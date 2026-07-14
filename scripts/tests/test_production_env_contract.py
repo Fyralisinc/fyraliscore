@@ -371,3 +371,53 @@ def test_env_contract_reports_nonempty_byoc_evidence_signing_key(
     assert len(violations) == 1
     assert violations[0].key == "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY"
     assert "must stay blank" in violations[0].message
+
+
+def test_env_contract_accepts_enabled_byoc_figma_oauth(
+    tmp_path: Path,
+) -> None:
+    template = tmp_path / ".env.production.example"
+    _write_byoc_template(
+        template,
+        overrides={
+            "FIGMA_OAUTH_ENABLED": "1",
+            "FIGMA_CLIENT_ID": "customer-deployment-app",
+            "FIGMA_REDIRECT_URI": (
+                "https://gateway.customer.test/"
+                "integrations/figma/oauth/callback"
+            ),
+            "FIGMA_OAUTH_UI_BASE_URL": "https://console.customer.test",
+            "FIGMA_OAUTH_SCOPES": (
+                "current_user:read,file_metadata:read,file_content:read,"
+                "file_comments:read,file_versions:read"
+            ),
+        },
+    )
+
+    assert check_env_contract(template) == []
+
+
+def test_env_contract_rejects_incomplete_or_broad_enabled_byoc_figma_oauth(
+    tmp_path: Path,
+) -> None:
+    template = tmp_path / ".env.production.example"
+    _write_byoc_template(
+        template,
+        overrides={
+            "FIGMA_OAUTH_ENABLED": "1",
+            "FIGMA_CLIENT_ID": "",
+            "FIGMA_REDIRECT_URI": "https://gateway.customer.test/figma/callback",
+            "FIGMA_OAUTH_UI_BASE_URL": "http://console.customer.test",
+            "FIGMA_OAUTH_SCOPES": "current_user:read,file_content:read,webhooks:write",
+        },
+    )
+
+    violations = check_env_contract(template)
+
+    assert [violation.key for violation in violations] == [
+        "FIGMA_CLIENT_ID",
+        "FIGMA_REDIRECT_URI",
+        "FIGMA_OAUTH_UI_BASE_URL",
+        "FIGMA_OAUTH_SCOPES",
+    ]
+    assert "exact Figma callback path" in violations[1].message

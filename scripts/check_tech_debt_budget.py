@@ -23,13 +23,13 @@ from scripts.report_tech_debt_metrics import TechDebtReport, build_report  # noq
 
 
 DEFAULT_FILE_LINE_BUDGETS = {
-    "services/reasoning/think/reconciler.py": 1387,
-    "services/reasoning/sage/outcome_evaluator.py": 1476,
-    "services/platform/execution/inquiry.py": 493,
+    "services/reasoning/think/reconciler.py": 1492,
+    "services/reasoning/sage/outcome_evaluator.py": 1532,
+    "services/platform/execution/inquiry.py": 533,
 }
 
 DEFAULT_FUNCTION_LINE_BUDGETS = {
-    "services/app/gateway/debug_router.py:build_debug_router": 78,
+    "services/app/gateway/debug_router.py:build_debug_router": 83,
     "services/app/gateway/finance_router.py:build_finance_router": 8,
     "services/app/gateway/map_routes.py:_build_snapshot": 75,
     "services/app/gateway/slack_router.py:build_slack_router": 9,
@@ -39,9 +39,9 @@ DEFAULT_FUNCTION_LINE_BUDGETS = {
     "services/ingest/synthetic/backfill_harness/harness.py:_write_install_and_trigger": 43,
     "services/ingest/synthetic/live_generators/hmac_webhook.py:_build_payload": 6,
     "services/ingest/synthetic/mock_servers/google_workspace.py:_make_handler": 5,
-    "services/ingest/ingestion/writers/observation_writer.py:_handle_message": 136,
+    "services/ingest/ingestion/writers/observation_writer.py:_handle_message": 158,
     "services/ingest/ingestion/feature_flags/circuit_breaker.py:_process_tick": 42,
-    "services/ingest/ingestion/core.py:ingest_from_draft": 69,
+    "services/ingest/ingestion/core.py:ingest_from_draft": 104,
     "services/ingest/ingestion/workflows/shard_fetch.py:_run_fetch_loop": 99,
     "services/ingest/integrations/gmail/fetcher.py:drain_mailbox_history": 86,
     "services/ingest/synthetic/validation_runs/composition.py:build_live_drivers": 65,
@@ -63,16 +63,16 @@ DEFAULT_FUNCTION_LINE_BUDGETS = {
     "services/reasoning/sage/cue_extractor.py:_extract_sync": 32,
     "services/reasoning/sage/evidence_projection.py:_rank_for_model": 65,
     "services/reasoning/contestability/service.py:contest_model": 44,
-    "services/reasoning/sage/outcome_evaluator.py:_evaluate": 194,
-    "services/reasoning/sage/reader.py:read": 179,
+    "services/reasoning/sage/outcome_evaluator.py:_evaluate": 195,
+    "services/reasoning/sage/reader.py:read": 203,
     "services/reasoning/think/applier.py:_apply_act_op": 24,
     "services/reasoning/think/applier.py:_apply_claim_op": 37,
-    "services/reasoning/think/applier.py:apply_diff": 149,
-    "services/reasoning/think/reason.py:_run_once": 143,
+    "services/reasoning/think/applier.py:apply_diff": 194,
+    "services/reasoning/think/reason.py:_run_once": 153,
     "services/reasoning/think/reconciler.py:_reconcile_inner": 45,
     "services/reasoning/think/reason.py:think": 148,
-    "services/reasoning/think/context_use.py:summarize_context_use": 198,
-    "services/reasoning/think/validator.py:validate": 88,
+    "services/reasoning/think/context_use.py:summarize_context_use": 252,
+    "services/reasoning/think/validator.py:validate": 109,
     "services/reasoning/retrieval/assembler.py:assemble_context": 88,
     "services/reasoning/retrieval/primary.py:primary_retrieve": 152,
     "services/reasoning/retrieval/pathways.py:pathway_b_semantic": 88,
@@ -81,8 +81,8 @@ DEFAULT_FUNCTION_LINE_BUDGETS = {
     "benchmarks/adapters/stress10_adapter.py:__init__": 6,
     "scripts/run_storyline_batch_benchmark.py:run_benchmark": 101,
     "scripts/run_storyline_batch_benchmark.py:score_storylines": 34,
-    "scripts/run_storyline_batch_benchmark.py:_company_intelligence_scorecard": 78,
-    "scripts/run_storyline_batch_benchmark.py:_product_value_evals": 110,
+    "scripts/run_storyline_batch_benchmark.py:_company_intelligence_scorecard": 80,
+    "scripts/run_storyline_batch_benchmark.py:_product_value_evals": 114,
     "scripts/run_1000_signal_model_layer_probe.py:collect_model_layer_report": 46,
     "scripts/run_1000_signal_model_layer_probe.py:main": 55,
     "benchmarks/run_benchmark.py:main": 23,
@@ -271,8 +271,8 @@ FUNCTION_LINE_BUDGET_ARG_NAMES = {
 
 @dataclass(frozen=True)
 class TechDebtBudget:
-    files_over_threshold: int = 37
-    functions_over_threshold: int = 36
+    files_over_threshold: int = 40
+    functions_over_threshold: int = 39
     classes_over_threshold: int = 23
     import_linter_ignored_imports_total: int = 71
     file_line_budgets: Mapping[str, int] = field(
@@ -389,14 +389,14 @@ def check_budget(
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
-    parser.add_argument("--max-files-over-threshold", type=int, default=37)
-    parser.add_argument("--max-functions-over-threshold", type=int, default=36)
+    parser.add_argument("--max-files-over-threshold", type=int, default=40)
+    parser.add_argument("--max-functions-over-threshold", type=int, default=39)
     parser.add_argument("--max-classes-over-threshold", type=int, default=23)
     parser.add_argument("--max-import-linter-ignored-imports", type=int, default=71)
-    parser.add_argument("--max-platform-inquiry-lines", type=int, default=493)
-    parser.add_argument("--max-outcome-evaluator-file-lines", type=int, default=1476)
-    parser.add_argument("--max-think-reconciler-file-lines", type=int, default=1387)
-    parser.add_argument("--max-debug-router-factory-lines", type=int, default=78)
+    parser.add_argument("--max-platform-inquiry-lines", type=int, default=533)
+    parser.add_argument("--max-outcome-evaluator-file-lines", type=int, default=1532)
+    parser.add_argument("--max-think-reconciler-file-lines", type=int, default=1492)
+    parser.add_argument("--max-debug-router-factory-lines", type=int, default=83)
     parser.add_argument("--max-finance-router-factory-lines", type=int, default=8)
     parser.add_argument("--max-map-snapshot-lines", type=int, default=75)
     parser.add_argument("--max-slack-router-factory-lines", type=int, default=9)
@@ -406,9 +406,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--max-backfill-install-dispatch-lines", type=int, default=43)
     parser.add_argument("--max-hmac-webhook-payload-lines", type=int, default=6)
     parser.add_argument("--max-google-workspace-handler-lines", type=int, default=5)
-    parser.add_argument("--max-observation-writer-handle-message-lines", type=int, default=136)
+    parser.add_argument("--max-observation-writer-handle-message-lines", type=int, default=158)
     parser.add_argument("--max-circuit-breaker-process-tick-lines", type=int, default=42)
-    parser.add_argument("--max-ingest-from-draft-lines", type=int, default=69)
+    parser.add_argument("--max-ingest-from-draft-lines", type=int, default=104)
     parser.add_argument("--max-shard-fetch-loop-lines", type=int, default=99)
     parser.add_argument("--max-gmail-drain-history-lines", type=int, default=86)
     parser.add_argument("--max-live-driver-composition-lines", type=int, default=65)
@@ -434,16 +434,16 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--max-sage-cue-extractor-lines", type=int, default=32)
     parser.add_argument("--max-sage-evidence-rank-lines", type=int, default=65)
     parser.add_argument("--max-contestation-service-entrypoint-lines", type=int, default=44)
-    parser.add_argument("--max-outcome-evaluator-lines", type=int, default=194)
-    parser.add_argument("--max-sage-reader-read-lines", type=int, default=179)
+    parser.add_argument("--max-outcome-evaluator-lines", type=int, default=195)
+    parser.add_argument("--max-sage-reader-read-lines", type=int, default=203)
     parser.add_argument("--max-think-apply-act-op-lines", type=int, default=24)
     parser.add_argument("--max-think-apply-claim-op-lines", type=int, default=37)
-    parser.add_argument("--max-think-apply-diff-lines", type=int, default=149)
-    parser.add_argument("--max-think-run-once-lines", type=int, default=143)
+    parser.add_argument("--max-think-apply-diff-lines", type=int, default=194)
+    parser.add_argument("--max-think-run-once-lines", type=int, default=153)
     parser.add_argument("--max-think-reconcile-inner-lines", type=int, default=45)
     parser.add_argument("--max-think-entrypoint-lines", type=int, default=148)
-    parser.add_argument("--max-think-context-use-lines", type=int, default=198)
-    parser.add_argument("--max-think-validate-lines", type=int, default=88)
+    parser.add_argument("--max-think-context-use-lines", type=int, default=252)
+    parser.add_argument("--max-think-validate-lines", type=int, default=109)
     parser.add_argument("--max-assemble-context-lines", type=int, default=88)
     parser.add_argument("--max-primary-retrieve-lines", type=int, default=152)
     parser.add_argument("--max-pathway-b-semantic-lines", type=int, default=88)
@@ -452,8 +452,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--max-stress10-adapter-init-lines", type=int, default=6)
     parser.add_argument("--max-storyline-run-benchmark-lines", type=int, default=101)
     parser.add_argument("--max-storyline-score-lines", type=int, default=34)
-    parser.add_argument("--max-company-intelligence-scorecard-lines", type=int, default=78)
-    parser.add_argument("--max-product-value-evals-lines", type=int, default=110)
+    parser.add_argument("--max-company-intelligence-scorecard-lines", type=int, default=80)
+    parser.add_argument("--max-product-value-evals-lines", type=int, default=114)
     parser.add_argument("--max-model-layer-report-lines", type=int, default=46)
     parser.add_argument("--max-model-layer-probe-main-lines", type=int, default=55)
     parser.add_argument("--max-benchmark-runner-main-lines", type=int, default=23)

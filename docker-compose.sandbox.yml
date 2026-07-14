@@ -15,16 +15,23 @@
 #   2. Publishes the gateway on host :8000 so `ngrok http 8000` (run on
 #      the host) can give it a public HTTPS URL for webhooks + OAuth.
 #   3. Disables the services a non-Gmail local sandbox does not need:
-#      the gmail_* live workers (no Gmail creds → would crash-loop), and
-#      the demo UI / nginx-proxy / acme / think workers (the cloud-deploy
-#      edge + reasoning layer, irrelevant to ingestion validation). They
+#      non-Slack live/background workers (no provider creds → would crash-loop),
+#      and the demo UI / nginx-proxy / acme / think workers (the cloud-deploy
+#      edge + reasoning layer, irrelevant to Slack ingestion validation). They
 #      are parked under the `full` profile — bring them in deliberately
 #      with `--profile full` if ever needed.
 #
-# Gmail is intentionally absent: with no Gmail env set, the gateway does
-# not mount its Gmail routers, so the public gateway still boots clean.
+# Gmail/Calendar/Drive and other live workers are intentionally absent from the
+# default sandbox. Bring them in deliberately with `--profile full`.
 
 x-sb-envfile: &sb-envfile
+  # The extracted github-intel extension is private/optional. Slack sandbox
+  # validation must be runnable without GitHub package credentials, so build the
+  # core image only unless an operator deliberately overrides this overlay.
+  build:
+    context: .
+    args:
+      GITHUB_INTEL_REF: ""
   # `!override` tells Compose to REPLACE the base service's env_file
   # (.env.production, which need not exist here) rather than append to it.
   env_file: !override
@@ -36,6 +43,13 @@ x-sb-envfile: &sb-envfile
   environment:
     COMPANY_OS_ENV: dev
     FYRALIS_ENV: dev
+    FYRALIS_SOURCE_REHEARSAL_ENABLED: "1"
+    FYRALIS_SLACK_REHEARSAL_ENABLED: "1"
+    FYRALIS_SOURCE_AUTO_CONNECT_EXECUTE_BROWSER_DOM: "1"
+    FYRALIS_SOURCE_AUTO_CONNECT_HEADLESS_BROWSER: "1"
+    SHARD_FETCH_BATCH: "auto"
+    SHARD_FETCH_CONCURRENCY: "auto"
+    DISCORD_GATEWAY_INSTALLATION_CACHE_TTL_SECONDS: "5"
   # GitHub App private key (multi-line PEM can't live in env_file) — mount
   # it read-only from the gitignored .secrets/ dir; .env.sandbox points
   # GITHUB_APP_PRIVATE_KEY_PATH here. Harmless on workers that don't read it.
@@ -68,8 +82,12 @@ services:
   tenant_onboarding: { <<: *sb-envfile }
   source_onboarding: { <<: *sb-envfile }
   shard_fetch: { <<: *sb-envfile }
-  reconciler: { <<: *sb-envfile }
-  periodic_reconciler: { <<: *sb-envfile }
+  reconciler:
+    <<: *sb-envfile
+    profiles: ["full"]
+  periodic_reconciler:
+    <<: *sb-envfile
+    profiles: ["full"]
 
   # ---- Kafka consumer chain ------------------------------------------
   normalizer: { <<: *sb-envfile }
@@ -81,20 +99,54 @@ services:
   embedding_backlog: { <<: *sb-envfile }
 
   # ---- live source worker (real Discord gateway WSS) -----------------
-  discord_gateway_worker: { <<: *sb-envfile }
+  discord_gateway_worker:
+    <<: *sb-envfile
+    profiles: ["full"]
 
   # ---- one-shots that load creds (env_file) --------------------------
   migrate: { <<: *sb-envfile }
   kafka-init: { <<: *sb-envfile }
 
   # ---- parked under `full` profile: not started by default ----------
+  extension_workers:
+    profiles: ["full"]
+  feels_onboarded_monitor:
+    profiles: ["full"]
+  circuit_breaker:
+    profiles: ["full"]
+  telegram_gateway_worker:
+    profiles: ["full"]
+  signal_gateway_worker:
+    profiles: ["full"]
   gmail_watch_scheduler:
     profiles: ["full"]
   gmail_history_poller:
     profiles: ["full"]
+  google_calendar_live_poller:
+    profiles: ["full"]
+  google_drive_live_poller:
+    profiles: ["full"]
+  google_calendar_watch_scheduler:
+    profiles: ["full"]
+  google_drive_watch_scheduler:
+    profiles: ["full"]
   think_worker:
     profiles: ["full"]
   post_commit_worker:
+    profiles: ["full"]
+  anomaly_processor_worker:
+    profiles: ["full"]
+  entity_resolver_worker:
+    profiles: ["full"]
+  schema_drift_monitor:
+    profiles: ["full"]
+  sage_structural_features_worker:
+    profiles: ["full"]
+  sage_topology_optimizer_worker:
+    profiles: ["full"]
+  housekeeper_worker:
+    profiles: ["full"]
+  relationship_ontology_proposals_worker:
     profiles: ["full"]
   # ui / nginx-proxy / acme-companion moved to the demo overlay repo
   # (docker-compose.demo.yml); the sandbox no longer parks them here.

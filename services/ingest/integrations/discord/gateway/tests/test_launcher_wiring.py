@@ -136,7 +136,7 @@ def _install_common_stubs(mod, monkeypatch, *, events: list[str]) -> None:
     monkeypatch.setattr(mod, "build_secret_store", lambda _pool: object())
     monkeypatch.setattr(mod, "build_tenant_resolver", lambda _deps: object())
     monkeypatch.setattr(mod, "TenantResolverDeps", lambda **_kw: object())
-    monkeypatch.setattr(mod, "InstallationCache", lambda: object())
+    monkeypatch.setattr(mod, "InstallationCache", lambda **_kw: object())
     monkeypatch.setattr(mod, "default_metrics", lambda: object())
     monkeypatch.setattr(mod, "ActorRepo", lambda _pool: object())
     monkeypatch.setattr(mod, "EntityAliasRepo", lambda _pool: object())

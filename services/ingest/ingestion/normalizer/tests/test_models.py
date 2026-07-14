@@ -52,6 +52,21 @@ def test_normalized_envelope_round_trips_through_json():
     assert parsed == env
 
 
+def test_normalized_envelope_carries_private_artifact_descriptors_outside_content():
+    fields = _valid_fields()
+    fields["content"] = {"artifacts": [{"blob_id": "safe-public-id"}]}
+    fields["artifact_descriptors"] = [{
+        "blob_id": "safe-public-id",
+        "bucket": "private-bucket",
+        "object_key": "private/key.json",
+    }]
+
+    env = NormalizedEnvelope(**fields)
+
+    assert env.content["artifacts"][0]["blob_id"] == "safe-public-id"
+    assert env.artifact_descriptors[0]["bucket"] == "private-bucket"
+
+
 def test_envelope_rejects_extra_fields():
     """`extra="forbid"` is load-bearing — a producer that slips an
     extra field through would mask a wire-format bump."""

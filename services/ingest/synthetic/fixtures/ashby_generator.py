@@ -34,9 +34,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
-# The five recruiting entities the planner shards on (client.DEFAULT_ENTITIES).
+# The Ashby read-model entities the planner shards on (client.DEFAULT_ENTITIES).
 DEFAULT_ENTITIES: tuple[str, ...] = (
     "candidate", "application", "job", "interview", "offer",
+    "application_feedback", "approval", "candidate_tag", "department",
+    "feedback_form_definition", "interview_plan", "interview_schedule",
+    "interview_stage_group", "job_posting", "location", "opening", "project",
+    "source", "source_tracking_link", "survey_form_definition",
+    "survey_request", "survey_submission_candidate_experience",
+    "survey_submission_questionnaire", "user",
 )
 
 
@@ -54,10 +60,10 @@ def make_ashby(
     Args:
       org_id: Ashby organization id (the scope-id; returned at top level and
         stamped into the external_id namespace).
-      entities: Entity types to generate; defaults to the five recruiting entities
-        ("candidate", "application", "job", "interview", "offer").
+      entities: Entity types to generate; defaults to the Ashby read-model
+        entity set used by the production client.
       rows_per_entity: Number of rows generated for EACH entity type. The default
-        5 entities × 1 row = exactly 5 backfill observations per tenant.
+        one row per entity = one backfill observation per entity per tenant.
       seed: Optional salt mixed into the deterministic digest so distinct tenants
         get distinct ids (the org_id namespace + entity_kind discriminator already
         keep rows distinct, so this is belt-and-suspenders).
@@ -136,11 +142,56 @@ def _entity(
         entity["candidate"] = {"id": f"can_{digest[:12]}", "name": name}
         entity["status"] = "scheduled"
         entity["interviewStage"] = {"title": "Technical Screen"}
-    else:  # offer
+    elif entity_type == "offer":
         entity["candidate"] = {"id": f"can_{digest[:12]}", "name": name}
         # A terminal offer status is the recruiting state-change signal.
         entity["offerStatus"] = "accepted"
         entity["status"] = "accepted"
+    elif entity_type == "application_feedback":
+        entity["applicationId"] = f"app_{digest[:12]}"
+        entity["interviewId"] = f"int_{digest[:12]}"
+        entity["submittedAt"] = updated
+        entity["submittedByUser"] = {
+            "id": f"usr_{digest[:12]}",
+            "firstName": "Grace",
+            "lastName": "Hopper",
+            "email": f"interviewer-{digest[:6]}@example.com",
+        }
+        entity["submittedValues"] = {"overall_recommendation": "hire"}
+    elif entity_type == "user":
+        entity["firstName"] = "Grace"
+        entity["lastName"] = "Hopper"
+        entity["email"] = f"user-{digest[:6]}@example.com"
+        entity["isEnabled"] = True
+    elif entity_type == "job_posting":
+        entity["title"] = "Senior Software Engineer"
+        entity["jobId"] = f"job_{digest[:12]}"
+        entity["departmentName"] = "Engineering"
+        entity["locationName"] = "Remote"
+        entity["employmentType"] = "FullTime"
+        entity["isListed"] = True
+        entity["publishedDate"] = updated[:10]
+    elif entity_type == "opening":
+        entity["openingState"] = "Approved"
+        entity["latestVersion"] = {"identifier": f"OP-{digest[:6]}"}
+    elif entity_type == "department":
+        entity["name"] = "Engineering"
+        entity["isArchived"] = False
+    elif entity_type == "location":
+        entity["name"] = "Remote"
+    elif entity_type == "approval":
+        entity["status"] = "approved"
+    elif entity_type.startswith("survey_submission"):
+        entity["candidateId"] = f"can_{digest[:12]}"
+        entity["submittedAt"] = updated
+        entity["surveyType"] = (
+            "CandidateExperience"
+            if "candidate_experience" in entity_type
+            else "Questionnaire"
+        )
+        entity["submittedValues"] = {"rating": "positive"}
+    else:
+        entity["title"] = entity_type.replace("_", " ").title()
 
     return entity
 

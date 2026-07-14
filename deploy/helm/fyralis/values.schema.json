@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Fyralis local BYOC chart values",
+  "type": "object",
+  "properties": {
+    "minio": {
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short-retention raw-ingestion bucket."
+        },
+        "blobBucket": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Durable observation-artifact bucket."
+        }
+      },
+      "required": [
+        "bucket",
+        "blobBucket"
+      ]
+    },
+    "app": {
+      "type": "object",
+      "properties": {
+        "extraEnv": {
+          "type": "object",
+          "description": "Non-secret runtime settings rendered to the app ConfigMap.",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          },
+          "allOf": [
+            {
+              "not": {
+                "required": [
+                  "FIGMA_CLIENT_SECRET"
+                ]
+              }
+            },
+            {
+              "not": {
+                "required": [
+                  "OAUTH_STATE_HMAC_KEY"
+                ]
+              }
+            },
+            {
+              "not": {
+                "required": [
+                  "FIGMA_CLIENT_SECRET_SECRET_REF"
+                ]
+              }
+            },
+            {
+              "not": {
+                "required": [
+                  "OAUTH_STATE_HMAC_KEY_SECRET_REF"
+                ]
+              }
+            }
+          ]
+        },
+        "figmaOAuth": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "clientId": {
+              "type": "string"
+            },
+            "redirectUri": {
+              "type": "string"
+            },
+            "uiBaseUrl": {
+              "type": "string"
+            },
+            "allowHttpLoopback": {
+              "type": "boolean"
+            },
+            "scopes": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string",
+              "description": "Pre-created Kubernetes Secret containing managed secret references only."
+            }
+          },
+          "required": [
+            "enabled",
+            "clientId",
+            "redirectUri",
+            "uiBaseUrl",
+            "allowHttpLoopback",
+            "scopes",
+            "existingSecret"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "clientId": {
+                    "minLength": 1
+                  },
+                  "redirectUri": {
+                    "minLength": 1
+                  },
+                  "uiBaseUrl": {
+                    "minLength": 1
+                  },
+                  "scopes": {
+                    "minLength": 1
+                  },
+                  "existingSecret": {
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "figmaOAuth"
+      ]
+    }
+  }
+}

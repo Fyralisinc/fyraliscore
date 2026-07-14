@@ -49,6 +49,7 @@ from services.domain.observations.repo import (
     InvalidTrustTier,
     ObservationError,
     ObservationRepository,
+    _hydrate_row,
 )
 from services.domain.observations.state_change import emit_state_change
 
@@ -189,6 +190,32 @@ async def test_insert_twice_same_external_id_returns_first_row(
     # Returned row reflects the first insert's content_text, not the
     # second's.
     assert second.content_text == "hello world"
+
+
+async def test_hydrate_row_accepts_pgvector_vector(tenant_id: UUID):
+    from pgvector import Vector
+
+    row = _hydrate_row({
+        "id": uuid7(),
+        "tenant_id": tenant_id,
+        "occurred_at": _now(),
+        "ingested_at": _now(),
+        "kind": "signal",
+        "source_channel": "discord:message",
+        "source_actor_ref": None,
+        "actor_id": None,
+        "content": {"text": "duplicate event"},
+        "content_text": "duplicate event",
+        "embedding": Vector([0.1] * EMBEDDING_DIM),
+        "embedding_pending": False,
+        "trust_tier": "inferential",
+        "external_id": "discord-duplicate",
+        "cause_id": None,
+        "sequence_num": 1,
+        "entities_mentioned": [],
+    })
+
+    assert row.embedding == pytest.approx([0.1] * EMBEDDING_DIM)
 
 
 async def test_same_external_id_is_deduped_per_tenant(

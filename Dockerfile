@@ -13,12 +13,20 @@ RUN apt-get update && apt-get install -y \
 RUN npm install -g @openai/codex@0.134.0
 RUN mkdir -p /root/.codex
 
-COPY pyproject.toml .
-RUN pip install --no-cache-dir .
+COPY pyproject.toml README.md ./
+ARG INSTALL_BROWSER_AGENT=1
+RUN if [ "$INSTALL_BROWSER_AGENT" = "1" ]; then \
+      pip install --no-cache-dir ".[browser-agent]" && \
+      python -m playwright install --with-deps chromium; \
+    else \
+      pip install --no-cache-dir .; \
+    fi
 
 COPY . .
 
 ENV PYTHONPATH=/app
+ENV FYRALIS_SOURCE_AUTO_CONNECT_EXECUTE_BROWSER_DOM=1
+ENV FYRALIS_SOURCE_AUTO_CONNECT_HEADLESS_BROWSER=1
 
 # Install the github-intel interface (ADR-0004 first interface) into the shared
 # image so the gateway, observation_writer (inline enricher), and the

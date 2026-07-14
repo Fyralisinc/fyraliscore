@@ -112,10 +112,15 @@ def _hydrate_row(record: asyncpg.Record) -> ObservationRow:
             v = v.decode()
         if isinstance(v, str):
             raw[key] = json.loads(v)
-    # pgvector's asyncpg codec returns numpy arrays when registered;
-    # convert to list[float] so Pydantic validates cleanly.
+    # pgvector's asyncpg codec can return either numpy arrays or
+    # pgvector.Vector depending on package/runtime version. Normalize to
+    # list[float] so Pydantic validates cleanly.
     emb = raw.get("embedding")
     if emb is not None and not isinstance(emb, list):
+        if hasattr(emb, "to_list"):
+            emb = emb.to_list()
+        elif hasattr(emb, "to_numpy"):
+            emb = emb.to_numpy()
         raw["embedding"] = [float(x) for x in emb]
     try:
         return ObservationRow.model_validate(raw)

@@ -91,6 +91,24 @@ def test_full_mode_draft_reconstruction_applies_shared_payload_guards() -> None:
     assert writer_module.get_metrics()["writer.shadow_write_events"] == 0
 
 
+def test_full_mode_draft_keeps_private_artifact_descriptor_off_content() -> None:
+    env = NormalizedEnvelope.model_validate(
+        json.loads(_normalized_envelope_bytes())
+    ).model_copy(update={
+        "content": {"artifacts": [{"blob_id": "blob-1"}]},
+        "artifact_descriptors": [{
+            "blob_id": "blob-1",
+            "bucket": "private-bucket",
+            "object_key": "private/key.json",
+        }],
+    })
+
+    draft = writer_module._draft_from_envelope(env)
+
+    assert draft.content == {"artifacts": [{"blob_id": "blob-1"}]}
+    assert draft.artifact_descriptors[0]["bucket"] == "private-bucket"
+
+
 # ---------------------------------------------------------------------
 # 2. Parse-failure — malformed envelope bumps metric, no log entry.
 # (The full-loop variant runs against testcontainers in

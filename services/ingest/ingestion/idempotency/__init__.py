@@ -203,6 +203,13 @@ def telegram_message(
     )
 
 
+# --- Facebook Pages --------------------------------------------------
+def facebook_page_message(page_id: str, message_id: str) -> str:
+    """`facebook_pages:{page_id}:{message_id}` — immutable Meta message id,
+    namespaced by Page so webhook and backfill twins collapse."""
+    return f"facebook_pages:{page_id}:{message_id}"
+
+
 # --- Brex (Bearer / Mercury archetype) -------------------------------
 def brex_transaction(account_id: str, txn_id: str, status: str) -> str:
     """`brex:{account}:txn:{id}:{status}` — VERSIONED by status so a
@@ -299,6 +306,17 @@ def figma_event(team_id: str, event_id: str, version: object) -> str:
     UNIQUE has no tenant_id) and VERSIONED by the event version so a
     re-emitted event at a new version re-observes."""
     return f"figma:{team_id}:event:{event_id}:{version}"
+
+
+def figma_file_snapshot(scope_id: str, file_key: str, version: object) -> str:
+    """``figma:{scope}:file_snapshot:{file}:{version}``.
+
+    A Figma file is mutable, so the upstream document version (falling back to
+    its captured content hash when Figma omits a version) is part of the key.
+    ``scope_id`` is the tenant installation id when available, avoiding a
+    global collision when the same Figma team is connected by two tenants.
+    """
+    return f"figma:{scope_id}:file_snapshot:{file_key}:{version}"
 
 
 # --- LinkedIn (poll/backfill archetype) ------------------------------
@@ -416,6 +434,8 @@ __all__ = [
     "deel_payment",
     "discord_event",
     "figma_event",
+    "figma_file_snapshot",
+    "facebook_page_message",
     "fireflies_transcript",
     "github_push",
     "github_object",

@@ -174,24 +174,24 @@ ALTER TABLE source_onboarding_runs
     DROP CONSTRAINT IF EXISTS source_onboarding_runs_source_check;
 ALTER TABLE source_onboarding_runs
     ADD CONSTRAINT source_onboarding_runs_source_check
-    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira', 'mercury', 'quickbooks', 'grafana', 'telegram'));
+    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira', 'mercury', 'quickbooks', 'grafana', 'telegram')) NOT VALID;
 
 ALTER TABLE onboarding_shards
     DROP CONSTRAINT IF EXISTS onboarding_shards_source_check;
 ALTER TABLE onboarding_shards
     ADD CONSTRAINT onboarding_shards_source_check
-    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira', 'mercury', 'quickbooks', 'grafana', 'telegram'));
+    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira', 'mercury', 'quickbooks', 'grafana', 'telegram')) NOT VALID;
 
 ALTER TABLE ingestion_failures
     DROP CONSTRAINT IF EXISTS ingestion_failures_source_check;
 ALTER TABLE ingestion_failures
     ADD CONSTRAINT ingestion_failures_source_check
-    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira', 'mercury', 'quickbooks', 'grafana', 'telegram'));
+    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira', 'mercury', 'quickbooks', 'grafana', 'telegram')) NOT VALID;
 
 ALTER TABLE onboarding_triggers
     DROP CONSTRAINT IF EXISTS onboarding_triggers_source_check;
 ALTER TABLE onboarding_triggers
     ADD CONSTRAINT onboarding_triggers_source_check
-    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira', 'mercury', 'quickbooks', 'grafana', 'telegram'));
+    CHECK (source IN ('slack', 'github', 'discord', 'gmail', 'notion', 'google_calendar', 'google_drive', 'jira', 'mercury', 'quickbooks', 'grafana', 'telegram')) NOT VALID;
 
 COMMIT;

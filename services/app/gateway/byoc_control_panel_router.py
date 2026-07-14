@@ -57,12 +57,12 @@ def build_byoc_control_panel_router() -> APIRouter:
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"errors": [str(exc)]},
+                detail={"error": "invalid_control_panel_request"},
             ) from exc
         except ValidationError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"errors": [error["msg"] for error in exc.errors()]},
+                detail={"error": "invalid_control_panel_response"},
             ) from exc
 
     @router.get("/state")

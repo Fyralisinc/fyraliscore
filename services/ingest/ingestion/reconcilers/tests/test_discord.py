@@ -46,15 +46,14 @@ class _FakePool:
         return self.install
 
 
-def _shard(*, state="done", is_sampled=True, shard_id=None):
+def _shard(*, state="done", shard_id=None, channel_id="C"):
     sid = shard_id or uuid4()
     return _FakeRec(
         id=sid, onboarding_run_id=uuid4(), tenant_id=uuid4(),
         source="discord", shard_kind=SHARD_KIND_CHANNEL_WINDOW,
         shard_identifier={
             "shard_kind": SHARD_KIND_CHANNEL_WINDOW,
-            "guild_id": "G", "channel_id": "C",
-            "is_sampled": is_sampled,
+            "guild_id": "G", "channel_id": channel_id,
             "installation_id": "I",
         },
         state=state, parent_shard_id=None, last_error=None,
@@ -99,21 +98,19 @@ def _wire_pool(monkeypatch, pool):
     monkeypatch.setattr(dc_rec, "_pool_provider", pool)
 
 
-async def test_only_sampled_channels_checked(monkeypatch):
-    """LOAD-BEARING for M6.6: non-sampled shards are skipped entirely."""
-    sampled = _shard(is_sampled=True)
-    unsampled = _shard(is_sampled=False)
+async def test_all_completed_channels_checked(monkeypatch):
+    a = _shard(channel_id="A")
+    b = _shard(channel_id="B")
     pool = _FakePool(install=_install())
     fake = _FakeDC(after_returns=[])
     _stub_state(monkeypatch, {
-        str(sampled["id"]): {"newest_seen_snowflake": "1000"},
-        str(unsampled["id"]): {"newest_seen_snowflake": "1000"},
+        str(a["id"]): {"newest_seen_snowflake": "1000"},
+        str(b["id"]): {"newest_seen_snowflake": "1000"},
     })
     _stub_client(monkeypatch, fake)
     _wire_pool(monkeypatch, pool)
-    await reconcile_discord([sampled, unsampled], _run())
-    # Only the sampled shard probed.
-    assert fake.calls == 1
+    await reconcile_discord([a, b], _run())
+    assert fake.calls == 2
 
 
 async def test_reshares_when_newer_messages(monkeypatch):
@@ -132,7 +129,7 @@ async def test_reshares_when_newer_messages(monkeypatch):
     assert rs.parent_shard_id == sid
     assert rs.shard.recency_score == RESHARE_RECENCY_SCORE
     assert rs.shard.shard_identifier["gap_baseline_snowflake"] == "1000"
-    assert rs.shard.shard_identifier["is_sampled"] is True
+    assert "is_sampled" not in rs.shard.shard_identifier
 
 
 async def test_clean_when_no_newer(monkeypatch):

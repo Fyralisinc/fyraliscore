@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from lib.shared.errors import DiscordApiError
 from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
 from services.ingest.ingestion.fetchers import discord as dc
 from services.ingest.ingestion.fetchers.discord import (
@@ -22,7 +23,10 @@ class _FakeDC:
         self.calls.append({"before": before, "after": after, "limit": limit})
         if not self.pages:
             return []
-        return self.pages.pop(0)
+        page = self.pages.pop(0)
+        if isinstance(page, Exception):
+            raise page
+        return page
 
 
 class _Inst:
@@ -80,6 +84,26 @@ async def test_record_envelope_shape(monkeypatch):
     assert rec["content"] == "hi"
     assert rec["guild_id"] == "G"
     assert rec["channel_id"] == "C"
+
+
+async def test_channel_missing_access_is_skipped(monkeypatch):
+    fake = _FakeDC([
+        DiscordApiError(
+            "discord channel is not readable by this bot",
+            code="discord_channel_forbidden",
+            context={"http_status": 403, "discord_error_code": 50001},
+        )
+    ])
+    _patch(monkeypatch, fake)
+
+    result = await fetch_page_discord(
+        _Inst(),
+        {"channel_id": "private-channel", "guild_id": "G", "installation_id": "I"},
+        cursor=None,
+    )
+
+    assert result.records == []
+    assert result.end_of_data is True
 
 
 async def test_cursor_strict():

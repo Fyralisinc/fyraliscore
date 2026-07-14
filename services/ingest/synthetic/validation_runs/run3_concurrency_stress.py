@@ -12,8 +12,7 @@ A concurrent monitor samples, while the backfill runs:
 
 Assertions (A22 properties under load):
   - per-tenant isolation: each tenant's observation count matches its
-    fixture independently (gmail/github/slack exact; discord = all-equal
-    + positive, since 5% channel-sampling picks 1 of 4 channels → 30 obs),
+    fixture independently (gmail/github/slack/discord exact),
   - signal-table backlog bounded (< 10× concurrency = 100),
   - concurrency exercised (≥5 in_progress simultaneously),
   - #39 flake watch: `tenant_onboarding_completed` fires exactly once per
@@ -83,8 +82,7 @@ def run3_scenarios() -> list[BackfillScenario]:
             tenant_slug=f"r3-discord-{i}", source="discord",
             fixture_params={"guild_id": f"G_r3d{i}", "channels": 4,
                             "messages_per_channel": 10},
-            # 5% of 4 channels → max(1, int(0.2)) = 1 channel sampled.
-            expected_observation_count=10))
+            expected_observation_count=4 * 10))
     return out
 
 
