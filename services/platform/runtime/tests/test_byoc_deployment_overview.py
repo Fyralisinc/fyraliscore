@@ -351,10 +351,11 @@ def test_control_panel_state_composes_sanitized_deployment_reads() -> None:
     assert state.schema_version == "fyralis.byoc.control_panel_state.v1"
     assert state.stored_scope == "sanitized_control_panel_metadata_only"
     assert state.overview.status == "ready"
-    assert state.actions == ()
+    assert [action.code for action in state.actions] == ["review_product_health"]
     assert {section.key: section.status for section in state.sections} == {
         "deployment_overview": "ready",
         "agent_fleet": "ready",
+        "product_health": "unknown",
         "evidence_packages": "ready",
         "preflight_reports": "ready",
         "runner_evidence": "ready",
@@ -363,7 +364,8 @@ def test_control_panel_state_composes_sanitized_deployment_reads() -> None:
     assert "install_token" not in serialized.lower()
     assert "secret_ref" not in serialized.lower()
     assert "signature" not in serialized.lower()
-    assert "payload" not in serialized.lower()
+    assert '"raw_payload":' not in serialized.lower()
+    assert '"raw_payloads_included":false' in serialized.lower()
     assert '"preflight_report":' not in serialized
     assert '"checks":' not in serialized
 
@@ -388,7 +390,10 @@ def test_control_panel_state_surfaces_action_codes_without_raw_context() -> None
         generated_at=GENERATED_AT,
     )
 
-    assert [action.code for action in state.actions] == ["submit_evidence_package"]
+    assert [action.code for action in state.actions] == [
+        "submit_evidence_package",
+        "review_product_health",
+    ]
     assert state.actions[0].target_section == "evidence_packages"
     assert state.actions[0].priority == "warning"
     assert {section.key: section.status for section in state.sections}[
@@ -422,6 +427,10 @@ def test_control_panel_state_flags_desired_revision_drift() -> None:
     )
 
     assert overview.agent_summary.mixed_desired_revisions is True
-    assert state.actions[0].code == "review_desired_state_drift"
-    assert state.actions[0].source == "agent_fleet"
-    assert state.actions[0].priority == "warning"
+    drift_action = next(
+        action
+        for action in state.actions
+        if action.code == "review_desired_state_drift"
+    )
+    assert drift_action.source == "agent_fleet"
+    assert drift_action.priority == "warning"

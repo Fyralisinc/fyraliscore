@@ -393,11 +393,8 @@ async def test_get_delta_denies_hidden_target_delta(
         headers=_auth(token),
     )
 
-    assert resp.status_code == 403, resp.text
-    assert resp.json() == {
-        "error": "access_denied",
-        "reason": "resource_out_of_scope:relational",
-    }
+    assert resp.status_code == 404, resp.text
+    assert resp.json() == {"error": "not_found"}
 
 
 @pytest.mark.asyncio

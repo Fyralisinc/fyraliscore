@@ -485,6 +485,7 @@ async def _run_think_attempt(
                         reason_for_trigger=reason_for_trigger,
                         record=record,
                         expanded_region=expanded_region,
+                        read_pool=None,
                         reason_cache=reason_cache,
                     )
             else:
@@ -498,6 +499,7 @@ async def _run_think_attempt(
                     reason_for_trigger=reason_for_trigger,
                     record=record,
                     expanded_region=expanded_region,
+                    read_pool=pool,
                     reason_cache=reason_cache,
                 )
     await flush_debug_captures(pool, debug_scope.artifacts)

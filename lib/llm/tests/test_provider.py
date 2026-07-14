@@ -125,12 +125,17 @@ def test_provider_estimates_usage_when_sdk_usage_is_missing() -> None:
 # Config
 # =====================================================================
 
-def test_config_from_env_defaults(monkeypatch):
+def test_config_from_env_defaults(monkeypatch, tmp_path):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_AUTH_FILE", raising=False)
+    monkeypatch.delenv("CODEX_MODEL", raising=False)
+    monkeypatch.delenv("CODEX_TRANSPORT", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.setenv("LLM_API_KEY", "k")
     cfg = LLMConfig.from_env()
     assert cfg.provider == "codex"

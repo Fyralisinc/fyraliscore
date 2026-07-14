@@ -21,7 +21,7 @@ def _invoice(**over):
         "TotalAmt": 5000.00, "Balance": 5000.00,
         "CustomerRef": {"value": "1", "name": "Globex"},
         "TxnDate": "2026-05-01",
-        "DueDate": "2026-06-30",
+        "DueDate": "2099-06-30",
         "MetaData": {"LastUpdatedTime": "2026-05-20T12:30:00-08:00"},
     }
     base.update(over)

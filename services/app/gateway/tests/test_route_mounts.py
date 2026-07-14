@@ -10,7 +10,7 @@ def test_native_connect_routers_are_mounted() -> None:
 
     _mount_native_connect_routers(app, emit_mount_logs=False)
 
-    paths = {route.path for route in app.routes}
+    paths = set(app.openapi()["paths"])
     for source in (
         "ashby",
         "aws",

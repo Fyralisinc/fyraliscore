@@ -11,7 +11,7 @@ readme = "README.md"
 
 dependencies = [
     "asyncpg>=0.29",
-    "pgvector>=0.3",
+    "pgvector>=0.3,<0.4",        # 0.4+ decodes asyncpg vectors as non-iterable Vector objects
     "numpy>=2.0",                # reasoning topology + pgvector array handling
     "pydantic>=2.7",
     "fastapi>=0.110",

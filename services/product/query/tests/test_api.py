@@ -137,7 +137,13 @@ async def test_ask_maps_rendering_unavailable_to_503(fake_strategies):
         cache_adapter=InMemoryCacheAdapter(),
     )
     app = FastAPI()
-    app.include_router(build_router(handler, default_tenant_id=TENANT))
+    app.include_router(
+        build_router(
+            handler,
+            default_tenant_id=TENANT,
+            default_viewer_id=VIEWER,
+        )
+    )
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"

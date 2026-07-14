@@ -7,9 +7,9 @@ transport-level exposure, not fine-grained substrate authorization.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, APIWebSocketRoute
@@ -207,29 +207,58 @@ def gateway_auth_bypassed(path: str, extension_prefixes: Iterable[str] = ()) -> 
 
 def iter_gateway_route_inventory(app: FastAPI) -> list[RouteInventoryEntry]:
     entries: list[RouteInventoryEntry] = []
-    for route in app.routes:
+    for route, path, inherited_tags in _iter_effective_routes(app.routes):
         if isinstance(route, APIRoute):
             methods = tuple(sorted(route.methods or ()))
             entries.append(
                 RouteInventoryEntry(
                     methods=methods,
-                    path=route.path,
+                    path=path,
                     name=route.name,
-                    tags=tuple(str(tag) for tag in (route.tags or ())),
-                    policy=classify_gateway_route(route.path),
+                    tags=inherited_tags
+                    + tuple(str(tag) for tag in (route.tags or ())),
+                    policy=classify_gateway_route(path),
                 )
             )
         elif isinstance(route, APIWebSocketRoute):
             entries.append(
                 RouteInventoryEntry(
                     methods=("WEBSOCKET",),
-                    path=route.path,
+                    path=path,
                     name=route.name,
-                    tags=(),
-                    policy=classify_gateway_route(route.path),
+                    tags=inherited_tags,
+                    policy=classify_gateway_route(path),
                 )
             )
     return sorted(entries, key=lambda entry: (entry.path, entry.methods))
+
+
+def _iter_effective_routes(
+    routes: Iterable[object],
+    *,
+    prefix: str = "",
+    inherited_tags: tuple[str, ...] = (),
+) -> Iterator[tuple[APIRoute | APIWebSocketRoute, str, tuple[str, ...]]]:
+    """Walk flat and FastAPI 0.139+ lazy included-router inventories."""
+    for route in routes:
+        if isinstance(route, APIRoute | APIWebSocketRoute):
+            yield route, f"{prefix}{route.path}", inherited_tags
+            continue
+
+        original_router = getattr(route, "original_router", None)
+        include_context = getattr(route, "include_context", None)
+        nested_routes = getattr(original_router, "routes", None)
+        if include_context is None or nested_routes is None:
+            continue
+        nested_prefix = f"{prefix}{getattr(include_context, 'prefix', '')}"
+        nested_tags = inherited_tags + tuple(
+            str(tag) for tag in (getattr(include_context, "tags", ()) or ())
+        )
+        yield from _iter_effective_routes(
+            nested_routes,
+            prefix=nested_prefix,
+            inherited_tags=nested_tags,
+        )
 
 
 __all__ = [

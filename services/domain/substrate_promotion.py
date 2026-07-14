@@ -1223,7 +1223,7 @@ def _auto_promotion_floor(
     """Return the deterministic promotion floor for a discovered substrate.
 
     The global floor is intentionally conservative for ambiguous people and
-    customer names. Some Alpen-scale substrate is much more concrete, though:
+    customer names. Some large-company substrate is much more concrete, though:
     source systems, vendor integrations, repository handles, Jira work items,
     and PR-backed commitments are deterministic enough to promote without a
     clarification round-trip.

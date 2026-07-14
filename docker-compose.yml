@@ -429,7 +429,6 @@ services:
   think_worker_reflex:
     <<: *worker
     profiles: ["think-lanes"]
-    container_name: company_os_think_worker_reflex
     command: python scripts/run_think_worker.py
     healthcheck: *consumer-healthcheck
     environment:
@@ -440,7 +439,6 @@ services:
   think_worker_batch_memory:
     <<: *worker
     profiles: ["think-lanes"]
-    container_name: company_os_think_worker_batch_memory
     command: python scripts/run_think_worker.py
     healthcheck: *consumer-healthcheck
     environment:
@@ -451,7 +449,6 @@ services:
   think_worker_relationship:
     <<: *worker
     profiles: ["think-lanes"]
-    container_name: company_os_think_worker_relationship
     command: python scripts/run_think_worker.py
     healthcheck: *consumer-healthcheck
     environment:
@@ -462,7 +459,6 @@ services:
   think_worker_deep_synthesis:
     <<: *worker
     profiles: ["think-lanes"]
-    container_name: company_os_think_worker_deep_synthesis
     command: python scripts/run_think_worker.py
     healthcheck: *consumer-healthcheck
     environment:
@@ -473,7 +469,6 @@ services:
   think_worker_repair:
     <<: *worker
     profiles: ["think-lanes"]
-    container_name: company_os_think_worker_repair
     command: python scripts/run_think_worker.py
     healthcheck: *consumer-healthcheck
     environment:

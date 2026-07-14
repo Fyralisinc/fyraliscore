@@ -2392,13 +2392,22 @@ async def _pathway_b_fetch_scope_exact_fallback(
         time.perf_counter() - exact_started, strategy="exact_fallback"
     )
     _PGVECTOR_QUERIES.inc(strategy="exact_fallback")
-    exact_models = _hydrate_many(
-        exact_rows, _hydrate_model, notes, "scope_exact_models"
+    candidates = _pathway_b_hydrate_exact_candidates(exact_rows)
+    ranked_ids = _pathway_b_rank_exact_candidates(
+        candidates,
+        vec=vec,
+        k=k,
     )
-    models = _pathway_b_rank_exact(exact_models, vec=vec, k=k)
+    models = await _pathway_b_fetch_ranked_models_by_id(
+        conn,
+        tenant_id=scope.params[0],
+        ids=ranked_ids,
+        notes=notes,
+        bucket="scope_exact_models",
+    )
     notes["scope_exact_fallback"] = {
         "hnsw_rows": len(ann_rows),
-        "candidate_rows": len(exact_models),
+        "candidate_rows": len(candidates),
         "hydrated_rows": len(models),
         "returned": len(models),
     }

@@ -891,16 +891,47 @@ async def _apply_one_expanded_claim_op(
         and recon_result.decision == "auto_merge"
         and recon_result.replacement_op is not None
     )
-    apply_result = await _apply_claim_op(
-        op,
-        conn,
-        models_repo,
-        diff.tenant_id,
-        cause_event_id=trigger_cause_event_id,
-        trigger_supporting_event_ids=trigger_evidence_ids,
-        audit_cause_override=("reconciliation_merge" if is_recon_merge else None),
-        doc_memory_source=doc_memory_source,
-    )
+    try:
+        apply_result = await _apply_claim_op(
+            op,
+            conn,
+            models_repo,
+            diff.tenant_id,
+            cause_event_id=trigger_cause_event_id,
+            trigger_supporting_event_ids=trigger_evidence_ids,
+            audit_cause_override=("reconciliation_merge" if is_recon_merge else None),
+            doc_memory_source=doc_memory_source,
+        )
+    except ValidationError as exc:
+        reason = _classify_apply_claim_drop_reason(exc)
+        message = getattr(exc, "message", str(exc))
+        log_dropped_op(
+            trigger_id=diff.trigger_ref,
+            tenant_id=diff.tenant_id,
+            op_kind=op.op,
+            op_type="claim",
+            failure_reason=reason,
+            original_op=op,
+        )
+        await _record_apply_drop(
+            conn,
+            tenant_id=diff.tenant_id,
+            op_type="claim",
+            op_kind=op.op,
+            reason=reason,
+            message=message,
+        )
+        ops_summary["apply_dropped_op_count"] += 1
+        ops_summary["apply_dropped_op_errors"].append(message)
+        ops_summary["claim_ops"].append(
+            {
+                "op": "skip",
+                "claim_op": op.op,
+                "reason": reason,
+                "message": message,
+            }
+        )
+        return
     _annotate_claim_result_summary(
         apply_result["summary"],
         recon_result=recon_result,

@@ -144,8 +144,10 @@ async def test_projection_then_pull(wired):
 async def test_webhook_push_is_signed_and_delivered(wired):
     from services.platform.extensions.egress.projector import run_projection_pass
     from services.platform.extensions.egress.delivery import run_webhook_pass
-    from fyralis_ext.webhooks import verify as verify_sig
-    from services.platform.extensions.egress.webhook import SIGNATURE_HEADER
+    from services.platform.extensions.egress.webhook import (
+        SIGNATURE_HEADER,
+        verify_signature,
+    )
 
     await run_projection_pass(wired.pool)
     captured = {}
@@ -159,8 +161,11 @@ async def test_webhook_push_is_signed_and_delivered(wired):
     result = await run_webhook_pass(wired.pool, http_post=fake_post)
     assert result["delivered"] == 1 and result["failed"] == 0
     assert captured["url"] == "https://ext.example/hook"
-    # the SDK-side verify accepts the host-signed body with the client's webhook secret
-    assert verify_sig(captured["body"], captured["sig"], wired.creds.webhook_secret)
+    # The public verification contract accepts the host-signed body with the
+    # extension client's webhook secret.
+    assert verify_signature(
+        captured["body"], captured["sig"], wired.creds.webhook_secret
+    )
     event = json.loads(captured["body"])
     assert event["type"] == "observation"
     assert event["observation"]["source_channel"] == "github:webhook"

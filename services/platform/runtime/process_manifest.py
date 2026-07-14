@@ -169,6 +169,16 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         singleton=True,
     ),
     _proc(
+        "deadline_resolver",
+        "reasoning",
+        ("python", "scripts/run_deadline_resolver_worker.py"),
+        ("production",),
+        "Fires overdue prediction and commitment evaluation triggers.",
+        compose_service="deadline_resolver",
+        has_healthcheck=True,
+        singleton=True,
+    ),
+    _proc(
         "topology_sweeper",
         "reasoning",
         ("python", "scripts/run_topology_sweeper.py"),

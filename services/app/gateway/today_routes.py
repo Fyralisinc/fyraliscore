@@ -1877,6 +1877,11 @@ async def apply_delta(
     pool = _deps(request).pool
     try:
         async with pool.acquire() as conn:
+            principal = await principal_for_actor(
+                auth.actor_id,
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
             async with conn.transaction():
                 view_for_access = await dd_repo.get_delta(
                     conn,
@@ -1917,7 +1922,10 @@ async def apply_delta(
     # Pick next delta from the page list (excluding the one we just
     # accepted) to streamline the focused-review flow.
     next_id = await _next_delta_id(
-        pool=pool, auth=auth, exclude=did,
+        pool=pool,
+        auth=auth,
+        exclude=did,
+        principal=principal,
     )
     ledger_event_id = triggered.get("target_event_id")
     return JSONResponse({

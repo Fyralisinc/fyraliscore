@@ -392,8 +392,10 @@ def _term_allowed(
         return False
     if any(_is_numeric_or_tiny(word) for word in words):
         return False
-    if any(
-        word in _SOURCE_CHANNEL_TERMS or word in _BATCH_WRAPPER_TERMS
+    if any(word in _SOURCE_CHANNEL_TERMS for word in words):
+        return False
+    if all(
+        word in _BATCH_WRAPPER_TERMS or word in _STOPWORDS
         for word in words
     ):
         return False

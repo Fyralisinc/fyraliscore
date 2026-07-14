@@ -63,6 +63,11 @@ def _shard(
 
 def _patch_client(monkeypatch, client: MockGoogleDriveClient) -> None:
     """Rebind the fetcher's `_open_drive_client` seam to yield the mock."""
+    # The fixture timestamps are intentionally fixed for deterministic
+    # partition assertions. Keep them inside this test's backfill horizon as
+    # wall-clock time advances.
+    monkeypatch.setenv("GOOGLE_DRIVE_BACKFILL_DAYS", "3650")
+
     async def _open(_install):  # noqa: ANN001, ANN202
         async def _close() -> None:
             return None

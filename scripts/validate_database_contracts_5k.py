@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate database table contracts with a 5k-observation run.
 
-This is a focused alternative to replaying a full Alpen run. It reuses the
+This is a focused alternative to replaying a full large-company run. It reuses the
 single-company synthetic probe's production ingestion path, but skips Think/LLM
 drain and topology work. The goal is table-contract evidence:
 

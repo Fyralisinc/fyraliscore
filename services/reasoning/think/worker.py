@@ -3344,6 +3344,10 @@ class ThinkWorker:
     async def _queue_depth(self) -> int:
         async with self.pool.acquire() as conn:
             lane_filter = self._lane_filter_sql()
+            background_filter = (
+                "" if self.config.process_background_triggers
+                else "AND trigger_kind != 'T4'"
+            )
             if self.config.tenant_filter is None:
                 row = await conn.fetchrow(
                     f"""
@@ -3352,6 +3356,7 @@ class ThinkWorker:
                         WHERE completed_at IS NULL
                           AND batch_parent_id IS NULL
                           {lane_filter}
+                          {background_filter}
                       )::int AS pending_depth,
                       COUNT(*) FILTER (
                         WHERE completed_at IS NULL
@@ -3361,6 +3366,7 @@ class ThinkWorker:
                             OR locked_at < now() - ($1 || ' seconds')::interval
                           )
                           {lane_filter}
+                          {background_filter}
                       )::int AS stale_locks
                     FROM think_trigger_queue
                     """,
@@ -3374,6 +3380,7 @@ class ThinkWorker:
                         WHERE completed_at IS NULL
                           AND batch_parent_id IS NULL
                           {lane_filter}
+                          {background_filter}
                       )::int AS pending_depth,
                       COUNT(*) FILTER (
                         WHERE completed_at IS NULL
@@ -3383,6 +3390,7 @@ class ThinkWorker:
                             OR locked_at < now() - ($2 || ' seconds')::interval
                           )
                           {lane_filter}
+                          {background_filter}
                       )::int AS stale_locks
                     FROM think_trigger_queue
                     WHERE tenant_id = $1

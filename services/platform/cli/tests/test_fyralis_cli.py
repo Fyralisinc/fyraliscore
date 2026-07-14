@@ -877,7 +877,8 @@ def test_byoc_source_autopilot_redacts_credential_ref(
     assert browser_agent["status"] == "waiting_for_admin"
     assert browser_agent["handoff_url"] == "https://api.slack.com/apps"
     assert any(
-        action["id"] == "execute_slack_browser_dom_plan" and action["status"] == "ready"
+        action["id"] == "execute_slack_app_config_token_plan"
+        and action["status"] == "ready"
         for action in browser_agent["action_results"]
     )
     assert "fyralis-slack-app-manifest" in json.dumps(
@@ -911,7 +912,8 @@ def test_byoc_source_autopilot_redacts_credential_ref(
     dom_plan = json.loads(generated_dom_plan.read_text(encoding="utf-8"))
     assert dom_plan["source"] == "slack"
     assert any(
-        step["action"] == "paste_or_upload_manifest" for step in dom_plan["steps"]
+        step["action"] == "slack_app_config_token_auto_connect"
+        for step in dom_plan["steps"]
     )
     generated_launcher = (
         tmp_path

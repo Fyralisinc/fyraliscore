@@ -47,6 +47,16 @@ scrape_configs:
         labels: { worker: circuit_breaker }
       - targets: ["think_worker:9300"]
         labels: { worker: think_worker }
+      - targets: ["think_worker_reflex:9300"]
+        labels: { worker: think_worker_reflex }
+      - targets: ["think_worker_batch_memory:9300"]
+        labels: { worker: think_worker_batch_memory }
+      - targets: ["think_worker_relationship:9300"]
+        labels: { worker: think_worker_relationship }
+      - targets: ["think_worker_deep_synthesis:9300"]
+        labels: { worker: think_worker_deep_synthesis }
+      - targets: ["think_worker_repair:9300"]
+        labels: { worker: think_worker_repair }
       - targets: ["post_commit_worker:9300"]
         labels: { worker: post_commit_worker }
       - targets: ["anomaly_processor_worker:9300"]
@@ -55,6 +65,8 @@ scrape_configs:
         labels: { worker: entity_resolver_worker }
       - targets: ["schema_drift_monitor:9300"]
         labels: { worker: schema_drift_monitor }
+      - targets: ["deadline_resolver:9300"]
+        labels: { worker: deadline_resolver }
       - targets: ["shard_fetch:9300"]
         labels: { worker: shard_fetch }
       - targets: ["oauth_poller:9300"]

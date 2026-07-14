@@ -1150,8 +1150,9 @@ async def _run_pathway_b(
             # gracefully (model formation still proceeds from A/C/G).
             notes["seed_vector_reembed_error"] = str(exc)
 
-    b_k = trigger.semantic_k if trigger.semantic_k != 40 else cfg.semantic_k
-    if sage_policy is not None:
+    trigger_semantic_k_overridden = trigger.semantic_k != 40
+    b_k = trigger.semantic_k if trigger_semantic_k_overridden else cfg.semantic_k
+    if sage_policy is not None and not trigger_semantic_k_overridden:
         b_k = sage_policy.budget_for("B", b_k)
     stage_started = time.perf_counter()
     try:
