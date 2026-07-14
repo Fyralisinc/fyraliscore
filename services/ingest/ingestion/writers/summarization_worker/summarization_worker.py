@@ -13,6 +13,7 @@ import asyncpg
 import orjson
 from aiokafka import AIOKafkaConsumer
 
+from lib.embeddings.mode import write_obs_embeddings
 from lib.shared.db import configure_connection_timeouts
 from services.domain.triggers import enqueue_trigger
 from services.ingest.ingestion.dlq.publish import publish_dlq
@@ -126,6 +127,33 @@ UPDATE observations
 """
 
 
+# OBS_EMBEDDING_MODE=cutover: embeddings are decommissioned, so leave the row
+# embedding-less and unflagged (the T1 trigger re-embeds the summary on demand).
+_UPDATE_SQL_NO_EMBED = """
+UPDATE observations
+   SET content_text = $1,
+       content = $2::jsonb,
+       embedding = NULL,
+       embedding_pending = FALSE
+ WHERE id = $3
+   AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
+ RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+"""
+
+
+_UPDATE_WITH_ENTITIES_SQL_NO_EMBED = """
+UPDATE observations
+   SET content_text = $1,
+       content = $2::jsonb,
+       entities_mentioned = $4::jsonb,
+       embedding = NULL,
+       embedding_pending = FALSE
+ WHERE id = $3
+   AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
+ RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+"""
+
+
 _FAIL_UPDATE_SQL = """
 UPDATE observations
    SET content_text = $1,
@@ -213,14 +241,19 @@ async def _write_summary_and_enqueue(
         structured=result.structured,
     )
 
-    update_sql = _UPDATE_SQL
+    embedding_enabled = write_obs_embeddings()
+    update_sql = _UPDATE_SQL if embedding_enabled else _UPDATE_SQL_NO_EMBED
     update_args: tuple[Any, ...] = (
         result.summary_text,
         json.dumps(content),
         env.observation_id,
     )
     if scope is not None:
-        update_sql = _UPDATE_WITH_ENTITIES_SQL
+        update_sql = (
+            _UPDATE_WITH_ENTITIES_SQL
+            if embedding_enabled
+            else _UPDATE_WITH_ENTITIES_SQL_NO_EMBED
+        )
         update_args = (
             result.summary_text,
             json.dumps(content),
@@ -523,7 +556,11 @@ async def summarize_and_update(
         result=result,
         source_chars=len(source_text),
     )
-    if status == "summarized" and embedding_producer is not None:
+    if (
+        status == "summarized"
+        and embedding_producer is not None
+        and write_obs_embeddings()
+    ):
         await publish_embedding_request(
             producer=embedding_producer,
             tenant_id=env.tenant_id,

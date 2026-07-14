@@ -72,7 +72,7 @@ async def test_first_page_advances_cursor(monkeypatch):
     )
     assert isinstance(result, FetchResult)
     assert len(result.records) == 2
-    assert result.end_of_data is True  # only 1 page < per_page = end
+    assert result.end_of_data is True  # next_page is None (Link header) = end
     assert result.next_cursor["etag"] == "W/etag-1"
     assert result.next_cursor["last_seen_updated_at"] == "2025-01-02T00:00:00Z"
 
@@ -152,6 +152,46 @@ async def test_multi_page_paginates(monkeypatch):
     )
     assert len(r2.records) == 1
     assert r2.end_of_data is True
+
+
+async def test_short_nonfinal_pages_do_not_end_pagination(monkeypatch):
+    """Regression: a page SHORTER than the requested per_page is NOT
+    end-of-data while the client still advertises a next page (GitHub's Link
+    `rel="next"`). The old `len(page) < _DEFAULT_PER_PAGE` heuristic stopped
+    here and silently truncated a multi-page backfill to its first page — the
+    cause of the synthetic six-source check landing only 60 of 200 github
+    observations (the mock caps each page at the fixture per_page, so every
+    page came back short of the 100 the fetcher requests). Drive the full
+    ShardFetch drain loop and assert every record across all short pages lands.
+    """
+    fake = _FakeGithubClient(pages=[
+        [{"id": i, "node_id": f"PullRequest_{i}",
+          "updated_at": f"2025-01-01T00:{i:02d}:00Z"} for i in range(30)],
+        [{"id": 100 + i, "node_id": f"PullRequest_{100 + i}",
+          "updated_at": f"2025-02-01T00:{i:02d}:00Z"} for i in range(30)],
+        [{"id": 200 + i, "node_id": f"PullRequest_{200 + i}",
+          "updated_at": f"2025-03-01T00:{i:02d}:00Z"} for i in range(10)],
+    ])  # 30 + 30 + 10 = 70 records, every page < the requested per_page=100
+    _patch_client(monkeypatch, fake)
+    shard = {"shard_kind": SHARD_KIND_REPO_EVENTS, "event_type": "pull_requests",
+             "owner": "a", "repo": "b", "installation_id": "42",
+             "repo_full_name": "a/b"}
+
+    # Mimic ShardFetch's `while not end_of_data` drain loop (shard_fetch.py).
+    collected: list = []
+    cursor = None
+    pages = 0
+    while True:
+        r = await fetch_page_github(_FakeInstall(), shard, cursor)
+        collected.extend(r.records)
+        cursor = r.next_cursor
+        pages += 1
+        if r.end_of_data:
+            break
+        assert pages < 10, "drain loop did not terminate"
+
+    assert pages == 3
+    assert len(collected) == 70  # all three short pages drained, not just 30
 
 
 async def test_record_envelope_shape(monkeypatch):

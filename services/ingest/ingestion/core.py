@@ -43,6 +43,7 @@ from uuid import UUID
 
 import asyncpg
 
+from lib.embeddings.mode import write_obs_embeddings
 from lib.embeddings.ollama import (
     EMBEDDING_DIM,
     OllamaClient,
@@ -358,11 +359,15 @@ async def ingest_from_draft(
     obs_id = uuid7()
     actor = await _resolve_actor(draft, actor_repo)
     entities = await _resolve_entities(draft, alias_repo, tenant_id)
-    embedding = (
-        _EmbeddingResult(embedding=None, pending=True)
-        if summary_pending
-        else await _compute_embedding(embedder, draft.content_text)
-    )
+    if not write_obs_embeddings():
+        # OBS_EMBEDDING_MODE=cutover: observation embeddings are decommissioned;
+        # the T1 retrieval seed re-embeds content_text on demand. Insert NULL
+        # with pending=FALSE so no backfill worker chases the row.
+        embedding = _EmbeddingResult(embedding=None, pending=False)
+    elif summary_pending:
+        embedding = _EmbeddingResult(embedding=None, pending=True)
+    else:
+        embedding = await _compute_embedding(embedder, draft.content_text)
     obs_create = _build_observation_create(
         obs_id=obs_id,
         tenant_id=tenant_id,
@@ -385,7 +390,7 @@ async def ingest_from_draft(
         tenant_id=tenant_id,
         draft=draft,
         row=result.observation,
-        skip=summary_pending,
+        skip=summary_pending or not write_obs_embeddings(),
     )
     await _publish_summarization_request_if_needed(
         producer=summarization_producer,

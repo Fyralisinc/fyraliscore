@@ -99,6 +99,18 @@ async def test_onboarding_and_reconciler_cover_telegram():
     assert RECONCILER_DISPATCH["telegram"] is reconcile_telegram
     rec_src = inspect.getsource(_rec)
     assert "register_pool_provider(pool)" in rec_src
+    # The per-source `<src>_reconciler_mod.set_pool_provider(pool)` blocks were
+    # replaced by the centralized `register_pool_provider(pool)`, which derives
+    # the registration set from RECONCILER_DISPATCH so the at-completion and
+    # PeriodicReconciler services cannot drift per-source. The telegram
+    # guarantee now holds iff (a) the service calls register_pool_provider and
+    # (b) telegram is a dispatch entry whose module exposes set_pool_provider.
+    from services.ingest.ingestion.reconcilers import register_pool_provider
+    from services.ingest.ingestion.reconcilers import telegram as _tg_rec
+
+    assert "telegram" in RECONCILER_DISPATCH
+    assert hasattr(_tg_rec, "set_pool_provider")
+    assert callable(register_pool_provider)
 
 
 async def test_backward_paging_full_sweep(monkeypatch):

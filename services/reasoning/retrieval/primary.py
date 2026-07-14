@@ -31,6 +31,7 @@ scoring is trigger-dependent. PathwayResult itself is trigger-agnostic.
 
 from __future__ import annotations
 
+import logging
 import math
 import json
 import time
@@ -41,7 +42,12 @@ from uuid import UUID
 
 import asyncpg
 
-from lib.embeddings.ollama import OllamaClient
+from lib.embeddings.mode import seed_from_stored_obs_vector, shadow_compare_seed
+from lib.embeddings.ollama import (
+    OllamaClient,
+    OllamaDimensionMismatch,
+    OllamaError,
+)
 from lib.shared.errors import CompanyOSError, ValidationError
 from lib.shared.types import (
     CommitmentRow,
@@ -68,6 +74,56 @@ from .pathways import (
 from .scoring import merge_and_rank_rrf
 
 from lib.observability import counter, histogram
+
+logger = logging.getLogger(__name__)
+
+# Shadow-mode parity gauge: cosine between the persisted obs seed vector and an
+# on-demand re-embed of the same content_text. A distribution near 1.0 confirms
+# the lazy seed (cutover) reproduces the stored vector's ANN neighbours.
+_SHADOW_SEED_COSINE = histogram(
+    "retrieval_obs_seed_shadow_cosine",
+    "Cosine(persisted obs seed vector, on-demand re-embed of content_text).",
+    (),
+)
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = na = nb = 0.0
+    for x, y in zip(a, b):
+        fx = float(x)
+        fy = float(y)
+        dot += fx * fy
+        na += fx * fx
+        nb += fy * fy
+    if na <= 0.0 or nb <= 0.0:
+        return 0.0
+    return dot / ((na**0.5) * (nb**0.5))
+
+
+async def _shadow_compare_seed_vector(
+    *,
+    embedder: OllamaClient,
+    stored: list[float],
+    seed_text: str,
+    notes: dict[str, Any],
+) -> None:
+    """Measure how close an on-demand re-embed is to the persisted seed vector.
+
+    Shadow mode only: does not affect retrieval. Records the cosine into the
+    pathway notes (persisted in the retrieval audit) and a Prometheus histogram.
+    """
+    try:
+        reembed = await embedder.embed(seed_text)
+    except (OllamaError, OllamaDimensionMismatch) as exc:
+        notes["shadow_seed_error"] = str(exc)
+        return
+    if len(reembed) != len(stored):
+        notes["shadow_seed_dim_mismatch"] = [len(stored), len(reembed)]
+        return
+    cos = _cosine_similarity(stored, reembed)
+    notes["shadow_seed_cosine"] = cos
+    _SHADOW_SEED_COSINE.observe(cos)
+    logger.info("obs_embedding_shadow_seed_cosine=%.6f dim=%d", cos, len(stored))
 
 
 TriggerKind = Literal["T1", "T2", "T3", "T4", "T6"]
@@ -706,7 +762,10 @@ async def _derive_trigger_scope(
                     and row["content_text"].strip()
                 ):
                     model_natural = row["content_text"]
-                if model_embedding is None:
+                # The persisted obs vector is only used as the T1 seed cache.
+                # Under `cutover` we ignore it and re-embed content_text on
+                # demand in _run_pathway_b (the column may also be NULL there).
+                if model_embedding is None and seed_from_stored_obs_vector():
                     model_embedding = _coerce_vector(row["embedding"])
 
     if trigger.kind == "T2":
@@ -897,6 +956,44 @@ async def _run_pathway_b(
 ) -> PathwayResult | None:
     text = trigger.seed_natural_text or t2_model_natural or ""
     vector = trigger.precomputed_seed_vector or t2_model_embedding
+
+    # Guardrail 1 (parity): when the seed must be re-embedded (cutover) or
+    # measured (shadow), embed the FULL observation content_text
+    # (t2_model_natural for T1) rather than the truncated trigger payload, so the
+    # lazy seed reproduces the vector historically persisted from the full text.
+    # Eager keeps `text` and the precomputed vector untouched — zero behaviour
+    # change — since `reembed_text` is only consumed on the re-embed/shadow paths.
+    reembed_text = t2_model_natural or text
+
+    if (
+        shadow_compare_seed()
+        and trigger.kind == "T1"
+        and vector is not None
+        and embedder is not None
+        and reembed_text.strip()
+    ):
+        await _shadow_compare_seed_vector(
+            embedder=embedder,
+            stored=list(vector),
+            seed_text=reembed_text,
+            notes=notes,
+        )
+
+    if vector is None and embedder is not None and reembed_text.strip():
+        # Cutover: resolve the seed once here and cache it on the trigger so
+        # inquiry rounds reuse it (Guardrail 2 — retrieval_actions reuses
+        # trigger.precomputed_seed_vector when query_text == trigger_text)
+        # instead of re-embedding the same text each round. pathway_b_semantic
+        # then uses this precomputed vector and never re-embeds `text` itself.
+        try:
+            vector = await embedder.embed(reembed_text)
+            trigger.precomputed_seed_vector = list(vector)
+            notes["seed_vector_source"] = "lazy_reembed"
+        except (OllamaError, OllamaDimensionMismatch) as exc:
+            # Leave vector None; pathway_b_semantic will raise -> skip pathway B
+            # gracefully (model formation still proceeds from A/C/G).
+            notes["seed_vector_reembed_error"] = str(exc)
+
     b_k = trigger.semantic_k if trigger.semantic_k != 40 else cfg.semantic_k
     stage_started = time.perf_counter()
     try:
