@@ -191,15 +191,6 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         has_healthcheck=True,
     ),
     _proc(
-        "external_effect_executor_worker",
-        "reasoning",
-        ("python", "scripts/run_external_effect_executor_worker.py"),
-        ("production",),
-        "Durable leased-work-to-fenced-external-effect execution worker.",
-        compose_service="external_effect_executor_worker",
-        has_healthcheck=True,
-    ),
-    _proc(
         "topology_sweeper",
         "reasoning",
         ("python", "scripts/run_topology_sweeper.py"),

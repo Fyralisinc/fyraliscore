@@ -10,7 +10,6 @@ from lib.evaluation.closed_loop import (
     ClosedLoopEvaluationScope,
     ClosedLoopEvaluationState,
     _summarize_activation_work_rows,
-    _summarize_effect_execution_rows,
     _summarize_manifest_work_rows,
     _summarize_scheduling_work_rows,
     build_closed_loop_invariant_evidence,
@@ -64,17 +63,6 @@ def _state(
         scheduling_work_terminal_failure_count=0,
         scheduling_work_completion_rate=None,
         scheduling_work_fate_counts={},
-        effect_execution_item_count=0,
-        effect_execution_successful_dispatch_count=0,
-        effect_execution_incomplete_count=0,
-        effect_execution_backlog_count=0,
-        effect_execution_reconciliation_required_count=0,
-        effect_execution_unknown_count=0,
-        effect_execution_provider_rejected_count=0,
-        effect_execution_provider_failed_count=0,
-        effect_execution_terminal_failure_count=0,
-        effect_execution_completion_rate=None,
-        effect_execution_fate_counts={},
         stage_coverage_rates={},
         continuity_rates={},
         component_violation_counts=component_violations or {},
@@ -411,139 +399,3 @@ def test_markdown_reports_scheduling_backlog_and_continuous_fates() -> None:
     assert "- Authorization expired: 1" in markdown
     assert "- Completion rate: 40.0%" in markdown
     assert "| work_expired | 1 |" in markdown
-
-
-def test_effect_execution_fates_are_continuous_and_unknown_fates_fail_closed() -> None:
-    summary = _summarize_effect_execution_rows(
-        [
-            {"status": "pending"},
-            {"status": "processing"},
-            {"status": "retry_scheduled"},
-            {"status": "dispatched"},
-            {"status": "dispatched"},
-            {"status": "provider_rejected"},
-            {"status": "provider_failed"},
-            {"status": "unknown"},
-            {"status": "reconciliation_required"},
-            {"status": "failed_terminal"},
-        ]
-    )
-
-    assert summary == (
-        10,
-        2,
-        3,
-        1,
-        1,
-        1,
-        1,
-        1,
-        {
-            "dispatched": 2,
-            "failed_terminal": 1,
-            "pending": 1,
-            "processing": 1,
-            "provider_failed": 1,
-            "provider_rejected": 1,
-            "reconciliation_required": 1,
-            "retry_scheduled": 1,
-            "unknown": 1,
-        },
-    )
-
-    with pytest.raises(ValueError, match="unknown leased-work effect execution"):
-        _summarize_effect_execution_rows([{"status": "silently_dropped"}])
-
-
-def test_effect_execution_incidents_remain_visible_without_downgrading_e3() -> None:
-    state = _state(episode_count=1, complete_episode_count=1).model_copy(
-        update={
-            "effect_execution_item_count": 8,
-            "effect_execution_successful_dispatch_count": 2,
-            "effect_execution_incomplete_count": 1,
-            "effect_execution_backlog_count": 1,
-            "effect_execution_reconciliation_required_count": 1,
-            "effect_execution_unknown_count": 1,
-            "effect_execution_provider_rejected_count": 1,
-            "effect_execution_provider_failed_count": 1,
-            "effect_execution_terminal_failure_count": 1,
-            "effect_execution_completion_rate": 0.25,
-            "effect_execution_fate_counts": {
-                "dispatched": 2,
-                "failed_terminal": 1,
-                "pending": 1,
-                "provider_failed": 1,
-                "provider_rejected": 1,
-                "reconciliation_required": 1,
-                "unknown": 1,
-            },
-            "incident_counts": {
-                "effect_execution_failed_terminal": 1,
-                "effect_execution_incomplete": 1,
-                "effect_execution_provider_failed": 1,
-                "effect_execution_provider_rejected": 1,
-                "effect_execution_reconciliation_required": 1,
-                "effect_execution_unknown": 1,
-            },
-        }
-    )
-
-    evidence = build_closed_loop_invariant_evidence(
-        state,
-        registry=load_architecture_registry(REGISTRY),
-        executed_scenario_ids=frozenset(),
-    )[0]
-
-    assert evidence.achieved_evidence_tier is EvidenceTier.E3
-    assert evidence.metric_observations[0].violation_count == 6
-    by_class = {incident.incident_class: incident for incident in evidence.incidents}
-    assert set(by_class) == {
-        "effect_execution_failed_terminal",
-        "effect_execution_incomplete",
-        "effect_execution_provider_failed",
-        "effect_execution_provider_rejected",
-        "effect_execution_reconciliation_required",
-        "effect_execution_unknown",
-    }
-    assert (
-        by_class["effect_execution_unknown"].summary
-        == "Observed 1 effect executions with unknown provider outcome."
-    )
-    assert all(incident.severity == 5 for incident in by_class.values())
-
-
-def test_markdown_reports_effect_execution_backlog_and_terminal_fates() -> None:
-    state = _state(episode_count=1, complete_episode_count=1).model_copy(
-        update={
-            "effect_execution_item_count": 6,
-            "effect_execution_successful_dispatch_count": 2,
-            "effect_execution_incomplete_count": 1,
-            "effect_execution_backlog_count": 1,
-            "effect_execution_reconciliation_required_count": 1,
-            "effect_execution_unknown_count": 1,
-            "effect_execution_provider_rejected_count": 1,
-            "effect_execution_provider_failed_count": 0,
-            "effect_execution_terminal_failure_count": 0,
-            "effect_execution_completion_rate": 1 / 3,
-            "effect_execution_fate_counts": {
-                "dispatched": 2,
-                "pending": 1,
-                "provider_rejected": 1,
-                "reconciliation_required": 1,
-                "unknown": 1,
-            },
-        }
-    )
-
-    markdown = render_closed_loop_markdown(state)
-
-    assert "## Leased Work Effect Execution Queue" in markdown
-    assert "- Work items: 6" in markdown
-    assert "- Successful dispatches: 2" in markdown
-    assert "- Incomplete: 1" in markdown
-    assert "- Backlog: 1" in markdown
-    assert "- Reconciliation required: 1" in markdown
-    assert "- Unknown outcomes: 1" in markdown
-    assert "- Provider rejected: 1" in markdown
-    assert "- Completion rate: 33.3%" in markdown
-    assert "| reconciliation_required | 1 |" in markdown
