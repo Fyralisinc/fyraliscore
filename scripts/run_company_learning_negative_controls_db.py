@@ -103,6 +103,21 @@ class RuntimeEntityTarget:
         }
 
 
+def _find_alias_by_normalized_phrase(
+    aliases: list[Any],
+    phrase: str,
+) -> Any | None:
+    expected_alias = normalize_phrase(phrase)
+    return next(
+        (
+            row
+            for row in aliases
+            if normalize_phrase(str(row["alias_text"])) == expected_alias
+        ),
+        None,
+    )
+
+
 async def run_negative_control_experiment_db(
     *,
     pool: asyncpg.Pool,
@@ -431,15 +446,17 @@ async def _prepare_negative_arm(
                 tenant_id=tenant_id,
                 answered_by=adjudicator_id,
             )
-        alias = await conn.fetchrow(
+        aliases = await conn.fetch(
             """
-            SELECT id, resolved_entity_ref, entity_metadata
+            SELECT id, alias_text, resolved_entity_ref, entity_metadata
             FROM entity_aliases
             WHERE tenant_id=$1
-              AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g')=$2
             """,
             tenant_id,
-            normalize_phrase(definition.training_phrase),
+        )
+        alias = _find_alias_by_normalized_phrase(
+            aliases,
+            definition.training_phrase,
         )
     if alias is None:
         raise RuntimeError("adjudication did not persist corrective memory")
@@ -451,6 +468,17 @@ async def _prepare_negative_arm(
     metadata = _json(alias["entity_metadata"])
     if metadata.get("resolution_scope") != definition.resolution_scope:
         raise RuntimeError("persisted correction changed sealed resolution scope")
+    if (
+        metadata.get("source") != "manual"
+        or metadata.get("identity_basis_class") != "independently_adjudicated"
+        or metadata.get("identity_basis_ref")
+        != f"clarification-request:{request.id}"
+        or metadata.get("clarification_request_id") != str(request.id)
+        or metadata.get("adjudication_state") != "active"
+        or not isinstance(metadata.get("adjudication_answer_digest"), str)
+        or len(metadata["adjudication_answer_digest"]) != 64
+    ):
+        raise RuntimeError("persisted correction lost adjudication authority")
     await _drain_tenant_semantics(
         pool=pool,
         tenant_id=tenant_id,

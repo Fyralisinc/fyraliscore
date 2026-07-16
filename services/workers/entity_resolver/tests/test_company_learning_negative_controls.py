@@ -17,6 +17,9 @@ from scripts.company_learning_recurrence_runtime import (
     load_negative_control_fixture,
 )
 from scripts.run_company_learning_negative_controls import main
+from scripts.run_company_learning_negative_controls_db import (
+    _find_alias_by_normalized_phrase,
+)
 
 
 def test_negative_control_fixture_seals_the_four_required_case_kinds() -> None:
@@ -135,3 +138,20 @@ def test_negative_control_plan_rejects_assignment_tampering() -> None:
         match="globally distinct tenants",
     ):
         NegativeControlExecutionPlan.model_validate(payload)
+
+
+def test_harness_finds_fullwidth_alias_with_production_normalization() -> None:
+    alias = {
+        "id": "pytest-alias",
+        "alias_text": "Ａtlas-Gateway",
+        "resolved_entity_ref": {"type": "resource", "id": "pytest-resource"},
+        "entity_metadata": {"resolution_scope": "tenant_global_exact"},
+    }
+
+    assert (
+        _find_alias_by_normalized_phrase(
+            [alias],
+            "Ａtlas-Gateway",
+        )
+        is alias
+    )
