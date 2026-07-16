@@ -8,6 +8,7 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.edge_registry import EDGE_REGISTRY
+from lib.shared.errors import InvariantViolation
 from services.domain.correction_propagation.projections import (
     ProjectionCorrectionAdapter,
     ProjectionCorrectionFenceReport,
@@ -127,55 +128,10 @@ class CorrectionPropagationService:
             row["id"] for row in old_rows if str(row["status"]) == "active"
         }
 
-        dependency_rows = await conn.fetch(
-            """
-            WITH dependency_pairs AS (
-              SELECT edge.target_model_id AS dependent_model_id,
-                     edge.source_model_id AS cause_model_id
-              FROM model_edges edge
-              WHERE edge.tenant_id=$1
-                AND edge.source_model_id=ANY($2::uuid[])
-                AND edge.edge_kind=ANY($3::text[])
-                AND edge.status IN ('active', 'inert')
-
-              UNION
-
-              SELECT edge.source_model_id AS dependent_model_id,
-                     edge.target_model_id AS cause_model_id
-              FROM model_edges edge
-              WHERE edge.tenant_id=$1
-                AND edge.target_model_id=ANY($2::uuid[])
-                AND edge.edge_kind=ANY($4::text[])
-                AND edge.status IN ('active', 'inert')
-
-              UNION
-
-              SELECT dependent.id AS dependent_model_id,
-                     support.support_model_id AS cause_model_id
-              FROM models dependent
-              CROSS JOIN LATERAL unnest(
-                COALESCE(dependent.supporting_model_ids, '{}'::uuid[])
-              ) AS support(support_model_id)
-              WHERE dependent.tenant_id=$1
-                AND support.support_model_id=ANY($2::uuid[])
-            )
-            SELECT DISTINCT pair.dependent_model_id, pair.cause_model_id
-            FROM dependency_pairs pair
-            JOIN models dependent
-              ON dependent.tenant_id=$1
-             AND dependent.id=pair.dependent_model_id
-            WHERE dependent.status='active'
-              AND pair.dependent_model_id <> ALL($2::uuid[])
-            ORDER BY pair.dependent_model_id, pair.cause_model_id
-            """,
-            tenant_id,
-            list(old_model_ids),
-            list(_SOURCE_ARCHIVE_DEPENDENCY_KINDS),
-            list(_TARGET_ARCHIVE_DEPENDENCY_KINDS),
-        )
-        dependency_pairs = tuple(
-            (row["dependent_model_id"], row["cause_model_id"])
-            for row in dependency_rows
+        dependency_pairs = await self._load_recursive_dependency_pairs(
+            conn,
+            tenant_id=tenant_id,
+            root_model_ids=old_model_ids,
         )
 
         newly_fenced: set[UUID] = set()
@@ -209,16 +165,20 @@ class CorrectionPropagationService:
             )
             reeval_pairs.append((dependent_model_id, cause_model_id))
 
+        contaminated_model_ids = (
+            *old_model_ids,
+            *tuple(sorted(first_cause_by_dependent)),
+        )
         relation_fence = await self._relations.fence_for_models(
             conn,
             tenant_id=tenant_id,
-            contaminated_model_ids=old_model_ids,
+            contaminated_model_ids=contaminated_model_ids,
             cause_event_id=cause_event_id,
         )
         projection_fence = await self._projections.invalidate_for_models(
             conn,
             tenant_id=tenant_id,
-            contaminated_model_ids=old_model_ids,
+            contaminated_model_ids=contaminated_model_ids,
             cause_event_id=cause_event_id,
         )
 
@@ -243,6 +203,108 @@ class CorrectionPropagationService:
             reeval_pairs=tuple(reeval_pairs),
             relation_fence=relation_fence,
             projection_fence=projection_fence,
+        )
+
+    async def _load_recursive_dependency_pairs(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        root_model_ids: tuple[UUID, ...],
+        max_depth: int = 64,
+    ) -> tuple[tuple[UUID, UUID], ...]:
+        """Walk registered dependency directions breadth-first and cycle-safe."""
+
+        discovered_depth = {model_id: 0 for model_id in root_model_ids}
+        frontier = tuple(root_model_ids)
+        pairs: list[tuple[UUID, UUID]] = []
+        seen_pairs: set[tuple[UUID, UUID]] = set()
+        depth = 0
+        while frontier:
+            if depth >= max_depth:
+                raise InvariantViolation(
+                    "CORRECTION_DEPENDENCY_DEPTH_EXCEEDED",
+                    "correction dependency propagation exceeded its safety depth",
+                    tenant_id=str(tenant_id),
+                    max_depth=max_depth,
+                )
+            rows = await self._load_active_dependency_pairs(
+                conn,
+                tenant_id=tenant_id,
+                cause_model_ids=frontier,
+            )
+            next_frontier: list[UUID] = []
+            next_depth = depth + 1
+            for row in rows:
+                pair = (row["dependent_model_id"], row["cause_model_id"])
+                dependent_model_id, _cause_model_id = pair
+                prior_depth = discovered_depth.get(dependent_model_id)
+                if prior_depth is not None and prior_depth < next_depth:
+                    continue
+                if prior_depth is None:
+                    discovered_depth[dependent_model_id] = next_depth
+                    next_frontier.append(dependent_model_id)
+                if pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    pairs.append(pair)
+            frontier = tuple(sorted(set(next_frontier)))
+            depth = next_depth
+        return tuple(pairs)
+
+    @staticmethod
+    async def _load_active_dependency_pairs(
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        cause_model_ids: tuple[UUID, ...],
+    ) -> list[asyncpg.Record]:
+        return list(
+            await conn.fetch(
+                """
+                WITH dependency_pairs AS (
+                  SELECT edge.target_model_id AS dependent_model_id,
+                         edge.source_model_id AS cause_model_id
+                  FROM model_edges edge
+                  WHERE edge.tenant_id=$1
+                    AND edge.source_model_id=ANY($2::uuid[])
+                    AND edge.edge_kind=ANY($3::text[])
+                    AND edge.status IN ('active', 'inert')
+
+                  UNION
+
+                  SELECT edge.source_model_id AS dependent_model_id,
+                         edge.target_model_id AS cause_model_id
+                  FROM model_edges edge
+                  WHERE edge.tenant_id=$1
+                    AND edge.target_model_id=ANY($2::uuid[])
+                    AND edge.edge_kind=ANY($4::text[])
+                    AND edge.status IN ('active', 'inert')
+
+                  UNION
+
+                  SELECT dependent.id AS dependent_model_id,
+                         support.support_model_id AS cause_model_id
+                  FROM models dependent
+                  CROSS JOIN LATERAL unnest(
+                    COALESCE(dependent.supporting_model_ids, '{}'::uuid[])
+                  ) AS support(support_model_id)
+                  WHERE dependent.tenant_id=$1
+                    AND support.support_model_id=ANY($2::uuid[])
+                )
+                SELECT DISTINCT pair.dependent_model_id, pair.cause_model_id
+                FROM dependency_pairs pair
+                JOIN models dependent
+                  ON dependent.tenant_id=$1
+                 AND dependent.id=pair.dependent_model_id
+                WHERE dependent.status='active'
+                  AND pair.dependent_model_id <> ALL($2::uuid[])
+                ORDER BY pair.dependent_model_id, pair.cause_model_id
+                """,
+                tenant_id,
+                list(cause_model_ids),
+                list(_SOURCE_ARCHIVE_DEPENDENCY_KINDS),
+                list(_TARGET_ARCHIVE_DEPENDENCY_KINDS),
+            )
         )
 
 

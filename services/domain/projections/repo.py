@@ -21,6 +21,7 @@ from services.domain.models.read_shapes import (
     MODEL_ROW_SELECT_SQL,
     hydrate_model_row,
 )
+from services.domain.projections.visibility import active_visible_model_sql
 
 
 _MODEL_SELECT_COLS = MODEL_ROW_SELECT_COLS
@@ -260,7 +261,7 @@ class ProjectionRepo:
             SELECT {_MODEL_SELECT_SQL}
             FROM models
             WHERE tenant_id = $1
-              AND status = 'active'
+              AND {active_visible_model_sql()}
               AND id = ANY($2::uuid[])
             """,
             tenant_id,

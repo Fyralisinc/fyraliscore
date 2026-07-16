@@ -9,7 +9,6 @@ import asyncpg
 
 from services.domain.projections.store import enqueue_projection_refresh_job
 from services.domain.projections.types import (
-    ProjectionDependencyRef,
     ProjectionSubjectRef,
 )
 
@@ -64,14 +63,6 @@ class ProjectionCorrectionAdapter:
             for row in rows
         )
         refresh_job_ids: list[UUID] = []
-        dependency_refs = tuple(
-            ProjectionDependencyRef(
-                ref_kind="model",
-                ref_value=str(model_id),
-                reason="grounding_corrected",
-            )
-            for model_id in contaminated_model_ids
-        )
         for subject in subjects:
             refresh_job_ids.append(
                 await enqueue_projection_refresh_job(
@@ -82,7 +73,6 @@ class ProjectionCorrectionAdapter:
                     subject_key=subject.subject_key,
                     reason="dependency_delta",
                     event_ids=(cause_event_id,),
-                    dependency_refs=dependency_refs,
                     payload={
                         "correction_kind": "grounding_corrected",
                         "contaminated_model_ids": model_ref_values,

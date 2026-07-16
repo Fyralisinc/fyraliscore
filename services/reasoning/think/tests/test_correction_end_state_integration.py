@@ -13,9 +13,10 @@ from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
 from services.domain.correction_propagation import CorrectionPropagationService
 from services.domain.models.repo import ModelsRepo
+from services.domain.projections.catalog import projectors_for
+from services.domain.projections.runtime import ProjectionRunner
 from services.domain.source_semantics.processor import GroundedBeliefProcessor
 from services.domain.source_semantics.tests.test_grounded_belief_vertical import (
-    CUSTOMER_REF,
     _commit_grounding,
 )
 from services.reasoning.retrieval.assembler import ContextBundle
@@ -115,11 +116,43 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
                 },
                 natural="The delivery forecast is at risk",
                 embedding=[0.02] * EMBEDDING_DIM,
-                scope_entities=[{**CUSTOMER_REF, "version": 1}],
+                scope_entities=[
+                    {"type": "customer", "id": "nimbus", "version": 1}
+                ],
                 scope_temporal={"type": "now"},
                 confidence=0.6,
                 confidence_at_assertion=0.6,
                 supporting_model_ids=[old_model_id],
+            ),
+            conn=conn,
+        )
+        second_hop_observation_id = await _insert_observation(
+            conn,
+            tenant_id=tenant_id,
+            text="The executive forecast depends on the delivery forecast",
+        )
+        second_hop = await models_repo.insert(
+            ModelCreate(
+                tenant_id=tenant_id,
+                born_from_event_id=second_hop_observation_id,
+                proposition={
+                    "kind": "belief",
+                    "claim_role": "fact",
+                    "abstraction_level": "atomic",
+                    "time_mode": "current",
+                    "modality": "inferred",
+                    "polarity": "neutral",
+                    "assertion": "The executive forecast is at risk",
+                },
+                natural="The executive forecast is at risk",
+                embedding=[0.025] * EMBEDDING_DIM,
+                scope_entities=[
+                    {"type": "customer", "id": "nimbus", "version": 1}
+                ],
+                scope_temporal={"type": "now"},
+                confidence=0.6,
+                confidence_at_assertion=0.6,
+                supporting_model_ids=[dependent.id],
             ),
             conn=conn,
         )
@@ -196,7 +229,7 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
             old_model_id,
             dependent.id,
         )
-        projection_subject = "customer:nimbus"
+        projection_subject = "customer:nimbus:customers"
         await conn.execute(
             """
             INSERT INTO projection_snapshots (
@@ -286,6 +319,13 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
                 cause_event_id=predecessor_observation_id,
                 corrected_model_id=None,
             )
+        refresh_report = await ProjectionRunner(
+            projectors_for(["customers"])
+        ).run_queued_refresh_jobs_once_detailed(
+            conn,
+            tenant_id=tenant_id,
+            limit=10,
+        )
 
         old_model = await conn.fetchrow(
             """
@@ -303,15 +343,22 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
             tenant_id,
             dependent.id,
         )
+        second_hop_model = await conn.fetchrow(
+            """
+            SELECT status, visible_to_subjects
+            FROM models WHERE tenant_id=$1 AND id=$2
+            """,
+            tenant_id,
+            second_hop.id,
+        )
         queue_rows = await conn.fetch(
             """
             SELECT model_id, cause_model_id, cause_kind, processed_at
             FROM model_reeval_queue
-            WHERE tenant_id=$1 AND model_id=$2 AND cause_model_id=$3
+            WHERE tenant_id=$1 AND cause_kind='grounding_corrected'
+            ORDER BY model_id, cause_model_id
             """,
             tenant_id,
-            dependent.id,
-            old_model_id,
         )
         source_after = await conn.fetchrow(
             """
@@ -344,9 +391,9 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
             tenant_id,
             relation_projection_id,
         )
-        projection_after = await conn.fetchval(
+        projection_after = await conn.fetchrow(
             """
-            SELECT count(*)
+            SELECT payload, source_model_ids
             FROM projection_snapshots
             WHERE tenant_id=$1 AND projection_name='customers'
               AND projection_version='v1' AND subject_key=$2
@@ -360,9 +407,11 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
             FROM projection_dependencies
             WHERE tenant_id=$1 AND projection_name='customers'
               AND projection_version='v1' AND subject_key=$2
+              AND ref_kind='model' AND ref_value=$3
             """,
             tenant_id,
             projection_subject,
+            str(old_model_id),
         )
         refresh_jobs = await conn.fetch(
             """
@@ -410,6 +459,41 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
             """,
             tenant_id,
             dependent.id,
+        )
+        second_hop_diff = await deterministic_handler(
+            TriggerContext(
+                kind="T4",
+                tenant_id=tenant_id,
+                subkind="model_reeval",
+                model_id=second_hop.id,
+                seed_signature={
+                    "trigger_id": str(uuid7()),
+                    "cause_model_id": str(dependent.id),
+                    "cause_kind": "grounding_corrected",
+                },
+            ),
+            ContextBundle(),
+            conn,
+        )
+        assert len(second_hop_diff.claim_ops) == 1
+        assert second_hop_diff.claim_ops[0].op == "archive"
+        async with conn.transaction():
+            await apply_diff(
+                ValidatedDiff.model_validate(
+                    second_hop_diff.model_dump(mode="python")
+                ),
+                conn,
+                trigger_kind="T4",
+                trigger_cause_event_id=predecessor_observation_id,
+                models_repo=models_repo,
+            )
+        second_hop_after_revalidation = await conn.fetchrow(
+            """
+            SELECT status, archive_reason, visible_to_subjects
+            FROM models WHERE tenant_id=$1 AND id=$2
+            """,
+            tenant_id,
+            second_hop.id,
         )
         reeval_replay = await deterministic_handler(
             TriggerContext(
@@ -475,24 +559,46 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
         )
 
     assert first.archived_model_ids == (old_model_id,)
-    assert first.newly_fenced_model_ids == (dependent.id,)
-    assert first.reeval_pairs == ((dependent.id, old_model_id),)
+    assert set(first.newly_fenced_model_ids) == {
+        dependent.id,
+        second_hop.id,
+    }
+    assert set(first.reeval_pairs) == {
+        (dependent.id, old_model_id),
+        (second_hop.id, dependent.id),
+    }
     assert old_model["status"] == "archived"
     assert old_model["archive_reason"] == "superseded"
     assert dependent_model["status"] == "active"
     assert dependent_model["visible_to_subjects"] is False
-    assert len(queue_rows) == 1
-    assert queue_rows[0]["cause_kind"] == "grounding_corrected"
-    assert queue_rows[0]["processed_at"] is None
+    assert second_hop_model["status"] == "active"
+    assert second_hop_model["visible_to_subjects"] is False
+    assert len(queue_rows) == 2
+    assert {
+        (row["model_id"], row["cause_model_id"])
+        for row in queue_rows
+    } == {
+        (dependent.id, old_model_id),
+        (second_hop.id, dependent.id),
+    }
+    assert all(row["processed_at"] is None for row in queue_rows)
     assert source_after == source_before
     assert other_after["status"] == "active"
     assert other_after["visible_to_subjects"] is True
     assert relation_after == "retired"
     assert relation_projection_after == "retired"
-    assert projection_after == 0
+    assert refresh_report.processed_jobs == 1
+    assert refresh_report.failed_jobs == 0
+    assert projection_after is not None
+    assert projection_after["source_model_ids"] == []
+    fresh_payload = projection_after["payload"]
+    if isinstance(fresh_payload, str):
+        fresh_payload = json.loads(fresh_payload)
+    assert fresh_payload["status"] == "empty"
+    assert fresh_payload["source_model_count"] == 0
     assert dependency_after == 0
     assert len(refresh_jobs) == 1
-    assert refresh_jobs[0]["status"] == "pending"
+    assert refresh_jobs[0]["status"] == "processed"
     assert refresh_jobs[0]["reason"] == "dependency_delta"
     refresh_payload = refresh_jobs[0]["payload"]
     if isinstance(refresh_payload, str):
@@ -500,11 +606,13 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
     assert refresh_payload["correction_kind"] == "grounding_corrected"
     assert dependent_after_revalidation["status"] == "archived"
     assert dependent_after_revalidation["archive_reason"] == "superseded"
+    assert second_hop_after_revalidation["status"] == "archived"
+    assert second_hop_after_revalidation["archive_reason"] == "superseded"
     assert reeval_replay.claim_ops == []
     assert replay.archived_model_ids == ()
     assert replay.newly_fenced_model_ids == ()
     assert replay.reeval_pairs == ()
     assert replay_queue_count == 1
-    assert replay_refresh_count == 1
+    assert replay_refresh_count == 0
     assert other_relation_after == "accepted"
     assert other_projection_after == "untouched"

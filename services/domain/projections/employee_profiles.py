@@ -17,6 +17,7 @@ from uuid import UUID
 import asyncpg
 
 from services.domain.projections.types import ModelEvent, ProjectionSnapshot
+from services.domain.projections.visibility import active_visible_model_sql
 
 
 _PROFILE_ROLES = ("capability", "concern", "pattern", "relation", "recommendation")
@@ -191,16 +192,16 @@ async def _fetch_profile_models(
 ) -> list[asyncpg.Record]:
     return list(
         await conn.fetch(
-            """
+            f"""
             SELECT m.id, m.proposition, m."natural" AS natural, m.confidence,
                    m.activation, m.claim_role, m.domain_tags, m.scope_entities,
                    m.supporting_event_ids, m.created_at,
-                   COALESCE(mst.semantic_terms, '{}'::text[]) AS semantic_terms
+                   COALESCE(mst.semantic_terms, '{{}}'::text[]) AS semantic_terms
             FROM models m
             LEFT JOIN model_semantic_terms mst
               ON mst.tenant_id = m.tenant_id AND mst.model_id = m.id
             WHERE m.tenant_id = $1
-              AND m.status = 'active'
+              AND {active_visible_model_sql("m")}
               AND m.confidence >= $5
               AND m.scope_actors && ARRAY[$2]::uuid[]
               AND (

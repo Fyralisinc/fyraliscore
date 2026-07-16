@@ -18,6 +18,7 @@ from uuid import UUID
 import asyncpg
 
 from services.domain.projections.types import ModelEvent, ProjectionSnapshot
+from services.domain.projections.visibility import active_visible_model_predicates
 
 
 _MODEL_EVENT_TYPES = {"model.created", "model.updated", "model.archived"}
@@ -275,7 +276,7 @@ async def _fetch_entity_models(
     params: list[Any] = [tenant_id]
     where = [
         "tenant_id = $1",
-        "status = 'active'",
+        *active_visible_model_predicates(),
     ]
 
     entity_id = _subject_entity_id(subject_key, config)

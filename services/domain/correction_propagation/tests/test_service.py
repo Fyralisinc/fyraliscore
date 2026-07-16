@@ -35,6 +35,20 @@ class _Connection:
         raise AssertionError(f"unexpected SQL: {sql}")
 
 
+class _RecursiveConnection(_Connection):
+    def __init__(self, *, old_rows, dependency_batches) -> None:
+        super().__init__(old_rows=old_rows, dependency_rows=[])
+        self.dependency_batches = list(dependency_batches)
+
+    async def fetch(self, sql: str, *args):
+        self.fetches.append((sql, args))
+        if "FROM source_semantic_interpretations" in sql:
+            return self.old_rows
+        if "WITH dependency_pairs AS" in sql:
+            return self.dependency_batches.pop(0)
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
 class _Models:
     def __init__(self, *, changed_dependents=()) -> None:
         self.changed_dependents = set(changed_dependents)
@@ -190,6 +204,63 @@ async def test_replay_of_completed_fence_does_not_create_new_repair_work(
     assert report.reeval_pairs == ()
     assert reeval_calls == []
     assert [kind for kind, _payload in models.calls] == ["fence"]
+
+
+async def test_correction_fences_and_queues_recursive_dependents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_model_id = uuid7()
+    direct_model_id = uuid7()
+    second_hop_model_id = uuid7()
+    conn = _RecursiveConnection(
+        old_rows=[{"id": old_model_id, "status": "active"}],
+        dependency_batches=[
+            [
+                {
+                    "dependent_model_id": direct_model_id,
+                    "cause_model_id": old_model_id,
+                }
+            ],
+            [
+                {
+                    "dependent_model_id": second_hop_model_id,
+                    "cause_model_id": direct_model_id,
+                }
+            ],
+            [],
+        ],
+    )
+    models = _Models(
+        changed_dependents=(direct_model_id, second_hop_model_id)
+    )
+    reeval_pairs = []
+
+    async def _enqueue(_conn, **kwargs):
+        reeval_pairs.append((kwargs["model_id"], kwargs["cause_model_id"]))
+        return uuid7()
+
+    monkeypatch.setattr(service_module, "enqueue_model_reeval", _enqueue)
+    report = await _service(models).propagate_direct_correction(
+        conn,  # type: ignore[arg-type]
+        tenant_id=uuid7(),
+        predecessor_grounding_trace_id=uuid7(),
+        successor_grounding_trace_id=uuid7(),
+        cause_event_id=uuid7(),
+        corrected_model_id=None,
+    )
+
+    assert report.dependent_model_ids == (
+        direct_model_id,
+        second_hop_model_id,
+    )
+    assert report.newly_fenced_model_ids == (
+        direct_model_id,
+        second_hop_model_id,
+    )
+    assert reeval_pairs == [
+        (direct_model_id, old_model_id),
+        (second_hop_model_id, direct_model_id),
+    ]
 
 
 async def test_non_correction_trace_is_a_noop() -> None:

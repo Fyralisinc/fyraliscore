@@ -16,6 +16,7 @@ from uuid import UUID
 import asyncpg
 
 from services.domain.projections.types import ModelEvent, ProjectionSnapshot
+from services.domain.projections.visibility import active_visible_model_predicates
 
 
 _DECISION_ROLES = ("concern", "recommendation", "situation")
@@ -183,7 +184,7 @@ async def _fetch_decision_surface_models(
     ]
     where = [
         "tenant_id = $1",
-        "status = 'active'",
+        *active_visible_model_predicates(),
         """
         (
           claim_role = ANY($2::text[])

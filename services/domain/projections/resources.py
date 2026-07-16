@@ -9,6 +9,7 @@ from uuid import UUID
 import asyncpg
 
 from services.domain.projections.types import ModelEvent, ProjectionSnapshot
+from services.domain.projections.visibility import active_visible_model_predicates
 
 
 _RESOURCE_ROLES = (
@@ -242,7 +243,7 @@ async def _fetch_resource_models(
     params: list[Any] = [tenant_id]
     where = [
         "tenant_id = $1",
-        "status = 'active'",
+        *active_visible_model_predicates(),
     ]
 
     subject_tags = _subject_tags(subject_key)

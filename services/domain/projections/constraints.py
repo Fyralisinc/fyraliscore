@@ -9,6 +9,7 @@ from uuid import UUID
 import asyncpg
 
 from services.domain.projections.types import ModelEvent, ProjectionSnapshot
+from services.domain.projections.visibility import active_visible_model_predicates
 
 
 _CONSTRAINT_ROLE_ONLY = (
@@ -156,7 +157,7 @@ async def _fetch_constraint_models(
     ]
     where = [
         "tenant_id = $1",
-        "status = 'active'",
+        *active_visible_model_predicates(),
         "(claim_role = ANY($2::text[]) OR domain_tags && $3::text[])",
     ]
 
