@@ -154,7 +154,7 @@ def test_slack_user_channel_and_user_group_markup_remain_exact_and_context_token
         "<#C01OPS|ops>",
         "<!subteam^S01ONCALL|@on-call>",
         "bob.smith",
-        "#rev-ops",
+        "rev-ops",
     )
 
 
