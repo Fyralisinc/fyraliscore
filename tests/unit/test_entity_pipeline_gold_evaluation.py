@@ -8,6 +8,8 @@ import pytest
 
 from lib.evaluation.entity_pipeline_gold import (
     GoldEntityPipelineCase,
+    GoldRelationExpectation,
+    analyze_entity_pipeline_rows,
     canonical_ref_key,
     evaluate_persisted_entity_pipeline,
 )
@@ -229,6 +231,8 @@ async def test_db_backed_entity_pipeline_scores_one_batched_population() -> None
     assert "source_semantic_interpretations" in db.calls[0][0]
     assert "source_semantic_admission_decisions" in db.calls[0][0]
     assert "semantic_interpretation_model_count" in db.calls[0][0]
+    assert "FROM model_edges edge" in db.calls[0][0]
+    assert "topology.downstream_relations" in db.calls[0][0]
     assert set(db.calls[0][1][1]) == set(observation_ids)
     metrics = report.overall
     assert metrics.gold_case_count == 5
@@ -281,7 +285,7 @@ async def test_db_backed_entity_pipeline_scores_one_batched_population() -> None
         "canonical_metrics_exclude_open_world_gold_cases",
         "terminal_fate_accuracy_excludes_unlabeled_cases",
         "semantic_impact_metrics_exclude_unlabeled_cases",
-        "downstream_relation_topology_quality_not_evaluated",
+        "relation_topology_metrics_exclude_unlabeled_cases",
     )
 
 
@@ -444,3 +448,241 @@ async def test_no_admission_with_stray_model_fails_downstream_safety() -> None:
     assert report.overall.semantic_disposition_accuracy == 1.0
     assert report.overall.no_admission_no_model_safety_rate == 0.0
     assert report.overall.harmful_semantic_propagation_rate == 1.0
+
+
+def test_relation_topology_scores_admission_endpoints_direction_and_lineage() -> None:
+    observation_ids = [uuid4() for _ in range(3)]
+    source_model, target_model, poison_model = uuid4(), uuid4(), uuid4()
+    correct_ref = {"type": "customer", "id": "customer:known", "version": 1}
+    promise_ref = {"type": "commitment", "id": "commitment:p-1", "version": 1}
+    wrong_ref = {"type": "customer", "id": "customer:wrong", "version": 1}
+    first = _pipeline_row(
+        observation_id=observation_ids[0], surface="Known Co",
+        candidates=[_canonical("known", "customer", "customer:known")],
+        selected_id="known", selected_ref=correct_ref,
+        type_distribution={"customer": 0.9, "unknown": 0.1},
+    )
+    second = _pipeline_row(
+        observation_id=observation_ids[1], surface="Promise P-1",
+        candidates=[_canonical("promise", "commitment", "commitment:p-1")],
+        selected_id="promise", selected_ref=promise_ref,
+        type_distribution={"commitment": 0.8, "unknown": 0.2},
+    )
+    open_case = _pipeline_row(
+        observation_id=observation_ids[2], surface="Unnamed venture",
+        candidates=[_canonical("wrong", "customer", "customer:wrong")],
+        selected_id="wrong", selected_ref=wrong_ref,
+        type_distribution={"customer": 0.6, "unknown": 0.4},
+    )
+    good_relation_id, harmful_relation_id = uuid4(), uuid4()
+    good_relation = {
+        "id": good_relation_id, "source_model_id": source_model,
+        "target_model_id": target_model, "edge_kind": "committed_to",
+        "status": "active", "metadata": {"source_entity_mention_ids": [
+            str(first["entity_mention_id"]), str(second["entity_mention_id"]),
+        ]},
+    }
+    harmful_relation = {
+        "id": harmful_relation_id, "source_model_id": poison_model,
+        "target_model_id": target_model, "edge_kind": "supports",
+        "status": "active", "metadata": {"source_entity_mention_id": str(
+            open_case["entity_mention_id"]
+        )},
+    }
+    # The same durable edge can be visible from multiple originating rows; the
+    # evaluator must deduplicate it while preserving both mention origins.
+    first["downstream_relations"] = [good_relation]
+    second["downstream_relations"] = [good_relation]
+    open_case["downstream_relations"] = [harmful_relation]
+    cases = [
+        GoldEntityPipelineCase(
+            case_id="customer", batch_id="batch", source_observation_id=observation_ids[0],
+            surface="Known Co", gold_entity_type="customer",
+            gold_canonical_label="gold:known",
+            expected_relations=(GoldRelationExpectation(
+                expectation_id="expected-edge", expected_admission=True,
+                source_model_gold_label="gold:promise-model",
+                target_model_gold_label="gold:customer-model",
+                relation_type="committed_to",
+                source_mention_case_ids=("customer", "promise"),
+            ),),
+        ),
+        GoldEntityPipelineCase(
+            case_id="promise", batch_id="batch", source_observation_id=observation_ids[1],
+            surface="Promise P-1", gold_entity_type="commitment",
+            gold_canonical_label="gold:promise",
+        ),
+        GoldEntityPipelineCase(
+            case_id="open", batch_id="batch", source_observation_id=observation_ids[2],
+            surface="Unnamed venture", gold_entity_type="customer",
+            expected_relations=(GoldRelationExpectation(
+                expectation_id="must-not-propagate", expected_admission=False,
+                source_mention_case_ids=("open",),
+            ),),
+        ),
+    ]
+
+    report = analyze_entity_pipeline_rows(
+        gold_cases=cases,
+        canonical_gold_labels={
+            canonical_ref_key(correct_ref): "gold:known",
+            canonical_ref_key(promise_ref): "gold:promise",
+            canonical_ref_key(wrong_ref): "gold:wrong",
+        },
+        topology_model_gold_labels={
+            str(source_model): "gold:promise-model",
+            str(target_model): "gold:customer-model",
+            str(poison_model): "gold:poison-model",
+        },
+        rows=[first, second, open_case],
+    )
+
+    metrics = report.overall
+    assert metrics.relation_expectation_count == 2
+    assert metrics.expected_relation_admission_count == 1
+    assert metrics.observed_active_relation_count == 2
+    assert metrics.relation_admission_accuracy == 0.5
+    assert metrics.expected_relation_recall == 1.0
+    assert metrics.relation_non_admission_safety_rate == 0.0
+    assert metrics.relation_endpoint_accuracy == 1.0
+    assert metrics.relation_type_accuracy == 1.0
+    assert metrics.relation_direction_accuracy == 1.0
+    assert metrics.relation_lineage_coverage == 1.0
+    assert metrics.relation_lineage_integrity == 1.0
+    assert metrics.unexpected_relation_rate == 0.5
+    assert metrics.harmful_topology_relation_count == 1
+    assert metrics.harmful_topology_model_count == 2
+    assert metrics.harmful_topology_propagation_rate == 0.5
+    assert metrics.unknown_topology_endpoint_count == 0
+
+
+def test_relation_topology_exposes_reversed_edge_and_wrong_type() -> None:
+    observation_id, source_model, target_model = uuid4(), uuid4(), uuid4()
+    row = _pipeline_row(
+        observation_id=observation_id, surface="Entity A",
+        candidates=[_special("unknown", "unknown")],
+        selected_id="unknown", selected_ref=None, current_fate="review",
+    )
+    row["downstream_relations"] = [{
+        "id": uuid4(), "source_model_id": target_model,
+        "target_model_id": source_model, "edge_kind": "contradicts",
+        "status": "active", "metadata": {"source_entity_mention_id": str(
+            row["entity_mention_id"]
+        )},
+    }]
+    case = GoldEntityPipelineCase(
+        case_id="entity-a", batch_id="batch", source_observation_id=observation_id,
+        surface="Entity A", gold_entity_type="customer",
+        expected_relations=(GoldRelationExpectation(
+            expectation_id="directed", expected_admission=True,
+            source_model_gold_label="gold:a", target_model_gold_label="gold:b",
+            relation_type="depends_on", source_mention_case_ids=("entity-a",),
+        ),),
+    )
+
+    metrics = analyze_entity_pipeline_rows(
+        gold_cases=[case], canonical_gold_labels={}, rows=[row],
+        topology_model_gold_labels={
+            str(source_model): "gold:a", str(target_model): "gold:b",
+        },
+    ).overall
+
+    assert metrics.relation_admission_accuracy == 0.0
+    assert metrics.expected_relation_recall == 0.0
+    assert metrics.relation_endpoint_accuracy == 1.0
+    assert metrics.relation_direction_accuracy == 0.0
+    assert metrics.relation_type_accuracy == 0.0
+    assert metrics.relation_lineage_coverage == 0.0
+    assert metrics.relation_lineage_integrity is None
+    assert metrics.unexpected_relation_rate == 1.0
+    assert metrics.harmful_topology_propagation_rate == 1.0
+
+
+def test_relation_expectations_reject_unknown_mention_lineage() -> None:
+    case = GoldEntityPipelineCase(
+        case_id="known", batch_id="batch", source_observation_id=uuid4(),
+        surface="Known", gold_entity_type="team",
+        expected_relations=(GoldRelationExpectation(
+            expectation_id="bad-lineage", expected_admission=False,
+            source_mention_case_ids=("missing",),
+        ),),
+    )
+    with pytest.raises(ValueError, match="unknown mention case"):
+        analyze_entity_pipeline_rows(
+            gold_cases=[case], canonical_gold_labels={}, rows=[],
+        )
+
+
+def test_shared_endpoint_adjacency_does_not_manufacture_relation_origin() -> None:
+    observations = [uuid4(), uuid4()]
+    shared_model, target_model, orphan_model = uuid4(), uuid4(), uuid4()
+    unrelated = _pipeline_row(
+        observation_id=observations[0], surface="Unrelated Entity",
+        candidates=[_special("unknown", "unknown")],
+        selected_id="unknown", selected_ref=None, current_fate="review",
+    )
+    actual_ref = {"type": "team", "id": "team:actual", "version": 1}
+    actual_origin = _pipeline_row(
+        observation_id=observations[1], surface="Actual Origin",
+        candidates=[_canonical("actual", "team", "team:actual")],
+        selected_id="actual", selected_ref=actual_ref,
+    )
+    lineaged_edge = {
+        "id": uuid4(), "source_model_id": shared_model,
+        "target_model_id": target_model, "edge_kind": "supports",
+        "status": "active", "metadata": {"source_entity_mention_id": str(
+            actual_origin["entity_mention_id"]
+        )},
+    }
+    unlineaged_edge = {
+        "id": uuid4(), "source_model_id": shared_model,
+        "target_model_id": orphan_model, "edge_kind": "depends_on",
+        "status": "active", "metadata": {},
+    }
+    # Both edges are discovered only because they are adjacent to the unrelated
+    # row's admitted model. Their metadata, not this placement, controls origin.
+    unrelated["downstream_relations"] = [lineaged_edge, unlineaged_edge]
+    actual_origin["downstream_relations"] = []
+    cases = [
+        GoldEntityPipelineCase(
+            case_id="unrelated", batch_id="batch",
+            source_observation_id=observations[0], surface="Unrelated Entity",
+            gold_entity_type="customer",
+            expected_relations=(GoldRelationExpectation(
+                expectation_id="unrelated-must-not-propagate",
+                expected_admission=False,
+                source_mention_case_ids=("unrelated",),
+            ),),
+        ),
+        GoldEntityPipelineCase(
+            case_id="actual", batch_id="batch",
+            source_observation_id=observations[1], surface="Actual Origin",
+            gold_entity_type="team", gold_canonical_label="gold:actual",
+            expected_relations=(GoldRelationExpectation(
+                expectation_id="actual-edge", expected_admission=True,
+                source_model_gold_label="gold:shared",
+                target_model_gold_label="gold:target", relation_type="supports",
+                source_mention_case_ids=("actual",),
+            ),),
+        ),
+    ]
+
+    metrics = analyze_entity_pipeline_rows(
+        gold_cases=cases,
+        canonical_gold_labels={canonical_ref_key(actual_ref): "gold:actual"},
+        rows=[unrelated, actual_origin],
+        topology_model_gold_labels={
+            str(shared_model): "gold:shared", str(target_model): "gold:target",
+            str(orphan_model): "gold:orphan",
+        },
+    ).overall
+
+    assert metrics.observed_active_relation_count == 2
+    assert metrics.relation_admission_accuracy == 1.0
+    assert metrics.expected_relation_recall == 1.0
+    assert metrics.relation_non_admission_safety_rate == 1.0
+    assert metrics.relation_lineage_integrity == 1.0
+    assert metrics.unlineaged_active_relation_count == 1
+    assert metrics.unlineaged_active_relation_rate == 0.5
+    assert metrics.unexpected_relation_rate == 0.5
+    assert metrics.harmful_topology_relation_count == 1

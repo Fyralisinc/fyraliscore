@@ -22,6 +22,35 @@ class _Record(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
 
+class GoldRelationExpectation(_Record):
+    """Evaluator-owned graph consequence of one or more grounded mentions.
+
+    ``expected_admission=False`` is a strong no-edge expectation: no active
+    relation may originate from the listed mention cases. Endpoint/type fields
+    are therefore only legal for expected admissions.
+    """
+
+    expectation_id: str = Field(min_length=1)
+    expected_admission: bool
+    source_model_gold_label: str | None = None
+    target_model_gold_label: str | None = None
+    relation_type: str | None = None
+    source_mention_case_ids: tuple[str, ...] = Field(min_length=1)
+
+    def model_post_init(self, __context: Any) -> None:
+        typed = (
+            self.source_model_gold_label,
+            self.target_model_gold_label,
+            self.relation_type,
+        )
+        if self.expected_admission and not all(typed):
+            raise ValueError(
+                "admitted relation expectations require source, target, and type"
+            )
+        if not self.expected_admission and any(value is not None for value in typed):
+            raise ValueError("non-admission expectations must not describe an edge")
+
+
 class GoldEntityPipelineCase(_Record):
     case_id: str = Field(min_length=1)
     batch_id: str = Field(min_length=1)
@@ -34,6 +63,7 @@ class GoldEntityPipelineCase(_Record):
         Literal["resolved_for_consumer", "review", "unresolved", "abstained"], ...
     ] = ()
     expected_semantic_disposition: Literal["belief_applied", "no_admission"] | None = None
+    expected_relations: tuple[GoldRelationExpectation, ...] = ()
 
 
 class EntityPipelineMetrics(_Record):
@@ -80,10 +110,28 @@ class EntityPipelineMetrics(_Record):
     belief_model_lineage_integrity: float | None = Field(default=None, ge=0, le=1)
     no_admission_no_model_safety_rate: float | None = Field(default=None, ge=0, le=1)
     harmful_semantic_propagation_rate: float | None = Field(default=None, ge=0, le=1)
+    relation_expectation_count: int = Field(ge=0)
+    expected_relation_admission_count: int = Field(ge=0)
+    observed_active_relation_count: int = Field(ge=0)
+    relation_admission_accuracy: float | None = Field(default=None, ge=0, le=1)
+    expected_relation_recall: float | None = Field(default=None, ge=0, le=1)
+    relation_non_admission_safety_rate: float | None = Field(default=None, ge=0, le=1)
+    relation_endpoint_accuracy: float | None = Field(default=None, ge=0, le=1)
+    relation_type_accuracy: float | None = Field(default=None, ge=0, le=1)
+    relation_direction_accuracy: float | None = Field(default=None, ge=0, le=1)
+    relation_lineage_coverage: float | None = Field(default=None, ge=0, le=1)
+    relation_lineage_integrity: float | None = Field(default=None, ge=0, le=1)
+    unexpected_relation_rate: float | None = Field(default=None, ge=0, le=1)
+    harmful_topology_relation_count: int = Field(ge=0)
+    harmful_topology_model_count: int = Field(ge=0)
+    harmful_topology_propagation_rate: float | None = Field(default=None, ge=0, le=1)
+    unknown_topology_endpoint_count: int = Field(ge=0)
+    unlineaged_active_relation_count: int = Field(ge=0)
+    unlineaged_active_relation_rate: float | None = Field(default=None, ge=0, le=1)
 
 
 class GoldEntityPipelineReport(_Record):
-    schema_version: str = "gold-entity-pipeline-v3"
+    schema_version: str = "gold-entity-pipeline-v4"
     overall: EntityPipelineMetrics
     by_batch: dict[str, EntityPipelineMetrics]
     uncertainties: tuple[str, ...] = ()
@@ -137,22 +185,84 @@ def _probability_distribution(value: Any) -> dict[str, float] | None:
     return result
 
 
+def _active_relations(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw = _json(row.get("downstream_relations")) or []
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict) or str(item.get("status")) != "active":
+            continue
+        relation_id = str(item.get("id") or "")
+        if not relation_id or relation_id in seen:
+            continue
+        if not all(item.get(field) for field in (
+            "source_model_id", "target_model_id", "edge_kind",
+        )):
+            continue
+        seen.add(relation_id)
+        result.append(item)
+    return result
+
+
+def _relation_mention_ids(relation: Mapping[str, Any]) -> set[str]:
+    metadata = _json(relation.get("metadata")) or {}
+    if not isinstance(metadata, dict):
+        return set()
+    values: list[Any] = []
+    singular = metadata.get("source_entity_mention_id")
+    if singular is not None:
+        values.append(singular)
+    plural = metadata.get("source_entity_mention_ids")
+    if isinstance(plural, list):
+        values.extend(plural)
+    return {str(value) for value in values if value is not None}
+
+
+def _relation_labels(
+    relation: Mapping[str, Any],
+    model_gold_labels: Mapping[str, str],
+) -> tuple[str | None, str | None]:
+    return (
+        model_gold_labels.get(str(relation.get("source_model_id"))),
+        model_gold_labels.get(str(relation.get("target_model_id"))),
+    )
+
+
 def analyze_entity_pipeline_rows(
     *,
     gold_cases: Sequence[GoldEntityPipelineCase],
     canonical_gold_labels: Mapping[str, str],
     rows: Sequence[Mapping[str, Any]],
+    topology_model_gold_labels: Mapping[str, str] | None = None,
     ks: Sequence[int] = (1, 3, 5),
 ) -> GoldEntityPipelineReport:
     """Score joined DB rows without trusting resolver-declared success fates."""
 
     if not ks or any(k <= 0 for k in ks):
         raise ValueError("ks must contain positive values")
+    topology_model_gold_labels = topology_model_gold_labels or {}
     keys = [(case.source_observation_id, case.surface) for case in gold_cases]
     if len(keys) != len(set(keys)) or len(
         {case.case_id for case in gold_cases}
     ) != len(gold_cases):
         raise ValueError("gold cases must have unique IDs and observation/surface keys")
+    case_ids = {case.case_id for case in gold_cases}
+    relation_expectations = [
+        expectation
+        for case in gold_cases
+        for expectation in case.expected_relations
+    ]
+    expectation_ids = [item.expectation_id for item in relation_expectations]
+    if len(expectation_ids) != len(set(expectation_ids)):
+        raise ValueError("relation expectation IDs must be globally unique")
+    if any(
+        source_case_id not in case_ids
+        for item in relation_expectations
+        for source_case_id in item.source_mention_case_ids
+    ):
+        raise ValueError("relation expectation references an unknown mention case")
     rows_by_key = {
         (UUID(str(row["source_observation_id"])), str(row["candidate_surface"])): row
         for row in rows
@@ -174,6 +284,9 @@ def analyze_entity_pipeline_rows(
         belief_applied = belief_materialized = belief_model_lineage_ok = 0
         semantic_propagated = 0
         no_admission = safe_no_admission = harmful_semantic_propagations = 0
+        relations_by_case: dict[str, list[dict[str, Any]]] = {}
+        mention_id_by_case: dict[str, str] = {}
+        unsafe_topology_origin: dict[str, bool] = {}
         recall_hits = {k: 0 for k in ks}
         type_hits = {k: 0 for k in ks}
         recall_denominator = type_denominator = 0
@@ -181,10 +294,15 @@ def analyze_entity_pipeline_rows(
         for case in cases:
             row = rows_by_key.get((case.source_observation_id, case.surface))
             if row is None:
+                relations_by_case[case.case_id] = []
+                unsafe_topology_origin[case.case_id] = True
                 detection_expected += int(case.expected_detection_fate is not None)
                 terminal_expected += int(bool(case.acceptable_terminal_fates))
                 semantic_expected += int(case.expected_semantic_disposition is not None)
                 continue
+            relations_by_case[case.case_id] = _active_relations(row)
+            if row.get("entity_mention_id") is not None:
+                mention_id_by_case[case.case_id] = str(row["entity_mention_id"])
             governed += 1
             fate = str(row.get("detection_fate") or "")
             is_detected = fate == "detected"
@@ -198,6 +316,7 @@ def analyze_entity_pipeline_rows(
             raw_candidates = _json(row.get("candidates")) or []
             candidates = [item for item in raw_candidates if isinstance(item, dict)]
             if not is_detected:
+                unsafe_topology_origin[case.case_id] = True
                 rejected_with_candidates += int(
                     bool(candidates or row.get("candidate_request_id"))
                 )
@@ -283,6 +402,7 @@ def analyze_entity_pipeline_rows(
                     selected.get("candidate_type") == case.gold_entity_type
                 )
             admitted_ref = _json(row.get("selected_referent"))
+            resolved_label = None
             if admitted_ref:
                 linked += int(case.gold_canonical_label is not None)
                 resolved_label = canonical_gold_labels.get(canonical_ref_key(admitted_ref))
@@ -295,6 +415,11 @@ def analyze_entity_pipeline_rows(
                     case.gold_canonical_label is None
                     or resolved_label != case.gold_canonical_label
                 )
+            unsafe_topology_origin[case.case_id] = (
+                case.gold_canonical_label is None
+                or not admitted_ref
+                or resolved_label != case.gold_canonical_label
+            )
             current_fate = str(row.get("current_fate") or "")
             abstained += int(current_fate in {"abstained", "unresolved"})
             reviewed += int(current_fate == "review")
@@ -400,6 +525,138 @@ def analyze_entity_pipeline_rows(
                     )
                 )
 
+        expectations = [
+            expectation
+            for case in cases
+            for expectation in case.expected_relations
+        ]
+        expected_admissions = [item for item in expectations if item.expected_admission]
+        expected_non_admissions = [
+            item for item in expectations if not item.expected_admission
+        ]
+        unique_relations: dict[str, dict[str, Any]] = {}
+        relation_origins: dict[str, set[str]] = {}
+        for case_id, relations in relations_by_case.items():
+            for relation in relations:
+                relation_id = str(relation["id"])
+                unique_relations.setdefault(relation_id, relation)
+        case_id_by_mention_id = {
+            mention_id: case_id for case_id, mention_id in mention_id_by_case.items()
+        }
+        for relation_id, relation in unique_relations.items():
+            relation_origins[relation_id] = {
+                case_id_by_mention_id[mention_id]
+                for mention_id in _relation_mention_ids(relation)
+                if mention_id in case_id_by_mention_id
+            }
+        unlineaged_relation_ids = {
+            relation_id
+            for relation_id, origins in relation_origins.items()
+            if not origins
+        }
+
+        admission_correct = endpoint_correct = relation_type_correct = 0
+        direction_correct = exact_admitted = relation_lineage_ok = 0
+        non_admission_correct = 0
+        matched_expected_relation_ids: set[str] = set()
+        for expectation in expected_admissions:
+            expected_origin_ids = set(expectation.source_mention_case_ids)
+            candidates = {
+                relation_id: relation
+                for relation_id, relation in unique_relations.items()
+                if relation_origins.get(relation_id, set()) & expected_origin_ids
+            }
+            scored: list[tuple[tuple[int, int, int, str], dict[str, Any]]] = []
+            for relation_id, relation in candidates.items():
+                source_label, target_label = _relation_labels(
+                    relation, topology_model_gold_labels
+                )
+                endpoints_ok = sorted((source_label or "", target_label or "")) == sorted((
+                    expectation.source_model_gold_label or "",
+                    expectation.target_model_gold_label or "",
+                ))
+                direction_ok = (
+                    source_label == expectation.source_model_gold_label
+                    and target_label == expectation.target_model_gold_label
+                )
+                type_ok = str(relation.get("edge_kind")) == expectation.relation_type
+                scored.append((
+                    (
+                        int(endpoints_ok) + int(direction_ok) + int(type_ok),
+                        int(direction_ok),
+                        int(type_ok),
+                        relation_id,
+                    ),
+                    relation,
+                ))
+            selected_relation = max(scored, default=None, key=lambda item: item[0])
+            if selected_relation is None:
+                continue
+            relation = selected_relation[1]
+            source_label, target_label = _relation_labels(
+                relation, topology_model_gold_labels
+            )
+            endpoints_ok = sorted((source_label or "", target_label or "")) == sorted((
+                expectation.source_model_gold_label or "",
+                expectation.target_model_gold_label or "",
+            ))
+            direction_ok = (
+                source_label == expectation.source_model_gold_label
+                and target_label == expectation.target_model_gold_label
+            )
+            type_ok = str(relation.get("edge_kind")) == expectation.relation_type
+            exact = endpoints_ok and direction_ok and type_ok
+            endpoint_correct += int(endpoints_ok)
+            direction_correct += int(direction_ok)
+            relation_type_correct += int(type_ok)
+            admission_correct += int(exact)
+            exact_admitted += int(exact)
+            if exact:
+                relation_id = str(relation["id"])
+                matched_expected_relation_ids.add(relation_id)
+                required_mentions = {
+                    mention_id_by_case[source_case_id]
+                    for source_case_id in expectation.source_mention_case_ids
+                    if source_case_id in mention_id_by_case
+                }
+                lineage_ok_for_relation = (
+                    len(required_mentions) == len(expectation.source_mention_case_ids)
+                    and required_mentions <= _relation_mention_ids(relation)
+                )
+                relation_lineage_ok += int(lineage_ok_for_relation)
+
+        for expectation in expected_non_admissions:
+            expected_origin_ids = set(expectation.source_mention_case_ids)
+            has_relation = any(
+                origins & expected_origin_ids
+                for origins in relation_origins.values()
+            )
+            non_admission_correct += int(not has_relation)
+            admission_correct += int(not has_relation)
+
+        unexpected_relation_ids = (
+            set(unique_relations) - matched_expected_relation_ids
+        )
+        harmful_relation_ids = {
+            relation_id
+            for relation_id in unique_relations
+            if relation_id in unexpected_relation_ids
+            or any(
+                unsafe_topology_origin.get(case_id, True)
+                for case_id in relation_origins.get(relation_id, set())
+            )
+        }
+        harmful_models = {
+            str(unique_relations[relation_id][field])
+            for relation_id in harmful_relation_ids
+            for field in ("source_model_id", "target_model_id")
+        }
+        unknown_topology_endpoints = sum(
+            str(relation[field]) not in topology_model_gold_labels
+            for relation in unique_relations.values()
+            for field in ("source_model_id", "target_model_id")
+        )
+
         return EntityPipelineMetrics(
             gold_case_count=len(cases), detected_case_count=detected,
             candidate_population_count=candidate_population, assessed_case_count=assessed,
@@ -452,6 +709,46 @@ def analyze_entity_pipeline_rows(
                 harmful_semantic_propagations,
                 semantic_propagated,
             ),
+            relation_expectation_count=len(expectations),
+            expected_relation_admission_count=len(expected_admissions),
+            observed_active_relation_count=len(unique_relations),
+            relation_admission_accuracy=_rate(
+                admission_correct, len(expectations)
+            ),
+            expected_relation_recall=_rate(
+                exact_admitted, len(expected_admissions)
+            ),
+            relation_non_admission_safety_rate=_rate(
+                non_admission_correct, len(expected_non_admissions)
+            ),
+            relation_endpoint_accuracy=_rate(
+                endpoint_correct, len(expected_admissions)
+            ),
+            relation_type_accuracy=_rate(
+                relation_type_correct, len(expected_admissions)
+            ),
+            relation_direction_accuracy=_rate(
+                direction_correct, len(expected_admissions)
+            ),
+            relation_lineage_coverage=_rate(
+                relation_lineage_ok, len(expected_admissions)
+            ),
+            relation_lineage_integrity=_rate(
+                relation_lineage_ok, exact_admitted
+            ),
+            unexpected_relation_rate=_rate(
+                len(unexpected_relation_ids), len(unique_relations)
+            ),
+            harmful_topology_relation_count=len(harmful_relation_ids),
+            harmful_topology_model_count=len(harmful_models),
+            harmful_topology_propagation_rate=_rate(
+                len(harmful_relation_ids), len(unique_relations)
+            ),
+            unknown_topology_endpoint_count=unknown_topology_endpoints,
+            unlineaged_active_relation_count=len(unlineaged_relation_ids),
+            unlineaged_active_relation_rate=_rate(
+                len(unlineaged_relation_ids), len(unique_relations)
+            ),
         )
 
     overall = metrics(gold_cases)
@@ -469,7 +766,8 @@ def analyze_entity_pipeline_rows(
         uncertainties.append("detected_cases_without_valid_type_assessment")
     if any(case.expected_semantic_disposition is None for case in gold_cases):
         uncertainties.append("semantic_impact_metrics_exclude_unlabeled_cases")
-    uncertainties.append("downstream_relation_topology_quality_not_evaluated")
+    if any(not case.expected_relations for case in gold_cases):
+        uncertainties.append("relation_topology_metrics_exclude_unlabeled_cases")
     return GoldEntityPipelineReport(
         overall=overall,
         by_batch={
@@ -486,6 +784,7 @@ async def evaluate_persisted_entity_pipeline(
     tenant_id: UUID,
     gold_cases: Sequence[GoldEntityPipelineCase],
     canonical_gold_labels: Mapping[str, str],
+    topology_model_gold_labels: Mapping[str, str] | None = None,
     ks: Sequence[int] = (1, 3, 5),
 ) -> GoldEntityPipelineReport:
     """Load current persisted heads and evaluate the complete grounding chain."""
@@ -514,6 +813,7 @@ async def evaluate_persisted_entity_pipeline(
                ssad.admitted_model_id AS semantic_admitted_model_id,
                downstream_model.id AS downstream_model_id,
                downstream_model.proposition AS downstream_model_proposition,
+               topology.downstream_relations,
                COALESCE((
                  SELECT count(*)
                  FROM models semantic_model
@@ -547,6 +847,23 @@ async def evaluate_persisted_entity_pipeline(
         LEFT JOIN models downstream_model
           ON downstream_model.tenant_id=ssad.tenant_id
          AND downstream_model.id=ssad.admitted_model_id
+        LEFT JOIN LATERAL (
+          SELECT jsonb_agg(jsonb_build_object(
+                   'id', edge.id,
+                   'source_model_id', edge.source_model_id,
+                   'target_model_id', edge.target_model_id,
+                   'edge_kind', edge.edge_kind,
+                   'status', edge.status,
+                   'metadata', edge.metadata,
+                   'created_by_event_id', edge.created_by_event_id
+                 ) ORDER BY edge.created_at, edge.id) AS downstream_relations
+          FROM model_edges edge
+          WHERE edge.tenant_id=downstream_model.tenant_id
+            AND (
+              edge.source_model_id=downstream_model.id
+              OR edge.target_model_id=downstream_model.id
+            )
+        ) topology ON true
         WHERE d.tenant_id=$1 AND d.source_observation_id = ANY($2::uuid[])
         ORDER BY d.source_observation_id, d.candidate_surface,
                  ra.assessment_version DESC NULLS LAST, gt.created_at DESC NULLS LAST
@@ -561,6 +878,7 @@ async def evaluate_persisted_entity_pipeline(
     return analyze_entity_pipeline_rows(
         gold_cases=gold_cases,
         canonical_gold_labels=canonical_gold_labels,
+        topology_model_gold_labels=topology_model_gold_labels,
         rows=tuple(deduped.values()),
         ks=ks,
     )
@@ -568,5 +886,6 @@ async def evaluate_persisted_entity_pipeline(
 
 __all__ = [
     "EntityPipelineMetrics", "GoldEntityPipelineCase", "GoldEntityPipelineReport",
+    "GoldRelationExpectation",
     "analyze_entity_pipeline_rows", "canonical_ref_key", "evaluate_persisted_entity_pipeline",
 ]
