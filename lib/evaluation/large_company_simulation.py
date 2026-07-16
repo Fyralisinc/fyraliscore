@@ -7,6 +7,7 @@ assessment that preserves proof gaps and non-compensatory safety failures.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -50,6 +51,7 @@ def evaluate_large_company_simulation(
     assurance: JsonObject | None,
     run_config: JsonObject,
     profile_name: str,
+    entity_evidence: JsonObject | None = None,
 ) -> dict[str, Any]:
     """Return a precise continuous report over saved simulation artifacts."""
     profile = PROFILES[profile_name]
@@ -96,7 +98,9 @@ def evaluate_large_company_simulation(
     storyline_scores = _objects(benchmark.get("storyline_scores"))
     hidden = _hidden_pattern_dimension(benchmark, storyline_scores, gaps)
     temporal = _temporal_dimension(dimensions, gaps)
-    entity_model = _entity_model_dimension(dimensions, vitals, gaps)
+    entity_model = _entity_model_dimension(
+        dimensions, vitals, entity_evidence, gaps
+    )
     learning = _learning_dimension(vitals, assurance, gaps)
     operational = _operational_dimension(
         benchmark=benchmark,
@@ -287,6 +291,7 @@ def _temporal_dimension(
 def _entity_model_dimension(
     dimensions: JsonObject,
     vitals: JsonObject | None,
+    entity_evidence: JsonObject | None,
     gaps: list[str],
 ) -> dict[str, Any]:
     memory_truth = _score(dimensions, "memory_truth")
@@ -295,17 +300,21 @@ def _entity_model_dimension(
     vital_rows = _object((vitals or {}).get("vitals"))
     coherence = _nested_score(vital_rows, "model_coherence")
     metabolism = _nested_score(vital_rows, "metabolism_yield")
-    entity_quality = _company_physics_score(vitals, "active_surfaces")
+    entity_quality, entity_coverage, entity_metrics = _objective_entity_quality(
+        entity_evidence, gaps
+    )
     values = [memory_truth, compression, edge, coherence, metabolism, entity_quality]
     observed = [value for value in values if value is not None]
     if entity_quality is None:
         gaps.append(
             "No explicit entity-extraction/resolution quality score was found; "
-            "identity quality is only indirectly covered."
+            "active-surface status is not objective entity-quality evidence."
         )
     return _dimension(
         _mean(observed),
-        len(observed) / len(values),
+        (
+            sum(value is not None for value in values[:-1]) + entity_coverage
+        ) / len(values),
         {
             "memory_truth": memory_truth,
             "compression": compression,
@@ -313,6 +322,103 @@ def _entity_model_dimension(
             "model_coherence": coherence,
             "metabolism_yield": metabolism,
             "entity_identity_quality": entity_quality,
+            "entity_identity_evidence_coverage": entity_coverage,
+            "entity_identity_metrics": entity_metrics,
+        },
+    )
+
+
+def _objective_entity_quality(
+    evidence: JsonObject | None,
+    gaps: list[str],
+) -> tuple[float | None, float, dict[str, Any]]:
+    """Score only numeric evaluator output, never a component status label."""
+
+    if not evidence:
+        return None, 0.0, {}
+    if evidence.get("schema_version") != "objective-entity-evidence-v1":
+        gaps.append("Objective entity evidence has an unsupported schema version.")
+        return None, 0.0, {}
+    extraction = _object(evidence.get("extraction"))
+    pipeline = _object(evidence.get("pipeline"))
+    extraction_overall = _object(extraction.get("overall"))
+    pipeline_overall = _object(pipeline.get("overall"))
+    if extraction.get("schema_version") != "gold-entity-extraction-v1":
+        gaps.append("Objective entity evidence lacks a labeled extraction-v1 report.")
+        extraction_overall = {}
+    if pipeline.get("schema_version") != "gold-entity-pipeline-v4":
+        gaps.append("Objective entity evidence lacks a labeled entity-pipeline-v4 report.")
+        pipeline_overall = {}
+
+    components = {
+        "exact_span_f1": _optional_ratio(extraction_overall.get("span_f1")),
+        "type_accuracy": _optional_ratio(extraction_overall.get("type_accuracy")),
+        "canonical_link_accuracy": _optional_ratio(
+            pipeline_overall.get("canonical_link_accuracy")
+        ),
+        "canonical_link_coverage": _optional_ratio(
+            pipeline_overall.get("canonical_link_coverage")
+        ),
+        "grounding_lineage_integrity": _optional_ratio(
+            pipeline_overall.get("lineage_integrity")
+        ),
+        "semantic_lineage_integrity": _optional_ratio(
+            pipeline_overall.get("semantic_lineage_integrity")
+        ),
+        "relation_admission_accuracy": _optional_ratio(
+            pipeline_overall.get("relation_admission_accuracy")
+        ),
+        "relation_endpoint_accuracy": _optional_ratio(
+            pipeline_overall.get("relation_endpoint_accuracy")
+        ),
+        "relation_type_accuracy": _optional_ratio(
+            pipeline_overall.get("relation_type_accuracy")
+        ),
+        "relation_direction_accuracy": _optional_ratio(
+            pipeline_overall.get("relation_direction_accuracy")
+        ),
+        "relation_lineage_coverage": _optional_ratio(
+            pipeline_overall.get("relation_lineage_coverage")
+        ),
+        "false_link_safety": _inverse_optional_ratio(
+            pipeline_overall.get("harmful_false_link_rate")
+        ),
+        "topology_propagation_safety": _inverse_optional_ratio(
+            pipeline_overall.get("harmful_topology_propagation_rate")
+        ),
+        "active_relation_lineage_safety": _inverse_optional_ratio(
+            pipeline_overall.get("unlineaged_active_relation_rate")
+        ),
+    }
+    observed = [value for value in components.values() if value is not None]
+    coverage = len(observed) / len(components)
+    if components["canonical_link_accuracy"] is None or components[
+        "canonical_link_coverage"
+    ] is None:
+        gaps.append("Objective canonical-link accuracy or coverage is unpopulated.")
+    topology_keys = (
+        "relation_admission_accuracy", "relation_endpoint_accuracy",
+        "relation_type_accuracy", "relation_direction_accuracy",
+        "relation_lineage_coverage", "topology_propagation_safety",
+        "active_relation_lineage_safety",
+    )
+    if any(components[key] is None for key in topology_keys):
+        gaps.append("Objective relation/topology evidence is incomplete or unpopulated.")
+    for source, label in ((extraction, "extraction"), (pipeline, "pipeline")):
+        for uncertainty in _strings(source.get("uncertainties")):
+            gaps.append(f"Objective entity {label} uncertainty: {uncertainty}")
+    gaps.extend(
+        f"Objective entity evidence: {item}"
+        for item in _strings(evidence.get("proof_gaps"))
+    )
+    return (
+        _mean(observed) if observed else None,
+        coverage,
+        {
+            "components": components,
+            "observed_component_count": len(observed),
+            "required_component_count": len(components),
+            "coverage": round(coverage, 4),
         },
     )
 
@@ -775,23 +881,6 @@ def _assurance_component_score(
     return _ratio01(support) if support is not None else None
 
 
-def _company_physics_score(
-    vitals: JsonObject | None,
-    key: str,
-) -> float | None:
-    physics = _object((vitals or {}).get("company_physics"))
-    component = _object(
-        _object(physics.get("assurance_suite")).get(key)
-    )
-    if not component:
-        return None
-    if component.get("status") in {"working", "observed", "substantiated"}:
-        return 1.0
-    report = _object(component.get("report"))
-    value = report.get("support_ratio", report.get("satisfaction_ratio"))
-    return _ratio01(value) if value is not None else None
-
-
 def _score(dimensions: JsonObject, key: str) -> float | None:
     payload = _object(dimensions.get(key))
     return _ratio01(payload.get("score")) if payload else None
@@ -911,6 +1000,20 @@ def _number(value: Any) -> float:
 
 def _ratio01(value: Any) -> float:
     return max(0.0, min(1.0, _number(value)))
+
+
+def _optional_ratio(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    if not math.isfinite(numeric) or not 0.0 <= numeric <= 1.0:
+        return None
+    return numeric
+
+
+def _inverse_optional_ratio(value: Any) -> float | None:
+    observed = _optional_ratio(value)
+    return None if observed is None else 1.0 - observed
 
 
 def _mean(values: list[float]) -> float:

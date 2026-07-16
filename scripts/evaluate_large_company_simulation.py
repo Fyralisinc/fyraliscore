@@ -44,6 +44,10 @@ def main(argv: list[str] | None = None) -> int:
         report_dir / "company_learning_assurance_summary.json",
         report_dir / "vitals" / "company_learning_assurance_summary.json",
     )
+    entity_evidence_path = args.entity_evidence or _first_existing(
+        report_dir / "objective_entity_evidence.json",
+        report_dir / "vitals" / "objective_entity_evidence.json",
+    )
     report = evaluate_large_company_simulation(
         benchmark=_read_json(benchmark_path),
         run_summary=_read_json(run_path),
@@ -51,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
         assurance=_read_json(assurance_path) if assurance_path else None,
         run_config=_read_json(run_config_path),
         profile_name=args.profile,
+        entity_evidence=(
+            _read_json(entity_evidence_path) if entity_evidence_path else None
+        ),
     )
     report["artifact_inputs"] = {
         "benchmark": str(benchmark_path),
@@ -58,6 +65,9 @@ def main(argv: list[str] | None = None) -> int:
         "run_config": str(run_config_path),
         "vitals": str(vitals_path) if vitals_path else None,
         "assurance": str(assurance_path) if assurance_path else None,
+        "entity_evidence": (
+            str(entity_evidence_path) if entity_evidence_path else None
+        ),
     }
     output_dir = (args.output_dir or report_dir / "large_simulation_gate").resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -89,6 +99,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--vitals", type=Path)
     parser.add_argument("--assurance", type=Path)
+    parser.add_argument("--entity-evidence", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--fail-on-not-credible", action="store_true")
     return parser.parse_args(argv)

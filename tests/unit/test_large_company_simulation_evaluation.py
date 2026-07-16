@@ -9,6 +9,40 @@ from lib.evaluation.large_company_simulation import (
 from scripts.evaluate_large_company_simulation import main
 
 
+def _objective_entity_evidence(*, complete: bool = True) -> dict:
+    pipeline = {
+        "canonical_link_accuracy": 0.96 if complete else None,
+        "canonical_link_coverage": 0.90 if complete else None,
+        "lineage_integrity": 1.0,
+        "semantic_lineage_integrity": 0.98 if complete else None,
+        "relation_admission_accuracy": 0.94 if complete else None,
+        "relation_endpoint_accuracy": 0.97 if complete else None,
+        "relation_type_accuracy": 0.95 if complete else None,
+        "relation_direction_accuracy": 0.96 if complete else None,
+        "relation_lineage_coverage": 0.92 if complete else None,
+        "harmful_false_link_rate": 0.01,
+        "harmful_topology_propagation_rate": 0.02 if complete else None,
+        "unlineaged_active_relation_rate": 0.0 if complete else None,
+    }
+    return {
+        "schema_version": "objective-entity-evidence-v1",
+        "extraction": {
+            "schema_version": "gold-entity-extraction-v1",
+            "overall": {"span_f1": 0.94, "type_accuracy": 0.98},
+            "uncertainties": [],
+        },
+        "pipeline": {
+            "schema_version": "gold-entity-pipeline-v4",
+            "overall": pipeline,
+            "uncertainties": ([] if complete else [
+                "canonical_metrics_exclude_open_world_gold_cases",
+                "relation_topology_metrics_exclude_unlabeled_cases",
+            ]),
+        },
+        "proof_gaps": [],
+    }
+
+
 def _artifacts(*, batches: int = 45, signals: int = 1125) -> tuple[dict, ...]:
     storyline_scores = [
         {
@@ -141,6 +175,7 @@ def test_full_profile_is_continuous_and_supports_strong_claims() -> None:
         assurance=assurance,
         run_config=run_config,
         profile_name="authoritative-45",
+        entity_evidence=_objective_entity_evidence(),
     )
 
     assert report["status"] == "strong"
@@ -158,6 +193,54 @@ def test_full_profile_is_continuous_and_supports_strong_claims() -> None:
     assert hidden["causal_thesis_miss_rate"] == 0.125
     assert hidden["independent_thesis_weight"] == 0.60
     assert hidden["proxy_structure_weight"] == 0.40
+
+
+def test_status_only_active_surfaces_cannot_manufacture_entity_quality() -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark, run_summary=run_summary, vitals=vitals,
+        assurance=assurance, run_config=run_config,
+        profile_name="authoritative-45",
+    )
+
+    entity = report["dimensions"]["entity_model_quality"]
+    assert vitals["company_physics"]["assurance_suite"]["active_surfaces"] == {
+        "status": "observed"
+    }
+    assert entity["metrics"]["entity_identity_quality"] is None
+    assert entity["metrics"]["entity_identity_evidence_coverage"] == 0.0
+    assert entity["coverage"] == 0.8333
+    assert any(
+        "active-surface status is not objective entity-quality evidence" in gap
+        for gap in report["proof_gaps"]
+    )
+
+
+def test_partial_objective_entity_metrics_remain_continuous_and_gapped() -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark, run_summary=run_summary, vitals=vitals,
+        assurance=assurance, run_config=run_config,
+        profile_name="authoritative-45",
+        entity_evidence=_objective_entity_evidence(complete=False),
+    )
+
+    entity = report["dimensions"]["entity_model_quality"]["metrics"]
+    objective = entity["entity_identity_metrics"]
+    assert entity["entity_identity_quality"] == 0.9775
+    assert entity["entity_identity_evidence_coverage"] == 4 / 14
+    assert objective["observed_component_count"] == 4
+    assert objective["required_component_count"] == 14
+    assert objective["components"]["canonical_link_accuracy"] is None
+    assert objective["components"]["relation_admission_accuracy"] is None
+    assert any("canonical-link" in gap for gap in report["proof_gaps"])
+    assert any("relation/topology" in gap for gap in report["proof_gaps"])
+    assert any(
+        "canonical_metrics_exclude_open_world_gold_cases" in gap
+        for gap in report["proof_gaps"]
+    )
 
 
 def test_scale_shortfall_is_precise_instead_of_binary() -> None:
@@ -243,6 +326,7 @@ def test_cli_writes_json_and_markdown(tmp_path: Path) -> None:
         (report_dir / "run_config.json", run_config),
         (vitals_dir / "vitals_scorecard.json", vitals),
         (report_dir / "company_learning_assurance_summary.json", assurance),
+        (report_dir / "objective_entity_evidence.json", _objective_entity_evidence()),
     ):
         path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -258,6 +342,9 @@ def test_cli_writes_json_and_markdown(tmp_path: Path) -> None:
     assert payload["profile"] == "authoritative-45"
     assert payload["artifact_inputs"]["vitals"].endswith(
         "vitals/vitals_scorecard.json"
+    )
+    assert payload["artifact_inputs"]["entity_evidence"].endswith(
+        "objective_entity_evidence.json"
     )
     assert "## Hidden Pattern Recovery" in markdown
     assert "## Claims This Run Does Not Support" in markdown
