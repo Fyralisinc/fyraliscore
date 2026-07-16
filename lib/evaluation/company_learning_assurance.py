@@ -1,0 +1,682 @@
+"""Typed contract for the combined company-learning assurance report."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any, Literal
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.company_learning_experiment import (
+    CorrectiveMemoryExperimentReport,
+    PairedRecurrenceResult,
+)
+from lib.evaluation.company_learning_population import (
+    HeldOutExactAliasPopulation,
+    HeldOutPairObservation,
+    evaluate_heldout_population,
+)
+
+
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class _SummaryModel(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+    )
+
+    @model_validator(mode="after")
+    def valid_digest_and_path_maps(self) -> Self:
+        for field_name in ("component_digests", "artifact_paths"):
+            values = getattr(self, field_name, None)
+            if values is None:
+                continue
+            if not values:
+                raise ValueError(f"{field_name} must not be empty")
+            for key, value in values.items():
+                if not key or not value:
+                    raise ValueError(f"{field_name} requires non-empty entries")
+                if (
+                    field_name == "component_digests"
+                    and _DIGEST_RE.fullmatch(value) is None
+                ):
+                    raise ValueError(
+                        f"invalid component digest for {key}: {value}"
+                    )
+        return self
+
+
+class PositiveAssurance(_SummaryModel):
+    status: str
+    pair_count: int = Field(ge=0)
+    adaptive_correctness_rate: float | None
+    frozen_correctness_rate: float | None
+    adaptive_minus_frozen_correctness: float | None
+    hard_failures: tuple[str, ...]
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+
+class NegativeAssurance(_SummaryModel):
+    status: str
+    pair_count: int = Field(ge=0)
+    safety_incident_count: int = Field(ge=0)
+    adaptive_unsafe_count: int = Field(ge=0)
+    frozen_unsafe_count: int = Field(ge=0)
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def unsafe_counts_require_incidents(self) -> Self:
+        if (
+            self.adaptive_unsafe_count > 0
+            or self.frozen_unsafe_count > 0
+        ) and self.safety_incident_count == 0:
+            raise ValueError(
+                "unsafe negative-control arms require safety incidents"
+            )
+        return self
+
+
+class SlackAssurance(_SummaryModel):
+    status: str
+    metrics: dict[str, Any]
+    diagnostic_only: Literal[True] = True
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+
+class PopulationAssurance(_SummaryModel):
+    status: str
+    registry_pair_count: int = Field(ge=0)
+    observed_pair_count: int = Field(ge=0)
+    unsupported_case_count: int = Field(ge=0)
+    runtime_support_rate: float = Field(ge=0.0, le=1.0)
+    metrics: dict[str, Any]
+    unsupported_strata_counts: dict[str, dict[str, int]]
+    unsupported_reason_counts: dict[str, int]
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def exact_population_accounting(self) -> Self:
+        if self.registry_pair_count != 60:
+            raise ValueError("v1 assurance requires the sealed 60-case registry")
+        if (
+            self.observed_pair_count + self.unsupported_case_count
+            != self.registry_pair_count
+        ):
+            raise ValueError(
+                "population observed and unsupported counts must partition "
+                "the registry"
+            )
+        expected_rate = self.observed_pair_count / self.registry_pair_count
+        if abs(self.runtime_support_rate - expected_rate) > 1e-12:
+            raise ValueError("population runtime support rate is inconsistent")
+        expected_metrics = {
+            "pair_count": self.registry_pair_count,
+            "observed_pair_count": self.observed_pair_count,
+            "unsupported_case_count": self.unsupported_case_count,
+            "complete_population": True,
+        }
+        for key, expected in expected_metrics.items():
+            if self.metrics.get(key) != expected:
+                raise ValueError(
+                    f"population metric {key} does not match summary"
+                )
+        for dimension, counts in self.unsupported_strata_counts.items():
+            if sum(counts.values()) != self.unsupported_case_count:
+                raise ValueError(
+                    "unsupported population stratum does not cover every "
+                    f"unsupported case: {dimension}"
+                )
+        if (
+            sum(self.unsupported_reason_counts.values())
+            != self.unsupported_case_count
+        ):
+            raise ValueError(
+                "unsupported reasons must cover every unsupported case"
+            )
+        return self
+
+
+class CompanyLearningAssuranceSummary(_SummaryModel):
+    schema_version: Literal["company-learning-assurance-summary-v1"] = (
+        "company-learning-assurance-summary-v1"
+    )
+    run_id: str = Field(min_length=1)
+    system_version: str = Field(min_length=1)
+    created_at: str = Field(min_length=1)
+    status: Literal["working", "failed"]
+    positive: PositiveAssurance
+    negative: NegativeAssurance
+    slack: SlackAssurance
+    population: PopulationAssurance | None = None
+    proof_gaps: tuple[str, ...]
+    blocking_failures: tuple[str, ...]
+    component_digests: dict[str, str]
+    artifact_paths: dict[str, str]
+
+    @model_validator(mode="after")
+    def coherent_noncompensatory_summary(self) -> Self:
+        nested_paths = {
+            **self.positive.artifact_paths,
+            **self.negative.artifact_paths,
+            **self.slack.artifact_paths,
+            **(
+                self.population.artifact_paths
+                if self.population is not None
+                else {}
+            ),
+        }
+        if self.artifact_paths != nested_paths:
+            raise ValueError(
+                "top-level artifact paths must exactly match component paths"
+            )
+        nested_digests = {
+            **{
+                f"positive_{key}": value
+                for key, value in self.positive.component_digests.items()
+            },
+            **{
+                f"negative_{key}": value
+                for key, value in self.negative.component_digests.items()
+            },
+            **{
+                f"slack_{key}": value
+                for key, value in self.slack.component_digests.items()
+            },
+            **(
+                {
+                    f"population_{key}": value
+                    for key, value in self.population.component_digests.items()
+                }
+                if self.population is not None
+                else {}
+            ),
+        }
+        if self.component_digests != nested_digests:
+            raise ValueError(
+                "top-level component digests must exactly match components"
+            )
+        unsafe_component = bool(
+            self.positive.hard_failures
+            or self.negative.safety_incident_count
+            or (
+                self.population is not None
+                and _population_safety_incident_count(self.population) > 0
+            )
+        )
+        if self.status == "working" and (
+            self.blocking_failures or unsafe_component
+        ):
+            raise ValueError(
+                "working assurance cannot contain blocking or unsafe evidence"
+            )
+        if self.status == "failed" and not self.blocking_failures:
+            raise ValueError(
+                "failed assurance requires at least one blocking failure"
+            )
+        if unsafe_component and not self.blocking_failures:
+            raise ValueError(
+                "unsafe component evidence requires blocking failures"
+            )
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_sha256(self.model_dump(mode="json"))
+
+    def artifact_payload(self) -> dict[str, Any]:
+        return {
+            **self.model_dump(mode="json"),
+            "summary_digest": self.digest,
+        }
+
+
+def validate_company_learning_assurance_artifact(
+    payload: dict[str, Any],
+) -> CompanyLearningAssuranceSummary:
+    """Validate the typed payload and its self-authenticating digest."""
+
+    supplied_digest = str(payload.get("summary_digest") or "")
+    summary = CompanyLearningAssuranceSummary.model_validate(
+        {
+            key: value
+            for key, value in payload.items()
+            if key != "summary_digest"
+        }
+    )
+    if supplied_digest != summary.digest:
+        raise ValueError("company-learning assurance summary digest mismatch")
+    return summary
+
+
+def validate_company_learning_assurance_components(
+    summary: CompanyLearningAssuranceSummary,
+) -> None:
+    """Reopen every evidence component and verify identity and digests."""
+
+    expected_paths = {
+        "positive_pair",
+        "positive_company_learning_evaluation",
+        "positive_company_learning_evidence_bundle",
+        "negative_evidence",
+        "population_evidence",
+        "slack_observations",
+        "slack_report",
+    }
+    if set(summary.artifact_paths) != expected_paths:
+        raise ValueError("assurance artifact path set is incomplete or unknown")
+
+    positive = _read_json_file(summary.artifact_paths["positive_pair"])
+    _assert_run_identity(
+        positive.get("report"),
+        run_id=f"{summary.run_id}:positive",
+        system_version=summary.system_version,
+    )
+    if (
+        str(positive.get("report_digest") or "")
+        != summary.positive.component_digests.get("report")
+    ):
+        raise ValueError("positive report digest mismatch")
+    if canonical_sha256(positive.get("report")) != positive.get(
+        "report_digest"
+    ):
+        raise ValueError("positive report failed digest recomputation")
+    positive_report = _object(positive.get("report"), "positive report")
+    positive_metrics = _object(
+        positive_report.get("metrics"),
+        "positive metrics",
+    )
+    if (
+        summary.positive.status != positive_report.get("status")
+        or summary.positive.pair_count != positive_metrics.get("pair_count")
+        or summary.positive.adaptive_correctness_rate
+        != positive_metrics.get("adaptive_correctness_rate")
+        or summary.positive.frozen_correctness_rate
+        != positive_metrics.get("frozen_correctness_rate")
+        or summary.positive.adaptive_minus_frozen_correctness
+        != positive_metrics.get("adaptive_minus_frozen_correctness")
+    ):
+        raise ValueError("positive assurance metrics do not match evidence")
+    if positive_report.get("incidents") and not summary.positive.hard_failures:
+        raise ValueError("positive incidents require positive hard failures")
+
+    positive_evaluation = _read_json_file(
+        summary.artifact_paths["positive_company_learning_evaluation"]
+    )
+    if canonical_sha256(positive_evaluation) != (
+        summary.positive.component_digests.get(
+            "company_learning_evaluation"
+        )
+    ):
+        raise ValueError("positive evaluation digest mismatch")
+    _assert_positive_evaluation_identity(
+        positive_evaluation,
+        run_id=f"{summary.run_id}:positive",
+        system_version=summary.system_version,
+    )
+
+    positive_bundle = _read_json_file(
+        summary.artifact_paths["positive_company_learning_evidence_bundle"]
+    )
+    if canonical_sha256(positive_bundle) != (
+        summary.positive.component_digests.get(
+            "company_learning_evidence_bundle"
+        )
+    ):
+        raise ValueError("positive evidence bundle digest mismatch")
+    _assert_run_identity(
+        positive_bundle,
+        run_id=f"{summary.run_id}:positive",
+        system_version=summary.system_version,
+    )
+
+    negative = _read_json_file(summary.artifact_paths["negative_evidence"])
+    _assert_run_identity(
+        negative.get("report"),
+        run_id=f"{summary.run_id}:negative",
+        system_version=summary.system_version,
+    )
+    if str(negative.get("evidence_digest") or "") != (
+        summary.negative.component_digests.get("evidence")
+    ):
+        raise ValueError("negative evidence digest mismatch")
+    if canonical_sha256(
+        {
+            key: value
+            for key, value in negative.items()
+            if key != "evidence_digest"
+        }
+    ) != negative.get("evidence_digest"):
+        raise ValueError("negative evidence failed digest recomputation")
+    if canonical_sha256(negative.get("report")) != (
+        summary.negative.component_digests.get("report")
+    ):
+        raise ValueError("negative report digest mismatch")
+    if str(negative.get("plan_digest") or "") != (
+        summary.negative.component_digests.get("plan")
+    ):
+        raise ValueError("negative plan digest mismatch")
+    negative_report = _object(negative.get("report"), "negative report")
+    negative_metrics = _object(
+        negative_report.get("metrics"),
+        "negative metrics",
+    )
+    if (
+        summary.negative.status != negative_report.get("status")
+        or summary.negative.pair_count != negative_metrics.get("pair_count")
+        or summary.negative.adaptive_unsafe_count
+        != negative_metrics.get("adaptive_unsafe_count")
+        or summary.negative.frozen_unsafe_count
+        != negative_metrics.get("frozen_unsafe_count")
+        or summary.negative.safety_incident_count
+        != len(negative_report.get("incidents") or ())
+    ):
+        raise ValueError("negative assurance metrics do not match evidence")
+
+    population = _read_json_file(
+        summary.artifact_paths["population_evidence"]
+    )
+    _assert_run_identity(
+        population,
+        run_id=f"{summary.run_id}:population",
+        system_version=summary.system_version,
+    )
+    if str(population.get("evidence_digest") or "") != (
+        summary.population.component_digests.get("evidence")
+        if summary.population is not None
+        else None
+    ):
+        raise ValueError("population evidence digest mismatch")
+    if canonical_sha256(
+        {
+            key: value
+            for key, value in population.items()
+            if key != "evidence_digest"
+        }
+    ) != population.get("evidence_digest"):
+        raise ValueError("population evidence failed digest recomputation")
+    if str(population.get("registry_population_digest") or "") != (
+        summary.population.component_digests.get("registry")
+        if summary.population is not None
+        else None
+    ):
+        raise ValueError("population registry digest mismatch")
+    if canonical_sha256(population.get("execution_population")) != (
+        population.get("registry_population_digest")
+    ):
+        raise ValueError("population registry failed digest recomputation")
+    if canonical_sha256(population.get("population_report")) != (
+        summary.population.component_digests.get("report")
+        if summary.population is not None
+        else None
+    ):
+        raise ValueError("population report digest mismatch")
+    if summary.population is None:
+        raise ValueError("population assurance component is required")
+    population_report = _object(
+        population.get("population_report"),
+        "population report",
+    )
+    if (
+        summary.population.registry_pair_count
+        != population_report.get("pair_count")
+        or summary.population.observed_pair_count
+        != population_report.get("observed_pair_count")
+        or summary.population.unsupported_case_count
+        != population_report.get("unsupported_case_count")
+        or summary.population.unsupported_strata_counts
+        != population_report.get("unsupported_strata_counts")
+        or summary.population.unsupported_reason_counts
+        != population_report.get("unsupported_reason_counts")
+    ):
+        raise ValueError("population assurance does not match evidence")
+    population_incidents = len(
+        _object(
+            population.get("experiment_report"),
+            "population experiment report",
+        ).get("incidents")
+        or ()
+    )
+    if (
+        _population_safety_incident_count(summary.population)
+        != population_incidents
+    ):
+        raise ValueError("population safety incidents do not match evidence")
+    _validate_population_evidence(
+        population,
+        assurance=summary.population,
+    )
+
+    slack_envelope = _read_json_file(summary.artifact_paths["slack_report"])
+    slack_report = slack_envelope.get("report")
+    _assert_run_identity(
+        slack_report,
+        run_id=f"{summary.run_id}:slack",
+        system_version=summary.system_version,
+    )
+    if str(slack_envelope.get("report_digest") or "") != (
+        summary.slack.component_digests.get("report")
+    ):
+        raise ValueError("Slack report digest mismatch")
+    if canonical_sha256(slack_report) != slack_envelope.get("report_digest"):
+        raise ValueError("Slack report failed digest recomputation")
+    if str(slack_report.get("gold_manifest_digest") or "") != (
+        summary.slack.component_digests.get("gold_manifest")
+    ):
+        raise ValueError("Slack gold digest mismatch")
+    if str(slack_report.get("observation_digest") or "") != (
+        summary.slack.component_digests.get("observations")
+    ):
+        raise ValueError("Slack report and observations are not cross-bound")
+    if (
+        summary.slack.status != slack_report.get("status")
+        or summary.slack.metrics != slack_report.get("metrics")
+    ):
+        raise ValueError("Slack assurance does not match evidence")
+    observations = _read_jsonl_file(
+        summary.artifact_paths["slack_observations"]
+    )
+    if canonical_sha256(observations) != (
+        summary.slack.component_digests.get("observations")
+    ):
+        raise ValueError("Slack observations digest mismatch")
+
+
+def _population_safety_incident_count(
+    population: PopulationAssurance,
+) -> int:
+    for key in (
+        "safety_incident_count",
+        "hard_safety_incident_count",
+    ):
+        value = population.metrics.get(key)
+        if isinstance(value, int):
+            return value
+    return 0
+
+
+def _read_json_file(path_value: str) -> dict[str, Any]:
+    path = Path(path_value)
+    if not path.is_file():
+        raise ValueError(f"required assurance component is missing: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"assurance component must be an object: {path}")
+    return payload
+
+
+def _read_jsonl_file(path_value: str) -> list[dict[str, Any]]:
+    path = Path(path_value)
+    if not path.is_file():
+        raise ValueError(f"required assurance component is missing: {path}")
+    rows = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if not all(isinstance(row, dict) for row in rows):
+        raise ValueError(f"assurance JSONL rows must be objects: {path}")
+    return rows
+
+
+def _assert_run_identity(
+    payload: Any,
+    *,
+    run_id: str,
+    system_version: str,
+) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("assurance component identity payload is missing")
+    if payload.get("run_id") != run_id:
+        raise ValueError("assurance component run identity mismatch")
+    if payload.get("system_version") != system_version:
+        raise ValueError("assurance component system version mismatch")
+
+
+def _assert_positive_evaluation_identity(
+    payload: dict[str, Any],
+    *,
+    run_id: str,
+    system_version: str,
+) -> None:
+    state_scope = _object(
+        _object(payload.get("state"), "positive evaluation state").get(
+            "scope"
+        ),
+        "positive evaluation scope",
+    )
+    if state_scope.get("run_id") != run_id:
+        raise ValueError("positive evaluation run identity mismatch")
+    for field in ("evidence_manifest", "evidence_bundle"):
+        identity = _object(payload.get(field), f"positive {field}")
+        _assert_run_identity(
+            identity,
+            run_id=run_id,
+            system_version=system_version,
+        )
+
+
+def _validate_population_evidence(
+    payload: dict[str, Any],
+    *,
+    assurance: PopulationAssurance,
+) -> None:
+    population = HeldOutExactAliasPopulation.model_validate(
+        payload.get("execution_population")
+    )
+    case_ids = tuple(case.case_id for case in population.cases)
+    if len(case_ids) != 60 or tuple(payload.get("selected_case_ids") or ()) != (
+        case_ids
+    ):
+        raise ValueError("population evidence does not cover the sealed registry")
+
+    assignments = payload.get("assignments")
+    if not isinstance(assignments, list):
+        raise ValueError("population assignments are missing")
+    assignment_ids = [str(row.get("case_id")) for row in assignments]
+    if len(assignment_ids) != len(set(assignment_ids)) or set(
+        assignment_ids
+    ) != set(case_ids):
+        raise ValueError("population assignments do not exactly cover cases")
+    tenant_ids = [
+        str(row.get(key))
+        for row in assignments
+        for key in ("adaptive_tenant_id", "frozen_tenant_id")
+    ]
+    if len(tenant_ids) != len(set(tenant_ids)):
+        raise ValueError("population arm tenants are not unique")
+
+    observations = tuple(
+        HeldOutPairObservation.model_validate(row)
+        for row in payload.get("observations") or ()
+    )
+    raw_pairs = tuple(
+        PairedRecurrenceResult.model_validate(row)
+        for row in payload.get("raw_pairs") or ()
+    )
+    observed_ids = {
+        row.case_id
+        for row in observations
+        if row.execution_status == "observed"
+    }
+    if {pair.case_id for pair in raw_pairs} != observed_ids:
+        raise ValueError("population raw pairs do not cover observed cases")
+
+    experiment = CorrectiveMemoryExperimentReport.model_validate(
+        payload.get("experiment_report")
+    )
+    if experiment.pairs != raw_pairs:
+        raise ValueError("population experiment pairs do not match raw pairs")
+    assessment = {
+        (row.case_id, row.arm): row
+        for row in experiment.assessments
+    }
+    pair_by_case = {pair.case_id: pair for pair in raw_pairs}
+    for observation in observations:
+        if observation.execution_status != "observed":
+            continue
+        pair = pair_by_case[observation.case_id]
+        adaptive = assessment[(observation.case_id, pair.adaptive.arm)]
+        frozen = assessment[(observation.case_id, pair.frozen.arm)]
+        expected = {
+            "adaptive_correct": adaptive.correct,
+            "frozen_correct": frozen.correct,
+            "adaptive_unsafe": bool(adaptive.incident_classes),
+            "frozen_unsafe": bool(frozen.incident_classes),
+            "adaptive_llm_calls": pair.adaptive.llm_call_count,
+            "frozen_llm_calls": pair.frozen.llm_call_count,
+            "adaptive_latency_ms": pair.adaptive.latency_ms,
+            "frozen_latency_ms": pair.frozen.latency_ms,
+        }
+        if any(
+            getattr(observation, key) != value
+            for key, value in expected.items()
+        ):
+            raise ValueError(
+                "population observations do not match raw pair assessments"
+            )
+
+    method = str(
+        _object(
+            payload.get("population_report"),
+            "population report",
+        )
+        .get("adaptive_minus_frozen_correctness", {})
+        .get("method", "")
+    )
+    try:
+        bootstrap_samples = int(method.rsplit("_", 1)[1])
+    except (IndexError, ValueError) as exc:
+        raise ValueError("population bootstrap method is invalid") from exc
+    recomputed = evaluate_heldout_population(
+        population=population,
+        observations=observations,
+        bootstrap_samples=bootstrap_samples,
+    )
+    if recomputed.model_dump(mode="json") != payload.get(
+        "population_report"
+    ):
+        raise ValueError("population report does not match recomputation")
+    if (
+        assurance.registry_pair_count != recomputed.pair_count
+        or assurance.observed_pair_count != recomputed.observed_pair_count
+        or assurance.unsupported_case_count
+        != recomputed.unsupported_case_count
+    ):
+        raise ValueError("population assurance does not match recomputation")
+
+
+def _object(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    return value

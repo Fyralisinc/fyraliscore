@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 import pytest
@@ -19,6 +20,18 @@ from lib.evaluation.company_learning_experiment import (
     SealedArmExpectation,
     SealedRecurrenceCase,
     evaluate_corrective_memory_experiment,
+)
+from lib.evaluation.company_learning_assurance import (
+    CompanyLearningAssuranceSummary,
+    NegativeAssurance,
+    PopulationAssurance,
+    PositiveAssurance,
+    SlackAssurance,
+)
+from lib.evaluation.company_learning_population import (
+    HeldOutPairObservation,
+    build_exact_alias_heldout_population,
+    evaluate_heldout_population,
 )
 from lib.evaluation.proof import (
     CANONICAL_COMPONENT_PARTITION_DIMENSION,
@@ -169,6 +182,182 @@ def test_company_physics_incidents_are_noncompensatory_hard_failures(
     assert scorecard["status"] == "fail"
     assert any(
         "unsafe_governed_alias_replay" in failure
+        for failure in scorecard["hard_failures"]
+    )
+
+
+def test_combined_assurance_is_non_scoring_and_persists_for_rerender(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    baseline = build_vitals_from_report_dir(report_dir)
+    source = _write_company_learning_assurance(report_dir)
+
+    first = write_vitals_artifacts(report_dir)
+    assurance = first.scorecard["company_physics"]["assurance_suite"]
+
+    assert first.scorecard["overall_score"] == baseline["overall_score"]
+    assert first.scorecard["scored_vitals"] == baseline["scored_vitals"]
+    assert first.scorecard["vitals"].keys() == baseline["vitals"].keys()
+    assert assurance["available"] is True
+    assert assurance["status"] == "working"
+    assert assurance["positive"]["adaptive_minus_frozen_correctness"] == 1.0
+    assert assurance["negative"]["safety_incident_count"] == 0
+    assert assurance["slack"]["metrics"]["correct_case_rate"] == 1.0
+    assert assurance["population"]["runtime_support_rate"] == 0.25
+    assert "scorecard" not in assurance["positive"]["component_digests"]
+    persisted = (
+        first.output_dir / "company_learning_assurance_summary.json"
+    )
+    assert persisted.exists()
+    assert "Combined assurance: working" in (
+        first.output_dir / "vitals_summary.md"
+    ).read_text()
+
+    source.unlink()
+    rerender = write_vitals_artifacts(report_dir)
+    assert rerender.scorecard["company_physics"]["assurance_suite"][
+        "summary_digest"
+    ] == assurance["summary_digest"]
+
+
+def test_tampered_combined_assurance_fails_closed_noncompensatorily(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    artifact = _write_company_learning_assurance(report_dir)
+    payload = json.loads(artifact.read_text())
+    payload["negative"]["adaptive_unsafe_count"] = 1
+    payload["summary_digest"] = canonical_sha256(
+        {
+            key: value
+            for key, value in payload.items()
+            if key != "summary_digest"
+        }
+    )
+    _write_json(artifact, payload)
+
+    scorecard = build_vitals_from_report_dir(report_dir)
+    assurance = scorecard["company_physics"]["assurance_suite"]
+
+    assert scorecard["status"] == "fail"
+    assert assurance["available"] is False
+    assert assurance["status"] == "invalid"
+    assert assurance["error"] == "assurance_artifact_invalid"
+    assert any(
+        "assurance artifact failed validation" in failure
+        for failure in scorecard["hard_failures"]
+    )
+
+
+def test_stale_combined_assurance_component_fails_closed(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    artifact = _write_company_learning_assurance(report_dir)
+    summary_payload = json.loads(artifact.read_text())
+    negative_path = Path(
+        summary_payload["artifact_paths"]["negative_evidence"]
+    )
+    negative = json.loads(negative_path.read_text())
+    negative["report"]["metrics"]["adaptive_unsafe_count"] = 1
+    _write_json(negative_path, negative)
+
+    scorecard = build_vitals_from_report_dir(report_dir)
+
+    assert scorecard["status"] == "fail"
+    assurance = scorecard["company_physics"]["assurance_suite"]
+    assert assurance["status"] == "invalid"
+    assert "digest" in assurance["detail"].lower()
+
+
+def test_inconsistent_population_accounting_fails_even_with_new_digest(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    artifact = _write_company_learning_assurance(report_dir)
+    payload = json.loads(artifact.read_text())
+    payload["population"]["unsupported_case_count"] = 44
+    payload["summary_digest"] = canonical_sha256(
+        {
+            key: value
+            for key, value in payload.items()
+            if key != "summary_digest"
+        }
+    )
+    _write_json(artifact, payload)
+
+    scorecard = build_vitals_from_report_dir(report_dir)
+
+    assert scorecard["status"] == "fail"
+    assurance = scorecard["company_physics"]["assurance_suite"]
+    assert assurance["status"] == "invalid"
+    assert "partition" in assurance["detail"].lower()
+
+
+def test_resealed_population_raw_result_mismatch_fails_closed(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    artifact = _write_company_learning_assurance(report_dir)
+    summary = json.loads(artifact.read_text())
+    population_path = Path(
+        summary["artifact_paths"]["population_evidence"]
+    )
+    population = json.loads(population_path.read_text())
+    observed = next(
+        row
+        for row in population["observations"]
+        if row["execution_status"] == "observed"
+    )
+    observed["adaptive_correct"] = False
+    population["evidence_digest"] = canonical_sha256(
+        {
+            key: value
+            for key, value in population.items()
+            if key != "evidence_digest"
+        }
+    )
+    _write_json(population_path, population)
+    new_evidence_digest = population["evidence_digest"]
+    summary["population"]["component_digests"][
+        "evidence"
+    ] = new_evidence_digest
+    summary["component_digests"]["population_evidence"] = (
+        new_evidence_digest
+    )
+    summary["summary_digest"] = canonical_sha256(
+        {
+            key: value
+            for key, value in summary.items()
+            if key != "summary_digest"
+        }
+    )
+    _write_json(artifact, summary)
+
+    scorecard = build_vitals_from_report_dir(report_dir)
+
+    assert scorecard["status"] == "fail"
+    assurance = scorecard["company_physics"]["assurance_suite"]
+    assert assurance["status"] == "invalid"
+    assert "raw pair assessments" in assurance["detail"]
+
+
+def test_failed_combined_assurance_is_a_noncompensatory_hard_failure(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    _write_company_learning_assurance(
+        report_dir,
+        status="failed",
+        blocking_failures=("negative safety incident: sealed-case",),
+    )
+
+    scorecard = build_vitals_from_report_dir(report_dir)
+
+    assert scorecard["status"] == "fail"
+    assert any(
+        "negative safety incident: sealed-case" in failure
         for failure in scorecard["hard_failures"]
     )
 
@@ -986,6 +1175,412 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+def _write_company_learning_assurance(
+    report_dir: Path,
+    *,
+    status: Literal["working", "failed"] = "working",
+    blocking_failures: tuple[str, ...] = (),
+) -> Path:
+    system_version = "unreported-system-version"
+    positive_report = {
+        "run_id": "synthetic-vitals:positive",
+        "system_version": system_version,
+        "status": "observed",
+        "metrics": {
+            "pair_count": 3,
+            "adaptive_correctness_rate": 1.0,
+            "frozen_correctness_rate": 0.0,
+            "adaptive_minus_frozen_correctness": 1.0,
+        },
+        "incidents": [],
+    }
+    positive_report_digest = canonical_sha256(positive_report)
+    positive_path = report_dir / "pytest-positive.json"
+    _write_json(
+        positive_path,
+        {
+            "report": positive_report,
+            "report_digest": positive_report_digest,
+        },
+    )
+    positive_evaluation = {
+        "available": True,
+        "status": "substantiated",
+        "state": {
+            "scope": {"run_id": "synthetic-vitals:positive"},
+        },
+        "evidence_manifest": {
+            "run_id": "synthetic-vitals:positive",
+            "system_version": system_version,
+        },
+        "evidence_bundle": {
+            "run_id": "synthetic-vitals:positive",
+            "system_version": system_version,
+        },
+    }
+    positive_evaluation_path = report_dir / "pytest-positive-evaluation.json"
+    _write_json(positive_evaluation_path, positive_evaluation)
+    positive_bundle = {
+        "bundle_version": "pytest-v1",
+        "run_id": "synthetic-vitals:positive",
+        "system_version": system_version,
+        "evidence": [],
+    }
+    positive_bundle_path = report_dir / "pytest-positive-bundle.json"
+    _write_json(positive_bundle_path, positive_bundle)
+
+    negative_report = {
+        "run_id": "synthetic-vitals:negative",
+        "system_version": system_version,
+        "status": "observed",
+        "metrics": {
+            "pair_count": 4,
+            "adaptive_unsafe_count": 0,
+            "frozen_unsafe_count": 0,
+        },
+        "incidents": [],
+    }
+    negative_payload = {
+        "plan_digest": "b" * 64,
+        "report": negative_report,
+    }
+    negative_payload["evidence_digest"] = canonical_sha256(negative_payload)
+    negative_path = report_dir / "pytest-negative.json"
+    _write_json(negative_path, negative_payload)
+
+    population = build_exact_alias_heldout_population(size=60)
+    population_assignments = []
+    population_cases = []
+    population_pairs = []
+    population_observations = []
+    for case in population.cases:
+        adaptive_tenant_id = uuid4()
+        frozen_tenant_id = uuid4()
+        adaptive_target_id = uuid4()
+        frozen_target_id = uuid4()
+        supported = case.entity_type == "customer"
+        population_assignments.append(
+            {
+                "case_id": case.case_id,
+                "logical_entity_type": case.entity_type,
+                "runtime_entity_type": (
+                    "customer" if supported else None
+                ),
+                "adaptive_tenant_id": str(adaptive_tenant_id),
+                "frozen_tenant_id": str(frozen_tenant_id),
+                "adaptive_target_id": str(adaptive_target_id),
+                "frozen_target_id": str(frozen_target_id),
+                "unsupported_reason": (
+                    None
+                    if supported
+                    else "unsupported non-customer runtime"
+                ),
+            }
+        )
+        if not supported:
+            population_observations.append(
+                HeldOutPairObservation(
+                    case_id=case.case_id,
+                    execution_status="unsupported",
+                    unsupported_reason="unsupported non-customer runtime",
+                )
+            )
+            continue
+        adaptive_ref = CanonicalEntityRef(
+            type="customer",
+            id=str(adaptive_target_id),
+        )
+        frozen_ref = CanonicalEntityRef(
+            type="customer",
+            id=str(frozen_target_id),
+        )
+        population_cases.append(
+            SealedRecurrenceCase(
+                case_id=case.case_id,
+                case_version=case.case_version,
+                kind=RecurrenceCaseKind.EXACT_ALIAS_POSITIVE,
+                alias_surface=case.alias_surface,
+                source_text_digest=canonical_sha256(case.recurrence_text),
+                context_digest=case.digest,
+                adaptive_expectation=SealedArmExpectation(
+                    tenant_id=adaptive_tenant_id,
+                    allowed_consumer_fates=(
+                        ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,
+                    ),
+                    expected_entity_ref=adaptive_ref,
+                    expected_model_count=0,
+                    autonomous_resolution_permitted=True,
+                ),
+                frozen_expectation=SealedArmExpectation(
+                    tenant_id=frozen_tenant_id,
+                    allowed_consumer_fates=(ConsumerTerminalFate.REVIEW,),
+                    expected_entity_ref=frozen_ref,
+                    expected_model_count=0,
+                    autonomous_resolution_permitted=False,
+                ),
+                artifact_refs=(f"pytest://population/{case.case_id}",),
+            )
+        )
+        pair = PairedRecurrenceResult(
+            case_id=case.case_id,
+            adaptive=CorrectiveMemoryArmResult(
+                case_id=case.case_id,
+                arm=CorrectiveMemoryArm.ADAPTIVE,
+                tenant_id=adaptive_tenant_id,
+                consumer_fate=ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,
+                resolved_entity_ref=adaptive_ref,
+                decision_source="governed_exact_alias_replay",
+                llm_call_count=0,
+                latency_ms=10.0,
+                estimated_cost_usd=0.0,
+                source_semantic_admitted=False,
+                lineage=ArmLineageRefs(
+                    training_observation_id=uuid4(),
+                    recurrence_observation_id=uuid4(),
+                    clarification_request_id=uuid4(),
+                    clarification_answer_digest=canonical_sha256(
+                        {"case_id": case.case_id, "arm": "adaptive"}
+                    ),
+                    adjudicated_alias_id=uuid4(),
+                    artifact_refs=("pytest://population/adaptive",),
+                ),
+            ),
+            frozen=CorrectiveMemoryArmResult(
+                case_id=case.case_id,
+                arm=CorrectiveMemoryArm.FROZEN,
+                tenant_id=frozen_tenant_id,
+                consumer_fate=ConsumerTerminalFate.REVIEW,
+                resolved_entity_ref=None,
+                decision_source="llm",
+                llm_call_count=1,
+                latency_ms=20.0,
+                estimated_cost_usd=0.001,
+                source_semantic_admitted=False,
+                lineage=ArmLineageRefs(
+                    training_observation_id=uuid4(),
+                    recurrence_observation_id=uuid4(),
+                    clarification_request_id=uuid4(),
+                    clarification_answer_digest=canonical_sha256(
+                        {"case_id": case.case_id, "arm": "frozen"}
+                    ),
+                    adjudicated_alias_id=uuid4(),
+                    artifact_refs=("pytest://population/frozen",),
+                ),
+            ),
+            artifact_refs=(f"pytest://population/{case.case_id}",),
+        )
+        population_pairs.append(pair)
+        population_observations.append(
+            HeldOutPairObservation(
+                case_id=case.case_id,
+                adaptive_correct=True,
+                frozen_correct=False,
+                adaptive_unsafe=False,
+                frozen_unsafe=False,
+                adaptive_llm_calls=0,
+                frozen_llm_calls=1,
+                adaptive_latency_ms=10.0,
+                frozen_latency_ms=20.0,
+            )
+        )
+    population_spec = CorrectiveMemoryExperimentSpec(
+        experiment_id="pytest-heldout-population",
+        run_id="synthetic-vitals:population",
+        system_version=system_version,
+        created_at="2026-07-16T00:00:00+00:00",
+        scenario_ids=("ENTITY-CORRECTIVE-MEMORY-HELDOUT-POPULATION",),
+        company_foundation_digest=canonical_sha256(population_assignments),
+        provider_behavior_digest=canonical_sha256("pytest-provider"),
+        cases=tuple(population_cases),
+        artifact_refs=("pytest://population/spec",),
+    )
+    population_experiment = evaluate_corrective_memory_experiment(
+        spec=population_spec,
+        pairs=tuple(population_pairs),
+        artifact_refs=("pytest://population/report",),
+    )
+    population_report = evaluate_heldout_population(
+        population=population,
+        observations=tuple(population_observations),
+        bootstrap_samples=200,
+    )
+    population_report_payload = population_report.model_dump(mode="json")
+    execution_population = population.model_dump(mode="json")
+    population_payload = {
+        "run_id": "synthetic-vitals:population",
+        "system_version": system_version,
+        "registry_population_digest": population.digest,
+        "execution_population": execution_population,
+        "selected_case_ids": [
+            case.case_id for case in population.cases
+        ],
+        "assignments": population_assignments,
+        "raw_pairs": [
+            pair.model_dump(mode="json") for pair in population_pairs
+        ],
+        "observations": [
+            observation.model_dump(mode="json")
+            for observation in population_observations
+        ],
+        "population_report": population_report_payload,
+        "experiment_report": population_experiment.model_dump(mode="json"),
+    }
+    population_payload["evidence_digest"] = canonical_sha256(
+        population_payload
+    )
+    population_path = report_dir / "pytest-population.json"
+    _write_json(population_path, population_payload)
+
+    slack_observations = [{"case_id": "pytest-slack"}]
+    slack_observations_path = report_dir / "pytest-slack-observations.jsonl"
+    _write_jsonl(slack_observations_path, slack_observations)
+    slack_metrics = {
+        "case_count": 9,
+        "correct_case_rate": 1.0,
+        "contamination_rate": 0.0,
+    }
+    slack_report = {
+        "run_id": "synthetic-vitals:slack",
+        "system_version": system_version,
+        "status": "observed",
+        "gold_manifest_digest": "c" * 64,
+        "observation_digest": canonical_sha256(slack_observations),
+        "metrics": slack_metrics,
+    }
+    slack_report_path = report_dir / "pytest-slack-report.json"
+    _write_json(
+        slack_report_path,
+        {
+            "report": slack_report,
+            "report_digest": canonical_sha256(slack_report),
+        },
+    )
+    artifact_paths = {
+        "positive_pair": str(positive_path),
+        "positive_company_learning_evaluation": str(
+            positive_evaluation_path
+        ),
+        "positive_company_learning_evidence_bundle": str(
+            positive_bundle_path
+        ),
+        "negative_evidence": str(negative_path),
+        "population_evidence": str(population_path),
+        "slack_observations": str(slack_observations_path),
+        "slack_report": str(slack_report_path),
+    }
+    summary = CompanyLearningAssuranceSummary(
+        run_id="synthetic-vitals",
+        system_version=system_version,
+        created_at="2026-07-16T00:00:00+00:00",
+        status=status,
+        positive=PositiveAssurance(
+            status="observed",
+            pair_count=3,
+            adaptive_correctness_rate=1.0,
+            frozen_correctness_rate=0.0,
+            adaptive_minus_frozen_correctness=1.0,
+            hard_failures=(),
+            artifact_paths={
+                key: value
+                for key, value in artifact_paths.items()
+                if key.startswith("positive_")
+            },
+            component_digests={
+                "report": positive_report_digest,
+                "company_learning_evaluation": canonical_sha256(
+                    positive_evaluation
+                ),
+                "company_learning_evidence_bundle": canonical_sha256(
+                    positive_bundle
+                ),
+            },
+        ),
+        negative=NegativeAssurance(
+            status="observed",
+            pair_count=4,
+            safety_incident_count=0,
+            adaptive_unsafe_count=0,
+            frozen_unsafe_count=0,
+            artifact_paths={
+                "negative_evidence": artifact_paths["negative_evidence"]
+            },
+            component_digests={
+                "evidence": negative_payload["evidence_digest"],
+                "report": canonical_sha256(negative_report),
+                "plan": negative_payload["plan_digest"],
+            },
+        ),
+        slack=SlackAssurance(
+            status="observed",
+            metrics=slack_metrics,
+            artifact_paths={
+                "slack_observations": artifact_paths["slack_observations"],
+                "slack_report": artifact_paths["slack_report"],
+            },
+            component_digests={
+                "report": canonical_sha256(slack_report),
+                "gold_manifest": slack_report["gold_manifest_digest"],
+                "observations": canonical_sha256(slack_observations),
+            },
+        ),
+        population=PopulationAssurance(
+            status="observed_with_gaps",
+            registry_pair_count=60,
+            observed_pair_count=15,
+            unsupported_case_count=45,
+            runtime_support_rate=0.25,
+            metrics={
+                **population_report_payload,
+                "safety_incident_count": 0,
+            },
+            unsupported_strata_counts=population_report_payload[
+                "unsupported_strata_counts"
+            ],
+            unsupported_reason_counts=population_report_payload[
+                "unsupported_reason_counts"
+            ],
+            artifact_paths={
+                "population_evidence": artifact_paths["population_evidence"]
+            },
+            component_digests={
+                "evidence": population_payload["evidence_digest"],
+                "registry": population_payload[
+                    "registry_population_digest"
+                ],
+                "report": canonical_sha256(population_report_payload),
+            },
+        ),
+        proof_gaps=("pytest assurance remains synthetic E4 evidence.",),
+        blocking_failures=blocking_failures,
+        component_digests={
+            "positive_report": positive_report_digest,
+            "positive_company_learning_evaluation": canonical_sha256(
+                positive_evaluation
+            ),
+            "positive_company_learning_evidence_bundle": canonical_sha256(
+                positive_bundle
+            ),
+            "negative_evidence": negative_payload["evidence_digest"],
+            "negative_report": canonical_sha256(negative_report),
+            "negative_plan": negative_payload["plan_digest"],
+            "slack_report": canonical_sha256(slack_report),
+            "slack_gold_manifest": slack_report["gold_manifest_digest"],
+            "slack_observations": canonical_sha256(slack_observations),
+            "population_evidence": population_payload["evidence_digest"],
+            "population_registry": population_payload[
+                "registry_population_digest"
+            ],
+            "population_report": canonical_sha256(
+                population_report_payload
+            ),
+        },
+        artifact_paths=artifact_paths,
+    )
+    artifact_path = report_dir / "company_learning_assurance_summary.json"
+    _write_json(artifact_path, summary.artifact_payload())
+    return artifact_path
 
 
 def _write_corrective_memory_experiment(

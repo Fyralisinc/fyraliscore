@@ -24,6 +24,10 @@ from lib.evaluation.company_learning import (
     company_learning_assurance_status,
     evaluate_company_learning_state,
 )
+from lib.evaluation.company_learning_assurance import (
+    validate_company_learning_assurance_artifact,
+    validate_company_learning_assurance_components,
+)
 from lib.evaluation.company_learning_experiment import (
     CorrectiveMemoryExperimentReport,
     CorrectiveMemoryExperimentSpec,
@@ -181,6 +185,7 @@ def _build_vitals_scorecard(
     company_physics = _company_physics_section(
         company_learning_evaluation,
         experiment=_json_obj(bundle.get("company_learning_experiment")),
+        assurance=_json_obj(bundle.get("company_learning_assurance")),
     )
 
     vitals: dict[str, Any] = {
@@ -381,6 +386,13 @@ def write_vitals_artifacts(
         _write_json(
             out / "company_learning_scenario_evidence.json",
             experiment_payload,
+        )
+    assurance = _json_obj(bundle.get("company_learning_assurance"))
+    assurance_payload = _json_obj(assurance.get("canonical_payload"))
+    if assurance.get("valid") is True and assurance_payload:
+        _write_json(
+            out / "company_learning_assurance_summary.json",
+            assurance_payload,
         )
     _write_json(out / "db_trace_summary.json", db_summary)
     _write_json(out / "graph_coherence.json", graph_coherence)
@@ -895,9 +907,11 @@ def _company_physics_section(
     evaluation: dict[str, Any] | None,
     *,
     experiment: dict[str, Any] | None = None,
+    assurance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     evaluation = _json_obj(evaluation)
     experiment_summary = _corrective_memory_experiment_summary(experiment)
+    assurance_summary = _company_learning_assurance_summary(assurance)
     experiment_gaps = {
         str(item)
         for item in _json_list(experiment_summary.get("proof_gaps"))
@@ -906,6 +920,16 @@ def _company_physics_section(
     experiment_failures = [
         str(item)
         for item in _json_list(experiment_summary.get("hard_failures"))
+        if str(item).strip()
+    ]
+    assurance_gaps = {
+        str(item)
+        for item in _json_list(assurance_summary.get("proof_gaps"))
+        if str(item).strip()
+    }
+    assurance_failures = [
+        str(item)
+        for item in _json_list(assurance_summary.get("hard_failures"))
         if str(item).strip()
     ]
     experiments = (
@@ -926,16 +950,21 @@ def _company_physics_section(
                 "context, grounding and source-semantic state are unknown."
             }
         gaps.update(experiment_gaps)
+        gaps.update(assurance_gaps)
         return {
             "status": str(evaluation.get("status") or "not_observed"),
             "noncompensatory": True,
             "learning_loop": {},
             "components": {},
             "incident_counts": {},
-            "hard_failures": experiment_failures,
+            "hard_failures": [
+                *experiment_failures,
+                *assurance_failures,
+            ],
             "proof_gaps": sorted(gaps),
             "error": evaluation.get("error"),
             "experiments": experiments,
+            "assurance_suite": assurance_summary,
         }
     incidents = _json_obj(state.get("incident_counts"))
     status = str(evaluation.get("status") or "insufficient")
@@ -973,7 +1002,9 @@ def _company_physics_section(
             if str(gap).strip()
         )
     hard_failures.extend(experiment_failures)
+    hard_failures.extend(assurance_failures)
     proof_gaps.update(experiment_gaps)
+    proof_gaps.update(assurance_gaps)
     return {
         "status": status,
         "observed_slice_health": str(
@@ -998,6 +1029,59 @@ def _company_physics_section(
         "artifact_refs": _json_list(state.get("artifact_refs")),
         "invariant_proof": proof_summary,
         "experiments": experiments,
+        "assurance_suite": assurance_summary,
+    }
+
+
+def _company_learning_assurance_summary(
+    assurance: dict[str, Any] | None,
+) -> dict[str, Any]:
+    assurance = _json_obj(assurance)
+    if not assurance:
+        return {}
+    if assurance.get("valid") is not True:
+        return {
+            "available": False,
+            "status": "invalid",
+            "source_path": assurance.get("source_path"),
+            "error": assurance.get("error") or "assurance_artifact_invalid",
+            "detail": assurance.get("detail"),
+            "hard_failures": [
+                "company-learning assurance artifact failed validation"
+            ],
+            "proof_gaps": [
+                "Combined positive, negative and Slack assurance evidence "
+                "could not be trusted."
+            ],
+        }
+    summary = _json_obj(assurance.get("summary"))
+    status = str(summary.get("status") or "failed")
+    blocking_failures = [
+        str(item)
+        for item in _json_list(summary.get("blocking_failures"))
+        if str(item).strip()
+    ]
+    hard_failures = [
+        f"company-learning assurance: {failure}"
+        for failure in blocking_failures
+    ]
+    if status == "failed" and not hard_failures:
+        hard_failures.append("company-learning assurance suite failed")
+    return {
+        "available": True,
+        "status": status,
+        "source_path": assurance.get("source_path"),
+        "summary_digest": assurance.get("summary_digest"),
+        "run_id": summary.get("run_id"),
+        "system_version": summary.get("system_version"),
+        "positive": _json_obj(summary.get("positive")),
+        "negative": _json_obj(summary.get("negative")),
+        "slack": _json_obj(summary.get("slack")),
+        "population": _json_obj(summary.get("population")),
+        "component_digests": _json_obj(summary.get("component_digests")),
+        "artifact_paths": _json_obj(summary.get("artifact_paths")),
+        "hard_failures": hard_failures,
+        "proof_gaps": _json_list(summary.get("proof_gaps")),
     }
 
 
@@ -1147,6 +1231,35 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
                 ),
             ]
         )
+    assurance = _json_obj(company_physics.get("assurance_suite"))
+    if assurance:
+        positive = _json_obj(assurance.get("positive"))
+        negative = _json_obj(assurance.get("negative"))
+        slack = _json_obj(assurance.get("slack"))
+        population = _json_obj(assurance.get("population"))
+        slack_metrics = _json_obj(slack.get("metrics"))
+        lines.extend(
+            [
+                f"- Combined assurance: {assurance.get('status', 'invalid')}",
+                (
+                    "- Positive adaptive lift: "
+                    f"{_fmt_score(positive.get('adaptive_minus_frozen_correctness'))}"
+                ),
+                (
+                    "- Negative-control safety incidents: "
+                    f"{negative.get('safety_incident_count', 'unknown')}"
+                ),
+                (
+                    "- Slack reconstruction correctness: "
+                    f"{_fmt_score(slack_metrics.get('correct_case_rate'))}"
+                ),
+                (
+                    "- Held-out runtime coverage: "
+                    f"{population.get('observed_pair_count', 'unknown')}/"
+                    f"{population.get('registry_pair_count', 'unknown')}"
+                ),
+            ]
+        )
     lines.append("")
 
     lines.extend(
@@ -1191,7 +1304,73 @@ def _load_artifact_bundle(report_dir: Path) -> dict[str, Any]:
             bundle=bundle,
         )
     )
+    bundle["company_learning_assurance"] = (
+        _company_learning_assurance_for_report(
+            report_dir,
+            bundle=bundle,
+        )
+    )
     return bundle
+
+
+def _company_learning_assurance_for_report(
+    report_dir: Path,
+    *,
+    bundle: dict[str, Any],
+) -> dict[str, Any]:
+    source_path = next(
+        (
+            path
+            for path in (
+                report_dir / "company_learning_assurance_summary.json",
+                report_dir
+                / "vitals"
+                / "company_learning_assurance_summary.json",
+            )
+            if path.exists()
+        ),
+        None,
+    )
+    if source_path is None:
+        return {}
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("assurance artifact root must be a JSON object")
+        summary = validate_company_learning_assurance_artifact(payload)
+        validate_company_learning_assurance_components(summary)
+        expected_run_id = _company_learning_run_id(
+            bundle,
+            report_path=report_dir,
+        )
+        if expected_run_id not in {
+            summary.run_id,
+            f"{summary.run_id}:positive",
+        }:
+            raise ValueError(
+                "company-learning assurance run identity does not match report"
+            )
+        if summary.system_version != _company_learning_system_version(bundle):
+            raise ValueError(
+                "company-learning assurance system version does not match report"
+            )
+        canonical_payload = summary.artifact_payload()
+        return {
+            "available": True,
+            "valid": True,
+            "source_path": str(source_path),
+            "summary": summary.model_dump(mode="json"),
+            "summary_digest": summary.digest,
+            "canonical_payload": canonical_payload,
+        }
+    except Exception as exc:  # noqa: BLE001 - untrusted supporting artifact
+        return {
+            "available": True,
+            "valid": False,
+            "source_path": str(source_path),
+            "error": "assurance_artifact_invalid",
+            "detail": f"{type(exc).__name__}: {str(exc)[:500]}",
+        }
 
 
 def _company_learning_experiment_for_report(

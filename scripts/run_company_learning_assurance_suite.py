@@ -10,15 +10,21 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import asyncpg
-from pydantic import BaseModel, ConfigDict, Field
-
 from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.company_learning_assurance import (
+    CompanyLearningAssuranceSummary,
+    NegativeAssurance,
+    PopulationAssurance,
+    PositiveAssurance,
+    SlackAssurance,
+    validate_company_learning_assurance_components,
+)
 from lib.evaluation.slack_reconstruction_gold import (
     evaluate_slack_reconstruction,
     load_slack_reconstruction_gold,
@@ -33,6 +39,12 @@ from scripts.run_company_learning_negative_controls_db import (
 from scripts.run_company_learning_negative_controls_db import (
     run_negative_control_experiment_db,
 )
+from scripts.run_company_learning_population_harness import (
+    ARTIFACT_NAME as POPULATION_ARTIFACT_NAME,
+)
+from scripts.run_company_learning_population_harness import (
+    run_population_experiment,
+)
 from scripts.run_company_learning_vitals_harness import (
     _install_json_codec,
     _working_version_failures,
@@ -45,62 +57,6 @@ SLACK_OBSERVATIONS_NAME = "slack_reconstruction_observations.jsonl"
 SLACK_REPORT_NAME = "slack_reconstruction_existing_surface_report.json"
 
 
-class _SummaryModel(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        str_strip_whitespace=True,
-    )
-
-
-class PositiveAssurance(_SummaryModel):
-    status: str
-    pair_count: int = Field(ge=0)
-    adaptive_correctness_rate: float | None
-    frozen_correctness_rate: float | None
-    adaptive_minus_frozen_correctness: float | None
-    hard_failures: tuple[str, ...]
-    artifact_paths: dict[str, str]
-    component_digests: dict[str, str]
-
-
-class NegativeAssurance(_SummaryModel):
-    status: str
-    pair_count: int = Field(ge=0)
-    safety_incident_count: int = Field(ge=0)
-    adaptive_unsafe_count: int = Field(ge=0)
-    frozen_unsafe_count: int = Field(ge=0)
-    artifact_paths: dict[str, str]
-    component_digests: dict[str, str]
-
-
-class SlackAssurance(_SummaryModel):
-    status: str
-    metrics: dict[str, Any]
-    diagnostic_only: Literal[True] = True
-    artifact_paths: dict[str, str]
-    component_digests: dict[str, str]
-
-
-class CompanyLearningAssuranceSummary(_SummaryModel):
-    schema_version: str = "company-learning-assurance-summary-v1"
-    run_id: str = Field(min_length=1)
-    system_version: str = Field(min_length=1)
-    created_at: str = Field(min_length=1)
-    status: Literal["working", "failed"]
-    positive: PositiveAssurance
-    negative: NegativeAssurance
-    slack: SlackAssurance
-    proof_gaps: tuple[str, ...]
-    blocking_failures: tuple[str, ...]
-    component_digests: dict[str, str]
-    artifact_paths: dict[str, str]
-
-    @property
-    def digest(self) -> str:
-        return canonical_sha256(self.model_dump(mode="json"))
-
-
 async def run_company_learning_assurance_suite(
     *,
     database_url: str,
@@ -110,11 +66,12 @@ async def run_company_learning_assurance_suite(
     llm_call_cost_usd: float = 0.001,
     slack_gold_path: Path = DEFAULT_GOLD,
 ) -> CompanyLearningAssuranceSummary:
-    """Run existing positive, negative, and Slack assurance surfaces."""
+    """Run positive, negative, held-out population, and Slack assurance."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     positive_dir = output_dir / "positive"
     negative_dir = output_dir / "negative"
+    population_dir = output_dir / "population"
     slack_dir = output_dir / "slack"
 
     positive_result = await run_joined_company_learning_vitals(
@@ -159,9 +116,17 @@ async def run_company_learning_assurance_suite(
             system_version=system_version,
             llm_call_cost_usd=llm_call_cost_usd,
         )
+        population_evidence = await run_population_experiment(
+            pool=negative_pool,
+            output_dir=population_dir,
+            run_id=f"{run_id}:population",
+            system_version=system_version,
+            llm_call_cost_usd=llm_call_cost_usd,
+        )
     finally:
         await negative_pool.close()
     negative_path = negative_dir / NEGATIVE_ARTIFACT_NAME
+    population_path = population_dir / POPULATION_ARTIFACT_NAME
 
     slack_cases = load_slack_reconstruction_gold(slack_gold_path)
     slack_observations = await observe_existing_slack_reconstruction(
@@ -198,7 +163,6 @@ async def run_company_learning_assurance_suite(
 
     artifact_paths = {
         "positive_pair": str(positive_pair_path.resolve()),
-        "positive_vitals_scorecard": str(positive_scorecard_path.resolve()),
         "positive_company_learning_evaluation": str(
             positive_evaluation_path.resolve()
         ),
@@ -206,6 +170,7 @@ async def run_company_learning_assurance_suite(
             positive_bundle_path.resolve()
         ),
         "negative_evidence": str(negative_path.resolve()),
+        "population_evidence": str(population_path.resolve()),
         "slack_observations": str(slack_observations_path.resolve()),
         "slack_report": str(slack_report_path.resolve()),
     }
@@ -215,6 +180,7 @@ async def run_company_learning_assurance_suite(
         if not Path(path).is_file()
     )
     negative_incidents = negative_evidence.report.incidents
+    population_incidents = population_evidence.experiment_report.incidents
     blocking_failures = tuple(
         dict.fromkeys(
             (
@@ -226,20 +192,35 @@ async def run_company_learning_assurance_suite(
                     f"{incident.incident_class.value}"
                     for incident in negative_incidents
                 ),
+                *(
+                    "population safety incident: "
+                    f"{incident.case_id}/{incident.arm.value}/"
+                    f"{incident.incident_class.value}"
+                    for incident in population_incidents
+                ),
             )
         )
     )
     positive_digests = {
         "report": str(positive_pair["report_digest"]),
-        "scorecard": canonical_sha256(positive_scorecard),
         "company_learning_evaluation": canonical_sha256(
             positive_evaluation
+        ),
+        "company_learning_evidence_bundle": canonical_sha256(
+            _read_json(positive_bundle_path)
         ),
     }
     negative_digests = {
         "evidence": negative_evidence.digest,
         "report": negative_evidence.report.digest,
         "plan": negative_evidence.plan_digest,
+    }
+    population_digests = {
+        "evidence": population_evidence.digest,
+        "registry": population_evidence.registry_population_digest,
+        "report": canonical_sha256(
+            population_evidence.population_report.model_dump(mode="json")
+        ),
     }
     slack_digests = {
         "report": slack_report.digest,
@@ -260,6 +241,17 @@ async def run_company_learning_assurance_suite(
                     f"negative: {gap}"
                     for gap in negative_evidence.report.proof_gaps
                 ),
+                *(
+                    f"population: {gap}"
+                    for gap in population_evidence.experiment_report.proof_gaps
+                ),
+                (
+                    "population: runtime coverage observed "
+                    f"{population_evidence.population_report.observed_pair_count}/"
+                    f"{population_evidence.population_report.pair_count} "
+                    "sealed cases; unsupported entity strata remain explicitly "
+                    "accounted for."
+                ),
                 *(f"slack: {gap}" for gap in slack_report.proof_gaps),
                 (
                     "suite: Slack reconstruction remains diagnostic and "
@@ -268,12 +260,9 @@ async def run_company_learning_assurance_suite(
                 ),
                 (
                     "suite: direct correction fencing is separately "
-                    "Postgres-proven, but this command does not execute "
-                    "relation/projection repair or async convergence."
-                ),
-                (
-                    "suite: the sealed 60-case held-out population has not "
-                    "yet been runtime-executed."
+                    "Postgres-proven and relation/projection repair is "
+                    "unit-proven, but this command does not execute the "
+                    "integrated correction convergence burn."
                 ),
             )
         )
@@ -327,6 +316,54 @@ async def run_company_learning_assurance_suite(
             },
             component_digests=slack_digests,
         ),
+        population=PopulationAssurance(
+            status=(
+                "observed_with_gaps"
+                if population_evidence.population_report.unsupported_case_count
+                else "observed"
+            ),
+            registry_pair_count=(
+                population_evidence.population_report.pair_count
+            ),
+            observed_pair_count=(
+                population_evidence.population_report.observed_pair_count
+            ),
+            unsupported_case_count=(
+                population_evidence.population_report.unsupported_case_count
+            ),
+            runtime_support_rate=(
+                population_evidence.population_report.observed_pair_count
+                / max(1, population_evidence.population_report.pair_count)
+            ),
+            metrics={
+                "safety_incident_count": len(population_incidents),
+                **{
+                    key: value
+                    for key, value in (
+                        population_evidence.population_report.model_dump(
+                            mode="json"
+                        )
+                    ).items()
+                    if key
+                    not in {
+                        "strata_counts",
+                        "observed_strata_counts",
+                        "unsupported_strata_counts",
+                        "unsupported_reason_counts",
+                    }
+                },
+            },
+            unsupported_strata_counts=(
+                population_evidence.population_report.unsupported_strata_counts
+            ),
+            unsupported_reason_counts=(
+                population_evidence.population_report.unsupported_reason_counts
+            ),
+            artifact_paths={
+                "population_evidence": artifact_paths["population_evidence"]
+            },
+            component_digests=population_digests,
+        ),
         proof_gaps=proof_gaps,
         blocking_failures=blocking_failures,
         component_digests={
@@ -342,10 +379,20 @@ async def run_company_learning_assurance_suite(
                 f"slack_{key}": value
                 for key, value in slack_digests.items()
             },
+            **{
+                f"population_{key}": value
+                for key, value in population_digests.items()
+            },
         },
         artifact_paths=artifact_paths,
     )
-    _write_summary(summary, output_dir / SUMMARY_ARTIFACT_NAME)
+    validate_company_learning_assurance_components(summary)
+    summary_path = output_dir / SUMMARY_ARTIFACT_NAME
+    _write_summary(summary, summary_path)
+    _write_summary(summary, positive_dir / SUMMARY_ARTIFACT_NAME)
+    from scripts.company_vitals import write_vitals_artifacts
+
+    write_vitals_artifacts(positive_dir)
     return summary
 
 
@@ -369,13 +416,7 @@ def _write_summary(
     summary: CompanyLearningAssuranceSummary,
     path: Path,
 ) -> None:
-    _write_json(
-        path,
-        {
-            **summary.model_dump(mode="json"),
-            "summary_digest": summary.digest,
-        },
-    )
+    _write_json(path, summary.artifact_payload())
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -395,11 +436,22 @@ async def _run(args: argparse.Namespace) -> int:
     print(f"summary={summary_path}")
     print(
         "status={status} positive_lift={lift} negative_incidents={incidents} "
-        "negative_status={negative} slack_status={slack}".format(
+        "negative_status={negative} population={observed}/{registry} "
+        "slack_status={slack}".format(
             status=summary.status,
             lift=summary.positive.adaptive_minus_frozen_correctness,
             incidents=summary.negative.safety_incident_count,
             negative=summary.negative.status,
+            observed=(
+                summary.population.observed_pair_count
+                if summary.population is not None
+                else 0
+            ),
+            registry=(
+                summary.population.registry_pair_count
+                if summary.population is not None
+                else 0
+            ),
             slack=summary.slack.status,
         )
     )
@@ -413,7 +465,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run positive corrective-memory Vitals, negative safety controls, "
-            "and diagnostic Slack reconstruction in one assurance command."
+            "the sealed held-out population, and diagnostic Slack "
+            "reconstruction in one assurance command."
         )
     )
     parser.add_argument("--database-url", default=None)
