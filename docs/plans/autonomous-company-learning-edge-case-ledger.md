@@ -27,15 +27,20 @@ Everything else receives an explicit safe behavior and return condition here.
 
 ### EDGE-001 — Source-native Slack revision history
 
-- **Status:** `bounded`
-- **Current behavior:** Context selection adapts Observation rows and synthetic
-  revision references.
-- **Missing behavior:** Canonical create/edit/delete/reaction/tombstone history
-  with exact source-native revisions.
-- **Safe boundary:** Do not claim edit/delete replay or retrospective source
-  fidelity beyond the Observation adapter.
-- **Return condition:** Implement before edit/delete/reaction correction
-  closure is included in the pilot operating envelope.
+- **Status:** `resolved` for the sealed Slack operating envelope
+- **Current behavior:** Slack ingestion and context selection preserve
+  source-derived thread/reply and edit succession, immutable deletion
+  tombstones and reaction-evidence revisions. The sealed edit,
+  deletion/tombstone and reaction families all reconstruct with their expected
+  revision fates.
+- **Evidence:** The nine-family Slack gold is `9/9`; edit/delete correctness,
+  topology recall, selected-context precision and sufficient-set recall are
+  `1.0`, with contamination `0.0`.
+- **Remaining boundary:** This does not prove arbitrary historical Slack export
+  fidelity, every Slack subtype, source retention beyond the captured event
+  envelope, large-history replay, or unseen edit/delete/reaction forms.
+- **Return condition:** Reopen for production Slack export/backfill,
+  long-duration retention and previously unseen revision families.
 
 ### EDGE-002 — Durable pre-model preparation identity
 
@@ -73,14 +78,19 @@ Everything else receives an explicit safe behavior and return condition here.
 
 ### EDGE-005 — Long-range and cross-channel Slack recurrence
 
-- **Status:** `open`
-- **Current behavior:** Context is channel/thread/cutoff bounded.
-- **Missing behavior:** Governed recurrence across long gaps, channels, and
-  authorized source boundaries.
-- **Safe boundary:** Missing context lowers confidence or produces unresolved
-  fate; the resolver must not bridge boundaries speculatively.
-- **Return condition:** Add during source-breadth expansion after the thin
-  learning loop.
+- **Status:** `resolved` for the sealed Slack families
+- **Current behavior:** Governed phrase-anchor recurrence can recover bounded
+  long-range, cross-thread and cross-channel Slack dependencies while
+  preserving the cutoff and rejecting high-similarity distractors.
+- **Evidence:** The sealed long-range recurrence, cross-thread dependency and
+  cross-channel dependency families are all correct; long-range and
+  cross-channel recall are `1.0`, selected contamination is `0.0`, and the
+  high-similarity case abstains safely.
+- **Remaining boundary:** Open-ended channel discovery, arbitrary recurrence
+  distance, very large histories, cross-workspace Slack, non-Slack source
+  boundaries and source-equivalent email/Jira behavior remain unproven.
+- **Return condition:** Reopen during multi-source and production-scale
+  recurrence evaluation.
 
 ### EDGE-006 — Multilingual and code-switched entity mentions
 
@@ -140,16 +150,24 @@ Everything else receives an explicit safe behavior and return condition here.
 
 ### EDGE-011 — Repair of an already admitted wrong identity
 
-- **Status:** `open`
-- **Current behavior:** The correction loop begins from a review, unresolved,
-  or abstained grounding fate. It does not yet retract a previously admitted
-  wrong referent or repair Models that consumed it.
-- **Safe boundary:** Do not claim correction closure for false-positive
-  auto-admissions. Keep automatic admission thresholds conservative and route
-  disputed accepted identities to manual investigation.
-- **Return condition:** Add typed retraction/supersession across grounding,
-  source semantics, Model belief addresses, projections, and retrieval before
-  widening automatic identity admission.
+- **Status:** `resolved` for the seeded company-learning cascade
+- **Current behavior:** An authoritative grounding successor can supersede an
+  already admitted wrong identity. The runtime archives the wrong Model,
+  immediately hides direct and second-hop dependents, queues
+  correction-specific re-evaluation with immediate-parent lineage, retires
+  contaminated relation frames and relation-edge projections, removes stale
+  projection state and consumes the queued refresh through the existing
+  projector runtime. Dependents explicitly archive or unfence rather than
+  receiving a confidence-only nudge.
+- **Evidence:** The serialized real-Postgres correction proof establishes
+  source immutability, tenant isolation, bounded cycle-safe recursive fanout,
+  fresh uncontaminated projection rebuild and replay idempotency.
+- **Remaining boundary:** The proof is a seeded second-hop cascade, not an
+  oracle-complete production dependency census. Very large/deep graphs,
+  sustained refresh load, kill/restart/reorder, hidden dependents, distinct
+  revocation/deletion and policy/reward/intent repair remain unproven.
+- **Return condition:** Reopen for production-scale repair, oracle dependency
+  coverage and non-identity correction classes.
 
 ### EDGE-012 — Governed exact-alias autonomous replay
 

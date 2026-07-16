@@ -3,20 +3,22 @@
 Date: 2026-07-16
 
 Status: architecture-aligned evaluation framework with executable component
-evaluators for architecture governance, entity grounding, governed intent,
-Concern, consequential agency and governed control policy. These currently
-produce E3 component evidence only; no full-system, customer-value or
+evaluators and a focused autonomous company-learning assurance checkpoint.
+Current evidence includes live E3 component proof and bounded paired E4
+recurrence evidence. No full-system, open-world, E5 customer-value, scale or
 production-readiness proof is claimed.
 
 Companion implementation plan:
 [Revised Company Physics–Brain–Intent System Implementation](../plans/revised-reality-belief-intent-system-implementation.md)
 
 Architecture compatibility target:
-`1925a9dd358e30d5ea79403ec6a2087a7403a46cf60d5116a3239ae52667304a`
-(SHA-256 of the companion implementation plan reviewed for this revision).
+`a3e75c96080101cc547b5ea144c51a57988b6ff5f054aa32b57d1d234daecf4a`
+(current SHA-256 of the companion implementation plan on 2026-07-16).
 Every evaluation manifest and rendered report must record the implementation-
 plan digest it claims to cover; a digest mismatch is a visible compatibility
-gap, never silently treated as current proof.
+gap, never silently treated as current proof. This digest remains a
+compatibility target for the reviewed design, not evidence that the live
+runtime implements every object, flow or proof obligation in that plan.
 
 Current-runtime references:
 
@@ -24,6 +26,19 @@ Current-runtime references:
 - [Codebase Architecture](../reference/CODEBASE-ARCHITECTURE.md)
 - [Company Intelligence Harness](./company_intelligence_harness.md)
 - [Company Understanding Vitals Harness](./company_understanding_vitals_harness.md)
+
+## Active Evaluation Profile
+
+The active product profile is **autonomous company learning and company
+modeling**: reconstruct company signals, ground company entities, build and
+revise company memory, reuse governed corrections, and autonomously close the
+learning and feedback loop around that model.
+
+Autonomous task planning, scheduling, leasing, execution and external-effect
+control are excluded from the active profile. Existing task/agency contracts
+and evaluators remain future compatibility surfaces with zero active-product
+exposure; they must not be used to imply that task autonomy is enabled or
+proven.
 
 ## Purpose
 
@@ -349,21 +364,48 @@ The framework now has a shared proof spine rather than only a normative metric
 catalog. The architecture registry defines INV-01–INV-42, each executable
 evaluator emits denominator records, continuous metric observations, localized
 incidents, evidence tier, uncertainty and artifact references, and the proof
-compiler refuses to treat absent exposure as success. The current component
-evaluators cover:
+compiler refuses to treat absent exposure as success.
+
+The focused autonomous company-learning checkpoint currently establishes:
+
+- one sealed 60-pair exact-alias recurrence population, executed without
+  selective reruns, with `60/60` observed pairs and 15 pairs each for customer,
+  project, team and system entities;
+- all nine sealed Slack reconstruction families supported and correct, with
+  selected-context precision `1.0`, contamination `0.0`, topology and
+  sufficient-set recall `1.0`, and explicit insufficient-evidence behavior;
+- four matched negative controls with zero detected safety incidents;
+- a separately executed real-Postgres seeded correction proof in which the
+  wrong admitted Model is superseded, direct and second-hop dependents are
+  immediately fenced and then terminalized, affected relations are retired,
+  contaminated projection state is removed, and the existing projector runtime
+  consumes the queued refresh into a fresh uncontaminated projection; and
+- a digest-sealed combined assurance summary that Company Vitals accepts only
+  after reopening every included artifact, checking run/component identity,
+  recomputing component and outer digests, recomputing raw population and safety
+  facts, and applying noncompensatory incident handling.
+
+The current combined command includes positive adaptive/frozen evidence, the
+four negative controls, the 60-pair population and the nine-family Slack gold.
+It does **not** yet invoke or embed the seeded correction integration proof.
+Correction convergence is therefore current live evidence from a separate
+serialized test, while inclusion of a correction artifact in the combined
+command and trusted Vitals envelope remains a compatibility target.
+
+Within the broader evaluation catalog, current component evaluators cover:
 
 | Evaluator | Mechanically measured now | Explicit proof boundary |
 | --- | --- | --- |
 | Writer ownership and cutover | Canonical head/version integrity, legal lifecycle, epoch monotonicity, exact active partition claims, typed transition-proof coverage, explicit zero-writer fencing, split/merge conservation, command reconstructability, command/event/outbox closure, immutable guards and localized incidents for registered WriterScopeEpochs | E3 Postgres/component proof only. It does not inventory unregistered legacy or direct writers, prove every semantic applier is cut over, supply an external constitutional root for the registry's tenant root, or establish live process crash/restart, advancing-tail replay, rebalance and consumer-drain behavior |
-| Conversational context selection | Durable head/snapshot integrity, typed command reconstruction, independent selection replay equivalence, candidate/probe fate coverage, required probe-surface coverage, exact SelectionDependency coverage, unsafe-selection and premature-sufficiency incidents, immutable guards and command/event/outbox closure | E3 protocol/state proof only. The current deterministic probe is not a semantic oracle; source-native edit/delete/reaction reconstruction, gold sufficient sets, contamination, coreference/deixis, long-range and cross-boundary retrieval, live revocation races, all-consumer cutover and repair convergence remain unproven |
-| Entity grounding | Opportunity/request/set/assessment/admission/work fates, trace integrity, pre-model versus persisted context equality, context-sufficiency admission fencing and focused replay quality | Broad conversational-world accuracy, live-source breadth, extraction calibration and dependent repair remain unproven |
+| Conversational context selection | Durable head/snapshot integrity, typed command reconstruction, independent selection replay equivalence, candidate/probe fate coverage, required probe-surface coverage, exact SelectionDependency coverage, unsafe-selection and premature-sufficiency incidents, immutable guards and command/event/outbox closure; plus nine sealed Slack families covering thread/reply, edit, deletion/tombstone, reaction, long-range, contamination abstention, cross-thread, cross-channel and pronoun/coreference behavior | Exact sealed-family evidence only. Unseen discourse forms, open-ended channel history, multilingual/code-switched conversation, source-equivalent email/Jira comparison, authority/revocation races, large histories and production source drift remain unproven |
+| Entity grounding and exact-alias learning | Opportunity/request/set/assessment/admission/work fates, trace integrity, pre-model versus persisted context equality, context-sufficiency admission fencing, four-entity exact-alias recurrence at `60/60`, and four matched safety controls with zero incidents | The sealed population proves exact governed aliases, not unseen spellings, abbreviations, novel/open-world entities, broad homonyms, entity lifecycle transitions, multi-source equivalence, production load or general extraction calibration |
 | Governed intent | Typed command/proposal paths, authority bases, exact acceptance, versions/events/outboxes and legacy gaps | Not every legacy producer is cut over; human/institutional legitimacy remains outside component proof |
 | Attention governance and Concern | Binding validity, plural-contributor reducer, CAS, identity correction and command closure | Live CriteriaProjector/source coverage and organization-level attention value remain unproven |
 | Consequential agency | Proposal/InterventionSpec atomicity, prediction preregistration, exact authorization, independent Outcome, settlement/residual, conservative attribution and episode continuity | Population calibration, correction closure and causal-world value remain unproven |
 | Workflow, work, failure and external effects | Workflow/task/work/lease/failure/effect legal histories, work/failure lineage and processing envelope, exact cross-owner terminalization result for AgencyStateApplier Task and ProposalAppender proposal fates with aggregate and per-writer closure rates, heartbeat exposure, pure-computation and effect-capable missed-heartbeat takeover safety with exact no-attempt, reserved-version or terminal-receipt ledger evidence, atomically coordinated identity-preserving Work/Failure redrive authorization and closure, repair-child success and reverse-terminal owner-result closure, spec/authorization/capability/task/work/fence continuity, dispatch-before-observation, known-no-effect retry safety, separately governed compensation integrity and closure through unknown/reconciling to success, failure or terminal partial state, exact rejected/expired proposal fates and rejection of non-reversible nesting, receipt-backed completion, immutable guards and command/event/outbox closure | Real provider calls, crash/restart/reorder around handshakes, semantic-owner types beyond the two covered classes, positively authorized nested compensation and live cutover remain unproven |
-| Correction invalidation and repair | Exact source-result binding, DependencyEdge integrity, episode/obligation reducer and lineage integrity, atomic child Work binding, exact dependent-writer result, receipt-backed child success closure, exact reverse child-exhaustion closure, authorized identity-preserving successor/redrive lineage, successor-commit transactional rollback, known/oracle denominators, WatermarkVector convergence, immutable guards and command/event/outbox closure | First-generation no-op, real dependent Work repair and exhausted-to-successor repair are covered; separately governed redrive-authorization objects, process kill/restart and reorder at other handshakes, partition rebalance, distinct revocation/deletion, historical as-known proof, production dependency breadth and policy/intent closure remain unproven |
-| Governed control policy | Bootstrap/manifest coverage, experiment preregistration, pre-exposure assignment, independent measurement reconstruction, eligibility, principal-separated promotion, artifact/policy lifecycle, family CAS/fallback, immutable history and command closure | Live policy consumers, confidence-interval recomputation, cross-tenant empirical isolation, correction propagation and long-horizon causal lift remain unproven |
-| Cross-component evidence compiler | Compatible evidence identity, source-manifest digests, explicit denominator partitioning, fail-closed aggregation and one continuous matrix row per invariant | Declared partitions are not raw membership-overlap proofs; system-wide populations, intervals, history and freeze evidence remain incomplete |
+| Correction invalidation and repair | Exact source-result binding, DependencyEdge integrity, episode/obligation reducer and lineage integrity, atomic child Work binding, exact dependent-writer result, receipt-backed child success closure, exact reverse child-exhaustion closure, authorized identity-preserving successor/redrive lineage, successor-commit transactional rollback, known/oracle denominators, WatermarkVector convergence, immutable guards and command/event/outbox closure; plus a seeded company-learning cascade across the wrong Model, bounded cycle-safe recursive dependents, relations and projection refresh consumption | General repair-ledger mechanics and one seeded second-hop company-learning cascade are covered separately. Hidden production dependencies, very large/deep cascades, sustained refresh load, process kill/restart and reorder, partition rebalance, distinct revocation/deletion, historical as-known proof, policy/reward/intent closure and correction inclusion in the combined assurance command remain unproven |
+| Governed control policy | Bootstrap/manifest coverage, experiment preregistration, pre-exposure assignment, independent measurement reconstruction, eligibility, principal-separated promotion, artifact/policy lifecycle, family CAS/fallback, immutable history and command closure | Live policy consumers, confidence-interval recomputation, cross-tenant empirical isolation, policy/reward correction propagation and long-horizon causal lift remain unproven |
+| Cross-component evidence compiler and trusted Vitals | Compatible evidence identity, source-manifest digests, explicit denominator partitioning, fail-closed aggregation and one continuous matrix row per invariant; the focused combined assurance is reopened, digest-recomputed, raw-fact-recomputed and cross-bound before Company Vitals accepts it | Current trust covers the included positive, negative, population and Slack artifacts only. Correction is still separate, declared partitions are not raw membership-overlap proofs, and system-wide populations, intervals, history, exact database-manifest binding and freeze evidence remain incomplete |
 
 Every rate in these evaluators is population-aware. A zero denominator is
 rendered `unknown/not exposed`; it is never converted to 100%. Component tests
