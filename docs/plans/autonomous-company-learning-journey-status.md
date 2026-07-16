@@ -383,6 +383,10 @@ Task autonomy is excluded from all percentages.
    - Homonym/local-association case.
    - Conflicting source hint.
    - Assert zero unsafe global alias creation and zero wrong Models.
+   - Current result: all four cases now execute on real Postgres, but the
+     adaptive arm leaks source-context-only grounding into source entity
+     annotations for the contextual phrase and homonym cases. The typed report
+     is correctly `contradicted`.
 
 2. **Expand beyond exact surface replay**
    - Unseen spelling and abbreviation variants.
@@ -396,6 +400,11 @@ Task autonomy is excluded from all percentages.
    - Long-range temporal context.
    - Sufficient-context and contamination gold.
    - Boundaryless episode reconstruction rather than fixed windows.
+   - Current result: the first four-case existing-surface gold run is `0/4`
+     correct. Required context recall is `1.0`, but selected-context precision
+     is `0.8`, contamination is `0.2`, topology recall is `0.0`, edit/revision
+     correctness is `0.5`, budget adherence is `0.5` and insufficient-context
+     abstention is `0.0`.
 
 4. **Complete correction propagation**
    - Identify every accepted Model, relation, edge and projection that depended
@@ -403,11 +412,18 @@ Task autonomy is excluded from all percentages.
    - Fence unsafe reads immediately.
    - Recompute or supersede all affected derived state.
    - Measure convergence time and residual correction debt.
+   - Current result: the read-only audit and real-Postgres seeded-debt test can
+     discover stale readable Models and projections without mutating source or
+     another tenant. Production fencing, repair and convergence are not yet
+     implemented.
 
 5. **Scale the held-out population**
    - Generate enough independent matched pairs for uncertainty intervals.
    - Stratify by source, ambiguity, entity type, context length and consequence.
    - Preserve every pair and prevent selective rerun reporting.
+   - Current result: a deterministic 60-case exact-alias Slack population,
+     complete registry checks and Wilson/paired-bootstrap intervals exist.
+     Runtime execution over all 60 cases is still pending.
 
 ### P1 — Required for a strong multi-source product
 
@@ -525,13 +541,18 @@ not claimed by this working version.
 
 ## Next Execution Sequence
 
-1. Commit the runnable joined Company Vitals working-version checkpoint.
-2. Add contextual/conflict/homonym/unrelated negative cases in parallel lanes.
-3. Add larger held-out exact and variant-alias populations.
-4. Implement dependent-state correction propagation.
-5. Add Slack reconstruction gold and context ablations.
-6. Repeat the causal suite across structured sources.
-7. Reassess progress and reprioritize from the combined report.
+1. Fix source-context-only entity annotation leakage and rerun the four
+   negative controls until the typed report has no safety incidents.
+2. Thread Slack topology/revision metadata and make sufficiency
+   candidate-specific so the existing four-case gold improves from `0/4`.
+3. Add the immediate correction fence by reusing Model archive, edge inerting,
+   relation lifecycle and projection refresh machinery.
+4. Execute the deterministic 60-case held-out population after the reusable
+   recurrence executor is generalized.
+5. Integrate only observed artifacts into the joined Company Vitals report.
+6. Add the five remaining Slack gold families and variant-alias populations.
+7. Repeat the causal suite across structured sources.
+8. Reassess progress and reprioritize from the combined report.
 
 ## Progress Ledger
 
@@ -572,3 +593,22 @@ not claimed by this working version.
   into open-world or customer proof.
 - Kept generalized SAGE adaptation, broader recurrence populations, confidence
   intervals and production hardening explicitly outside the proven slice.
+
+### 2026-07-16 — Parallel breadth measurements
+
+- Added and executed four real-Postgres negative controls with eight fresh,
+  isolated tenants.
+- Confirmed safe identity outcomes for the unrelated alias and source-hint
+  conflict cases, while detecting two adaptive
+  `contextual_alias_globalized` incidents for a local description and homonym.
+- Added a deterministic 60-case exact-alias population with complete-registry
+  enforcement and continuous confidence intervals; runtime execution remains
+  pending.
+- Added four sealed Slack reconstruction cases and measured the current
+  handler/context-selection surface at `0/4` correct despite full required
+  context recall.
+- Added a read-only correction-propagation audit and a real-Postgres seeded
+  stale-dependency test that proves unsafe readable debt can be detected without
+  cross-tenant or source mutation.
+- Preserved every failure as an explicit observed result rather than converting
+  it into a passing benchmark.
