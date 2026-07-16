@@ -192,7 +192,8 @@ async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
               ra.assessment_version,
               gad.assessment_id AS admission_assessment_id,
               gad.decision_version AS admission_version,
-              gad.disposition AS admission_disposition
+              gad.disposition AS admission_disposition,
+              gad.reason_codes AS admission_reason_codes
             FROM grounding_traces gt
             JOIN interpretation_context_snapshots ics
               ON ics.id = gt.context_snapshot_id
@@ -260,6 +261,7 @@ async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
     assert "thread/reply/edit lineage" in selected_by_id[root_revision][
         "inclusion_reasons"
     ]
+    assert snapshot["sufficiency_verdict"]["disposition"] == "needs_expansion"
 
     mention = _json(row["mention"])
     anchor = mention["primary_anchor"]
@@ -301,6 +303,9 @@ async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
     assert decisions == [("the project", "review")]
     assert row["current_fate"] == "review"
     assert row["admission_disposition"] == "review"
+    assert row["admission_reason_codes"] == [
+        "context_not_operationally_sufficient:needs_expansion"
+    ]
     assert downstream == []
     assert review is not None
     review_candidates = _json(review["candidates"])
@@ -321,3 +326,113 @@ async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
     assert clarification is not None
     assert clarification["object_id"] == review["id"]
     assert clarification["source_observation_id"] == reply_id
+
+
+async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
+    resolver_db: asyncpg.Pool,
+    tenant_id,
+) -> None:
+    """Prove the thin live path from a Slack payload to one canonical Model."""
+
+    alias_repo = EntityAliasRepo(resolver_db)
+    await alias_repo.insert_alias(
+        phrase="Nimbus Bank",
+        resolved_entity_ref={"type": "customer", "id": "customer-nimbus"},
+        source="manual",
+        confidence=0.99,
+        tenant_id=tenant_id,
+        extra_metadata={
+            "identity_basis_class": "independently_adjudicated",
+            "identity_basis_ref": "test-adjudication:customer:nimbus",
+        },
+    )
+    payload = _slack_message(
+        text="NBI is blocked",
+        ts=f"{(datetime.now(timezone.utc) - timedelta(seconds=5)).timestamp():.6f}",
+    )
+    draft = await handle_slack_message(payload, {})
+    result = await ingest_from_draft(
+        channel="slack:message",
+        draft=draft,
+        pool=resolver_db,
+        tenant_id=tenant_id,
+        actor_repo=None,
+        alias_repo=alias_repo,
+        embedder=_DeterministicEmbedder(),
+    )
+    assert result.observation.content["_unresolved_phrases"] == ["NBI"]
+
+    provider = _ScriptedResolver(
+        {
+            "canonical_ref": {
+                "type": "customer",
+                "id": "customer-nimbus",
+            },
+            "confidence": 0.97,
+            "reasoning": "NBI selects the independently adjudicated tenant entity",
+        }
+    )
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=alias_repo,
+    )
+    assert await worker.process_observation(
+        result.observation.id,
+        tenant_id,
+    ) == [("NBI", "resolved")]
+
+    async with resolver_db.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT gt.current_fate,
+                   ssi.id AS interpretation_id,
+                   ssi.source_assertion,
+                   ssi.grounding_continuity,
+                   ssad.disposition,
+                   ssad.admitted_model_id,
+                   m.born_from_event_id,
+                   m.proposition,
+                   m.scope_entities
+            FROM grounding_traces gt
+            JOIN source_semantic_interpretations ssi
+              ON ssi.tenant_id=gt.tenant_id
+             AND ssi.grounding_trace_id=gt.id
+            JOIN source_semantic_admission_decisions ssad
+              ON ssad.tenant_id=ssi.tenant_id
+             AND ssad.interpretation_id=ssi.id
+            JOIN models m
+              ON m.tenant_id=ssad.tenant_id
+             AND m.id=ssad.admitted_model_id
+            WHERE gt.tenant_id=$1 AND gt.source_observation_id=$2
+              AND gt.phrase='NBI'
+            """,
+            tenant_id,
+            result.observation.id,
+        )
+        model_count = await conn.fetchval(
+            "SELECT count(*) FROM models WHERE tenant_id=$1",
+            tenant_id,
+        )
+
+    assert row is not None
+    assert row["current_fate"] == "resolved_for_consumer"
+    assert row["disposition"] == "belief_applied"
+    assert row["admitted_model_id"] is not None
+    assert row["born_from_event_id"] == result.observation.id
+    assert model_count == 1
+    assertion = _json(row["source_assertion"])
+    coordinate = assertion["coordinates"][0]
+    assert draft.content_text[
+        coordinate["span_start"] : coordinate["span_end"]
+    ] == assertion["expressed_content"]
+    proposition = _json(row["proposition"])
+    continuity = _json(row["grounding_continuity"])
+    assert proposition["kind"] == "belief"
+    assert proposition["source_semantic_interpretation_id"] == str(
+        row["interpretation_id"]
+    )
+    assert proposition["grounding_continuity"] == continuity
+    assert _json(row["scope_entities"]) == [
+        {"type": "customer", "id": "customer-nimbus", "version": 1}
+    ]

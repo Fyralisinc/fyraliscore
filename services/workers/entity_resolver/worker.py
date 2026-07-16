@@ -60,6 +60,7 @@ from services.domain.entity_grounding import (
     GroundingEpisode,
     build_grounding_episode,
 )
+from services.domain.source_semantics.processor import GroundedBeliefProcessor
 from services.workers.entity_resolver.context import (
     ResolverContext,
     build_context,
@@ -168,6 +169,7 @@ class EntityResolverWorker:
         llm: LLMProvider,
         alias_repo: EntityAliasRepo,
         grounding_repo: EntityGroundingRepo | None = None,
+        grounded_belief_processor: GroundedBeliefProcessor | None = None,
         budget: ResolverLLMBudget | None = None,
         high_confidence: float = HIGH_CONFIDENCE,
         review_min: float = REVIEW_MIN,
@@ -180,6 +182,9 @@ class EntityResolverWorker:
         # is no longer permitted to call this registry writer.
         del alias_repo
         self._grounding_repo = grounding_repo or EntityGroundingRepo(pool)
+        self._grounded_belief_processor = (
+            grounded_belief_processor or GroundedBeliefProcessor()
+        )
         self._budget = budget or ResolverLLMBudget()
         self._high = high_confidence
         self._review = review_min
@@ -347,7 +352,42 @@ class EntityResolverWorker:
         # assessment over the exact authorized candidate set.
         resolution = await self._invoke_llm(ctx)
         episode = self._build_grounding_episode(ctx=ctx, resolution=resolution)
-        await self._grounding_repo.append_episode(
+        if conn is not None:
+            async with conn.transaction():
+                return await self._commit_episode_and_route(
+                    conn,
+                    ctx=ctx,
+                    resolution=resolution,
+                    episode=episode,
+                    phrase=phrase,
+                    observation_id=observation_id,
+                    tenant_id=tenant_id,
+                )
+        async with self._pool.acquire() as owned, owned.transaction():
+            return await self._commit_episode_and_route(
+                owned,
+                ctx=ctx,
+                resolution=resolution,
+                episode=episode,
+                phrase=phrase,
+                observation_id=observation_id,
+                tenant_id=tenant_id,
+            )
+
+    async def _commit_episode_and_route(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        ctx: ResolverContext,
+        resolution: EntityResolution,
+        episode: GroundingEpisode,
+        phrase: str,
+        observation_id: UUID,
+        tenant_id: UUID,
+    ) -> ResolverDecision:
+        """Atomically finish grounding and the first admitted-belief lane."""
+
+        trace_id = await self._grounding_repo.append_episode(
             episode=episode,
             tenant_id=tenant_id,
             source_observation_id=observation_id,
@@ -357,6 +397,12 @@ class EntityResolverWorker:
 
         if episode.current_fate == "resolved_for_consumer":
             selected_ref = episode.admitted_canonical_ref or {}
+            await self._process_grounded_belief(
+                conn,
+                tenant_id=tenant_id,
+                observation_id=observation_id,
+                grounding_trace_id=trace_id,
+            )
             if selected_ref.get("type") in _TRIGGER_REENQUEUE_TYPES:
                 await self._maybe_enqueue_trigger(
                     observation_id=observation_id,
@@ -405,6 +451,43 @@ class EntityResolverWorker:
             reason_codes=list(episode.admission.reason_codes),
         )
         return "unresolved"
+
+    async def _process_grounded_belief(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        observation_id: UUID,
+        grounding_trace_id: UUID,
+    ) -> None:
+        """Run the thin semantic lane when ingestion supplied an embedding."""
+
+        row = await conn.fetchrow(
+            """
+            SELECT embedding, embedding_pending
+            FROM observations
+            WHERE tenant_id=$1 AND id=$2
+            FOR KEY SHARE
+            """,
+            tenant_id,
+            observation_id,
+        )
+        if row is None:
+            raise ValueError("grounded belief source observation is missing")
+        if row["embedding_pending"] or row["embedding"] is None:
+            self._log.warning(
+                "entity_resolver.grounded_belief_deferred_no_embedding",
+                tenant_id=str(tenant_id),
+                observation_id=str(observation_id),
+                grounding_trace_id=str(grounding_trace_id),
+            )
+            return
+        await self._grounded_belief_processor.process_trace(
+            conn,
+            tenant_id=tenant_id,
+            grounding_trace_id=grounding_trace_id,
+            embedding=[float(value) for value in row["embedding"]],
+        )
 
     def _build_grounding_episode(
         self,

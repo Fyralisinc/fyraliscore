@@ -210,6 +210,78 @@ coherent diff.
 - **Return condition:** Implement before claiming edit/delete/reaction replay,
   late reinterpretation or source-native conversational fidelity as complete.
 
+### DISC-008 — The first grounded-belief lane is an honest narrow cut, not production cutover
+
+- **Date:** 2026-07-16
+- **Milestone:** Grounding-to-belief vertical
+- **Status:** `deferred`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** source-semantic extraction, consumer-specific
+  grounding admission, EpistemicApplier and operational wiring
+- **Observation:** A grounding decision for
+  `observation-grounding-sidecar` cannot authorize a canonical belief Model.
+  The thin vertical therefore derives a separate live
+  `epistemic-applier` GroundingAdmissionDecision from the same immutable
+  ResolutionAssessment and binds GroundingContinuity to that new decision.
+  Reusing the resolver's original decision would erase the consumer/purpose/
+  operation boundary even when the selected referent is identical.
+- **Implemented core:** A deterministic extractor admits only a small explicit
+  copular asserted/report grammar in which the durable primary mention's exact
+  source span/surface is the sentence prefix immediately followed by the
+  supported predicate. The only admission entrypoint reloads and re-extracts
+  that source truth inside its transaction, persists SourceAssertion,
+  SemanticFrameCandidate and SpeechActCandidate, and applies exactly one
+  grounded belief through the public Models repository. Questions,
+  unsupported expression classes and non-admitted grounding terminate with an
+  explicit no-admission fate.
+- **Deferred hardening:** The extractor does not yet cover general Slack
+  discourse, quotation, recommendations, promises, corrections, quantities or
+  temporal operators. The epistemic admission currently uses a fixed service
+  policy rather than the full command/result/event/outbox and writer-cutover
+  protocol. The live resolver now invokes this narrow lane in the same database
+  transaction after a single-referent grounding fate and before its downstream
+  trigger, but the legacy Models repository remains the transitional physical
+  writer.
+- **Return condition:** Add each deferred capability only after the direct
+  Slack -> mention -> grounding -> deterministic source semantics -> one
+  admitted belief path is green, then require matched semantic fixtures and
+  exact named-writer/fate proof before production cutover.
+
+### DISC-009 — Deferred work after the first live Slack-to-belief proof
+
+- **Date:** 2026-07-16
+- **Milestone:** First live end-to-end vertical
+- **Status:** `deferred`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** embedding recovery, source semantics, tenant
+  constraints, idempotency and source identity
+- **Working core boundary:** A Slack message with an inline embedding, one
+  source-anchored entity mention, independently supported single-referent
+  grounding and the supported asserted/report grammar reaches one canonical
+  belief Model without a manual semantic handoff. The grounding trace,
+  interpretation, consumer-specific admission and Model commit atomically.
+- **Recorded edge cases:**
+  - An admitted grounding whose Observation embedding is null or still pending
+    logs a deferred fate but has no durable source-semantic retry item yet.
+  - Sequential replay is idempotent, while simultaneous processors for the same
+    grounding trace still rely on uniqueness failure rather than an explicit
+    per-trace claim/lock protocol.
+  - Source author identity currently uses a stable source-channel fallback; it
+    does not yet bind the source-native Slack user revision to SourceAssertion.
+  - Mention, interpretation and admission links are tenant-filtered in the
+    writer, but not every relationship has a tenant-composite foreign key.
+  - The deterministic grammar intentionally abstains on compound clauses,
+    quotations, incidental mentions, temporal qualifiers and all non-report
+    speech acts beyond the tested question fate.
+- **Reason for deferral:** None of these cases prevents the bounded, honest
+  primary path from running end to end. Solving them before that proof would
+  expand the slice into recovery infrastructure and general language
+  understanding.
+- **Return condition:** Revisit embedding retry first after the green vertical,
+  then add concurrency claims and source-native revision/author identity before
+  production cutover. Add grammar classes only with matched positive and
+  negative semantic fixtures.
+
 ## Reconciliation Procedure
 
 At a reconciliation milestone:
