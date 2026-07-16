@@ -270,6 +270,7 @@ def _select_diverse_observation_floor(
 def _batch_semantic_memory_state(
     *,
     selected_model_count: int,
+    selected_model_quality_mass: float,
     trigger_candidate_count: int,
     configured_floor: int,
     total_cap: int,
@@ -283,8 +284,9 @@ def _batch_semantic_memory_state(
     """
     trigger_count = max(0, int(trigger_candidate_count))
     model_count = max(0, int(selected_model_count))
+    quality_mass = max(0.0, min(float(model_count), selected_model_quality_mass))
     target_models = max(4, min(12, (trigger_count + 1) // 2))
-    sufficiency = min(1.0, model_count / target_models)
+    sufficiency = min(1.0, quality_mass / target_models)
     if sufficiency <= 0.0:
         maturity = "cold_start"
     elif sufficiency < 0.75:
@@ -305,9 +307,69 @@ def _batch_semantic_memory_state(
         "maturity": maturity,
         "semantic_memory_sufficiency": round(sufficiency, 4),
         "semantic_memory_target_models": target_models,
+        "selected_model_quality_mass": round(quality_mass, 4),
         "configured_raw_floor": configured,
         "effective_raw_floor": max(0, min(configured, effective)),
     }
+
+
+def _selected_model_quality_mass(
+    selected_models: list[ModelRow],
+    model_scores: dict[UUID, float],
+    *,
+    score_ceiling: float | None = None,
+) -> float:
+    """Return an effective count that discounts weak or unreliable Models."""
+    positive_scores = [
+        max(0.0, float(model_scores.get(model.id, 0.0)))
+        for model in selected_models
+        if float(model_scores.get(model.id, 0.0)) > 0.0
+    ]
+    if not positive_scores:
+        return 0.0
+    strongest = max(positive_scores)
+    normalization_ceiling = max(
+        strongest,
+        float(score_ceiling or 0.0),
+    )
+    quality_mass = 0.0
+    for model in selected_models:
+        score_ratio = max(
+            0.0,
+            min(
+                1.0,
+                float(model_scores.get(model.id, 0.0)) / normalization_ceiling,
+            ),
+        )
+        # Candidates far below the strongest retrieval result are reservoir
+        # tail, not evidence that semantic memory covers this batch.
+        if score_ratio < 0.2:
+            continue
+        reliability = (
+            max(0.0, min(1.0, float(model.confidence)))
+            * max(0.0, min(1.0, float(model.activation)))
+        ) ** 0.5
+        quality_mass += score_ratio * reliability
+    return quality_mass
+
+
+def _retrieval_score_ceiling(retrieval_result: RetrievalResult) -> float | None:
+    notes = retrieval_result.notes if isinstance(retrieval_result.notes, dict) else {}
+    config = notes.get("config_summary")
+    weights = notes.get("weights")
+    if not isinstance(config, dict) or not isinstance(weights, dict):
+        return None
+    pathway_weight = sum(
+        max(0.0, float(weights.get(pathway, 0.0)))
+        for pathway in ("A", "M", "B", "L", "C", "D", "G")
+    )
+    if str(config.get("scoring_mode", "")).lower() == "rrf":
+        rrf_k = max(1, int(config.get("rrf_k", 60)))
+        # Activation and provenance each retain a 0.5 RRF prior.
+        return (pathway_weight + 1.0) / (rrf_k + 1.0)
+    if str(config.get("scoring_mode", "")).lower() == "linear":
+        return max(1.0, pathway_weight)
+    return None
 
 
 def _raw_evidence_reopening(
@@ -334,6 +396,7 @@ def _select_observations(
     budget_observations: int,
     explicit_budget: bool,
     selected_model_count: int = 0,
+    selected_model_quality_mass: float | None = None,
 ) -> tuple[list[ObservationRow], dict[str, Any]]:
     observations.sort(key=lambda o: (o.occurred_at, o.id), reverse=True)
     if not cfg.model_first_context_enabled:
@@ -372,7 +435,12 @@ def _select_observations(
     if mode not in {"always", "model_gap", "none"}:
         mode = "model_gap"
     min_models = max(0, int(getattr(cfg, "observation_context_min_models", 1)))
-    model_context_sufficient = selected_model_count >= max(1, min_models)
+    quality_mass = (
+        float(selected_model_count)
+        if selected_model_quality_mass is None
+        else max(0.0, float(selected_model_quality_mass))
+    )
+    model_context_sufficient = quality_mass >= max(1, min_models)
     suppressed_reason: str | None = None
     if mode == "none":
         suppressed_reason = "mode_none"
@@ -381,11 +449,13 @@ def _select_observations(
     if suppressed_reason is not None:
         floor_selected: list[ObservationRow] = []
         memory_state: dict[str, Any] | None = None
-        if suppressed_reason == "model_context_sufficient" and _is_explicit_t1_event_batch(
-            retrieval_result
+        if (
+            suppressed_reason == "model_context_sufficient"
+            and _is_explicit_t1_event_batch(retrieval_result)
         ):
             memory_state = _batch_semantic_memory_state(
                 selected_model_count=selected_model_count,
+                selected_model_quality_mass=quality_mass,
                 trigger_candidate_count=len(trigger_observations),
                 configured_floor=int(
                     getattr(cfg, "t1_event_batch_raw_observation_floor", 0)
@@ -992,6 +1062,11 @@ async def assemble_context(
         budget_observations=budgets["observations"],
         explicit_budget=budgets["explicit_observation_budget"],
         selected_model_count=len(model_selection["models"]),
+        selected_model_quality_mass=_selected_model_quality_mass(
+            model_selection["models"],
+            retrieval_result.model_scores,
+            score_ceiling=_retrieval_score_ceiling(retrieval_result),
+        ),
     )
     topology_context = None
     notes = _build_context_notes(

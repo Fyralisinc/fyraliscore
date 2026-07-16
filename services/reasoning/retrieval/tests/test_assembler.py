@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,7 +15,9 @@ from lib.shared.types import ObservationRow
 from services.reasoning.retrieval.assembler import (
     AccessContext,
     ContextBundle,
+    _retrieval_score_ceiling,
     _select_observations,
+    _selected_model_quality_mass,
     assemble_context,
 )
 from services.reasoning.retrieval.config import RetrievalConfig
@@ -234,6 +237,7 @@ def test_select_observations_event_batch_continuously_matures_from_raw_to_models
         "maturity": "developing",
         "semantic_memory_sufficiency": 0.5,
         "semantic_memory_target_models": 12,
+        "selected_model_quality_mass": 6.0,
         "configured_raw_floor": 20,
         "effective_raw_floor": 11,
     }
@@ -245,6 +249,106 @@ def test_select_observations_event_batch_continuously_matures_from_raw_to_models
     assert mature_notes["raw_evidence_reopening"][
         "semantic_memory_sufficiency"
     ] == 1.0
+
+
+def test_select_observations_weak_model_tail_cannot_false_mature_batch():
+    tenant = uuid.uuid4()
+    rows = [_obs_row(tenant, i) for i in range(25)]
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant,
+        observation_id=rows[0].id,
+        observation_ids=[row.id for row in rows],
+    )
+    result = RetrievalResult(trigger=trigger, observations=list(rows))
+    cfg = RetrievalConfig(
+        observation_context_mode="model_gap",
+        t1_event_batch_raw_observation_floor=20,
+    )
+
+    weak_tail, weak_notes = _select_observations(
+        result,
+        list(result.observations),
+        cfg=cfg,
+        budget_observations=20,
+        explicit_budget=False,
+        selected_model_count=24,
+        selected_model_quality_mass=0.8,
+    )
+    strong_core, strong_notes = _select_observations(
+        result,
+        list(result.observations),
+        cfg=cfg,
+        budget_observations=20,
+        explicit_budget=False,
+        selected_model_count=10,
+        selected_model_quality_mass=9.5,
+    )
+
+    assert len(weak_tail) == 20
+    assert weak_notes["model_context_sufficient"] is False
+    assert weak_notes["raw_evidence_reopening"]["reason_codes"] == [
+        "semantic_memory_gap"
+    ]
+    assert len(strong_core) < len(weak_tail)
+    strong_reopening = strong_notes["raw_evidence_reopening"]
+    assert strong_reopening["maturity"] == "mature"
+    assert strong_reopening["selected_model_quality_mass"] == 9.5
+    assert strong_reopening["semantic_memory_sufficiency"] == 0.7917
+    assert strong_reopening["reason_codes"] == [
+        "fresh_trigger_verification_sample"
+    ]
+
+
+def test_selected_model_quality_mass_discounts_weak_ranked_tail():
+    strong = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            confidence=0.9,
+            activation=0.9,
+        )
+        for _ in range(6)
+    ]
+    weak = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            confidence=0.9,
+            activation=0.9,
+        )
+        for _ in range(18)
+    ]
+    scores = {
+        **{model.id: 1.0 - (index * 0.04) for index, model in enumerate(strong)},
+        **{model.id: 0.05 for model in weak},
+    }
+
+    quality_mass = _selected_model_quality_mass([*strong, *weak], scores)
+
+    assert 4.0 < quality_mass < 6.0
+    assert quality_mass < len(strong)
+    assert quality_mass < len(strong) + len(weak)
+
+    all_weak_scores = {model.id: 0.05 for model in [*strong, *weak]}
+    all_weak_mass = _selected_model_quality_mass(
+        [*strong, *weak],
+        all_weak_scores,
+        score_ceiling=1.0,
+    )
+    assert all_weak_mass < 2.0
+
+
+def test_retrieval_score_ceiling_uses_existing_rrf_policy_metadata():
+    tenant = uuid.uuid4()
+    result = RetrievalResult(
+        trigger=TriggerContext(kind="T1", tenant_id=tenant),
+        notes={
+            "weights": {"A": 0.5, "B": 0.3, "C": 0.2},
+            "config_summary": {"scoring_mode": "rrf", "rrf_k": 60},
+        },
+    )
+
+    assert _retrieval_score_ceiling(result) == pytest.approx(2.0 / 61.0)
 
 
 def test_select_observations_non_event_batch_still_suppresses_with_models():
