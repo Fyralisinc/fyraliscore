@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import asyncpg
 import pytest
 
 from lib.llm.provider import LLMConfig, LLMProvider
+from lib.evaluation.entity_grounding import (
+    GroundingEvaluationScope,
+    evaluate_entity_grounding_state,
+)
 from lib.shared.ids import uuid7
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.worker import (
@@ -81,10 +85,12 @@ async def _seed_observation(
     occurred_at: datetime | None = None,
     unresolved_location: str = "metadata",
     entities_mentioned: list[dict] | None = None,
+    content_extra: dict[str, object] | None = None,
 ) -> UUID:
     obs_id = uuid7()
     occurred_at = occurred_at or datetime.now(timezone.utc)
     content: dict[str, object] = {"text": content_text}
+    content.update(content_extra or {})
     if unresolved_location == "metadata":
         content["metadata"] = {"_unresolved_phrases": unresolved_phrases}
     elif unresolved_location == "top_level":
@@ -179,13 +185,92 @@ async def _count_state_change_obs(
         ) or 0
 
 
+async def _seed_candidate_alias(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    *,
+    alias: str,
+    entity_type: str,
+    entity_id: str,
+    source: str = "manual",
+    independently_governed: bool = True,
+) -> None:
+    await EntityAliasRepo(pool).insert_alias(
+        phrase=alias,
+        resolved_entity_ref={"type": entity_type, "id": entity_id},
+        source=source,
+        confidence=0.99,
+        tenant_id=tenant_id,
+        extra_metadata=(
+            {
+                "identity_basis_class": "independently_adjudicated",
+                "identity_basis_ref": f"test-adjudication:{entity_type}:{entity_id}",
+            }
+            if independently_governed
+            else None
+        ),
+    )
+
+
+async def _fetch_grounding_traces(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT * FROM grounding_traces
+            WHERE tenant_id = $1
+            ORDER BY created_at, id
+            """,
+            tenant_id,
+        )
+
+
+async def _fetch_grounding_work_items(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT * FROM entity_grounding_work_items
+            WHERE tenant_id = $1
+            ORDER BY created_at, id
+            """,
+            tenant_id,
+        )
+
+
+async def _fetch_mention_detections(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT * FROM entity_mention_detections
+            WHERE tenant_id = $1
+            ORDER BY recorded_at, id
+            """,
+            tenant_id,
+        )
+
+
 # =====================================================================
 # Resolved-path tests
 # =====================================================================
 
-async def test_phrase_in_payment_context_resolves_to_commitment(
+async def test_context_dependent_phrase_routes_to_review_without_stable_boundary(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Payments Service V2",
+        entity_type="commitment",
+        entity_id="payments_service_v2",
+    )
     obs_id = await _seed_observation(
         resolver_db,
         tenant_id,
@@ -205,25 +290,36 @@ async def test_phrase_in_payment_context_resolves_to_commitment(
         alias_repo=EntityAliasRepo(resolver_db),
     )
     decisions = await worker.process_observation(obs_id, tenant_id)
-    assert decisions == [("the billing thing", "resolved")]
+    assert decisions == [("the billing thing", "review")]
 
-    # Alias row exists.
+    # Resolver choice is a sidecar admission, not identity-registry evidence.
     ref = await EntityAliasRepo(resolver_db).fast_path_resolve(
         "the billing thing", tenant_id
     )
-    assert ref == {"type": "commitment", "id": "payments_service_v2"}
+    assert ref is None
 
-    # Observation has the entity appended.
+    # The source observation is immutable.
     ents = await _fetch_obs_entities(resolver_db, obs_id)
-    assert {"type": "commitment", "id": "payments_service_v2"} in ents
+    assert ents == []
 
-    # state_change observation emitted.
-    assert await _count_state_change_obs(resolver_db, tenant_id) == 1
+    assert await _count_state_change_obs(resolver_db, tenant_id) == 0
+    traces = await _fetch_grounding_traces(resolver_db, tenant_id)
+    assert len(traces) == 1
+    assert traces[0]["current_fate"] == "review"
+    assert traces[0]["identity_registry_mutated"] is False
+    assert traces[0]["source_observation_mutated"] is False
 
 
 async def test_top_level_unresolved_phrases_from_ingestion_are_processed(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Nimbus Bank",
+        entity_type="customer",
+        entity_id="customer-nimbus",
+    )
     obs_id = await _seed_observation(
         resolver_db,
         tenant_id,
@@ -244,12 +340,43 @@ async def test_top_level_unresolved_phrases_from_ingestion_are_processed(
 
     assert decisions == [("NBI", "resolved")]
     ref = await EntityAliasRepo(resolver_db).fast_path_resolve("NBI", tenant_id)
-    assert ref == {"type": "customer", "id": "customer-nimbus"}
+    assert ref is None
+    traces = await _fetch_grounding_traces(resolver_db, tenant_id)
+    detections = await _fetch_mention_detections(resolver_db, tenant_id)
+    assert len(traces) == 1
+    assert len(detections) == 1
+    detection = detections[0]
+    assert detection["fate"] == "detected"
+    assert detection["mention_id"] == detection["id"]
+    assert traces[0]["entity_mention_detection_id"] == detection["id"]
+    assert traces[0]["entity_mention_id"] == detection["mention_id"]
+    async with resolver_db.acquire() as conn:
+        request = await conn.fetchrow(
+            """
+            SELECT mention_ref, entity_mention_detection_id, entity_mention_id
+            FROM entity_candidate_generation_requests
+            WHERE tenant_id=$1 AND source_observation_id=$2
+            """,
+            tenant_id,
+            obs_id,
+        )
+    assert request["mention_ref"] == f"mention:{detection['mention_id']}:v1"
+    assert request["entity_mention_detection_id"] == detection["id"]
+    assert request["entity_mention_id"] == detection["mention_id"]
+    assert '"mention_detection"' in provider.calls[0]["user"]
+    assert str(detection["mention_id"]) in provider.calls[0]["user"]
 
 
 async def test_duplicate_top_level_and_metadata_phrases_are_deduped(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Nimbus Bank",
+        entity_type="customer",
+        entity_id="customer-nimbus",
+    )
     obs_id = await _seed_observation(
         resolver_db,
         tenant_id,
@@ -307,9 +434,114 @@ async def test_resolver_prompt_includes_source_entities_and_known_candidates(
     assert "customer-nimbus" in prompt
 
 
-async def test_resolved_customer_enqueues_think_trigger(
+async def test_slack_prompt_never_mixes_channels_or_future_messages(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
+    cutoff = datetime.now(timezone.utc)
+    await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="SAFE_FINANCE_CONTEXT",
+        unresolved_phrases=[],
+        occurred_at=cutoff - timedelta(minutes=2),
+        content_extra={"channel": "C-finance", "ts": "100.1"},
+    )
+    await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="SECRET_OTHER_CHANNEL",
+        unresolved_phrases=[],
+        occurred_at=cutoff - timedelta(minutes=1),
+        content_extra={"channel": "C-private", "ts": "101.1"},
+    )
+    await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="FUTURE_FINANCE_MESSAGE",
+        unresolved_phrases=[],
+        occurred_at=cutoff + timedelta(minutes=1),
+        content_extra={"channel": "C-finance", "ts": "103.1"},
+    )
+    focal = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="what about it?",
+        unresolved_phrases=["it"],
+        occurred_at=cutoff,
+        content_extra={"channel": "C-finance", "ts": "102.1"},
+    )
+    provider = ScriptedProvider([_resolution_json(type=None, confidence=0.7)])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    await worker.process_observation(focal, tenant_id)
+
+    prompt = provider.calls[0]["user"]
+    assert "SAFE_FINANCE_CONTEXT" in prompt
+    assert "SECRET_OTHER_CHANNEL" not in prompt
+    assert "FUTURE_FINANCE_MESSAGE" not in prompt
+    assert '"source_space":"C-finance"' in prompt
+    assert "scoped_models" not in prompt
+
+
+async def test_explicit_phrase_prompt_excludes_unselected_same_channel_distractor(
+    resolver_db: asyncpg.Pool, tenant_id: UUID
+):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Nimbus Bank",
+        entity_type="customer",
+        entity_id="customer-nimbus",
+    )
+    cutoff = datetime.now(timezone.utc)
+    await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="DISTRACTOR_FROM_SAME_CHANNEL",
+        unresolved_phrases=[],
+        occurred_at=cutoff - timedelta(minutes=1),
+        content_extra={"channel": "C-finance", "ts": "100.1"},
+    )
+    focal = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI renewal is blocked",
+        unresolved_phrases=["NBI"],
+        occurred_at=cutoff,
+        content_extra={"channel": "C-finance", "ts": "101.1"},
+    )
+    provider = ScriptedProvider([
+        _resolution_json(type="customer", id="customer-nimbus", confidence=0.95)
+    ])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    assert await worker.process_observation(focal, tenant_id) == [
+        ("NBI", "resolved")
+    ]
+
+    prompt = provider.calls[0]["user"]
+    assert "DISTRACTOR_FROM_SAME_CHANNEL" not in prompt
+    assert '"disposition":"operationally_sufficient"' in prompt
+
+
+async def test_context_dependent_customer_does_not_enqueue_think_trigger(
+    resolver_db: asyncpg.Pool, tenant_id: UUID
+):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Acme Corporation",
+        entity_type="customer",
+        entity_id="customer-acme",
+    )
     obs_id = await _seed_observation(
         resolver_db, tenant_id,
         content_text="we just lost the big one",
@@ -323,13 +555,20 @@ async def test_resolved_customer_enqueues_think_trigger(
         alias_repo=EntityAliasRepo(resolver_db),
     )
     await worker.process_observation(obs_id, tenant_id)
-    # think_trigger_queue row for this tenant.
-    assert await _count_trigger_rows(resolver_db, tenant_id) == 1
+    assert await _count_trigger_rows(resolver_db, tenant_id) == 0
+    assert await _count_review_rows(resolver_db, tenant_id) == 1
 
 
 async def test_resolved_non_material_type_does_not_enqueue_trigger(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Company Wiki",
+        entity_type="url",
+        entity_id="https://wiki",
+    )
     obs_id = await _seed_observation(
         resolver_db, tenant_id,
         content_text="a link to the wiki",
@@ -353,6 +592,13 @@ async def test_resolved_non_material_type_does_not_enqueue_trigger(
 async def test_ambiguous_confidence_goes_to_review_queue(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Project One",
+        entity_type="goal",
+        entity_id="g-1",
+    )
     obs_id = await _seed_observation(
         resolver_db, tenant_id,
         content_text="the project", unresolved_phrases=["the project"],
@@ -386,11 +632,51 @@ async def test_ambiguous_confidence_goes_to_review_queue(
     }
 
 
+@pytest.mark.parametrize("alias_source", ["resolver_worker", "manual"])
+async def test_alias_without_governed_identity_basis_cannot_auto_admit(
+    resolver_db: asyncpg.Pool,
+    tenant_id: UUID,
+    alias_source: str,
+):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Legacy NBI guess",
+        entity_type="customer",
+        entity_id="customer-nimbus",
+        source=alias_source,
+        independently_governed=False,
+    )
+    obs_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI renewal is blocked",
+        unresolved_phrases=["NBI"],
+    )
+    provider = ScriptedProvider([
+        _resolution_json(type="customer", id="customer-nimbus", confidence=0.99)
+    ])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    decisions = await worker.process_observation(obs_id, tenant_id)
+
+    assert decisions == [("NBI", "review")]
+    assert await _count_review_rows(resolver_db, tenant_id) == 1
+    traces = await _fetch_grounding_traces(resolver_db, tenant_id)
+    assert traces[0]["current_fate"] == "review"
+    assert traces[0]["selected_referent"] is None
+    assert await _count_trigger_rows(resolver_db, tenant_id) == 0
+
+
 # =====================================================================
-# Dropped path
+# Explicit unresolved/abstention path
 # =====================================================================
 
-async def test_low_confidence_is_dropped(
+async def test_low_confidence_is_preserved_with_an_explicit_fate(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
     obs_id = await _seed_observation(
@@ -406,7 +692,7 @@ async def test_low_confidence_is_dropped(
         alias_repo=EntityAliasRepo(resolver_db),
     )
     decisions = await worker.process_observation(obs_id, tenant_id)
-    assert decisions == [("just said hi", "dropped")]
+    assert decisions == [("just said hi", "unresolved")]
 
     # No alias, no review, no trigger.
     ref = await EntityAliasRepo(resolver_db).fast_path_resolve(
@@ -414,14 +700,17 @@ async def test_low_confidence_is_dropped(
     )
     assert ref is None
     assert await _count_review_rows(resolver_db, tenant_id) == 0
+    traces = await _fetch_grounding_traces(resolver_db, tenant_id)
+    assert len(traces) == 1
+    assert traces[0]["current_fate"] == "abstained"
 
 
-async def test_null_canonical_ref_is_dropped(
+async def test_null_canonical_ref_remains_mention_local(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
     obs_id = await _seed_observation(
         resolver_db, tenant_id,
-        content_text="???",
+        content_text="not an entity",
         unresolved_phrases=["not an entity"],
     )
     provider = ScriptedProvider([
@@ -432,7 +721,59 @@ async def test_null_canonical_ref_is_dropped(
         alias_repo=EntityAliasRepo(resolver_db),
     )
     decisions = await worker.process_observation(obs_id, tenant_id)
-    assert decisions == [("not an entity", "dropped")]
+    assert decisions == [("not an entity", "unresolved")]
+    traces = await _fetch_grounding_traces(resolver_db, tenant_id)
+    assert len(traces) == 1
+    assert traces[0]["current_fate"] == "unresolved"
+
+
+async def test_unanchored_phrase_is_rejected_without_an_llm_call(
+    resolver_db: asyncpg.Pool, tenant_id: UUID
+):
+    occurred_at = datetime.now(timezone.utc)
+    obs_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="???",
+        unresolved_phrases=["metadata-only phantom"],
+        occurred_at=occurred_at,
+    )
+    provider = ScriptedProvider([])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    assert await worker.process_observation(obs_id, tenant_id) == [
+        ("metadata-only phantom", "unresolved")
+    ]
+    assert provider.calls == []
+    assert await _fetch_grounding_traces(resolver_db, tenant_id) == []
+    detections = await _fetch_mention_detections(resolver_db, tenant_id)
+    assert len(detections) == 1
+    assert detections[0]["fate"] == "rejected_not_anchored"
+    assert detections[0]["mention_id"] is None
+    work = await _fetch_grounding_work_items(resolver_db, tenant_id)
+    assert len(work) == 1
+    assert work[0]["status"] == "unresolved"
+    async with resolver_db.acquire() as conn:
+        state = await evaluate_entity_grounding_state(
+            conn,
+            scope=GroundingEvaluationScope(
+                tenant_id=tenant_id,
+                observation_start=occurred_at - timedelta(seconds=1),
+                observation_end=occurred_at + timedelta(seconds=1),
+                run_id="rejected-unanchored-mention-component",
+            ),
+            artifact_refs=(
+                "pytest://entity-resolver/rejected-unanchored-mention",
+            ),
+        )
+    assert state.mention_detection_population_coverage == 1.0
+    assert state.rejected_not_anchored_correctness_rate == 1.0
+    assert state.rejected_candidate_request_count == 0
+    assert state.incident_counts == {}
 
 
 # =====================================================================
@@ -444,7 +785,7 @@ async def test_llm_timeout_is_requeued(
 ):
     obs_id = await _seed_observation(
         resolver_db, tenant_id,
-        content_text="x", unresolved_phrases=["a"],
+        content_text="a", unresolved_phrases=["a"],
     )
     provider = ScriptedProvider([asyncio.TimeoutError()])
     worker = EntityResolverWorker(
@@ -454,6 +795,11 @@ async def test_llm_timeout_is_requeued(
     decisions = await worker.process_observation(obs_id, tenant_id)
     assert decisions == [("a", "rate_limited")]  # requeue semantics
     assert worker.requeue_delay_s(obs_id) > 0
+    work = await _fetch_grounding_work_items(resolver_db, tenant_id)
+    assert len(work) == 1
+    assert work[0]["status"] == "retry_scheduled"
+    assert work[0]["last_failure_class"] == "provider_timeout"
+    assert work[0]["next_attempt_at"] is not None
 
 
 async def test_llm_rate_limit_is_requeued(
@@ -464,7 +810,7 @@ async def test_llm_rate_limit_is_requeued(
 
     obs_id = await _seed_observation(
         resolver_db, tenant_id,
-        content_text="x", unresolved_phrases=["a"],
+        content_text="a", unresolved_phrases=["a"],
     )
     provider = ScriptedProvider([
         type("RateLimitError", (Exception,), {})("slow down")
@@ -475,14 +821,16 @@ async def test_llm_rate_limit_is_requeued(
     )
     decisions = await worker.process_observation(obs_id, tenant_id)
     assert decisions == [("a", "rate_limited")]
+    work = await _fetch_grounding_work_items(resolver_db, tenant_id)
+    assert work[0]["last_failure_class"] == "provider_rate_limited"
 
 
-async def test_llm_malformed_response_exhausts_retries_and_drops(
+async def test_llm_malformed_response_exhausts_local_retries_but_keeps_work_open(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
     obs_id = await _seed_observation(
         resolver_db, tenant_id,
-        content_text="x", unresolved_phrases=["a"],
+        content_text="a", unresolved_phrases=["a"],
     )
     # 3 consecutive unparseable responses (default max_retries=2 →
     # 3 total attempts).
@@ -492,7 +840,17 @@ async def test_llm_malformed_response_exhausts_retries_and_drops(
         alias_repo=EntityAliasRepo(resolver_db),
     )
     decisions = await worker.process_observation(obs_id, tenant_id)
-    assert decisions == [("a", "dropped")]
+    assert decisions == [("a", "retryable")]
+    assert await _fetch_grounding_traces(resolver_db, tenant_id) == []
+    work = await _fetch_grounding_work_items(resolver_db, tenant_id)
+    assert work[0]["status"] == "retry_scheduled"
+    assert work[0]["last_failure_class"] == "provider_parse_exhausted"
+    async with resolver_db.acquire() as conn:
+        content = await conn.fetchval(
+            "SELECT content FROM observations WHERE id = $1",
+            obs_id,
+        )
+    assert content["metadata"]["_unresolved_phrases"] == ["a"]
 
 
 # =====================================================================
@@ -502,9 +860,16 @@ async def test_llm_malformed_response_exhausts_retries_and_drops(
 async def test_per_tenant_budget_skips_call_when_exhausted(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Default Commitment",
+        entity_type="commitment",
+        entity_id="commitment-uuid",
+    )
     obs_id = await _seed_observation(
         resolver_db, tenant_id,
-        content_text="x", unresolved_phrases=["a", "b"],
+        content_text="a and b", unresolved_phrases=["a", "b"],
     )
     # Budget = 1 per minute — first phrase consumes, second is rate-limited.
     provider = ScriptedProvider([_resolution_json(confidence=0.95)])
@@ -518,6 +883,11 @@ async def test_per_tenant_budget_skips_call_when_exhausted(
     assert decisions[0][1] == "resolved"
     assert decisions[1][1] == "rate_limited"
     assert len(provider.calls) == 1
+    work = await _fetch_grounding_work_items(resolver_db, tenant_id)
+    by_phrase = {row["phrase"]: row for row in work}
+    assert by_phrase["a"]["status"] == "resolved_for_consumer"
+    assert by_phrase["b"]["status"] == "retry_scheduled"
+    assert by_phrase["b"]["last_failure_class"] == "local_budget_exhausted"
 
 
 # =====================================================================
@@ -566,9 +936,16 @@ async def test_process_pending_finds_top_level_unresolved_phrases(
     assert len(provider.calls) == 1
 
 
-async def test_process_pending_clears_handled_unresolved_phrases(
+async def test_process_pending_preserves_source_and_uses_trace_as_terminal_fate(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Nimbus Bank",
+        entity_type="customer",
+        entity_id="customer-nimbus",
+    )
     obs_id = await _seed_observation(
         resolver_db,
         tenant_id,
@@ -594,7 +971,12 @@ async def test_process_pending_clears_handled_unresolved_phrases(
             "SELECT content FROM observations WHERE id = $1",
             obs_id,
         )
-    assert content["_unresolved_phrases"] == []
+    assert content["_unresolved_phrases"] == ["NBI"]
+    work = await _fetch_grounding_work_items(resolver_db, tenant_id)
+    assert work[0]["status"] == "resolved_for_consumer"
+    traces = await _fetch_grounding_traces(resolver_db, tenant_id)
+    assert len(traces) == 1
+    assert traces[0]["source_observation_mutated"] is False
 
 
 async def test_process_pending_keeps_rate_limited_unresolved_phrases(
@@ -624,33 +1006,41 @@ async def test_process_pending_keeps_rate_limited_unresolved_phrases(
             obs_id,
         )
     assert content["_unresolved_phrases"] == ["NBI"]
+    work = await _fetch_grounding_work_items(resolver_db, tenant_id)
+    assert work[0]["status"] == "retry_scheduled"
 
 
 # =====================================================================
-# Idempotency: same phrase + same obs → alias inserted once
+# Idempotency: one terminal trace; no identity or source mutation
 # =====================================================================
 
-async def test_alias_is_idempotent_on_rerun(
+async def test_terminal_grounding_trace_is_idempotent_on_rerun(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Commitment One",
+        entity_type="commitment",
+        entity_id="c1",
+    )
     obs_id = await _seed_observation(
         resolver_db, tenant_id,
         content_text="ship it now",
         unresolved_phrases=["ship it"],
     )
-    responses = [
-        _resolution_json(type="commitment", id="c1", confidence=0.9)
-        for _ in range(2)
-    ]
+    responses = [_resolution_json(type="commitment", id="c1", confidence=0.9)]
     provider = ScriptedProvider(responses)
     worker = EntityResolverWorker(
         pool=resolver_db, llm=provider,
         alias_repo=EntityAliasRepo(resolver_db),
     )
-    await worker.process_observation(obs_id, tenant_id)
-    await worker.process_observation(obs_id, tenant_id)
+    assert await worker.process_observation(obs_id, tenant_id) == [
+        ("ship it", "review")
+    ]
+    assert await worker.process_observation(obs_id, tenant_id) == []
 
-    # Only one alias row per (tenant, phrase, actor_id=NULL).
+    # Resolver confidence never creates a new alias.
     async with resolver_db.acquire() as conn:
         n = await conn.fetchval(
             """
@@ -659,12 +1049,11 @@ async def test_alias_is_idempotent_on_rerun(
             """,
             tenant_id,
         )
-    assert n == 1
+    assert n == 0
 
-    # entities_mentioned still contains exactly one copy.
-    ents = await _fetch_obs_entities(resolver_db, obs_id)
-    ids = [e.get("id") for e in ents]
-    assert ids.count("c1") == 1
+    assert await _fetch_obs_entities(resolver_db, obs_id) == []
+    assert len(await _fetch_grounding_traces(resolver_db, tenant_id)) == 1
+    assert len(provider.calls) == 1
 
 
 # =====================================================================
@@ -676,10 +1065,9 @@ async def test_end_to_end_50_mixed_events(
 ):
     """Replay a 50-observation fixture spanning Slack/GitHub/Linear.
 
-    10 of those have an unresolved phrase; the resolver should produce
-    10 resolved aliases, append 10 entities to their parent
-    observations, emit 10 state_change Observations, and never
-    duplicate.
+    10 of those have an unresolved phrase. The resolver should produce ten
+    complete grounding traces without fabricating aliases, rewriting source
+    observations, or creating self-authoritative state-change evidence.
     """
     base = datetime.now(timezone.utc)
     channels = ["slack:message", "github:webhook", "linear:webhook"]
@@ -689,7 +1077,9 @@ async def test_end_to_end_50_mixed_events(
         phrases = [f"phrase_{i}"] if i % 5 == 0 else []
         obs = await _seed_observation(
             resolver_db, tenant_id,
-            content_text=f"event {i}",
+            content_text=(
+                f"event {i} {phrases[0]}" if phrases else f"event {i}"
+            ),
             unresolved_phrases=phrases,
             source_channel=channel,
             occurred_at=base.replace(microsecond=i * 1000),
@@ -698,6 +1088,14 @@ async def test_end_to_end_50_mixed_events(
 
     # Script a resolve for every unresolved phrase.
     n_phrases = sum(1 for i in range(50) if i % 5 == 0)
+    for i in range(n_phrases):
+        await _seed_candidate_alias(
+            resolver_db,
+            tenant_id,
+            alias=f"Known commitment {i}",
+            entity_type="commitment",
+            entity_id=f"c{i}",
+        )
     provider = ScriptedProvider([
         _resolution_json(
             type="commitment", id=f"c{i}", confidence=0.9
@@ -718,7 +1116,7 @@ async def test_end_to_end_50_mixed_events(
 
     resolved = [d for d in decisions if d[1] == "resolved"]
     assert len(resolved) == n_phrases
-    # Verify no duplicate aliases.
+    # Only the independently seeded candidates exist; phrases were not added.
     async with resolver_db.acquire() as conn:
         alias_rows = await conn.fetch(
             """
@@ -732,8 +1130,41 @@ async def test_end_to_end_50_mixed_events(
     assert all(r["c"] == 1 for r in alias_rows)
     assert len(alias_rows) == n_phrases
 
-    # state_change observation count equals n_phrases.
-    assert await _count_state_change_obs(resolver_db, tenant_id) == n_phrases
+    assert await _count_state_change_obs(resolver_db, tenant_id) == 0
+    traces = await _fetch_grounding_traces(resolver_db, tenant_id)
+    assert len(traces) == n_phrases
+    assert all(row["identity_registry_mutated"] is False for row in traces)
+    assert all(row["source_observation_mutated"] is False for row in traces)
+
+    # The objective evaluator reads the complete source opportunity population,
+    # not only successful traces, and reports this scoped component replay.
+    async with resolver_db.acquire() as conn:
+        state = await evaluate_entity_grounding_state(
+            conn,
+            scope=GroundingEvaluationScope(
+                tenant_id=tenant_id,
+                observation_start=base - timedelta(seconds=1),
+                observation_end=base + timedelta(seconds=1),
+                run_id="entity-grounding-50-event-component-replay",
+            ),
+            artifact_refs=(
+                "pytest://services/workers/entity_resolver/tests/test_worker.py::test_end_to_end_50_mixed_events",
+            ),
+        )
+    assert state.eligible_opportunities == n_phrases
+    assert state.work_population_coverage == 1.0
+    assert state.terminal_trace_coverage == 1.0
+    assert state.stage_continuity_rate == 1.0
+    assert state.candidate_request_fate_coverage == 1.0
+    assert state.mention_detection_population_coverage == 1.0
+    assert state.detected_mention_count == n_phrases
+    assert state.explicit_anchor_reconstructability_rate == 1.0
+    assert state.mention_context_continuity_rate == 1.0
+    assert state.mention_command_result_coverage == 1.0
+    assert state.mention_event_coverage == 1.0
+    assert state.mention_outbox_coverage == 1.0
+    assert state.detected_mention_to_candidate_continuity_rate == 1.0
+    assert state.incident_counts == {}
 
 
 # =====================================================================
@@ -744,6 +1175,20 @@ async def test_review_queue_tenant_isolated(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):
     other_tenant = uuid7()
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Commitment One",
+        entity_type="commitment",
+        entity_id="c1",
+    )
+    await _seed_candidate_alias(
+        resolver_db,
+        other_tenant,
+        alias="Commitment Two",
+        entity_type="commitment",
+        entity_id="c2",
+    )
     obs_id = await _seed_observation(
         resolver_db, tenant_id,
         content_text="ambi", unresolved_phrases=["ambi"],

@@ -1,9 +1,10 @@
 """services/workers/entity_resolver/context.py — context bundle builder.
 
-For each unresolved phrase on an Observation, the resolver worker
-needs "what did we know around the same time in the same channel,
-and what canonical entities are already in scope." This module
-assembles that bundle on demand.
+For each unresolved phrase on an Observation, the resolver worker needs an
+as-known, source-structured candidate context. Slack's semantic boundary is
+not a fixed message count or the entire connector channel: actual channel,
+thread/reply/edit topology and then bounded temporal alternatives are kept
+separate so proximity cannot impersonate corroboration.
 
 Inputs:
     - observation_id (UUID)
@@ -12,10 +13,8 @@ Inputs:
     - asyncpg.Pool (or Connection)
 
 Outputs: `ResolverContext` — a small dataclass with:
-    - recent_observations: list of 20 most recent observations in
-      the same source_channel (occurred before the current one)
-    - scoped_models: up to 10 recent Models whose scope_entities
-      overlaps any candidate entity shape inferred from the phrase
+    - recent_observations: authorized source-topology and temporal candidates
+      from the actual source channel, never all Slack observations
     - recent_aliases: list of aliases already seen for the phrase
       (useful to LLM as "we've seen this before")
 
@@ -26,10 +25,23 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 import asyncpg
+
+from lib.contracts import (
+    CommitEntityMentionDetectionCommand,
+    CommitInterpretationContextCommand,
+    ContextSelectionOutcome,
+)
+from services.domain.entity_grounding.episode import (
+    ContextObservationInput,
+    candidate_id_for_ref,
+    prepare_context_selection,
+)
+from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
 
 
 _DEFAULT_RECENT_OBS = 20
@@ -43,6 +55,8 @@ class RecentObservation:
     source_channel: str
     content_text: str
     entities_mentioned: list[dict[str, Any]]
+    inclusion_layer: str
+    inclusion_reasons: list[str]
 
 
 @dataclass
@@ -55,16 +69,24 @@ class ScopedModel:
 
 @dataclass
 class RecentAlias:
+    alias_id: UUID
     alias_text: str
     resolved_entity_ref: dict[str, Any]
     confidence: float
+    source: str
+    identity_basis_class: str | None
+    identity_basis_ref: str | None
 
 
 @dataclass
 class KnownEntityCandidate:
+    alias_id: UUID
     alias_text: str
     resolved_entity_ref: dict[str, Any]
     confidence: float
+    source: str
+    identity_basis_class: str | None
+    identity_basis_ref: str | None
 
 
 @dataclass
@@ -78,43 +100,132 @@ class ResolverContext:
     known_entity_candidates: list[KnownEntityCandidate] = field(default_factory=list)
     source_entities_mentioned: list[dict[str, Any]] = field(default_factory=list)
     source_channel: str = ""
+    source_space: str = ""
     content_text: str = ""
+    evidence_cutoff: Any | None = None
+    topology_incomplete: bool = False
+    boundary_hypotheses: list[dict[str, Any]] = field(default_factory=list)
+    selection_dependencies: list[str] = field(default_factory=list)
+    context_selection_command: CommitInterpretationContextCommand | None = None
+    context_selection_outcome: ContextSelectionOutcome | None = None
+    mention_detection_command: CommitEntityMentionDetectionCommand | None = None
 
     def to_prompt_blob(self) -> str:
         """Compact JSON-ish rendering for the LLM user message."""
+        selected_event_ids = (
+            {
+                item.event_revision_id
+                for item in self.context_selection_outcome.snapshot.selected_items
+            }
+            if self.context_selection_outcome is not None
+            else None
+        )
+        selected_recent = [
+            item
+            for item in self.recent_observations
+            if selected_event_ids is None
+            or f"observation:{item.id}:v1" in selected_event_ids
+        ]
         out: dict[str, Any] = {
             "phrase": self.phrase,
             "source_channel": self.source_channel,
+            "source_space": self.source_space,
+            "evidence_cutoff": self.evidence_cutoff,
+            "topology_incomplete": self.topology_incomplete,
+            "boundary_hypotheses": self.boundary_hypotheses,
+            "selection_dependencies": self.selection_dependencies,
+            "context_selection": (
+                {
+                    "snapshot_id": self.context_selection_outcome.snapshot.snapshot_id,
+                    "snapshot_hash": self.context_selection_outcome.snapshot.snapshot_content_hash,
+                    "disposition": self.context_selection_outcome.disposition.value,
+                    "omissions": list(
+                        self.context_selection_outcome.snapshot.sufficiency_verdict.omissions
+                    ),
+                    "unresolved_references": list(
+                        self.context_selection_outcome.snapshot.sufficiency_verdict.unresolved_references
+                    ),
+                }
+                if self.context_selection_outcome is not None
+                else None
+            ),
+            "mention_detection": (
+                {
+                    "detection_id": str(
+                        self.mention_detection_command.detection.detection_id
+                    ),
+                    "fate": self.mention_detection_command.detection.fate.value,
+                    "mention": (
+                        self.mention_detection_command.detection.mention.model_dump(
+                            mode="json"
+                        )
+                        if self.mention_detection_command.detection.mention is not None
+                        else None
+                    ),
+                    "semantic_limit": (
+                        "source-anchored mention only; it carries no entity identity "
+                        "or entity-type authority"
+                    ),
+                }
+                if self.mention_detection_command is not None
+                else None
+            ),
             "source_content_excerpt": self.content_text[:500],
-            "source_entities_mentioned": self.source_entities_mentioned[:10],
+            "source_entities_mentioned": [
+                {
+                    "candidate_id": candidate_id_for_ref(ref),
+                    "entity_ref": ref,
+                    "semantic_limit": (
+                        "already-admitted source sidecar; candidate navigation, "
+                        "not new identity evidence"
+                    ),
+                }
+                for ref in self.source_entities_mentioned[:10]
+                if isinstance(ref, dict) and ref.get("id") and ref.get("type")
+            ],
             "recent_observations": [
                 {
                     "channel": o.source_channel,
                     "text": o.content_text[:200],
                     "entities": o.entities_mentioned[:5],
+                    "occurred_at": o.occurred_at,
+                    "inclusion_layer": o.inclusion_layer,
+                    "inclusion_reasons": o.inclusion_reasons,
                 }
-                for o in self.recent_observations[:10]
+                for o in selected_recent[:10]
             ],
-            "candidate_entities_in_context": [
-                {
-                    "natural": m.natural,
-                    "confidence": m.confidence,
-                    "scope": m.scope_entities[:3],
-                }
-                for m in self.scoped_models[:5]
-            ],
+            "evidence_law": (
+                "context proximity, prior model output, and repeated aliases are "
+                "navigation or candidate features, never independent identity evidence"
+            ),
             "prior_alias_matches": [
                 {
                     "alias": a.alias_text,
+                    "candidate_id": candidate_id_for_ref(a.resolved_entity_ref),
                     "entity_ref": a.resolved_entity_ref,
+                    "alias_origin": a.source,
+                    "governed_identity_basis_class": a.identity_basis_class,
+                    "governed_identity_basis_ref": a.identity_basis_ref,
+                    "semantic_limit": (
+                        "candidate navigation; automatic admission additionally "
+                        "requires independently governed identity lineage"
+                    ),
                 }
                 for a in self.recent_aliases
             ],
             "known_entity_candidates": [
                 {
                     "alias": c.alias_text,
+                    "candidate_id": candidate_id_for_ref(c.resolved_entity_ref),
                     "entity_ref": c.resolved_entity_ref,
                     "confidence": c.confidence,
+                    "alias_origin": c.source,
+                    "governed_identity_basis_class": c.identity_basis_class,
+                    "governed_identity_basis_ref": c.identity_basis_ref,
+                    "semantic_limit": (
+                        "candidate navigation; automatic admission additionally "
+                        "requires independently governed identity lineage"
+                    ),
                 }
                 for c in self.known_entity_candidates[:30]
             ],
@@ -149,7 +260,7 @@ async def build_context(
         # occurred_at for the context-window query.
         src = await conn.fetchrow(
             """
-            SELECT id, source_channel, content_text, occurred_at,
+            SELECT id, source_channel, content_text, content, occurred_at,
                    entities_mentioned
             FROM observations
             WHERE id = $1 AND tenant_id = $2
@@ -165,76 +276,57 @@ async def build_context(
             )
 
         source_channel = src["source_channel"]
-        content_text = src["content_text"]
+        content_text = str(src["content_text"] or "")
         occurred_at = src["occurred_at"]
+        source_content = _parse_jsonb(src["content"]) or {}
+        source_space = str(
+            source_content.get("channel")
+            or source_content.get("project_id")
+            or source_content.get("repository")
+            or source_channel
+        )
         source_entities_mentioned = (
             _parse_jsonb(src["entities_mentioned"]) or []
         )
 
-        # 20 most recent observations in the same channel BEFORE this
-        # one, same tenant. We exclude the current observation itself.
-        recent_rows = await conn.fetch(
-            """
-            SELECT id, occurred_at, source_channel, content_text,
-                   entities_mentioned
-            FROM observations
-            WHERE tenant_id = $1
-              AND source_channel = $2
-              AND occurred_at <= $3
-              AND id <> $4
-            ORDER BY occurred_at DESC
-            LIMIT $5
-            """,
-            tenant_id,
-            source_channel,
-            occurred_at,
-            observation_id,
-            recent_n,
+        del scoped_models_n  # prior Models cannot be identity corroboration
+        structural_rows, temporal_rows = await _load_context_candidates(
+            conn=conn,
+            tenant_id=tenant_id,
+            observation_id=observation_id,
+            source_channel=source_channel,
+            source_space=source_space,
+            source_content=source_content,
+            occurred_at=occurred_at,
+            limit=recent_n,
         )
-        recent_observations = [
-            RecentObservation(
-                id=r["id"],
-                occurred_at=r["occurred_at"],
-                source_channel=r["source_channel"],
-                content_text=r["content_text"],
-                entities_mentioned=_parse_jsonb(r["entities_mentioned"]) or [],
+        selected: list[RecentObservation] = []
+        seen_observations: set[UUID] = set()
+        for row, layer, reasons in (*structural_rows, *temporal_rows):
+            if row["id"] in seen_observations or len(selected) >= recent_n:
+                continue
+            seen_observations.add(row["id"])
+            selected.append(
+                RecentObservation(
+                    id=row["id"],
+                    occurred_at=row["occurred_at"],
+                    source_channel=row["source_channel"],
+                    content_text=row["content_text"],
+                    entities_mentioned=_parse_jsonb(row["entities_mentioned"]) or [],
+                    inclusion_layer=layer,
+                    inclusion_reasons=reasons,
+                )
             )
-            for r in recent_rows
-        ]
-
-        # Scoped models — any active model whose scope_entities has
-        # an element matching the "type" guessed from the phrase. We
-        # skip the guess for now and return the most recently
-        # retrieved active models in the tenant as a generic context
-        # bundle. The resolver LLM can winnow from there.
-        # `natural` is a reserved SQL keyword; quote it on read just
-        # like the foundation migration (see BUILD-LOG Wave 0).
-        model_rows = await conn.fetch(
-            """
-            SELECT id, "natural", confidence, scope_entities
-            FROM models
-            WHERE tenant_id = $1
-              AND status = 'active'
-            ORDER BY COALESCE(last_retrieved_at, created_at) DESC
-            LIMIT $2
-            """,
-            tenant_id,
-            scoped_models_n,
-        )
-        scoped_models = [
-            ScopedModel(
-                id=r["id"],
-                natural=r["natural"],
-                confidence=float(r["confidence"]),
-                scope_entities=_parse_jsonb(r["scope_entities"]) or [],
-            )
-            for r in model_rows
-        ]
+        recent_observations = selected
+        scoped_models: list[ScopedModel] = []
 
         # Prior aliases for the exact phrase (if any).
         alias_rows = await conn.fetch(
             """
-            SELECT alias_text, resolved_entity_ref, confidence
+            SELECT id, alias_text, resolved_entity_ref, confidence,
+                   COALESCE(entity_metadata ->> 'source', 'unknown') AS source,
+                   entity_metadata ->> 'identity_basis_class' AS identity_basis_class,
+                   entity_metadata ->> 'identity_basis_ref' AS identity_basis_ref
             FROM entity_aliases
             WHERE tenant_id = $1
               AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g')
@@ -247,16 +339,23 @@ async def build_context(
         )
         recent_aliases = [
             RecentAlias(
+                alias_id=r["id"],
                 alias_text=r["alias_text"],
                 resolved_entity_ref=_parse_jsonb(r["resolved_entity_ref"]) or {},
                 confidence=float(r["confidence"]),
+                source=r["source"],
+                identity_basis_class=r["identity_basis_class"],
+                identity_basis_ref=r["identity_basis_ref"],
             )
             for r in alias_rows
         ]
 
         candidate_rows = await conn.fetch(
             """
-            SELECT alias_text, resolved_entity_ref, confidence
+            SELECT id, alias_text, resolved_entity_ref, confidence,
+                   COALESCE(entity_metadata ->> 'source', 'unknown') AS source,
+                   entity_metadata ->> 'identity_basis_class' AS identity_basis_class,
+                   entity_metadata ->> 'identity_basis_ref' AS identity_basis_ref
             FROM entity_aliases
             WHERE tenant_id = $1
             ORDER BY confidence DESC, confirmed_count DESC, last_used_at DESC
@@ -271,21 +370,176 @@ async def build_context(
             limit=known_entities_n,
         )
 
-        return ResolverContext(
+        context = ResolverContext(
             observation_id=observation_id,
             phrase=phrase,
             tenant_id=tenant_id,
             source_channel=source_channel,
+            source_space=source_space,
             content_text=content_text,
+            evidence_cutoff=occurred_at,
+            topology_incomplete=(
+                source_channel == "slack:message"
+                and not isinstance(source_content.get("channel"), str)
+            ),
+            boundary_hypotheses=_boundary_hypotheses(
+                source_content=source_content,
+                structural_count=len(structural_rows),
+                temporal_count=len(temporal_rows),
+            ),
+            selection_dependencies=[
+                f"observation:{row.id}@{row.occurred_at.isoformat()}"
+                for row in recent_observations
+            ],
             source_entities_mentioned=source_entities_mentioned,
             recent_observations=recent_observations,
             scoped_models=scoped_models,
             recent_aliases=recent_aliases,
             known_entity_candidates=known_entity_candidates,
         )
+        prepared_at = datetime.now(timezone.utc)
+        selection_command, selection_outcome = prepare_context_selection(
+            tenant_id=tenant_id,
+            observation_id=observation_id,
+            phrase=phrase,
+            occurred_at=occurred_at,
+            source_channel=source_channel,
+            source_space=source_space,
+            topology_incomplete=context.topology_incomplete,
+            boundary_hypotheses=tuple(context.boundary_hypotheses),
+            context_observations=tuple(
+                ContextObservationInput(
+                    observation_id=item.id,
+                    occurred_at=item.occurred_at,
+                    source_channel=item.source_channel,
+                    source_space=source_space,
+                    inclusion_layer=item.inclusion_layer,
+                    inclusion_reasons=tuple(item.inclusion_reasons),
+                )
+                for item in recent_observations
+            ),
+            selection_dependency_refs=tuple(context.selection_dependencies),
+            now=prepared_at,
+        )
+        context.context_selection_command = selection_command
+        context.context_selection_outcome = selection_outcome
+        context.mention_detection_command = prepare_entity_mention_detection(
+            tenant_id=tenant_id,
+            observation_id=observation_id,
+            phrase=phrase,
+            content_text=content_text,
+            source_channel=source_channel,
+            context_command=selection_command,
+            context_outcome=selection_outcome,
+            now=prepared_at,
+        )
+        return context
     finally:
         if conn_owned is not None:
             await pool.release(conn_owned)
+
+
+async def _load_context_candidates(
+    *,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    observation_id: UUID,
+    source_channel: str,
+    source_space: str,
+    source_content: dict[str, Any],
+    occurred_at: Any,
+    limit: int,
+) -> tuple[list[tuple[Any, str, list[str]]], list[tuple[Any, str, list[str]]]]:
+    """Load source-structural and temporal alternatives without conflating them."""
+
+    common = """
+        SELECT id, occurred_at, source_channel, content_text,
+               entities_mentioned, content
+        FROM observations
+        WHERE tenant_id = $1
+          AND source_channel = $2
+          AND occurred_at <= $3
+          AND id <> $4
+    """
+    source_space_clause = ""
+    args: list[Any] = [tenant_id, source_channel, occurred_at, observation_id]
+    if source_channel == "slack:message":
+        source_space_clause = " AND content ->> 'channel' = $5"
+        args.append(source_space)
+
+    temporal = await conn.fetch(
+        common
+        + source_space_clause
+        + " ORDER BY occurred_at DESC, id DESC LIMIT $%d" % (len(args) + 1),
+        *args,
+        max(limit * 3, limit),
+    )
+    temporal_rows = [
+        (row, "temporal_candidate", ["same exact source space", "as-known cutoff"])
+        for row in temporal
+    ]
+
+    structural_rows: list[tuple[Any, str, list[str]]] = []
+    if source_channel == "slack:message":
+        thread_root = (
+            source_content.get("thread_ts")
+            or source_content.get("original_ts")
+            or source_content.get("ts")
+        )
+        source_ts = source_content.get("ts")
+        if isinstance(thread_root, str) and thread_root:
+            structural = await conn.fetch(
+                common
+                + source_space_clause
+                + """
+                  AND (
+                    content ->> 'ts' = $6
+                    OR content ->> 'thread_ts' = $6
+                    OR content ->> 'original_ts' = $6
+                    OR ($7::text IS NOT NULL AND content ->> 'original_ts' = $7)
+                  )
+                  ORDER BY occurred_at ASC, id ASC
+                  LIMIT $8
+                """,
+                *args,
+                thread_root,
+                source_ts if isinstance(source_ts, str) else None,
+                max(limit * 3, limit),
+            )
+            structural_rows = [
+                (
+                    row,
+                    "source_topology",
+                    ["same Slack channel", "thread/reply/edit lineage"],
+                )
+                for row in structural
+            ]
+    return structural_rows, temporal_rows
+
+
+def _boundary_hypotheses(
+    *,
+    source_content: dict[str, Any],
+    structural_count: int,
+    temporal_count: int,
+) -> list[dict[str, Any]]:
+    hypotheses: list[dict[str, Any]] = []
+    if source_content.get("thread_ts") or source_content.get("original_ts"):
+        hypotheses.append(
+            {
+                "kind": "source_topology",
+                "candidate_count": structural_count,
+                "limits": "thread membership is useful structure, not proof of one topic",
+            }
+        )
+    hypotheses.append(
+        {
+            "kind": "same_source_space_temporal",
+            "candidate_count": temporal_count,
+            "limits": "temporal proximity is a candidate boundary, not corroboration",
+        }
+    )
+    return hypotheses
 
 
 def _parse_jsonb(v: Any) -> Any:
@@ -362,9 +616,13 @@ def _rank_known_entity_candidates(
             score,
             -idx,
             KnownEntityCandidate(
+                alias_id=row["id"],
                 alias_text=alias_text,
                 resolved_entity_ref=ref,
                 confidence=confidence,
+                source=row["source"],
+                identity_basis_class=row["identity_basis_class"],
+                identity_basis_ref=row["identity_basis_ref"],
             ),
         ))
 
