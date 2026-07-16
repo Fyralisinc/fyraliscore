@@ -1057,8 +1057,9 @@ def _company_learning_assurance_summary(
                 "company-learning assurance artifact failed validation"
             ],
             "proof_gaps": [
-                "Combined positive, negative, population, Slack and correction "
-                "assurance evidence could not be trusted."
+                "Combined positive, negative, exact-alias population, "
+                "variant-alias population, Slack and correction assurance "
+                "evidence could not be trusted."
             ],
         }
     summary = _json_obj(assurance.get("summary"))
@@ -1094,6 +1095,9 @@ def _company_learning_assurance_summary(
         "slack": _json_obj(summary.get("slack")),
         "correction": _json_obj(summary.get("correction")),
         "population": _json_obj(summary.get("population")),
+        "variant_population": _json_obj(
+            summary.get("variant_population")
+        ),
         "component_digests": _json_obj(summary.get("component_digests")),
         "artifact_paths": _json_obj(summary.get("artifact_paths")),
         "hard_failures": hard_failures,
