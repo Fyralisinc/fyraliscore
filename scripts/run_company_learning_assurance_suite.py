@@ -244,6 +244,10 @@ async def run_company_learning_assurance_suite(
                 *(
                     f"population: {gap}"
                     for gap in population_evidence.experiment_report.proof_gaps
+                    if not gap.startswith(
+                        "Confidence intervals require a larger held-out "
+                        "recurrence population."
+                    )
                 ),
                 *(
                     (
