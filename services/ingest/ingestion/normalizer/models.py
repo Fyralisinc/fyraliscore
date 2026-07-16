@@ -16,14 +16,17 @@ across writer reimplementations.
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any
+from typing import Any, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from services.ingest.ingestion.raw_tier.envelope import (
     IngressKindLiteral,
     SourceLiteral,
+)
+from services.ingest.ingestion.source_identity import (
+    StructuredSourceIdentityClaim,
 )
 
 
@@ -64,10 +67,24 @@ class NormalizedEnvelope(BaseModel):
     source_actor_ref: str | None = None
     external_id: str | None = None
     entities_hint: list[dict[str, Any]] = Field(default_factory=list)
+    source_identity_claims: list[
+        StructuredSourceIdentityClaim
+    ] = Field(default_factory=list)
     # ---- Normalizer-local ----
     normalized_at: dt.datetime
     ingress_metadata: dict[str, Any] = Field(default_factory=dict)
     idem_hints: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def source_identity_claims_match_envelope_source(self) -> Self:
+        if any(
+            claim.source_system != self.source
+            for claim in self.source_identity_claims
+        ):
+            raise ValueError(
+                "source identity claim system must match envelope source"
+            )
+        return self
 
 
 __all__ = ["NormalizedEnvelope"]

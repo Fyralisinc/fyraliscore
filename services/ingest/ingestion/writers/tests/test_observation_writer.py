@@ -56,6 +56,18 @@ def _normalized_envelope_bytes() -> bytes:
         source_actor_ref="slack:U01",
         external_id="C01:1.0",
         entities_hint=[],
+        source_identity_claims=[
+            {
+                "source_system": "slack",
+                "source_native_identifier": (
+                    "slack:workspace:T01"
+                ),
+                "source_surface": "Acme",
+                "claim_authority_ref": (
+                    "slack-handler:structured-workspace-field-v1"
+                ),
+            }
+        ],
         normalized_at=_NOW,
         ingress_metadata={},
         idem_hints={},
@@ -78,6 +90,15 @@ async def test_record_event_appends_to_shadow_log():
         json.loads(_normalized_envelope_bytes())
     )
     await writer_module._record_shadow_event(env)
+
+
+def test_full_mode_draft_preserves_source_identity_claims() -> None:
+    env = NormalizedEnvelope.model_validate(
+        json.loads(_normalized_envelope_bytes())
+    )
+    draft = writer_module._draft_from_envelope(env)
+
+    assert draft.source_identity_claims == env.source_identity_claims
 
 
 def test_full_mode_draft_reconstruction_applies_shared_payload_guards() -> None:

@@ -39,6 +39,9 @@ from services.ingest.ingestion.handlers import (
     ObservationDraft,
     register,
 )
+from services.ingest.ingestion.source_identity import (
+    StructuredSourceIdentityClaim,
+)
 
 
 _CHANNEL = "jira:issue"
@@ -149,6 +152,16 @@ def _issue_draft(issue: dict[str, Any], site: str) -> ObservationDraft:
 
     entities: list[dict[str, Any]] = [{"type": "jira_issue", "id": str(key)}]
     project = fields.get("project") or {}
+    project_id = (
+        str(project.get("id"))
+        if isinstance(project, dict) and project.get("id")
+        else None
+    )
+    project_key = (
+        str(project.get("key"))
+        if isinstance(project, dict) and project.get("key")
+        else None
+    )
     if isinstance(project, dict) and project.get("key"):
         entities.append({"type": "jira_project", "id": project["key"]})
     if assignee_hint:
@@ -168,7 +181,8 @@ def _issue_draft(issue: dict[str, Any], site: str) -> ObservationDraft:
         "priority": priority,
         "resolution": resolution,
         "labels": fields.get("labels") or [],
-        "project_key": project.get("key") if isinstance(project, dict) else None,
+        "project_key": project_key,
+        "project_id": project_id,
         "assignee": assignee_ref,
         "reporter": reporter_ref,
         "created": fields.get("created"),
@@ -189,6 +203,25 @@ def _issue_draft(issue: dict[str, Any], site: str) -> ObservationDraft:
         source_actor_ref=reporter_ref,
         external_id=external_id,
         entities_hint=entities,
+        source_identity_claims=(
+            [
+                StructuredSourceIdentityClaim(
+                    source_system="jira",
+                    source_native_identifier=(
+                        f"jira:{site}:project:{project_id}"
+                    ),
+                    source_surface=project_key,
+                    claim_authority_ref=(
+                        "jira-handler:structured-project-field-v1"
+                    ),
+                )
+            ]
+            if project_id and project_key
+            else []
+        ),
+        unresolved_phrases=(
+            [project_key] if project_id and project_key else []
+        ),
         raw_payload=issue,
     )
 

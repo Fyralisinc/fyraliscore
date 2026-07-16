@@ -58,6 +58,34 @@ async def test_issue_record_is_signal_with_versioned_external_id():
     assert draft.content["story_points"] == 5
     assert draft.source_actor_ref == "email:alice@acme.com"
     assert draft.occurred_at.isoformat().startswith("2026-05-20T12:30:00")
+    assert draft.source_identity_claims == []
+
+
+async def test_issue_emits_structured_project_claim_only_with_id_and_key():
+    draft = await handle_jira_issue(
+        _issue(
+            fields={
+                "project": {
+                    "id": "10000",
+                    "key": "ENG",
+                    "name": "Engineering",
+                }
+            }
+        ),
+        {},
+    )
+
+    assert len(draft.source_identity_claims) == 1
+    claim = draft.source_identity_claims[0]
+    assert claim.source_system == "jira"
+    assert claim.source_native_identifier == (
+        f"jira:{_SITE}:project:10000"
+    )
+    assert claim.source_surface == "ENG"
+    assert claim.claim_authority_ref == (
+        "jira-handler:structured-project-field-v1"
+    )
+    assert draft.unresolved_phrases == ["ENG"]
 
 
 async def test_issue_reedit_produces_distinct_external_id():

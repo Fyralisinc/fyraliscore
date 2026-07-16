@@ -183,7 +183,10 @@ class SourceIdentityBindingRepo:
                       WHERE target.tenant_id=binding.tenant_id
                         AND target.id::text =
                           binding.canonical_referent ->> 'id'
-                        AND target.archived_at IS NULL
+                        AND (
+                          target.archived_at IS NULL
+                          OR target.archived_at > $4
+                        )
                         AND (
                           binding.canonical_referent ->> 'type' <> 'customer'
                           OR target.metadata ->> 'semantic_kind' = 'customer'
@@ -212,6 +215,92 @@ class SourceIdentityBindingRepo:
                 ],
                 source_surface=row["source_surface"],
             )
+
+        if conn is not None:
+            return await read(conn)
+        if self._pool is None:
+            raise ValueError("source identity binding read requires a connection")
+        async with self._pool.acquire() as owned:
+            return await read(owned)
+
+    async def find_visible_binding(
+        self,
+        *,
+        tenant_id: UUID,
+        source_system: str,
+        source_native_identifier: str,
+        valid_at: datetime,
+        known_at: datetime | None = None,
+        conn: asyncpg.Connection | None = None,
+    ) -> SourceIdentityBinding | None:
+        """Find one pre-existing governed binding without creating authority."""
+
+        if (
+            not source_system
+            or not source_native_identifier.startswith(f"{source_system}:")
+        ):
+            return None
+        known_at = known_at or datetime.now(timezone.utc)
+
+        async def read(
+            target: asyncpg.Connection,
+        ) -> SourceIdentityBinding | None:
+            rows = await target.fetch(
+                """
+                SELECT binding.*
+                FROM source_identity_bindings binding
+                WHERE binding.tenant_id=$1
+                  AND binding.source_system=$2
+                  AND binding.source_native_identifier=$3
+                  AND binding.valid_from <= $4
+                  AND (
+                    binding.valid_to IS NULL OR $4 < binding.valid_to
+                  )
+                  AND binding.transaction_from <= $5
+                  AND (
+                    binding.transaction_to IS NULL
+                    OR $5 < binding.transaction_to
+                  )
+                  AND CASE
+                    WHEN binding.canonical_referent ->> 'type' = 'actor'
+                    THEN EXISTS (
+                      SELECT 1 FROM actors target
+                      WHERE target.tenant_id=binding.tenant_id
+                        AND target.id::text =
+                          binding.canonical_referent ->> 'id'
+                        AND target.status='active'
+                    )
+                    WHEN binding.canonical_referent ->> 'type'
+                         IN ('resource', 'customer')
+                    THEN EXISTS (
+                      SELECT 1 FROM resources target
+                      WHERE target.tenant_id=binding.tenant_id
+                        AND target.id::text =
+                          binding.canonical_referent ->> 'id'
+                        AND (
+                          target.archived_at IS NULL
+                          OR target.archived_at > $4
+                        )
+                        AND (
+                          binding.canonical_referent ->> 'type' <> 'customer'
+                          OR target.metadata ->> 'semantic_kind' = 'customer'
+                        )
+                    )
+                    ELSE TRUE
+                  END
+                ORDER BY binding.binding_version DESC,
+                         binding.transaction_from DESC
+                LIMIT 2
+                """,
+                tenant_id,
+                source_system,
+                source_native_identifier,
+                valid_at,
+                known_at,
+            )
+            if len(rows) != 1:
+                return None
+            return _binding_from_row(rows[0])
 
         if conn is not None:
             return await read(conn)

@@ -33,6 +33,9 @@ from typing import Any, Awaitable, Callable
 
 from lib.shared.errors import CompanyOSError
 from lib.shared.types import ObservationKind, TrustTierValue
+from services.ingest.ingestion.source_identity import (
+    StructuredSourceIdentityClaim,
+)
 
 
 # ARCHITECTURE §14 CHANNEL_TRUST_MAP — authoritative mapping.
@@ -106,6 +109,9 @@ class ObservationDraft:
     source_actor_ref: str | None = None
     external_id: str | None = None
     entities_hint: list[dict[str, Any]] = field(default_factory=list)
+    source_identity_claims: list[
+        StructuredSourceIdentityClaim
+    ] = field(default_factory=list)
     unresolved_phrases: list[str] = field(default_factory=list)
     raw_payload: dict[str, Any] | None = None
 

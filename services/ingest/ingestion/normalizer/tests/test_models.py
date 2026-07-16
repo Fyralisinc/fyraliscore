@@ -39,6 +39,18 @@ def _valid_fields() -> dict:
         "source_actor_ref": "slack:U01ALICE",
         "external_id": "C01:1234.567",
         "entities_hint": [{"type": "slack_channel", "id": "C01"}],
+        "source_identity_claims": [
+            {
+                "source_system": "slack",
+                "source_native_identifier": (
+                    "slack:workspace:T01"
+                ),
+                "source_surface": "Acme",
+                "claim_authority_ref": (
+                    "slack-handler:structured-workspace-field-v1"
+                ),
+            }
+        ],
         "normalized_at": _NOW,
         "ingress_metadata": {"delivery_id": "x"},
         "idem_hints": {"hint": "y"},
@@ -79,4 +91,14 @@ def test_envelope_requires_non_empty_raw_s3_key():
     fields = _valid_fields()
     fields["raw_s3_key"] = ""
     with pytest.raises(ValidationError):
+        NormalizedEnvelope(**fields)
+
+
+def test_envelope_rejects_cross_source_identity_claim() -> None:
+    fields = _valid_fields()
+    fields["source_identity_claims"][0]["source_system"] = "jira"
+    fields["source_identity_claims"][0][
+        "source_native_identifier"
+    ] = "jira:acme.atlassian.net:project:10000"
+    with pytest.raises(ValidationError, match="must match envelope source"):
         NormalizedEnvelope(**fields)

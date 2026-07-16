@@ -334,6 +334,7 @@ def _draft_from_envelope(env: NormalizedEnvelope) -> ObservationDraft:
         source_actor_ref=env.source_actor_ref,
         external_id=env.external_id,
         entities_hint=list(env.entities_hint),
+        source_identity_claims=list(env.source_identity_claims),
         unresolved_phrases=[],
         raw_payload=None,
     )

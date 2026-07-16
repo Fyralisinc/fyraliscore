@@ -136,6 +136,53 @@ async def test_normalize_slack_webhook_produces_normalized_envelope(
     assert norm.idem_hints == {"hint": "x"}
 
 
+async def test_normalize_jira_preserves_structured_project_claim(
+    _producer_stub, _s3_stub,
+):
+    tenant = uuid4()
+    payload = {
+        "webhookEvent": "jira:issue_updated",
+        "issue": {
+            "id": "10001",
+            "key": "ENG-42",
+            "self": (
+                "https://acme.atlassian.net/rest/api/2/issue/10001"
+            ),
+            "fields": {
+                "summary": "Service is degraded",
+                "updated": "2026-05-20T12:30:00.000+0000",
+                "project": {
+                    "id": "10000",
+                    "key": "ENG",
+                    "name": "Engineering",
+                },
+            },
+        },
+    }
+    raw_body, envelope_bytes, s3_key = _envelope_for(
+        payload,
+        tenant=tenant,
+        source="jira",
+        ingress_kind="webhook",
+    )
+    _s3_stub._storage[s3_key] = raw_body
+
+    assert await worker_module._normalize_one(
+        envelope_bytes,
+        _s3_stub,
+        _producer_stub,
+    )
+    _, kwargs = _producer_stub.produce.await_args
+    normalized = NormalizedEnvelope.model_validate_json(kwargs["value"])
+
+    assert len(normalized.source_identity_claims) == 1
+    claim = normalized.source_identity_claims[0]
+    assert claim.source_native_identifier == (
+        "jira:acme.atlassian.net:project:10000"
+    )
+    assert claim.source_surface == "ENG"
+
+
 # ---------------------------------------------------------------------
 # 2. Gmail Pub/Sub envelope — out-of-scope for M2 (no handler).
 # ---------------------------------------------------------------------

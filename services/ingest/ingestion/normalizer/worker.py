@@ -542,6 +542,7 @@ async def _normalize_one_with_envelope(
         source_actor_ref=draft.source_actor_ref,
         external_id=draft.external_id,
         entities_hint=draft.entities_hint,
+        source_identity_claims=draft.source_identity_claims,
         normalized_at=dt.datetime.now(tz=dt.timezone.utc),
         ingress_metadata=envelope.ingress_metadata,
         idem_hints=envelope.idem_hints,

@@ -58,6 +58,7 @@ from lib.shared.types import ObservationCreate, ObservationRow
 from services.domain.actors.repo import ActorRepo
 from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo, normalize_phrase
+from services.domain.source_identity_bindings import SourceIdentityBindingRepo
 from services.domain.triggers import ensure_event_arrival_trigger
 from services.ingest.ingestion.handlers import (
     ObservationDraft,
@@ -495,6 +496,8 @@ async def _resolve_entities(
         seen_opportunities.add(normalized)
         unresolved_phrases.append(phrase)
 
+    for claim in draft.source_identity_claims:
+        add_opportunity(claim.source_surface)
     for phrase in draft.unresolved_phrases:
         add_opportunity(phrase)
     for phrase in extract_bootstrap_mention_opportunities(
@@ -646,6 +649,12 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                 existing = await _lock_and_find_existing_observation(conn, draft)
                 if existing is not None:
                     deduped_row = await repo.insert(obs_create, conn=conn)
+                    await _attach_governed_source_identity_claims(
+                        conn,
+                        tenant_id=tenant_id,
+                        draft=draft,
+                        row=deduped_row,
+                    )
                     if enqueue_trigger:
                         trigger_queue_id = await _enqueue_event_arrival_trigger(
                             conn,
@@ -660,6 +669,12 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                     )
                 row = await repo.insert(obs_create, conn=conn)
                 if draft.external_id is not None and row.id != obs_id:
+                    await _attach_governed_source_identity_claims(
+                        conn,
+                        tenant_id=tenant_id,
+                        draft=draft,
+                        row=row,
+                    )
                     if enqueue_trigger:
                         trigger_queue_id = await _enqueue_event_arrival_trigger(
                             conn,
@@ -672,6 +687,12 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                         deduped=True,
                         trigger_queue_id=trigger_queue_id,
                     )
+                await _attach_governed_source_identity_claims(
+                    conn,
+                    tenant_id=tenant_id,
+                    draft=draft,
+                    row=row,
+                )
                 await _maybe_open_actor_identity_clarification(
                     conn,
                     tenant_id=tenant_id,
@@ -698,6 +719,46 @@ async def _insert_observation_and_maybe_enqueue_trigger(
         deduped=False,
         trigger_queue_id=trigger_queue_id,
     )
+
+
+async def _attach_governed_source_identity_claims(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    draft: ObservationDraft,
+    row: ObservationRow,
+) -> None:
+    """Attach structured claims only to pre-existing governed bindings."""
+
+    observation_source_system = draft.source_channel.split(":", 1)[0]
+    repo = SourceIdentityBindingRepo(None)
+    for claim in draft.source_identity_claims:
+        if (
+            claim.source_system != observation_source_system
+            or not claim.source_native_identifier.startswith(
+                f"{claim.source_system}:"
+            )
+        ):
+            continue
+        binding = await repo.find_visible_binding(
+            tenant_id=tenant_id,
+            source_system=claim.source_system,
+            source_native_identifier=claim.source_native_identifier,
+            valid_at=row.occurred_at,
+            conn=conn,
+        )
+        if binding is None:
+            continue
+        await repo.attach_to_observation(
+            tenant_id=tenant_id,
+            observation_id=row.id,
+            binding=binding,
+            source_surface=claim.source_surface,
+            attachment_authority_ref=(
+                f"ingestion-structured-claim:{claim.claim_authority_ref}"
+            ),
+            conn=conn,
+        )
 
 
 async def _maybe_open_actor_identity_clarification(
