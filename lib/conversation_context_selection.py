@@ -68,16 +68,16 @@ def _partial_rank(
     command: CommitInterpretationContextCommand,
     candidate: ConversationContextCandidate,
     probe: ContextProbeEnvelope,
-) -> tuple[int, int, int, int, float, float, str]:
+) -> tuple[int, float, int, int, int, float, str]:
     required = set(command.request.required_probe_surfaces)
     completed = len(required & set(probe.completed_probe_surfaces))
     missing = len(required - set(probe.completed_probe_surfaces))
     return (
-        -completed,
         len(probe.failed_probe_surfaces),
-        missing + len(probe.probe.unresolved_dependency_refs),
-        -len(candidate.layer_coverage),
         probe.contamination_score,
+        missing + len(probe.probe.unresolved_dependency_refs),
+        -completed,
+        -len(candidate.layer_coverage),
         command.policy.cost_score(candidate.cost),
         str(candidate.candidate_id),
     )

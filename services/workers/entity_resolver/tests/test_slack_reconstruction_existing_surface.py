@@ -41,23 +41,23 @@ async def test_existing_surface_produces_honest_slack_gold_measurement() -> None
     by_case = {observation.case_id: observation for observation in observations}
     assert len(observations) == 4
     assert report.status == "observed_with_gaps"
-    assert report.metrics.correct_case_rate == 0.0
+    assert report.metrics.correct_case_rate == 0.25
     assert report.metrics.mean_sufficient_set_recall == 1.0
     assert report.metrics.complete_sufficient_set_rate == 1.0
     assert report.metrics.reconstructability_rate == 1.0
-    assert report.metrics.contamination_rate == 0.2
-    assert report.metrics.selected_context_precision == 0.8
+    assert report.metrics.contamination_rate == pytest.approx(1 / 9)
+    assert report.metrics.selected_context_precision == pytest.approx(8 / 9)
     assert report.metrics.mean_topology_recall == 0.0
     assert report.metrics.edit_delete_correctness_rate == 0.5
     assert report.metrics.long_range_recall == 1.0
-    assert report.metrics.budget_adherence_rate == 0.5
-    assert report.metrics.abstention_under_insufficiency_rate == 0.0
+    assert report.metrics.budget_adherence_rate == 0.75
+    assert report.metrics.abstention_under_insufficiency_rate == 1.0
     assert report.metrics.supported_case_rate == 0.5
 
     thread = by_case["slack-thread-dependency-v1"]
     assert len(thread.candidate_event_revision_ids) == 4
-    assert len(thread.selected_event_revision_ids) == 4
-    assert thread.disposition.value == "needs_expansion"
+    assert len(thread.selected_event_revision_ids) == 3
+    assert thread.disposition.value == "operationally_sufficient"
     assert thread.unsupported_reasons == (
         "selected_topology_edges_not_materialized",
     )
@@ -75,7 +75,7 @@ async def test_existing_surface_produces_honest_slack_gold_measurement() -> None
     assert contamination.selected_event_revision_ids == (
         contamination.candidate_event_revision_ids[0],
     )
-    assert contamination.disposition.value == "operationally_sufficient"
+    assert contamination.disposition.value == "needs_clarification"
 
 
 def test_existing_surface_observer_cli_writes_replayable_artifacts(
@@ -109,7 +109,7 @@ def test_existing_surface_observer_cli_writes_replayable_artifacts(
     assert len(observations_path.read_text(encoding="utf-8").splitlines()) == 4
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["report"]["status"] == "observed_with_gaps"
-    assert payload["report"]["metrics"]["correct_case_rate"] == 0.0
+    assert payload["report"]["metrics"]["correct_case_rate"] == 0.25
     assert payload["report"]["metrics"]["mean_sufficient_set_recall"] == 1.0
     assert len(payload["report_digest"]) == 64
     output = capsys.readouterr().out

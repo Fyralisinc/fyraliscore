@@ -39,6 +39,7 @@ from lib.contracts.entity_mentions import CommitEntityMentionDetectionCommand
 from services.domain.entity_grounding.episode import (
     ContextObservationInput,
     candidate_id_for_ref,
+    estimate_context_tokens,
     prepare_context_selection,
 )
 from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
@@ -540,11 +541,21 @@ async def build_context(
                     source_space=source_space,
                     inclusion_layer=item.inclusion_layer,
                     inclusion_reasons=tuple(item.inclusion_reasons),
+                    content_text=item.content_text,
+                    token_count=estimate_context_tokens(item.content_text),
                 )
                 for item in recent_observations
             ),
             selection_dependency_refs=tuple(context.selection_dependencies),
             now=prepared_at,
+            focal_content_text=content_text,
+            governed_exact_alias_available=any(
+                alias.autonomous_replay_eligible
+                and alias.replay_lineage_valid
+                and alias.canonical_target_valid
+                and alias.resolution_scope == "tenant_global_exact"
+                for alias in recent_aliases
+            ),
         )
         context.context_selection_command = selection_command
         context.context_selection_outcome = selection_outcome

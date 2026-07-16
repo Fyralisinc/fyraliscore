@@ -9,6 +9,7 @@ referent, Observation, or any other company-physics aggregate.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -87,6 +88,9 @@ class ContextObservationInput:
     source_space: str
     inclusion_layer: str
     inclusion_reasons: tuple[str, ...]
+    content_text: str = ""
+    token_count: int = 0
+    topology_edge_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,12 @@ def candidate_id_for_ref(canonical_ref: dict[str, Any]) -> str:
     """Stable closed-set identifier for a tenant-local canonical ref."""
 
     return f"candidate:canonical:{canonical_sha256(canonical_ref)}"
+
+
+def estimate_context_tokens(text: str) -> int:
+    """Return a deterministic source-derived token proxy for context budgets."""
+
+    return len([token for token in text.split() if token])
 
 
 def build_grounding_episode(
@@ -414,6 +424,8 @@ def prepare_context_selection(
     context_observations: tuple[ContextObservationInput, ...],
     selection_dependency_refs: tuple[str, ...],
     now: datetime,
+    focal_content_text: str = "",
+    governed_exact_alias_available: bool = False,
 ) -> tuple[CommitInterpretationContextCommand, ContextSelectionOutcome]:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
@@ -435,6 +447,37 @@ def prepare_context_selection(
     source_spaces = tuple(
         sorted({source_space, *(item.source_space for item in eligible_context)})
     )
+    ambiguity_refs = _evidence_relative_ambiguity_refs(
+        phrase=phrase,
+        context_observations=eligible_context,
+        governed_exact_alias_available=governed_exact_alias_available,
+    )
+    context_dependent = (
+        source_channel == "slack:message"
+        and (
+            phrase_requires_context(phrase)
+            or bool(ambiguity_refs)
+        )
+    )
+    has_structural_context = any(
+        item.inclusion_layer == "source_topology"
+        for item in eligible_context
+    )
+    has_temporal_context = any(
+        item.inclusion_layer == "temporal_candidate"
+        for item in eligible_context
+    )
+    required_probe_surfaces = (
+        ("boundary_sensitivity",)
+        if not context_dependent
+        else (
+            ("source_topology", "boundary_sensitivity")
+            if has_structural_context
+            else ("temporal_alternatives", "boundary_sensitivity")
+            if has_temporal_context
+            else ("boundary_sensitivity",)
+        )
+    )
     request = InterpretationContextRequest(
         request_id=str(uuid7()),
         tenant_id=tenant_id,
@@ -447,11 +490,7 @@ def prepare_context_selection(
         processing_authority=authority,
         allowed_source_spaces=RestrictionSet.only(*source_spaces),
         risk_tier=ContextRiskTier.MEDIUM,
-        required_probe_surfaces=(
-            "source_topology",
-            "temporal_alternatives",
-            "boundary_sensitivity",
-        ),
+        required_probe_surfaces=required_probe_surfaces,
         budget=ContextBudget(
             max_events=20,
             max_topology_hops=2,
@@ -486,16 +525,27 @@ def prepare_context_selection(
         )
         for item in eligible_context
     )
+    input_by_revision = {
+        f"observation:{item.observation_id}:v1": item
+        for item in eligible_context
+    }
     groups: list[tuple[SelectedContextItem, ...]] = [(focal,)]
-    for layer in (
-        CandidateContextLayer.SOURCE_TOPOLOGY,
-        CandidateContextLayer.TEMPORAL,
-    ):
-        items = tuple(item for item in context_items if item.layer is layer)
-        if items:
-            groups.append((focal, *items))
-    if context_items:
-        groups.append((focal, *context_items))
+    structural_items = tuple(
+        item
+        for item in context_items
+        if item.layer is CandidateContextLayer.SOURCE_TOPOLOGY
+    )[: request.budget.max_events - 1]
+    if structural_items:
+        groups.append((focal, *structural_items))
+    temporal_items = tuple(
+        item
+        for item in context_items
+        if item.layer is CandidateContextLayer.TEMPORAL
+    )
+    groups.extend(
+        (focal, item)
+        for item in temporal_items[: request.budget.max_events - 1]
+    )
     unique_groups: list[tuple[SelectedContextItem, ...]] = []
     seen_groups: set[tuple[str, ...]] = set()
     for group in groups:
@@ -508,18 +558,28 @@ def prepare_context_selection(
         json.dumps(item, sort_keys=True, separators=(",", ":"))
         for item in boundary_hypotheses
     ) or ("same-source-space temporal boundary remains provisional",)
-    context_dependent = phrase_requires_context(phrase)
     candidates: list[ConversationContextCandidate] = []
     probes: list[ContextProbeEnvelope] = []
-    has_topology_basis = any(
-        item.get("kind") == "source_topology" for item in boundary_hypotheses
-    )
-    has_temporal_basis = any(
-        item.get("kind") == "same_source_space_temporal"
-        for item in boundary_hypotheses
-    )
     for selected in unique_groups:
         layer_coverage = tuple(dict.fromkeys(item.layer for item in selected))
+        selected_inputs = tuple(
+            input_by_revision[item.event_revision_id]
+            for item in selected[1:]
+            if item.event_revision_id in input_by_revision
+        )
+        topology_edge_ids = tuple(
+            dict.fromkeys(
+                edge_id
+                for item in selected_inputs
+                for edge_id in item.topology_edge_ids
+            )
+        )
+        boundary_resolved, semantic_signature = _candidate_boundary_probe(
+            phrase=phrase,
+            selected_context=selected_inputs,
+            context_dependent=context_dependent,
+            ambiguity_refs=ambiguity_refs,
+        )
         hypotheses: tuple[ConversationEpisodeHypothesis, ...] = ()
         if source_channel == "slack:message":
             hypotheses = (
@@ -553,14 +613,21 @@ def prepare_context_selection(
             candidate_id=uuid7(),
             request_id=request.request_id,
             selected_items=selected,
-            topology_edge_ids=(),
+            topology_edge_ids=topology_edge_ids,
             embedded_episode_hypotheses=hypotheses,
             discourse_referents=(),
             layer_coverage=layer_coverage,
             omitted_lane_reasons=omitted,
             cost=ContextCandidateCost(
                 event_count=len(selected),
-                token_count=128 * len(selected),
+                token_count=(
+                    estimate_context_tokens(focal_content_text)
+                    + sum(
+                        item.token_count
+                        or estimate_context_tokens(item.content_text)
+                        for item in selected_inputs
+                    )
+                ),
                 source_reads=min(3, len(selected)),
                 model_calls=1,
                 latency_ms=50 + 10 * len(selected),
@@ -569,31 +636,39 @@ def prepare_context_selection(
             configuration_version=_CONTEXT_POLICY_VERSION,
         )
         completed: list[str] = []
-        if source_channel != "slack:message" or not context_dependent or (
-            not topology_incomplete
-            and (
-                CandidateContextLayer.SOURCE_TOPOLOGY in layer_coverage
-                or has_topology_basis
-            )
+        if (
+            CandidateContextLayer.SOURCE_TOPOLOGY in layer_coverage
+            and not topology_incomplete
         ):
             completed.append("source_topology")
-        if source_channel != "slack:message" or not context_dependent or (
-            CandidateContextLayer.TEMPORAL in layer_coverage or has_temporal_basis
-        ):
+        if CandidateContextLayer.TEMPORAL in layer_coverage:
             completed.append("temporal_alternatives")
-        if source_channel != "slack:message" or not context_dependent:
+        if boundary_resolved:
             completed.append("boundary_sensitivity")
+        unresolved = (
+            ()
+            if boundary_resolved
+            else ambiguity_refs or (phrase,)
+        )
         probe = ContextProbeResult(
             probe_id=f"context-light-probe:{candidate.candidate_id}",
             probe_version="resolver-context-light-probe-v1",
             tested_context_hash=candidate.candidate_content_hash,
-            unresolved_dependency_refs=((phrase,) if context_dependent else ()),
-            alternative_interpretation_refs=(),
+            unresolved_dependency_refs=unresolved,
+            alternative_interpretation_refs=(
+                ambiguity_refs if not boundary_resolved else ()
+            ),
             perturbation_results={
-                "boundary_substitution": 1.0 if context_dependent else 0.0
+                "boundary_substitution": 0.0 if boundary_resolved else 1.0
             },
             future_or_authority_incident_refs=(),
-            expected_value_of_expansion=0.8 if context_dependent else 0.0,
+            expected_value_of_expansion=(
+                0.1
+                if ambiguity_refs and not boundary_resolved
+                else 0.8
+                if context_dependent and not boundary_resolved
+                else 0.0
+            ),
             cost_of_expansion=0.2,
         )
         probes.append(
@@ -605,10 +680,20 @@ def prepare_context_selection(
                 semantic_output_digest=canonical_sha256(
                     {
                         "phrase": phrase.casefold(),
-                        "context_dependent": context_dependent,
+                        "boundary_resolved": boundary_resolved,
+                        "semantic_signature": semantic_signature,
+                        "layer_coverage": [
+                            layer.value for layer in layer_coverage
+                        ],
                     }
                 ),
-                contamination_score=min(1.0, 0.02 * (len(selected) - 1)),
+                contamination_score=(
+                    max(0.5, 0.02 * len(selected_inputs))
+                    if ambiguity_refs
+                    and selected_inputs
+                    and not boundary_resolved
+                    else min(1.0, 0.02 * len(selected_inputs))
+                ),
             )
         )
         candidates.append(candidate)
@@ -663,6 +748,139 @@ def prepare_context_selection(
         frozen_at=now,
     )
     return command, outcome
+
+
+_CONTEXT_REFERENCE_TOKENS = {
+    "it",
+    "this",
+    "that",
+    "these",
+    "those",
+    "they",
+    "them",
+    "he",
+    "she",
+    "we",
+    "same",
+    "again",
+    "here",
+    "there",
+    "above",
+    "former",
+    "latter",
+    "the",
+}
+_AMBIGUITY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "again",
+    "also",
+    "at",
+    "be",
+    "blocked",
+    "delayed",
+    "did",
+    "finish",
+    "finished",
+    "for",
+    "in",
+    "is",
+    "of",
+    "on",
+    "still",
+    "the",
+    "to",
+    "was",
+}
+
+
+def _evidence_relative_ambiguity_refs(
+    *,
+    phrase: str,
+    context_observations: tuple[ContextObservationInput, ...],
+    governed_exact_alias_available: bool,
+) -> tuple[str, ...]:
+    if governed_exact_alias_available or phrase_requires_context(phrase):
+        return ()
+    phrase_tokens = _tokens(phrase)
+    if len(phrase_tokens) != 1 or len(phrase_tokens[0]) < 3:
+        return ()
+    phrase_token = phrase_tokens[0]
+    matches: list[tuple[str, tuple[str, ...]]] = []
+    for item in context_observations:
+        tokens = _tokens(item.content_text)
+        if phrase_token not in tokens:
+            continue
+        qualifiers = tuple(
+            sorted(
+                {
+                    token
+                    for token in tokens
+                    if token != phrase_token
+                    and token not in _AMBIGUITY_STOPWORDS
+                }
+            )
+        )
+        matches.append(
+            (
+                f"observation:{item.observation_id}:v1",
+                qualifiers,
+            )
+        )
+    if len(matches) < 2 or len({qualifiers for _, qualifiers in matches}) < 2:
+        return ()
+    return tuple(ref for ref, _ in matches)
+
+
+def _candidate_boundary_probe(
+    *,
+    phrase: str,
+    selected_context: tuple[ContextObservationInput, ...],
+    context_dependent: bool,
+    ambiguity_refs: tuple[str, ...],
+) -> tuple[bool, tuple[str, ...]]:
+    if not context_dependent:
+        return True, ("self-contained-source",)
+    signatures = tuple(
+        canonical_sha256(
+            {
+                "event_revision_id": f"observation:{item.observation_id}:v1",
+                "content_text": item.content_text,
+                "inclusion_layer": item.inclusion_layer,
+            }
+        )
+        for item in selected_context
+    )
+    if ambiguity_refs:
+        return False, signatures or ("unresolved-bare-surface",)
+    if not selected_context:
+        return False, ("missing-context",)
+    anchor_terms = {
+        token
+        for token in _tokens(phrase)
+        if token not in _CONTEXT_REFERENCE_TOKENS
+    }
+    if anchor_terms:
+        resolved = any(
+            anchor_terms.intersection(_tokens(item.content_text))
+            for item in selected_context
+        )
+    else:
+        resolved = any(
+            item.inclusion_layer == "source_topology"
+            for item in selected_context
+        )
+    return bool(resolved), signatures
+
+
+def _tokens(text: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in re.findall(r"[a-z0-9]+", text.casefold())
+        if token
+    )
 
 
 def _processing_authority(
@@ -1118,6 +1336,7 @@ __all__ = [
     "build_adjudicated_grounding_decision",
     "build_grounding_episode",
     "candidate_id_for_ref",
+    "estimate_context_tokens",
     "phrase_requires_context",
     "prepare_context_selection",
 ]

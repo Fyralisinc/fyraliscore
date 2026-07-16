@@ -25,6 +25,7 @@ from lib.evaluation.slack_reconstruction_gold import (
 from lib.shared.errors import ValidationError
 from services.domain.entity_grounding.episode import (
     ContextObservationInput,
+    estimate_context_tokens,
     prepare_context_selection,
 )
 from services.ingest.ingestion.handlers import ObservationDraft
@@ -123,6 +124,7 @@ async def _observe_case(
             for item in context_inputs
         ),
         now=focal.occurred_at + timedelta(seconds=1),
+        focal_content_text=focal.content_text,
     )
     candidates = tuple(
         dict.fromkeys(
@@ -251,6 +253,8 @@ def _context_input(
         source_space=str(draft.content.get("channel") or draft.source_channel),
         inclusion_layer=inclusion_layer,
         inclusion_reasons=reasons,
+        content_text=draft.content_text,
+        token_count=estimate_context_tokens(draft.content_text),
     )
 
 

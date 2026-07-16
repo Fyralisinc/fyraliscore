@@ -596,6 +596,8 @@ class EntityResolverWorker:
                 source_space=ctx.source_space,
                 inclusion_layer=item.inclusion_layer,
                 inclusion_reasons=tuple(item.inclusion_reasons),
+                content_text=item.content_text,
+                token_count=len(item.content_text.split()),
             )
             for item in ctx.recent_observations
         )

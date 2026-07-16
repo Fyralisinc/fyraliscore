@@ -401,6 +401,160 @@ def test_context_dependent_slack_phrase_cannot_auto_admit_without_stable_boundar
     )
 
 
+def test_context_probe_uses_only_the_candidate_specific_thread_chain() -> None:
+    root_id = uuid4()
+    reply_id = uuid4()
+    distractor_id = uuid4()
+    command, outcome = prepare_context_selection(
+        tenant_id=TENANT,
+        observation_id=OBSERVATION,
+        phrase="it",
+        occurred_at=NOW,
+        source_channel="slack:message",
+        source_space="C-finance",
+        topology_incomplete=False,
+        boundary_hypotheses=(
+            {"kind": "source_topology", "candidate_count": 2},
+            {"kind": "same_source_space_temporal", "candidate_count": 1},
+        ),
+        context_observations=(
+            ContextObservationInput(
+                observation_id=root_id,
+                occurred_at=NOW - timedelta(minutes=3),
+                source_channel="slack:message",
+                source_space="C-finance",
+                inclusion_layer="source_topology",
+                inclusion_reasons=("thread root",),
+                content_text="Nimbus migration is blocked",
+                token_count=4,
+            ),
+            ContextObservationInput(
+                observation_id=reply_id,
+                occurred_at=NOW - timedelta(minutes=2),
+                source_channel="slack:message",
+                source_space="C-finance",
+                inclusion_layer="source_topology",
+                inclusion_reasons=("thread reply",),
+                content_text="The dependency is the cutover",
+                token_count=5,
+            ),
+            ContextObservationInput(
+                observation_id=distractor_id,
+                occurred_at=NOW - timedelta(minutes=1),
+                source_channel="slack:message",
+                source_space="C-finance",
+                inclusion_layer="temporal_candidate",
+                inclusion_reasons=("same channel",),
+                content_text="Office lunch moved to Friday",
+                token_count=5,
+            ),
+        ),
+        selection_dependency_refs=(),
+        now=NOW + timedelta(seconds=1),
+        focal_content_text="Is it still blocked?",
+    )
+
+    selected = {
+        item.event_revision_id for item in outcome.snapshot.selected_items
+    }
+    assert outcome.disposition.value == "operationally_sufficient"
+    assert selected == {
+        f"observation:{OBSERVATION}:v1",
+        f"observation:{root_id}:v1",
+        f"observation:{reply_id}:v1",
+    }
+    assert f"observation:{distractor_id}:v1" not in selected
+    selected_candidate = next(
+        candidate
+        for candidate in command.candidates
+        if candidate.candidate_id == outcome.selected_candidate_ids[0]
+    )
+    assert selected_candidate.cost.token_count == 13
+
+
+def test_evidence_relative_bare_name_ambiguity_requires_clarification() -> None:
+    context = tuple(
+        ContextObservationInput(
+            observation_id=uuid4(),
+            occurred_at=NOW - timedelta(minutes=offset),
+            source_channel="slack:message",
+            source_space="C-finance",
+            inclusion_layer="temporal_candidate",
+            inclusion_reasons=("same channel",),
+            content_text=content,
+        )
+        for offset, content in (
+            (2, "Atlas CRM migration is delayed"),
+            (1, "Atlas infrastructure migration is delayed"),
+        )
+    )
+    _, outcome = prepare_context_selection(
+        tenant_id=TENANT,
+        observation_id=OBSERVATION,
+        phrase="Atlas",
+        occurred_at=NOW,
+        source_channel="slack:message",
+        source_space="C-finance",
+        topology_incomplete=False,
+        boundary_hypotheses=(
+            {"kind": "same_source_space_temporal", "candidate_count": 2},
+        ),
+        context_observations=context,
+        selection_dependency_refs=(),
+        now=NOW + timedelta(seconds=1),
+        focal_content_text="Atlas is delayed",
+    )
+
+    assert outcome.disposition.value == "needs_clarification"
+    assert tuple(
+        item.event_revision_id for item in outcome.snapshot.selected_items
+    ) == (f"observation:{OBSERVATION}:v1",)
+
+
+def test_governed_exact_alias_preserves_self_contained_resolution() -> None:
+    _, outcome = prepare_context_selection(
+        tenant_id=TENANT,
+        observation_id=OBSERVATION,
+        phrase="NBI",
+        occurred_at=NOW,
+        source_channel="slack:message",
+        source_space="C-finance",
+        topology_incomplete=False,
+        boundary_hypotheses=(
+            {"kind": "same_source_space_temporal", "candidate_count": 2},
+        ),
+        context_observations=(
+            ContextObservationInput(
+                observation_id=uuid4(),
+                occurred_at=NOW - timedelta(minutes=2),
+                source_channel="slack:message",
+                source_space="C-finance",
+                inclusion_layer="temporal_candidate",
+                inclusion_reasons=("same channel",),
+                content_text="NBI finance migration",
+            ),
+            ContextObservationInput(
+                observation_id=uuid4(),
+                occurred_at=NOW - timedelta(minutes=1),
+                source_channel="slack:message",
+                source_space="C-finance",
+                inclusion_layer="temporal_candidate",
+                inclusion_reasons=("same channel",),
+                content_text="NBI analytics migration",
+            ),
+        ),
+        selection_dependency_refs=(),
+        now=NOW + timedelta(seconds=1),
+        focal_content_text="NBI renewal",
+        governed_exact_alias_available=True,
+    )
+
+    assert outcome.disposition.value == "operationally_sufficient"
+    assert tuple(
+        item.event_revision_id for item in outcome.snapshot.selected_items
+    ) == (f"observation:{OBSERVATION}:v1",)
+
+
 def test_candidate_ids_are_canonical_and_order_independent() -> None:
     same_different_order = {"id": "customer:nimbus", "type": "customer"}
     assert candidate_id_for_ref(CUSTOMER) == candidate_id_for_ref(same_different_order)
