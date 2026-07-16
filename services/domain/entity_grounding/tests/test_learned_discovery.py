@@ -104,6 +104,63 @@ async def test_provider_failure_falls_back_without_partial_learned_output() -> N
 
 
 @pytest.mark.asyncio
+async def test_unique_exact_surface_repairs_bad_model_offsets() -> None:
+    signal_id = uuid4()
+    provider = ScriptedProvider(
+        {"mentions": [{
+            "signal_id": str(signal_id),
+            "surface": "Project Komorebi",
+            "span_start": 4,
+            "span_end": 21,
+            "entity_type": "project",
+            "confidence": 0.93,
+            "abstain": False,
+        }]}
+    )
+
+    result = await discover_batch_mentions(
+        provider=provider,
+        signals=(PersistedSignalText(
+            signal_id,
+            "email:message",
+            "Aiko leads Project Komorebi.",
+        ),),
+    )
+
+    candidate = result.candidates[0]
+    assert (candidate.span_start, candidate.span_end) == (11, 27)
+    assert candidate.fate is EntityMentionDetectionFate.DETECTED
+    assert "learned_span_repaired_unique_exact_surface" in candidate.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_repeated_surface_with_bad_offsets_remains_rejected() -> None:
+    signal_id = uuid4()
+    provider = ScriptedProvider(
+        {"mentions": [{
+            "signal_id": str(signal_id),
+            "surface": "Atlas",
+            "span_start": 2,
+            "span_end": 7,
+            "entity_type": "project",
+            "confidence": 0.93,
+            "abstain": False,
+        }]}
+    )
+
+    result = await discover_batch_mentions(
+        provider=provider,
+        signals=(PersistedSignalText(
+            signal_id,
+            "slack:message",
+            "Atlas depends on Atlas.",
+        ),),
+    )
+
+    assert result.candidates[0].fate is EntityMentionDetectionFate.REJECTED_NOT_ANCHORED
+
+
+@pytest.mark.asyncio
 async def test_preflight_marks_structured_provider_ready() -> None:
     await preflight_structured_discovery(PreflightProvider({"ready": True}))
 

@@ -233,6 +233,23 @@ def _verify_candidates(
             in_bounds
             and signal.content_text[item.span_start : item.span_end] == item.surface
         )
+        span_start = item.span_start
+        span_end = item.span_end
+        repaired = False
+        if not exact:
+            occurrences: list[int] = []
+            cursor = 0
+            while True:
+                found = signal.content_text.find(item.surface, cursor)
+                if found < 0:
+                    break
+                occurrences.append(found)
+                cursor = found + max(1, len(item.surface))
+            if len(occurrences) == 1:
+                span_start = occurrences[0]
+                span_end = span_start + len(item.surface)
+                exact = True
+                repaired = True
         if not exact:
             fate = EntityMentionDetectionFate.REJECTED_NOT_ANCHORED
             reasons = ("learned_span_failed_exact_source_verification",)
@@ -246,18 +263,22 @@ def _verify_candidates(
         else:
             fate = EntityMentionDetectionFate.DETECTED
             reasons = (
-                "learned_high_confidence_exact_source_span",
+                (
+                    "learned_span_repaired_unique_exact_surface"
+                    if repaired
+                    else "learned_high_confidence_exact_source_span"
+                ),
                 f"learned_type:{item.entity_type}",
             )
-        key = (item.signal_id, item.span_start, item.span_end, item.surface.casefold())
+        key = (item.signal_id, span_start, span_end, item.surface.casefold())
         if key in seen:
             continue
         seen.add(key)
         candidates.append(VerifiedMentionCandidate(
             signal_id=item.signal_id,
             surface=item.surface,
-            span_start=item.span_start,
-            span_end=item.span_end,
+            span_start=span_start,
+            span_end=span_end,
             entity_type=item.entity_type,
             confidence=item.confidence,
             fate=fate,
