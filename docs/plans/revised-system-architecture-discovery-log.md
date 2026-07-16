@@ -465,6 +465,82 @@ coherent diff.
   introduce fan-out consumer receipts/high-water tracking, registered
   projection authority and a repeated-stage manifest contract.
 
+### DISC-012 — Exact authorization can create planned agency, but not honest Work economics
+
+- **Date:** 2026-07-16
+- **Milestone:** Durable authorization-to-planned-agency activation
+- **Status:** `deferred`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** AuthorizationDecision, InterventionSpec,
+  WorkflowRun, Task, WorkObligation, activation runtime and joined evaluation
+- **Working core boundary:** A production-registered activation worker now
+  consumes only the exact version-one canonical event for an authorized
+  `AuthorizationDecision`. Discovery revalidates the canonical event against
+  its CommandResult, accepted Proposal, immutable InterventionSpec, exact
+  operation, target and parameter-field scope. It freezes a versioned plan with
+  deterministic WorkflowRun and Task UUIDs, activation time, workflow-spec
+  reference and grounded target. Leased workers recover abandoned claims with
+  a new fencing token. In one transaction the worker asks
+  `AgencyStateApplier` to create one planned Workflow and one planned
+  external-effect Task, verifies their exact first versions and terminalizes
+  the activation work. Expired authorization, retry and terminal failure are
+  explicit fates. The worker's processing context is restricted to the exact
+  internal Workflow or Task object and cannot schedule, lease or dispatch an
+  external effect.
+- **Implementation evidence:** The joined Slack-to-feedback E2E no longer lets
+  the test harness create the Workflow or Task. The activation worker creates
+  both from the frozen plan, after which the harness advances their later
+  lifecycle states. Replaying the activation worker discovers and claims zero
+  new work. Its two commands use deterministic version-five command IDs and
+  exact object-restricted processing authority. Repository tests prove
+  idempotent discovery, source-chain revalidation, deterministic plan identity,
+  exact planned-object verification, lease takeover, stale-worker rejection,
+  retry, authorization-expired and failed-terminal fates. The joined evaluator
+  continuously reports activation exposure, fate counts, completion rate,
+  incomplete work, authorization expiry and terminal failure.
+- **Deferred architecture gaps:**
+  - This worker instantiates internal agency only. It does not make the
+    Workflow active, make the Task ready or in progress, register Work, select
+    a processing class, lease a worker, reserve an effect or call a provider.
+  - `workflow_spec_version_ref` is an exact string identity, but there is not
+    yet a canonical WorkflowSpec registry/body that the worker can resolve and
+    compile. The first slice therefore uses a fixed versioned one-task
+    activation policy. It cannot yet prove that an arbitrary referenced
+    workflow definition was faithfully instantiated.
+  - The immutable Proposal and Authorization do not carry a defensible
+    `WorkObligation.expected_value` or an exact economic assessment reference.
+    The test harness still supplies `expected_value=0.8` and related priority
+    scores. Copying those constants into production would fabricate company
+    physics, so Work registration intentionally remains outside this worker.
+  - The InterventionSpec contains one target and operation, while real
+    workflows may require multiple tasks, prerequisites, owners, checkpoints
+    and non-effect work. The current deterministic one-task identity scheme is
+    only the first template family.
+  - Rejected authorization events do not establish activation work because
+    they are outside the activation-eligible denominator. The authorization
+    ledger remains the canonical rejected fate; a future full saga report may
+    still want an explicit no-activation ConsumerReceipt.
+  - Discovery is another direct canonical-event scan rather than a partitioned
+    fan-out consumer with high-water, gap detection and ConsumerReceipts.
+  - The narrow processing grant and writer scope remain embedded protocol
+    contexts rather than broker-issued and registry-fenced runtime authority.
+  - A single transaction prevents a partial Workflow-without-Task activation,
+    but concurrent-worker crash injection and historical queue reconstruction
+    have not yet been exercised beyond lease/replay tests.
+  - Activation completion proves exact internal object creation, not action
+    value, outcome improvement or policy learning.
+- **Reason for deferral:** Workflow and Task identity are derivable from exact
+  authorization without making a new company judgment. Work economics are not.
+  Stopping at this semantic boundary removes another manual runtime handoff
+  while refusing to turn a convenient test estimate into canonical production
+  truth.
+- **Return condition:** Add a canonical WorkflowSpec/template registry and a
+  governed economic-assessment object that supplies expected value, cost,
+  priority, uncertainty and envelope provenance. Then let a distinct Work
+  registrar create the exact obligation, and let a scheduler/governor decide
+  eligibility and lease under its own policy and authority. Preserve the
+  activation worker as planned-agency-only.
+
 ## Reconciliation Procedure
 
 At a reconciliation milestone:
