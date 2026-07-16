@@ -218,7 +218,7 @@ Everything else receives an explicit safe behavior and return condition here.
 
 ### EDGE-015 — Variant collision and homonym safety
 
-- **Status:** `open`
+- **Status:** `active`
 - **Trigger:** An acronym, short form, normalized spelling or typo can rank two
   permitted entities, including entities of different types or validity times.
 - **Risk:** Candidate-memory lift can become a high-confidence false merge or
@@ -226,11 +226,19 @@ Everything else receives an explicit safe behavior and return condition here.
 - **Safe boundary:** Candidate ranking may improve recall but must not remove
   any colliding candidate, none-of-the-above or review/abstention fate. Usage,
   confidence and SAGE utility cannot promote identity.
-- **Return condition:** Run a sealed collision matrix across all six variant
-  families, same- and cross-type homonyms, historical-name reuse, conflicting
-  source IDs and inactive targets. Require zero wrong resolutions/Models and
-  complete collision-triggered review or abstention before behavioral
-  promotion.
+- **Current evaluator:** A deterministic 16-case registry now covers eight
+  collision families: same- and cross-type acronyms, ambiguous short forms,
+  punctuation/Unicode normalization, channel-local nicknames, authenticated
+  source-ID conflicts, inactive targets and historical-name reuse. It measures
+  candidate visibility, none-of-the-above availability, unsafe versus
+  authoritative resolution, wrong Models, alias promotion, source immutability
+  and exact family/entity/lifecycle strata.
+- **Return condition:** Execute the sealed registry on real PostgreSQL. Require
+  zero learned-target or other unauthorized resolutions, zero wrong Models,
+  zero promotion and complete safe containment for every supported case.
+  Authenticated source-native identifiers may resolve only their authorized
+  active conflicting target. Unsupported source-ID authority must remain
+  explicit until a genuine persisted source-identity binding exists.
 
 ### EDGE-016 — Rename and lifecycle changes cannot be aliases
 

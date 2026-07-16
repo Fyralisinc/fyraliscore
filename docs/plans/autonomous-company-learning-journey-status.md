@@ -865,3 +865,24 @@ not claimed by this working version.
   mediated success `1.0`, adaptive target authorization `1.0`, frozen target
   exposure `0.0`, frozen safe review/abstention `1.0`, source immutability
   `1.0`, zero control-integrity violations and zero hard-safety incidents.
+
+### 2026-07-16 — Variant collision evaluator sealed
+
+- Added a deterministic 16-case negative-control registry covering same- and
+  cross-type acronyms, ambiguous short forms, normalization collisions,
+  channel-local nicknames, source-native conflicts, inactive targets and
+  historical-name reuse.
+- The evaluator distinguishes unsafe learned resolution from safe resolution
+  backed by an explicitly authorized source-native identifier; ambiguous fixture
+  text no longer leaks the conflicting answer.
+- Continuous reports preserve candidate visibility, none-of-the-above
+  availability, safe containment, unsafe and authoritative resolution, wrong
+  Models, alias promotion, source immutability, support coverage and exact
+  collision/entity/lifecycle strata.
+- The evaluator-only checkpoint has six focused passing tests. Its real
+  PostgreSQL runtime is the active next step; the two source-native-ID cases
+  must remain explicitly unsupported until genuine source-identity authority is
+  persisted.
+- The working-version evaluator currently adds one file-over-threshold debt
+  item. It is recorded for later module decomposition rather than delaying the
+  first honest end-to-end collision result.
