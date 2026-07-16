@@ -17,6 +17,7 @@ from lib.evaluation.company_learning_experiment import (
 )
 from lib.evaluation.company_learning_assurance import (
     ActiveSurfacesAssurance,
+    CanonicalReplacementAssurance,
     CompanyLearningAssuranceSummary,
     CorrectionAssurance,
     CustomerLifecycleAssurance,
@@ -24,16 +25,24 @@ from lib.evaluation.company_learning_assurance import (
     PopulationAssurance,
     PositiveAssurance,
     RetentionAssurance,
+    SourceBindingLifecycleAssurance,
     SlackAssurance,
     VariantCollisionAssurance,
     VariantPopulationAssurance,
     validate_company_learning_assurance_artifact,
     validate_active_surfaces_assurance_component,
+    validate_canonical_replacement_assurance_component,
     validate_correction_assurance_component,
     validate_customer_lifecycle_assurance_component,
     validate_retention_assurance_component,
+    validate_source_binding_lifecycle_assurance_component,
     validate_variant_collision_assurance_component,
     validate_variant_population_assurance_component,
+)
+from lib.evaluation.canonical_referent_replacement import (
+    CanonicalResourceReplacementEvidence,
+    ReplacementProofCell,
+    evaluate_canonical_resource_replacement,
 )
 from lib.evaluation.company_learning_active_surfaces import (
     ActiveLearningSurfacesEvidence,
@@ -108,9 +117,20 @@ from lib.evaluation.tests.test_company_learning_variant_collisions import (
 from lib.evaluation.tests.test_company_learning_customer_lifecycle import (
     _safe_observations as _safe_lifecycle_observations,
 )
+from lib.evaluation.tests.test_canonical_referent_replacement import (
+    _observation as _replacement_observation,
+)
+from lib.evaluation.tests.test_source_identity_binding_lifecycle import (
+    _observation as _binding_lifecycle_observation,
+)
 from scripts.run_company_learning_customer_lifecycle_db import (
     CompanyLearningCustomerLifecycleEvidence,
     CustomerLifecycleRuntimeAssignment,
+)
+from lib.evaluation.source_identity_binding_lifecycle import (
+    BindingLifecycleProofCell,
+    SourceIdentityBindingLifecycleEvidence,
+    evaluate_source_identity_binding_lifecycle,
 )
 
 
@@ -1129,6 +1149,96 @@ def _retention_assurance(
     )
 
 
+def _canonical_replacement_evidence(
+    *,
+    run_id: str = "pytest-assurance:canonical-replacement",
+    system_version: str = "pytest-system",
+    observation=None,
+) -> CanonicalResourceReplacementEvidence:
+    observation = observation or _replacement_observation()
+    return CanonicalResourceReplacementEvidence(
+        run_id=run_id,
+        system_version=system_version,
+        created_at="2026-07-17T00:00:00+00:00",
+        observation=observation,
+        report=evaluate_canonical_resource_replacement(observation),
+        artifact_refs=("pytest:canonical-replacement",),
+    )
+
+
+def _canonical_replacement_assurance(
+    *,
+    path: str = "/tmp/canonical-replacement.json",
+    evidence: CanonicalResourceReplacementEvidence | None = None,
+) -> CanonicalReplacementAssurance:
+    evidence = evidence or _canonical_replacement_evidence()
+    report = evidence.report
+    return CanonicalReplacementAssurance(
+        status=(
+            "failed"
+            if report.violating_measurement_count
+            else "observed"
+            if report.full_scope_complete
+            else "observed_with_gaps"
+        ),
+        evidence_tier=EvidenceTier.E4,
+        report=report,
+        artifact_paths={"canonical_replacement_evidence": path},
+        component_digests={
+            "evidence": evidence.digest,
+            "report": report.digest,
+            "observation": canonical_sha256(
+                evidence.observation.model_dump(mode="json")
+            ),
+        },
+    )
+
+
+def _source_binding_lifecycle_evidence(
+    *,
+    run_id: str = "pytest-assurance:source-binding-lifecycle",
+    system_version: str = "pytest-system",
+    observation=None,
+) -> SourceIdentityBindingLifecycleEvidence:
+    observation = observation or _binding_lifecycle_observation()
+    return SourceIdentityBindingLifecycleEvidence(
+        run_id=run_id,
+        system_version=system_version,
+        created_at="2026-07-17T00:00:00+00:00",
+        observation=observation,
+        report=evaluate_source_identity_binding_lifecycle(observation),
+        artifact_refs=("pytest:source-binding-lifecycle",),
+    )
+
+
+def _source_binding_lifecycle_assurance(
+    *,
+    path: str = "/tmp/source-binding-lifecycle.json",
+    evidence: SourceIdentityBindingLifecycleEvidence | None = None,
+) -> SourceBindingLifecycleAssurance:
+    evidence = evidence or _source_binding_lifecycle_evidence()
+    report = evidence.report
+    return SourceBindingLifecycleAssurance(
+        status=(
+            "failed"
+            if report.violating_measurement_count
+            else "observed"
+            if report.full_scope_complete
+            else "observed_with_gaps"
+        ),
+        evidence_tier=EvidenceTier.E4,
+        report=report,
+        artifact_paths={"source_binding_lifecycle_evidence": path},
+        component_digests={
+            "evidence": evidence.digest,
+            "report": report.digest,
+            "observation": canonical_sha256(
+                evidence.observation.model_dump(mode="json")
+            ),
+        },
+    )
+
+
 def _summary(
     *,
     slack: SlackAssurance | None = None,
@@ -1138,6 +1248,8 @@ def _summary(
     customer_lifecycle: CustomerLifecycleAssurance | None = None,
     active_surfaces: ActiveSurfacesAssurance | None = None,
     retention: RetentionAssurance | None = None,
+    canonical_replacement: CanonicalReplacementAssurance | None = None,
+    source_binding_lifecycle: SourceBindingLifecycleAssurance | None = None,
     status: str = "working",
     blocking_failures: tuple[str, ...] = (),
     architecture_digest: str = _ARCHITECTURE_DIGEST,
@@ -1206,6 +1318,12 @@ def _summary(
     customer_lifecycle = customer_lifecycle or _lifecycle_assurance()
     active_surfaces = active_surfaces or _active_surfaces_assurance()
     retention = retention or _retention_assurance()
+    canonical_replacement = (
+        canonical_replacement or _canonical_replacement_assurance()
+    )
+    source_binding_lifecycle = (
+        source_binding_lifecycle or _source_binding_lifecycle_assurance()
+    )
     artifact_paths = {
         **positive.artifact_paths,
         **negative.artifact_paths,
@@ -1216,6 +1334,8 @@ def _summary(
         **customer_lifecycle.artifact_paths,
         **active_surfaces.artifact_paths,
         **retention.artifact_paths,
+        **canonical_replacement.artifact_paths,
+        **source_binding_lifecycle.artifact_paths,
         **population.artifact_paths,
     }
     component_digests = {
@@ -1253,6 +1373,14 @@ def _summary(
             for key, value in retention.component_digests.items()
         },
         **{
+            f"canonical_replacement_{key}": value
+            for key, value in canonical_replacement.component_digests.items()
+        },
+        **{
+            f"source_binding_lifecycle_{key}": value
+            for key, value in source_binding_lifecycle.component_digests.items()
+        },
+        **{
             f"population_{key}": value
             for key, value in population.component_digests.items()
         },
@@ -1274,6 +1402,8 @@ def _summary(
         customer_lifecycle=customer_lifecycle,
         active_surfaces=active_surfaces,
         retention=retention,
+        canonical_replacement=canonical_replacement,
+        source_binding_lifecycle=source_binding_lifecycle,
         population=population,
         proof_gaps=("not open-world or task-autonomy proof",),
         blocking_failures=blocking_failures,
@@ -1282,10 +1412,10 @@ def _summary(
     )
 
 
-def test_summary_v6_binds_reviewed_identity_and_active_scope() -> None:
+def test_summary_v7_binds_reviewed_identity_and_active_scope() -> None:
     summary = _summary()
 
-    assert summary.schema_version == "company-learning-assurance-summary-v6"
+    assert summary.schema_version == "company-learning-assurance-summary-v7"
     assert summary.architecture_digest == _ARCHITECTURE_DIGEST
     assert summary.implementation_plan_digest == _IMPLEMENTATION_PLAN_DIGEST
     assert summary.evaluation_profile == "autonomous-company-learning-v1"
@@ -1304,6 +1434,150 @@ def test_summary_v6_binds_reviewed_identity_and_active_scope() -> None:
         _summary(implementation_plan_digest="not-a-digest")
     with pytest.raises(ValidationError, match="explicitly exclude"):
         _summary(excluded_capabilities=("autonomous_task_planning",))
+
+
+def test_replacement_unsupported_and_unsafe_evidence_block_working() -> None:
+    unsupported_observation = _replacement_observation().model_copy(
+        update={
+            "projection_invalidated": ReplacementProofCell(
+                status="unsupported",
+                unsupported_reason="projection invalidation evidence unavailable",
+            )
+        }
+    )
+    unsupported_evidence = _canonical_replacement_evidence(
+        observation=unsupported_observation
+    )
+    unsafe_observation = _replacement_observation().model_copy(
+        update={
+            "transaction_atomic": ReplacementProofCell(
+                status="observed",
+                satisfied=False,
+                artifact_refs=("pytest:non-atomic-replacement",),
+            )
+        }
+    )
+    unsafe_evidence = _canonical_replacement_evidence(
+        observation=unsafe_observation
+    )
+
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(
+            canonical_replacement=_canonical_replacement_assurance(
+                evidence=unsupported_evidence
+            )
+        )
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(
+            canonical_replacement=_canonical_replacement_assurance(
+                evidence=unsafe_evidence
+            )
+        )
+
+
+def test_binding_lifecycle_unsupported_and_immutability_evidence_block_working() -> None:
+    unsupported_observation = _binding_lifecycle_observation().model_copy(
+        update={
+            "revocation_correct": BindingLifecycleProofCell(
+                status="unsupported",
+                unsupported_reason="revocation evidence unavailable",
+            )
+        }
+    )
+    unsupported_evidence = _source_binding_lifecycle_evidence(
+        observation=unsupported_observation
+    )
+    immutable_failure = _binding_lifecycle_observation().model_copy(
+        update={
+            "source_immutable": BindingLifecycleProofCell(
+                status="observed",
+                satisfied=False,
+                artifact_refs=("pytest:source-mutated",),
+            )
+        }
+    )
+    unsafe_evidence = _source_binding_lifecycle_evidence(
+        observation=immutable_failure
+    )
+
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(
+            source_binding_lifecycle=_source_binding_lifecycle_assurance(
+                evidence=unsupported_evidence
+            )
+        )
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(
+            source_binding_lifecycle=_source_binding_lifecycle_assurance(
+                evidence=unsafe_evidence
+            )
+        )
+
+
+def test_canonical_replacement_component_reopens_raw_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence = _canonical_replacement_evidence()
+    artifact_path = tmp_path / "canonical-replacement.json"
+    artifact_path.write_text(
+        json.dumps(evidence.artifact_payload()),
+        encoding="utf-8",
+    )
+    assurance = _canonical_replacement_assurance(
+        path=str(artifact_path),
+        evidence=evidence,
+    )
+
+    assert (
+        validate_canonical_replacement_assurance_component(
+            assurance,
+            run_id=evidence.run_id,
+            system_version=evidence.system_version,
+        )
+        == evidence.report
+    )
+    payload = evidence.artifact_payload()
+    payload["observation"]["transaction_atomic"]["satisfied"] = False
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="report does not match"):
+        validate_canonical_replacement_assurance_component(
+            assurance,
+            run_id=evidence.run_id,
+            system_version=evidence.system_version,
+        )
+
+
+def test_source_binding_lifecycle_component_reopens_raw_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence = _source_binding_lifecycle_evidence()
+    artifact_path = tmp_path / "source-binding-lifecycle.json"
+    artifact_path.write_text(
+        json.dumps(evidence.artifact_payload()),
+        encoding="utf-8",
+    )
+    assurance = _source_binding_lifecycle_assurance(
+        path=str(artifact_path),
+        evidence=evidence,
+    )
+
+    assert (
+        validate_source_binding_lifecycle_assurance_component(
+            assurance,
+            run_id=evidence.run_id,
+            system_version=evidence.system_version,
+        )
+        == evidence.report
+    )
+    payload = evidence.artifact_payload()
+    payload["observation"]["source_immutable"]["satisfied"] = False
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="report does not match"):
+        validate_source_binding_lifecycle_assurance_component(
+            assurance,
+            run_id=evidence.run_id,
+            system_version=evidence.system_version,
+        )
 
 
 def test_active_surfaces_are_noncompensatory_for_working_status() -> None:

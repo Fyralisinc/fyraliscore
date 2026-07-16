@@ -11,6 +11,10 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.canonical_referent_replacement import (
+    CanonicalResourceReplacementReport,
+    validate_canonical_resource_replacement_artifact,
+)
 from lib.evaluation.company_learning_active_surfaces import (
     ActiveLearningSurfacesReport,
     SEALED_ACTIVE_SURFACE_CLAIMS,
@@ -62,6 +66,10 @@ from lib.evaluation.proof import EvidenceTier
 from lib.evaluation.slack_reconstruction_gold import (
     SlackGoldFamily,
     SlackReconstructionReport,
+)
+from lib.evaluation.source_identity_binding_lifecycle import (
+    SourceIdentityBindingLifecycleReport,
+    validate_source_identity_binding_lifecycle_artifact,
 )
 
 
@@ -951,9 +959,121 @@ class RetentionAssurance(_SummaryModel):
         return not self.full_scope_complete
 
 
+class CanonicalReplacementAssurance(_SummaryModel):
+    status: Literal["observed", "observed_with_gaps", "failed"]
+    evidence_tier: EvidenceTier
+    report: CanonicalResourceReplacementReport
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def exact_replacement_accounting(self) -> Self:
+        if set(self.artifact_paths) != {"canonical_replacement_evidence"}:
+            raise ValueError(
+                "canonical replacement assurance requires one evidence artifact"
+            )
+        if set(self.component_digests) != {
+            "evidence",
+            "report",
+            "observation",
+        }:
+            raise ValueError(
+                "canonical replacement assurance requires evidence, report and "
+                "raw-observation digests"
+            )
+        expected_status = (
+            "failed"
+            if self.has_unsafe_evidence
+            else "observed"
+            if self.full_scope_complete
+            else "observed_with_gaps"
+        )
+        if self.status != expected_status:
+            raise ValueError(
+                "canonical replacement status does not match sealed evidence"
+            )
+        if self.status == "observed" and self.evidence_tier.rank < 4:
+            raise ValueError(
+                "canonical replacement assurance requires at least E4 evidence"
+            )
+        return self
+
+    @property
+    def full_scope_complete(self) -> bool:
+        return self.report.full_scope_complete
+
+    @property
+    def has_unsafe_evidence(self) -> bool:
+        return bool(
+            self.report.violating_measurement_count
+            or self.report.safety_violation_count
+            or self.report.immutability_violation_count
+        )
+
+    @property
+    def has_blocking_evidence(self) -> bool:
+        return not self.full_scope_complete
+
+
+class SourceBindingLifecycleAssurance(_SummaryModel):
+    status: Literal["observed", "observed_with_gaps", "failed"]
+    evidence_tier: EvidenceTier
+    report: SourceIdentityBindingLifecycleReport
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def exact_binding_lifecycle_accounting(self) -> Self:
+        if set(self.artifact_paths) != {"source_binding_lifecycle_evidence"}:
+            raise ValueError(
+                "source binding lifecycle assurance requires one evidence artifact"
+            )
+        if set(self.component_digests) != {
+            "evidence",
+            "report",
+            "observation",
+        }:
+            raise ValueError(
+                "source binding lifecycle assurance requires evidence, report "
+                "and raw-observation digests"
+            )
+        expected_status = (
+            "failed"
+            if self.has_unsafe_evidence
+            else "observed"
+            if self.full_scope_complete
+            else "observed_with_gaps"
+        )
+        if self.status != expected_status:
+            raise ValueError(
+                "source binding lifecycle status does not match sealed evidence"
+            )
+        if self.status == "observed" and self.evidence_tier.rank < 4:
+            raise ValueError(
+                "source binding lifecycle assurance requires at least E4 evidence"
+            )
+        return self
+
+    @property
+    def full_scope_complete(self) -> bool:
+        return self.report.full_scope_complete
+
+    @property
+    def has_unsafe_evidence(self) -> bool:
+        return bool(
+            self.report.violating_measurement_count
+            or self.report.safety_violation_count
+            or self.report.immutability_violation_count
+        )
+
+    @property
+    def has_blocking_evidence(self) -> bool:
+        return not self.full_scope_complete
+
+
 class CompanyLearningAssuranceSummary(_SummaryModel):
-    schema_version: Literal["company-learning-assurance-summary-v6"] = (
-        "company-learning-assurance-summary-v6"
+    schema_version: Literal["company-learning-assurance-summary-v7"] = (
+        "company-learning-assurance-summary-v7"
     )
     run_id: str = Field(min_length=1)
     system_version: str = Field(min_length=1)
@@ -977,6 +1097,8 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
     customer_lifecycle: CustomerLifecycleAssurance
     active_surfaces: ActiveSurfacesAssurance
     retention: RetentionAssurance
+    canonical_replacement: CanonicalReplacementAssurance
+    source_binding_lifecycle: SourceBindingLifecycleAssurance
     population: PopulationAssurance | None = None
     proof_gaps: tuple[str, ...]
     blocking_failures: tuple[str, ...]
@@ -1004,6 +1126,8 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             **self.customer_lifecycle.artifact_paths,
             **self.active_surfaces.artifact_paths,
             **self.retention.artifact_paths,
+            **self.canonical_replacement.artifact_paths,
+            **self.source_binding_lifecycle.artifact_paths,
             **(self.population.artifact_paths if self.population is not None else {}),
         }
         if self.artifact_paths != nested_paths:
@@ -1047,6 +1171,16 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
                 f"retention_{key}": value
                 for key, value in self.retention.component_digests.items()
             },
+            **{
+                f"canonical_replacement_{key}": value
+                for key, value in self.canonical_replacement.component_digests.items()
+            },
+            **{
+                f"source_binding_lifecycle_{key}": value
+                for key, value in (
+                    self.source_binding_lifecycle.component_digests.items()
+                )
+            },
             **(
                 {
                     f"population_{key}": value
@@ -1077,6 +1211,8 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             or self.customer_lifecycle.has_blocking_evidence
             or self.active_surfaces.has_blocking_evidence
             or self.retention.has_safety_or_immutability_regression
+            or self.canonical_replacement.has_unsafe_evidence
+            or self.source_binding_lifecycle.has_unsafe_evidence
         )
         blocking_component = bool(
             (
@@ -1089,6 +1225,8 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             or not self.customer_lifecycle.full_scope_complete
             or not self.active_surfaces.full_scope_complete
             or not self.retention.full_scope_complete
+            or not self.canonical_replacement.full_scope_complete
+            or not self.source_binding_lifecycle.full_scope_complete
         )
         if self.status == "working" and (
             self.blocking_failures or unsafe_component or blocking_component
@@ -1601,6 +1739,94 @@ def validate_retention_assurance_component(
     return report
 
 
+def validate_canonical_replacement_assurance_component(
+    assurance: CanonicalReplacementAssurance,
+    *,
+    run_id: str,
+    system_version: str,
+) -> CanonicalResourceReplacementReport:
+    """Reopen canonical replacement evidence and recompute raw obligations."""
+
+    payload = _read_json_file(
+        assurance.artifact_paths["canonical_replacement_evidence"]
+    )
+    evidence = validate_canonical_resource_replacement_artifact(payload)
+    if evidence.run_id != run_id:
+        raise ValueError("canonical replacement run identity mismatch")
+    if evidence.system_version != system_version:
+        raise ValueError("canonical replacement system version mismatch")
+    expected_digests = {
+        "evidence": evidence.digest,
+        "report": evidence.report.digest,
+        "observation": canonical_sha256(
+            evidence.observation.model_dump(mode="json")
+        ),
+    }
+    if assurance.component_digests != expected_digests:
+        raise ValueError("canonical replacement component digest mismatch")
+    expected_status = (
+        "failed"
+        if (
+            evidence.report.violating_measurement_count
+            or evidence.report.safety_violation_count
+            or evidence.report.immutability_violation_count
+        )
+        else "observed"
+        if evidence.report.full_scope_complete
+        else "observed_with_gaps"
+    )
+    if assurance.report != evidence.report or assurance.status != expected_status:
+        raise ValueError(
+            "canonical replacement assurance does not match persisted evidence"
+        )
+    return evidence.report
+
+
+def validate_source_binding_lifecycle_assurance_component(
+    assurance: SourceBindingLifecycleAssurance,
+    *,
+    run_id: str,
+    system_version: str,
+) -> SourceIdentityBindingLifecycleReport:
+    """Reopen source-binding lifecycle evidence and recompute raw obligations."""
+
+    payload = _read_json_file(
+        assurance.artifact_paths["source_binding_lifecycle_evidence"]
+    )
+    evidence = validate_source_identity_binding_lifecycle_artifact(payload)
+    if evidence.run_id != run_id:
+        raise ValueError("source binding lifecycle run identity mismatch")
+    if evidence.system_version != system_version:
+        raise ValueError("source binding lifecycle system version mismatch")
+    expected_digests = {
+        "evidence": evidence.digest,
+        "report": evidence.report.digest,
+        "observation": canonical_sha256(
+            evidence.observation.model_dump(mode="json")
+        ),
+    }
+    if assurance.component_digests != expected_digests:
+        raise ValueError(
+            "source binding lifecycle component digest mismatch"
+        )
+    expected_status = (
+        "failed"
+        if (
+            evidence.report.violating_measurement_count
+            or evidence.report.safety_violation_count
+            or evidence.report.immutability_violation_count
+        )
+        else "observed"
+        if evidence.report.full_scope_complete
+        else "observed_with_gaps"
+    )
+    if assurance.report != evidence.report or assurance.status != expected_status:
+        raise ValueError(
+            "source binding lifecycle assurance does not match persisted evidence"
+        )
+    return evidence.report
+
+
 def _validate_retention_spec_scope(spec: RetentionRunSpec) -> None:
     expected_horizons = ((0, 0), (4, 1), (16, 2))
     final_horizon = ((16, 2),)
@@ -1735,6 +1961,8 @@ def validate_company_learning_assurance_components(
         "customer_lifecycle_evidence",
         "active_surfaces_evidence",
         "retention_evidence",
+        "canonical_replacement_evidence",
+        "source_binding_lifecycle_evidence",
         "slack_observations",
         "slack_report",
     }
@@ -1935,6 +2163,16 @@ def validate_company_learning_assurance_components(
     validate_retention_assurance_component(
         summary.retention,
         run_id=f"{summary.run_id}:retention",
+        system_version=summary.system_version,
+    )
+    validate_canonical_replacement_assurance_component(
+        summary.canonical_replacement,
+        run_id=f"{summary.run_id}:canonical-replacement",
+        system_version=summary.system_version,
+    )
+    validate_source_binding_lifecycle_assurance_component(
+        summary.source_binding_lifecycle,
+        run_id=f"{summary.run_id}:source-binding-lifecycle",
         system_version=summary.system_version,
     )
 
