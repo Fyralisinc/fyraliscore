@@ -383,6 +383,88 @@ coherent diff.
   demonstrate statistically useful policy improvement across held-out
   simulated company worlds before claiming adaptive learning.
 
+### DISC-011 — Episode-manifest projection is now durable, but it is not the intervention saga
+
+- **Date:** 2026-07-16
+- **Milestone:** First production-shaped intervention runtime process
+- **Status:** `deferred`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** agency canonical events, InterventionEpisode,
+  EpisodeCoordinator, runtime process manifest, leased work, joined evaluation
+- **Working core boundary:** A production-registered worker now discovers the
+  ten supported version-one intervention-stage events from canonical agency
+  history, revalidates each event against its exact CommandResult and source
+  object/version, and establishes one durable work head per episode stage.
+  Work is claimed with an expiring lease and fresh fencing token. The worker
+  locks the current episode head, adds or replaces only the exact stage link,
+  invokes `EpisodeCoordinator` under a narrow manifest-projection context and
+  acknowledges the work in the same transaction. An identical link is a
+  no-op; a different present object is a terminal invariant violation.
+  Retry, terminal-failure, expired-lease recovery and stale-token rejection are
+  explicit. Runtime manifest, Compose and health wiring make the worker an
+  owned production process. The joined evaluator continuously reports queue
+  fate counts, completion rate, incomplete work and terminal failures.
+- **Implementation evidence:** The real Slack-to-feedback E2E no longer asks
+  the test harness to complete the final episode. The durable worker links
+  Proposal, Prediction, Authorization, Workflow, Task, Work, Effect, Outcome,
+  Settlement and Attribution through ten separately committed episode
+  versions. A replay discovers and claims zero new work, preserves one episode
+  head and leaves all ten work items applied. Focused repository tests prove
+  idempotent discovery, exact source revalidation, retry scheduling,
+  expired-lease takeover and stale-worker fencing. The worker's ten commands
+  are checked to carry only `intervention_episode` object authority derived
+  from their exact canonical-event reference.
+- **Deferred architecture gaps:**
+  - This process is a projection consumer, not the intervention saga. It does
+    not decide, authorize, schedule, execute, reconcile, observe Outcomes,
+    settle or learn. Each named semantic writer remains authoritative.
+  - It assumes an InterventionEpisode already exists. The current joined test
+    still opens the episode and supplies its belief, intent and Concern links
+    before the durable worker begins. Runtime episode creation and earlier
+    Concern/inquiry continuity remain unimplemented.
+  - Discovery scans immutable canonical events into a dedicated leased queue.
+    It is not yet a partitioned, position-aware fan-out consumer with
+    ConsumerReceipts, schema-gap detection and a durable high-water mark.
+    Existing single-destination agency outboxes cannot safely be marked
+    delivered by this additional consumer.
+  - `EpisodeStageLink` permits one object per stage. Multi-task, multi-work or
+    multi-effect episodes cannot be represented honestly. A second distinct
+    object for the same stage is surfaced as
+    `INTERVENTION_MANIFEST_STAGE_CONFLICT`; until a repeated/grouped stage
+    contract and durable discovery-rejection fate exist, that poison event can
+    block later discovery in the same poll transaction.
+  - The worker issues a deliberately narrow embedded service-processing
+    context because the current agency protocol has no canonical authority
+    broker for this projection role. It cannot inherit or mint action
+    authority, but broker issuance, revocation and audit are not yet proven.
+  - The embedded `EpisodeCoordinator` writer scope is compatible with the
+    current strangulation protocol, but is not yet registered and fenced
+    through the canonical writer-scope registry for every tenant.
+  - Batch claims have no heartbeat. The current deterministic work is short,
+    but slower future validation or high contention will require per-item
+    claims, bounded parallelism or lease renewal.
+  - The worker links successful `PRESENT` objects only. Rejected, expired,
+    infeasible and censored paths still need exact typed-absence projection and
+    a contract capable of retaining the governing decision reference.
+  - The clean E2E proves crash-safe transaction shape, replay and repository
+    lease takeover, but does not yet inject a process crash between every
+    discovery, claim, episode-CAS and acknowledgment boundary under concurrent
+    workers.
+  - Queue completion proves audit-manifest convergence, not that the action was
+    beneficial or that feedback changed future policy behavior.
+- **Reason for deferral:** The bounded process removes a real manual handoff
+  from the only complete vertical and provides a durable place to measure
+  orchestration health. Expanding it into a semantic super-writer, generic
+  queue platform or full adaptive controller would violate the single-writer
+  architecture and repeat the earlier horizontal implementation failure.
+- **Return condition:** Keep this worker narrow. Next add a separate durable
+  intervention saga that advances existing named writers through exact
+  commands, beginning with eligible Concern to Proposal/spec, preregistered
+  Prediction and authorized Workflow/Work. Add scheduler/lease and effect
+  reconciliation lanes independently. Before multi-step production episodes,
+  introduce fan-out consumer receipts/high-water tracking, registered
+  projection authority and a repeated-stage manifest contract.
+
 ## Reconciliation Procedure
 
 At a reconciliation milestone:
