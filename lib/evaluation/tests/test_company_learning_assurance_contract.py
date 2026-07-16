@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -16,9 +17,11 @@ from lib.evaluation.company_learning_assurance import (
     PopulationAssurance,
     PositiveAssurance,
     SlackAssurance,
+    VariantCollisionAssurance,
     VariantPopulationAssurance,
     validate_company_learning_assurance_artifact,
     validate_correction_assurance_component,
+    validate_variant_collision_assurance_component,
     validate_variant_population_assurance_component,
 )
 from lib.evaluation.company_learning_population import IntervalEstimate
@@ -28,6 +31,14 @@ from lib.evaluation.company_learning_variant_population import (
     VariantAliasMechanismMetrics,
     build_variant_alias_population,
     evaluate_variant_alias_population,
+)
+from lib.evaluation.company_learning_variant_collisions import (
+    HeldOutVariantCollisionPopulation,
+    VariantCollisionFamily,
+    VariantCollisionPairObservation,
+    VariantCollisionPopulationReport,
+    build_variant_collision_population,
+    evaluate_variant_collision_population,
 )
 from lib.evaluation.correction_assurance import (
     CorrectionAssuranceArtifact,
@@ -54,11 +65,59 @@ from lib.evaluation.tests.test_company_learning_variant_population import (
 from lib.evaluation.tests.test_company_learning_variant_population import (
     _mechanisms as _variant_mechanisms,
 )
+from lib.evaluation.tests.test_company_learning_variant_collisions import (
+    _safe_observations as _safe_collision_observations,
+)
 
 
 _DIGEST = "a" * 64
 _ARCHITECTURE_DIGEST = "b" * 64
 _IMPLEMENTATION_PLAN_DIGEST = "c" * 64
+_SOURCE_ID_GAP = (
+    "runtime lacks authenticated SourceIdentityBinding evidence"
+)
+
+
+@dataclass(frozen=True)
+class _CollisionEvidenceFixture:
+    created_at: str
+    run_id: str
+    system_version: str
+    registry_path: str
+    registry_population: HeldOutVariantCollisionPopulation
+    registry_population_digest: str
+    assignments: tuple[dict[str, str], ...]
+    observations: tuple[VariantCollisionPairObservation, ...]
+    report: VariantCollisionPopulationReport
+    artifact_refs: tuple[str, ...]
+
+    @property
+    def digest(self) -> str:
+        return canonical_sha256(self._payload())
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "schema_version": (
+                "company-learning-variant-collision-evidence-v1"
+            ),
+            "created_at": self.created_at,
+            "run_id": self.run_id,
+            "system_version": self.system_version,
+            "registry_path": self.registry_path,
+            "registry_population": self.registry_population.model_dump(
+                mode="json"
+            ),
+            "registry_population_digest": self.registry_population_digest,
+            "assignments": list(self.assignments),
+            "observations": [
+                row.model_dump(mode="json") for row in self.observations
+            ],
+            "report": self.report.model_dump(mode="json"),
+            "artifact_refs": list(self.artifact_refs),
+        }
+
+    def artifact_payload(self) -> dict[str, object]:
+        return {**self._payload(), "evidence_digest": self.digest}
 
 
 def _interval(
@@ -72,6 +131,257 @@ def _interval(
         upper_95=point_estimate,
         method="pytest-exact",
         sample_size=sample_size,
+    )
+
+
+def _collision_assurance(
+    *,
+    path: str = "/tmp/variant-collision-evidence.json",
+    status: str = "observed_with_gaps",
+    observed_pair_count: int = 14,
+    unsupported_case_count: int = 2,
+    adaptive_safe_containment_rate: float = 1.0,
+    adaptive_unsafe_rate: float = 0.0,
+    safety_incident_count: int = 0,
+    source_native_authoritative_rate: float = 1.0,
+) -> VariantCollisionAssurance:
+    behavior = lambda value: _interval(
+        value,
+        sample_size=observed_pair_count,
+    )
+    return VariantCollisionAssurance(
+        status=status,
+        evidence_tier=EvidenceTier.E4,
+        registry_pair_count=16,
+        observed_pair_count=observed_pair_count,
+        unsupported_case_count=unsupported_case_count,
+        runtime_support_rate=_interval(
+            observed_pair_count / 16,
+            sample_size=16,
+        ),
+        adaptive_safe_containment_rate=behavior(
+            adaptive_safe_containment_rate
+        ),
+        frozen_safe_containment_rate=behavior(1.0),
+        adaptive_unsafe_rate=behavior(adaptive_unsafe_rate),
+        frozen_unsafe_rate=behavior(0.0),
+        adaptive_unsafe_resolution_rate=behavior(adaptive_unsafe_rate),
+        frozen_unsafe_resolution_rate=behavior(0.0),
+        adaptive_authoritative_resolution_rate=behavior(
+            (
+                2 / observed_pair_count
+                if unsupported_case_count == 0
+                else 0.0
+            )
+        ),
+        frozen_authoritative_resolution_rate=behavior(
+            (
+                2 / observed_pair_count
+                if unsupported_case_count == 0
+                else 0.0
+            )
+        ),
+        adaptive_candidate_visibility_rate=behavior(1.0),
+        frozen_candidate_visibility_rate=behavior(1.0),
+        adaptive_none_of_above_availability_rate=behavior(1.0),
+        frozen_none_of_above_availability_rate=behavior(1.0),
+        adaptive_learned_promotion_rate=behavior(0.0),
+        frozen_learned_promotion_rate=behavior(0.0),
+        adaptive_wrong_model_rate=behavior(0.0),
+        frozen_wrong_model_rate=behavior(0.0),
+        adaptive_wrong_model_count=0,
+        frozen_wrong_model_count=0,
+        adaptive_source_immutability_rate=behavior(1.0),
+        frozen_source_immutability_rate=behavior(1.0),
+        safety_incident_count=safety_incident_count,
+        source_native_observed_case_count=(
+            2 if unsupported_case_count == 0 else 0
+        ),
+        source_native_unsupported_case_count=unsupported_case_count,
+        source_native_adaptive_authoritative_resolution_rate=(
+            _interval(source_native_authoritative_rate, sample_size=2)
+            if unsupported_case_count == 0
+            else None
+        ),
+        source_native_frozen_authoritative_resolution_rate=(
+            _interval(source_native_authoritative_rate, sample_size=2)
+            if unsupported_case_count == 0
+            else None
+        ),
+        unsupported_strata_counts={
+            "collision_family": {
+                (
+                    VariantCollisionFamily
+                    .CONFLICTING_SOURCE_NATIVE_IDENTIFIER.value
+                ): unsupported_case_count,
+            },
+            "learned_entity_type": (
+                {"system": 1, "team": 1}
+                if unsupported_case_count == 2
+                else {}
+            ),
+            "entity_type_relation": (
+                {"same_type": 2}
+                if unsupported_case_count == 2
+                else {}
+            ),
+            "learned_lifecycle": (
+                {"active": 2}
+                if unsupported_case_count == 2
+                else {}
+            ),
+        },
+        unsupported_reason_counts=(
+            {_SOURCE_ID_GAP: unsupported_case_count}
+            if unsupported_case_count
+            else {}
+        ),
+        artifact_paths={"variant_collision_evidence": path},
+        component_digests={
+            "evidence": _DIGEST,
+            "registry": _DIGEST,
+            "report": _DIGEST,
+            "observations": _DIGEST,
+        },
+    )
+
+
+def _collision_evidence(
+    *,
+    run_id: str = "pytest-assurance:collision",
+    system_version: str = "pytest-system",
+) -> _CollisionEvidenceFixture:
+    population = build_variant_collision_population()
+    observations = list(_safe_collision_observations(population))
+    for index, case in enumerate(population.cases):
+        if (
+            case.collision_family
+            is VariantCollisionFamily.CONFLICTING_SOURCE_NATIVE_IDENTIFIER
+        ):
+            observations[index] = VariantCollisionPairObservation(
+                case_id=case.case_id,
+                execution_status="unsupported",
+                unsupported_reason=_SOURCE_ID_GAP,
+            )
+    typed_observations = tuple(observations)
+    report = evaluate_variant_collision_population(
+        population=population,
+        observations=typed_observations,
+    )
+    return _CollisionEvidenceFixture(
+        created_at="2026-07-16T00:00:00+00:00",
+        run_id=run_id,
+        system_version=system_version,
+        registry_path="/tmp/collision-registry.jsonl",
+        registry_population=population,
+        registry_population_digest=population.digest,
+        assignments=tuple(
+            {
+                "case_id": case.case_id,
+                "adaptive_tenant_id": str(uuid4()),
+                "frozen_tenant_id": str(uuid4()),
+                "adaptive_target_id": str(uuid4()),
+                "frozen_target_id": str(uuid4()),
+                "adaptive_conflicting_id": str(uuid4()),
+                "frozen_conflicting_id": str(uuid4()),
+            }
+            for case in population.cases
+        ),
+        observations=typed_observations,
+        report=report,
+        artifact_refs=("pytest:collision-assurance",),
+    )
+
+
+def _collision_assurance_from_evidence(
+    evidence: _CollisionEvidenceFixture,
+    *,
+    path: str,
+) -> VariantCollisionAssurance:
+    report = evidence.report
+    source_native = report.stratum_reports["collision_family"][
+        VariantCollisionFamily.CONFLICTING_SOURCE_NATIVE_IDENTIFIER.value
+    ]
+    return VariantCollisionAssurance(
+        status=report.status,
+        evidence_tier=EvidenceTier.E4,
+        registry_pair_count=report.pair_count,
+        observed_pair_count=report.observed_pair_count,
+        unsupported_case_count=report.unsupported_case_count,
+        runtime_support_rate=report.runtime_support_rate,
+        adaptive_safe_containment_rate=(
+            report.adaptive_safe_containment_rate
+        ),
+        frozen_safe_containment_rate=report.frozen_safe_containment_rate,
+        adaptive_unsafe_rate=report.adaptive_unsafe_rate,
+        frozen_unsafe_rate=report.frozen_unsafe_rate,
+        adaptive_unsafe_resolution_rate=(
+            report.adaptive_unsafe_resolution_rate
+        ),
+        frozen_unsafe_resolution_rate=(
+            report.frozen_unsafe_resolution_rate
+        ),
+        adaptive_authoritative_resolution_rate=(
+            report.adaptive_authoritative_resolution_rate
+        ),
+        frozen_authoritative_resolution_rate=(
+            report.frozen_authoritative_resolution_rate
+        ),
+        adaptive_candidate_visibility_rate=(
+            report.adaptive_candidate_visibility_rate
+        ),
+        frozen_candidate_visibility_rate=(
+            report.frozen_candidate_visibility_rate
+        ),
+        adaptive_none_of_above_availability_rate=(
+            report.adaptive_none_of_above_availability_rate
+        ),
+        frozen_none_of_above_availability_rate=(
+            report.frozen_none_of_above_availability_rate
+        ),
+        adaptive_learned_promotion_rate=(
+            report.adaptive_learned_promotion_rate
+        ),
+        frozen_learned_promotion_rate=(
+            report.frozen_learned_promotion_rate
+        ),
+        adaptive_wrong_model_rate=report.adaptive_wrong_model_rate,
+        frozen_wrong_model_rate=report.frozen_wrong_model_rate,
+        adaptive_wrong_model_count=report.adaptive_wrong_model_count,
+        frozen_wrong_model_count=report.frozen_wrong_model_count,
+        adaptive_source_immutability_rate=(
+            report.adaptive_source_immutability_rate
+        ),
+        frozen_source_immutability_rate=(
+            report.frozen_source_immutability_rate
+        ),
+        safety_incident_count=report.safety_incident_count,
+        source_native_observed_case_count=(
+            source_native.observed_case_count
+        ),
+        source_native_unsupported_case_count=(
+            source_native.unsupported_case_count
+        ),
+        source_native_adaptive_authoritative_resolution_rate=(
+            source_native.adaptive_authoritative_resolution_rate
+        ),
+        source_native_frozen_authoritative_resolution_rate=(
+            source_native.frozen_authoritative_resolution_rate
+        ),
+        unsupported_strata_counts=report.unsupported_strata_counts,
+        unsupported_reason_counts=report.unsupported_reason_counts,
+        artifact_paths={"variant_collision_evidence": path},
+        component_digests={
+            "evidence": evidence.digest,
+            "registry": evidence.registry_population_digest,
+            "report": report.digest,
+            "observations": canonical_sha256(
+                [
+                    row.model_dump(mode="json")
+                    for row in evidence.observations
+                ]
+            ),
+        },
     )
 
 
@@ -416,6 +726,7 @@ def _summary(
     slack: SlackAssurance | None = None,
     correction: CorrectionAssurance | None = None,
     variant_population: VariantPopulationAssurance | None = None,
+    variant_collision: VariantCollisionAssurance | None = None,
     status: str = "working",
     blocking_failures: tuple[str, ...] = (),
     architecture_digest: str = _ARCHITECTURE_DIGEST,
@@ -484,12 +795,14 @@ def _summary(
     slack = slack or _slack_assurance()
     correction = correction or _correction_summary()
     variant_population = variant_population or _variant_assurance()
+    variant_collision = variant_collision or _collision_assurance()
     artifact_paths = {
         **positive.artifact_paths,
         **negative.artifact_paths,
         **slack.artifact_paths,
         **correction.artifact_paths,
         **variant_population.artifact_paths,
+        **variant_collision.artifact_paths,
         **population.artifact_paths,
     }
     component_digests = {
@@ -514,6 +827,10 @@ def _summary(
             for key, value in variant_population.component_digests.items()
         },
         **{
+            f"variant_collision_{key}": value
+            for key, value in variant_collision.component_digests.items()
+        },
+        **{
             f"population_{key}": value
             for key, value in population.component_digests.items()
         },
@@ -531,6 +848,7 @@ def _summary(
         slack=slack,
         correction=correction,
         variant_population=variant_population,
+        variant_collision=variant_collision,
         population=population,
         proof_gaps=("not open-world or task-autonomy proof",),
         blocking_failures=blocking_failures,
@@ -539,10 +857,10 @@ def _summary(
     )
 
 
-def test_summary_v3_binds_reviewed_identity_and_active_scope() -> None:
+def test_summary_v4_binds_reviewed_identity_and_active_scope() -> None:
     summary = _summary()
 
-    assert summary.schema_version == "company-learning-assurance-summary-v3"
+    assert summary.schema_version == "company-learning-assurance-summary-v4"
     assert summary.architecture_digest == _ARCHITECTURE_DIGEST
     assert summary.implementation_plan_digest == _IMPLEMENTATION_PLAN_DIGEST
     assert summary.evaluation_profile == "autonomous-company-learning-v1"
@@ -701,6 +1019,94 @@ def test_variant_component_reopens_full_evidence_and_all_digests(
         validate_variant_population_assurance_component(
             assurance,
             run_id="another-run:variant",
+            system_version="pytest-system",
+        )
+
+
+def test_collision_supported_scope_is_safe_but_not_full_scope() -> None:
+    summary = _summary()
+
+    assert summary.status == "working"
+    assert summary.variant_collision.status == "observed_with_gaps"
+    assert summary.variant_collision.supported_scope_satisfied is True
+    assert summary.variant_collision.full_scope_complete is False
+    assert summary.variant_collision.observed_pair_count == 14
+    assert summary.variant_collision.unsupported_case_count == 2
+    assert summary.variant_collision.unsupported_reason_counts == {
+        _SOURCE_ID_GAP: 2
+    }
+
+    complete = _collision_assurance(
+        status="observed",
+        observed_pair_count=16,
+        unsupported_case_count=0,
+    )
+    assert complete.full_scope_complete is True
+    assert complete.source_native_scope_valid is True
+
+    review_only_source_scope = _collision_assurance(
+        status="failed",
+        observed_pair_count=16,
+        unsupported_case_count=0,
+        source_native_authoritative_rate=0.0,
+    )
+    assert review_only_source_scope.full_scope_complete is False
+    assert review_only_source_scope.source_native_scope_valid is False
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(variant_collision=review_only_source_scope)
+
+
+def test_collision_unsafe_supported_evidence_is_noncompensatory() -> None:
+    unsafe = _collision_assurance(
+        status="failed",
+        adaptive_safe_containment_rate=13 / 14,
+        adaptive_unsafe_rate=1 / 14,
+        safety_incident_count=1,
+    )
+
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(variant_collision=unsafe)
+
+    failed = _summary(
+        variant_collision=unsafe,
+        status="failed",
+        blocking_failures=("collision supported scope is unsafe",),
+    )
+    assert failed.variant_collision == unsafe
+
+
+def test_collision_component_reopens_and_recomputes_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence = _collision_evidence()
+    artifact_path = tmp_path / "variant_collision_evidence.json"
+    artifact_path.write_text(
+        json.dumps(evidence.artifact_payload(), sort_keys=True),
+        encoding="utf-8",
+    )
+    assurance = _collision_assurance_from_evidence(
+        evidence,
+        path=str(artifact_path),
+    )
+
+    assert validate_variant_collision_assurance_component(
+        assurance,
+        run_id="pytest-assurance:collision",
+        system_version="pytest-system",
+    ) == evidence.report
+
+    wrong_digest = assurance.model_copy(
+        update={
+            "component_digests": {
+                **assurance.component_digests,
+                "observations": "f" * 64,
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="component digest mismatch"):
+        validate_variant_collision_assurance_component(
+            wrong_digest,
+            run_id="pytest-assurance:collision",
             system_version="pytest-system",
         )
 

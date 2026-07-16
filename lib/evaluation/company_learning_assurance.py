@@ -26,6 +26,13 @@ from lib.evaluation.company_learning_variant_population import (
     VariantAliasMechanismMetrics,
     validate_variant_population_evidence_artifact,
 )
+from lib.evaluation.company_learning_variant_collisions import (
+    HeldOutVariantCollisionPopulation,
+    VariantCollisionFamily,
+    VariantCollisionPairObservation,
+    VariantCollisionPopulationReport,
+    evaluate_variant_collision_population,
+)
 from lib.evaluation.correction_assurance import (
     CorrectionAssuranceArtifact,
     validate_correction_assurance_artifact as _validate_correction_artifact,
@@ -40,6 +47,9 @@ from lib.evaluation.slack_reconstruction_gold import (
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _SEALED_VARIANT_POPULATION_DIGEST = (
     "d51087c86ff9a80d3729d3ad9147f14109570b00ab24df025220936017dc4e58"
+)
+_SEALED_VARIANT_COLLISION_DIGEST = (
+    "925b8d442d093de1ba40a94b3e8a689001ff533498a5b7ba11e2cdca302d34aa"
 )
 
 
@@ -421,9 +431,248 @@ class VariantPopulationAssurance(_SummaryModel):
         )
 
 
+class VariantCollisionAssurance(_SummaryModel):
+    status: Literal["observed", "observed_with_gaps", "failed"]
+    evidence_tier: EvidenceTier
+    registry_pair_count: int = Field(ge=0)
+    observed_pair_count: int = Field(ge=0)
+    unsupported_case_count: int = Field(ge=0)
+    runtime_support_rate: IntervalEstimate
+    adaptive_safe_containment_rate: IntervalEstimate
+    frozen_safe_containment_rate: IntervalEstimate
+    adaptive_unsafe_rate: IntervalEstimate
+    frozen_unsafe_rate: IntervalEstimate
+    adaptive_unsafe_resolution_rate: IntervalEstimate
+    frozen_unsafe_resolution_rate: IntervalEstimate
+    adaptive_authoritative_resolution_rate: IntervalEstimate
+    frozen_authoritative_resolution_rate: IntervalEstimate
+    adaptive_candidate_visibility_rate: IntervalEstimate
+    frozen_candidate_visibility_rate: IntervalEstimate
+    adaptive_none_of_above_availability_rate: IntervalEstimate
+    frozen_none_of_above_availability_rate: IntervalEstimate
+    adaptive_learned_promotion_rate: IntervalEstimate
+    frozen_learned_promotion_rate: IntervalEstimate
+    adaptive_wrong_model_rate: IntervalEstimate
+    frozen_wrong_model_rate: IntervalEstimate
+    adaptive_wrong_model_count: int = Field(ge=0)
+    frozen_wrong_model_count: int = Field(ge=0)
+    adaptive_source_immutability_rate: IntervalEstimate
+    frozen_source_immutability_rate: IntervalEstimate
+    safety_incident_count: int = Field(ge=0)
+    source_native_observed_case_count: int = Field(ge=0)
+    source_native_unsupported_case_count: int = Field(ge=0)
+    source_native_adaptive_authoritative_resolution_rate: (
+        IntervalEstimate | None
+    )
+    source_native_frozen_authoritative_resolution_rate: (
+        IntervalEstimate | None
+    )
+    unsupported_strata_counts: dict[str, dict[str, int]]
+    unsupported_reason_counts: dict[str, int]
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def exact_collision_population_accounting(self) -> Self:
+        if self.registry_pair_count != 16:
+            raise ValueError(
+                "collision assurance requires the sealed 16-case registry"
+            )
+        if (
+            self.observed_pair_count + self.unsupported_case_count
+            != self.registry_pair_count
+        ):
+            raise ValueError(
+                "collision observed and unsupported counts must partition "
+                "the registry"
+            )
+        if self.runtime_support_rate.sample_size != self.registry_pair_count:
+            raise ValueError(
+                "collision runtime coverage must include every sealed case"
+            )
+        expected_support = (
+            self.observed_pair_count / self.registry_pair_count
+        )
+        if (
+            abs(
+                self.runtime_support_rate.point_estimate
+                - expected_support
+            )
+            > 1e-12
+        ):
+            raise ValueError(
+                "collision runtime support rate is inconsistent"
+            )
+        behavior_estimates = (
+            self.adaptive_safe_containment_rate,
+            self.frozen_safe_containment_rate,
+            self.adaptive_unsafe_rate,
+            self.frozen_unsafe_rate,
+            self.adaptive_unsafe_resolution_rate,
+            self.frozen_unsafe_resolution_rate,
+            self.adaptive_authoritative_resolution_rate,
+            self.frozen_authoritative_resolution_rate,
+            self.adaptive_candidate_visibility_rate,
+            self.frozen_candidate_visibility_rate,
+            self.adaptive_none_of_above_availability_rate,
+            self.frozen_none_of_above_availability_rate,
+            self.adaptive_learned_promotion_rate,
+            self.frozen_learned_promotion_rate,
+            self.adaptive_wrong_model_rate,
+            self.frozen_wrong_model_rate,
+            self.adaptive_source_immutability_rate,
+            self.frozen_source_immutability_rate,
+        )
+        if any(
+            estimate.sample_size != self.observed_pair_count
+            for estimate in behavior_estimates
+        ):
+            raise ValueError(
+                "collision behavior metrics must cover every observed case"
+            )
+        if (
+            self.source_native_observed_case_count
+            + self.source_native_unsupported_case_count
+            != 2
+        ):
+            raise ValueError(
+                "collision source-native stratum must retain both sealed cases"
+            )
+        source_rates = (
+            self.source_native_adaptive_authoritative_resolution_rate,
+            self.source_native_frozen_authoritative_resolution_rate,
+        )
+        if self.source_native_observed_case_count == 0:
+            if any(rate is not None for rate in source_rates):
+                raise ValueError(
+                    "unsupported source-native scope cannot contain rates"
+                )
+        elif any(
+            rate is None
+            or rate.sample_size != self.source_native_observed_case_count
+            for rate in source_rates
+        ):
+            raise ValueError(
+                "observed source-native scope requires complete rates"
+            )
+        for dimension, counts in self.unsupported_strata_counts.items():
+            if sum(counts.values()) != self.unsupported_case_count:
+                raise ValueError(
+                    "collision unsupported stratum does not cover every "
+                    f"unsupported case: {dimension}"
+                )
+        if (
+            sum(self.unsupported_reason_counts.values())
+            != self.unsupported_case_count
+        ):
+            raise ValueError(
+                "collision unsupported reasons must cover every unsupported "
+                "case"
+            )
+        if set(self.artifact_paths) != {"variant_collision_evidence"}:
+            raise ValueError(
+                "collision assurance requires exactly one evidence artifact"
+            )
+        if set(self.component_digests) != {
+            "evidence",
+            "registry",
+            "report",
+            "observations",
+        }:
+            raise ValueError(
+                "collision assurance requires evidence, registry, report "
+                "and observation digests"
+            )
+        expected_status = (
+            "failed"
+            if self.has_unsafe_supported_evidence
+            else (
+                "observed"
+                if self.full_scope_complete
+                else "observed_with_gaps"
+            )
+        )
+        if self.status != expected_status:
+            raise ValueError(
+                "collision assurance status does not match safety and "
+                "coverage evidence"
+            )
+        if self.status != "failed" and self.evidence_tier.rank < 4:
+            raise ValueError(
+                "observed collision assurance requires at least E4 evidence"
+            )
+        return self
+
+    @property
+    def full_scope_complete(self) -> bool:
+        return bool(
+            self.observed_pair_count == self.registry_pair_count
+            and self.unsupported_case_count == 0
+            and self.runtime_support_rate.point_estimate == 1.0
+            and self.source_native_scope_valid
+        )
+
+    @property
+    def has_unsafe_supported_evidence(self) -> bool:
+        zero_metrics = (
+            self.adaptive_unsafe_rate,
+            self.frozen_unsafe_rate,
+            self.adaptive_unsafe_resolution_rate,
+            self.frozen_unsafe_resolution_rate,
+            self.adaptive_learned_promotion_rate,
+            self.frozen_learned_promotion_rate,
+            self.adaptive_wrong_model_rate,
+            self.frozen_wrong_model_rate,
+        )
+        one_metrics = (
+            self.adaptive_safe_containment_rate,
+            self.frozen_safe_containment_rate,
+            self.adaptive_candidate_visibility_rate,
+            self.frozen_candidate_visibility_rate,
+            self.adaptive_none_of_above_availability_rate,
+            self.frozen_none_of_above_availability_rate,
+            self.adaptive_source_immutability_rate,
+            self.frozen_source_immutability_rate,
+        )
+        return bool(
+            self.safety_incident_count
+            or self.adaptive_wrong_model_count
+            or self.frozen_wrong_model_count
+            or any(metric.point_estimate != 0.0 for metric in zero_metrics)
+            or any(metric.point_estimate != 1.0 for metric in one_metrics)
+            or not self.source_native_scope_valid
+        )
+
+    @property
+    def supported_scope_satisfied(self) -> bool:
+        return bool(
+            self.observed_pair_count > 0
+            and not self.has_unsafe_supported_evidence
+        )
+
+    @property
+    def source_native_scope_valid(self) -> bool:
+        if self.source_native_observed_case_count == 0:
+            return self.source_native_unsupported_case_count == 2
+        adaptive = (
+            self.source_native_adaptive_authoritative_resolution_rate
+        )
+        frozen = self.source_native_frozen_authoritative_resolution_rate
+        return bool(
+            self.source_native_observed_case_count == 2
+            and self.source_native_unsupported_case_count == 0
+            and adaptive is not None
+            and frozen is not None
+            and adaptive.sample_size == 2
+            and frozen.sample_size == 2
+            and adaptive.point_estimate == 1.0
+            and frozen.point_estimate == 1.0
+        )
+
+
 class CompanyLearningAssuranceSummary(_SummaryModel):
-    schema_version: Literal["company-learning-assurance-summary-v3"] = (
-        "company-learning-assurance-summary-v3"
+    schema_version: Literal["company-learning-assurance-summary-v4"] = (
+        "company-learning-assurance-summary-v4"
     )
     run_id: str = Field(min_length=1)
     system_version: str = Field(min_length=1)
@@ -443,6 +692,7 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
     slack: SlackAssurance
     correction: CorrectionAssurance
     variant_population: VariantPopulationAssurance
+    variant_collision: VariantCollisionAssurance
     population: PopulationAssurance | None = None
     proof_gaps: tuple[str, ...]
     blocking_failures: tuple[str, ...]
@@ -466,6 +716,7 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             **self.slack.artifact_paths,
             **self.correction.artifact_paths,
             **self.variant_population.artifact_paths,
+            **self.variant_collision.artifact_paths,
             **(
                 self.population.artifact_paths
                 if self.population is not None
@@ -499,6 +750,12 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
                     self.variant_population.component_digests.items()
                 )
             },
+            **{
+                f"variant_collision_{key}": value
+                for key, value in (
+                    self.variant_collision.component_digests.items()
+                )
+            },
             **(
                 {
                     f"population_{key}": value
@@ -525,6 +782,7 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             or not self.correction.tenant_isolated
             or not self.correction.replay_idempotent
             or self.variant_population.has_unsafe_or_invalid_mechanism
+            or self.variant_collision.has_unsafe_supported_evidence
         )
         blocking_component = bool(
             (
@@ -533,6 +791,7 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             )
             or not self.correction.converged
             or not self.variant_population.working_requirements_satisfied
+            or not self.variant_collision.supported_scope_satisfied
         )
         if self.status == "working" and (
             self.blocking_failures or unsafe_component or blocking_component
@@ -731,6 +990,165 @@ def validate_variant_population_assurance_component(
     return evidence
 
 
+def validate_variant_collision_assurance_component(
+    assurance: VariantCollisionAssurance,
+    *,
+    run_id: str,
+    system_version: str,
+) -> VariantCollisionPopulationReport:
+    """Reopen collision evidence and recompute its typed report."""
+
+    payload = _read_json_file(
+        assurance.artifact_paths["variant_collision_evidence"]
+    )
+    supplied_digest = str(payload.get("evidence_digest") or "")
+    evidence_payload = {
+        key: value
+        for key, value in payload.items()
+        if key != "evidence_digest"
+    }
+    if canonical_sha256(evidence_payload) != supplied_digest:
+        raise ValueError("collision assurance evidence digest mismatch")
+    if payload.get("run_id") != run_id:
+        raise ValueError("collision assurance run identity mismatch")
+    if payload.get("system_version") != system_version:
+        raise ValueError("collision assurance system version mismatch")
+
+    registry = HeldOutVariantCollisionPopulation.model_validate(
+        payload.get("registry_population")
+    )
+    if (
+        registry.digest != _SEALED_VARIANT_COLLISION_DIGEST
+        or payload.get("registry_population_digest") != registry.digest
+    ):
+        raise ValueError("collision assurance registry identity mismatch")
+    registry_ids = tuple(case.case_id for case in registry.cases)
+    assignments = payload.get("assignments")
+    if not isinstance(assignments, list) or tuple(
+        str(row.get("case_id")) for row in assignments
+    ) != registry_ids:
+        raise ValueError(
+            "collision assurance assignments do not cover registry order"
+        )
+    tenant_ids = [
+        str(row.get(key))
+        for row in assignments
+        for key in ("adaptive_tenant_id", "frozen_tenant_id")
+    ]
+    if len(tenant_ids) != len(set(tenant_ids)):
+        raise ValueError("collision assurance arm tenants are not unique")
+    observations = tuple(
+        VariantCollisionPairObservation.model_validate(row)
+        for row in payload.get("observations") or ()
+    )
+    if tuple(row.case_id for row in observations) != registry_ids:
+        raise ValueError(
+            "collision assurance observations changed registry order"
+        )
+    report = VariantCollisionPopulationReport.model_validate(
+        payload.get("report")
+    )
+    recomputed = evaluate_variant_collision_population(
+        population=registry,
+        observations=observations,
+    )
+    if recomputed != report:
+        raise ValueError(
+            "collision assurance report does not match recomputation"
+        )
+    source_native = report.stratum_reports["collision_family"][
+        VariantCollisionFamily.CONFLICTING_SOURCE_NATIVE_IDENTIFIER.value
+    ]
+    expected_digests = {
+        "evidence": supplied_digest,
+        "registry": registry.digest,
+        "report": report.digest,
+        "observations": canonical_sha256(
+            [row.model_dump(mode="json") for row in observations]
+        ),
+    }
+    if assurance.component_digests != expected_digests:
+        raise ValueError("collision assurance component digest mismatch")
+    expected_values = {
+        "status": report.status,
+        "registry_pair_count": report.pair_count,
+        "observed_pair_count": report.observed_pair_count,
+        "unsupported_case_count": report.unsupported_case_count,
+        "runtime_support_rate": report.runtime_support_rate,
+        "adaptive_safe_containment_rate": (
+            report.adaptive_safe_containment_rate
+        ),
+        "frozen_safe_containment_rate": (
+            report.frozen_safe_containment_rate
+        ),
+        "adaptive_unsafe_rate": report.adaptive_unsafe_rate,
+        "frozen_unsafe_rate": report.frozen_unsafe_rate,
+        "adaptive_unsafe_resolution_rate": (
+            report.adaptive_unsafe_resolution_rate
+        ),
+        "frozen_unsafe_resolution_rate": (
+            report.frozen_unsafe_resolution_rate
+        ),
+        "adaptive_authoritative_resolution_rate": (
+            report.adaptive_authoritative_resolution_rate
+        ),
+        "frozen_authoritative_resolution_rate": (
+            report.frozen_authoritative_resolution_rate
+        ),
+        "adaptive_candidate_visibility_rate": (
+            report.adaptive_candidate_visibility_rate
+        ),
+        "frozen_candidate_visibility_rate": (
+            report.frozen_candidate_visibility_rate
+        ),
+        "adaptive_none_of_above_availability_rate": (
+            report.adaptive_none_of_above_availability_rate
+        ),
+        "frozen_none_of_above_availability_rate": (
+            report.frozen_none_of_above_availability_rate
+        ),
+        "adaptive_learned_promotion_rate": (
+            report.adaptive_learned_promotion_rate
+        ),
+        "frozen_learned_promotion_rate": (
+            report.frozen_learned_promotion_rate
+        ),
+        "adaptive_wrong_model_rate": report.adaptive_wrong_model_rate,
+        "frozen_wrong_model_rate": report.frozen_wrong_model_rate,
+        "adaptive_wrong_model_count": report.adaptive_wrong_model_count,
+        "frozen_wrong_model_count": report.frozen_wrong_model_count,
+        "adaptive_source_immutability_rate": (
+            report.adaptive_source_immutability_rate
+        ),
+        "frozen_source_immutability_rate": (
+            report.frozen_source_immutability_rate
+        ),
+        "safety_incident_count": report.safety_incident_count,
+        "source_native_observed_case_count": (
+            source_native.observed_case_count
+        ),
+        "source_native_unsupported_case_count": (
+            source_native.unsupported_case_count
+        ),
+        "source_native_adaptive_authoritative_resolution_rate": (
+            source_native.adaptive_authoritative_resolution_rate
+        ),
+        "source_native_frozen_authoritative_resolution_rate": (
+            source_native.frozen_authoritative_resolution_rate
+        ),
+        "unsupported_strata_counts": report.unsupported_strata_counts,
+        "unsupported_reason_counts": report.unsupported_reason_counts,
+    }
+    if any(
+        getattr(assurance, field_name) != expected_value
+        for field_name, expected_value in expected_values.items()
+    ):
+        raise ValueError(
+            "collision assurance does not match persisted evidence"
+        )
+    return report
+
+
 def validate_company_learning_assurance_components(
     summary: CompanyLearningAssuranceSummary,
 ) -> None:
@@ -744,6 +1162,7 @@ def validate_company_learning_assurance_components(
         "population_evidence",
         "correction_evidence",
         "variant_population_evidence",
+        "variant_collision_evidence",
         "slack_observations",
         "slack_report",
     }
@@ -945,6 +1364,11 @@ def validate_company_learning_assurance_components(
     validate_variant_population_assurance_component(
         summary.variant_population,
         run_id=f"{summary.run_id}:variant",
+        system_version=summary.system_version,
+    )
+    validate_variant_collision_assurance_component(
+        summary.variant_collision,
+        run_id=f"{summary.run_id}:collision",
         system_version=summary.system_version,
     )
 

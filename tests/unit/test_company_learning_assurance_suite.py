@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.run_company_learning_assurance_suite import (
+    _variant_collision_failures,
     _variant_population_failures,
 )
 
@@ -40,8 +41,93 @@ def _clean_variant_evidence() -> SimpleNamespace:
     )
 
 
+def _clean_collision_evidence() -> SimpleNamespace:
+    report = SimpleNamespace(
+        pair_count=16,
+        observed_pair_count=14,
+        unsupported_case_count=2,
+        unsupported_reason_counts={
+            (
+                "runtime lacks authenticated SourceIdentityBinding "
+                "evidence"
+            ): 2
+        },
+        adaptive_safe_containment_rate=_point(1.0),
+        frozen_safe_containment_rate=_point(1.0),
+        adaptive_candidate_visibility_rate=_point(1.0),
+        frozen_candidate_visibility_rate=_point(1.0),
+        adaptive_none_of_above_availability_rate=_point(1.0),
+        frozen_none_of_above_availability_rate=_point(1.0),
+        adaptive_source_immutability_rate=_point(1.0),
+        frozen_source_immutability_rate=_point(1.0),
+        adaptive_unsafe_rate=_point(0.0),
+        frozen_unsafe_rate=_point(0.0),
+        adaptive_unsafe_resolution_rate=_point(0.0),
+        frozen_unsafe_resolution_rate=_point(0.0),
+        adaptive_learned_promotion_rate=_point(0.0),
+        frozen_learned_promotion_rate=_point(0.0),
+        adaptive_wrong_model_rate=_point(0.0),
+        frozen_wrong_model_rate=_point(0.0),
+        safety_incident_count=0,
+        adaptive_wrong_model_count=0,
+        frozen_wrong_model_count=0,
+        stratum_reports={
+            "collision_family": {
+                "conflicting_source_native_identifier": SimpleNamespace(
+                    observed_case_count=0,
+                    unsupported_case_count=2,
+                    adaptive_authoritative_resolution_rate=None,
+                    frozen_authoritative_resolution_rate=None,
+                )
+            }
+        },
+    )
+    return SimpleNamespace(report=report)
+
+
 def test_clean_variant_population_has_no_blocking_failures() -> None:
     assert _variant_population_failures(_clean_variant_evidence()) == ()
+
+
+def test_safe_supported_collision_scope_has_no_blocking_failures() -> None:
+    assert _variant_collision_failures(_clean_collision_evidence()) == ()
+
+
+def test_collision_safety_regression_blocks_without_hiding_scope() -> None:
+    evidence = _clean_collision_evidence()
+    evidence.report.adaptive_safe_containment_rate = _point(13 / 14)
+    evidence.report.adaptive_unsafe_rate = _point(1 / 14)
+    evidence.report.adaptive_unsafe_resolution_rate = _point(1 / 14)
+    evidence.report.safety_incident_count = 1
+
+    failures = _variant_collision_failures(evidence)
+
+    assert any("adaptive safe containment" in row for row in failures)
+    assert any("adaptive unsafe resolution" in row for row in failures)
+    assert any("safety incidents" in row for row in failures)
+
+
+def test_full_source_native_scope_requires_authoritative_resolution() -> None:
+    evidence = _clean_collision_evidence()
+    source_native = evidence.report.stratum_reports["collision_family"][
+        "conflicting_source_native_identifier"
+    ]
+    source_native.observed_case_count = 2
+    source_native.unsupported_case_count = 0
+    source_native.adaptive_authoritative_resolution_rate = _point(0.0)
+    source_native.frozen_authoritative_resolution_rate = _point(0.0)
+    source_native.adaptive_authoritative_resolution_rate.sample_size = 2
+    source_native.frozen_authoritative_resolution_rate.sample_size = 2
+    evidence.report.observed_pair_count = 16
+    evidence.report.unsupported_case_count = 0
+    evidence.report.unsupported_reason_counts = {}
+
+    failures = _variant_collision_failures(evidence)
+
+    assert any(
+        "adaptive source-native authoritative resolution" in row
+        for row in failures
+    )
 
 
 @pytest.mark.parametrize(

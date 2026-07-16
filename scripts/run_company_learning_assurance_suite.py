@@ -26,10 +26,14 @@ from lib.evaluation.company_learning_assurance import (
     PopulationAssurance,
     PositiveAssurance,
     SlackAssurance,
+    VariantCollisionAssurance,
     VariantPopulationAssurance,
     validate_company_learning_assurance_components,
 )
 from lib.evaluation.proof import EvidenceTier
+from lib.evaluation.company_learning_variant_collisions import (
+    VariantCollisionFamily,
+)
 from lib.evaluation.slack_reconstruction_gold import (
     evaluate_slack_reconstruction,
     load_slack_reconstruction_gold,
@@ -58,6 +62,12 @@ from scripts.run_company_learning_variant_population_harness import (
 )
 from scripts.run_company_learning_variant_population_harness import (
     run_variant_population_experiment,
+)
+from scripts.run_company_learning_variant_collisions_db import (
+    ARTIFACT_NAME as VARIANT_COLLISION_ARTIFACT_NAME,
+)
+from scripts.run_company_learning_variant_collisions_db import (
+    run_variant_collision_experiment,
 )
 from scripts.run_company_learning_vitals_harness import (
     _install_json_codec,
@@ -95,6 +105,7 @@ async def run_company_learning_assurance_suite(
     negative_dir = output_dir / "negative"
     population_dir = output_dir / "population"
     variant_dir = output_dir / "variant"
+    collision_dir = output_dir / "collision"
     slack_dir = output_dir / "slack"
     correction_dir = output_dir / "correction"
 
@@ -156,12 +167,23 @@ async def run_company_learning_assurance_suite(
                 llm_call_cost_usd=llm_call_cost_usd,
             )
         )
+        variant_collision_evidence = (
+            await run_variant_collision_experiment(
+                pool=negative_pool,
+                output_dir=collision_dir,
+                run_id=f"{run_id}:collision",
+                system_version=system_version,
+            )
+        )
     finally:
         await negative_pool.close()
     negative_path = negative_dir / NEGATIVE_ARTIFACT_NAME
     population_path = population_dir / POPULATION_ARTIFACT_NAME
     variant_population_path = (
         variant_dir / VARIANT_POPULATION_ARTIFACT_NAME
+    )
+    variant_collision_path = (
+        collision_dir / VARIANT_COLLISION_ARTIFACT_NAME
     )
     correction_artifact = await run_company_learning_correction_harness(
         database_url=database_url,
@@ -217,6 +239,9 @@ async def run_company_learning_assurance_suite(
         "variant_population_evidence": str(
             variant_population_path.resolve()
         ),
+        "variant_collision_evidence": str(
+            variant_collision_path.resolve()
+        ),
         "correction_evidence": str(correction_path.resolve()),
         "slack_observations": str(slack_observations_path.resolve()),
         "slack_report": str(slack_report_path.resolve()),
@@ -267,6 +292,16 @@ async def run_company_learning_assurance_suite(
             != 0.0
         )
     )
+    variant_collision_report = variant_collision_evidence.report
+    source_native_collision_report = (
+        variant_collision_report.stratum_reports["collision_family"][
+            VariantCollisionFamily
+            .CONFLICTING_SOURCE_NATIVE_IDENTIFIER.value
+        ]
+    )
+    variant_collision_failures = _variant_collision_failures(
+        variant_collision_evidence
+    )
     blocking_failures = tuple(
         dict.fromkeys(
             (
@@ -291,6 +326,7 @@ async def run_company_learning_assurance_suite(
                     for incident in variant_population_incidents
                 ),
                 *variant_failures,
+                *variant_collision_failures,
                 *(
                     f"correction incident: {incident}"
                     for incident in correction_artifact.incidents
@@ -340,6 +376,17 @@ async def run_company_learning_assurance_suite(
             variant_mechanism_metrics.model_dump(mode="json")
         ),
     }
+    variant_collision_digests = {
+        "evidence": variant_collision_evidence.digest,
+        "registry": variant_collision_evidence.registry_population_digest,
+        "report": variant_collision_report.digest,
+        "observations": canonical_sha256(
+            [
+                row.model_dump(mode="json")
+                for row in variant_collision_evidence.observations
+            ]
+        ),
+    }
     slack_digests = {
         "report": slack_report.digest,
         "gold_manifest": slack_report.gold_manifest_digest,
@@ -386,6 +433,19 @@ async def run_company_learning_assurance_suite(
                         "accounted for.",
                     )
                     if variant_population_report.unsupported_case_count
+                    else ()
+                ),
+                *(
+                    (
+                        "variant_collision: supported collision safety "
+                        f"observed {variant_collision_report.observed_pair_count}/"
+                        f"{variant_collision_report.pair_count} sealed cases; "
+                        f"{variant_collision_report.unsupported_case_count} "
+                        "authenticated source-identity cases remain "
+                        "unsupported until persisted SourceIdentityBinding "
+                        "evidence exists.",
+                    )
+                    if variant_collision_report.unsupported_case_count
                     else ()
                 ),
                 *(
@@ -580,6 +640,109 @@ async def run_company_learning_assurance_suite(
             },
             component_digests=variant_population_digests,
         ),
+        variant_collision=VariantCollisionAssurance(
+            status=variant_collision_report.status,
+            evidence_tier=EvidenceTier.E4,
+            registry_pair_count=variant_collision_report.pair_count,
+            observed_pair_count=(
+                variant_collision_report.observed_pair_count
+            ),
+            unsupported_case_count=(
+                variant_collision_report.unsupported_case_count
+            ),
+            runtime_support_rate=(
+                variant_collision_report.runtime_support_rate
+            ),
+            adaptive_safe_containment_rate=(
+                variant_collision_report.adaptive_safe_containment_rate
+            ),
+            frozen_safe_containment_rate=(
+                variant_collision_report.frozen_safe_containment_rate
+            ),
+            adaptive_unsafe_rate=(
+                variant_collision_report.adaptive_unsafe_rate
+            ),
+            frozen_unsafe_rate=variant_collision_report.frozen_unsafe_rate,
+            adaptive_unsafe_resolution_rate=(
+                variant_collision_report.adaptive_unsafe_resolution_rate
+            ),
+            frozen_unsafe_resolution_rate=(
+                variant_collision_report.frozen_unsafe_resolution_rate
+            ),
+            adaptive_authoritative_resolution_rate=(
+                variant_collision_report.adaptive_authoritative_resolution_rate
+            ),
+            frozen_authoritative_resolution_rate=(
+                variant_collision_report.frozen_authoritative_resolution_rate
+            ),
+            adaptive_candidate_visibility_rate=(
+                variant_collision_report.adaptive_candidate_visibility_rate
+            ),
+            frozen_candidate_visibility_rate=(
+                variant_collision_report.frozen_candidate_visibility_rate
+            ),
+            adaptive_none_of_above_availability_rate=(
+                variant_collision_report
+                .adaptive_none_of_above_availability_rate
+            ),
+            frozen_none_of_above_availability_rate=(
+                variant_collision_report
+                .frozen_none_of_above_availability_rate
+            ),
+            adaptive_learned_promotion_rate=(
+                variant_collision_report.adaptive_learned_promotion_rate
+            ),
+            frozen_learned_promotion_rate=(
+                variant_collision_report.frozen_learned_promotion_rate
+            ),
+            adaptive_wrong_model_rate=(
+                variant_collision_report.adaptive_wrong_model_rate
+            ),
+            frozen_wrong_model_rate=(
+                variant_collision_report.frozen_wrong_model_rate
+            ),
+            adaptive_wrong_model_count=(
+                variant_collision_report.adaptive_wrong_model_count
+            ),
+            frozen_wrong_model_count=(
+                variant_collision_report.frozen_wrong_model_count
+            ),
+            adaptive_source_immutability_rate=(
+                variant_collision_report.adaptive_source_immutability_rate
+            ),
+            frozen_source_immutability_rate=(
+                variant_collision_report.frozen_source_immutability_rate
+            ),
+            safety_incident_count=(
+                variant_collision_report.safety_incident_count
+            ),
+            source_native_observed_case_count=(
+                source_native_collision_report.observed_case_count
+            ),
+            source_native_unsupported_case_count=(
+                source_native_collision_report.unsupported_case_count
+            ),
+            source_native_adaptive_authoritative_resolution_rate=(
+                source_native_collision_report
+                .adaptive_authoritative_resolution_rate
+            ),
+            source_native_frozen_authoritative_resolution_rate=(
+                source_native_collision_report
+                .frozen_authoritative_resolution_rate
+            ),
+            unsupported_strata_counts=(
+                variant_collision_report.unsupported_strata_counts
+            ),
+            unsupported_reason_counts=(
+                variant_collision_report.unsupported_reason_counts
+            ),
+            artifact_paths={
+                "variant_collision_evidence": artifact_paths[
+                    "variant_collision_evidence"
+                ]
+            },
+            component_digests=variant_collision_digests,
+        ),
         population=PopulationAssurance(
             status=(
                 "observed_with_gaps"
@@ -650,6 +813,10 @@ async def run_company_learning_assurance_suite(
             **{
                 f"variant_population_{key}": value
                 for key, value in variant_population_digests.items()
+            },
+            **{
+                f"variant_collision_{key}": value
+                for key, value in variant_collision_digests.items()
             },
             **{
                 f"correction_{key}": value
@@ -741,6 +908,132 @@ def _variant_population_failures(evidence: Any) -> tuple[str, ...]:
     return tuple(failures)
 
 
+def _variant_collision_failures(evidence: Any) -> tuple[str, ...]:
+    report = evidence.report
+    source_native = report.stratum_reports["collision_family"][
+        VariantCollisionFamily.CONFLICTING_SOURCE_NATIVE_IDENTIFIER.value
+    ]
+    failures: list[str] = []
+    if report.pair_count != 16:
+        failures.append(
+            "variant collision: sealed registry did not contain 16 cases"
+        )
+    if report.observed_pair_count < 14:
+        failures.append(
+            "variant collision: fewer than 14 supported cases executed"
+        )
+    if report.unsupported_case_count and (
+        report.unsupported_reason_counts
+        != {
+            (
+                "runtime lacks authenticated SourceIdentityBinding "
+                "evidence"
+            ): 2
+        }
+    ):
+        failures.append(
+            "variant collision: unsupported scope was not exactly the two "
+            "authenticated source-identity cases"
+        )
+    if source_native.observed_case_count:
+        source_rates = {
+            "adaptive source-native authoritative resolution": (
+                source_native.adaptive_authoritative_resolution_rate
+            ),
+            "frozen source-native authoritative resolution": (
+                source_native.frozen_authoritative_resolution_rate
+            ),
+        }
+        if source_native.observed_case_count != 2:
+            failures.append(
+                "variant collision: source-native scope did not execute "
+                "both sealed cases"
+            )
+        failures.extend(
+            "variant collision: "
+            f"{label} lacked a two-case 1.0 result"
+            for label, rate in source_rates.items()
+            if (
+                rate is None
+                or rate.sample_size != 2
+                or rate.point_estimate != 1.0
+            )
+        )
+    one_metrics = {
+        "adaptive safe containment": (
+            report.adaptive_safe_containment_rate.point_estimate
+        ),
+        "frozen safe containment": (
+            report.frozen_safe_containment_rate.point_estimate
+        ),
+        "adaptive candidate visibility": (
+            report.adaptive_candidate_visibility_rate.point_estimate
+        ),
+        "frozen candidate visibility": (
+            report.frozen_candidate_visibility_rate.point_estimate
+        ),
+        "adaptive none-of-the-above availability": (
+            report.adaptive_none_of_above_availability_rate.point_estimate
+        ),
+        "frozen none-of-the-above availability": (
+            report.frozen_none_of_above_availability_rate.point_estimate
+        ),
+        "adaptive source immutability": (
+            report.adaptive_source_immutability_rate.point_estimate
+        ),
+        "frozen source immutability": (
+            report.frozen_source_immutability_rate.point_estimate
+        ),
+    }
+    zero_metrics = {
+        "adaptive unsafe rate": (
+            report.adaptive_unsafe_rate.point_estimate
+        ),
+        "frozen unsafe rate": report.frozen_unsafe_rate.point_estimate,
+        "adaptive unsafe resolution": (
+            report.adaptive_unsafe_resolution_rate.point_estimate
+        ),
+        "frozen unsafe resolution": (
+            report.frozen_unsafe_resolution_rate.point_estimate
+        ),
+        "adaptive learned promotion": (
+            report.adaptive_learned_promotion_rate.point_estimate
+        ),
+        "frozen learned promotion": (
+            report.frozen_learned_promotion_rate.point_estimate
+        ),
+        "adaptive wrong Model rate": (
+            report.adaptive_wrong_model_rate.point_estimate
+        ),
+        "frozen wrong Model rate": (
+            report.frozen_wrong_model_rate.point_estimate
+        ),
+    }
+    failures.extend(
+        "variant collision: "
+        f"{label} was {value!r}, expected 1.0"
+        for label, value in one_metrics.items()
+        if value != 1.0
+    )
+    failures.extend(
+        "variant collision: "
+        f"{label} was {value!r}, expected 0.0"
+        for label, value in zero_metrics.items()
+        if value != 0.0
+    )
+    counts = {
+        "safety incidents": report.safety_incident_count,
+        "adaptive wrong Models": report.adaptive_wrong_model_count,
+        "frozen wrong Models": report.frozen_wrong_model_count,
+    }
+    failures.extend(
+        f"variant collision: recorded {count} {label}"
+        for label, count in counts.items()
+        if count
+    )
+    return tuple(failures)
+
+
 def _variant_exact_metric_failures(
     *,
     expected: float,
@@ -810,6 +1103,7 @@ async def _run(args: argparse.Namespace) -> int:
         "status={status} positive_lift={lift} negative_incidents={incidents} "
         "negative_status={negative} population={observed}/{registry} "
         "variant={variant_observed}/{variant_registry} "
+        "collision={collision_observed}/{collision_registry} "
         "slack_status={slack} correction_status={correction}".format(
             status=summary.status,
             lift=summary.positive.adaptive_minus_frozen_correctness,
@@ -827,6 +1121,12 @@ async def _run(args: argparse.Namespace) -> int:
             ),
             variant_observed=summary.variant_population.observed_pair_count,
             variant_registry=summary.variant_population.registry_pair_count,
+            collision_observed=(
+                summary.variant_collision.observed_pair_count
+            ),
+            collision_registry=(
+                summary.variant_collision.registry_pair_count
+            ),
             slack=summary.slack.status,
             correction=summary.correction.status,
         )
@@ -841,7 +1141,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run positive corrective-memory Vitals, negative safety controls, "
-            "the sealed exact and variant held-out populations, Slack "
+            "the sealed exact, variant and collision populations, Slack "
             "reconstruction, and a recursive correction convergence burn in "
             "one assurance command."
         )

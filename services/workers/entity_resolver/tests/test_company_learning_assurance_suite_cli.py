@@ -48,6 +48,7 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert "positive_lift=1.0" in result.stdout
     assert "negative_incidents=0" in result.stdout
     assert "variant=24/24" in result.stdout
+    assert "collision=14/16" in result.stdout
     assert "slack_status=observed" in result.stdout
     assert "correction_status=working" in result.stdout
 
@@ -138,6 +139,38 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
         .control_integrity_violation_count
         == 0
     )
+    assert summary.variant_collision.status == "observed_with_gaps"
+    assert summary.variant_collision.registry_pair_count == 16
+    assert summary.variant_collision.observed_pair_count == 14
+    assert summary.variant_collision.unsupported_case_count == 2
+    assert (
+        summary.variant_collision.runtime_support_rate.point_estimate
+        == 14 / 16
+    )
+    assert (
+        summary.variant_collision
+        .adaptive_safe_containment_rate.point_estimate
+        == 1.0
+    )
+    assert (
+        summary.variant_collision.adaptive_unsafe_rate.point_estimate
+        == 0.0
+    )
+    assert summary.variant_collision.safety_incident_count == 0
+    assert summary.variant_collision.source_native_observed_case_count == 0
+    assert summary.variant_collision.source_native_unsupported_case_count == 2
+    assert (
+        summary.variant_collision
+        .source_native_adaptive_authoritative_resolution_rate
+        is None
+    )
+    assert summary.variant_collision.full_scope_complete is False
+    assert summary.variant_collision.supported_scope_satisfied is True
+    assert any(
+        "variant_collision: supported collision safety observed 14/16"
+        in gap
+        for gap in summary.proof_gaps
+    )
     assert not any(
         "Slack reconstruction remains diagnostic and non-blocking"
         in gap
@@ -200,6 +233,11 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
             summary.artifact_paths["variant_population_evidence"]
         ).read_text(encoding="utf-8")
     )
+    variant_collision = json.loads(
+        Path(
+            summary.artifact_paths["variant_collision_evidence"]
+        ).read_text(encoding="utf-8")
+    )
     assert (
         positive_pair["report"]["metrics"][
             "adaptive_minus_frozen_correctness"
@@ -224,6 +262,9 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
         ]
         == 1.0
     )
+    assert variant_collision["report"]["observed_pair_count"] == 14
+    assert variant_collision["report"]["unsupported_case_count"] == 2
+    assert variant_collision["report"]["status"] == "observed_with_gaps"
 
     persisted_summary_path = (
         output_dir
@@ -265,6 +306,9 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
         ]
         == 1.0
     )
+    assert assurance["variant_collision"]["registry_pair_count"] == 16
+    assert assurance["variant_collision"]["observed_pair_count"] == 14
+    assert assurance["variant_collision"]["unsupported_case_count"] == 2
 
 
 async def _run_cli(

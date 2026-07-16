@@ -42,6 +42,8 @@ from lib.evaluation.company_learning_population import (
     evaluate_heldout_population,
 )
 from lib.evaluation.tests.test_company_learning_assurance_contract import (
+    _collision_assurance_from_evidence,
+    _collision_evidence,
     _variant_assurance_from_evidence,
     _variant_evidence,
 )
@@ -225,6 +227,28 @@ def test_combined_assurance_is_non_scoring_and_persists_for_rerender(
         assurance["variant_population"]["mechanism_metrics"][
             "candidate_memory_mediated_success_rate"
         ]
+        == 1.0
+    )
+    assert assurance["variant_collision"]["status"] == "observed_with_gaps"
+    assert assurance["variant_collision"]["registry_pair_count"] == 16
+    assert assurance["variant_collision"]["observed_pair_count"] == 14
+    assert assurance["variant_collision"]["unsupported_case_count"] == 2
+    assert (
+        assurance["variant_collision"][
+            "source_native_observed_case_count"
+        ]
+        == 0
+    )
+    assert (
+        assurance["variant_collision"][
+            "source_native_unsupported_case_count"
+        ]
+        == 2
+    )
+    assert (
+        assurance["variant_collision"][
+            "adaptive_safe_containment_rate"
+        ]["point_estimate"]
         == 1.0
     )
     assert "scorecard" not in assurance["positive"]["component_digests"]
@@ -1555,6 +1579,12 @@ def _write_company_learning_assurance(
     )
     variant_path = report_dir / "pytest-variant-population.json"
     _write_json(variant_path, variant_evidence.artifact_payload())
+    collision_evidence = _collision_evidence(
+        run_id="synthetic-vitals:collision",
+        system_version=system_version,
+    )
+    collision_path = report_dir / "pytest-variant-collision.json"
+    _write_json(collision_path, collision_evidence.artifact_payload())
     artifact_paths = {
         "positive_pair": str(positive_path),
         "positive_company_learning_evaluation": str(
@@ -1567,12 +1597,17 @@ def _write_company_learning_assurance(
         "population_evidence": str(population_path),
         "correction_evidence": str(correction_path),
         "variant_population_evidence": str(variant_path),
+        "variant_collision_evidence": str(collision_path),
         "slack_observations": str(slack_observations_path),
         "slack_report": str(slack_report_path),
     }
     variant_assurance = _variant_assurance_from_evidence(
         variant_evidence,
         path=artifact_paths["variant_population_evidence"],
+    )
+    collision_assurance = _collision_assurance_from_evidence(
+        collision_evidence,
+        path=artifact_paths["variant_collision_evidence"],
     )
     summary = CompanyLearningAssuranceSummary(
         run_id="synthetic-vitals",
@@ -1681,6 +1716,7 @@ def _write_company_learning_assurance(
             },
         ),
         variant_population=variant_assurance,
+        variant_collision=collision_assurance,
         population=PopulationAssurance(
             status="observed_with_gaps",
             registry_pair_count=60,
@@ -1734,6 +1770,10 @@ def _write_company_learning_assurance(
             **{
                 f"variant_population_{key}": value
                 for key, value in variant_assurance.component_digests.items()
+            },
+            **{
+                f"variant_collision_{key}": value
+                for key, value in collision_assurance.component_digests.items()
             },
             "population_evidence": population_payload["evidence_digest"],
             "population_registry": population_payload[

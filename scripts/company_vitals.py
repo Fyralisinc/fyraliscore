@@ -1058,8 +1058,8 @@ def _company_learning_assurance_summary(
             ],
             "proof_gaps": [
                 "Combined positive, negative, exact-alias population, "
-                "variant-alias population, Slack and correction assurance "
-                "evidence could not be trusted."
+                "variant-alias population, collision population, Slack and "
+                "correction assurance evidence could not be trusted."
             ],
         }
     summary = _json_obj(assurance.get("summary"))
@@ -1097,6 +1097,9 @@ def _company_learning_assurance_summary(
         "population": _json_obj(summary.get("population")),
         "variant_population": _json_obj(
             summary.get("variant_population")
+        ),
+        "variant_collision": _json_obj(
+            summary.get("variant_collision")
         ),
         "component_digests": _json_obj(summary.get("component_digests")),
         "artifact_paths": _json_obj(summary.get("artifact_paths")),
