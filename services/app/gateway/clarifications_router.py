@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -19,6 +20,8 @@ from services.domain.clarifications import (
     list_clarification_requests,
 )
 from services.domain.entity_aliases.repo import insert_alias_with_connection
+from services.domain.entity_grounding.repo import EntityGroundingRepo
+from services.domain.source_semantics.repo import SourceSemanticRepo
 from services.domain.acts import commitments as commitments_svc
 from services.domain.resources import repo as resources_repo
 from services.domain.substrate_candidates import get_substrate_candidate
@@ -228,14 +231,16 @@ async def _apply_entity_resolution_answer(
     if action == "accept_candidate":
         payload = row.payload or {}
         phrase = str(payload.get("phrase") or "").strip()
-        canonical_ref = normalized.get("canonical_ref") or _first_candidate_ref(payload)
+        reviewed_candidate = _select_reviewed_candidate(
+            payload,
+            proposed_ref=normalized.get("canonical_ref"),
+        )
+        canonical_ref = reviewed_candidate["canonical_ref"]
         if not phrase:
             raise ValidationError("entity resolution answer missing phrase")
-        if not isinstance(canonical_ref, dict) or not canonical_ref.get("type"):
-            raise ValidationError("entity resolution answer missing canonical_ref")
         confidence = float(
             normalized.get("confidence")
-            or _first_candidate_confidence(payload)
+            or reviewed_candidate.get("confidence")
             or 1.0
         )
         await _finalize_entity_resolution(
@@ -302,25 +307,41 @@ def _normalized_answer(answer: dict[str, Any]) -> dict[str, Any]:
     return dict(answer)
 
 
-def _first_candidate_ref(payload: dict[str, Any]) -> dict[str, Any] | None:
-    candidates = payload.get("candidates") or []
+def _select_reviewed_candidate(
+    payload: dict[str, Any],
+    *,
+    proposed_ref: Any,
+) -> dict[str, Any]:
+    candidates = [
+        item
+        for item in (payload.get("candidates") or [])
+        if isinstance(item, dict) and isinstance(item.get("canonical_ref"), dict)
+    ]
     if not candidates:
-        return None
-    ref = candidates[0].get("canonical_ref") if isinstance(candidates[0], dict) else None
-    return dict(ref) if isinstance(ref, dict) else None
+        raise ValidationError("entity resolution answer has no reviewed candidates")
+    wanted = proposed_ref or candidates[0]["canonical_ref"]
+    if not isinstance(wanted, dict):
+        raise ValidationError("entity resolution answer missing canonical_ref")
 
+    def identity(ref: dict[str, Any]) -> tuple[str, str, int] | None:
+        entity_type = str(ref.get("type") or "").strip()
+        entity_id = str(ref.get("id") or "").strip()
+        if not entity_type or not entity_id:
+            return None
+        try:
+            version = int(ref.get("version", 1))
+        except (TypeError, ValueError):
+            return None
+        return entity_type, entity_id, version
 
-def _first_candidate_confidence(payload: dict[str, Any]) -> float | None:
-    candidates = payload.get("candidates") or []
-    if not candidates or not isinstance(candidates[0], dict):
-        return None
-    raw = candidates[0].get("confidence")
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
-
-
+    wanted_identity = identity(wanted)
+    for candidate in candidates:
+        candidate_ref = candidate["canonical_ref"]
+        if wanted_identity is not None and identity(candidate_ref) == wanted_identity:
+            return candidate
+    raise ValidationError(
+        "accepted canonical_ref must exactly match a reviewed candidate"
+    )
 async def _finalize_entity_resolution(
     conn: Any,
     *,
@@ -336,6 +357,7 @@ async def _finalize_entity_resolution(
     feedback_lineage = payload.get("feedback_lineage")
     if not isinstance(feedback_lineage, dict):
         feedback_lineage = {}
+    clarification_request_id = _coerce_uuid(row.id)
     await _insert_manual_entity_alias(
         conn,
         tenant_id=tenant_id,
@@ -343,10 +365,33 @@ async def _finalize_entity_resolution(
         canonical_ref=canonical_ref,
         confidence=confidence,
         source_event_id=observation_id,
-        clarification_request_id=_coerce_uuid(row.id),
+        clarification_request_id=clarification_request_id,
         answered_by=answered_by,
         feedback_lineage=feedback_lineage,
     )
+    original_trace_id = _coerce_uuid(feedback_lineage.get("grounding_trace_id"))
+    if (
+        original_trace_id is not None
+        and clarification_request_id is not None
+        and observation_id is not None
+    ):
+        successor_trace_id = await EntityGroundingRepo.append_adjudicated_successor(
+            conn,
+            tenant_id=tenant_id,
+            original_trace_id=original_trace_id,
+            clarification_request_id=clarification_request_id,
+            source_observation_id=observation_id,
+            phrase=phrase,
+            expected_lineage=feedback_lineage,
+            canonical_ref=canonical_ref,
+            now=datetime.now(timezone.utc),
+        )
+        await SourceSemanticRepo().enqueue_work(
+            conn,
+            tenant_id=tenant_id,
+            grounding_trace_id=successor_trace_id,
+            now=datetime.now(timezone.utc),
+        )
     await _mark_entity_review_resolved(
         conn,
         review_id=row.object_id,

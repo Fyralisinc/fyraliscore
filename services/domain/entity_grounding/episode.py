@@ -53,6 +53,7 @@ from lib.contracts.perception import (
     EntityCandidateGenerationRequest,
     EntityCandidateKind,
     EntityCandidateSet,
+    EntityMention,
     GroundingAdmissionDecision,
     GroundingAdmissionDisposition,
     InterpretationContextRequest,
@@ -110,6 +111,19 @@ class GroundingEpisode:
     selected_candidate_id: str | None
     assessed_canonical_ref: dict[str, Any] | None
     admitted_canonical_ref: dict[str, Any] | None
+    model_output: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AdjudicatedGroundingDecision:
+    processing_authority: ProcessingAuthorityContext
+    candidate_set: EntityCandidateSet
+    assessment: ResolutionAssessment
+    admission: GroundingAdmissionDecision
+    current_fate: str
+    selected_candidate_id: str
+    assessed_canonical_ref: dict[str, Any]
+    admitted_canonical_ref: dict[str, Any]
     model_output: dict[str, Any]
 
 
@@ -178,7 +192,7 @@ def build_grounding_episode(
         mention_id=mention.mention_id,
         mention_version=mention.mention_version,
         snapshot=snapshot,
-        authority=authority,
+        processing_authority_fingerprint=authority.fingerprint,
         candidates=candidates,
         now=now,
     )
@@ -245,6 +259,133 @@ def build_grounding_episode(
         admitted_canonical_ref=(
             assessed_ref if admission.selected_referent is not None else None
         ),
+        model_output=model_output,
+    )
+
+
+def build_adjudicated_grounding_decision(
+    *,
+    tenant_id: UUID,
+    observation_id: UUID,
+    phrase: str,
+    source_channel: str,
+    snapshot: InterpretationContextSnapshot,
+    mention: EntityMention,
+    canonical_ref: dict[str, Any],
+    identity_basis_ref: str,
+    redrive_of_request_digest: str,
+    correction_predecessor_ref: str,
+    now: datetime | None = None,
+) -> AdjudicatedGroundingDecision:
+    """Build a human-adjudicated successor over existing source annotations."""
+
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    authority = ProcessingAuthorityContext(
+        tenant_id=tenant_id,
+        principal_or_service_id="service:clarification-answer-applier",
+        purpose="company-physics-grounding-correction",
+        operation="apply-human-entity-adjudication",
+        object_types=RestrictionSet.only(
+            "observation",
+            "entity_mention",
+            "resolution_assessment",
+            "clarification_request",
+        ),
+        object_ids=RestrictionSet.only(
+            str(observation_id),
+            mention.mention_id,
+            correction_predecessor_ref,
+        ),
+        fields=RestrictionSet.unrestricted(),
+        source_labels=RestrictionSet.only(source_channel),
+        authority_basis_refs=frozenset({identity_basis_ref}),
+        policy_version="entity-clarification-adjudication-authority-v1",
+        authority_epoch=1,
+        decision_time=now - timedelta(microseconds=1),
+        expires_at=now + timedelta(hours=1),
+    )
+    candidate_inputs = (
+        GroundingCandidateInput(
+            canonical_ref=canonical_ref,
+            candidate_source="tenant_aliases",
+            positive_evidence_refs=(identity_basis_ref,),
+            independent_identity_evidence_refs=(identity_basis_ref,),
+        ),
+    )
+    candidate_set = _build_candidate_set(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        mention_id=mention.mention_id,
+        mention_version=mention.mention_version,
+        snapshot=snapshot,
+        processing_authority_fingerprint=authority.fingerprint,
+        candidates=candidate_inputs,
+        redrive_of_request_digest=redrive_of_request_digest,
+        now=now,
+    )
+    selected_candidate = _select_candidate(
+        candidate_set=candidate_set,
+        model_candidate_id=candidate_id_for_ref(canonical_ref),
+        model_canonical_ref=canonical_ref,
+    )
+    if selected_candidate is None:
+        raise ValueError("adjudicated canonical ref was not admitted to candidate set")
+    model_output = {
+        "candidate_id": selected_candidate.candidate_id,
+        "canonical_ref": canonical_ref,
+        "confidence": 1.0,
+        "reasoning": "independently adjudicated entity clarification",
+        "closed_set_match": True,
+        "human_adjudicated": True,
+        "identity_basis_ref": identity_basis_ref,
+    }
+    assessment = _build_assessment(
+        candidate_set=candidate_set,
+        selected_candidate=selected_candidate,
+        candidate_inputs=candidate_inputs,
+        model_canonical_ref=canonical_ref,
+        model_confidence=1.0,
+        calibration_cohort="human-entity-clarification-adjudication",
+        scorer_and_calibration_version="human-adjudication-v1",
+        correction_predecessor_ref=correction_predecessor_ref,
+        now=now,
+    )
+    admission, current_fate = _build_admission(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        source_channel=source_channel,
+        assessment=assessment,
+        context_disposition=snapshot.sufficiency_verdict.disposition,
+        selected_candidate=selected_candidate,
+        has_independent_identity_evidence=True,
+        model_canonical_ref=canonical_ref,
+        confidence=1.0,
+        high_confidence=0.8,
+        review_min=0.5,
+        authoritative_adjudication_ref=identity_basis_ref,
+        now=now,
+    )
+    if (
+        current_fate != "resolved_for_consumer"
+        or admission.selected_referent is None
+    ):
+        raise ValueError("human adjudication must produce one admitted referent")
+    assessed_ref = {
+        "type": selected_candidate.candidate_type,
+        "id": selected_candidate.canonical_referent_id,
+        "version": selected_candidate.canonical_referent_version,
+    }
+    return AdjudicatedGroundingDecision(
+        processing_authority=authority,
+        candidate_set=candidate_set,
+        assessment=assessment,
+        admission=admission,
+        current_fate=current_fate,
+        selected_candidate_id=selected_candidate.candidate_id,
+        assessed_canonical_ref=assessed_ref,
+        admitted_canonical_ref=assessed_ref,
         model_output=model_output,
     )
 
@@ -599,8 +740,9 @@ def _build_candidate_set(
     mention_id: str,
     mention_version: int,
     snapshot: InterpretationContextSnapshot,
-    authority: ProcessingAuthorityContext,
+    processing_authority_fingerprint: str,
     candidates: tuple[GroundingCandidateInput, ...],
+    redrive_of_request_digest: str | None = None,
     now: datetime,
 ) -> EntityCandidateSet:
     deduped: dict[str, GroundingCandidateInput] = {}
@@ -624,7 +766,7 @@ def _build_candidate_set(
         local_role_binding_refs=(),
         context_snapshot_ref=snapshot.snapshot_id,
         registry_as_of_cutoff=now,
-        processing_authority_fingerprint=authority.fingerprint,
+        processing_authority_fingerprint=processing_authority_fingerprint,
         permitted_candidate_sources=RestrictionSet.only(*allowed_sources),
         permitted_candidate_types=RestrictionSet.only(*allowed_types),
         required_retrieval_lanes=("source_mentions", "tenant_aliases"),
@@ -639,6 +781,7 @@ def _build_candidate_set(
             max_model_calls=1,
             max_latency_ms=10_000,
         ),
+        redrive_of_request_digest=redrive_of_request_digest,
     )
     contract_candidates = [
         EntityCandidate(
@@ -793,6 +936,9 @@ def _build_assessment(
     candidate_inputs: tuple[GroundingCandidateInput, ...],
     model_canonical_ref: dict[str, Any] | None,
     model_confidence: float,
+    calibration_cohort: str = "legacy-unstructured-phrase-resolution",
+    scorer_and_calibration_version: str = _SCORER_VERSION,
+    correction_predecessor_ref: str | None = None,
     now: datetime,
 ) -> ResolutionAssessment:
     ids = [item.candidate_id for item in candidate_set.candidates]
@@ -839,10 +985,11 @@ def _build_assessment(
             else ("independent identity discriminator",)
         ),
         temporal_compatibility_refs=(),
-        calibration_cohort="legacy-unstructured-phrase-resolution",
-        scorer_and_calibration_version=_SCORER_VERSION,
+        calibration_cohort=calibration_cohort,
+        scorer_and_calibration_version=scorer_and_calibration_version,
         assessed_at=now,
         expires_at=min(candidate_set.expires_at, now + timedelta(hours=12)),
+        correction_predecessor_ref=correction_predecessor_ref,
     )
 
 
@@ -859,10 +1006,23 @@ def _build_admission(
     confidence: float,
     high_confidence: float,
     review_min: float,
+    authoritative_adjudication_ref: str | None = None,
     now: datetime,
 ) -> tuple[GroundingAdmissionDecision, str]:
     selected: ReferentVersionRef | None = None
     if (
+        selected_candidate is not None
+        and has_independent_identity_evidence
+        and authoritative_adjudication_ref is not None
+    ):
+        disposition = GroundingAdmissionDisposition.SINGLE_REFERENT
+        selected = ReferentVersionRef(
+            referent_id=selected_candidate.canonical_referent_id or "",
+            referent_version=selected_candidate.canonical_referent_version or 1,
+        )
+        reasons = ("independently_adjudicated_single_referent",)
+        fate = "resolved_for_consumer"
+    elif (
         selected_candidate is not None
         and confidence > high_confidence
         and has_independent_identity_evidence
@@ -908,7 +1068,16 @@ def _build_admission(
         object_ids=RestrictionSet.only(assessment.assessment_id, str(observation_id)),
         fields=RestrictionSet.unrestricted(),
         source_labels=RestrictionSet.only(source_channel),
-        authority_basis_refs=frozenset({"service-policy:grounding-consumer-v1"}),
+        authority_basis_refs=frozenset(
+            {
+                "service-policy:grounding-consumer-v1",
+                *(
+                    (authoritative_adjudication_ref,)
+                    if authoritative_adjudication_ref is not None
+                    else ()
+                ),
+            }
+        ),
         policy_version=_ADMISSION_POLICY_VERSION,
         authority_epoch=1,
         decision_time=now - timedelta(microseconds=1),
@@ -959,9 +1128,11 @@ def _independent_evidence_for_candidate(
 
 
 __all__ = [
+    "AdjudicatedGroundingDecision",
     "ContextObservationInput",
     "GroundingCandidateInput",
     "GroundingEpisode",
+    "build_adjudicated_grounding_decision",
     "build_grounding_episode",
     "candidate_id_for_ref",
     "prepare_context_selection",

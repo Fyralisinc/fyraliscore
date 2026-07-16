@@ -210,6 +210,76 @@ def _observation_content_text(row: Mapping[str, Any]) -> str:
     return ""
 
 
+def _trace_row_id(row: Mapping[str, Any]) -> str | None:
+    value = row.get("id")
+    if value is None:
+        return None
+    rendered = str(value).strip()
+    return rendered or None
+
+
+def _superseded_trace_id(row: Mapping[str, Any]) -> str | None:
+    value = row.get("supersedes_grounding_trace_id")
+    if value is None:
+        trace = _json(row.get("trace"))
+        if isinstance(trace, dict):
+            value = trace.get("supersedes_grounding_trace_id")
+    if value is None:
+        return None
+    rendered = str(value).strip()
+    return rendered or None
+
+
+def _trace_lineage_heads(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[
+    tuple[Mapping[str, Any], ...],
+    tuple[Mapping[str, Any], ...],
+    int,
+    tuple[str, ...],
+]:
+    """Return current lineage heads without treating superseded history as duplicate."""
+
+    rows_by_id: dict[str, Mapping[str, Any]] = {}
+    anonymous_rows: list[Mapping[str, Any]] = []
+    duplicate_count = 0
+    invalid_supersession_refs: list[str] = []
+    for row in rows:
+        trace_id = _trace_row_id(row)
+        if trace_id is None:
+            anonymous_rows.append(row)
+        elif trace_id in rows_by_id:
+            duplicate_count += 1
+        else:
+            rows_by_id[trace_id] = row
+
+    superseded_ids: set[str] = set()
+    for trace_id, row in rows_by_id.items():
+        predecessor_id = _superseded_trace_id(row)
+        if predecessor_id is None:
+            continue
+        if predecessor_id == trace_id or predecessor_id not in rows_by_id:
+            invalid_supersession_refs.append(trace_id)
+            continue
+        superseded_ids.add(predecessor_id)
+
+    identified_heads = tuple(
+        row
+        for trace_id, row in rows_by_id.items()
+        if trace_id not in superseded_ids
+    )
+    if rows_by_id and not identified_heads:
+        invalid_supersession_refs.extend(
+            trace_id
+            for trace_id in rows_by_id
+            if trace_id not in invalid_supersession_refs
+        )
+    heads = identified_heads + tuple(anonymous_rows)
+    duplicate_count += max(0, len(heads) - 1)
+    generations = tuple(rows_by_id.values()) + tuple(anonymous_rows)
+    return heads, generations, duplicate_count, tuple(invalid_supersession_refs)
+
+
 async def evaluate_entity_grounding_state(
     conn: asyncpg.Connection,
     *,
@@ -399,7 +469,9 @@ async def evaluate_entity_grounding_state(
             AND answered_at >= $2 AND answered_at < $3
         ),
         adjudicated_aliases AS (
-          SELECT a.*, answered.answered_at
+          SELECT a.*, answered.id AS clarification_request_id,
+                 answered.source_observation_id AS clarified_observation_id,
+                 answered.answered_at
           FROM entity_aliases a
           JOIN answered
             ON a.tenant_id = answered.tenant_id
@@ -439,6 +511,9 @@ async def evaluate_entity_grounding_state(
               WHERE trace.tenant_id = alias.tenant_id
                 AND trace.phrase = alias.alias_text
                 AND trace.created_at > alias.answered_at
+                AND trace.source_observation_id <> alias.clarified_observation_id
+                AND COALESCE(trace.trace ->> 'adjudication_ref', '')
+                    <> 'clarification-request:' || alias.clarification_request_id::text
                 AND trace.current_fate = 'resolved_for_consumer'
                 AND trace.selected_referent ->> 'type'
                     = alias.resolved_entity_ref ->> 'type'
@@ -523,7 +598,15 @@ def analyze_entity_grounding_rows(
     for row in work_items:
         key = (row["source_observation_id"], row["phrase"])
         if key in eligible:
-            work_by_key[key] = row
+            current = work_by_key.get(key)
+            row_generation = int(row.get("processing_generation") or 0)
+            current_generation = (
+                int(current.get("processing_generation") or 0)
+                if current is not None
+                else -1
+            )
+            if current is None or row_generation >= current_generation:
+                work_by_key[key] = row
     work_fates = Counter(str(row["status"]) for row in work_by_key.values())
     terminal_work = {
         key for key, row in work_by_key.items() if row["status"] in _TERMINAL_WORK_FATES
@@ -806,11 +889,10 @@ def analyze_entity_grounding_rows(
             expected_mention_ref = (
                 f"mention:{mention_id}:v{row.get('detection_version')}"
             )
-            candidate_ok = len(linked_candidates) == 1
-            if candidate_ok:
-                candidate_row = linked_candidates[0]
+            candidate_ok = bool(linked_candidates)
+            for candidate_row in linked_candidates:
                 request_payload = _json(candidate_row.get("request")) or {}
-                candidate_ok = (
+                candidate_ok = candidate_ok and (
                     str(candidate_row.get("entity_mention_id")) == str(mention_id)
                     and UUID(str(candidate_row.get("source_observation_id")))
                     == observation_id
@@ -840,8 +922,47 @@ def analyze_entity_grounding_rows(
         key = (row["source_observation_id"], row["phrase"])
         if key in eligible:
             traces_by_key.setdefault(key, []).append(row)
-    current_rows = [rows[-1] for rows in traces_by_key.values()]
-    duplicate_traces = sum(max(0, len(rows) - 1) for rows in traces_by_key.values())
+    current_rows: list[Mapping[str, Any]] = []
+    generation_rows: list[Mapping[str, Any]] = []
+    duplicate_traces = 0
+    for key, rows in traces_by_key.items():
+        (
+            heads,
+            lineage_generations,
+            duplicate_count,
+            invalid_supersession_refs,
+        ) = _trace_lineage_heads(rows)
+        generation_rows.extend(lineage_generations)
+        duplicate_traces += duplicate_count
+        for trace_id in invalid_supersession_refs:
+            incident(
+                "invalid_grounding_trace_supersession",
+                f"grounding-trace:{trace_id}",
+            )
+
+        raw_current_trace_id = work_by_key.get(key, {}).get("current_trace_id")
+        current_trace_id = (
+            str(raw_current_trace_id) if raw_current_trace_id is not None else None
+        )
+        current_row = next(
+            (row for row in rows if _trace_row_id(row) == current_trace_id),
+            None,
+        )
+        if current_trace_id is not None and current_row is None:
+            incident(
+                "grounding_trace_head_missing",
+                f"grounding-work:{key[0]}:{key[1]}",
+            )
+        elif current_row is not None and all(current_row is not head for head in heads):
+            incident(
+                "grounding_trace_head_not_current_generation",
+                f"grounding-trace:{current_trace_id}",
+            )
+        if current_row is None:
+            current_row = heads[0] if len(heads) == 1 else rows[-1]
+        current_rows.append(current_row)
+
+    all_trace_rows = generation_rows
 
     complete_stage = 0
     lane_incomplete = 0
@@ -857,7 +978,7 @@ def analyze_entity_grounding_rows(
     request_ids: set[str] = set()
     set_request_ids: set[str] = set()
 
-    for row in current_rows:
+    for row in all_trace_rows:
         snapshot = _json(row.get("snapshot"))
         request = _json(row.get("request"))
         candidate_set = _json(row.get("candidate_set"))
@@ -949,6 +1070,7 @@ def analyze_entity_grounding_rows(
             ungrounded_single_admissions += 1
         identity_mutations += int(bool(row.get("identity_registry_mutated")))
         source_mutations += int(bool(row.get("source_observation_mutated")))
+    for row in current_rows:
         if row.get("current_fate") == "review":
             review_fates += 1
             review_obligations += int(bool(row.get("has_review_obligation")))
@@ -973,7 +1095,7 @@ def analyze_entity_grounding_rows(
     structural_incidents = {
         "duplicate_terminal_trace": duplicate_traces,
         "retry_without_due_time": int(retry_without_due),
-        "incomplete_grounding_continuity": len(current_rows) - complete_stage,
+        "incomplete_grounding_continuity": len(all_trace_rows) - complete_stage,
         "incomplete_candidate_lane_fate": lane_incomplete,
         "missing_open_world_candidate_options": open_world_missing,
         "future_context_leak": future_context,
@@ -1048,12 +1170,12 @@ def analyze_entity_grounding_rows(
         terminal_trace_required_count=len(trace_required_terminal),
         retry_scheduled_count=work_fates.get("retry_scheduled", 0),
         retry_without_due_time_count=int(retry_without_due),
-        trace_count=sum(len(rows) for rows in traces_by_key.values()),
+        trace_count=len(all_trace_rows),
         traced_terminal_count=traced_terminal,
         terminal_trace_coverage=_ratio(traced_terminal, len(trace_required_terminal)),
         duplicate_trace_count=duplicate_traces,
         stage_complete_trace_count=complete_stage,
-        stage_continuity_rate=_ratio(complete_stage, len(current_rows)),
+        stage_continuity_rate=_ratio(complete_stage, len(all_trace_rows)),
         candidate_request_count=request_count,
         immutable_candidate_set_count=set_count,
         candidate_request_fate_coverage=_ratio(set_count, request_count),

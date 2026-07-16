@@ -111,22 +111,22 @@ Everything else receives an explicit safe behavior and return condition here.
 - **Preferred direction:** Extend the existing lifecycle one policy family at
   a time, beginning with contextual entity grounding.
 
-### EDGE-009 — Original grounding is not yet superseded after adjudication
+### EDGE-009 — Original grounding supersession after adjudication
 
-- **Status:** `active`
-- **Current behavior:** An accepted clarification records governed corrective
-  memory and improves later occurrences.
-- **Missing behavior:** The original review grounding, no-admission source
-  semantics and any dependent Model do not yet receive an N+1 successor,
-  retraction or repair fate.
-- **Safe boundary:** Do not claim correction closure; report the first result as
-  historically reviewed and the later improvement as future corrective memory.
-- **Return condition:** Implement grounding/source-semantic successor
-  generations and dependent Model repair before policy-learning promotion.
+- **Status:** `resolved`
+- **Current behavior:** An accepted clarification appends an explicitly typed
+  N+1 grounding generation over the exact reviewed trace, reuses the immutable
+  context and mention annotations, gives both generations a source-semantic
+  fate, and can apply exactly one Model from the original source coordinates.
+  The N generation remains immutable historical review/no-admission evidence.
+- **Evidence:** The real-Postgres Slack vertical proves review -> clarification
+  -> adjudicated successor -> original no-admission -> successor belief
+  application -> replay-stable single Model. The evaluator selects the latest
+  work generation as current while preserving both trace generations.
 
 ### EDGE-010 — Clarification compatibility mutates observation annotations
 
-- **Status:** `open`
+- **Status:** `active`
 - **Current behavior:** Legacy clarification finalization appends the chosen
   entity to `observations.entities_mentioned` and emits an authoritative state
   change.
@@ -136,7 +136,20 @@ Everything else receives an explicit safe behavior and return condition here.
 - **Safe boundary:** Treat `entities_mentioned` as a compatibility annotation,
   never as independent source evidence. Grounding lineage remains authoritative.
 - **Return condition:** Replace the mutation with a versioned correction/
-  annotation projection when successor grounding is implemented.
+  annotation projection before Observation immutability is claimed.
+
+### EDGE-011 — Repair of an already admitted wrong identity
+
+- **Status:** `open`
+- **Current behavior:** The correction loop begins from a review, unresolved,
+  or abstained grounding fate. It does not yet retract a previously admitted
+  wrong referent or repair Models that consumed it.
+- **Safe boundary:** Do not claim correction closure for false-positive
+  auto-admissions. Keep automatic admission thresholds conservative and route
+  disputed accepted identities to manual investigation.
+- **Return condition:** Add typed retraction/supersession across grounding,
+  source semantics, Model belief addresses, projections, and retrieval before
+  widening automatic identity admission.
 
 ## Entry Template
 

@@ -3,11 +3,16 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.testclient import TestClient
 
-from services.app.gateway.clarifications_router import build_clarifications_router
+from lib.shared.errors import ValidationError
+from services.app.gateway.clarifications_router import (
+    _select_reviewed_candidate,
+    build_clarifications_router,
+)
 
 
 class _Acquire:
@@ -248,9 +253,13 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
     request_id = uuid4()
     review_id = uuid4()
     observation_id = uuid4()
+    grounding_trace_id = uuid4()
+    successor_trace_id = uuid4()
     conn = _Conn()
     canonical_ref = {"type": "customer", "id": str(uuid4())}
     alias_calls: list[dict] = []
+    successor_calls: list[dict] = []
+    semantic_work_calls: list[dict] = []
 
     async def fake_answer(acquired_conn, *, tenant_id, request_id, answer, answered_by):
         return _Row(
@@ -264,7 +273,7 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
                 "payload": {
                     "phrase": "Alpen",
                     "feedback_lineage": {
-                        "grounding_trace_id": str(uuid4()),
+                        "grounding_trace_id": str(grounding_trace_id),
                         "resolution_assessment_id": str(uuid4()),
                     },
                     "candidates": [
@@ -282,6 +291,14 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
         alias_calls.append({"conn": acquired_conn, **kwargs})
         return SimpleNamespace(id=uuid4())
 
+    async def fake_append_successor(acquired_conn, **kwargs):
+        successor_calls.append({"conn": acquired_conn, **kwargs})
+        return successor_trace_id
+
+    async def fake_enqueue_work(_repo, acquired_conn, **kwargs):
+        semantic_work_calls.append({"conn": acquired_conn, **kwargs})
+        return SimpleNamespace(id=uuid4())
+
     monkeypatch.setattr(
         "services.app.gateway.clarifications_router.answer_clarification_request",
         fake_answer,
@@ -289,6 +306,14 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
     monkeypatch.setattr(
         "services.app.gateway.clarifications_router.insert_alias_with_connection",
         fake_insert_alias,
+    )
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.EntityGroundingRepo.append_adjudicated_successor",
+        fake_append_successor,
+    )
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.SourceSemanticRepo.enqueue_work",
+        fake_enqueue_work,
     )
     client = _client(tenant_id=tenant_id, actor_id=actor_id, conn=conn)
 
@@ -307,9 +332,47 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
     assert metadata["clarification_request_id"] == str(request_id)
     assert metadata["adjudicated_by"] == str(actor_id)
     assert metadata["grounding_feedback_lineage"]["grounding_trace_id"]
+    assert len(successor_calls) == 1
+    assert successor_calls[0]["conn"] is conn
+    assert successor_calls[0]["tenant_id"] == tenant_id
+    assert successor_calls[0]["original_trace_id"] == grounding_trace_id
+    assert successor_calls[0]["clarification_request_id"] == request_id
+    assert successor_calls[0]["source_observation_id"] == observation_id
+    assert successor_calls[0]["phrase"] == "Alpen"
+    assert successor_calls[0]["expected_lineage"] == metadata[
+        "grounding_feedback_lineage"
+    ]
+    assert successor_calls[0]["canonical_ref"] == canonical_ref
+    assert len(semantic_work_calls) == 1
+    assert semantic_work_calls[0]["conn"] is conn
+    assert semantic_work_calls[0]["tenant_id"] == tenant_id
+    assert semantic_work_calls[0]["grounding_trace_id"] == successor_trace_id
     assert any("UPDATE entity_review_queue" in query for query, _args in conn.executed)
     assert any("UPDATE observations" in query for query, _args in conn.executed)
     assert any("INSERT INTO observations" in query for query, _args in conn.executed)
+
+
+def test_entity_resolution_cannot_accept_an_unreviewed_canonical_ref() -> None:
+    reviewed_ref = {"type": "customer", "id": "customer-reviewed", "version": 1}
+    with pytest.raises(
+        ValidationError,
+        match="exactly match a reviewed candidate",
+    ):
+        _select_reviewed_candidate(
+            {
+                "candidates": [
+                    {
+                        "canonical_ref": reviewed_ref,
+                        "confidence": 0.8,
+                    }
+                ]
+            },
+            proposed_ref={
+                "type": "customer",
+                "id": "customer-injected",
+                "version": 1,
+            },
+        )
 
 
 def test_clarification_answer_creates_new_customer_entity(monkeypatch) -> None:

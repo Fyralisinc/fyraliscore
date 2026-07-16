@@ -9,6 +9,7 @@ from lib.contracts.perception import EntityCandidateKind
 from services.domain.entity_grounding.episode import (
     ContextObservationInput,
     GroundingCandidateInput,
+    build_adjudicated_grounding_decision,
     build_grounding_episode,
     candidate_id_for_ref,
     prepare_context_selection,
@@ -403,6 +404,63 @@ def test_context_dependent_slack_phrase_cannot_auto_admit_without_stable_boundar
 def test_candidate_ids_are_canonical_and_order_independent() -> None:
     same_different_order = {"id": "customer:nimbus", "type": "customer"}
     assert candidate_id_for_ref(CUSTOMER) == candidate_id_for_ref(same_different_order)
+
+
+def test_human_adjudication_builds_an_independently_grounded_successor() -> None:
+    original = _episode(
+        candidate_id=candidate_id_for_ref(CUSTOMER),
+        confidence=0.6,
+    )
+    mention = original.mention_detection_command.detection.mention
+    assert mention is not None
+    adjudication_ref = "clarification-request:019f0000-0000-7000-8000-000000000001"
+
+    successor = build_adjudicated_grounding_decision(
+        tenant_id=TENANT,
+        observation_id=OBSERVATION,
+        phrase="NBI",
+        source_channel="slack:message",
+        snapshot=original.context_snapshot,
+        mention=mention,
+        canonical_ref=CUSTOMER,
+        identity_basis_ref=adjudication_ref,
+        redrive_of_request_digest=(
+            original.candidate_set.request.generation_request_digest
+        ),
+        correction_predecessor_ref=(
+            f"resolution-assessment:{original.assessment.assessment_id}"
+        ),
+        now=NOW + timedelta(minutes=2),
+    )
+
+    assert successor.current_fate == "resolved_for_consumer"
+    assert successor.admission.disposition.value == "single_referent"
+    assert successor.admission.reason_codes == (
+        "independently_adjudicated_single_referent",
+    )
+    assert adjudication_ref in (
+        successor.admission.consumption_authority.authority_basis_refs
+    )
+    assert successor.admitted_canonical_ref == {**CUSTOMER, "version": 1}
+    assert successor.assessment.decisive_evidence_refs == (adjudication_ref,)
+    assert successor.model_output["human_adjudicated"] is True
+    assert successor.model_output["identity_basis_ref"] == adjudication_ref
+    assert (
+        successor.candidate_set.request.redrive_of_request_digest
+        == original.candidate_set.request.generation_request_digest
+    )
+    assert successor.assessment.correction_predecessor_ref == (
+        f"resolution-assessment:{original.assessment.assessment_id}"
+    )
+    assert successor.assessment.calibration_cohort == (
+        "human-entity-clarification-adjudication"
+    )
+    assert successor.assessment.scorer_and_calibration_version == (
+        "human-adjudication-v1"
+    )
+    assert successor.processing_authority.authority_basis_refs == frozenset(
+        {adjudication_ref}
+    )
 
 
 def test_naive_as_known_time_is_rejected() -> None:

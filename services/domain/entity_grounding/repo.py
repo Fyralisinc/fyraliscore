@@ -18,10 +18,19 @@ from lib.contracts.entity_mentions import (
     EntityMentionDetectionFate,
 )
 from lib.contracts.kernel import canonical_sha256
+from lib.contracts.perception import (
+    EntityMention,
+    InterpretationContextSnapshot,
+    SelectionDependency,
+)
 from lib.shared.errors import InvariantViolation
 from lib.shared.ids import uuid7
 from services.domain.conversation_context.repo import GroundingAnnotationAppender
-from services.domain.entity_grounding.episode import GroundingEpisode
+from services.domain.entity_grounding.episode import (
+    AdjudicatedGroundingDecision,
+    GroundingEpisode,
+    build_adjudicated_grounding_decision,
+)
 
 
 class EntityGroundingRepo:
@@ -156,6 +165,224 @@ class EntityGroundingRepo:
                 source_observation_id=source_observation_id,
                 phrase=phrase,
             )
+
+    @classmethod
+    async def append_adjudicated_successor(
+        cls,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        original_trace_id: UUID,
+        clarification_request_id: UUID,
+        source_observation_id: UUID,
+        phrase: str,
+        expected_lineage: dict[str, Any],
+        canonical_ref: dict[str, Any],
+        now: datetime,
+    ) -> UUID:
+        """Append one corrected grounding trace over existing source annotations."""
+
+        adjudication_ref = f"clarification-request:{clarification_request_id}"
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            f"entity-grounding-adjudication:{tenant_id}:{clarification_request_id}",
+        )
+        row = await conn.fetchrow(
+            """
+            SELECT
+              trace.id AS original_trace_id,
+              trace.source_observation_id,
+              trace.phrase,
+              trace.current_fate,
+              trace.context_snapshot_id,
+              trace.entity_mention_detection_id,
+              trace.entity_mention_id,
+              trace.candidate_request_id,
+              trace.candidate_set_id,
+              trace.resolution_assessment_id,
+              trace.grounding_admission_id,
+              snapshot.snapshot,
+              snapshot.selection_dependency,
+              snapshot.source_channel,
+              detection.detection_version,
+              detection.detection_digest,
+              detection.fate AS detection_fate,
+              detection.mention,
+              request.request_digest,
+              candidate_set.candidates AS original_candidates,
+              work.processing_generation
+            FROM grounding_traces trace
+            JOIN interpretation_context_snapshots snapshot
+              ON snapshot.tenant_id=trace.tenant_id
+             AND snapshot.id=trace.context_snapshot_id
+            JOIN entity_mention_detections detection
+              ON detection.tenant_id=trace.tenant_id
+             AND detection.id=trace.entity_mention_detection_id
+            JOIN entity_candidate_generation_requests request
+              ON request.tenant_id=trace.tenant_id
+             AND request.id=trace.candidate_request_id
+            JOIN entity_candidate_sets candidate_set
+              ON candidate_set.tenant_id=trace.tenant_id
+             AND candidate_set.id=trace.candidate_set_id
+            LEFT JOIN entity_grounding_work_items work
+              ON work.tenant_id=trace.tenant_id
+             AND work.current_trace_id=trace.id
+            WHERE trace.tenant_id=$1 AND trace.id=$2
+            FOR UPDATE OF trace
+            """,
+            tenant_id,
+            original_trace_id,
+        )
+        if row is None:
+            raise InvariantViolation(
+                "GROUNDING_ADJUDICATION_TRACE_MISSING",
+                "entity adjudication requires the exact original grounding trace",
+                original_trace_id=str(original_trace_id),
+            )
+        if row["current_fate"] not in {"review", "unresolved", "abstained"}:
+            raise InvariantViolation(
+                "GROUNDING_ADJUDICATION_TRACE_TERMINAL",
+                "only a non-admitted grounding trace can be adjudicated",
+                original_trace_id=str(original_trace_id),
+                current_fate=row["current_fate"],
+            )
+        lineage_bindings = {
+            "grounding_trace_id": row["original_trace_id"],
+            "context_snapshot_id": row["context_snapshot_id"],
+            "entity_mention_detection_id": row["entity_mention_detection_id"],
+            "entity_mention_id": row["entity_mention_id"],
+            "candidate_set_id": row["candidate_set_id"],
+            "resolution_assessment_id": row["resolution_assessment_id"],
+            "grounding_admission_id": row["grounding_admission_id"],
+        }
+        lineage_mismatch = [
+            field
+            for field, actual in lineage_bindings.items()
+            if str(expected_lineage.get(field) or "") != str(actual)
+        ]
+        if (
+            row["source_observation_id"] != source_observation_id
+            or row["phrase"] != phrase
+            or lineage_mismatch
+        ):
+            raise InvariantViolation(
+                "GROUNDING_ADJUDICATION_LINEAGE_MISMATCH",
+                "clarification does not bind the exact reviewed grounding aggregate",
+                clarification_request_id=str(clarification_request_id),
+                original_trace_id=str(original_trace_id),
+                mismatched_fields=lineage_mismatch,
+            )
+        original_candidates = row["original_candidates"]
+        if isinstance(original_candidates, str):
+            original_candidates = json.loads(original_candidates)
+        expected_ref = {
+            "type": str(canonical_ref.get("type") or ""),
+            "id": str(canonical_ref.get("id") or ""),
+            "version": int(canonical_ref.get("version", 1)),
+        }
+        candidate_refs = {
+            (
+                str(candidate.get("candidate_type") or ""),
+                str(candidate.get("canonical_referent_id") or ""),
+                int(candidate.get("canonical_referent_version") or 1),
+            )
+            for candidate in (original_candidates or [])
+            if isinstance(candidate, dict)
+        }
+        if (
+            expected_ref["type"],
+            expected_ref["id"],
+            expected_ref["version"],
+        ) not in candidate_refs:
+            raise InvariantViolation(
+                "GROUNDING_ADJUDICATION_CANDIDATE_MISMATCH",
+                "adjudication must select an exact candidate from the reviewed set",
+                clarification_request_id=str(clarification_request_id),
+            )
+        duplicate = await conn.fetchrow(
+            """
+            SELECT id, selected_referent,
+                   trace ->> 'supersedes_grounding_trace_id' AS supersedes_trace_id
+            FROM grounding_traces
+            WHERE tenant_id=$1
+              AND trace ->> 'adjudication_ref' = $2
+            ORDER BY created_at, id
+            LIMIT 1
+            """,
+            tenant_id,
+            adjudication_ref,
+        )
+        if duplicate is not None:
+            selected_referent = duplicate["selected_referent"]
+            if isinstance(selected_referent, str):
+                selected_referent = json.loads(selected_referent)
+            if (
+                duplicate["supersedes_trace_id"] != str(original_trace_id)
+                or selected_referent != expected_ref
+            ):
+                raise InvariantViolation(
+                    "GROUNDING_ADJUDICATION_IDEMPOTENCY_CONFLICT",
+                    "one clarification cannot produce conflicting grounding successors",
+                    clarification_request_id=str(clarification_request_id),
+                    original_trace_id=str(original_trace_id),
+                    existing_trace_id=str(duplicate["id"]),
+                )
+            return duplicate["id"]
+        snapshot_payload = row["snapshot"]
+        if isinstance(snapshot_payload, str):
+            snapshot_payload = json.loads(snapshot_payload)
+        mention_payload = row["mention"]
+        if isinstance(mention_payload, str):
+            mention_payload = json.loads(mention_payload)
+        dependency_payload = row["selection_dependency"]
+        if isinstance(dependency_payload, str):
+            dependency_payload = json.loads(dependency_payload)
+        if not isinstance(dependency_payload, dict):
+            raise InvariantViolation(
+                "GROUNDING_ADJUDICATION_DEPENDENCY_MISSING",
+                "adjudication requires the original context dependency",
+                original_trace_id=str(original_trace_id),
+            )
+        snapshot = InterpretationContextSnapshot.model_validate(snapshot_payload)
+        mention = EntityMention.model_validate(mention_payload)
+        dependency = SelectionDependency.model_validate(dependency_payload)
+        decision = build_adjudicated_grounding_decision(
+            tenant_id=tenant_id,
+            observation_id=row["source_observation_id"],
+            phrase=row["phrase"],
+            source_channel=row["source_channel"],
+            snapshot=snapshot,
+            mention=mention,
+            canonical_ref=canonical_ref,
+            identity_basis_ref=adjudication_ref,
+            redrive_of_request_digest=row["request_digest"],
+            correction_predecessor_ref=(
+                f"resolution-assessment:{row['resolution_assessment_id']}"
+            ),
+            now=now,
+        )
+        processing_generation = int(row["processing_generation"] or 1) + 1
+        return await cls._append_decision_artifacts(
+            conn,
+            tenant_id=tenant_id,
+            source_observation_id=row["source_observation_id"],
+            phrase=row["phrase"],
+            context_snapshot=snapshot,
+            selection_dependency=dependency,
+            mention_detection_id=row["entity_mention_detection_id"],
+            mention_detection_version=int(row["detection_version"]),
+            mention_detection_digest=row["detection_digest"],
+            mention_detection_fate=row["detection_fate"],
+            mention_id=row["entity_mention_id"],
+            mention_version=mention.mention_version,
+            decision=decision,
+            processing_generation=processing_generation,
+            trace_extra={
+                "supersedes_grounding_trace_id": str(original_trace_id),
+                "adjudication_ref": adjudication_ref,
+                "correction_kind": "entity_clarification_adjudication",
+            },
+        )
 
     async def _append_rejected_mention(
         self,
@@ -484,6 +711,241 @@ class EntityGroundingRepo:
             episode.current_fate,
             trace_id,
             json.dumps(terminal_fate),
+        )
+        return trace_id
+
+    @classmethod
+    async def _append_decision_artifacts(
+        cls,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        source_observation_id: UUID,
+        phrase: str,
+        context_snapshot: InterpretationContextSnapshot,
+        selection_dependency: SelectionDependency,
+        mention_detection_id: UUID,
+        mention_detection_version: int,
+        mention_detection_digest: str,
+        mention_detection_fate: str,
+        mention_id: UUID,
+        mention_version: int,
+        decision: AdjudicatedGroundingDecision,
+        processing_generation: int,
+        trace_extra: dict[str, Any],
+    ) -> UUID:
+        """Persist candidate through trace using already committed annotations."""
+
+        candidate_set = decision.candidate_set
+        request = candidate_set.request
+        assessment = decision.assessment
+        admission = decision.admission
+        candidate_set_payload = candidate_set.model_dump(mode="json")
+        assessment_payload = assessment.model_dump(mode="json")
+        admission_payload = admission.model_dump(mode="json")
+        await conn.execute(
+            """
+            INSERT INTO entity_candidate_generation_requests (
+                id, tenant_id, context_snapshot_id, source_observation_id,
+                phrase, mention_ref, entity_mention_detection_id,
+                entity_mention_id, request_digest,
+                processing_authority_fingerprint, required_lanes, request
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb
+            )
+            """,
+            UUID(request.request_id),
+            tenant_id,
+            UUID(context_snapshot.snapshot_id),
+            source_observation_id,
+            phrase,
+            request.mention_ref,
+            mention_detection_id,
+            mention_id,
+            request.generation_request_digest,
+            request.processing_authority_fingerprint,
+            list(request.required_retrieval_lanes),
+            json.dumps(request.model_dump(mode="json")),
+        )
+        await conn.execute(
+            """
+            INSERT INTO entity_candidate_sets (
+                id, tenant_id, request_id, request_digest, candidate_set_version,
+                lane_fates, candidates, candidate_set_hash, candidate_set,
+                registry_version, expires_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb,
+                $10, $11
+            )
+            """,
+            UUID(candidate_set.candidate_set_id),
+            tenant_id,
+            UUID(request.request_id),
+            request.generation_request_digest,
+            candidate_set.candidate_set_version,
+            json.dumps(
+                [item.model_dump(mode="json") for item in candidate_set.lane_fates]
+            ),
+            json.dumps(
+                [item.model_dump(mode="json") for item in candidate_set.candidates]
+            ),
+            canonical_sha256(candidate_set_payload),
+            json.dumps(candidate_set_payload),
+            candidate_set.registry_version,
+            candidate_set.expires_at,
+        )
+        await conn.execute(
+            """
+            INSERT INTO resolution_assessments (
+                id, tenant_id, candidate_set_id, assessment_version,
+                candidate_distribution, selected_candidate_id,
+                suggested_canonical_ref, model_output, assessment,
+                scorer_and_calibration_version, assessed_at, expires_at
+            ) VALUES (
+                $1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8::jsonb,
+                $9::jsonb, $10, $11, $12
+            )
+            """,
+            UUID(assessment.assessment_id),
+            tenant_id,
+            UUID(candidate_set.candidate_set_id),
+            assessment.assessment_version,
+            json.dumps(assessment.candidate_distribution),
+            decision.selected_candidate_id,
+            json.dumps(decision.assessed_canonical_ref),
+            json.dumps(decision.model_output),
+            json.dumps(assessment_payload),
+            assessment.scorer_and_calibration_version,
+            assessment.assessed_at,
+            assessment.expires_at,
+        )
+        await conn.execute(
+            """
+            INSERT INTO grounding_admission_decisions (
+                id, tenant_id, assessment_id, decision_version, consumer,
+                purpose, operation, risk_tier, disposition, selected_referent,
+                reason_codes, consumption_authority_fingerprint, decision,
+                decided_at, expires_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
+                $11, $12, $13::jsonb, $14, $15
+            )
+            """,
+            UUID(admission.decision_id),
+            tenant_id,
+            UUID(assessment.assessment_id),
+            admission.decision_version,
+            admission.consumer,
+            admission.purpose,
+            admission.operation,
+            admission.risk_tier,
+            admission.disposition.value,
+            json.dumps(admission.selected_referent.model_dump(mode="json")),
+            list(admission.reason_codes),
+            admission.consumption_authority.fingerprint,
+            json.dumps(admission_payload),
+            admission.decided_at,
+            admission.expires_at,
+        )
+        trace_id = uuid7()
+        trace: dict[str, Any] = {
+            "selection_dependency": selection_dependency.model_dump(mode="json"),
+            "context_snapshot": {
+                "id": context_snapshot.snapshot_id,
+                "version": context_snapshot.snapshot_version,
+                "hash": context_snapshot.snapshot_content_hash,
+            },
+            "mention_detection": {
+                "id": str(mention_detection_id),
+                "version": mention_detection_version,
+                "digest": mention_detection_digest,
+                "fate": mention_detection_fate,
+            },
+            "entity_mention": {
+                "id": str(mention_id),
+                "version": mention_version,
+            },
+            "candidate_request": {
+                "id": request.request_id,
+                "digest": request.generation_request_digest,
+            },
+            "candidate_set": {
+                "id": candidate_set.candidate_set_id,
+                "version": candidate_set.candidate_set_version,
+            },
+            "assessment": {
+                "id": assessment.assessment_id,
+                "version": assessment.assessment_version,
+            },
+            "admission": {
+                "id": admission.decision_id,
+                "version": admission.decision_version,
+                "expires_at": admission.expires_at.isoformat(),
+            },
+            "adjudication_processing_authority": (
+                decision.processing_authority.model_dump(mode="json")
+            ),
+            "model_output_is_evidence": False,
+            "identity_registry_mutated": False,
+            "source_observation_mutated": False,
+            **trace_extra,
+        }
+        await conn.execute(
+            """
+            INSERT INTO grounding_traces (
+                id, tenant_id, source_observation_id, phrase,
+                context_snapshot_id, entity_mention_detection_id,
+                entity_mention_id, candidate_request_id, candidate_set_id,
+                resolution_assessment_id, grounding_admission_id,
+                current_fate, selected_referent, identity_registry_mutated,
+                source_observation_mutated, trace
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                $13::jsonb, FALSE, FALSE, $14::jsonb
+            )
+            """,
+            trace_id,
+            tenant_id,
+            source_observation_id,
+            phrase,
+            UUID(context_snapshot.snapshot_id),
+            mention_detection_id,
+            mention_id,
+            UUID(request.request_id),
+            UUID(candidate_set.candidate_set_id),
+            UUID(assessment.assessment_id),
+            UUID(admission.decision_id),
+            decision.current_fate,
+            json.dumps(decision.admitted_canonical_ref),
+            json.dumps(trace),
+        )
+        await conn.execute(
+            """
+            INSERT INTO entity_grounding_work_items (
+                id, tenant_id, source_observation_id, phrase,
+                processing_generation, status, processing_class,
+                attempt_count, current_trace_id, useful_safe_fate
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, 'R2', 1, $7, $8::jsonb
+            )
+            """,
+            uuid7(),
+            tenant_id,
+            source_observation_id,
+            phrase,
+            processing_generation,
+            decision.current_fate,
+            trace_id,
+            json.dumps(
+                {
+                    "fate_kind": decision.current_fate,
+                    "terminal": True,
+                    "trace_id": str(trace_id),
+                    "reason_codes": list(admission.reason_codes),
+                    "contract_version": "grounding-work-fate-v2",
+                    **trace_extra,
+                }
+            ),
         )
         return trace_id
 

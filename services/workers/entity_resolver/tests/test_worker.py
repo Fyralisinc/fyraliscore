@@ -810,6 +810,20 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
             answered_by=None,
         )
 
+    async with resolver_db.acquire() as conn:
+        before_future_exposure = await evaluate_entity_grounding_state(
+            conn,
+            scope=GroundingEvaluationScope(
+                tenant_id=tenant_id,
+                observation_start=scope_start,
+                observation_end=datetime.now(timezone.utc) + timedelta(seconds=1),
+                run_id="clarification-before-future-exposure",
+            ),
+            artifact_refs=("pytest://clarification-before-future-exposure",),
+        )
+    assert before_future_exposure.corrective_memory_observed_reuse_count == 0
+    assert before_future_exposure.duplicate_trace_count == 0
+
     second_observation_id = await _seed_observation(
         resolver_db,
         tenant_id,
@@ -872,6 +886,7 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     assert evaluation.adjudicated_alias_count == 1
     assert evaluation.adjudicated_alias_lineage_coverage == 1.0
     assert evaluation.corrective_memory_observed_reuse_count == 1
+    assert evaluation.duplicate_trace_count == 0
 
 
 # =====================================================================

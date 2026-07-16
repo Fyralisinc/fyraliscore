@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -172,19 +173,26 @@ def _fixture_rows(
         "payload_hash": canonical_sha256(event_payload),
         "payload": event_payload,
     }
+    trace_id = uuid4()
     work = {
+        "id": uuid4(),
         "source_observation_id": observation_id,
         "phrase": "NBI",
+        "processing_generation": 1,
         "status": episode.current_fate if episode is not None else "unresolved",
         "processing_class": "R2",
         "next_attempt_at": None,
+        "current_trace_id": trace_id if episode is not None else None,
+        "updated_at": NOW + timedelta(minutes=1),
     }
     episode_rows = []
     candidate_rows = []
     if episode is not None and detection.mention is not None:
         row = {
+            "id": trace_id,
             "source_observation_id": observation_id,
             "phrase": "NBI",
+            "created_at": NOW + timedelta(minutes=1),
             "snapshot": episode.context_snapshot.model_dump(mode="json"),
             "request": episode.candidate_set.request.model_dump(mode="json"),
             "candidate_set": episode.candidate_set.model_dump(mode="json"),
@@ -203,6 +211,7 @@ def _fixture_rows(
             "trace_mention_id": detection.mention.mention_id,
             "candidate_mention_detection_id": detection.detection_id,
             "candidate_mention_id": detection.mention.mention_id,
+            "trace": {},
         }
         episode_rows.append(row)
         candidate_payload = episode.candidate_set.request.model_dump(mode="json")
@@ -252,6 +261,102 @@ def test_clean_grounding_scope_reports_complete_continuity_without_incidents() -
     assert state.candidate_request_fate_coverage == 1.0
     assert state.incident_counts == {}
     assert state.processing_class_counts == {"R2": 1}
+
+
+def test_adjudicated_successor_generation_is_history_not_duplicate_trace() -> None:
+    inputs = _fixture_rows(review=True)
+    original = inputs["episode_rows"][0]
+    successor = deepcopy(original)
+    successor_trace_id = uuid4()
+    successor_request_id = str(uuid4())
+    successor.update(
+        {
+            "id": successor_trace_id,
+            "created_at": NOW + timedelta(minutes=2),
+            "current_fate": "resolved_for_consumer",
+            "selected_referent": {
+                "type": "customer",
+                "id": "customer:nimbus",
+            },
+            "has_review_obligation": False,
+            "trace": {
+                "supersedes_grounding_trace_id": str(original["id"]),
+                "adjudication_ref": f"clarification-request:{uuid4()}",
+                "correction_kind": "entity_clarification_adjudication",
+            },
+        }
+    )
+    successor["request"]["request_id"] = successor_request_id
+    successor["candidate_set"]["request"]["request_id"] = successor_request_id
+    successor["decision"]["disposition"] = "single_referent"
+    successor["decision"]["selected_referent"] = successor["selected_referent"]
+
+    successor_candidate_request = deepcopy(inputs["candidate_request_rows"][0])
+    successor_candidate_request["id"] = successor_request_id
+    successor_candidate_request["request"]["request_id"] = successor_request_id
+    inputs["candidate_request_rows"].append(successor_candidate_request)
+    inputs["episode_rows"].append(successor)
+    inputs["work_items"].insert(
+        0,
+        {
+            "id": uuid4(),
+            "source_observation_id": original["source_observation_id"],
+            "phrase": original["phrase"],
+            "processing_generation": 2,
+            "status": "resolved_for_consumer",
+            "processing_class": "R2",
+            "next_attempt_at": None,
+            "current_trace_id": successor_trace_id,
+            "updated_at": NOW + timedelta(minutes=2),
+        },
+    )
+
+    state = analyze_entity_grounding_rows(**inputs)
+
+    assert state.work_fate_counts == {"resolved_for_consumer": 1}
+    assert state.trace_count == 2
+    assert state.duplicate_trace_count == 0
+    assert state.stage_complete_trace_count == 2
+    assert state.stage_continuity_rate == 1.0
+    assert state.candidate_request_count == 2
+    assert state.immutable_candidate_set_count == 2
+    assert state.candidate_request_fate_coverage == 1.0
+    assert state.review_fate_count == 0
+    assert "duplicate_terminal_trace" not in state.incident_counts
+    assert "grounding_trace_head_not_current_generation" not in state.incident_counts
+
+
+def test_unrelated_trace_rows_remain_duplicate_current_heads() -> None:
+    inputs = _fixture_rows()
+    unrelated = deepcopy(inputs["episode_rows"][0])
+    unrelated["id"] = uuid4()
+    unrelated["created_at"] = NOW + timedelta(minutes=2)
+    unrelated["trace"] = {}
+    inputs["episode_rows"].append(unrelated)
+
+    state = analyze_entity_grounding_rows(**inputs)
+
+    assert state.trace_count == 2
+    assert state.duplicate_trace_count == 1
+    assert state.incident_counts["duplicate_terminal_trace"] == 1
+
+
+def test_supersession_cycle_is_an_invalid_headless_lineage() -> None:
+    inputs = _fixture_rows()
+    first = inputs["episode_rows"][0]
+    second = deepcopy(first)
+    second["id"] = uuid4()
+    second["created_at"] = NOW + timedelta(minutes=2)
+    first["trace"] = {"supersedes_grounding_trace_id": str(second["id"])}
+    second["trace"] = {"supersedes_grounding_trace_id": str(first["id"])}
+    inputs["episode_rows"].append(second)
+    inputs["work_items"][0]["processing_generation"] = 2
+    inputs["work_items"][0]["current_trace_id"] = second["id"]
+
+    state = analyze_entity_grounding_rows(**inputs)
+
+    assert state.incident_counts["invalid_grounding_trace_supersession"] == 2
+    assert state.incident_counts["grounding_trace_head_not_current_generation"] == 1
 
 
 def test_zero_grounding_exposure_is_unknown_not_perfect() -> None:

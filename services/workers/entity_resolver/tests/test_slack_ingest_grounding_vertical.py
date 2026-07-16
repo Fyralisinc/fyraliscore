@@ -14,6 +14,10 @@ from lib.evaluation.source_semantics import (
     SourceSemanticEvaluationScope,
     evaluate_source_semantic_state,
 )
+from services.app.gateway.clarifications_router import (
+    _apply_entity_resolution_answer,
+)
+from services.domain.clarifications import answer_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.embedding.models import EmbeddingEnvelope
 from services.ingest.ingestion.core import ingest_from_draft
@@ -96,11 +100,11 @@ def _json(value: Any) -> Any:
     return json.loads(value) if isinstance(value, str) else value
 
 
-async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
+async def test_slack_thread_review_adjudication_reaches_original_grounded_belief(
     resolver_db: asyncpg.Pool,
     tenant_id,
 ) -> None:
-    """Exercise the real Slack draft and shared ingest path before grounding."""
+    """Prove review correction closes into one Model from the original Slack row."""
 
     alias_repo = EntityAliasRepo(resolver_db)
     await alias_repo.insert_alias(
@@ -243,7 +247,7 @@ async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
         )
         clarification = await conn.fetchrow(
             """
-            SELECT object_id, source_observation_id, payload
+            SELECT id, object_id, source_observation_id, payload
             FROM clarification_requests
             WHERE tenant_id = $1
               AND source_observation_id = $2
@@ -364,6 +368,291 @@ async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
         "grounding_admission_version": row["grounding_admission_version"],
         "grounding_disposition": row["admission_disposition"],
     }
+
+    answer = {
+        "action": "accept_candidate",
+        "canonical_ref": {
+            "type": "goal",
+            "id": "project-northstar",
+            "version": 1,
+        },
+        "confidence": 0.99,
+    }
+    async with resolver_db.acquire() as conn, conn.transaction():
+        answered = await answer_clarification_request(
+            conn,
+            tenant_id=tenant_id,
+            request_id=clarification["id"],
+            answer=answer,
+            answered_by=None,
+        )
+        assert answered is not None
+        await _apply_entity_resolution_answer(
+            conn,
+            row=answered,
+            answer=answer,
+            tenant_id=tenant_id,
+            answered_by=None,
+        )
+
+    async with resolver_db.acquire() as conn:
+        trace_rows = await conn.fetch(
+            """
+            SELECT
+              gt.id,
+              gt.current_fate,
+              gt.context_snapshot_id,
+              gt.entity_mention_detection_id,
+              gt.entity_mention_id,
+              gt.candidate_request_id,
+              gt.candidate_set_id,
+              gt.resolution_assessment_id,
+              gt.grounding_admission_id,
+              gt.selected_referent,
+              gt.trace,
+              gad.disposition AS admission_disposition,
+              gad.reason_codes AS admission_reason_codes
+            FROM grounding_traces gt
+            JOIN grounding_admission_decisions gad
+              ON gad.tenant_id=gt.tenant_id
+             AND gad.id=gt.grounding_admission_id
+            WHERE gt.tenant_id=$1
+              AND gt.source_observation_id=$2
+              AND gt.phrase='the project'
+            ORDER BY gt.created_at, gt.id
+            """,
+            tenant_id,
+            reply_id,
+        )
+        grounding_work = await conn.fetch(
+            """
+            SELECT processing_generation, status, current_trace_id,
+                   useful_safe_fate
+            FROM entity_grounding_work_items
+            WHERE tenant_id=$1
+              AND source_observation_id=$2
+              AND phrase='the project'
+            ORDER BY processing_generation
+            """,
+            tenant_id,
+            reply_id,
+        )
+        semantic_work = await conn.fetch(
+            """
+            SELECT work.grounding_trace_id, work.status, work.attempt_count
+            FROM source_semantic_work_items work
+            JOIN grounding_traces trace
+              ON trace.tenant_id=work.tenant_id
+             AND trace.id=work.grounding_trace_id
+            WHERE work.tenant_id=$1
+              AND trace.source_observation_id=$2
+              AND trace.phrase='the project'
+            """,
+            tenant_id,
+            reply_id,
+        )
+        model_count_before = await conn.fetchval(
+            "SELECT count(*) FROM models WHERE tenant_id=$1",
+            tenant_id,
+        )
+
+    assert len(trace_rows) == 2
+    original_trace = next(
+        trace for trace in trace_rows if trace["id"] == row["grounding_trace_id"]
+    )
+    successor_trace = next(
+        trace for trace in trace_rows if trace["id"] != row["grounding_trace_id"]
+    )
+    assert original_trace["current_fate"] == "review"
+    assert successor_trace["current_fate"] == "resolved_for_consumer"
+    assert successor_trace["admission_disposition"] == "single_referent"
+    assert successor_trace["admission_reason_codes"] == [
+        "independently_adjudicated_single_referent"
+    ]
+    assert _json(successor_trace["selected_referent"]) == {
+        "type": "goal",
+        "id": "project-northstar",
+        "version": 1,
+    }
+    assert successor_trace["context_snapshot_id"] == original_trace[
+        "context_snapshot_id"
+    ]
+    assert successor_trace["entity_mention_detection_id"] == original_trace[
+        "entity_mention_detection_id"
+    ]
+    assert successor_trace["entity_mention_id"] == original_trace[
+        "entity_mention_id"
+    ]
+    assert successor_trace["candidate_request_id"] != original_trace[
+        "candidate_request_id"
+    ]
+    assert successor_trace["candidate_set_id"] != original_trace["candidate_set_id"]
+    assert successor_trace["resolution_assessment_id"] != original_trace[
+        "resolution_assessment_id"
+    ]
+    assert successor_trace["grounding_admission_id"] != original_trace[
+        "grounding_admission_id"
+    ]
+    successor_lineage = _json(successor_trace["trace"])
+    assert successor_lineage["supersedes_grounding_trace_id"] == str(
+        original_trace["id"]
+    )
+    assert successor_lineage["adjudication_ref"] == (
+        f"clarification-request:{clarification['id']}"
+    )
+    assert successor_lineage["correction_kind"] == (
+        "entity_clarification_adjudication"
+    )
+    assert [
+        (item["processing_generation"], item["status"], item["current_trace_id"])
+        for item in grounding_work
+    ] == [
+        (1, "review", original_trace["id"]),
+        (2, "resolved_for_consumer", successor_trace["id"]),
+    ]
+    assert _json(grounding_work[1]["useful_safe_fate"])[
+        "supersedes_grounding_trace_id"
+    ] == str(original_trace["id"])
+    assert {
+        (
+            item["grounding_trace_id"],
+            item["status"],
+            item["attempt_count"],
+        )
+        for item in semantic_work
+    } == {
+        (original_trace["id"], "pending", 0),
+        (successor_trace["id"], "pending", 0),
+    }
+    assert model_count_before == 0
+
+    semantic_worker = SourceSemanticWorker(
+        pool=resolver_db,
+        worker_id=f"pytest:clarification-successor:{tenant_id}",
+    )
+    await semantic_worker.process_batch(limit=1000)
+
+    async with resolver_db.acquire() as conn:
+        applied = await conn.fetchrow(
+            """
+            SELECT
+              work.status AS work_status,
+              work.attempt_count,
+              work.grounding_trace_id,
+              interpretation.id AS interpretation_id,
+              interpretation.source_observation_id,
+              interpretation.resolution_assessment_id,
+              interpretation.grounding_admission_id,
+              interpretation.source_assertion,
+              interpretation.grounding_continuity,
+              admission.disposition,
+              admission.admitted_model_id,
+              model.born_from_event_id,
+              model.proposition,
+              model.scope_entities
+            FROM source_semantic_work_items work
+            JOIN source_semantic_interpretations interpretation
+              ON interpretation.tenant_id=work.tenant_id
+             AND interpretation.id=work.interpretation_id
+            JOIN source_semantic_admission_decisions admission
+              ON admission.tenant_id=work.tenant_id
+             AND admission.id=work.admission_decision_id
+            JOIN models model
+              ON model.tenant_id=work.tenant_id
+             AND model.id=work.admitted_model_id
+            WHERE work.tenant_id=$1
+              AND work.grounding_trace_id=$2
+            """,
+            tenant_id,
+            successor_trace["id"],
+        )
+        review_terminal = await conn.fetchrow(
+            """
+            SELECT work.status, work.attempt_count,
+                   admission.disposition, admission.admitted_model_id
+            FROM source_semantic_work_items work
+            JOIN source_semantic_admission_decisions admission
+              ON admission.tenant_id=work.tenant_id
+             AND admission.id=work.admission_decision_id
+            WHERE work.tenant_id=$1
+              AND work.grounding_trace_id=$2
+            """,
+            tenant_id,
+            original_trace["id"],
+        )
+        counts = await conn.fetchrow(
+            """
+            SELECT
+              (SELECT count(*) FROM source_semantic_interpretations
+               WHERE tenant_id=$1) AS interpretation_count,
+              (SELECT count(*) FROM source_semantic_admission_decisions
+               WHERE tenant_id=$1) AS admission_count,
+              (SELECT count(*) FROM models
+               WHERE tenant_id=$1 AND born_from_event_id=$2) AS model_count
+            """,
+            tenant_id,
+            reply_id,
+        )
+
+    assert applied is not None
+    assert review_terminal is not None
+    assert review_terminal["status"] == "no_admission"
+    assert review_terminal["attempt_count"] == 1
+    assert review_terminal["disposition"] == "no_admission"
+    assert review_terminal["admitted_model_id"] is None
+    assert applied["work_status"] == "belief_applied"
+    assert applied["attempt_count"] == 1
+    assert applied["grounding_trace_id"] == successor_trace["id"]
+    assert applied["source_observation_id"] == reply_id
+    assert applied["disposition"] == "belief_applied"
+    assert applied["admitted_model_id"] is not None
+    assert applied["born_from_event_id"] == reply_id
+    assertion = _json(applied["source_assertion"])
+    assert assertion["expressed_content"] == "the project is blocked"
+    assert len(assertion["coordinates"]) == 1
+    coordinate = assertion["coordinates"][0]
+    assert coordinate["evidence_record_id"] == f"observation:{reply_id}"
+    assert coordinate["source_system"] == "slack"
+    assert coordinate["source_object_id"] == f"observation:{reply_id}"
+    assert coordinate["source_revision"] == f"observation:{reply_id}:v1"
+    assert coordinate["field_path"] == "content_text"
+    assert coordinate["span_start"] == 0
+    assert coordinate["span_end"] == len("the project is blocked")
+    continuity = _json(applied["grounding_continuity"])
+    assert applied["resolution_assessment_id"] == successor_trace[
+        "resolution_assessment_id"
+    ]
+    assert continuity["resolution_assessment_ref"] == (
+        f"resolution-assessment:{successor_trace['resolution_assessment_id']}"
+    )
+    assert continuity["grounding_admission_ref"] == (
+        f"grounding-admission:{applied['grounding_admission_id']}"
+    )
+    proposition = _json(applied["proposition"])
+    assert proposition["source_semantic_interpretation_id"] == str(
+        applied["interpretation_id"]
+    )
+    assert proposition["grounding_continuity"] == continuity
+    assert _json(applied["scope_entities"]) == [
+        {"type": "goal", "id": "project-northstar", "version": 1}
+    ]
+    assert dict(counts) == {
+        "interpretation_count": 2,
+        "admission_count": 2,
+        "model_count": 1,
+    }
+
+    await semantic_worker.process_batch(limit=1000)
+    async with resolver_db.acquire() as conn:
+        assert await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM models
+            WHERE tenant_id=$1 AND born_from_event_id=$2
+            """,
+            tenant_id,
+            reply_id,
+        ) == 1
 
 
 async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
