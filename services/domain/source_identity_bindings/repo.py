@@ -749,6 +749,91 @@ class SourceIdentityBindingRepo:
             conn=conn,
         )
 
+    async def list_bindings_for_canonical_ref(
+        self,
+        *,
+        tenant_id: UUID,
+        canonical_referent_type: str,
+        canonical_referent_id: str,
+        canonical_referent_version: int,
+        valid_at: datetime | None = None,
+        known_at: datetime | None = None,
+        conn: asyncpg.Connection | None = None,
+    ) -> tuple[SourceIdentityBinding, ...]:
+        """List bindings whose exact canonical ref is visible at one cutoff.
+
+        Omitting both cutoffs performs a current read. Supplying cutoffs performs
+        a bitemporal as-of read. Target lifecycle is deliberately not consulted,
+        so repair can still discover bindings after a referent is retired.
+        """
+
+        canonical_referent_type = canonical_referent_type.strip()
+        canonical_referent_id = canonical_referent_id.strip()
+        if not canonical_referent_type or not canonical_referent_id:
+            raise ValueError("canonical referent type and id are required")
+        if canonical_referent_version < 1:
+            raise ValueError("canonical referent version must be positive")
+        if (valid_at is None) != (known_at is None):
+            raise ValueError(
+                "valid_at and known_at must both be provided for an as-of read"
+            )
+        if valid_at is None:
+            valid_at = known_at = datetime.now(timezone.utc)
+        assert known_at is not None
+        for field_name, value in (
+            ("valid_at", valid_at),
+            ("known_at", known_at),
+        ):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(f"{field_name} must be timezone-aware")
+
+        async def read(
+            target: asyncpg.Connection,
+        ) -> tuple[SourceIdentityBinding, ...]:
+            rows = await target.fetch(
+                """
+                SELECT binding.*
+                FROM source_identity_bindings binding
+                WHERE binding.tenant_id=$1
+                  AND binding.canonical_referent ->> 'type'=$2
+                  AND binding.canonical_referent ->> 'id'=$3
+                  AND COALESCE(
+                    (binding.canonical_referent ->> 'version')::integer,
+                    1
+                  )=$4
+                  AND binding.valid_from <= $5
+                  AND (
+                    binding.valid_to IS NULL OR $5 < binding.valid_to
+                  )
+                  AND binding.transaction_from <= $6
+                  AND (
+                    binding.transaction_to IS NULL
+                    OR $6 < binding.transaction_to
+                  )
+                ORDER BY
+                  binding.source_system,
+                  binding.source_native_identifier,
+                  binding.lineage_id,
+                  binding.binding_version,
+                  binding.transaction_from,
+                  binding.id
+                """,
+                tenant_id,
+                canonical_referent_type,
+                canonical_referent_id,
+                canonical_referent_version,
+                valid_at,
+                known_at,
+            )
+            return tuple(_binding_from_row(row) for row in rows)
+
+        if conn is not None:
+            return await read(conn)
+        if self._pool is None:
+            raise ValueError("source identity binding read requires a connection")
+        async with self._pool.acquire() as owned:
+            return await read(owned)
+
     async def attach_to_observation(
         self,
         *,

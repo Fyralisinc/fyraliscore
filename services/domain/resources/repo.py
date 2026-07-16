@@ -83,6 +83,16 @@ def _is_customer_resource(row: asyncpg.Record | dict[str, Any]) -> bool:
     )
 
 
+def _is_actor_resource(row: asyncpg.Record | dict[str, Any]) -> bool:
+    return _json_obj(row.get("metadata")).get("semantic_kind") in {
+        "actor",
+        "human",
+        "human_internal",
+        "human_external",
+        "person",
+    }
+
+
 def _customer_ref(resource_id: UUID) -> dict[str, str]:
     return {"type": "customer", "id": str(resource_id)}
 
@@ -567,6 +577,164 @@ async def archive(
 
 
 # =====================================================================
+# Canonical replacement retirement
+# =====================================================================
+
+async def retire_non_customer_at(
+    resource_id: UUID,
+    *,
+    tenant_id: UUID,
+    canonical_referent_type: str,
+    effective_at: datetime,
+    reason: str,
+    cause_event_id: UUID | None = None,
+    conn: asyncpg.Connection | None = None,
+) -> ResourceRow:
+    """Archive one non-customer Resource at an explicit valid-time boundary.
+
+    This is a physical-state adapter for governed canonical replacement. It
+    deliberately does not close, create, or transfer aliases; replacement
+    orchestration owns those independent lifecycle decisions.
+    """
+
+    canonical_referent_type = canonical_referent_type.strip()
+    reason = reason.strip()
+    if canonical_referent_type in {"actor", "customer"}:
+        raise InvariantViolation(
+            "RESOURCE_RETIREMENT_REFERENT_TYPE",
+            "actor and customer referents require their own lifecycle protocols",
+            canonical_referent_type=canonical_referent_type,
+            resource_id=str(resource_id),
+        )
+    if canonical_referent_type != "resource":
+        raise ValidationError(
+            "canonical_referent_type must be resource",
+            field="canonical_referent_type",
+            value=canonical_referent_type,
+        )
+    if effective_at.tzinfo is None or effective_at.utcoffset() is None:
+        raise ValidationError(
+            "effective_at must be timezone-aware",
+            field="effective_at",
+        )
+    if not reason:
+        raise ValidationError("reason is required", field="reason")
+
+    async def _do(tx: asyncpg.Connection) -> ResourceRow:
+        row = await tx.fetchrow(
+            """
+            SELECT *
+            FROM resources
+            WHERE tenant_id=$1 AND id=$2
+            FOR UPDATE
+            """,
+            tenant_id,
+            resource_id,
+        )
+        if row is None:
+            raise ValidationError(
+                "resource not found",
+                tenant_id=str(tenant_id),
+                resource_id=str(resource_id),
+            )
+        if _is_customer_resource(row):
+            raise InvariantViolation(
+                "RESOURCE_RETIREMENT_CUSTOMER",
+                "customer resources require the customer lifecycle protocol",
+                tenant_id=str(tenant_id),
+                resource_id=str(resource_id),
+            )
+        if _is_actor_resource(row):
+            raise InvariantViolation(
+                "RESOURCE_RETIREMENT_ACTOR",
+                "actor-like resources cannot use resource replacement retirement",
+                tenant_id=str(tenant_id),
+                resource_id=str(resource_id),
+            )
+
+        archived_at = row["archived_at"]
+        if archived_at is not None:
+            if archived_at == effective_at:
+                return _resource_row_from_record(row)
+            raise InvariantViolation(
+                "RESOURCE_RETIREMENT_BOUNDARY_CONFLICT",
+                "resource is already archived at a different effective boundary",
+                tenant_id=str(tenant_id),
+                resource_id=str(resource_id),
+                archived_at=archived_at.isoformat(),
+                requested_effective_at=effective_at.isoformat(),
+            )
+
+        database_now = await tx.fetchval("SELECT clock_timestamp()")
+        if effective_at <= row["created_at"]:
+            raise ValidationError(
+                "effective_at must be later than resource creation",
+                field="effective_at",
+                created_at=row["created_at"].isoformat(),
+            )
+        if effective_at <= row["last_updated_at"]:
+            raise ValidationError(
+                "effective_at must be later than the latest resource update",
+                field="effective_at",
+                last_updated_at=row["last_updated_at"].isoformat(),
+            )
+        if effective_at > database_now:
+            raise ValidationError(
+                "future-effective resource retirement is not supported",
+                field="effective_at",
+                database_now=database_now.isoformat(),
+            )
+
+        updated = await tx.fetchrow(
+            """
+            UPDATE resources
+            SET archived_at=$3,
+                last_updated_at=$4,
+                last_updated_by_event_id=COALESCE(
+                  $5, last_updated_by_event_id
+                )
+            WHERE tenant_id=$1 AND id=$2 AND archived_at IS NULL
+            RETURNING *
+            """,
+            tenant_id,
+            resource_id,
+            effective_at,
+            database_now,
+            cause_event_id,
+        )
+        if updated is None:
+            raise InvariantViolation(
+                "RESOURCE_RETIREMENT_RACE",
+                "resource retirement lost its active-row fence",
+                tenant_id=str(tenant_id),
+                resource_id=str(resource_id),
+            )
+        semantic_kind = _json_obj(row.get("metadata")).get("semantic_kind")
+        await emit_state_change(
+            tx,
+            kind="resource_archived",
+            entity_id=resource_id,
+            tenant_id=tenant_id,
+            cause_event_id=cause_event_id,
+            occurred_at=effective_at,
+            entity_kind="resource",
+            metadata={
+                "reason": reason,
+                "resource_kind": row["kind"],
+                "semantic_kind": semantic_kind,
+                "effective_at": effective_at.isoformat(),
+                "retirement_mode": "canonical_replacement",
+            },
+        )
+        return _resource_row_from_record(updated)
+
+    if conn is None:
+        async with transaction() as tx:
+            return await _do(tx)
+    return await _do(conn)
+
+
+# =====================================================================
 # Get
 # =====================================================================
 
@@ -684,6 +852,7 @@ __all__ = [
     "create",
     "update_attributes",
     "archive",
+    "retire_non_customer_at",
     "get",
     "search_by_kind",
     "search_by_name_fuzzy",
