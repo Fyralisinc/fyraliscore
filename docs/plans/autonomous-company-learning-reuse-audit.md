@@ -492,18 +492,22 @@ owners, not add parallel subsystems:
 
 ## Next Consolidation Targets
 
-1. Connect the existing mention candidate/detection/grounding protocol to every
-   persisted-signal batch and require total fate.
-2. Remove resolver writes to canonical aliases; route all new identity through
-   existing candidate and adjudication owners.
-3. Restrict existing Model scope writers to claim-local decisive entities and
-   add contamination rejection to the current admission path.
-4. Make existing retrieval/SAGE policies Model-first after memory forms, with
-   explicit raw-observation reopening reasons.
-5. Add directional role contracts to existing relation-frame and Model-edge
-   projection code.
-6. Coalesce current projection jobs and govern existing T4 repair lanes by
+1. Validate the implemented mention-fate, adjudication-only alias, claim-local
+   scope, directionality and quality-weighted retrieval changes in a bounded
+   multi-batch regression before another expensive authoritative run.
+2. Measure gold entity extraction quality independently from protocol-fate
+   closure; the existing fate ledger is reused and is not an extraction score.
+3. Validate causal-thesis recovery and signed calibration bias on held-out
+   batched storylines after the new prompt, confidence caps and evaluator
+   weighting.
+4. Coalesce current projection jobs and govern existing T4 repair lanes by
    measured durable-outcome ROI.
+
+The first five previous consolidation targets were implemented, without new
+parallel truth stores or controllers, in `b38faf87` through `e04da5e8`.
+`8f4e75e8` extends the existing Think validator and large-company evaluator for
+causal thesis and calibration. These are focused implementation proofs, not a
+retroactive repair of the pre-change 45-batch artifact.
 
 ## Proof Required Before Behavioral Expansion
 

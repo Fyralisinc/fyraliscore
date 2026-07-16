@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `be401f25`
+**Current checkpoint:** `8f4e75e8`
 
 **Last updated:** 2026-07-17
 
@@ -299,6 +299,7 @@ flowchart LR
 | Retention and forgetting evaluator | Exact and governed-variant behavior is measured at 0/4/16 alias-interference cycles and 0/1/2 worker-object restarts; correction, four negative controls and three collision families are checked noncompensatorily | Complete in assurance v6: 14/14, forgetting 0.0; not process-restart or long-duration proof |
 | Canonical resource replacement | One atomic orchestrator governs transition lineage, predecessor retirement, alias closure, exact source-binding supersession and projection invalidation while preserving Observations, attachments and Models; resource reads can resolve the lineage head at explicit valid/known cutoffs | Complete for the sealed resource vertical: 20/20 observed, zero gaps or violations |
 | Large cold-start company learning | One fresh tenant processed 1,125 signals in 45 genuine 25-signal batches from zero semantic memory; all work drained and later evidence changed memory | Executed; authoritative verdict `not_credible` because entity grounding and retrieval behavior failed required trust gates |
+| Postmortem semantic repairs | Persisted batches close mention-candidate fates; canonical aliases require grounded adjudication; claim scope is claim-local; asymmetric edges are role-stable; retrieval maturity is quality-weighted and records raw-evidence reopening; causal thesis and calibration reporting are stronger | Implemented and focused-test proven at `8f4e75e8`; the 45-batch simulation has not been rerun, so end-state impact remains unproven |
 
 ## Important Implementation Checkpoints
 
@@ -328,6 +329,13 @@ flowchart LR
 | `1142a8ed` | Closed recursive correction fanout and projection refresh convergence |
 | `6902b149` | Added source-native Slack deletion, reaction and cross-channel reconstruction |
 | `8140b942` | Sealed the 60-case and nine-family combined assurance gate |
+| `b38faf87` | Kept batched Model scope claim-local and rejected control-plane text |
+| `74f3149c` | Closed governed mention-candidate fates for persisted batches |
+| `a68ecd5d` | Enforced role-stable direction for asymmetric Model edges |
+| `ed93bf50` | Required grounded adjudication before canonical alias persistence |
+| `666ae2ee` | Added maturity-aware Model-first retrieval and explicit raw-evidence reopening reasons |
+| `e04da5e8` | Made retrieval maturity depend on selected Model quality, not count alone |
+| `8f4e75e8` | Strengthened causal-thesis formation, confidence caps and calibration diagnostics |
 | `d6908b39` | Removed proof gaps already closed by the complete sealed run |
 | `ac963125` | Reused grounding/source-semantic outcomes as bounded SAGE source-salience memory |
 | `4b6ef3c8` | Added governed Linear project/team structured identity transport |
@@ -697,13 +705,18 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
-| Scoped company-learning runtime implementation | 90–93% | The batched cold-start metabolism, learning, correction, lifecycle, replacement, projection and drain paths execute end to end; the remaining work is concentrated in semantic trust rather than missing orchestration |
-| Customer-free objective substantiation | 68–75% | Assurance v7 is green and the 45-batch run has 96.7% evidence coverage, but the authoritative verdict is `not_credible` because mention fate coverage is zero, resolver identity writes are unauthorized and mature retrieval is not Model-first |
-| Broader revised system excluding task autonomy | 72–80% | The core company-memory substrate is substantial and large-run operational behavior is proven, but entity truth, claim-local scope, graph directionality, calibration, human gap closure and customer-value evidence remain incomplete |
+| Scoped company-learning runtime implementation | 94–96% | The seven postmortem defects now have integrated runtime/evaluator changes and focused regression proof; broad semantic trust still requires a fresh representative validation run |
+| Customer-free objective substantiation | 72–80% | Assurance v7 remains green and focused tests prove the intended repairs, but the only authoritative 45-batch artifact is still the pre-fix `not_credible` run; it cannot be retroactively upgraded |
+| Broader revised system excluding task autonomy | 78–84% | Core company memory and its principal postmortem repairs exist; open-world entity quality, large-run retrieval transition, causal-thesis recovery, calibration, human gap closure and customer-value evidence remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
 ## Remaining Work
+
+The former P0 implementation defects from the cold-start postmortem are now
+closed in focused code paths. The immediate P0 is bounded, batched validation.
+No second large simulation is authorized or claimed; until the user requests
+one, the `be401f25` 45-batch verdict remains the authoritative large-run result.
 
 ### P0 — Required before believing the company-learning system broadly works
 
@@ -1456,3 +1469,21 @@ connection depend on the caller supplying the surrounding transaction.
   observations substantially more often than Models.
 - Durable analysis is recorded in
   `docs/evaluation/autonomous-company-learning-cold-start-45-postmortem-20260717.md`.
+
+### 2026-07-17 — Postmortem P0 repairs implemented with focused proof
+
+- `b38faf87`, `74f3149c`, `a68ecd5d` and `ed93bf50` repair claim-local Model
+  scope/control-text admission, persisted-batch mention fates, asymmetric edge
+  direction and canonical alias authority.
+- `666ae2ee` and `e04da5e8` make retrieval maturity Model-first only when
+  quality-weighted semantic memory is sufficient, while recording why raw
+  evidence is reopened.
+- `8f4e75e8` strengthens causal-thesis formation, confidence caps, independent
+  thesis weighting, signed calibration bias and overconfidence exposure.
+- The combined focused non-database regression lane passed `151` tests. Import
+  contracts passed `7/7`; architecture ratchets and the production environment
+  contract passed. Focused database lanes for the affected owners also passed.
+- The repository-wide technical-debt budget remains red on pre-existing
+  thresholds; it is not presented as a newly green gate.
+- No second large run was performed. These results prove the repaired contracts
+  in focused paths, not their aggregate behavior across another 45-batch world.

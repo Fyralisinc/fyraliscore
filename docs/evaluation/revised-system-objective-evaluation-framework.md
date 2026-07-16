@@ -398,6 +398,24 @@ burn. Correction and variant evidence are self-verifying artifacts that the v3
 contract must reopen and cross-bind before Company Vitals can accept the
 combined result.
 
+The postmortem repair checkpoint at `8f4e75e8` additionally establishes focused
+executable contracts for persisted-batch mention-candidate terminal fate,
+adjudication-authorized canonical aliases, claim-local Model scope,
+role-stable asymmetric edge direction, maturity- and quality-weighted
+Model-first retrieval with explicit raw-evidence reopening reasons, and causal
+thesis confidence/calibration diagnostics. Mention-fate coverage is a protocol
+closure metric only: it must never be reported as entity extraction precision,
+recall, boundary, typing or canonical-link accuracy without labeled gold.
+Recovered attempts and terminally failed triggers must also remain separate
+reliability populations.
+
+These contracts are focused proof. The authoritative 45-batch artifact was
+produced before these changes and remains `not_credible`; no second large run is
+claimed or authorized. If the user later requests an end-state rerun, it must
+show that the fixes interact correctly at company scale. Connector/listener ingestion
+transport remains outside this active profile: evaluation starts from
+normalized, source-attributed signals already persisted in PostgreSQL.
+
 Within the broader evaluation catalog, current component evaluators cover:
 
 | Evaluator | Mechanically measured now | Explicit proof boundary |

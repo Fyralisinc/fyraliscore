@@ -493,13 +493,14 @@ transport are excluded from this goal.
 
 ### EDGE-024 — Mention candidates bypass the governed detection-fate protocol
 
-- **Status:** `active`, P0
+- **Status:** `implemented; focused proof only`, P0 validation
 - **Trigger:** The 45-batch DB-backed Vitals run generated 10,325 phrase
   opportunities across 1,125 observations but found zero detection heads,
   detections, work items or grounding traces.
-- **Current behavior:** Broad bootstrap and unresolved-phrase heuristics expose
-  both real names and non-entity phrases, but none receive a governed terminal
-  detection or rejection fate in the large simulation.
+- **Current behavior:** `74f3149c` closes deterministic detected/rejected fates
+  for eligible candidates at the persisted-observation batch boundary. The
+  evaluator now labels this as protocol-fate coverage and explicitly does not
+  equate it with gold extraction precision, recall, typing or linking quality.
 - **Risk:** Entity extraction is outside the authoritative audit trail; missed
   and rejected candidates are indistinguishable; every downstream Model and
   graph-quality claim is weakened.
@@ -513,12 +514,12 @@ transport are excluded from this goal.
 
 ### EDGE-025 — Resolver writes opaque aliases into canonical identity
 
-- **Status:** `active`, P0
+- **Status:** `implemented; focused proof only`, P0 validation
 - **Trigger:** The large run persisted 50 canonical aliases whose metadata
   names `resolver_worker` as the source.
-- **Current behavior:** 46 of the 50 aliases are raw UUID strings; the rows
-  cover 11 customer, 19 system and 20 workstream references across 13 source
-  events. No authorized promotion trace is present.
+- **Current behavior:** `ed93bf50` rejects canonical alias persistence without
+  an authorized adjudication trace bound to the exact reviewed grounding
+  lineage. Resolver output is withheld pending grounded adjudication.
 - **Risk:** Opaque identity pollution, likely duplicate canonicalization and
   fragmentation, misleading product labels and a bypass of candidate/
   adjudication authority.
@@ -532,12 +533,14 @@ transport are excluded from this goal.
 
 ### EDGE-026 — Mature retrieval remains flat and mixed
 
-- **Status:** `active`, P0
+- **Status:** `implemented; focused proof only`, P0 validation
 - **Trigger:** The requested cold-start behavior expected early observation use
   to give way to mostly Model retrieval.
-- **Current behavior:** Early Model share was `0.4095`, middle `0.5000` and late
-  `0.4982`; the slope was only `+0.004182` per wave. Mature meaningful waves
-  usually selected 20 Models and 20 historical observations.
+- **Current behavior:** `666ae2ee` introduces cold/developing/mature budgets,
+  Model-first mature context and typed raw-evidence reopening reasons;
+  `e04da5e8` gates maturity on quality-weighted Model mass so a weak Model tail
+  cannot suppress necessary evidence. The quoted flat shares remain the
+  unrerun 45-batch baseline.
 - **Risk:** High prompt cost, raw-evidence dependence, weak compression value
   and repeated selection of unused context.
 - **Use evidence:** Late normal waves referenced roughly 31.3% of selected
@@ -549,12 +552,14 @@ transport are excluded from this goal.
 
 ### EDGE-027 — Batch context contaminates canonical Model scope and text
 
-- **Status:** `active`, P0
+- **Status:** `implemented; focused proof only`, P0 validation
 - **Trigger:** Final Models average 11.73 scoped entities; 84/86 Models have at
   least ten. Canonical memory also contains benchmark-wrapper and inquiry-policy
   language.
-- **Current behavior:** Batch/context entities appear to be copied into
-  claim scope, and non-company reasoning/control text can survive admission.
+- **Current behavior:** `b38faf87` requires claim-local semantic evidence for
+  inferred scope, excludes context-only entities and filters event-batch
+  wrapper claims plus tagged question-policy, retrieval-policy and capability
+  control claims before admission.
 - **Risk:** Cross-storyline relevance inflation, false graph overlap,
   calibration contamination, projection amplification and untrustworthy
   company propositions.
@@ -566,12 +571,13 @@ transport are excluded from this goal.
 
 ### EDGE-028 — Asymmetric graph relations become reciprocal
 
-- **Status:** `active`, P0
+- **Status:** `implemented; focused proof only`, P0 validation
 - **Trigger:** The final graph contains eight reciprocal
   `early_warning_for` pairs, four reciprocal `blocks` pairs and one reciprocal
   `contradicts` pair.
-- **Current behavior:** Direction-sensitive relation-frame projections can emit
-  both orientations, frequently with the same explanation.
+- **Current behavior:** `a68ecd5d` registers role-stable asymmetric kinds and
+  rejects an unjustified reciprocal edge in the canonical edge repository;
+  relation projection preserves the registered source/target roles.
 - **Risk:** Reversed causality and dependency semantics in the company graph.
 - **Safe boundary:** Mechanical no-self/no-orphan/no-duplicate checks do not
   establish relation correctness.
@@ -594,6 +600,9 @@ transport are excluded from this goal.
   terminal failures, recovery latency and retry cost separately; reserve the
   noncompensatory failure gate for terminal/unrecovered work or an explicit SLA
   breach.
+- **Current implementation state:** Still bounded rather than closed. None of
+  the seven postmortem commits changes recovered-versus-terminal run accounting;
+  this distinction must remain explicit in the next evaluator/runtime proof.
 
 ## Entry Template
 
