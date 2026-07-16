@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `24f345a8`
+**Current checkpoint:** `86c1d44b`
 
 **Last updated:** 2026-07-16
 
@@ -205,6 +205,37 @@ Correction:
 8. Commit every coherent, validated checkpoint.
 9. Treat validation boundaries as part of the implementation.
 10. Do not call a result causal or proof-bearing until adversarial review agrees.
+11. Time-box seam discovery: if an implementation lane has not produced a
+    first test, artifact or code checkpoint after a bounded audit, cut scope to
+    the smallest runnable proof instead of continuing design exploration.
+12. Require early reversible checkpoints: evaluator contracts and pure tests
+    land before expensive Postgres orchestration, and runtime schema/repository
+    changes land before being folded into the combined assurance command.
+13. Give every database-backed lane its own disposable database. Parallel
+    agents may inspect and edit disjoint files concurrently, but they must not
+    share mutable test tenants, queues or migration state.
+14. Reuse production seams directly. A new evaluator may measure an existing
+    writer, resolver, connector or SAGE consumer, but it must not introduce a
+    second authority, truth store, learner or health-report spine.
+15. Keep the critical path explicit: source identity and entity grounding,
+    feedback reuse, correction safety and Company Vitals evidence take
+    precedence over exhaustive matrices, generalized frameworks and production
+    polish.
+
+### Parallel Lane Contract
+
+Every parallel lane must declare:
+
+- exclusive file ownership or a new-file-only boundary;
+- the production seam it reuses;
+- one continuous metric and one noncompensatory safety condition;
+- the smallest independently committable checkpoint;
+- the exact disposable-database or no-database validation boundary;
+- deferred breadth that will be recorded instead of blocking the vertical.
+
+The integration lane does not wait for every edge case. It joins only committed,
+independently validated component artifacts, recomputes their digests and
+preserves their proof gaps.
 
 ## Current End-to-End Implemented Slice
 
