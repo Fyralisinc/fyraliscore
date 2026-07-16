@@ -32,11 +32,11 @@ from lib.evaluation.company_learning import (
 from lib.evaluation.proof import compile_invariant_proof_matrix
 from lib.embeddings.ollama import EMBEDDING_DIM
 from lib.shared.ids import uuid7
-from services.app.gateway.clarifications_router import (
-    _apply_entity_resolution_answer,
-)
 from services.domain.clarifications import answer_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.domain.entity_resolution_adjudication import (
+    adjudicate_entity_resolution_clarification,
+)
 from services.workers.entity_resolver.context import build_context
 from services.workers.entity_resolver.worker import (
     EntityResolverWorker,
@@ -855,9 +855,9 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
             answered_by=adjudicator_id,
         )
         assert answered is not None
-        await _apply_entity_resolution_answer(
+        await adjudicate_entity_resolution_clarification(
             conn,
-            row=answered,
+            clarification=answered,
             answer=answer,
             tenant_id=tenant_id,
             answered_by=adjudicator_id,
@@ -1318,9 +1318,9 @@ async def test_contextual_adjudication_does_not_enable_global_deterministic_repl
             answered_by=None,
         )
         assert answered is not None
-        await _apply_entity_resolution_answer(
+        await adjudicate_entity_resolution_clarification(
             conn,
-            row=answered,
+            clarification=answered,
             answer=answer,
             tenant_id=tenant_id,
             answered_by=None,

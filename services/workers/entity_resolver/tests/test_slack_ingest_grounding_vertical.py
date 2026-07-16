@@ -14,11 +14,11 @@ from lib.evaluation.source_semantics import (
     SourceSemanticEvaluationScope,
     evaluate_source_semantic_state,
 )
-from services.app.gateway.clarifications_router import (
-    _apply_entity_resolution_answer,
-)
 from services.domain.clarifications import answer_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.domain.entity_resolution_adjudication import (
+    adjudicate_entity_resolution_clarification,
+)
 from services.ingest.ingestion.embedding.models import EmbeddingEnvelope
 from services.ingest.ingestion.core import ingest_from_draft
 from services.ingest.ingestion.handlers.slack import handle_slack_message
@@ -380,9 +380,9 @@ async def test_slack_thread_review_adjudication_reaches_original_grounded_belief
             answered_by=None,
         )
         assert answered is not None
-        await _apply_entity_resolution_answer(
+        await adjudicate_entity_resolution_clarification(
             conn,
-            row=answered,
+            clarification=answered,
             answer=answer,
             tenant_id=tenant_id,
             answered_by=None,

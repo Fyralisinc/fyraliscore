@@ -10,9 +10,11 @@ from starlette.testclient import TestClient
 
 from lib.shared.errors import ValidationError
 from services.app.gateway.clarifications_router import (
+    build_clarifications_router,
+)
+from services.domain.entity_resolution_adjudication import (
     _resolution_scope,
     _select_reviewed_candidate,
-    build_clarifications_router,
 )
 
 
@@ -304,15 +306,15 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
         fake_answer,
     )
     monkeypatch.setattr(
-        "services.app.gateway.clarifications_router.insert_alias_with_connection",
+        "services.domain.entity_resolution_adjudication.insert_alias_with_connection",
         fake_insert_alias,
     )
     monkeypatch.setattr(
-        "services.app.gateway.clarifications_router.EntityGroundingRepo.append_adjudicated_successor",
+        "services.domain.entity_resolution_adjudication.EntityGroundingRepo.append_adjudicated_successor",
         fake_append_successor,
     )
     monkeypatch.setattr(
-        "services.app.gateway.clarifications_router.SourceSemanticRepo.enqueue_work",
+        "services.domain.entity_resolution_adjudication.SourceSemanticRepo.enqueue_work",
         fake_enqueue_work,
     )
     client = _client(tenant_id=tenant_id, actor_id=actor_id, conn=conn)
@@ -428,11 +430,11 @@ def test_clarification_answer_creates_new_customer_entity(monkeypatch) -> None:
         fake_answer,
     )
     monkeypatch.setattr(
-        "services.app.gateway.clarifications_router.resources_repo.create",
+        "services.domain.entity_resolution_adjudication.resources_repo.create",
         fake_create,
     )
     monkeypatch.setattr(
-        "services.app.gateway.clarifications_router.insert_alias_with_connection",
+        "services.domain.entity_resolution_adjudication.insert_alias_with_connection",
         fake_insert_alias,
     )
     client = _client(tenant_id=tenant_id, actor_id=actor_id, conn=conn)
