@@ -1027,8 +1027,8 @@ def _company_learning_assurance_summary(
             "proof_gaps": [
                 "Combined positive, negative, exact-alias population, "
                 "variant-alias population, collision population, Slack and "
-                "customer-lifecycle and correction assurance evidence could "
-                "not be trusted."
+                "customer-lifecycle, active-learning-surface, retention and "
+                "correction assurance evidence could not be trusted."
             ],
         }
     summary = _json_obj(assurance.get("summary"))
@@ -1062,6 +1062,8 @@ def _company_learning_assurance_summary(
         "variant_population": _json_obj(summary.get("variant_population")),
         "variant_collision": _json_obj(summary.get("variant_collision")),
         "customer_lifecycle": _json_obj(summary.get("customer_lifecycle")),
+        "active_surfaces": _json_obj(summary.get("active_surfaces")),
+        "retention": _json_obj(summary.get("retention")),
         "component_digests": _json_obj(summary.get("component_digests")),
         "artifact_paths": _json_obj(summary.get("artifact_paths")),
         "hard_failures": hard_failures,
@@ -1223,6 +1225,12 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
         correction = _json_obj(assurance.get("correction"))
         population = _json_obj(assurance.get("population"))
         lifecycle = _json_obj(assurance.get("customer_lifecycle"))
+        active_surfaces = _json_obj(assurance.get("active_surfaces"))
+        structured_identity = _json_obj(
+            active_surfaces.get("structured_identity")
+        )
+        source_salience = _json_obj(active_surfaces.get("source_salience"))
+        retention = _json_obj(assurance.get("retention"))
         slack_metrics = _json_obj(slack.get("metrics"))
         lines.extend(
             [
@@ -1256,6 +1264,66 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
                     f"{lifecycle.get('case_count', 'unknown')} "
                     "(violations="
                     f"{lifecycle.get('violating_case_count', 'unknown')})"
+                ),
+                (
+                    "- Active structured identity: "
+                    f"{structured_identity.get('status', 'unknown')}, "
+                    f"{structured_identity.get('observed_case_count', 'unknown')}/"
+                    f"{structured_identity.get('case_count', 'unknown')} "
+                    "(violations="
+                    f"{structured_identity.get('violating_case_count', 'unknown')}, "
+                    "governed attachment="
+                    f"{_fmt_interval_point(structured_identity.get('governed_attachment_rate'))}"
+                    ")"
+                ),
+                (
+                    "- Active source salience: "
+                    f"{source_salience.get('status', 'unknown')}, "
+                    f"{source_salience.get('observed_case_count', 'unknown')}/"
+                    f"{source_salience.get('case_count', 'unknown')} "
+                    "(violations="
+                    f"{source_salience.get('violating_case_count', 'unknown')}, "
+                    "safe direction="
+                    f"{_fmt_interval_point(source_salience.get('salience_direction_rate'))}"
+                    ")"
+                ),
+                (
+                    "- Learning retention: "
+                    f"{retention.get('status', 'unknown')}, overall="
+                    f"{_fmt_score(retention.get('overall_positive_retention_rate'))} "
+                    "(forgetting="
+                    f"{_fmt_score(retention.get('overall_forgetting_rate'))}, "
+                    "restart survival="
+                    f"{_fmt_score(retention.get('restart_survival_rate'))})"
+                ),
+                (
+                    "- Retention families: exact="
+                    f"{_fmt_score(retention.get('exact_retention_rate'))}, "
+                    "variant="
+                    f"{_fmt_score(retention.get('variant_retention_rate'))}, "
+                    "corrected="
+                    f"{_fmt_score(retention.get('corrected_retention_rate'))}, "
+                    "horizon AUC="
+                    f"{_fmt_score(retention.get('retention_horizon_auc'))}"
+                ),
+                (
+                    "- Retention safety and integrity: "
+                    "negative="
+                    f"{_fmt_score(retention.get('negative_control_safety_rate'))}, "
+                    "collision="
+                    f"{_fmt_score(retention.get('collision_control_safety_rate'))}, "
+                    "correction authority="
+                    f"{_fmt_score(retention.get('correction_authority_rate'))}, "
+                    "unsafe globalization="
+                    f"{_fmt_score(retention.get('unsafe_globalization_rate'))}, "
+                    "source immutable="
+                    f"{_fmt_score(retention.get('source_immutability_rate'))}, "
+                    "model consistent="
+                    f"{_fmt_score(retention.get('model_consistency_rate'))}, "
+                    "lineage consistent="
+                    f"{_fmt_score(retention.get('evidence_lineage_consistency_rate'))}, "
+                    "hard incident rate="
+                    f"{_fmt_score(retention.get('hard_safety_incident_rate'))}"
                 ),
             ]
         )
@@ -4965,6 +5033,10 @@ def _status_from_score(score: float | None) -> str:
 
 def _fmt_score(value: Any) -> str:
     return "n/a" if value is None else f"{float(value):.4f}"
+
+
+def _fmt_interval_point(value: Any) -> str:
+    return _fmt_score(_json_obj(value).get("point_estimate"))
 
 
 def _short_metrics(metrics: dict[str, Any]) -> str:

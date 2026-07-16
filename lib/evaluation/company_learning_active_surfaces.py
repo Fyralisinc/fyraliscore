@@ -23,7 +23,7 @@ class _SurfaceModel(BaseModel):
 
 
 class StructuredIdentitySurfaceObservation(_SurfaceModel):
-    case_id: Literal["jira", "linear"]
+    case_id: Literal["jira", "linear", "google_drive", "gmail"]
     execution_status: Literal["observed", "unsupported"] = "observed"
     unsupported_reason: str | None = None
     claim_emitted: bool | None = None
@@ -308,18 +308,22 @@ def evaluate_active_learning_surfaces(
 def _evaluate_identity(
     observations: tuple[StructuredIdentitySurfaceObservation, ...],
 ) -> StructuredIdentitySurfaceReport:
-    _require_exact_ids(observations, {"jira", "linear"}, "identity")
+    _require_exact_ids(
+        observations,
+        {"jira", "linear", "google_drive", "gmail"},
+        "identity",
+    )
     observed = tuple(row for row in observations if row.execution_status == "observed")
     if not observed:
         raise ValueError("identity surface has no observed cases")
     violating = sum(not row.safe for row in observed)
     return StructuredIdentitySurfaceReport(
         status=(
-            "observed" if len(observed) == 2 and violating == 0 else "contradicted"
+            "observed" if len(observed) == 4 and violating == 0 else "contradicted"
         ),
-        case_count=2,
+        case_count=4,
         observed_case_count=len(observed),
-        unsupported_case_count=2 - len(observed),
+        unsupported_case_count=4 - len(observed),
         violating_case_count=violating,
         unsupported_reason_counts=_unsupported_reasons(observations),
         runtime_support_rate=_wilson_estimate(

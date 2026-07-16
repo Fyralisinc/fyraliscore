@@ -26,7 +26,7 @@ async def test_active_learning_surfaces_produce_complete_postgres_evidence(
     )
 
     assert evidence.report.status == "observed"
-    assert evidence.report.structured_identity.observed_case_count == 2
+    assert evidence.report.structured_identity.observed_case_count == 4
     assert evidence.report.structured_identity.violating_case_count == 0
     assert evidence.report.source_salience.observed_case_count == 5
     assert evidence.report.source_salience.violating_case_count == 0

@@ -18,7 +18,7 @@ def test_active_surface_report_is_continuous_and_noncompensatory() -> None:
     )
 
     assert report.status == "observed"
-    assert report.structured_identity.observed_case_count == 2
+    assert report.structured_identity.observed_case_count == 4
     assert report.structured_identity.violating_case_count == 0
     assert report.structured_identity.runtime_support_rate.point_estimate == 1.0
     assert report.structured_identity.handler_non_authority_rate.point_estimate == 1.0
@@ -101,7 +101,7 @@ def test_unsupported_surface_is_a_continuous_support_failure() -> None:
     )
 
     assert report.status == "contradicted"
-    assert report.structured_identity.runtime_support_rate.point_estimate == 0.5
+    assert report.structured_identity.runtime_support_rate.point_estimate == 0.75
     assert report.structured_identity.unsupported_reason_counts == {
         "linear runtime unavailable": 1
     }
@@ -158,7 +158,7 @@ def _safe_identity() -> tuple[StructuredIdentitySurfaceObservation, ...]:
             source_observation_immutable=True,
             artifact_refs=(f"pytest:{source}",),
         )
-        for source in ("jira", "linear")
+        for source in ("jira", "linear", "google_drive", "gmail")
     )
 
 

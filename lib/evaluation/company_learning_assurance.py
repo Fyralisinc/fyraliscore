@@ -11,6 +11,12 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.company_learning_active_surfaces import (
+    ActiveLearningSurfacesReport,
+    SourceSalienceSurfaceReport,
+    StructuredIdentitySurfaceReport,
+    validate_active_learning_surfaces_artifact,
+)
 from lib.evaluation.company_learning_experiment import (
     CorrectiveMemoryExperimentReport,
     PairedRecurrenceResult,
@@ -26,6 +32,13 @@ from lib.evaluation.company_learning_population import (
     HeldOutPairObservation,
     IntervalEstimate,
     evaluate_heldout_population,
+)
+from lib.evaluation.company_learning_retention import (
+    CompanyLearningRetentionReport,
+    RetentionHorizonMetrics,
+    RetentionObservation,
+    RetentionRunSpec,
+    evaluate_company_learning_retention,
 )
 from lib.evaluation.company_learning_variant_population import (
     CompanyLearningVariantPopulationEvidence,
@@ -726,9 +739,207 @@ class CustomerLifecycleAssurance(_SummaryModel):
         )
 
 
+class ActiveSurfacesAssurance(_SummaryModel):
+    status: Literal["observed", "failed"]
+    evidence_tier: EvidenceTier
+    structured_identity: StructuredIdentitySurfaceReport
+    source_salience: SourceSalienceSurfaceReport
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def exact_active_surface_accounting(self) -> Self:
+        if set(self.artifact_paths) != {"active_surfaces_evidence"}:
+            raise ValueError(
+                "active surfaces assurance requires one evidence artifact"
+            )
+        if set(self.component_digests) != {
+            "evidence",
+            "report",
+            "structured_identity_report",
+            "source_salience_report",
+            "identity_observations",
+            "salience_observations",
+        }:
+            raise ValueError(
+                "active surfaces assurance requires evidence, report, "
+                "subreport and raw-observation digests"
+            )
+        expected_status = "observed" if self.full_scope_complete else "failed"
+        if self.status != expected_status:
+            raise ValueError(
+                "active surfaces status does not match noncompensatory evidence"
+            )
+        if self.status == "observed" and self.evidence_tier.rank < 4:
+            raise ValueError("active surfaces assurance requires at least E4 evidence")
+        return self
+
+    @property
+    def continuous_metrics(self) -> tuple[IntervalEstimate, ...]:
+        identity = self.structured_identity
+        salience = self.source_salience
+        return (
+            identity.runtime_support_rate,
+            identity.claim_emission_rate,
+            identity.claim_preservation_rate,
+            identity.governed_attachment_rate,
+            identity.handler_non_authority_rate,
+            identity.ingest_non_authority_rate,
+            identity.forged_text_rejection_rate,
+            identity.missing_binding_non_authority_rate,
+            identity.cross_source_isolation_rate,
+            identity.cross_tenant_isolation_rate,
+            identity.source_immutability_rate,
+            salience.runtime_support_rate,
+            salience.useful_salience_increase_rate,
+            salience.corrected_nonincrease_rate,
+            salience.pending_zero_credit_rate,
+            salience.foreign_tenant_isolation_rate,
+            salience.canonical_truth_immutability_rate,
+            salience.grounding_truth_immutability_rate,
+            salience.salience_direction_rate,
+        )
+
+    @property
+    def full_scope_complete(self) -> bool:
+        identity = self.structured_identity
+        salience = self.source_salience
+        return bool(
+            identity.status == "observed"
+            and identity.case_count == 4
+            and identity.observed_case_count == identity.case_count
+            and identity.unsupported_case_count == 0
+            and identity.violating_case_count == 0
+            and salience.status == "observed"
+            and salience.case_count == 5
+            and salience.observed_case_count == salience.case_count
+            and salience.unsupported_case_count == 0
+            and salience.violating_case_count == 0
+            and all(metric.point_estimate == 1.0 for metric in self.continuous_metrics)
+        )
+
+    @property
+    def has_blocking_evidence(self) -> bool:
+        return not self.full_scope_complete
+
+
+class RetentionAssurance(_SummaryModel):
+    status: Literal["observed", "observed_with_degradation", "failed"]
+    evidence_tier: EvidenceTier
+    expected_observation_count: int = Field(ge=0)
+    observed_observation_count: int = Field(ge=0)
+    exact_retention_rate: float = Field(ge=0.0, le=1.0)
+    variant_retention_rate: float = Field(ge=0.0, le=1.0)
+    corrected_retention_rate: float = Field(ge=0.0, le=1.0)
+    overall_positive_retention_rate: float = Field(ge=0.0, le=1.0)
+    overall_forgetting_rate: float = Field(ge=0.0, le=1.0)
+    restart_survival_rate: float = Field(ge=0.0, le=1.0)
+    correction_authority_rate: float = Field(ge=0.0, le=1.0)
+    unsafe_globalization_rate: float = Field(ge=0.0, le=1.0)
+    negative_control_safety_rate: float = Field(ge=0.0, le=1.0)
+    collision_control_safety_rate: float = Field(ge=0.0, le=1.0)
+    source_immutability_rate: float = Field(ge=0.0, le=1.0)
+    model_consistency_rate: float = Field(ge=0.0, le=1.0)
+    evidence_lineage_consistency_rate: float = Field(ge=0.0, le=1.0)
+    hard_safety_incident_rate: float = Field(ge=0.0, le=1.0)
+    retention_horizon_auc: float = Field(ge=0.0, le=1.0)
+    horizon_metrics: tuple[RetentionHorizonMetrics, ...]
+    family_counts: dict[str, int]
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def exact_retention_accounting(self) -> Self:
+        if set(self.artifact_paths) != {"retention_evidence"}:
+            raise ValueError("retention assurance requires one evidence artifact")
+        if set(self.component_digests) != {
+            "artifact",
+            "spec",
+            "report",
+            "observations",
+        }:
+            raise ValueError(
+                "retention assurance requires artifact, spec, report and "
+                "observation digests"
+            )
+        expected_status = (
+            "observed"
+            if self.full_scope_complete
+            else "failed"
+            if self.has_safety_or_immutability_regression
+            else "observed_with_degradation"
+        )
+        if self.status != expected_status:
+            raise ValueError(
+                "retention status does not match noncompensatory evidence"
+            )
+        if self.status == "observed" and self.evidence_tier.rank < 4:
+            raise ValueError("retention assurance requires at least E4 evidence")
+        return self
+
+    @property
+    def has_safety_or_immutability_regression(self) -> bool:
+        return bool(
+            self.unsafe_globalization_rate > 0.0
+            or self.hard_safety_incident_rate > 0.0
+            or self.negative_control_safety_rate < 1.0
+            or self.collision_control_safety_rate < 1.0
+            or self.correction_authority_rate < 1.0
+            or self.source_immutability_rate < 1.0
+            or self.model_consistency_rate < 1.0
+            or self.evidence_lineage_consistency_rate < 1.0
+            or any(
+                horizon.source_immutability_rate < 1.0
+                or horizon.model_consistency_rate < 1.0
+                or horizon.evidence_lineage_consistency_rate < 1.0
+                or (
+                    horizon.negative_safety_rate is not None
+                    and horizon.negative_safety_rate < 1.0
+                )
+                or (
+                    horizon.collision_safety_rate is not None
+                    and horizon.collision_safety_rate < 1.0
+                )
+                for horizon in self.horizon_metrics
+            )
+        )
+
+    @property
+    def has_retention_regression(self) -> bool:
+        return bool(
+            self.expected_observation_count == 0
+            or self.observed_observation_count != self.expected_observation_count
+            or self.exact_retention_rate < 1.0
+            or self.variant_retention_rate < 1.0
+            or self.corrected_retention_rate < 1.0
+            or self.overall_positive_retention_rate < 1.0
+            or self.overall_forgetting_rate > 0.0
+            or self.restart_survival_rate < 1.0
+            or self.retention_horizon_auc < 1.0
+            or any(
+                horizon.positive_retention_rate is not None
+                and horizon.positive_retention_rate < 1.0
+                or horizon.forgetting_rate is not None
+                and horizon.forgetting_rate > 0.0
+                for horizon in self.horizon_metrics
+            )
+        )
+
+    @property
+    def full_scope_complete(self) -> bool:
+        return not (
+            self.has_safety_or_immutability_regression
+            or self.has_retention_regression
+        )
+
+    @property
+    def has_blocking_evidence(self) -> bool:
+        return not self.full_scope_complete
+
+
 class CompanyLearningAssuranceSummary(_SummaryModel):
-    schema_version: Literal["company-learning-assurance-summary-v5"] = (
-        "company-learning-assurance-summary-v5"
+    schema_version: Literal["company-learning-assurance-summary-v6"] = (
+        "company-learning-assurance-summary-v6"
     )
     run_id: str = Field(min_length=1)
     system_version: str = Field(min_length=1)
@@ -750,6 +961,8 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
     variant_population: VariantPopulationAssurance
     variant_collision: VariantCollisionAssurance
     customer_lifecycle: CustomerLifecycleAssurance
+    active_surfaces: ActiveSurfacesAssurance
+    retention: RetentionAssurance
     population: PopulationAssurance | None = None
     proof_gaps: tuple[str, ...]
     blocking_failures: tuple[str, ...]
@@ -775,6 +988,8 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             **self.variant_population.artifact_paths,
             **self.variant_collision.artifact_paths,
             **self.customer_lifecycle.artifact_paths,
+            **self.active_surfaces.artifact_paths,
+            **self.retention.artifact_paths,
             **(self.population.artifact_paths if self.population is not None else {}),
         }
         if self.artifact_paths != nested_paths:
@@ -810,6 +1025,14 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
                 f"customer_lifecycle_{key}": value
                 for key, value in (self.customer_lifecycle.component_digests.items())
             },
+            **{
+                f"active_surfaces_{key}": value
+                for key, value in self.active_surfaces.component_digests.items()
+            },
+            **{
+                f"retention_{key}": value
+                for key, value in self.retention.component_digests.items()
+            },
             **(
                 {
                     f"population_{key}": value
@@ -838,6 +1061,8 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             or self.variant_population.has_unsafe_or_invalid_mechanism
             or self.variant_collision.has_unsafe_supported_evidence
             or self.customer_lifecycle.has_blocking_evidence
+            or self.active_surfaces.has_blocking_evidence
+            or self.retention.has_safety_or_immutability_regression
         )
         blocking_component = bool(
             (
@@ -848,6 +1073,8 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             or not self.variant_population.working_requirements_satisfied
             or not self.variant_collision.full_scope_complete
             or not self.customer_lifecycle.full_scope_complete
+            or not self.active_surfaces.full_scope_complete
+            or not self.retention.full_scope_complete
         )
         if self.status == "working" and (
             self.blocking_failures or unsafe_component or blocking_component
@@ -1234,6 +1461,124 @@ def validate_customer_lifecycle_assurance_component(
     return report
 
 
+def validate_active_surfaces_assurance_component(
+    assurance: ActiveSurfacesAssurance,
+    *,
+    run_id: str,
+    system_version: str,
+) -> ActiveLearningSurfacesReport:
+    """Reopen active-surface evidence and recompute both raw subreports."""
+
+    payload = _read_json_file(assurance.artifact_paths["active_surfaces_evidence"])
+    evidence = validate_active_learning_surfaces_artifact(payload)
+    if evidence.run_id != run_id:
+        raise ValueError("active surfaces run identity mismatch")
+    if evidence.system_version != system_version:
+        raise ValueError("active surfaces system version mismatch")
+    expected_digests = {
+        "evidence": evidence.digest,
+        "report": evidence.report.digest,
+        "structured_identity_report": evidence.report.structured_identity.digest,
+        "source_salience_report": evidence.report.source_salience.digest,
+        "identity_observations": canonical_sha256(
+            [
+                row.model_dump(mode="json")
+                for row in evidence.identity_observations
+            ]
+        ),
+        "salience_observations": canonical_sha256(
+            [
+                row.model_dump(mode="json")
+                for row in evidence.salience_observations
+            ]
+        ),
+    }
+    if assurance.component_digests != expected_digests:
+        raise ValueError("active surfaces component digest mismatch")
+    if (
+        assurance.structured_identity != evidence.report.structured_identity
+        or assurance.source_salience != evidence.report.source_salience
+        or assurance.status
+        != ("observed" if evidence.report.status == "observed" else "failed")
+    ):
+        raise ValueError(
+            "active surfaces assurance does not match persisted evidence"
+        )
+    return evidence.report
+
+
+def validate_retention_assurance_component(
+    assurance: RetentionAssurance,
+    *,
+    run_id: str,
+    system_version: str,
+) -> CompanyLearningRetentionReport:
+    """Reopen retention evidence and recompute every raw observation."""
+
+    payload = _read_json_file(assurance.artifact_paths["retention_evidence"])
+    spec = RetentionRunSpec.model_validate(payload.get("spec"))
+    if spec.run_id != run_id:
+        raise ValueError("retention run identity mismatch")
+    if spec.system_version != system_version:
+        raise ValueError("retention system version mismatch")
+    observations = tuple(
+        RetentionObservation.model_validate(row)
+        for row in payload.get("observations") or ()
+    )
+    report = CompanyLearningRetentionReport.model_validate(payload.get("report"))
+    recomputed = evaluate_company_learning_retention(
+        spec=spec,
+        observations=observations,
+        artifact_refs=report.artifact_refs,
+    )
+    if recomputed != report:
+        raise ValueError("retention report does not match raw recomputation")
+    if str(payload.get("report_digest") or "") != report.digest:
+        raise ValueError("retention report digest mismatch")
+    expected_digests = {
+        "artifact": canonical_sha256(payload),
+        "spec": spec.digest,
+        "report": report.digest,
+        "observations": report.observation_digest,
+    }
+    if assurance.component_digests != expected_digests:
+        raise ValueError("retention component digest mismatch")
+    expected_values = {
+        "status": (
+            "failed" if report.status == "contradicted" else report.status
+        ),
+        "expected_observation_count": report.expected_observation_count,
+        "observed_observation_count": report.observed_observation_count,
+        "exact_retention_rate": report.exact_retention_rate,
+        "variant_retention_rate": report.variant_retention_rate,
+        "corrected_retention_rate": report.corrected_retention_rate,
+        "overall_positive_retention_rate": (
+            report.overall_positive_retention_rate
+        ),
+        "overall_forgetting_rate": report.overall_forgetting_rate,
+        "restart_survival_rate": report.restart_survival_rate,
+        "correction_authority_rate": report.correction_authority_rate,
+        "unsafe_globalization_rate": report.unsafe_globalization_rate,
+        "negative_control_safety_rate": report.negative_control_safety_rate,
+        "collision_control_safety_rate": report.collision_control_safety_rate,
+        "source_immutability_rate": report.source_immutability_rate,
+        "model_consistency_rate": report.model_consistency_rate,
+        "evidence_lineage_consistency_rate": (
+            report.evidence_lineage_consistency_rate
+        ),
+        "hard_safety_incident_rate": report.hard_safety_incident_rate,
+        "retention_horizon_auc": report.retention_horizon_auc,
+        "horizon_metrics": report.horizon_metrics,
+        "family_counts": report.family_counts,
+    }
+    if any(
+        getattr(assurance, field_name) != expected_value
+        for field_name, expected_value in expected_values.items()
+    ):
+        raise ValueError("retention assurance does not match persisted evidence")
+    return report
+
+
 def validate_company_learning_assurance_components(
     summary: CompanyLearningAssuranceSummary,
 ) -> None:
@@ -1249,6 +1594,8 @@ def validate_company_learning_assurance_components(
         "variant_population_evidence",
         "variant_collision_evidence",
         "customer_lifecycle_evidence",
+        "active_surfaces_evidence",
+        "retention_evidence",
         "slack_observations",
         "slack_report",
     }
@@ -1439,6 +1786,16 @@ def validate_company_learning_assurance_components(
     validate_customer_lifecycle_assurance_component(
         summary.customer_lifecycle,
         run_id=f"{summary.run_id}:customer-lifecycle",
+        system_version=summary.system_version,
+    )
+    validate_active_surfaces_assurance_component(
+        summary.active_surfaces,
+        run_id=f"{summary.run_id}:active-surfaces",
+        system_version=summary.system_version,
+    )
+    validate_retention_assurance_component(
+        summary.retention,
+        run_id=f"{summary.run_id}:retention",
         system_version=summary.system_version,
     )
 

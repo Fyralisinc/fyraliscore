@@ -20,6 +20,10 @@ from lib.evaluation.company_learning_active_surfaces import (
 from lib.shared.ids import uuid7
 from services.domain.source_identity_bindings import SourceIdentityBindingRepo
 from services.ingest.ingestion.core import ingest
+from services.ingest.ingestion.handlers.gmail import handle_gmail
+from services.ingest.ingestion.handlers.google_drive import (
+    handle_google_drive_file,
+)
 from services.ingest.ingestion.handlers.jira import handle_jira_issue
 from services.ingest.ingestion.handlers.linear import handle_linear_webhook
 from services.reasoning.retrieval.primary import TriggerContext
@@ -42,6 +46,8 @@ async def run_active_surfaces_experiment(
         [
             await _identity_case(pool, "jira"),
             await _identity_case(pool, "linear"),
+            await _identity_case(pool, "google_drive"),
+            await _identity_case(pool, "gmail"),
         ]
     )
     salience = await _salience_cases(pool)
@@ -75,12 +81,39 @@ async def _identity_case(
         "INSERT INTO tenants (id) VALUES ($1)",
         [(tenant_id,), (foreign_tenant,)],
     )
-    payload = _jira_payload() if source == "jira" else _linear_payload()
-    handler = handle_jira_issue if source == "jira" else handle_linear_webhook
+    payloads = {
+        "jira": _jira_payload,
+        "linear": _linear_payload,
+        "google_drive": _google_drive_payload,
+        "gmail": _gmail_payload,
+    }
+    handlers = {
+        "jira": handle_jira_issue,
+        "linear": handle_linear_webhook,
+        "google_drive": handle_google_drive_file,
+        "gmail": handle_gmail,
+    }
+    payload = payloads[source]()
+    handler = handlers[source]
     before_handler = await _binding_count(pool, tenant_id)
     draft = await handler(payload, {})
     handler_created = await _binding_count(pool, tenant_id) != before_handler
     claim = draft.source_identity_claims[0]
+    _, wrong_source_binding_id = await _seed_source_binding(
+        pool,
+        tenant_id=tenant_id,
+        source_system=f"wrong-source:{source}",
+        source_native_identifier=claim.source_native_identifier,
+        source_surface=claim.source_surface,
+    )
+    _, foreign_binding_id = await _seed_source_binding(
+        pool,
+        tenant_id=foreign_tenant,
+        source_system=claim.source_system,
+        source_native_identifier=claim.source_native_identifier,
+        source_surface=claim.source_surface,
+    )
+    before_ingest = await _binding_count(pool, tenant_id)
 
     missing = await ingest(
         draft.source_channel,
@@ -90,39 +123,35 @@ async def _identity_case(
         embedder=None,
         enqueue_trigger=False,
     )
-    ingest_created = await _binding_count(pool, tenant_id) != before_handler
-    missing_authoritative = bool(
-        await pool.fetchval(
-            """
-            SELECT count(*) FROM observation_source_identity_bindings
-            WHERE tenant_id=$1 AND observation_id=$2
-            """,
-            tenant_id,
-            missing.observation.id,
-        )
-    )
-    resource_id = uuid7()
-    await pool.execute(
+    ingest_created = await _binding_count(pool, tenant_id) != before_ingest
+    missing_attachments = await pool.fetch(
         """
-        INSERT INTO resources (
-          id, tenant_id, kind, identity, current_value, metadata
-        ) VALUES (
-          $1, $2, 'capacity', $3, '{}'::jsonb,
-          jsonb_build_object('semantic_kind', 'project')
-        )
+        SELECT attachment.binding_id, binding.tenant_id, binding.source_system
+        FROM observation_source_identity_bindings attachment
+        JOIN source_identity_bindings binding
+          ON binding.tenant_id=attachment.tenant_id
+         AND binding.id=attachment.binding_id
+         AND binding.binding_version=attachment.binding_version
+        WHERE attachment.tenant_id=$1 AND attachment.observation_id=$2
         """,
-        resource_id,
         tenant_id,
-        claim.source_surface,
+        missing.observation.id,
     )
-    await SourceIdentityBindingRepo(pool).bind(
+    missing_authoritative = bool(missing_attachments)
+    cross_source_leak = any(
+        str(row["binding_id"]) == wrong_source_binding_id
+        for row in missing_attachments
+    )
+    cross_tenant_leak = any(
+        str(row["binding_id"]) == foreign_binding_id
+        for row in missing_attachments
+    )
+    resource_id, _ = await _seed_source_binding(
+        pool,
         tenant_id=tenant_id,
         source_system=claim.source_system,
         source_native_identifier=claim.source_native_identifier,
-        source_identity_authority_ref=f"{source}-object-contract-v1",
-        canonical_ref={"type": "resource", "id": str(resource_id)},
-        evidence_refs=(f"source-object:{claim.source_native_identifier}",),
-        valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        source_surface=claim.source_surface,
     )
     replay = await ingest(
         draft.source_channel,
@@ -159,12 +188,6 @@ async def _identity_case(
         observation_id=replay.observation.id,
         phrase="SALES",
     )
-    foreign = await build_context(
-        pool=pool,
-        tenant_id=foreign_tenant,
-        observation_id=replay.observation.id,
-        phrase=claim.source_surface,
-    )
     snapshot_after = await _observation_snapshot(pool, tenant_id, replay.observation.id)
     return StructuredIdentitySurfaceObservation(
         case_id=source,
@@ -180,10 +203,8 @@ async def _identity_case(
         ingest_created_authority=ingest_created,
         forged_text_resolved=forged.source_identity_binding is not None,
         missing_binding_authoritative=missing_authoritative,
-        cross_source_leak=any(
-            row.source_system != source for row in draft.source_identity_claims
-        ),
-        cross_tenant_leak=foreign.source_identity_binding is not None,
+        cross_source_leak=cross_source_leak,
+        cross_tenant_leak=cross_tenant_leak,
         source_observation_immutable=snapshot_before == snapshot_after,
         artifact_refs=(
             f"observation:{replay.observation.id}",
@@ -509,6 +530,40 @@ async def _binding_count(pool: asyncpg.Pool, tenant_id: UUID) -> int:
     )
 
 
+async def _seed_source_binding(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    source_system: str,
+    source_native_identifier: str,
+    source_surface: str,
+) -> tuple[UUID, str]:
+    resource_id = uuid7()
+    await pool.execute(
+        """
+        INSERT INTO resources (
+          id, tenant_id, kind, identity, current_value, metadata
+        ) VALUES (
+          $1, $2, 'capacity', $3, '{}'::jsonb,
+          jsonb_build_object('semantic_kind', 'source_object')
+        )
+        """,
+        resource_id,
+        tenant_id,
+        source_surface,
+    )
+    binding = await SourceIdentityBindingRepo(pool).bind(
+        tenant_id=tenant_id,
+        source_system=source_system,
+        source_native_identifier=source_native_identifier,
+        source_identity_authority_ref=f"{source_system}-object-contract-v1",
+        canonical_ref={"type": "resource", "id": str(resource_id)},
+        evidence_refs=(f"source-object:{source_native_identifier}",),
+        valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    return resource_id, binding.binding_id
+
+
 async def _observation_snapshot(
     pool: asyncpg.Pool,
     tenant_id: UUID,
@@ -551,6 +606,54 @@ def _linear_payload() -> dict:
             "createdAt": "2026-04-21T10:00:00Z",
         },
         "createdAt": "2026-04-21T10:00:00Z",
+    }
+
+
+def _google_drive_payload() -> dict:
+    return {
+        "id": "drive-file-active-surface",
+        "name": "Revenue Planning",
+        "version": "7",
+        "modifiedTime": "2026-04-21T10:00:00Z",
+        "_fyralis_extracted_text": (
+            "SALES is untrusted free text, not file identity."
+        ),
+    }
+
+
+def _gmail_payload() -> dict:
+    return {
+        "message_resource": {
+            "id": "gmail-message-active-surface",
+            "threadId": "gmail-thread-active-surface",
+            "snippet": "SALES is untrusted free text.",
+            "internalDate": "1776765600000",
+            "payload": {
+                "headers": [
+                    {
+                        "name": "Message-ID",
+                        "value": "<active-surface@example.com>",
+                    },
+                    {
+                        "name": "From",
+                        "value": "Alice <alice@example.com>",
+                    },
+                    {
+                        "name": "To",
+                        "value": "bob@example.com",
+                    },
+                    {
+                        "name": "Subject",
+                        "value": "Executive Planning",
+                    },
+                ]
+            },
+        },
+        "mailbox_email": "alice@example.com",
+        "scope_used": "gmail.metadata",
+        "read_path": "push",
+        "gmail_installation_id": "00000000-0000-0000-0000-000000000002",
+        "thread_canonical_id": str(uuid7()),
     }
 
 

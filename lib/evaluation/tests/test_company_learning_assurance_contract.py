@@ -11,30 +11,50 @@ from pydantic import ValidationError
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_experiment import (
+    CanonicalEntityRef,
     ConsumerTerminalFate,
     CorrectiveMemoryArm,
 )
 from lib.evaluation.company_learning_assurance import (
+    ActiveSurfacesAssurance,
     CompanyLearningAssuranceSummary,
     CorrectionAssurance,
     CustomerLifecycleAssurance,
     NegativeAssurance,
     PopulationAssurance,
     PositiveAssurance,
+    RetentionAssurance,
     SlackAssurance,
     VariantCollisionAssurance,
     VariantPopulationAssurance,
     validate_company_learning_assurance_artifact,
+    validate_active_surfaces_assurance_component,
     validate_correction_assurance_component,
     validate_customer_lifecycle_assurance_component,
+    validate_retention_assurance_component,
     validate_variant_collision_assurance_component,
     validate_variant_population_assurance_component,
+)
+from lib.evaluation.company_learning_active_surfaces import (
+    ActiveLearningSurfacesEvidence,
+    SourceSalienceObservation,
+    StructuredIdentitySurfaceObservation,
+    evaluate_active_learning_surfaces,
 )
 from lib.evaluation.company_learning_customer_lifecycle import (
     build_customer_lifecycle_population,
     evaluate_customer_lifecycle_population,
 )
 from lib.evaluation.company_learning_population import IntervalEstimate
+from lib.evaluation.company_learning_retention import (
+    CompanyLearningRetentionReport,
+    RetentionBehavior,
+    RetentionCaseSpec,
+    RetentionHorizon,
+    RetentionObservation,
+    RetentionRunSpec,
+    evaluate_company_learning_retention,
+)
 from lib.evaluation.company_learning_variant_population import (
     CompanyLearningVariantPopulationEvidence,
     VariantAliasExecutionObservation,
@@ -837,6 +857,244 @@ def _slack_assurance(
     )
 
 
+def _active_surfaces_evidence(
+    *,
+    run_id: str = "pytest-assurance:active-surfaces",
+    system_version: str = "pytest-system",
+) -> ActiveLearningSurfacesEvidence:
+    identity = tuple(
+        StructuredIdentitySurfaceObservation(
+            case_id=case_id,
+            claim_emitted=True,
+            claim_preserved=True,
+            preexisting_binding_attached=True,
+            handler_created_authority=False,
+            ingest_created_authority=False,
+            forged_text_resolved=False,
+            missing_binding_authoritative=False,
+            cross_source_leak=False,
+            cross_tenant_leak=False,
+            source_observation_immutable=True,
+            artifact_refs=(f"pytest:{case_id}",),
+        )
+        for case_id in ("jira", "linear", "google_drive", "gmail")
+    )
+    salience = tuple(
+        SourceSalienceObservation(
+            case_id=case_id,
+            baseline_salience=baseline,
+            learned_salience=learned,
+            credit_observed=credit,
+            foreign_tenant_learned=False,
+            canonical_truth_immutable=True,
+            grounding_truth_immutable=True,
+            artifact_refs=(f"pytest:{case_id}",),
+        )
+        for case_id, (baseline, learned, credit) in {
+            "settled_useful": (1.0, 2.0, True),
+            "corrected": (2.0, 1.0, False),
+            "pending": (1.0, 1.0, False),
+            "foreign_tenant": (1.0, 1.0, False),
+            "profile_load": (1.0, 1.0, False),
+        }.items()
+    )
+    return ActiveLearningSurfacesEvidence(
+        run_id=run_id,
+        system_version=system_version,
+        created_at="2026-07-16T00:00:00+00:00",
+        identity_observations=identity,
+        salience_observations=salience,
+        report=evaluate_active_learning_surfaces(
+            identity_observations=identity,
+            salience_observations=salience,
+        ),
+        artifact_refs=("pytest:active-surfaces",),
+    )
+
+
+def _active_surfaces_assurance(
+    *,
+    path: str = "/tmp/active-surfaces.json",
+    evidence: ActiveLearningSurfacesEvidence | None = None,
+) -> ActiveSurfacesAssurance:
+    evidence = evidence or _active_surfaces_evidence()
+    return ActiveSurfacesAssurance(
+        status=(
+            "observed" if evidence.report.status == "observed" else "failed"
+        ),
+        evidence_tier=EvidenceTier.E4,
+        structured_identity=evidence.report.structured_identity,
+        source_salience=evidence.report.source_salience,
+        artifact_paths={"active_surfaces_evidence": path},
+        component_digests={
+            "evidence": evidence.digest,
+            "report": evidence.report.digest,
+            "structured_identity_report": (
+                evidence.report.structured_identity.digest
+            ),
+            "source_salience_report": evidence.report.source_salience.digest,
+            "identity_observations": canonical_sha256(
+                [
+                    row.model_dump(mode="json")
+                    for row in evidence.identity_observations
+                ]
+            ),
+            "salience_observations": canonical_sha256(
+                [
+                    row.model_dump(mode="json")
+                    for row in evidence.salience_observations
+                ]
+            ),
+        },
+    )
+
+
+def _retention_evidence(
+    *,
+    run_id: str = "pytest-assurance:retention",
+    system_version: str = "pytest-system",
+) -> tuple[dict[str, object], CompanyLearningRetentionReport]:
+    horizons = (
+        RetentionHorizon(cycle_count=0, restart_count=0),
+        RetentionHorizon(cycle_count=4, restart_count=1),
+        RetentionHorizon(cycle_count=16, restart_count=2),
+    )
+    cases = (
+        RetentionCaseSpec(
+            case_id="exact",
+            behavior=RetentionBehavior.EXACT_ALIAS,
+            family="exact",
+            expected_ref=CanonicalEntityRef(type="customer", id="exact"),
+            horizons=horizons,
+            allowed_terminal_fates=(ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,),
+        ),
+        RetentionCaseSpec(
+            case_id="variant",
+            behavior=RetentionBehavior.VARIANT_ALIAS,
+            family="variant",
+            expected_ref=CanonicalEntityRef(type="customer", id="variant"),
+            horizons=horizons,
+            allowed_terminal_fates=(ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,),
+            candidate_authorization_required=True,
+        ),
+        RetentionCaseSpec(
+            case_id="corrected",
+            behavior=RetentionBehavior.CORRECTED_ALIAS,
+            family="corrected",
+            expected_ref=CanonicalEntityRef(type="customer", id="corrected"),
+            horizons=(horizons[-1],),
+            allowed_terminal_fates=(ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,),
+            correction_authority_required=True,
+        ),
+        RetentionCaseSpec(
+            case_id="negative",
+            behavior=RetentionBehavior.NEGATIVE_CONTROL,
+            family="negative",
+            horizons=(horizons[-1],),
+            allowed_terminal_fates=(ConsumerTerminalFate.REVIEW,),
+        ),
+        RetentionCaseSpec(
+            case_id="collision",
+            behavior=RetentionBehavior.COLLISION_CONTROL,
+            family="collision",
+            horizons=(horizons[-1],),
+            allowed_terminal_fates=(ConsumerTerminalFate.REVIEW,),
+        ),
+    )
+    spec = RetentionRunSpec(
+        run_id=run_id,
+        system_version=system_version,
+        created_at="2026-07-16T00:00:00+00:00",
+        cases=cases,
+        artifact_refs=("pytest:retention-spec",),
+    )
+    observations = tuple(
+        RetentionObservation(
+            case_id=case.case_id,
+            horizon=horizon,
+            intervening_learning_count=horizon.cycle_count,
+            consumer_fate=(
+                ConsumerTerminalFate.RESOLVED_FOR_CONSUMER
+                if case.expected_ref is not None
+                else ConsumerTerminalFate.REVIEW
+            ),
+            observed_ref=case.expected_ref,
+            candidate_authorized=(
+                True
+                if case.behavior is RetentionBehavior.VARIANT_ALIAS
+                else None
+            ),
+            correction_authoritative=(
+                True
+                if case.behavior is RetentionBehavior.CORRECTED_ALIAS
+                else None
+            ),
+            source_observation_immutable=True,
+            models_consistent=True,
+            evidence_lineage_consistent=True,
+            artifact_refs=(f"pytest:retention:{case.case_id}",),
+        )
+        for case in cases
+        for horizon in case.horizons
+    )
+    report = evaluate_company_learning_retention(
+        spec=spec,
+        observations=observations,
+        artifact_refs=("pytest:retention-report",),
+    )
+    payload: dict[str, object] = {
+        "spec": spec.model_dump(mode="json"),
+        "observations": [
+            row.model_dump(mode="json") for row in observations
+        ],
+        "report": report.model_dump(mode="json"),
+        "report_digest": report.digest,
+    }
+    return payload, report
+
+
+def _retention_assurance(
+    *,
+    path: str = "/tmp/retention.json",
+    payload: dict[str, object] | None = None,
+    report: CompanyLearningRetentionReport | None = None,
+) -> RetentionAssurance:
+    if payload is None or report is None:
+        payload, report = _retention_evidence()
+    return RetentionAssurance(
+        status="observed",
+        evidence_tier=EvidenceTier.E4,
+        expected_observation_count=report.expected_observation_count,
+        observed_observation_count=report.observed_observation_count,
+        exact_retention_rate=report.exact_retention_rate,
+        variant_retention_rate=report.variant_retention_rate,
+        corrected_retention_rate=report.corrected_retention_rate,
+        overall_positive_retention_rate=report.overall_positive_retention_rate,
+        overall_forgetting_rate=report.overall_forgetting_rate,
+        restart_survival_rate=report.restart_survival_rate,
+        correction_authority_rate=report.correction_authority_rate,
+        unsafe_globalization_rate=report.unsafe_globalization_rate,
+        negative_control_safety_rate=report.negative_control_safety_rate,
+        collision_control_safety_rate=report.collision_control_safety_rate,
+        source_immutability_rate=report.source_immutability_rate,
+        model_consistency_rate=report.model_consistency_rate,
+        evidence_lineage_consistency_rate=(
+            report.evidence_lineage_consistency_rate
+        ),
+        hard_safety_incident_rate=report.hard_safety_incident_rate,
+        retention_horizon_auc=report.retention_horizon_auc,
+        horizon_metrics=report.horizon_metrics,
+        family_counts=report.family_counts,
+        artifact_paths={"retention_evidence": path},
+        component_digests={
+            "artifact": canonical_sha256(payload),
+            "spec": report.spec_digest,
+            "report": report.digest,
+            "observations": report.observation_digest,
+        },
+    )
+
+
 def _summary(
     *,
     slack: SlackAssurance | None = None,
@@ -844,6 +1102,8 @@ def _summary(
     variant_population: VariantPopulationAssurance | None = None,
     variant_collision: VariantCollisionAssurance | None = None,
     customer_lifecycle: CustomerLifecycleAssurance | None = None,
+    active_surfaces: ActiveSurfacesAssurance | None = None,
+    retention: RetentionAssurance | None = None,
     status: str = "working",
     blocking_failures: tuple[str, ...] = (),
     architecture_digest: str = _ARCHITECTURE_DIGEST,
@@ -910,6 +1170,8 @@ def _summary(
     variant_population = variant_population or _variant_assurance()
     variant_collision = variant_collision or _collision_assurance()
     customer_lifecycle = customer_lifecycle or _lifecycle_assurance()
+    active_surfaces = active_surfaces or _active_surfaces_assurance()
+    retention = retention or _retention_assurance()
     artifact_paths = {
         **positive.artifact_paths,
         **negative.artifact_paths,
@@ -918,6 +1180,8 @@ def _summary(
         **variant_population.artifact_paths,
         **variant_collision.artifact_paths,
         **customer_lifecycle.artifact_paths,
+        **active_surfaces.artifact_paths,
+        **retention.artifact_paths,
         **population.artifact_paths,
     }
     component_digests = {
@@ -947,6 +1211,14 @@ def _summary(
             for key, value in customer_lifecycle.component_digests.items()
         },
         **{
+            f"active_surfaces_{key}": value
+            for key, value in active_surfaces.component_digests.items()
+        },
+        **{
+            f"retention_{key}": value
+            for key, value in retention.component_digests.items()
+        },
+        **{
             f"population_{key}": value
             for key, value in population.component_digests.items()
         },
@@ -966,6 +1238,8 @@ def _summary(
         variant_population=variant_population,
         variant_collision=variant_collision,
         customer_lifecycle=customer_lifecycle,
+        active_surfaces=active_surfaces,
+        retention=retention,
         population=population,
         proof_gaps=("not open-world or task-autonomy proof",),
         blocking_failures=blocking_failures,
@@ -974,10 +1248,10 @@ def _summary(
     )
 
 
-def test_summary_v5_binds_reviewed_identity_and_active_scope() -> None:
+def test_summary_v6_binds_reviewed_identity_and_active_scope() -> None:
     summary = _summary()
 
-    assert summary.schema_version == "company-learning-assurance-summary-v5"
+    assert summary.schema_version == "company-learning-assurance-summary-v6"
     assert summary.architecture_digest == _ARCHITECTURE_DIGEST
     assert summary.implementation_plan_digest == _IMPLEMENTATION_PLAN_DIGEST
     assert summary.evaluation_profile == "autonomous-company-learning-v1"
@@ -996,6 +1270,123 @@ def test_summary_v5_binds_reviewed_identity_and_active_scope() -> None:
         _summary(implementation_plan_digest="not-a-digest")
     with pytest.raises(ValidationError, match="explicitly exclude"):
         _summary(excluded_capabilities=("autonomous_task_planning",))
+
+
+def test_active_surfaces_are_noncompensatory_for_working_status() -> None:
+    evidence = _active_surfaces_evidence()
+    identity = list(evidence.identity_observations)
+    identity[0] = identity[0].model_copy(
+        update={"forged_text_resolved": True}
+    )
+    contradicted = evidence.model_copy(
+        update={
+            "identity_observations": tuple(identity),
+            "report": evaluate_active_learning_surfaces(
+                identity_observations=tuple(identity),
+                salience_observations=evidence.salience_observations,
+            ),
+        }
+    )
+    failed = _active_surfaces_assurance(evidence=contradicted)
+
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(active_surfaces=failed)
+
+
+@pytest.mark.parametrize(
+    ("updates", "status"),
+    (
+        (
+            {
+                "exact_retention_rate": 0.9,
+                "overall_positive_retention_rate": 0.95,
+                "overall_forgetting_rate": 0.05,
+                "retention_horizon_auc": 0.95,
+            },
+            "observed_with_degradation",
+        ),
+        ({"source_immutability_rate": 0.9}, "failed"),
+        ({"hard_safety_incident_rate": 0.1}, "failed"),
+    ),
+)
+def test_retention_regressions_are_noncompensatory_for_working_status(
+    updates: dict[str, float],
+    status: str,
+) -> None:
+    baseline = _retention_assurance()
+    degraded = RetentionAssurance.model_validate(
+        {
+            **baseline.model_dump(mode="json"),
+            **updates,
+            "status": status,
+        }
+    )
+
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(retention=degraded)
+
+
+def test_active_surface_component_reopens_raw_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence = _active_surfaces_evidence()
+    artifact_path = tmp_path / "active-surfaces.json"
+    artifact_path.write_text(
+        json.dumps(evidence.artifact_payload()),
+        encoding="utf-8",
+    )
+    assurance = _active_surfaces_assurance(
+        path=str(artifact_path),
+        evidence=evidence,
+    )
+
+    assert (
+        validate_active_surfaces_assurance_component(
+            assurance,
+            run_id=evidence.run_id,
+            system_version=evidence.system_version,
+        )
+        == evidence.report
+    )
+    payload = evidence.artifact_payload()
+    payload["identity_observations"][0]["forged_text_resolved"] = True
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="report does not match"):
+        validate_active_surfaces_assurance_component(
+            assurance,
+            run_id=evidence.run_id,
+            system_version=evidence.system_version,
+        )
+
+
+def test_retention_component_recomputes_raw_observations(
+    tmp_path: Path,
+) -> None:
+    payload, report = _retention_evidence()
+    artifact_path = tmp_path / "retention.json"
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+    assurance = _retention_assurance(
+        path=str(artifact_path),
+        payload=payload,
+        report=report,
+    )
+
+    assert (
+        validate_retention_assurance_component(
+            assurance,
+            run_id="pytest-assurance:retention",
+            system_version="pytest-system",
+        )
+        == report
+    )
+    payload["observations"][0]["observed_ref"] = None
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="raw recomputation"):
+        validate_retention_assurance_component(
+            assurance,
+            run_id="pytest-assurance:retention",
+            system_version="pytest-system",
+        )
 
 
 def test_slack_proof_semantics_are_explicit_and_noncompensatory() -> None:

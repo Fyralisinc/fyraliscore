@@ -50,6 +50,10 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert "variant=24/24" in result.stdout
     assert "collision=16/16" in result.stdout
     assert "lifecycle=8/8" in result.stdout
+    assert "active_identity=4/4" in result.stdout
+    assert "active_salience=5/5" in result.stdout
+    assert "retention=9/9" in result.stdout
+    assert "forgetting=0.0" in result.stdout
     assert "slack_status=observed" in result.stdout
     assert "correction_status=working" in result.stdout
 
@@ -161,6 +165,25 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
         summary.customer_lifecycle.alias_interval_non_overlap_rate.point_estimate == 1.0
     )
     assert summary.customer_lifecycle.full_scope_complete is True
+    assert summary.active_surfaces.status == "observed"
+    assert (
+        summary.active_surfaces.structured_identity.observed_case_count == 4
+    )
+    assert (
+        summary.active_surfaces.structured_identity.violating_case_count == 0
+    )
+    assert summary.active_surfaces.source_salience.observed_case_count == 5
+    assert summary.active_surfaces.source_salience.violating_case_count == 0
+    assert summary.active_surfaces.full_scope_complete is True
+    assert summary.retention.status == "observed"
+    assert summary.retention.observed_observation_count == 9
+    assert summary.retention.expected_observation_count == 9
+    assert summary.retention.overall_positive_retention_rate == 1.0
+    assert summary.retention.overall_forgetting_rate == 0.0
+    assert summary.retention.restart_survival_rate == 1.0
+    assert summary.retention.source_immutability_rate == 1.0
+    assert summary.retention.hard_safety_incident_rate == 0.0
+    assert summary.retention.full_scope_complete is True
     assert not any(
         "Slack reconstruction remains diagnostic and non-blocking" in gap
         for gap in summary.proof_gaps
@@ -215,6 +238,16 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
             encoding="utf-8"
         )
     )
+    active_surfaces = json.loads(
+        Path(summary.artifact_paths["active_surfaces_evidence"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    retention = json.loads(
+        Path(summary.artifact_paths["retention_evidence"]).read_text(
+            encoding="utf-8"
+        )
+    )
     assert (
         positive_pair["report"]["metrics"]["adaptive_minus_frozen_correctness"]
         == summary.positive.adaptive_minus_frozen_correctness
@@ -240,6 +273,14 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert customer_lifecycle["report"]["observed_case_count"] == 8
     assert customer_lifecycle["report"]["violating_case_count"] == 0
     assert customer_lifecycle["report"]["status"] == "observed"
+    assert active_surfaces["report"]["structured_identity"][
+        "observed_case_count"
+    ] == 4
+    assert active_surfaces["report"]["source_salience"][
+        "observed_case_count"
+    ] == 5
+    assert retention["report"]["observed_observation_count"] == 9
+    assert retention["report"]["overall_forgetting_rate"] == 0.0
 
     persisted_summary_path = output_dir / "positive" / "vitals" / SUMMARY_ARTIFACT_NAME
     persisted_payload = json.loads(persisted_summary_path.read_text(encoding="utf-8"))
@@ -277,6 +318,14 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert assurance["customer_lifecycle"]["case_count"] == 8
     assert assurance["customer_lifecycle"]["observed_case_count"] == 8
     assert assurance["customer_lifecycle"]["violating_case_count"] == 0
+    assert assurance["active_surfaces"]["structured_identity"][
+        "observed_case_count"
+    ] == 4
+    assert assurance["active_surfaces"]["source_salience"][
+        "observed_case_count"
+    ] == 5
+    assert assurance["retention"]["observed_observation_count"] == 9
+    assert assurance["retention"]["overall_forgetting_rate"] == 0.0
 
 
 async def _run_cli(

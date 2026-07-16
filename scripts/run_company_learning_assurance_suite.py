@@ -20,12 +20,14 @@ import asyncpg
 from lib.architecture_registry import load_architecture_registry
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_assurance import (
+    ActiveSurfacesAssurance,
     CompanyLearningAssuranceSummary,
     CorrectionAssurance,
     CustomerLifecycleAssurance,
     NegativeAssurance,
     PopulationAssurance,
     PositiveAssurance,
+    RetentionAssurance,
     SlackAssurance,
     VariantCollisionAssurance,
     VariantPopulationAssurance,
@@ -45,6 +47,12 @@ from scripts.observe_slack_reconstruction_gold import (
 )
 from scripts.run_company_learning_negative_controls_db import (
     ARTIFACT_NAME as NEGATIVE_ARTIFACT_NAME,
+)
+from scripts.run_company_learning_active_surfaces_db import (
+    ARTIFACT_NAME as ACTIVE_SURFACES_ARTIFACT_NAME,
+)
+from scripts.run_company_learning_active_surfaces_db import (
+    run_active_surfaces_experiment,
 )
 from scripts.run_company_learning_negative_controls_db import (
     run_negative_control_experiment_db,
@@ -69,6 +77,12 @@ from scripts.run_company_learning_variant_collisions_db import (
 )
 from scripts.run_company_learning_customer_lifecycle_db import (
     ARTIFACT_NAME as CUSTOMER_LIFECYCLE_ARTIFACT_NAME,
+)
+from scripts.run_company_learning_retention_db import (
+    ARTIFACT_NAME as RETENTION_ARTIFACT_NAME,
+)
+from scripts.run_company_learning_retention_db import (
+    run_company_learning_retention_experiment,
 )
 from scripts.run_company_learning_customer_lifecycle_db import (
     run_customer_lifecycle_experiment,
@@ -111,6 +125,8 @@ async def run_company_learning_assurance_suite(
     variant_dir = output_dir / "variant"
     collision_dir = output_dir / "collision"
     lifecycle_dir = output_dir / "customer-lifecycle"
+    active_surfaces_dir = output_dir / "active-surfaces"
+    retention_dir = output_dir / "retention"
     slack_dir = output_dir / "slack"
     correction_dir = output_dir / "correction"
 
@@ -178,6 +194,19 @@ async def run_company_learning_assurance_suite(
             run_id=f"{run_id}:customer-lifecycle",
             system_version=system_version,
         )
+        active_surfaces_evidence = await run_active_surfaces_experiment(
+            pool=negative_pool,
+            output_dir=active_surfaces_dir,
+            run_id=f"{run_id}:active-surfaces",
+            system_version=system_version,
+        )
+        retention_report = await run_company_learning_retention_experiment(
+            pool=negative_pool,
+            output_dir=retention_dir,
+            run_id=f"{run_id}:retention",
+            system_version=system_version,
+            llm_call_cost_usd=llm_call_cost_usd,
+        )
     finally:
         await negative_pool.close()
     negative_path = negative_dir / NEGATIVE_ARTIFACT_NAME
@@ -185,6 +214,8 @@ async def run_company_learning_assurance_suite(
     variant_population_path = variant_dir / VARIANT_POPULATION_ARTIFACT_NAME
     variant_collision_path = collision_dir / VARIANT_COLLISION_ARTIFACT_NAME
     customer_lifecycle_path = lifecycle_dir / CUSTOMER_LIFECYCLE_ARTIFACT_NAME
+    active_surfaces_path = active_surfaces_dir / ACTIVE_SURFACES_ARTIFACT_NAME
+    retention_path = retention_dir / RETENTION_ARTIFACT_NAME
     correction_artifact = await run_company_learning_correction_harness(
         database_url=database_url,
         output_dir=correction_dir,
@@ -234,6 +265,8 @@ async def run_company_learning_assurance_suite(
         "variant_population_evidence": str(variant_population_path.resolve()),
         "variant_collision_evidence": str(variant_collision_path.resolve()),
         "customer_lifecycle_evidence": str(customer_lifecycle_path.resolve()),
+        "active_surfaces_evidence": str(active_surfaces_path.resolve()),
+        "retention_evidence": str(retention_path.resolve()),
         "correction_evidence": str(correction_path.resolve()),
         "slack_observations": str(slack_observations_path.resolve()),
         "slack_report": str(slack_report_path.resolve()),
@@ -275,6 +308,11 @@ async def run_company_learning_assurance_suite(
     customer_lifecycle_failures = _customer_lifecycle_failures(
         customer_lifecycle_evidence
     )
+    active_surfaces_report = active_surfaces_evidence.report
+    active_surfaces_failures = _active_surfaces_failures(
+        active_surfaces_report
+    )
+    retention_failures = _retention_failures(retention_report)
     blocking_failures = tuple(
         dict.fromkeys(
             (
@@ -301,6 +339,8 @@ async def run_company_learning_assurance_suite(
                 *variant_failures,
                 *variant_collision_failures,
                 *customer_lifecycle_failures,
+                *active_surfaces_failures,
+                *retention_failures,
                 *(
                     f"correction incident: {incident}"
                     for incident in correction_artifact.incidents
@@ -366,6 +406,33 @@ async def run_company_learning_assurance_suite(
             ]
         ),
     }
+    active_surfaces_digests = {
+        "evidence": active_surfaces_evidence.digest,
+        "report": active_surfaces_report.digest,
+        "structured_identity_report": (
+            active_surfaces_report.structured_identity.digest
+        ),
+        "source_salience_report": active_surfaces_report.source_salience.digest,
+        "identity_observations": canonical_sha256(
+            [
+                row.model_dump(mode="json")
+                for row in active_surfaces_evidence.identity_observations
+            ]
+        ),
+        "salience_observations": canonical_sha256(
+            [
+                row.model_dump(mode="json")
+                for row in active_surfaces_evidence.salience_observations
+            ]
+        ),
+    }
+    retention_payload = _read_json(retention_path)
+    retention_digests = {
+        "artifact": canonical_sha256(retention_payload),
+        "spec": str(retention_report.spec_digest),
+        "report": retention_report.digest,
+        "observations": retention_report.observation_digest,
+    }
     slack_digests = {
         "report": slack_report.digest,
         "gold_manifest": slack_report.gold_manifest_digest,
@@ -417,14 +484,55 @@ async def run_company_learning_assurance_suite(
                     "split, replacement and resurrection remain unproven."
                 ),
                 (
-                    "source_identity: SourceIdentityBinding rebind and "
-                    "revocation lifecycle remains unproven."
+                    "source_identity_lifecycle: old observation attachments "
+                    "remain storage-exact after rebind/revocation, while "
+                    "operational reads stale-fence them; this does not prove "
+                    "historical attachment replay as current authority."
                 ),
                 (
-                    "connectors: governed Jira and Linear project/team identity "
-                    "claims now traverse production ingestion; equivalent "
-                    "email, document, meeting and remaining connector behavior "
-                    "remains unproven."
+                    "source_identity_lifecycle: overlap prevention is proven "
+                    "through the repository guard; direct SQL writers, "
+                    "database-native exclusion, and caller-owned transaction "
+                    "atomicity remain explicit boundaries."
+                ),
+                (
+                    "connectors: governed Jira, Linear, Google Drive and Gmail "
+                    "identity claims traverse production ingestion; meetings, "
+                    "remaining connectors, and full cross-source causal "
+                    "equivalence remain unproven."
+                ),
+                (
+                    "retention: worker restarts are object re-instantiation "
+                    "inside one database process, not operating-system or "
+                    "database failover."
+                ),
+                (
+                    "retention: intervening learning directly exercises the "
+                    "alias registry and does not yet reproduce every "
+                    "production learning pathway."
+                ),
+                (
+                    "retention: Model consistency is only a cardinality and ID "
+                    "round trip; it does not validate proposition semantics, "
+                    "lifecycle, referent, or projections. Lineage consistency "
+                    "only proves observation, answered clarification, and "
+                    "adjudicated alias rows exist; it does not prove complete "
+                    "linkage, digest continuity, or correction propagation."
+                ),
+                (
+                    "retention: corrected retention reuses the final exact-alias "
+                    "recurrence and validates the original clarification-learned "
+                    "replay authority; it does not execute a second correction "
+                    "that replaces a previously learned wrong target."
+                ),
+                (
+                    "retention: three representative collision families are "
+                    "exercised; five sealed collision families remain deferred."
+                ),
+                (
+                    "retention: tenant noninterference is inherited from the "
+                    "adaptive runtime path and is not independently measured "
+                    "across every retention horizon."
                 ),
                 *(
                     (
@@ -732,6 +840,67 @@ async def run_company_learning_assurance_suite(
             },
             component_digests=customer_lifecycle_digests,
         ),
+        active_surfaces=ActiveSurfacesAssurance(
+            status=(
+                "observed"
+                if active_surfaces_report.status == "observed"
+                else "failed"
+            ),
+            evidence_tier=EvidenceTier.E4,
+            structured_identity=active_surfaces_report.structured_identity,
+            source_salience=active_surfaces_report.source_salience,
+            artifact_paths={
+                "active_surfaces_evidence": artifact_paths[
+                    "active_surfaces_evidence"
+                ]
+            },
+            component_digests=active_surfaces_digests,
+        ),
+        retention=RetentionAssurance(
+            status=(
+                "failed"
+                if retention_report.status == "contradicted"
+                else retention_report.status
+            ),
+            evidence_tier=EvidenceTier.E4,
+            expected_observation_count=(
+                retention_report.expected_observation_count
+            ),
+            observed_observation_count=(
+                retention_report.observed_observation_count
+            ),
+            exact_retention_rate=retention_report.exact_retention_rate,
+            variant_retention_rate=retention_report.variant_retention_rate,
+            corrected_retention_rate=retention_report.corrected_retention_rate,
+            overall_positive_retention_rate=(
+                retention_report.overall_positive_retention_rate
+            ),
+            overall_forgetting_rate=retention_report.overall_forgetting_rate,
+            restart_survival_rate=retention_report.restart_survival_rate,
+            correction_authority_rate=retention_report.correction_authority_rate,
+            unsafe_globalization_rate=retention_report.unsafe_globalization_rate,
+            negative_control_safety_rate=(
+                retention_report.negative_control_safety_rate
+            ),
+            collision_control_safety_rate=(
+                retention_report.collision_control_safety_rate
+            ),
+            source_immutability_rate=retention_report.source_immutability_rate,
+            model_consistency_rate=retention_report.model_consistency_rate,
+            evidence_lineage_consistency_rate=(
+                retention_report.evidence_lineage_consistency_rate
+            ),
+            hard_safety_incident_rate=(
+                retention_report.hard_safety_incident_rate
+            ),
+            retention_horizon_auc=retention_report.retention_horizon_auc,
+            horizon_metrics=retention_report.horizon_metrics,
+            family_counts=retention_report.family_counts,
+            artifact_paths={
+                "retention_evidence": artifact_paths["retention_evidence"]
+            },
+            component_digests=retention_digests,
+        ),
         population=PopulationAssurance(
             status=(
                 "observed_with_gaps"
@@ -794,6 +963,14 @@ async def run_company_learning_assurance_suite(
             **{
                 f"customer_lifecycle_{key}": value
                 for key, value in customer_lifecycle_digests.items()
+            },
+            **{
+                f"active_surfaces_{key}": value
+                for key, value in active_surfaces_digests.items()
+            },
+            **{
+                f"retention_{key}": value
+                for key, value in retention_digests.items()
             },
             **{f"correction_{key}": value for key, value in correction_digests.items()},
         },
@@ -998,6 +1175,137 @@ def _customer_lifecycle_failures(evidence: Any) -> tuple[str, ...]:
     return tuple(failures)
 
 
+def _active_surfaces_failures(report: Any) -> tuple[str, ...]:
+    failures: list[str] = []
+    for name, surface in (
+        ("structured identity", report.structured_identity),
+        ("source salience", report.source_salience),
+    ):
+        if surface.status != "observed":
+            failures.append(f"active surfaces: {name} status={surface.status}")
+        if surface.unsupported_case_count:
+            failures.append(
+                f"active surfaces: {name} has "
+                f"{surface.unsupported_case_count} unsupported cases"
+            )
+        if surface.violating_case_count:
+            failures.append(
+                f"active surfaces: {name} has "
+                f"{surface.violating_case_count} violating cases"
+            )
+    identity = report.structured_identity
+    salience = report.source_salience
+    metrics = {
+        "identity runtime support": identity.runtime_support_rate.point_estimate,
+        "claim emission": identity.claim_emission_rate.point_estimate,
+        "claim preservation": identity.claim_preservation_rate.point_estimate,
+        "governed attachment": identity.governed_attachment_rate.point_estimate,
+        "handler non-authority": identity.handler_non_authority_rate.point_estimate,
+        "ingest non-authority": identity.ingest_non_authority_rate.point_estimate,
+        "forged text rejection": identity.forged_text_rejection_rate.point_estimate,
+        "missing binding non-authority": (
+            identity.missing_binding_non_authority_rate.point_estimate
+        ),
+        "cross-source isolation": identity.cross_source_isolation_rate.point_estimate,
+        "cross-tenant isolation": identity.cross_tenant_isolation_rate.point_estimate,
+        "source immutability": identity.source_immutability_rate.point_estimate,
+        "salience runtime support": salience.runtime_support_rate.point_estimate,
+        "useful salience increase": (
+            salience.useful_salience_increase_rate.point_estimate
+        ),
+        "corrected nonincrease": salience.corrected_nonincrease_rate.point_estimate,
+        "pending zero credit": salience.pending_zero_credit_rate.point_estimate,
+        "foreign tenant isolation": (
+            salience.foreign_tenant_isolation_rate.point_estimate
+        ),
+        "canonical truth immutability": (
+            salience.canonical_truth_immutability_rate.point_estimate
+        ),
+        "grounding truth immutability": (
+            salience.grounding_truth_immutability_rate.point_estimate
+        ),
+        "salience direction": salience.salience_direction_rate.point_estimate,
+    }
+    failures.extend(
+        f"active surfaces: {name} regressed to {value:.6f}"
+        for name, value in metrics.items()
+        if value != 1.0
+    )
+    return tuple(failures)
+
+
+def _retention_failures(report: Any) -> tuple[str, ...]:
+    expected = {
+        "exact retention": (report.exact_retention_rate, 1.0),
+        "variant retention": (report.variant_retention_rate, 1.0),
+        "corrected retention": (report.corrected_retention_rate, 1.0),
+        "overall positive retention": (
+            report.overall_positive_retention_rate,
+            1.0,
+        ),
+        "overall forgetting": (report.overall_forgetting_rate, 0.0),
+        "restart survival": (report.restart_survival_rate, 1.0),
+        "correction authority": (report.correction_authority_rate, 1.0),
+        "unsafe globalization": (report.unsafe_globalization_rate, 0.0),
+        "negative control safety": (
+            report.negative_control_safety_rate,
+            1.0,
+        ),
+        "collision control safety": (
+            report.collision_control_safety_rate,
+            1.0,
+        ),
+        "source immutability": (report.source_immutability_rate, 1.0),
+        "model consistency": (report.model_consistency_rate, 1.0),
+        "evidence lineage consistency": (
+            report.evidence_lineage_consistency_rate,
+            1.0,
+        ),
+        "hard safety incident rate": (
+            report.hard_safety_incident_rate,
+            0.0,
+        ),
+        "retention horizon AUC": (report.retention_horizon_auc, 1.0),
+    }
+    failures: list[str] = []
+    if report.status != "observed":
+        failures.append(f"retention: status={report.status}")
+    if report.expected_observation_count != report.observed_observation_count:
+        failures.append(
+            "retention: raw observation coverage "
+            f"{report.observed_observation_count}/"
+            f"{report.expected_observation_count}"
+        )
+    failures.extend(
+        f"retention: {name}={value:.6f}, expected {target:.1f}"
+        for name, (value, target) in expected.items()
+        if value != target
+    )
+    for horizon in report.horizon_metrics:
+        prefix = (
+            f"retention: horizon cycles={horizon.cycle_count} "
+            f"restarts={horizon.restart_count}"
+        )
+        for name, value, target in (
+            ("positive retention", horizon.positive_retention_rate, 1.0),
+            ("forgetting", horizon.forgetting_rate, 0.0),
+            ("negative safety", horizon.negative_safety_rate, 1.0),
+            ("collision safety", horizon.collision_safety_rate, 1.0),
+            ("source immutability", horizon.source_immutability_rate, 1.0),
+            ("model consistency", horizon.model_consistency_rate, 1.0),
+            (
+                "evidence lineage consistency",
+                horizon.evidence_lineage_consistency_rate,
+                1.0,
+            ),
+        ):
+            if value is not None and value != target:
+                failures.append(
+                    f"{prefix} {name}={value:.6f}, expected {target:.1f}"
+                )
+    return tuple(failures)
+
+
 def _variant_exact_metric_failures(
     *,
     expected: float,
@@ -1066,6 +1374,10 @@ async def _run(args: argparse.Namespace) -> int:
         "variant={variant_observed}/{variant_registry} "
         "collision={collision_observed}/{collision_registry} "
         "lifecycle={lifecycle_observed}/{lifecycle_registry} "
+        "active_identity={identity_observed}/{identity_registry} "
+        "active_salience={salience_observed}/{salience_registry} "
+        "retention={retention_observed}/{retention_expected} "
+        "forgetting={forgetting} "
         "slack_status={slack} correction_status={correction}".format(
             status=summary.status,
             lift=summary.positive.adaptive_minus_frozen_correctness,
@@ -1087,6 +1399,17 @@ async def _run(args: argparse.Namespace) -> int:
             collision_registry=(summary.variant_collision.registry_pair_count),
             lifecycle_observed=(summary.customer_lifecycle.observed_case_count),
             lifecycle_registry=summary.customer_lifecycle.case_count,
+            identity_observed=(
+                summary.active_surfaces.structured_identity.observed_case_count
+            ),
+            identity_registry=summary.active_surfaces.structured_identity.case_count,
+            salience_observed=(
+                summary.active_surfaces.source_salience.observed_case_count
+            ),
+            salience_registry=summary.active_surfaces.source_salience.case_count,
+            retention_observed=summary.retention.observed_observation_count,
+            retention_expected=summary.retention.expected_observation_count,
+            forgetting=summary.retention.overall_forgetting_rate,
             slack=summary.slack.status,
             correction=summary.correction.status,
         )
@@ -1102,8 +1425,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         description=(
             "Run positive corrective-memory Vitals, negative safety controls, "
             "the sealed exact, variant and collision populations, Slack "
-            "reconstruction, customer identity lifecycle, and a recursive "
-            "correction convergence burn in one assurance command."
+            "reconstruction, customer identity lifecycle, active structured "
+            "identity and salience surfaces, retention across learning and "
+            "restart horizons, and a recursive correction convergence burn "
+            "in one assurance command."
         )
     )
     parser.add_argument("--database-url", default=None)
