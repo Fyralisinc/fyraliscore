@@ -151,18 +151,26 @@ class RetentionObservation(_RetentionModel):
     observed_safety_incidents: frozenset[HardSafetyIncidentClass] = frozenset()
     artifact_refs: tuple[str, ...] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def learning_count_matches_horizon(self) -> Self:
+        if self.intervening_learning_count != self.horizon.cycle_count:
+            raise ValueError(
+                "intervening learning count must equal the sealed cycle horizon"
+            )
+        return self
+
 
 class RetentionHorizonMetrics(_RetentionModel):
     cycle_count: int = Field(ge=0)
     restart_count: int = Field(ge=0)
     observed_count: int = Field(ge=0)
-    positive_retention_rate: float | None
-    forgetting_rate: float | None
-    negative_safety_rate: float | None
-    collision_safety_rate: float | None
-    source_immutability_rate: float
-    model_consistency_rate: float
-    evidence_lineage_consistency_rate: float
+    positive_retention_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    forgetting_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    negative_safety_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    collision_safety_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    source_immutability_rate: float = Field(ge=0.0, le=1.0)
+    model_consistency_rate: float = Field(ge=0.0, le=1.0)
+    evidence_lineage_consistency_rate: float = Field(ge=0.0, le=1.0)
 
 
 class CompanyLearningRetentionReport(_RetentionModel):
@@ -174,21 +182,21 @@ class CompanyLearningRetentionReport(_RetentionModel):
     observation_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_observation_count: int = Field(ge=0)
     observed_observation_count: int = Field(ge=0)
-    exact_retention_rate: float
-    variant_retention_rate: float
-    corrected_retention_rate: float
-    overall_positive_retention_rate: float
-    overall_forgetting_rate: float
-    restart_survival_rate: float
-    correction_authority_rate: float
-    unsafe_globalization_rate: float
-    negative_control_safety_rate: float
-    collision_control_safety_rate: float
-    source_immutability_rate: float
-    model_consistency_rate: float
-    evidence_lineage_consistency_rate: float
-    hard_safety_incident_rate: float
-    retention_horizon_auc: float
+    exact_retention_rate: float = Field(ge=0.0, le=1.0)
+    variant_retention_rate: float = Field(ge=0.0, le=1.0)
+    corrected_retention_rate: float = Field(ge=0.0, le=1.0)
+    overall_positive_retention_rate: float = Field(ge=0.0, le=1.0)
+    overall_forgetting_rate: float = Field(ge=0.0, le=1.0)
+    restart_survival_rate: float = Field(ge=0.0, le=1.0)
+    correction_authority_rate: float = Field(ge=0.0, le=1.0)
+    unsafe_globalization_rate: float = Field(ge=0.0, le=1.0)
+    negative_control_safety_rate: float = Field(ge=0.0, le=1.0)
+    collision_control_safety_rate: float = Field(ge=0.0, le=1.0)
+    source_immutability_rate: float = Field(ge=0.0, le=1.0)
+    model_consistency_rate: float = Field(ge=0.0, le=1.0)
+    evidence_lineage_consistency_rate: float = Field(ge=0.0, le=1.0)
+    hard_safety_incident_rate: float = Field(ge=0.0, le=1.0)
+    retention_horizon_auc: float = Field(ge=0.0, le=1.0)
     horizon_metrics: tuple[RetentionHorizonMetrics, ...]
     family_counts: dict[str, int]
     artifact_refs: tuple[str, ...] = Field(min_length=1)
@@ -269,7 +277,20 @@ def evaluate_company_learning_retention(
         if row.positive_retention_rate is not None
     )
     overall_retention = _rate(positive, "correct")
-    contradicted = bool(hard_incident_count or unsafe_globalization_count)
+    consistency_failure = any(
+        not bool(row[key])
+        for row in assessments
+        for key in (
+            "source_immutable",
+            "models_consistent",
+            "evidence_lineage_consistent",
+        )
+    )
+    contradicted = bool(
+        hard_incident_count
+        or unsafe_globalization_count
+        or consistency_failure
+    )
     degraded = any(not bool(row["correct"]) for row in assessments)
     status: Literal["observed", "observed_with_degradation", "contradicted"] = (
         "contradicted"

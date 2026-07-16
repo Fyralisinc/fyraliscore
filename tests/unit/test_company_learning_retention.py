@@ -13,6 +13,7 @@ from lib.evaluation.company_learning_retention import (
     RetentionBehavior,
     RetentionCaseSpec,
     RetentionHorizon,
+    RetentionHorizonMetrics,
     RetentionObservation,
     RetentionRunSpec,
     evaluate_company_learning_retention,
@@ -115,6 +116,58 @@ def test_retention_report_rejects_survivor_only_observations() -> None:
             spec=spec,
             observations=observations[:-1],
             artifact_refs=("pytest:missing-retention-row",),
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "source_observation_immutable",
+        "models_consistent",
+        "evidence_lineage_consistent",
+    ),
+)
+def test_consistency_failures_are_noncompensatory(field: str) -> None:
+    spec = _spec()
+    observations = list(_observations(spec))
+    observations[0] = observations[0].model_copy(update={field: False})
+
+    report = evaluate_company_learning_retention(
+        spec=spec,
+        observations=tuple(observations),
+        artifact_refs=("pytest:consistency-failure",),
+    )
+
+    assert report.status == "contradicted"
+
+
+def test_observation_rejects_learning_count_that_disagrees_with_horizon() -> None:
+    with pytest.raises(ValueError, match="sealed cycle horizon"):
+        RetentionObservation(
+            case_id="mismatched-cycle",
+            horizon=RetentionHorizon(cycle_count=4, restart_count=1),
+            intervening_learning_count=3,
+            consumer_fate=ConsumerTerminalFate.REVIEW,
+            source_observation_immutable=True,
+            models_consistent=True,
+            evidence_lineage_consistent=True,
+            artifact_refs=("pytest:mismatched-cycle",),
+        )
+
+
+def test_rate_fields_reject_values_outside_unit_interval() -> None:
+    with pytest.raises(ValueError):
+        RetentionHorizonMetrics(
+            cycle_count=4,
+            restart_count=1,
+            observed_count=1,
+            positive_retention_rate=1.01,
+            forgetting_rate=0.0,
+            negative_safety_rate=None,
+            collision_safety_rate=None,
+            source_immutability_rate=1.0,
+            model_consistency_rate=1.0,
+            evidence_lineage_consistency_rate=1.0,
         )
 
 
