@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `5ba59e42`
+**Current checkpoint:** `6c0a273a`
 
 **Last updated:** 2026-07-16
 
@@ -247,9 +247,11 @@ flowchart LR
 | Company-learning evaluator | Context, grounding and source-semantic state compile into one active-slice evaluation | Complete for measured slice |
 | Paired causal evaluator | Correctness is derived from sealed arm-specific gold and terminal consumer fate; incidents are noncompensatory | Complete for current case family |
 | Canonical proof integration | Experiment scenario and lift metric are registered under INV-05 and aggregated through canonical proof models | Complete |
-| Company Vitals | Validates and recomputes the typed experiment artifact, displays continuous metrics and keeps it non-scoring | Complete |
-| Negative/adversarial recurrence families | Contextual, conflict, homonym, unrelated and unseen-spelling cases | Not implemented |
-| Broad correction propagation | Repair every dependent Model, relation, edge and projection after a corrected identity | Partial |
+| Company Vitals | Reopens and validates positive, negative, population and Slack artifacts; enforces noncompensatory safety; displays the combined assurance without score inflation | Complete for current assurance surfaces |
+| Negative/adversarial recurrence families | Contextual phrase, source conflict, homonym and unrelated controls run on real Postgres with zero incidents | Complete for four sealed controls |
+| Held-out recurrence population | The sealed 60-case registry executes exactly once with continuous intervals and no selective reruns | Complete accounting; runtime support is 15/60 |
+| Slack conversational reconstruction | All nine target families are sealed; six are supported and correct, three are explicit unsupported gaps | Partial: 6/9 |
+| Broad correction propagation | Wrong Models, dependents, relation frames, relation-edge projections and projection snapshots are fenced or retired; correction-specific T4 archives or explicitly unfences | Complete for the seeded direct cascade |
 | Cross-source company physics | Equivalent learning behavior across Jira, email, documents and other sources | Partial / unproven |
 | Long-duration autonomous learning | Drift, retention, rollback and regression behavior across many learning cycles | Not proven |
 
@@ -270,6 +272,13 @@ flowchart LR
 | `7527a34d` | Moved entity adjudication from the gateway into the domain |
 | `5f04dbf8` | Added sealed paired evidence and canonical proof integration |
 | `5ba59e42` | Added isolated real-Postgres corrective-memory experiment |
+| `3337c9b2` | Extended fail-closed correction repair to relations, projections and correction-specific T4 convergence |
+| `31eb46fd` | Sealed all nine Slack reconstruction families and fixed long-range contamination |
+| `7738487d` | Added the real-Postgres 60-case held-out population runner |
+| `e81419cd` | Proved correction end-state convergence on real Postgres |
+| `5cc358e6` | Normalized canonical entity candidate identity across implicit/explicit version one |
+| `11248d5a` | Integrated digest-verified, noncompensatory combined assurance into Company Vitals |
+| `6c0a273a` | Aligned the assurance report with the real-Postgres correction convergence proof boundary |
 
 ## Current Validation Evidence
 
@@ -299,17 +308,69 @@ forcing every resolved signal to become a belief.
 
 ### Focused validation
 
-- paired harness real-Postgres tests: `2 passed`;
-- full entity-resolver test directory: `37 passed`;
-- evaluator, Company Vitals, domain adjudication, router and boundary tests:
-  `47 passed`;
-- paired evaluator and Company Vitals focused suite: `32 passed`;
+- trusted combined assurance CLI integration: `1 passed in 19.40s`;
+- final combined assurance command: exit `0`, status `working`, no blocking
+  failures;
+- focused evaluator, Vitals, Slack, grounding and correction unit suite:
+  `67 passed`;
+- correction end-state real-Postgres integration: `1 passed`;
+- 60-case held-out population real-Postgres execution: exit `0`;
 - import-linter: 7 contracts kept, 0 broken;
 - architecture ratchets: passed;
 - production environment contract: passed;
 - changed-file Ruff and Python compilation: passed;
-- typed artifact from the CLI smoke run was accepted and recomputed by the
-  Company Vitals validator.
+- every combined-assurance component is reopened, identity-checked,
+  digest-recomputed and cross-bound before Company Vitals accepts it.
+
+### Held-out population
+
+The sealed registry contains 60 cases and was executed once without selective
+reruns:
+
+- 60 selected and assigned cases;
+- 120 unique fresh tenants;
+- 15 measured customer pairs;
+- 45 explicitly unsupported cases: 15 project, 15 team and 15 system;
+- adaptive correctness: `1.0`, Wilson 95% interval `[0.7961, 1.0]`;
+- frozen correctness: `0.0`, Wilson 95% interval `[0.0, 0.2039]`;
+- paired correctness lift: `1.0`, bootstrap interval `[1.0, 1.0]`;
+- adaptive and frozen observed unsafe rate: `0.0`;
+- mean LLM calls avoided: `1.0`.
+
+The statistical result applies to the 15 runtime-supported customer pairs. It
+does not turn the 45 unsupported entity-type cases into successful executions.
+
+### Slack reconstruction
+
+All nine intended Slack boundary families are now sealed:
+
+- supported and correct: thread root/replies, edit revision, long-range
+  recurrence, high-similarity abstention, cross-thread dependency and
+  pronoun/coreference;
+- explicitly unsupported: deletion/tombstone, reaction evidence and
+  cross-channel dependency;
+- correct and supported: `6/9`;
+- selected-context precision: `1.0`;
+- contamination: `0.0`;
+- topology recall: `1.0`;
+- long-range recall: `1.0`;
+- budget adherence: `1.0`;
+- sufficient-set recall: `0.8333`.
+
+### Correction convergence
+
+The real-Postgres correction proof now verifies that:
+
+- the predecessor-admitted wrong Model becomes `archived/superseded`;
+- direct dependents are immediately hidden;
+- contaminated relation frames and relation-edge projections are retired;
+- contaminated projection snapshots and dependencies are removed;
+- exactly one durable projection refresh and one correction-specific Model
+  re-evaluation remain queued;
+- T4 archives a dependent after its last positive support disappears rather
+  than applying a confidence nudge;
+- replay is idempotent;
+- source observations and another tenant remain unchanged.
 
 ### Known validation caveat
 
@@ -322,9 +383,10 @@ do not resolve the repository-wide debt budget.
 
 The current system proves one narrow but real causal statement:
 
-> For the sealed exact-alias Slack recurrence population, authorized corrective
-> memory causes correct later entity resolution and avoids resolver-model calls,
-> while the matched frozen system safely abstains.
+> For the 15 runtime-supported customer cases in the sealed exact-alias Slack
+> population, authorized corrective memory causes correct later entity
+> resolution and avoids resolver-model calls, while the matched frozen system
+> safely abstains.
 
 It also proves:
 
@@ -336,20 +398,24 @@ It also proves:
 - identity correctness and semantic belief admission are separately evaluated;
 - typed evidence can be validated, recomputed and integrated into canonical
   invariant proof.
+- direct correction can converge through Models, relations and projections
+  without mutating source truth or another tenant.
 
 ## What the Current Evidence Does Not Prove
 
 It does not yet prove:
 
 - performance on unseen alias spellings;
-- broad contextual references, pronouns or local nicknames beyond the sealed
-  cases;
+- broad contextual references, descriptions or local nicknames beyond the
+  sealed cases;
 - broad conflicting-evidence and homonym populations beyond one case each;
 - open-world Slack reconstruction across long time spans and channels;
-- statistical confidence from a large held-out population;
+- exact-alias corrective-memory support for project, team and system entities;
+- Slack deletion/tombstone, reaction and cross-channel reconstruction;
 - real-provider/model robustness;
 - equivalent behavior across Jira, email, documents and meetings;
-- complete downstream repair after an identity correction;
+- large recursive correction cascades and operational completion of queued
+  projection refresh work;
 - long-term retention without catastrophic overgeneralization;
 - customer value or E5 production benefit.
 
@@ -366,9 +432,9 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias Slack clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared |
-| Active autonomous company-learning runtime | 65–70% | Positive and negative learning loops, bounded Slack reconstruction and direct correction fencing work; breadth and convergence remain |
-| Customer-free objective substantiation | 45–50% | Positive, negative, Slack and direct-correction slices are measured, but the 60-case runtime population and open-world proof remain |
-| Broader revised system excluding task autonomy | 55–60% | Core substrate, learning loop and proof path are substantial, but multi-source breadth and full correction convergence remain partial |
+| Active autonomous company-learning runtime | 72–76% | Positive and negative loops, trusted reporting, six Slack families and direct correction convergence work; non-customer entity reuse and multi-source breadth remain |
+| Customer-free objective substantiation | 60–65% | The 60-case registry, nine-family Slack gold, negative controls and correction convergence are measured; 45/60 entity cases and 3/9 Slack families remain unsupported |
+| Broader revised system excluding task autonomy | 62–67% | The core company-memory and autonomous correction loop is substantial, but entity/source breadth, retention and open-world validation remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
@@ -399,13 +465,11 @@ Task autonomy is excluded from all percentages.
    - Long-range temporal context.
    - Sufficient-context and contamination gold.
    - Boundaryless episode reconstruction rather than fixed windows.
-   - Current result: the first four-case existing-surface gold run is `3/4`
-     correct. Required-context recall, topology recall, edit/revision
-     correctness and insufficient-context abstention are `1.0`;
-     selected-context precision is `0.8889`, contamination is `0.1111` and
-     budget adherence is `0.75`. Long-range competing temporal alternatives
-     remain the failing case. Deletion, reactions and cross-channel structure
-     are not yet sealed.
+   - Current result: all nine families are sealed. Six are supported and
+     correct. Precision, contamination avoidance, topology, long-range recall,
+     budget adherence and safe abstention are `1.0`; sufficient-set recall is
+     `0.8333`. Deletion/tombstone, reactions and cross-channel dependency are
+     explicit unsupported results.
 
 4. **Complete correction propagation**
    - Identify every accepted Model, relation, edge and projection that depended
@@ -413,20 +477,20 @@ Task autonomy is excluded from all percentages.
    - Fence unsafe reads immediately.
    - Recompute or supersede all affected derived state.
    - Measure convergence time and residual correction debt.
-   - Current result: direct production fencing is implemented and
-     real-Postgres proven. The predecessor-admitted wrong Model is archived,
-     direct dependents become unreadable, one `grounding_corrected`
-     re-evaluation is queued, replay is idempotent, source stays immutable and
-     another tenant is untouched. Relation/projection fencing, recursive fanout
-     and async archive-or-unfence convergence remain.
+   - Current result: the seeded real-Postgres cascade now includes wrong-Model
+     archival, dependent hiding, relation and relation-edge retirement,
+     projection snapshot/dependency removal, durable refresh enqueue and
+     correction-specific T4 archive convergence. Recursive multi-hop fanout,
+     large-cascade latency and operational refresh-job completion remain.
 
 5. **Scale the held-out population**
    - Generate enough independent matched pairs for uncertainty intervals.
    - Stratify by source, ambiguity, entity type, context length and consequence.
    - Preserve every pair and prevent selective rerun reporting.
-   - Current result: a deterministic 60-case exact-alias Slack population,
-     complete registry checks and Wilson/paired-bootstrap intervals exist.
-     Runtime execution over all 60 cases is still pending.
+   - Current result: all 60 cases execute with exact accounting. Fifteen
+     customer cases are measured and pass; 45 project/team/system cases are
+     explicitly unsupported. The next task is runtime breadth, not another
+     selective rerun.
 
 ### P1 — Required for a strong multi-source product
 
@@ -456,10 +520,10 @@ Task autonomy is excluded from all percentages.
 ## Working Version Runbook
 
 The primary runnable working version now executes the positive adaptive/frozen
-learning loop, the real-Postgres negative-control population and the current
-Slack reconstruction gold through one command. It preserves the positive
-Company Vitals report as a component and writes one digest-sealed assurance
-summary across all three surfaces.
+learning loop, real-Postgres negative controls, the sealed 60-case population
+and the nine-family Slack reconstruction gold through one command. It writes
+one digest-sealed assurance summary, reopens every component and embeds the
+validated result into Company Vitals without adding a score.
 
 ### Prerequisite and command
 
@@ -485,8 +549,10 @@ The output directory contains:
 - `positive/company_learning_scenario_evidence.json`;
 - `positive/vitals/company_learning_evaluation.json`;
 - `positive/vitals/company_learning_evidence_bundle.json`;
+- `positive/vitals/company_learning_assurance_summary.json`;
 - `positive/vitals/vitals_scorecard.json`;
 - `negative/company_learning_negative_controls_evidence.json`;
+- `population/company_learning_population_evidence.json`;
 - `slack/slack_reconstruction_observations.jsonl`;
 - `slack/slack_reconstruction_existing_surface_report.json`.
 
@@ -496,12 +562,14 @@ A successful run:
 
 - exits with status `0`;
 - prints the summary path, working status, positive adaptive lift, negative
-  incident count and Slack status;
-- validates and independently recomputes the positive and negative typed
-  recurrence experiments;
+  incident count, held-out coverage and Slack status;
+- validates and independently recomputes the positive, negative and held-out
+  population results;
 - joins real-database E3 runtime evidence with the paired E4 recurrence evidence
   in the positive Company Vitals component;
 - preserves all detected hard-safety incidents rather than averaging them away;
+- rejects recomputed outer summaries whose safety state, component digests,
+  run identity or population accounting contradict the underlying artifacts;
 - fails on a positive hard failure, a missing required artifact or any negative
   safety incident;
 - keeps incomplete Slack breadth diagnostic and non-blocking while exposing all
@@ -512,12 +580,12 @@ A successful run:
 ### Proof boundary
 
 This working version proves a real-Postgres exact tenant-global learning slice,
-four matched negative controls, a four-case in-process Slack reconstruction
-slice and a separately real-Postgres-proven direct correction fence. The joined
-E3/E4 evidence remains insufficient for broad invariant closure. It is not
-open-world or customer E5 evidence, does not prove multi-source learning, does
-not execute the sealed 60-case population, and does not include autonomous task
-execution.
+four matched negative controls, 15 measured customer pairs inside an exactly
+accounted 60-case population, six supported Slack reconstruction families and a
+real-Postgres correction cascade across Models, relations and projections. The
+joined E3/E4 evidence remains insufficient for broad invariant closure. It is
+not open-world or customer E5 evidence, does not prove non-customer or
+multi-source learning, and does not include autonomous task execution.
 
 The implementation assumes reuse of the existing SAGE learner, retrieval
 machinery, Model/event writers, projection runtime, grounding protocols and
@@ -535,11 +603,11 @@ not claimed by this working version.
 
 ### Explicitly deferred production hardening
 
-- runtime execution of the sealed 60-case population;
+- corrective-memory target support for project, team and system entities;
 - unseen spellings, abbreviations and larger homonym/conflict populations;
 - open-world simulation, real-provider runs and customer E5 validation;
-- relation/projection correction fencing and async convergence;
-- long-range temporal disambiguation and the five unsealed Slack families;
+- large recursive correction cascades and operational refresh-job completion;
+- Slack deletion/tombstone, reaction evidence and cross-channel dependencies;
 - cross-source equivalence;
 - load, restart, outage, durability and evidence-attestation testing;
 - cryptographic binding between the experiment artifact and the exact
@@ -547,18 +615,16 @@ not claimed by this working version.
 
 ## Next Execution Sequence
 
-1. Execute the deterministic 60-case held-out population after the reusable
-   recurrence executor is generalized.
-2. Fix the remaining long-range temporal-alternative Slack case and then seal
-   deletion, reactions, cross-thread, cross-channel and pronoun/coreference
-   families.
-3. Extend correction propagation to relations, projections, recursive fanout
-   and explicit archive-or-unfence convergence.
-4. Integrate the combined assurance summary into the reader-facing Company
-   Vitals report without scoring diagnostic evidence.
-5. Add variant-alias populations and retention/forgetting regression.
-6. Repeat the causal suite across structured sources.
-7. Reassess progress and reprioritize from the combined report.
+1. Generalize the corrective-memory target runtime to project, team and system,
+   then rerun the same sealed 60-case registry.
+2. Implement Slack deletion/tombstone, reaction evidence and cross-channel
+   dependency reconstruction against the existing sealed gold.
+3. Prove recursive multi-hop correction fanout and actual consumption of queued
+   projection refresh work.
+4. Add unseen spelling, abbreviation and variant-alias populations.
+5. Add retention, forgetting and old-family regression evaluation.
+6. Repeat the causal suite across Jira, email and document sources.
+7. Reassess progress from the same combined Company Vitals assurance report.
 
 ## Progress Ledger
 
@@ -638,3 +704,22 @@ not claimed by this working version.
 - Added one assurance command and digest-sealed summary combining positive
   Company Vitals, negative safety controls and Slack reconstruction. The final
   run is `working` with no blocking failures.
+
+### 2026-07-16 — Trusted breadth and correction convergence
+
+- Executed the sealed 60-case registry once: 15 customer pairs measured, 45
+  project/team/system cases explicitly unsupported, zero observed incidents.
+- Sealed all nine Slack families, fixed long-range contamination and added
+  passing cross-thread and pronoun/coreference cases.
+- Extended correction repair through relations and projections and proved
+  archive convergence, replay idempotency, source immutability and tenant
+  isolation on real Postgres.
+- Found and fixed a canonical identity defect where implicit and explicit
+  version-one entity references generated different candidate IDs.
+- Integrated the full assurance into Company Vitals without score inflation.
+- Added fail-closed validation for safety contradictions, component identity,
+  component digests, Slack observation cross-binding and recomputed raw
+  population accounting.
+- Final real-Postgres assurance status: `working`, positive lift `1.0`, negative
+  incidents `0`, population coverage `15/60`, Slack status
+  `observed_with_gaps`.
