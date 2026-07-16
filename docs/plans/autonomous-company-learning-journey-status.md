@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `18aab465`
+**Current checkpoint:** `38838612`
 
 **Last updated:** 2026-07-17
 
@@ -303,8 +303,13 @@ flowchart LR
 | Entity extraction measurement | Gold span/type evaluation and a pipeline evaluator now separate mention discovery, type assessment, resolver handoff and canonical-link coverage instead of treating fate closure as extraction quality | Metrics exist; deterministic holdouts exposed adaptation risk and the canonical-link fields remain unpopulated in current learned evidence |
 | Learned batched discovery | Persisted signals are discovered as batches through a learned provider path, with typed candidates committed into the existing mention-fate ledger and handed to the existing resolver; deterministic discovery remains an availability fallback | Implemented with focused tests and provider readiness preflight; learned quality is promising but not exceptional |
 | Learned discovery provider readiness | Worker startup preflights the configured learned-discovery provider/model so a missing or incompatible provider is an explicit incident instead of silently becoming the normal mode | Implemented after a real provider/model configuration incident |
-| Learned quality benchmark | One frozen six-batch, 60-signal `gpt-5.4` run measured exact-span precision `0.8163`, recall `0.6452`, F1 `0.7207`, type accuracy `0.9556`, and negative cleanliness `1.0` | Fresh provider evidence; no canonical-link claim |
-| Source-verifiable rescore | Repairing uniquely verifiable source offsets and rescoring the same saved provider outputs at the tuned admission threshold yields precision `0.8500`, recall `0.8226`, F1 `0.8361`, and type accuracy `0.9286` | Post-hoc artifact rescore only, not a new provider run; useful for diagnosis, not independent generalization proof |
+| Resolver poll isolation | Tenant-specific simulations and worker runs can bound unresolved-observation polling by tenant; omitted scope preserves the production global poll | Implemented and focused-test proven at `b5cb50b8`; this is isolation evidence, not extraction or canonical-link quality |
+| Historical v1 learned run | One 60-signal, six-batch `gpt-5.4` run measured fresh exact-span P/R/F1 `0.8163/0.6452/0.7207`, type accuracy `0.9556`, and negative cleanliness `1.0` | Historical fresh provider evidence; no canonical-link claim |
+| Historical v1 source-verifiable rescore | Repairing uniquely verifiable source offsets and rescoring the same saved v1 outputs at the tuned admission threshold yields P/R/F1 `0.8500/0.8226/0.8361` and type accuracy `0.9286` | Post-hoc artifact rescore only, not a new provider run |
+| Sealed v2 recovered run | 80 signals, eight ten-signal batches, 114 spans and 40 negatives; exact recovered P/R/F1 `0.8020/0.7105/0.7535`, type accuracy `0.8163`, negative cleanliness `0.95`; one schema-invalid batch | Exact recovery of completed structured turns, not a rerun; exposes batch-atomic schema loss and makes no canonical-link claim |
+| Mutable development feedback | A checkpointed `gpt-5.4` run processed four genuine ten-signal batches with one call each and zero provider errors; post-verification P/R/F1 was `0.7727/0.7969/0.7846`, type accuracy `0.8906`, negative cleanliness `1.0` | Development feedback only. The inspected corpus/results informed later prompt work and cannot be used as holdout or generalization evidence |
+| Complete-boundary and role-type prompt | The current production prompt requires per-signal completeness, exact complete written designations, role-grounded closed types and transport-coordinate negatives | Implemented with focused prompt/schema tests at `813848ce`; not yet scored by a fresh untouched provider run |
+| Frozen untouched v3 | 40 signals in four ten-signal batches, organization/entity/time/text-disjoint, SHA-256 `e6d582…a43bc4`, sealed at `38838612` with zero executions and one allowed provider run | Created and frozen but not executed; no v3 quality or generalization claim yet |
 
 ## Important Implementation Checkpoints
 
@@ -348,6 +353,10 @@ flowchart LR
 | `1359eb18` | Added provider/model readiness preflight after the learned-discovery configuration incident |
 | `a46300aa` | Froze and ran the real `gpt-5.4` learned entity-quality benchmark |
 | `0582666a` / `18aab465` | Repaired uniquely source-verifiable offsets and tuned mention admission; reported results are an artifact rescore, not another provider run |
+| `b5cb50b8` | Bounded tenant-specific resolver polls without changing production global polling |
+| `5b708d0c` | Added the contract-validated, per-batch checkpointed mutable development runner and explicitly non-generalization report |
+| `813848ce` | Clarified complete mention boundaries, role-grounded company-object types and transport-coordinate negatives in the learned prompt/schema |
+| `38838612` | Froze the untouched one-shot v3 holdout, disjoint from v1, v2 and mutable development data |
 | `d6908b39` | Removed proof gaps already closed by the complete sealed run |
 | `ac963125` | Reused grounding/source-semantic outcomes as bounded SAGE source-salience memory |
 | `4b6ef3c8` | Added governed Linear project/team structured identity transport |
@@ -736,11 +745,11 @@ one, the `be401f25` 45-batch verdict remains the authoritative large-run result.
    - Populate and score every pipeline stage from persisted batched signals:
      discovery, exact span, company-object type, resolver handoff, candidate-set
      inclusion, abstention/review and canonical link.
-   - Raise learned discovery beyond the current fresh-run exact-span F1 of
-     `0.7207`; treat the post-hoc `0.8361` rescore as diagnostic evidence only.
-   - Run a new sealed untouched holdout after freezing policy and thresholds;
-     do not adapt against the final holdout or reuse the same provider outputs
-     as the generalization claim.
+   - Treat historical v1 fresh F1 `0.7207`, its post-hoc `0.8361` rescore,
+     sealed-v2 recovered F1 `0.7535`, and mutable-development F1 `0.7846` as
+     distinct non-current-prompt populations.
+   - Execute the already frozen v3 holdout exactly once; preserve digest
+     `e6d582…a43bc4` and do not adapt policy, prompt or thresholds against it.
    - Prove canonical-link coverage and accuracy. Current benchmark referents are
      intentionally null and therefore make no canonical-link claim.
    - Preserve the deterministic locator as explicit availability fallback, not
@@ -1073,26 +1082,37 @@ connection depend on the caller supplying the surrounding transaction.
 - cryptographic binding between the experiment artifact and the exact
   database-backed tenant/observation manifest.
 
-## Next Execution Sequence
+## Completed Repair Sequence And Next Validation
 
-1. Wire every eligible mention candidate through a detection head and one
-   terminal detection/rejection fate.
-2. Prohibit resolver-owned writes to canonical identity aliases; require a
-   promotion/adjudication trace for every canonical alias mutation.
-3. Enforce claim-local Model scope and reject batch/context-only entities from
-   durable proposition scope.
-4. Add source/target role contracts and reciprocal-edge guards for asymmetric
-   relations such as `blocks` and `early_warning_for`.
-5. Reject benchmark, prompt, inquiry and wrapper language from canonical
-   Models.
-6. Make mature retrieval Model-first, require a reason for raw-observation
-   reopening and measure selected-versus-used context per wave.
-7. Make independent causal-thesis correctness the primary hidden-pattern
-   metric and add cross-storyline contamination penalties.
-8. Recalibrate confidence against later outcomes after entity and scope fixes.
-9. Coalesce projection refresh work and govern T4 repair by durable-outcome ROI.
-10. Run focused regression/evaluator suites for these defects. Do not run a
-    second large company simulation unless the user explicitly requests it.
+The former items for terminal mention fates, resolver alias-write prohibition,
+claim-local Model scope, asymmetric edge roles, control-text rejection,
+Model-first retrieval, independent causal-thesis scoring and calibration are no
+longer pending implementation tasks. They were completed through `8f4e75e8`
+with focused proof. In particular, the resolver produces candidate,
+assessment, admission and terminal-fate records; only traced grounded
+adjudication may persist a tenant-global canonical alias. Authenticated
+source-identity resolution is mention-scoped and cannot transfer alias-write
+authority.
+
+The next sequence is validation and remaining pipeline closure:
+
+1. Preserve the current complete-boundary/role-type prompt, extraction policy
+   and thresholds without adapting them against frozen v3.
+2. Execute frozen v3 once in its four genuine ten-signal batches, verifying its
+   pre-call digest and zero-execution metadata before provider construction.
+3. Keep historical v1 fresh output, its post-hoc rescore, recovered sealed v2,
+   mutable development, deterministic fallback and frozen v3 as separate
+   report populations.
+4. Populate canonical-link candidate recall, selected-link accuracy, coverage,
+   abstention/review and lineage from persisted batched signals through the
+   governed resolver/adjudication boundary.
+5. Verify tenant-scoped resolver polling, provider outage/fallback and partial
+   batch failure without allowing fallback evidence to inflate learned quality.
+6. Coalesce projection refresh work and govern T4 repair by durable-outcome
+   ROI.
+7. Run focused regression/evaluator suites. Do not run a second large company
+   simulation unless the user explicitly requests it; the existing 45-batch
+   verdict remains authoritative and `not_credible`.
 
 ## Progress Ledger
 
@@ -1527,12 +1547,43 @@ connection depend on the caller supplying the surrounding transaction.
   recorded availability fallback rather than a parallel truth path.
 - A provider/model incident revealed that worker readiness did not prove the
   learned-discovery provider was usable. `1359eb18` added startup preflight.
-- The one frozen real `gpt-5.4` run scored exact-span P/R/F1
+- The historical v1 real `gpt-5.4` run scored fresh exact-span P/R/F1
   `0.8163/0.6452/0.7207`, type accuracy `0.9556`, and negative cleanliness
   `1.0`. It made no canonical-link claim.
 - `0582666a` repaired only uniquely source-verifiable offsets and `18aab465`
   tuned admission. Rescoring the saved outputs produced exact-span P/R/F1
   `0.8500/0.8226/0.8361` and type accuracy `0.9286`. This is explicitly a
   post-hoc artifact rescore, not a new provider execution or untouched result.
+- Sealed v2 was a separate 80-signal, eight-batch run with 114 gold spans and
+  40 negatives. Exact recovery of its completed structured turns produced
+  P/R/F1 `0.8020/0.7105/0.7535`, type accuracy `0.8163` and negative
+  cleanliness `0.95`. One schema-invalid item rejected its entire batch; the
+  recovery is not a provider rerun and makes no canonical-link claim.
 - The authoritative 45-batch verdict remains the pre-fix `not_credible` result.
   No second large run was performed.
+
+### 2026-07-17 — Development evidence and prompt contract were separated
+
+- `b5cb50b8` made resolver batch polling optionally tenant-scoped for isolated
+  simulations and worker tests while retaining the global production poll when
+  no tenant is supplied.
+- `5b708d0c` added a mutable development-only runner that validates its
+  corpus/evaluator contract before provider construction, makes one `gpt-5.4`
+  call per ten-signal batch and checkpoints raw output, usage, exact errors and
+  pre/post metrics after every batch.
+- Its four-batch run produced post-verification exact-span P/R/F1
+  `0.7727/0.7969/0.7846`, type accuracy `0.8906` and negative cleanliness
+  `1.0`, with four calls and zero provider errors. These are inspected
+  development results, not a holdout and not generalization evidence.
+- `813848ce` then strengthened the production extraction contract around
+  complete written boundaries, role-grounded types, per-signal omission passes
+  and transport-coordinate negatives. Focused tests prove the prompt/schema
+  contract, but no fresh untouched provider run has scored that revision.
+- Historical v1, sealed v2, mutable development and frozen untouched v3 remain
+  distinct. V3 was sealed at `38838612` with 40 signals in four ten-signal
+  batches, digest `e6d582…a43bc4`, zero executions and one allowed run. It has
+  not been executed.
+- These focused changes do not revise the historical large-run outcome: the 50
+  resolver-owned canonical writes remain incidents in that artifact even
+  though the mechanism now forbids them. The authoritative 45-batch verdict is
+  still `not_credible`.

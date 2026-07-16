@@ -303,20 +303,30 @@ entity_resolution_jobs
 Repository:
 
 ```text
-services/domain/entity_aliases.py
+services/domain/entity_aliases/repo.py
 ```
 
 Responsibilities:
 
 - Fast exact alias lookup during ingest.
-- Store canonical and non-canonical aliases.
+- Store canonical and non-canonical aliases only through an authorized
+  adjudication or promotion operation with durable lineage.
 - Queue unresolved phrases for background resolution.
+- Keep detection, candidate generation and canonical-registry mutation as
+  separate authority stages. A resolver decision is not alias-write authority.
 
 Acceptance criteria:
 
 - Ingest can attach known entity refs to observations.
 - Unknown phrases do not block ingest.
-- Deferred resolver can later canonicalize unresolved phrases.
+- Deferred resolution can match an unresolved phrase against already governed
+  identity, abstain, or create a review obligation. It cannot invent a
+  canonical entity or persist an accepted canonical alias.
+- Every canonical alias mutation reconstructs to its adjudication/promotion
+  trace; resolver-only writes fail closed.
+- An authenticated source-identity binding may ground its exact mention, but
+  that mention-scoped authority is non-transferable and cannot authorize a
+  canonical alias-registry write.
 
 ## 1.4 Observations
 
@@ -1528,16 +1538,66 @@ Acceptance criteria:
 
 Responsibilities:
 
-- Resolve unresolved phrases into canonical entity aliases.
+- Consume committed mention detections and resolve them against existing
+  governed canonical identity.
 - Use deterministic matching first.
 - Use LLM-assisted resolution behind a flag.
-- Write alias proposals and accepted aliases.
+- Emit a resolution, abstention or review/proposal outcome with exact evidence
+  lineage. Accepted canonical aliases are written only by the separate
+  adjudication/promotion authority.
+- Support an optional tenant-bound poll for simulations and scoped worker runs;
+  the omitted-tenant mode remains the production global poll.
 
 Acceptance criteria:
 
 - Resolver never blocks ingest.
 - Human/tenant review can be required for uncertain aliases.
 - Alias changes are auditable.
+- A tenant-bound poll cannot select another tenant's unresolved observations.
+- Resolver execution alone cannot create canonical identity or mutate the
+  accepted canonical-alias registry.
+
+### Learned discovery evidence discipline
+
+Learned mention discovery operates once per persisted signal batch. Its prompt
+requires a complete left-to-right pass per focal signal, exact source slices,
+the smallest complete written designation, and company-object types chosen from
+the referent's stated role. Context from other signals may disambiguate a
+literal surface but may never introduce absent text. Transport coordinates,
+generic roles and schema/code syntax are explicit negatives. These are
+extraction contracts, not canonical-link authority.
+
+Implementation and evaluation keep four learned-provider evidence populations
+distinct:
+
+1. The historical v1 `gpt-5.4` run produced fresh exact-span P/R/F1
+   `0.8163/0.6452/0.7207`. The later `0.8361` F1 is a post-hoc rescore of those
+   same saved outputs, not a second independent run.
+2. Sealed v2 contains 80 signals in eight ten-signal batches, 114 gold spans
+   and 40 hard negatives. Exact recovery of the already completed structured
+   turns produced P/R/F1 `0.8020/0.7105/0.7535`, type accuracy `0.8163` and
+   negative cleanliness `0.95`. One schema-invalid item rejected its whole
+   batch. This is recovered sealed-run evidence, not a provider rerun, and all
+   canonical referents are null.
+3. The mutable development corpus and checkpointed one-call-per-ten-signal
+   runner are prompt-development feedback only. The recorded pre-prompt-revision
+   run reached post-verification exact-span P/R/F1
+   `0.7727/0.7969/0.7846`, type accuracy `0.8906` and negative cleanliness
+   `1.0`. Because its examples and results were inspected before the current
+   boundary/type prompt was frozen, it is not generalization evidence for that
+   prompt.
+4. Frozen v3 is the next untouched organization/entity/time/text-disjoint
+   holdout: 40 signals in four ten-signal batches, digest
+   `e6d5821399403feeac727253f791a8bb0d98d1c42232376c3b30305f00a43bc4`.
+   It was sealed at `38838612` with zero provider executions and a one-shot
+   allowance. It has not been run. Until that one execution occurs, prior and
+   development evidence cannot prove the current prompt generalizes.
+
+The checkpointed development runner validates the gold/evaluator contract
+before provider construction, pins one `gpt-5.4` structured call per genuine
+ten-signal batch, and atomically records raw output, usage, exact errors and
+pre/post-verification metrics after every batch. Its artifacts must carry
+`development_only=true` and `generalization_claim_permitted=false`.
 
 ## 8.3 Anomaly processor
 
@@ -2380,4 +2440,3 @@ Fyralis Core v1 is complete when:
 17. Dogfood rollout
 18. Production hardening
 ```
-

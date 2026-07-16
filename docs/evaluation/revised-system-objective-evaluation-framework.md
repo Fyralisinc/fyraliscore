@@ -409,6 +409,17 @@ recall, boundary, typing or canonical-link accuracy without labeled gold.
 Recovered attempts and terminally failed triggers must also remain separate
 reliability populations.
 
+The exact-alias authority proof is narrower but stronger than “promotion is
+unproven.” For the measured tenant-global clarification path, an answered
+clarification authorizes one traced alias mutation, closes the predecessor
+grounding, creates the exact successor grounding, preserves source evidence and
+permits later governed replay. The resolver may propose candidates, assessments
+and terminal fates, but may not persist an accepted canonical alias. An
+authenticated source-identity binding may resolve that exact mention without a
+model call; its authority is mention-scoped and explicitly non-transferable as
+general alias-write authority. Novel/open-world promotion, ambiguous variants
+and broader identity lifecycle remain unproven.
+
 These contracts are focused proof. The authoritative 45-batch artifact was
 produced before these changes and remains `not_credible`; no second large run is
 claimed or authorized. If the user later requests an end-state rerun, it must
@@ -422,7 +433,7 @@ Within the broader evaluation catalog, current component evaluators cover:
 | --- | --- | --- |
 | Writer ownership and cutover | Canonical head/version integrity, legal lifecycle, epoch monotonicity, exact active partition claims, typed transition-proof coverage, explicit zero-writer fencing, split/merge conservation, command reconstructability, command/event/outbox closure, immutable guards and localized incidents for registered WriterScopeEpochs | E3 Postgres/component proof only. It does not inventory unregistered legacy or direct writers, prove every semantic applier is cut over, supply an external constitutional root for the registry's tenant root, or establish live process crash/restart, advancing-tail replay, rebalance and consumer-drain behavior |
 | Conversational context selection | Durable head/snapshot integrity, typed command reconstruction, independent selection replay equivalence, candidate/probe fate coverage, required probe-surface coverage, exact SelectionDependency coverage, unsafe-selection and premature-sufficiency incidents, immutable guards and command/event/outbox closure; plus nine sealed Slack families covering thread/reply, edit, deletion/tombstone, reaction, long-range, contamination abstention, cross-thread, cross-channel and pronoun/coreference behavior | Exact sealed-family evidence only. Unseen discourse forms, open-ended channel history, multilingual/code-switched conversation, source-equivalent email/Jira comparison, authority/revocation races, large histories and production source drift remain unproven |
-| Entity grounding and alias learning | Opportunity/request/set/assessment/admission/work fates, trace integrity, pre-model versus persisted context equality, context-sufficiency admission fencing, four-entity exact-alias recurrence at `60/60`, four matched safety controls with zero incidents, and trusted candidate-memory lift across 24 unambiguous variants in six families | The variant proof establishes candidate recall and closed-set resolution for unambiguous forms, not variant collision/homonym safety, canonical alias promotion, novel/open-world entities, lifecycle transitions, multi-source equivalence, production load or general extraction calibration |
+| Entity grounding and alias learning | Opportunity/request/set/assessment/admission/work fates, trace integrity, pre-model versus persisted context equality, context-sufficiency admission fencing, exact predecessor/successor grounding plus answered-clarification authority for tenant-global alias mutation, four-entity exact-alias recurrence at `60/60`, four matched safety controls with zero incidents, and trusted candidate-memory lift across 24 unambiguous variants in six families | Focused grounded adjudication and exact replay are proven. The variant proof establishes candidate recall and closed-set resolution for unambiguous forms, not resolver-owned alias writes, open-world/ambiguous alias promotion, collision/homonym safety, novel entities, broader lifecycle transitions, multi-source equivalence, production load or general extraction calibration |
 | Governed intent | Typed command/proposal paths, authority bases, exact acceptance, versions/events/outboxes and legacy gaps | Not every legacy producer is cut over; human/institutional legitimacy remains outside component proof |
 | Attention governance and Concern | Binding validity, plural-contributor reducer, CAS, identity correction and command closure | Live CriteriaProjector/source coverage and organization-level attention value remain unproven |
 | Consequential agency | Proposal/InterventionSpec atomicity, prediction preregistration, exact authorization, independent Outcome, settlement/residual, conservative attribution and episode continuity | Population calibration, correction closure and causal-world value remain unproven |
@@ -4440,7 +4451,7 @@ quality:
 
 ## Entity Grounding Pre-Customer Evidence Standard
 
-### Current executable entity-physics checkpoint (`18aab465`)
+### Current executable entity-physics checkpoint (`38838612`)
 
 The evaluator now measures gold exact-span extraction and stage-level pipeline
 quality independently from protocol-fate closure. Persisted signals are tested
@@ -4452,18 +4463,27 @@ Current evidence must be read as a vector, not a pass:
 
 | Evidence | Current result | Valid conclusion |
 | --- | ---: | --- |
-| Frozen real `gpt-5.4` learned run | exact-span P/R/F1 `0.8163/0.6452/0.7207`; type accuracy `0.9556`; negative cleanliness `1.0` | Fresh provider evidence; learned extraction is useful but not exceptional |
-| Source-verifiable offset repair plus threshold rescore | exact-span P/R/F1 `0.8500/0.8226/0.8361`; type accuracy `0.9286` | Post-hoc rescore of saved provider outputs only; not a fresh or untouched run |
+| Historical v1 real `gpt-5.4` run | fresh exact-span P/R/F1 `0.8163/0.6452/0.7207`; type accuracy `0.9556`; negative cleanliness `1.0` | Historical fresh provider evidence; useful but not exceptional |
+| Historical v1 source-verifiable repair and threshold rescore | exact-span P/R/F1 `0.8500/0.8226/0.8361`; type accuracy `0.9286` | Post-hoc rescore of the same saved v1 outputs only; not a fresh or untouched run |
+| Sealed v2 recovered `gpt-5.4` run | 80 signals, eight ten-signal batches, 114 spans and 40 negatives; exact recovered P/R/F1 `0.8020/0.7105/0.7535`; type accuracy `0.8163`; negative cleanliness `0.95`; one schema-invalid batch | Exact recovery of eight completed structured turns after report rendering failed, not a provider rerun. One invalid item caused batch-atomic loss; no canonical-link claim |
+| Mutable development corpus and checkpointed runner (`5b708d0c`) | four genuine ten-signal batches; post-verification P/R/F1 `0.7727/0.7969/0.7846`; type accuracy `0.8906`; negative cleanliness `1.0`; four calls, zero provider errors | Prompt-development feedback only. The corpus and results were inspected and informed later prompt work, so this is explicitly not generalization evidence |
+| Complete-boundary and role-typed prompt (`813848ce`) | production prompt/schema now require complete written designations, per-signal omission passes, role-grounded closed types and transport-coordinate negatives | Focused contract tests prove instructions and one-batch payload shape; no fresh provider-quality claim for the revised prompt |
+| Frozen untouched v3 (`38838612`) | 40 signals in four ten-signal batches; organization/entity/time/text-disjoint; SHA-256 `e6d582…a43bc4`; sealed with execution count zero and one allowed provider execution | Valid sealed design evidence only. The one-shot provider run has not occurred, so there are no v3 quality metrics or generalization claim yet |
 | Deterministic holdouts | first adapted holdout strong; final untouched holdout weak | Fixture adaptation is regression evidence, not generalization proof |
 | Pipeline metrics | discovery, type, resolver-handoff and canonical-link fields exist | Stage localization is possible; population is incomplete |
 | Canonical linking | no sealed gold referents in the learned benchmark | No canonical-link coverage or accuracy claim |
+| Tenant-scoped resolver polling (`b5cb50b8`) | scoped polls filter unresolved observations by tenant while omitted scope preserves production global polling | Focused isolation/worker contract only; it neither improves extraction quality nor grants alias-write authority |
 | Full company simulation | authoritative 45-batch run remains pre-fix `not_credible` | No aggregate upgrade; no second large run occurred |
 
-The next report must keep learned and deterministic-fallback populations
-separate, populate the pipeline through canonical link, and score a newly sealed
-untouched organization/entity/time holdout once after policy and thresholds are
-frozen. A post-hoc artifact rescore may diagnose recoverable parser/admission
-loss, but cannot satisfy the independent-run or generalization evidence tier.
+Every report must keep historical v1, sealed v2, mutable development, frozen v3
+and deterministic-fallback populations separate. Development feedback cannot
+be relabeled as a holdout because it is checkpointed or provider-backed, and
+v3 cannot be reported as successful merely because its seal is valid. The next
+independent report must execute frozen v3 exactly once, preserve its pre-call
+digest and execution metadata, and separately populate the pipeline through
+canonical link. A post-hoc artifact rescore or recovered prior output may
+diagnose parser/admission loss, but cannot satisfy the v3 independent-run or
+current-prompt generalization tier.
 
 Most entity health remains continuous. Before calling the system ready for a
 controlled pilot, the report must nevertheless support these claims at the
