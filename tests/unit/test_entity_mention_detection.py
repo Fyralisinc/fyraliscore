@@ -41,3 +41,36 @@ def test_bootstrap_opportunities_ignore_unbounded_lowercase_prose() -> None:
     assert extract_bootstrap_mention_opportunities(
         "we should probably revisit this tomorrow"
     ) == ()
+
+
+def test_dotted_names_acronyms_possessives_and_plurals_keep_source_surface() -> None:
+    text = (
+        "Atlas.Pay met N.B.I. after Acme's review; "
+        "Horizons and Platform's owners replied."
+    )
+
+    assert extract_bootstrap_mention_opportunities(text) == (
+        "Atlas.Pay",
+        "N.B.I.",
+        "Acme's",
+        "Horizons",
+        "Platform's",
+    )
+
+
+def test_dotted_and_possessive_support_does_not_harvest_lowercase_prose() -> None:
+    text = (
+        "example.com and v1.2.3 are references; "
+        "it's a team's ordinary prose."
+    )
+
+    assert extract_bootstrap_mention_opportunities(text) == ()
+
+
+def test_extended_source_surfaces_remain_bounded_and_deduplicated() -> None:
+    text = "Atlas.Pay and Atlas.Pay and N.B.I. and Acme's"
+
+    assert extract_bootstrap_mention_opportunities(
+        text,
+        max_opportunities=2,
+    ) == ("Atlas.Pay", "N.B.I.")

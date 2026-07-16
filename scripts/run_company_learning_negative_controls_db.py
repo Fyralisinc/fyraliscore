@@ -246,6 +246,7 @@ async def _prepare_negative_arm(
     arm: CorrectiveMemoryArm,
     training_at: datetime,
     runtime_target: RuntimeEntityTarget | None = None,
+    recurrence_confidence: float | None = None,
 ) -> _NegativeArmFoundation:
     runtime_target = runtime_target or RuntimeEntityTarget(
         canonical_ref_type="customer",
@@ -329,14 +330,15 @@ async def _prepare_negative_arm(
         if definition.recurrence_response == "conflicting_high"
         else target_id
     )
-    recurrence_confidence = (
-        0.99
-        if (
-            definition.recurrence_response == "conflicting_high"
-            and arm is CorrectiveMemoryArm.ADAPTIVE
+    if recurrence_confidence is None:
+        recurrence_confidence = (
+            0.99
+            if (
+                definition.recurrence_response == "conflicting_high"
+                and arm is CorrectiveMemoryArm.ADAPTIVE
+            )
+            else 0.40
         )
-        else 0.40
-    )
     provider = _ScriptedResolver(
         [
             _resolver_response(

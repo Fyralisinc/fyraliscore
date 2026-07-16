@@ -5,7 +5,14 @@ from __future__ import annotations
 import re
 
 
-_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*")
+_WORD_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9]*"
+    r"(?:(?:-[A-Za-z0-9]+)|(?:\.[A-Za-z][A-Za-z0-9]*))*"
+    r"(?:['’]s)?"
+)
+_DOTTED_ACRONYM_RE = re.compile(
+    r"(?<!\w)(?:[A-Z]\.){2,}[A-Z]?(?:\.)?(?!\w)"
+)
 _SLACK_NATIVE_REFERENCE_RE = re.compile(
     r"<(?:@[A-Z0-9]+|#[A-Z0-9]+)(?:\|[^>\r\n]+)?>"
 )
@@ -63,6 +70,9 @@ def extract_bootstrap_mention_opportunities(
     candidates: list[tuple[int, int]] = [
         match.span() for match in _SLACK_NATIVE_REFERENCE_RE.finditer(content_text)
     ]
+    candidates.extend(
+        match.span() for match in _DOTTED_ACRONYM_RE.finditer(content_text)
+    )
     candidates.extend(
         match.span() for match in _DEFINITE_ENTITY_RE.finditer(content_text)
     )

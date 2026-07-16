@@ -78,7 +78,9 @@ from services.domain.observations.repo import ObservationRepository
 # alphanumerics + hyphens. Not linguistic — the fast path does exact
 # lookups against known aliases, so precision > recall here. Wave 2-B
 # entity resolver worker handles the long tail with LLM help.
-_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-]{1,}")
+_TOKEN_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9\-]{1,}(?:['’]s)?"
+)
 _MAX_MENTION_OPPORTUNITIES = 50
 
 
