@@ -171,6 +171,44 @@ def test_rate_fields_reject_values_outside_unit_interval() -> None:
         )
 
 
+@pytest.mark.parametrize("case_id", ("correction", "negative", "collision"))
+def test_authority_and_safety_control_failures_are_noncompensatory(
+    case_id: str,
+) -> None:
+    spec = _spec()
+    observations = list(_observations(spec))
+    index = next(
+        index
+        for index, observation in enumerate(observations)
+        if observation.case_id == case_id
+    )
+    observations[index] = observations[index].model_copy(
+        update={
+            "consumer_fate": (
+                ConsumerTerminalFate.REVIEW
+                if case_id == "correction"
+                else ConsumerTerminalFate.RESOLVED_FOR_CONSUMER
+            ),
+            "observed_ref": (
+                None
+                if case_id == "correction"
+                else CanonicalEntityRef(type="customer", id="unsafe-target")
+            ),
+            "correction_authoritative": (
+                False if case_id == "correction" else None
+            ),
+        }
+    )
+
+    report = evaluate_company_learning_retention(
+        spec=spec,
+        observations=tuple(observations),
+        artifact_refs=("pytest:noncompensatory-behavior",),
+    )
+
+    assert report.status == "contradicted"
+
+
 def _spec() -> RetentionRunSpec:
     exact_ref = CanonicalEntityRef(type="customer", id="exact-customer")
     variant_ref = CanonicalEntityRef(type="customer", id="variant-customer")

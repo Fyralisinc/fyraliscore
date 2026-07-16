@@ -286,10 +286,21 @@ def evaluate_company_learning_retention(
             "evidence_lineage_consistent",
         )
     )
+    noncompensatory_behavior_failure = any(
+        not bool(row["correct"])
+        and row["case"].behavior
+        in {
+            RetentionBehavior.CORRECTED_ALIAS,
+            RetentionBehavior.NEGATIVE_CONTROL,
+            RetentionBehavior.COLLISION_CONTROL,
+        }
+        for row in assessments
+    )
     contradicted = bool(
         hard_incident_count
         or unsafe_globalization_count
         or consistency_failure
+        or noncompensatory_behavior_failure
     )
     degraded = any(not bool(row["correct"]) for row in assessments)
     status: Literal["observed", "observed_with_degradation", "contradicted"] = (
