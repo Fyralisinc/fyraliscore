@@ -354,6 +354,34 @@ class EntityResolverWorker:
             )
             return "unresolved"
 
+        source_resolution = self._authenticated_source_identity_resolution(ctx)
+        if source_resolution is not None:
+            episode = self._build_grounding_episode(
+                ctx=ctx,
+                resolution=source_resolution,
+            )
+            if conn is not None:
+                async with conn.transaction():
+                    return await self._commit_episode_and_route(
+                        conn,
+                        ctx=ctx,
+                        resolution=source_resolution,
+                        episode=episode,
+                        phrase=phrase,
+                        observation_id=observation_id,
+                        tenant_id=tenant_id,
+                    )
+            async with self._pool.acquire() as owned, owned.transaction():
+                return await self._commit_episode_and_route(
+                    owned,
+                    ctx=ctx,
+                    resolution=source_resolution,
+                    episode=episode,
+                    phrase=phrase,
+                    observation_id=observation_id,
+                    tenant_id=tenant_id,
+                )
+
         learned_resolution = self._governed_alias_replay(ctx)
         if learned_resolution is not None:
             if conn is not None:
@@ -652,14 +680,26 @@ class EntityResolverWorker:
                 "llm_invoked": resolution.decision_source == "llm",
             },
             assessment_calibration_cohort=(
-                "deterministic-human-memory-replay"
-                if resolution.decision_source == "governed_exact_alias_replay"
-                else "legacy-unstructured-phrase-resolution"
+                "deterministic-authenticated-source-identity"
+                if resolution.decision_source
+                == "authenticated_source_identity_binding"
+                else (
+                    "deterministic-human-memory-replay"
+                    if resolution.decision_source
+                    == "governed_exact_alias_replay"
+                    else "legacy-unstructured-phrase-resolution"
+                )
             ),
             assessment_scorer_version=(
-                "governed-exact-alias-replay-v1"
-                if resolution.decision_source == "governed_exact_alias_replay"
-                else "closed-set-llm-assessment-uncalibrated-v1"
+                "authenticated-source-identity-binding-v1"
+                if resolution.decision_source
+                == "authenticated_source_identity_binding"
+                else (
+                    "governed-exact-alias-replay-v1"
+                    if resolution.decision_source
+                    == "governed_exact_alias_replay"
+                    else "closed-set-llm-assessment-uncalibrated-v1"
+                )
             ),
             high_confidence=self._high,
             review_min=self._review,
@@ -970,6 +1010,56 @@ class EntityResolverWorker:
             adjudication_answer_digest=(
                 replay_alias.adjudication_answer_digest
             ),
+        )
+
+    @staticmethod
+    def _authenticated_source_identity_resolution(
+        ctx: ResolverContext,
+    ) -> EntityResolution | None:
+        """Select one ingestion-authenticated, pre-existing binding.
+
+        ``build_context`` only exposes a binding when the persisted Observation
+        has an authority-bearing attachment for this exact normalized surface,
+        the source system matches, the binding is bitemporally visible, its
+        canonical target is still live, and the lookup returns exactly one row.
+        This decision therefore consumes existing authority; it never creates
+        a referent or alias. Competing exact authority remains in the closed
+        candidate set and is routed to review by the grounding episode.
+        """
+
+        resolved = ctx.source_identity_binding
+        if resolved is None:
+            return None
+        if normalize_phrase(ctx.phrase) != normalize_phrase(
+            resolved.source_surface
+        ):
+            return None
+        binding = resolved.binding
+        canonical_ref = resolved.canonical_ref
+        if (
+            binding.tenant_id != ctx.tenant_id
+            or binding.canonical_referent_type
+            != str(canonical_ref.get("type") or "")
+            or binding.canonical_referent_id
+            != str(canonical_ref.get("id") or "")
+            or binding.canonical_referent_version
+            != int(canonical_ref.get("version", 1))
+        ):
+            return None
+        return EntityResolution(
+            candidate_id=candidate_id_for_ref(canonical_ref),
+            canonical_ref=canonical_ref,
+            confidence=1.0,
+            reasoning=(
+                "exact mention surface has one active ingestion-authenticated "
+                "source identity binding to an existing canonical referent"
+            ),
+            decision_source="authenticated_source_identity_binding",
+            identity_basis_ref=(
+                f"source-identity-binding:{binding.binding_id}:"
+                f"version:{binding.binding_version}"
+            ),
+            resolution_scope="observation_source_surface_exact",
         )
 
     # -----------------------------------------------------------------

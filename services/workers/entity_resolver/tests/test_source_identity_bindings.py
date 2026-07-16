@@ -7,12 +7,22 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
+from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.domain.source_identity_bindings import SourceIdentityBindingRepo
 from services.workers.entity_resolver.context import build_context
 from services.workers.entity_resolver.worker import EntityResolverWorker
 
 
 pytestmark = pytest.mark.integration
+
+
+class _ForbiddenProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def structured(self, **_kwargs):
+        self.calls += 1
+        raise AssertionError("authenticated source identity must not invoke an LLM")
 
 
 async def _seed_source_object(
@@ -183,6 +193,59 @@ async def test_binding_requires_explicit_observation_attachment(
     assert len(decisive) == 1
     assert decisive[0].canonical_ref == resolved.canonical_ref
     assert decisive[0].exact_mention_match is True
+
+    provider = _ForbiddenProvider()
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,  # type: ignore[arg-type]
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+    assert await worker._process_phrase(
+        phrase="Mercury",
+        observation_id=observation_id,
+        tenant_id=tenant_id,
+        conn=None,
+    ) == "resolved"
+    assert provider.calls == 0
+    async with resolver_db.acquire() as conn:
+        trace = await conn.fetchrow(
+            """
+            SELECT trace.current_fate, trace.selected_referent,
+                   admission.decision AS admission_decision,
+                   assessment.model_output,
+                   assessment.scorer_and_calibration_version
+            FROM grounding_traces trace
+            JOIN resolution_assessments assessment
+              ON assessment.tenant_id=trace.tenant_id
+             AND assessment.id=trace.resolution_assessment_id
+            JOIN grounding_admission_decisions admission
+              ON admission.tenant_id=trace.tenant_id
+             AND admission.id=trace.grounding_admission_id
+            WHERE trace.tenant_id=$1
+              AND trace.source_observation_id=$2
+            """,
+            tenant_id,
+            observation_id,
+        )
+        alias_count = await conn.fetchval(
+            "SELECT count(*) FROM entity_aliases WHERE tenant_id=$1",
+            tenant_id,
+        )
+    assert trace is not None
+    assert trace["current_fate"] == "resolved_for_consumer"
+    assert trace["selected_referent"]["id"] == str(resource_id)
+    admitted_binding = trace["admission_decision"]["genuine_source_binding"]
+    assert admitted_binding["binding_id"] == binding.binding_id
+    assert admitted_binding["binding_version"] == binding.binding_version
+    assert trace["model_output"]["decision_source"] == (
+        "authenticated_source_identity_binding"
+    )
+    assert trace["model_output"]["llm_invoked"] is False
+    assert trace["scorer_and_calibration_version"] == (
+        "authenticated-source-identity-binding-v1"
+    )
+    assert alias_count == 0
+
     matching_context.phrase = "Mercury Billing"
     assert all(
         item.genuine_source_binding is None
