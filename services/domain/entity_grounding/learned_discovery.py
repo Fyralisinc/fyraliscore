@@ -23,11 +23,12 @@ CompanyEntityType = Literal[
 _DISCOVERY_SYSTEM_PROMPT = """\
 Extract every explicit named company-entity mention from this persisted signal batch.
 
-Work focal signal by focal signal. Other signals may disambiguate a literal name,
-but never copy a name into a focal signal where its characters do not occur.
+Work signal by signal, treating one signal as focal at a time. Other signals may
+disambiguate a literal name, but never copy a name into a focal signal where its
+characters do not occur.
 Complete one signal before advancing: scan its people, organizations, named work,
 technical objects, and typed identifiers, then make a final left-to-right pass for
-omissions. A signal can contain many mentions; return every distinct occurrence.
+omissions. A signal can contain many mentions. Return each distinct literal occurrence.
 
 BOUNDARIES
 Offsets are zero-based Python character offsets into exact content_text and
