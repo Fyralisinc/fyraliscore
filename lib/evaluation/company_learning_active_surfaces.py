@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -242,6 +242,51 @@ class ActiveLearningSurfacesReport(_SurfaceModel):
         return canonical_sha256(self.model_dump(mode="json"))
 
 
+class ActiveLearningSurfacesEvidence(_SurfaceModel):
+    schema_version: Literal["company-learning-active-surfaces-evidence-v1"] = (
+        "company-learning-active-surfaces-evidence-v1"
+    )
+    run_id: str = Field(min_length=1)
+    system_version: str = Field(min_length=1)
+    created_at: str = Field(min_length=1)
+    identity_observations: tuple[StructuredIdentitySurfaceObservation, ...]
+    salience_observations: tuple[SourceSalienceObservation, ...]
+    report: ActiveLearningSurfacesReport
+    artifact_refs: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def report_matches_raw_observations(self) -> Self:
+        recomputed = evaluate_active_learning_surfaces(
+            identity_observations=self.identity_observations,
+            salience_observations=self.salience_observations,
+        )
+        if recomputed != self.report:
+            raise ValueError("active surface report does not match raw observations")
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_sha256(self.model_dump(mode="json"))
+
+    def artifact_payload(self) -> dict[str, Any]:
+        return {
+            **self.model_dump(mode="json"),
+            "evidence_digest": self.digest,
+        }
+
+
+def validate_active_learning_surfaces_artifact(
+    payload: dict[str, Any],
+) -> ActiveLearningSurfacesEvidence:
+    supplied = str(payload.get("evidence_digest") or "")
+    evidence = ActiveLearningSurfacesEvidence.model_validate(
+        {key: value for key, value in payload.items() if key != "evidence_digest"}
+    )
+    if supplied != evidence.digest:
+        raise ValueError("active learning surfaces evidence digest mismatch")
+    return evidence
+
+
 def evaluate_active_learning_surfaces(
     *,
     identity_observations: tuple[StructuredIdentitySurfaceObservation, ...],
@@ -404,9 +449,11 @@ def _unsupported_salience() -> SourceSalienceObservation:
 
 __all__ = [
     "ActiveLearningSurfacesReport",
+    "ActiveLearningSurfacesEvidence",
     "SourceSalienceObservation",
     "SourceSalienceSurfaceReport",
     "StructuredIdentitySurfaceObservation",
     "StructuredIdentitySurfaceReport",
     "evaluate_active_learning_surfaces",
+    "validate_active_learning_surfaces_artifact",
 ]

@@ -3,9 +3,11 @@ from __future__ import annotations
 import pytest
 
 from lib.evaluation.company_learning_active_surfaces import (
+    ActiveLearningSurfacesEvidence,
     SourceSalienceObservation,
     StructuredIdentitySurfaceObservation,
     evaluate_active_learning_surfaces,
+    validate_active_learning_surfaces_artifact,
 )
 
 
@@ -111,6 +113,33 @@ def test_selective_surface_reporting_is_rejected() -> None:
             identity_observations=_safe_identity()[:1],
             salience_observations=_safe_salience(),
         )
+
+
+def test_evidence_envelope_reopens_raw_observations_and_digest() -> None:
+    identity = _safe_identity()
+    salience = _safe_salience()
+    evidence = ActiveLearningSurfacesEvidence(
+        run_id="pytest-active-surfaces",
+        system_version="pytest-system",
+        created_at="2026-07-16T00:00:00+00:00",
+        identity_observations=identity,
+        salience_observations=salience,
+        report=evaluate_active_learning_surfaces(
+            identity_observations=identity,
+            salience_observations=salience,
+        ),
+        artifact_refs=("pytest:active-surfaces",),
+    )
+
+    assert (
+        validate_active_learning_surfaces_artifact(evidence.artifact_payload())
+        == evidence
+    )
+
+    tampered = evidence.artifact_payload()
+    tampered["identity_observations"][0]["forged_text_resolved"] = True
+    with pytest.raises(ValueError, match="report does not match"):
+        validate_active_learning_surfaces_artifact(tampered)
 
 
 def _safe_identity() -> tuple[StructuredIdentitySurfaceObservation, ...]:
