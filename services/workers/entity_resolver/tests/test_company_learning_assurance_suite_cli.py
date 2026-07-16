@@ -320,7 +320,7 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert assurance["customer_lifecycle"]["violating_case_count"] == 0
     assert assurance["active_surfaces"]["structured_identity"][
         "observed_case_count"
-    ] == 4
+    ] == 6
     assert assurance["active_surfaces"]["source_salience"][
         "observed_case_count"
     ] == 5
