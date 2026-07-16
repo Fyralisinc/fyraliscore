@@ -5,9 +5,15 @@ from __future__ import annotations
 import re
 
 
+_UNICODE_LETTER_RE = r"[^\W\d_]"
+_UNICODE_ALNUM_OR_MARK_RE = (
+    r"(?:[^\W_]|[\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff"
+    r"\u20d0-\u20ff\ufe20-\ufe2f])"
+)
 _WORD_RE = re.compile(
-    r"[A-Za-z][A-Za-z0-9]*"
-    r"(?:(?:-[A-Za-z0-9]+)|(?:\.[A-Za-z][A-Za-z0-9]*))*"
+    rf"{_UNICODE_LETTER_RE}{_UNICODE_ALNUM_OR_MARK_RE}*"
+    rf"(?:(?:-{_UNICODE_ALNUM_OR_MARK_RE}+)|"
+    rf"(?:\.{_UNICODE_LETTER_RE}{_UNICODE_ALNUM_OR_MARK_RE}*))*"
     r"(?:['’]s)?"
 )
 _DOTTED_ACRONYM_RE = re.compile(

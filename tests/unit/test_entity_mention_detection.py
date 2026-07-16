@@ -74,3 +74,33 @@ def test_extended_source_surfaces_remain_bounded_and_deduplicated() -> None:
         text,
         max_opportunities=2,
     ) == ("Atlas.Pay", "N.B.I.")
+
+
+def test_unicode_names_preserve_exact_composed_decomposed_and_full_width_surfaces() -> None:
+    surfaces = (
+        "Café Ops",
+        "Cafe\u0301 Ops",
+        "Ａtlas-Gateway",
+    )
+
+    for surface in surfaces:
+        assert extract_bootstrap_mention_opportunities(surface) == (surface,)
+
+
+def test_unicode_names_remain_bounded_and_deduplicated() -> None:
+    text = (
+        "Café Ops and Café Ops and "
+        "Cafe\u0301 Ops and Cafe\u0301 Ops and "
+        "Ａtlas-Gateway"
+    )
+
+    assert extract_bootstrap_mention_opportunities(
+        text,
+        max_opportunities=2,
+    ) == ("Café Ops", "Cafe\u0301 Ops")
+
+
+def test_unicode_support_does_not_harvest_lowercase_prose() -> None:
+    assert extract_bootstrap_mention_opportunities(
+        "café ops discussed naïve routing with the résumé owner"
+    ) == ()
