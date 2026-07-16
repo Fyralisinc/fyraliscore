@@ -247,12 +247,17 @@ async def _prepare_negative_arm(
     training_at: datetime,
     runtime_target: RuntimeEntityTarget | None = None,
     recurrence_confidence: float | None = None,
+    conflicting_runtime_target: RuntimeEntityTarget | None = None,
+    conflicting_target_label: str | None = None,
+    training_channel: str | None = None,
+    training_phrases: tuple[str, ...] | None = None,
 ) -> _NegativeArmFoundation:
     runtime_target = runtime_target or RuntimeEntityTarget(
         canonical_ref_type="customer",
         logical_entity_type=definition.entity_type,
         semantic_kind="customer",
     )
+    conflicting_runtime_target = conflicting_runtime_target or runtime_target
     tenant_id = (
         assignment.adaptive_tenant_id
         if arm is CorrectiveMemoryArm.ADAPTIVE
@@ -296,6 +301,8 @@ async def _prepare_negative_arm(
             conflicting_id=conflicting_id,
             target_label=definition.candidate_alias,
             runtime_target=runtime_target,
+            conflicting_target_label=conflicting_target_label,
+            conflicting_runtime_target=conflicting_runtime_target,
         )
 
     alias_repo = EntityAliasRepo(pool)
@@ -312,13 +319,17 @@ async def _prepare_negative_arm(
     )
     await alias_repo.insert_alias(
         phrase=f"Conflicting {definition.candidate_alias}",
-        resolved_entity_ref=runtime_target.canonical_ref(conflicting_id),
+        resolved_entity_ref=conflicting_runtime_target.canonical_ref(
+            conflicting_id
+        ),
         source="manual",
         confidence=0.99,
         tenant_id=tenant_id,
         extra_metadata={
-            "logical_entity_type": runtime_target.logical_entity_type,
-            "semantic_kind": runtime_target.semantic_kind,
+            "logical_entity_type": (
+                conflicting_runtime_target.logical_entity_type
+            ),
+            "semantic_kind": conflicting_runtime_target.semantic_kind,
             "identity_basis_class": "source_authoritative",
             "identity_basis_ref": (
                 f"negative-control-fixture:{definition.case_id}:conflicting"
@@ -329,6 +340,11 @@ async def _prepare_negative_arm(
         conflicting_id
         if definition.recurrence_response == "conflicting_high"
         else target_id
+    )
+    recurrence_runtime_target = (
+        conflicting_runtime_target
+        if definition.recurrence_response == "conflicting_high"
+        else runtime_target
     )
     if recurrence_confidence is None:
         recurrence_confidence = (
@@ -349,7 +365,9 @@ async def _prepare_negative_arm(
             _resolver_response(
                 recurrence_entity_id,
                 confidence=recurrence_confidence,
-                canonical_type=runtime_target.canonical_ref_type,
+                canonical_type=(
+                    recurrence_runtime_target.canonical_ref_type
+                ),
             ),
         ]
     )
@@ -370,10 +388,17 @@ async def _prepare_negative_arm(
         tenant_id=tenant_id,
         alias_repo=alias_repo,
         text=definition.training_text,
-        channel=f"{definition.channel}-TRAIN",
+        channel=training_channel or f"{definition.channel}-TRAIN",
         occurred_at=training_at,
         corrective_memory_reuse_enabled=True,
     )
+    if training_phrases is not None:
+        await _set_observation_grounding_inputs(
+            pool=pool,
+            tenant_id=tenant_id,
+            observation_id=training_observation_id,
+            phrases=training_phrases,
+        )
     decision = await worker.process_observation(
         training_observation_id,
         tenant_id,
@@ -483,33 +508,54 @@ async def _materialize_runtime_targets(
     conflicting_id: UUID,
     target_label: str,
     runtime_target: RuntimeEntityTarget,
+    conflicting_target_label: str | None = None,
+    conflicting_runtime_target: RuntimeEntityTarget | None = None,
+) -> None:
+    conflicting_runtime_target = conflicting_runtime_target or runtime_target
+    await _materialize_runtime_target(
+        conn=conn,
+        tenant_id=tenant_id,
+        entity_id=target_id,
+        label=target_label,
+        runtime_target=runtime_target,
+    )
+    await _materialize_runtime_target(
+        conn=conn,
+        tenant_id=tenant_id,
+        entity_id=conflicting_id,
+        label=(
+            conflicting_target_label
+            or f"Conflicting {target_label}"
+        ),
+        runtime_target=conflicting_runtime_target,
+    )
+
+
+async def _materialize_runtime_target(
+    *,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    entity_id: UUID,
+    label: str,
+    runtime_target: RuntimeEntityTarget,
 ) -> None:
     metadata = {
         "source": "company_learning_evaluation",
         "logical_entity_type": runtime_target.logical_entity_type,
         "semantic_kind": runtime_target.semantic_kind,
     }
-    rows = (
-        (target_id, target_label),
-        (conflicting_id, f"Conflicting {target_label}"),
-    )
     if runtime_target.canonical_ref_type == "actor":
-        await conn.executemany(
+        await conn.execute(
             """
             INSERT INTO actors (
                 id, tenant_id, type, display_name, status, metadata
             ) VALUES ($1, $2, $3, $4, 'active', $5::jsonb)
             """,
-            tuple(
-                (
-                    entity_id,
-                    tenant_id,
-                    runtime_target.actor_type or "group",
-                    label,
-                    json.dumps(metadata, sort_keys=True),
-                )
-                for entity_id, label in rows
-            ),
+            entity_id,
+            tenant_id,
+            runtime_target.actor_type or "group",
+            label,
+            json.dumps(metadata, sort_keys=True),
         )
         return
     resource_kind = {
@@ -517,22 +563,17 @@ async def _materialize_runtime_targets(
         "system": "infrastructure",
         "workstream": "capacity",
     }.get(runtime_target.semantic_kind, "relational")
-    await conn.executemany(
+    await conn.execute(
         """
         INSERT INTO resources (
             id, tenant_id, kind, identity, current_value, metadata
         ) VALUES ($1, $2, $3, $4, $5::jsonb, $5::jsonb)
         """,
-        tuple(
-            (
-                entity_id,
-                tenant_id,
-                resource_kind,
-                label,
-                json.dumps(metadata, sort_keys=True),
-            )
-            for entity_id, label in rows
-        ),
+        entity_id,
+        tenant_id,
+        resource_kind,
+        label,
+        json.dumps(metadata, sort_keys=True),
     )
 
 
@@ -698,16 +739,37 @@ async def _inject_conflicting_source_hint(
     entity_type: str,
     conflicting_id: UUID,
 ) -> None:
-    source_ref = {
-        "type": entity_type,
-        "id": str(conflicting_id),
-        "version": 1,
-    }
+    await _set_observation_grounding_inputs(
+        pool=pool,
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrases=(phrase,),
+        entities=(
+            {
+                "type": entity_type,
+                "id": str(conflicting_id),
+                "version": 1,
+            },
+        ),
+    )
+
+
+async def _set_observation_grounding_inputs(
+    *,
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    observation_id: UUID,
+    phrases: tuple[str, ...],
+    entities: tuple[dict[str, Any], ...] | None = None,
+) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
             """
             UPDATE observations
-            SET entities_mentioned=$3::jsonb,
+            SET entities_mentioned=COALESCE(
+                    $3::jsonb,
+                    entities_mentioned
+                ),
                 content=jsonb_set(
                     content,
                     '{_unresolved_phrases}',
@@ -718,8 +780,8 @@ async def _inject_conflicting_source_hint(
             """,
             tenant_id,
             observation_id,
-            json.dumps([source_ref]),
-            json.dumps([phrase]),
+            json.dumps(entities) if entities is not None else None,
+            json.dumps(phrases),
         )
 
 
