@@ -342,10 +342,9 @@ It also proves:
 It does not yet prove:
 
 - performance on unseen alias spellings;
-- contextual references, pronouns or local nicknames;
-- conflicting evidence;
-- homonyms and same-name companies/people;
-- negative controls where no entity should resolve;
+- broad contextual references, pronouns or local nicknames beyond the sealed
+  cases;
+- broad conflicting-evidence and homonym populations beyond one case each;
 - open-world Slack reconstruction across long time spans and channels;
 - statistical confidence from a large held-out population;
 - real-provider/model robustness;
@@ -367,9 +366,9 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias Slack clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared |
-| Active autonomous company-learning runtime | 55–60% | Core loop exists, but breadth, repair and generalized grounding remain |
-| Customer-free objective substantiation | 30–35% | Strong typed framework and first E4 slice exist; population breadth is still small |
-| Broader revised system excluding task autonomy | 50–55% | Core substrate and proof path are substantial, but multiple end-state components remain partial |
+| Active autonomous company-learning runtime | 65–70% | Positive and negative learning loops, bounded Slack reconstruction and direct correction fencing work; breadth and convergence remain |
+| Customer-free objective substantiation | 45–50% | Positive, negative, Slack and direct-correction slices are measured, but the 60-case runtime population and open-world proof remain |
+| Broader revised system excluding task autonomy | 55–60% | Core substrate, learning loop and proof path are substantial, but multi-source breadth and full correction convergence remain partial |
 
 Task autonomy is excluded from all percentages.
 
@@ -383,10 +382,10 @@ Task autonomy is excluded from all percentages.
    - Homonym/local-association case.
    - Conflicting source hint.
    - Assert zero unsafe global alias creation and zero wrong Models.
-   - Current result: all four cases now execute on real Postgres, but the
-     adaptive arm leaks source-context-only grounding into source entity
-     annotations for the contextual phrase and homonym cases. The typed report
-     is correctly `contradicted`.
+   - Current result: all four cases execute on real Postgres with eight fresh
+     tenants, zero adaptive/frozen safety incidents and zero wrong Models.
+     Context-local adjudications no longer enter ingest entity hints, while
+     tenant-global exact reuse remains adaptive `3/3` versus frozen `0/3`.
 
 2. **Expand beyond exact surface replay**
    - Unseen spelling and abbreviation variants.
@@ -400,11 +399,13 @@ Task autonomy is excluded from all percentages.
    - Long-range temporal context.
    - Sufficient-context and contamination gold.
    - Boundaryless episode reconstruction rather than fixed windows.
-   - Current result: the first four-case existing-surface gold run is `0/4`
-     correct. Required context recall is `1.0`, but selected-context precision
-     is `0.8`, contamination is `0.2`, topology recall is `0.0`, edit/revision
-     correctness is `0.5`, budget adherence is `0.5` and insufficient-context
-     abstention is `0.0`.
+   - Current result: the first four-case existing-surface gold run is `3/4`
+     correct. Required-context recall, topology recall, edit/revision
+     correctness and insufficient-context abstention are `1.0`;
+     selected-context precision is `0.8889`, contamination is `0.1111` and
+     budget adherence is `0.75`. Long-range competing temporal alternatives
+     remain the failing case. Deletion, reactions and cross-channel structure
+     are not yet sealed.
 
 4. **Complete correction propagation**
    - Identify every accepted Model, relation, edge and projection that depended
@@ -412,10 +413,12 @@ Task autonomy is excluded from all percentages.
    - Fence unsafe reads immediately.
    - Recompute or supersede all affected derived state.
    - Measure convergence time and residual correction debt.
-   - Current result: the read-only audit and real-Postgres seeded-debt test can
-     discover stale readable Models and projections without mutating source or
-     another tenant. Production fencing, repair and convergence are not yet
-     implemented.
+   - Current result: direct production fencing is implemented and
+     real-Postgres proven. The predecessor-admitted wrong Model is archived,
+     direct dependents become unreadable, one `grounding_corrected`
+     re-evaluation is queued, replay is idempotent, source stays immutable and
+     another tenant is untouched. Relation/projection fencing, recursive fanout
+     and async archive-or-unfence convergence remain.
 
 5. **Scale the held-out population**
    - Generate enough independent matched pairs for uncertainty intervals.
@@ -452,10 +455,11 @@ Task autonomy is excluded from all percentages.
 
 ## Working Version Runbook
 
-The current runnable working version executes the real-Postgres
-clarification-to-corrective-memory-to-reuse slice, runs its sealed
-adaptive-versus-frozen recurrence experiment, and renders both into one Company
-Vitals report.
+The primary runnable working version now executes the positive adaptive/frozen
+learning loop, the real-Postgres negative-control population and the current
+Slack reconstruction gold through one command. It preserves the positive
+Company Vitals report as a component and writes one digest-sealed assurance
+summary across all three surfaces.
 
 ### Prerequisite and command
 
@@ -465,9 +469,9 @@ with `--database-url`.
 
 ```bash
 DATABASE_URL=postgresql://... \
-  python scripts/run_company_learning_vitals_harness.py \
-    --report-dir reports/company-learning-proof \
-    --run-id company-learning-proof \
+  python scripts/run_company_learning_assurance_suite.py \
+    --output-dir reports/company-learning-assurance \
+    --run-id company-learning-assurance \
     --system-version <git-sha-or-version>
 ```
 
@@ -475,43 +479,45 @@ DATABASE_URL=postgresql://... \
 
 ### Generated artifacts
 
-The report directory contains the saved experiment and standard report inputs.
-The main proof and reader-facing outputs are:
+The output directory contains:
 
-- `company_learning_scenario_evidence.json`;
-- `vitals/company_learning_evaluation.json`;
-- `vitals/company_learning_evidence_manifest.json`;
-- `vitals/company_learning_evidence_bundle.json`;
-- `vitals/vitals_scorecard.json`;
-- `vitals/vitals_summary.md`.
+- `company_learning_assurance_summary.json`;
+- `positive/company_learning_scenario_evidence.json`;
+- `positive/vitals/company_learning_evaluation.json`;
+- `positive/vitals/company_learning_evidence_bundle.json`;
+- `positive/vitals/vitals_scorecard.json`;
+- `negative/company_learning_negative_controls_evidence.json`;
+- `slack/slack_reconstruction_observations.jsonl`;
+- `slack/slack_reconstruction_existing_surface_report.json`.
 
 ### Successful-run behavior
 
 A successful run:
 
 - exits with status `0`;
-- prints the report and Vitals directories, scorecard and evidence-bundle paths,
-  the focused working-version status, the unscored general-product result and
-  adaptive lift;
-- validates and independently recomputes the typed recurrence experiment;
+- prints the summary path, working status, positive adaptive lift, negative
+  incident count and Slack status;
+- validates and independently recomputes the positive and negative typed
+  recurrence experiments;
 - joins real-database E3 runtime evidence with the paired E4 recurrence evidence
-  only through their declared disjoint INV-05 partitions;
+  in the positive Company Vitals component;
 - preserves all detected hard-safety incidents rather than averaging them away;
-- leaves all 30 general product vitals explicitly unmeasured, with
-  `overall_score=null`, because this command does not collect the evidence
-  required to score them;
-- returns a non-zero status when the typed experiment, database-backed Company
-  Physics evaluation, required saved artifacts or zero-incident condition is
-  missing.
+- fails on a positive hard failure, a missing required artifact or any negative
+  safety incident;
+- keeps incomplete Slack breadth diagnostic and non-blocking while exposing all
+  metrics and proof gaps;
+- leaves all 30 general product vitals explicitly unmeasured in the focused
+  positive Vitals component.
 
 ### Proof boundary
 
-This working version proves a real-Postgres runtime slice for the current exact,
-tenant-global Slack alias path and a controlled synthetic causal comparison of
-adaptive reuse against a frozen system. The joined E3 and E4 evidence remains
-insufficient for broad invariant closure. It is not open-world or customer E5
-evidence, does not prove generalized Slack reconstruction or multi-source
-learning, and does not include autonomous task execution.
+This working version proves a real-Postgres exact tenant-global learning slice,
+four matched negative controls, a four-case in-process Slack reconstruction
+slice and a separately real-Postgres-proven direct correction fence. The joined
+E3/E4 evidence remains insufficient for broad invariant closure. It is not
+open-world or customer E5 evidence, does not prove multi-source learning, does
+not execute the sealed 60-case population, and does not include autonomous task
+execution.
 
 The implementation assumes reuse of the existing SAGE learner, retrieval
 machinery, Model/event writers, projection runtime, grounding protocols and
@@ -529,30 +535,30 @@ not claimed by this working version.
 
 ### Explicitly deferred production hardening
 
-- larger and more varied held-out case populations;
-- confidence intervals and stratified statistical analysis;
-- negative controls, homonyms, conflicts and unseen surface forms;
+- runtime execution of the sealed 60-case population;
+- unseen spellings, abbreviations and larger homonym/conflict populations;
 - open-world simulation, real-provider runs and customer E5 validation;
-- complete downstream correction propagation;
-- general Slack episode reconstruction and cross-source equivalence;
+- relation/projection correction fencing and async convergence;
+- long-range temporal disambiguation and the five unsealed Slack families;
+- cross-source equivalence;
 - load, restart, outage, durability and evidence-attestation testing;
 - cryptographic binding between the experiment artifact and the exact
   database-backed tenant/observation manifest.
 
 ## Next Execution Sequence
 
-1. Fix source-context-only entity annotation leakage and rerun the four
-   negative controls until the typed report has no safety incidents.
-2. Thread Slack topology/revision metadata and make sufficiency
-   candidate-specific so the existing four-case gold improves from `0/4`.
-3. Add the immediate correction fence by reusing Model archive, edge inerting,
-   relation lifecycle and projection refresh machinery.
-4. Execute the deterministic 60-case held-out population after the reusable
+1. Execute the deterministic 60-case held-out population after the reusable
    recurrence executor is generalized.
-5. Integrate only observed artifacts into the joined Company Vitals report.
-6. Add the five remaining Slack gold families and variant-alias populations.
-7. Repeat the causal suite across structured sources.
-8. Reassess progress and reprioritize from the combined report.
+2. Fix the remaining long-range temporal-alternative Slack case and then seal
+   deletion, reactions, cross-thread, cross-channel and pronoun/coreference
+   families.
+3. Extend correction propagation to relations, projections, recursive fanout
+   and explicit archive-or-unfence convergence.
+4. Integrate the combined assurance summary into the reader-facing Company
+   Vitals report without scoring diagnostic evidence.
+5. Add variant-alias populations and retention/forgetting regression.
+6. Repeat the causal suite across structured sources.
+7. Reassess progress and reprioritize from the combined report.
 
 ## Progress Ledger
 
@@ -612,3 +618,23 @@ not claimed by this working version.
   cross-tenant or source mutation.
 - Preserved every failure as an explicit observed result rather than converting
   it into a passing benchmark.
+
+### 2026-07-16 — Production fixes and combined assurance
+
+- Prevented independently adjudicated `source_context_only` aliases from
+  entering ingest entity hints while preserving governed tenant-global exact
+  replay.
+- Reran the positive and negative real-Postgres suites: positive adaptive
+  correctness remains `1.0` versus frozen `0.0`, and all four negative controls
+  now have zero safety incidents.
+- Made Slack sufficiency candidate-specific, added evidence-relative bare-name
+  ambiguity and source-derived context costs, then projected immutable Slack
+  thread, reply and edit structure.
+- Improved the four-case Slack gold from `0/4` to `3/4`, with topology and edit
+  correctness at `1.0`.
+- Added and real-Postgres-proved a direct correction fence that archives the
+  wrong Model, hides direct dependents and queues idempotent correction-specific
+  re-evaluation.
+- Added one assurance command and digest-sealed summary combining positive
+  Company Vitals, negative safety controls and Slack reconstruction. The final
+  run is `working` with no blocking failures.
