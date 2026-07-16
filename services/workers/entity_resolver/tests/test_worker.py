@@ -388,37 +388,14 @@ async def test_top_level_unresolved_phrases_from_ingestion_are_processed(
     assert '"mention_detection"' in provider.calls[0]["user"]
     assert str(detection["mention_id"]) in provider.calls[0]["user"]
 
-    # The exact admitted referent and grounding versions must survive the
-    # resolver -> Think queue boundary. ThinkWorker already rehydrates
-    # seed_entity_ids; this assertion protects the producer side of that
-    # existing contract.
-    triggers = await _fetch_entity_resolved_triggers(
+    # A grounding admission issued to the sidecar consumer must not authorize
+    # a second legacy Think consumer. The source-semantic lane owns the exact
+    # downstream belief/no-admission fate once an embedding is available.
+    assert await _fetch_entity_resolved_triggers(
         resolver_db,
         tenant_id,
         obs_id,
-    )
-    assert len(triggers) == 1
-    trigger = triggers[0]
-    payload = trigger["payload"]
-    if isinstance(payload, str):
-        payload = json.loads(payload)
-    admitted_ref = {
-        "type": "customer",
-        "id": "customer-nimbus",
-        "version": 1,
-    }
-    assert trigger["tenant_id"] == tenant_id
-    assert trigger["observation_id"] == obs_id
-    assert payload["entity_ref"] == admitted_ref
-    assert payload["seed_entity_ids"] == [admitted_ref]
-    assert payload["resolution_assessment_ref"] == {
-        "id": str(traces[0]["resolution_assessment_id"]),
-        "version": 1,
-    }
-    assert payload["grounding_admission_ref"]["id"] == str(
-        traces[0]["grounding_admission_id"]
-    )
-    assert payload["grounding_admission_ref"]["version"] == 1
+    ) == []
     async with resolver_db.acquire() as conn:
         admission = await conn.fetchrow(
             """
@@ -440,21 +417,17 @@ async def test_top_level_unresolved_phrases_from_ingestion_are_processed(
         )
     assert admission is not None
     assert admission["assessment_id"] == traces[0]["resolution_assessment_id"]
-    assert assessment_version == payload["resolution_assessment_ref"]["version"]
-    assert admission["decision_version"] == payload["grounding_admission_ref"][
-        "version"
-    ]
-    assert admission["expires_at"].isoformat() == payload[
-        "grounding_admission_ref"
-    ]["expires_at"]
+    assert assessment_version == 1
+    assert admission["decision_version"] == 1
+    assert admission["expires_at"] is not None
 
     # A terminal grounding trace closes this processing generation, so replay
-    # must neither call the model nor enqueue a duplicate downstream trigger.
+    # must neither call the model nor enqueue a legacy downstream trigger.
     assert await worker.process_observation(obs_id, tenant_id) == []
     assert len(provider.calls) == 1
     assert len(
         await _fetch_entity_resolved_triggers(resolver_db, tenant_id, obs_id)
-    ) == 1
+    ) == 0
 
 
 async def test_duplicate_top_level_and_metadata_phrases_are_deduped(

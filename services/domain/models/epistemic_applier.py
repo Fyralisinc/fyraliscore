@@ -27,6 +27,7 @@ class EpistemicApplier:
         *,
         proposal: ProposedBeliefAssertion,
         source_observation_id: UUID,
+        source_actor_id: UUID | None,
         occurred_at: datetime,
         selected_scope_entity: dict[str, Any],
         embedding: list[float],
@@ -38,6 +39,7 @@ class EpistemicApplier:
             proposition=proposal.proposition,
             natural=proposal.natural,
             embedding=embedding,
+            scope_actors=[source_actor_id] if source_actor_id is not None else [],
             scope_entities=[selected_scope_entity],
             scope_temporal={
                 "source_occurred_at": occurred_at.isoformat(),

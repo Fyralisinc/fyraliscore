@@ -155,6 +155,7 @@ class GroundedBeliefProcessor:
                     "speech_act_ref": bundle.speech_act.speech_act_id,
                     "grounding_continuity": continuity.model_dump(mode="json"),
                     "source_semantic_interpretation_id": str(interpretation_id),
+                    "source_author_ref": grounding.source_author_ref,
                 }
                 proposal = ProposedBeliefAssertion(
                     proposal_id=uuid7(),
@@ -173,6 +174,7 @@ class GroundedBeliefProcessor:
                     conn,
                     proposal=proposal,
                     source_observation_id=grounding.source_observation_id,
+                    source_actor_id=grounding.source_actor_id,
                     occurred_at=grounding.occurred_at,
                     selected_scope_entity=grounding.selected_scope_entity,
                     embedding=embedding,

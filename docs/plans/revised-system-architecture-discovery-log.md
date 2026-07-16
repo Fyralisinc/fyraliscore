@@ -260,14 +260,18 @@ coherent diff.
   grounding and the supported asserted/report grammar reaches one canonical
   belief Model without a manual semantic handoff. The grounding trace,
   interpretation, consumer-specific admission and Model commit atomically.
+  The exact source-native Slack author is retained in the SourceAssertion and
+  Model proposition. The legacy late-Think trigger is suppressed because the
+  resolver's sidecar admission cannot authorize Think or a second belief write.
 - **Recorded edge cases:**
   - An admitted grounding whose Observation embedding is null or still pending
     logs a deferred fate but has no durable source-semantic retry item yet.
   - Sequential replay is idempotent, while simultaneous processors for the same
     grounding trace still rely on uniqueness failure rather than an explicit
     per-trace claim/lock protocol.
-  - Source author identity currently uses a stable source-channel fallback; it
-    does not yet bind the source-native Slack user revision to SourceAssertion.
+  - Sources without a stable native actor reference still carry an explicit
+    unresolved-author marker; they need later adjudication rather than a
+    fabricated channel identity.
   - Mention, interpretation and admission links are tenant-filtered in the
     writer, but not every relationship has a tenant-composite foreign key.
   - The deterministic grammar intentionally abstains on compound clauses,
@@ -278,9 +282,11 @@ coherent diff.
   expand the slice into recovery infrastructure and general language
   understanding.
 - **Return condition:** Revisit embedding retry first after the green vertical,
-  then add concurrency claims and source-native revision/author identity before
-  production cutover. Add grammar classes only with matched positive and
-  negative semantic fixtures.
+  then add concurrency claims and source-native revision identity before
+  production cutover. Any future Think handoff must mint a separate live
+  Think-consumer admission and prove it cannot duplicate the source-semantic
+  belief. Add grammar classes only with matched positive and negative semantic
+  fixtures.
 
 ## Reconciliation Procedure
 

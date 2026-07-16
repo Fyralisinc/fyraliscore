@@ -40,6 +40,8 @@ class GroundingTraceContext:
     source_observation_id: UUID
     content_text: str
     source_channel: str
+    source_author_ref: str
+    source_actor_id: UUID | None
     occurred_at: datetime
     context_snapshot_id: UUID
     context_snapshot_version: int
@@ -215,7 +217,8 @@ class SourceSemanticRepo:
                    gt.context_snapshot_id, gt.resolution_assessment_id,
                    gt.grounding_admission_id, gt.current_fate,
                    gt.selected_referent,
-                   o.content_text, o.source_channel, o.occurred_at,
+                   o.content_text, o.source_channel, o.source_actor_ref,
+                   o.actor_id, o.occurred_at,
                    ics.snapshot_version AS context_snapshot_version,
                    req.mention_ref,
                    emd.mention,
@@ -256,12 +259,20 @@ class SourceSemanticRepo:
                 grounding_trace_id=str(grounding_trace_id),
             )
         selected_scope_entity = _json(row["selected_referent"])
+        source_actor_id = row["actor_id"]
+        source_author_ref = row["source_actor_ref"]
+        if not source_author_ref and source_actor_id is not None:
+            source_author_ref = f"actor:{source_actor_id}"
+        if not source_author_ref:
+            source_author_ref = f"unresolved-source-author:{row['source_channel']}"
         return GroundingTraceContext(
             trace_id=row["id"],
             tenant_id=row["tenant_id"],
             source_observation_id=row["source_observation_id"],
             content_text=str(row["content_text"] or ""),
             source_channel=str(row["source_channel"]),
+            source_author_ref=str(source_author_ref),
+            source_actor_id=source_actor_id,
             occurred_at=row["occurred_at"],
             context_snapshot_id=row["context_snapshot_id"],
             context_snapshot_version=int(row["context_snapshot_version"]),

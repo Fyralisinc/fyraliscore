@@ -414,6 +414,15 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
             "SELECT count(*) FROM models WHERE tenant_id=$1",
             tenant_id,
         )
+        legacy_think_trigger_count = await conn.fetchval(
+            """
+            SELECT count(*) FROM think_trigger_queue
+            WHERE tenant_id=$1 AND observation_id=$2
+              AND trigger_subkind='entity_resolved_late'
+            """,
+            tenant_id,
+            result.observation.id,
+        )
 
     assert row is not None
     assert row["current_fate"] == "resolved_for_consumer"
@@ -421,7 +430,9 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
     assert row["admitted_model_id"] is not None
     assert row["born_from_event_id"] == result.observation.id
     assert model_count == 1
+    assert legacy_think_trigger_count == 0
     assertion = _json(row["source_assertion"])
+    assert assertion["current_speaker_or_author"] == "slack:U-NORTHSTAR"
     coordinate = assertion["coordinates"][0]
     assert draft.content_text[
         coordinate["span_start"] : coordinate["span_end"]
@@ -429,6 +440,7 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
     proposition = _json(row["proposition"])
     continuity = _json(row["grounding_continuity"])
     assert proposition["kind"] == "belief"
+    assert proposition["source_author_ref"] == "slack:U-NORTHSTAR"
     assert proposition["source_semantic_interpretation_id"] == str(
         row["interpretation_id"]
     )

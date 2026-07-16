@@ -50,7 +50,6 @@ from lib.llm.provider import (
     LLMTimeoutError,
 )
 from lib.shared.ids import uuid7
-from services.domain.triggers import enqueue_trigger
 from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.domain.entity_grounding import (
@@ -75,11 +74,6 @@ _log = structlog.get_logger(__name__)
 # can override without re-instantiating every module.
 HIGH_CONFIDENCE = 0.8
 REVIEW_MIN = 0.5
-
-# Types whose late-resolution "materially changes context" and triggers
-# a T1 re-enqueue per ARCHITECTURE §15.
-_TRIGGER_REENQUEUE_TYPES = frozenset(("customer", "commitment", "goal"))
-
 
 # =====================================================================
 # LLM schema (Pydantic) — what the resolver prompt returns.
@@ -403,14 +397,6 @@ class EntityResolverWorker:
                 observation_id=observation_id,
                 grounding_trace_id=trace_id,
             )
-            if selected_ref.get("type") in _TRIGGER_REENQUEUE_TYPES:
-                await self._maybe_enqueue_trigger(
-                    observation_id=observation_id,
-                    tenant_id=tenant_id,
-                    entity_ref=selected_ref,
-                    conn=conn,
-                    grounding_episode=episode,
-                )
             self._log.info(
                 "entity_resolver.resolved",
                 phrase=phrase,
@@ -785,7 +771,7 @@ class EntityResolverWorker:
         )
 
     # -----------------------------------------------------------------
-    # Helpers: durable work visibility and lineage-carrying trigger enqueue.
+    # Helpers: durable grounding-work visibility.
     # -----------------------------------------------------------------
 
     async def _load_unresolved_phrases(
@@ -881,92 +867,6 @@ class EntityResolverWorker:
             for phrase in _extract_unresolved_phrases(content)
             if phrase not in terminal_phrases and ready(phrase)
         ]
-
-    async def _maybe_enqueue_trigger(
-        self,
-        *,
-        observation_id: UUID,
-        tenant_id: UUID,
-        entity_ref: dict[str, Any],
-        conn: asyncpg.Connection | None,
-        grounding_episode: GroundingEpisode,
-    ) -> None:
-        """Try to enqueue T1 on think_trigger_queue if the table exists.
-
-        Deviation docs: prompt lets us pick "try/except" OR "check
-        pg_class". Picking pg_class check: it's a single fast query
-        and avoids logging the error as noise when 2-A's 0004 is
-        present.
-        """
-        exists = await self._fetchval(
-            conn,
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = 'public'
-                  AND c.relname = 'think_trigger_queue'
-                  AND c.relkind IN ('r', 'p')
-            )
-            """,
-        )
-        if not exists:
-            self._log.warning(
-                "entity_resolver.trigger_skipped_no_table",
-                entity_ref=entity_ref,
-                observation_id=str(observation_id),
-            )
-            return
-        try:
-            if conn is not None:
-                await enqueue_trigger(
-                    conn,
-                    tenant_id=tenant_id,
-                    trigger_kind="T1",
-                    trigger_subkind="entity_resolved_late",
-                    observation_id=observation_id,
-                    payload={
-                        "entity_ref": entity_ref,
-                        "seed_entity_ids": [entity_ref],
-                        "resolution_assessment_ref": {
-                            "id": grounding_episode.assessment.assessment_id,
-                            "version": grounding_episode.assessment.assessment_version,
-                        },
-                        "grounding_admission_ref": {
-                            "id": grounding_episode.admission.decision_id,
-                            "version": grounding_episode.admission.decision_version,
-                            "expires_at": grounding_episode.admission.expires_at.isoformat(),
-                        },
-                    },
-                )
-            else:
-                async with self._pool.acquire() as owned:
-                    await enqueue_trigger(
-                        owned,
-                        tenant_id=tenant_id,
-                        trigger_kind="T1",
-                        trigger_subkind="entity_resolved_late",
-                        observation_id=observation_id,
-                        payload={
-                            "entity_ref": entity_ref,
-                            "seed_entity_ids": [entity_ref],
-                            "resolution_assessment_ref": {
-                                "id": grounding_episode.assessment.assessment_id,
-                                "version": grounding_episode.assessment.assessment_version,
-                            },
-                            "grounding_admission_ref": {
-                                "id": grounding_episode.admission.decision_id,
-                                "version": grounding_episode.admission.decision_version,
-                                "expires_at": grounding_episode.admission.expires_at.isoformat(),
-                            },
-                        },
-                    )
-        except asyncpg.exceptions.UndefinedTableError:
-            self._log.warning(
-                "entity_resolver.trigger_skipped_no_table",
-                entity_ref=entity_ref,
-                observation_id=str(observation_id),
-            )
 
     # -----------------------------------------------------------------
     # Connection shims.

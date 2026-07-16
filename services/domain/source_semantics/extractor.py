@@ -104,9 +104,7 @@ class DeterministicSourceSemanticExtractor:
                     span_end=end,
                 ),
             ),
-            current_speaker_or_author=(
-                f"source-author:{grounding.source_channel}"
-            ),
+            current_speaker_or_author=grounding.source_author_ref,
             kind=(
                 SourceAssertionKind.ASKED
                 if is_question
