@@ -2949,6 +2949,112 @@ class ModelsRepo:
             return await _run(owned)
 
     # =================================================================
+    # correction visibility fence
+    # =================================================================
+    async def fence_for_correction(
+        self,
+        model_id: UUID,
+        *,
+        tenant_id: UUID,
+        cause_event_id: UUID | None,
+        cause_model_id: UUID,
+        conn: asyncpg.Connection | None = None,
+    ) -> ModelRow | None:
+        """Fail closed while a dependent Model awaits correction re-evaluation.
+
+        Returns the changed Model, or ``None`` when the Model is already hidden
+        or no longer active. The tenant predicate is mandatory so a correction
+        lineage can never fence a Model outside its own tenant.
+        """
+
+        async def _run(c: asyncpg.Connection) -> ModelRow | None:
+            await _ensure_vector_codec(c)
+            pre_row = await c.fetchrow(
+                """
+                SELECT status, visible_to_subjects
+                FROM models
+                WHERE id = $1 AND tenant_id = $2
+                FOR UPDATE
+                """,
+                model_id,
+                tenant_id,
+            )
+            if pre_row is None:
+                raise ValidationError(
+                    f"model {model_id} not found",
+                    model_id=str(model_id),
+                    tenant_id=str(tenant_id),
+                )
+            if (
+                str(pre_row["status"]) != "active"
+                or not bool(pre_row["visible_to_subjects"])
+            ):
+                return None
+
+            row = await c.fetchrow(
+                f"""
+                UPDATE models
+                SET visible_to_subjects = FALSE
+                WHERE id = $1
+                  AND tenant_id = $2
+                  AND status = 'active'
+                  AND visible_to_subjects = TRUE
+                RETURNING {_SELECT_COLS_SQL}
+                """,
+                model_id,
+                tenant_id,
+            )
+            if row is None:
+                return None
+            hydrated = _hydrate_row(row)
+            previous_state = {"visible_to_subjects": True}
+            new_state = {"visible_to_subjects": False}
+
+            await emit_state_change(
+                c,
+                kind="fence_model_for_correction",
+                entity_id=hydrated.id,
+                tenant_id=hydrated.tenant_id,
+                cause_event_id=cause_event_id,
+                entity_kind="model",
+                metadata={
+                    "cause_model_id": str(cause_model_id),
+                    "fence_reason": "grounding_corrected",
+                },
+            )
+
+            from services.reasoning.think.audit import (  # noqa: WPS433
+                CAUSE_FIELD_UPDATE,
+                emit_audit_event,
+            )
+
+            await emit_audit_event(
+                c,
+                model_id=hydrated.id,
+                tenant_id=hydrated.tenant_id,
+                cause_type=CAUSE_FIELD_UPDATE,
+                new_state=new_state,
+                previous_state=previous_state,
+                cause_id=cause_event_id,
+                changed_fields=["visible_to_subjects"],
+            )
+            await emit_model_event(
+                c,
+                model=hydrated,
+                event_type=MODEL_EVENT_UPDATED,
+                changed_fields=["visible_to_subjects"],
+                previous_snapshot=previous_state,
+                source_event_id=cause_event_id,
+            )
+            return hydrated
+
+        if conn is not None:
+            return await _run(conn)
+        async with self._require_pool().acquire() as owned:
+            async with owned.transaction():
+                return await _run(owned)
+
+    # =================================================================
     # archive
     # =================================================================
     async def archive(

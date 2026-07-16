@@ -55,6 +55,9 @@ class GroundingTraceContext:
     grounding_admission: GroundingAdmissionDecision
     current_fate: str
     selected_scope_entity: dict[str, Any] | None
+    supersedes_grounding_trace_id: UUID | None = None
+    correction_kind: str | None = None
+    adjudication_ref: str | None = None
 
     def continuity(
         self,
@@ -604,7 +607,7 @@ class SourceSemanticRepo:
             SELECT gt.id, gt.tenant_id, gt.source_observation_id,
                    gt.context_snapshot_id, gt.resolution_assessment_id,
                    gt.grounding_admission_id, gt.current_fate,
-                   gt.selected_referent,
+                   gt.selected_referent, gt.trace,
                    o.content_text, o.source_channel, o.source_actor_ref,
                    o.actor_id, o.occurred_at,
                    ics.snapshot_version AS context_snapshot_version,
@@ -647,6 +650,21 @@ class SourceSemanticRepo:
                 grounding_trace_id=str(grounding_trace_id),
             )
         selected_scope_entity = _json(row["selected_referent"])
+        trace = _json(row["trace"])
+        if not isinstance(trace, dict):
+            trace = {}
+        raw_predecessor = trace.get("supersedes_grounding_trace_id")
+        try:
+            supersedes_grounding_trace_id = (
+                UUID(str(raw_predecessor)) if raw_predecessor is not None else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise InvariantViolation(
+                "SOURCE_SEMANTIC_CORRECTION_LINEAGE_INVALID",
+                "corrected grounding trace names an invalid predecessor",
+                grounding_trace_id=str(grounding_trace_id),
+                predecessor_grounding_trace_id=str(raw_predecessor),
+            ) from exc
         source_actor_id = row["actor_id"]
         source_author_ref = row["source_actor_ref"]
         if not source_author_ref and source_actor_id is not None:
@@ -679,6 +697,17 @@ class SourceSemanticRepo:
             selected_scope_entity=(
                 dict(selected_scope_entity)
                 if isinstance(selected_scope_entity, dict)
+                else None
+            ),
+            supersedes_grounding_trace_id=supersedes_grounding_trace_id,
+            correction_kind=(
+                str(trace["correction_kind"])
+                if trace.get("correction_kind") is not None
+                else None
+            ),
+            adjudication_ref=(
+                str(trace["adjudication_ref"])
+                if trace.get("adjudication_ref") is not None
                 else None
             ),
         )

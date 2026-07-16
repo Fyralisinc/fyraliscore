@@ -21,6 +21,7 @@ from lib.contracts.source_semantics import (
 )
 from lib.shared.errors import InvariantViolation
 from lib.shared.ids import uuid7
+from services.domain.correction_propagation import CorrectionPropagationService
 from services.domain.models.epistemic_applier import EpistemicApplier
 from services.domain.models.repo import ModelsRepo
 from services.domain.source_semantics.extractor import (
@@ -43,20 +44,23 @@ class GroundedBeliefProcessor:
         epistemic_applier: EpistemicApplier | None = None,
         models_repo: ModelsRepo | None = None,
         extractor: DeterministicSourceSemanticExtractor | None = None,
+        correction_propagation_service: CorrectionPropagationService | None = None,
     ) -> None:
         self._repo = source_semantic_repo or SourceSemanticRepo()
         self._extractor = extractor or DeterministicSourceSemanticExtractor()
+        model_repo = models_repo or ModelsRepo(
+            pool=None,  # type: ignore[arg-type]
+            embedder=None,
+            run_topology_on_insert=False,
+        )
         if epistemic_applier is not None:
             self._epistemic = epistemic_applier
         else:
-            self._epistemic = EpistemicApplier(
-                models_repo
-                or ModelsRepo(
-                    pool=None,  # type: ignore[arg-type]
-                    embedder=None,
-                    run_topology_on_insert=False,
-                )
-            )
+            self._epistemic = EpistemicApplier(model_repo)
+        self._correction_propagation = (
+            correction_propagation_service
+            or CorrectionPropagationService(models_repo=model_repo)
+        )
 
     async def process_trace(
         self,
@@ -89,6 +93,11 @@ class GroundedBeliefProcessor:
                 bundle_digest=bundle.bundle_digest,
             )
             if duplicate is not None:
+                await self._propagate_correction(
+                    conn,
+                    grounding=grounding,
+                    result=duplicate,
+                )
                 return duplicate
 
             self._validate_exact_source_semantics(bundle=bundle, grounding=grounding)
@@ -212,13 +221,37 @@ class GroundedBeliefProcessor:
                 decision_digest=decision_digest,
                 decided_at=now,
             )
-            return GroundedBeliefApplyResult(
+            result = GroundedBeliefApplyResult(
                 interpretation_id=interpretation_id,
                 admission_decision_id=decision_id,
                 disposition=disposition,
                 reason_codes=reason_codes,
                 model_id=model_id,
             )
+            await self._propagate_correction(
+                conn,
+                grounding=grounding,
+                result=result,
+            )
+            return result
+
+    async def _propagate_correction(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        grounding: GroundingTraceContext,
+        result: GroundedBeliefApplyResult,
+    ) -> None:
+        await self._correction_propagation.propagate_direct_correction(
+            conn,
+            tenant_id=grounding.tenant_id,
+            predecessor_grounding_trace_id=(
+                grounding.supersedes_grounding_trace_id
+            ),
+            successor_grounding_trace_id=grounding.trace_id,
+            cause_event_id=grounding.source_observation_id,
+            corrected_model_id=result.model_id,
+        )
 
     @staticmethod
     def _route_reasons(
