@@ -1971,6 +1971,62 @@ async def _maybe_seed_storyline_models(
     return seeded_status
 
 
+async def _pre_first_wave_memory_snapshot(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Measure semantic memory and structural scaffolding before wave one."""
+
+    semantic_tables = {
+        "models": "models",
+        "model_edges": "model_edges",
+        "pattern_candidates": "pattern_candidates",
+        "hypotheses": "sage_latent_gap_hypotheses",
+    }
+    scaffolding_tables = {
+        "actors": "actors",
+        "resources": "resources",
+        "customers": "customers",
+        "commitments": "commitments",
+        "goals": "goals",
+        "decisions": "decisions",
+        "entity_aliases": "entity_aliases",
+        "observations": "observations",
+    }
+    async with pool.acquire() as conn:
+        semantic = {
+            name: int(
+                await conn.fetchval(
+                    f"SELECT count(*)::bigint FROM {table} WHERE tenant_id = $1",
+                    tenant_id,
+                )
+                or 0
+            )
+            for name, table in semantic_tables.items()
+        }
+        scaffolding = {
+            "tenant": int(
+                await conn.fetchval(
+                    "SELECT count(*)::bigint FROM tenants WHERE id = $1",
+                    tenant_id,
+                )
+                or 0
+            ),
+            **{
+                name: int(
+                    await conn.fetchval(
+                        f"SELECT count(*)::bigint FROM {table} WHERE tenant_id = $1",
+                        tenant_id,
+                    )
+                    or 0
+                )
+                for name, table in scaffolding_tables.items()
+            },
+        }
+    return semantic, scaffolding
+
+
 async def _seed_database_preflight(
     pool: asyncpg.Pool,
     *,
@@ -2237,6 +2293,8 @@ async def _collect_storyline_benchmark_summary(
     adaptive_drain_status: dict[str, Any],
     append_context: dict[str, Any] | None,
     horizon_start_batch: int,
+    semantic_memory_before_first_wave: dict[str, int],
+    pre_first_wave_scaffolding: dict[str, int],
     started: float,
 ) -> dict[str, Any]:
     model_summary = await collect_model_layer_report(
@@ -2255,6 +2313,12 @@ async def _collect_storyline_benchmark_summary(
         elapsed_seconds=time.monotonic() - started,
     )
     model_summary["adaptive_drain_status"] = adaptive_drain_status
+    model_summary["semantic_memory_before_first_wave"] = dict(
+        semantic_memory_before_first_wave
+    )
+    model_summary["pre_first_wave_scaffolding"] = dict(
+        pre_first_wave_scaffolding
+    )
     model_summary["future_validation_events"] = await _count_future_validation_events(
         pool, tenant_id=tenant_id
     )
@@ -3408,6 +3472,23 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             append_context=benchmark_inputs.append_context,
             seed_status=prepared.seed_status,
         )
+        (
+            semantic_memory_before_first_wave,
+            pre_first_wave_scaffolding,
+        ) = await _pre_first_wave_memory_snapshot(
+            runtime.pool,
+            tenant_id=tenant_id,
+        )
+        print(
+            "semantic_memory_before_first_wave="
+            + json.dumps(semantic_memory_before_first_wave, sort_keys=True),
+            flush=True,
+        )
+        print(
+            "pre_first_wave_scaffolding="
+            + json.dumps(pre_first_wave_scaffolding, sort_keys=True),
+            flush=True,
+        )
         if args.mode == "seed-only":
             return await _write_seed_only_outputs(
                 args,
@@ -3463,6 +3544,8 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             adaptive_drain_status=adaptive_drain,
             append_context=benchmark_inputs.append_context,
             horizon_start_batch=benchmark_inputs.horizon_start_batch,
+            semantic_memory_before_first_wave=semantic_memory_before_first_wave,
+            pre_first_wave_scaffolding=pre_first_wave_scaffolding,
             started=started,
         )
         return await _write_storyline_benchmark_outputs(

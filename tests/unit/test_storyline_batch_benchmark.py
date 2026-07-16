@@ -510,6 +510,49 @@ def test_maybe_seed_storyline_models_skips_seed_for_append_context() -> None:
     assert result is seed_status
 
 
+def test_pre_first_wave_snapshot_separates_memory_from_scaffolding() -> None:
+    counts = {
+        "models": 0,
+        "model_edges": 0,
+        "pattern_candidates": 0,
+        "sage_latent_gap_hypotheses": 0,
+        "tenants": 1,
+        "actors": 12,
+        "resources": 9,
+        "customers": 4,
+        "commitments": 5,
+        "goals": 3,
+        "decisions": 2,
+        "entity_aliases": 20,
+        "observations": 0,
+    }
+
+    class _Conn:
+        async def fetchval(self, sql, *_args):
+            for table, count in counts.items():
+                if f"FROM {table} " in sql:
+                    return count
+            raise AssertionError(sql)
+
+    memory, scaffolding = asyncio.run(
+        benchmark._pre_first_wave_memory_snapshot(
+            _SeedPreflightPool(_Conn()),
+            tenant_id=uuid4(),
+        )
+    )
+
+    assert memory == {
+        "models": 0,
+        "model_edges": 0,
+        "pattern_candidates": 0,
+        "hypotheses": 0,
+    }
+    assert scaffolding["tenant"] == 1
+    assert scaffolding["actors"] == 12
+    assert scaffolding["entity_aliases"] == 20
+    assert scaffolding["observations"] == 0
+
+
 def test_seed_database_preflight_skips_small_seeds() -> None:
     result = asyncio.run(
         benchmark._seed_database_preflight(
