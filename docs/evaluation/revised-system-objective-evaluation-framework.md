@@ -4440,6 +4440,31 @@ quality:
 
 ## Entity Grounding Pre-Customer Evidence Standard
 
+### Current executable entity-physics checkpoint (`18aab465`)
+
+The evaluator now measures gold exact-span extraction and stage-level pipeline
+quality independently from protocol-fate closure. Persisted signals are tested
+in batches, learned discovery emits typed candidates, and committed detections
+enter the existing resolver bridge. Discovery mode records learned execution or
+deterministic availability fallback; provider/model readiness is preflighted.
+
+Current evidence must be read as a vector, not a pass:
+
+| Evidence | Current result | Valid conclusion |
+| --- | ---: | --- |
+| Frozen real `gpt-5.4` learned run | exact-span P/R/F1 `0.8163/0.6452/0.7207`; type accuracy `0.9556`; negative cleanliness `1.0` | Fresh provider evidence; learned extraction is useful but not exceptional |
+| Source-verifiable offset repair plus threshold rescore | exact-span P/R/F1 `0.8500/0.8226/0.8361`; type accuracy `0.9286` | Post-hoc rescore of saved provider outputs only; not a fresh or untouched run |
+| Deterministic holdouts | first adapted holdout strong; final untouched holdout weak | Fixture adaptation is regression evidence, not generalization proof |
+| Pipeline metrics | discovery, type, resolver-handoff and canonical-link fields exist | Stage localization is possible; population is incomplete |
+| Canonical linking | no sealed gold referents in the learned benchmark | No canonical-link coverage or accuracy claim |
+| Full company simulation | authoritative 45-batch run remains pre-fix `not_credible` | No aggregate upgrade; no second large run occurred |
+
+The next report must keep learned and deterministic-fallback populations
+separate, populate the pipeline through canonical link, and score a newly sealed
+untouched organization/entity/time holdout once after policy and thresholds are
+frozen. A post-hoc artifact rescore may diagnose recoverable parser/admission
+loss, but cannot satisfy the independent-run or generalization evidence tier.
+
 Most entity health remains continuous. Before calling the system ready for a
 controlled pilot, the report must nevertheless support these claims at the
 declared automatic-coverage level and for explicitly listed entity classes,

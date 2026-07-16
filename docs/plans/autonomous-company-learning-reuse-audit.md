@@ -490,17 +490,46 @@ owners, not add parallel subsystems:
   system report. Fix entity denominators, recovered-failure semantics and
   normalization inside those owners.
 
+## Entity-Physics Reuse Checkpoint At `18aab465`
+
+The latest work continued the reuse-first direction:
+
+- learned discovery writes typed candidates into the existing mention-fate and
+  grounding episode contracts rather than creating a second extraction ledger;
+- committed detections are handed to the existing entity resolver rather than
+  a new linker or registry;
+- the deterministic locator remains an explicit availability fallback, not a
+  competing authority or a substitute for learned-quality evidence;
+- the new gold evaluators extend the existing evaluation package and expose
+  pipeline-stage metrics rather than creating another top-level health report;
+- provider preflight reuses the configured LLM construction path and makes a
+  model/configuration incident visible before worker processing;
+- canonical-link fields deliberately remain empty until the existing resolver
+  path is populated with sealed referent gold. This is preferable to inventing
+  a benchmark-only linker.
+
+The real frozen `gpt-5.4` benchmark measured exact-span P/R/F1
+`0.8163/0.6452/0.7207`, type accuracy `0.9556`, and negative cleanliness `1.0`.
+After uniquely source-verifiable offset repair and threshold tuning, a rescore
+of those same saved outputs measured `0.8500/0.8226/0.8361` and type accuracy
+`0.9286`. The second result is a post-hoc artifact rescore, not a new provider
+run. Neither result proves canonical linking.
+
 ## Next Consolidation Targets
 
-1. Validate the implemented mention-fate, adjudication-only alias, claim-local
+1. Populate the existing resolver bridge and pipeline evaluator with sealed
+   canonical referents; measure candidate inclusion, abstention/review, link
+   coverage and link accuracy without adding a parallel linker.
+2. Freeze and execute a new untouched learned entity benchmark. The current
+   learned F1 is useful but not exceptional, and the final deterministic
+   untouched holdout remains weak.
+3. Validate the implemented mention-fate, adjudication-only alias, claim-local
    scope, directionality and quality-weighted retrieval changes in a bounded
    multi-batch regression before another expensive authoritative run.
-2. Measure gold entity extraction quality independently from protocol-fate
-   closure; the existing fate ledger is reused and is not an extraction score.
-3. Validate causal-thesis recovery and signed calibration bias on held-out
+4. Validate causal-thesis recovery and signed calibration bias on held-out
    batched storylines after the new prompt, confidence caps and evaluator
    weighting.
-4. Coalesce current projection jobs and govern existing T4 repair lanes by
+5. Coalesce current projection jobs and govern existing T4 repair lanes by
    measured durable-outcome ROI.
 
 The first five previous consolidation targets were implemented, without new

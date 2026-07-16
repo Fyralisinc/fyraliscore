@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `8f4e75e8`
+**Current checkpoint:** `18aab465`
 
 **Last updated:** 2026-07-17
 
@@ -300,6 +300,11 @@ flowchart LR
 | Canonical resource replacement | One atomic orchestrator governs transition lineage, predecessor retirement, alias closure, exact source-binding supersession and projection invalidation while preserving Observations, attachments and Models; resource reads can resolve the lineage head at explicit valid/known cutoffs | Complete for the sealed resource vertical: 20/20 observed, zero gaps or violations |
 | Large cold-start company learning | One fresh tenant processed 1,125 signals in 45 genuine 25-signal batches from zero semantic memory; all work drained and later evidence changed memory | Executed; authoritative verdict `not_credible` because entity grounding and retrieval behavior failed required trust gates |
 | Postmortem semantic repairs | Persisted batches close mention-candidate fates; canonical aliases require grounded adjudication; claim scope is claim-local; asymmetric edges are role-stable; retrieval maturity is quality-weighted and records raw-evidence reopening; causal thesis and calibration reporting are stronger | Implemented and focused-test proven at `8f4e75e8`; the 45-batch simulation has not been rerun, so end-state impact remains unproven |
+| Entity extraction measurement | Gold span/type evaluation and a pipeline evaluator now separate mention discovery, type assessment, resolver handoff and canonical-link coverage instead of treating fate closure as extraction quality | Metrics exist; deterministic holdouts exposed adaptation risk and the canonical-link fields remain unpopulated in current learned evidence |
+| Learned batched discovery | Persisted signals are discovered as batches through a learned provider path, with typed candidates committed into the existing mention-fate ledger and handed to the existing resolver; deterministic discovery remains an availability fallback | Implemented with focused tests and provider readiness preflight; learned quality is promising but not exceptional |
+| Learned discovery provider readiness | Worker startup preflights the configured learned-discovery provider/model so a missing or incompatible provider is an explicit incident instead of silently becoming the normal mode | Implemented after a real provider/model configuration incident |
+| Learned quality benchmark | One frozen six-batch, 60-signal `gpt-5.4` run measured exact-span precision `0.8163`, recall `0.6452`, F1 `0.7207`, type accuracy `0.9556`, and negative cleanliness `1.0` | Fresh provider evidence; no canonical-link claim |
+| Source-verifiable rescore | Repairing uniquely verifiable source offsets and rescoring the same saved provider outputs at the tuned admission threshold yields precision `0.8500`, recall `0.8226`, F1 `0.8361`, and type accuracy `0.9286` | Post-hoc artifact rescore only, not a new provider run; useful for diagnosis, not independent generalization proof |
 
 ## Important Implementation Checkpoints
 
@@ -336,6 +341,13 @@ flowchart LR
 | `666ae2ee` | Added maturity-aware Model-first retrieval and explicit raw-evidence reopening reasons |
 | `e04da5e8` | Made retrieval maturity depend on selected Model quality, not count alone |
 | `8f4e75e8` | Strengthened causal-thesis formation, confidence caps and calibration diagnostics |
+| `92ecf610` | Added gold entity-extraction measurement independent of mention-fate closure |
+| `66b1ca3c` through `bbd794e8` | Sealed deterministic batched corpora and independent holdouts; the first adapted holdout became strong, while the final untouched holdout remained weak |
+| `0d74b0e9` | Added stage-level entity pipeline quality metrics, including discovery, typing, resolver handoff and canonical-link fields |
+| `72a1648c` | Added learned batched discovery, typed assessment and the existing-resolver bridge with deterministic availability fallback |
+| `1359eb18` | Added provider/model readiness preflight after the learned-discovery configuration incident |
+| `a46300aa` | Froze and ran the real `gpt-5.4` learned entity-quality benchmark |
+| `0582666a` / `18aab465` | Repaired uniquely source-verifiable offsets and tuned mention admission; reported results are an artifact rescore, not another provider run |
 | `d6908b39` | Removed proof gaps already closed by the complete sealed run |
 | `ac963125` | Reused grounding/source-semantic outcomes as bounded SAGE source-salience memory |
 | `4b6ef3c8` | Added governed Linear project/team structured identity transport |
@@ -705,9 +717,9 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
-| Scoped company-learning runtime implementation | 94–96% | The seven postmortem defects now have integrated runtime/evaluator changes and focused regression proof; broad semantic trust still requires a fresh representative validation run |
-| Customer-free objective substantiation | 72–80% | Assurance v7 remains green and focused tests prove the intended repairs, but the only authoritative 45-batch artifact is still the pre-fix `not_credible` run; it cannot be retroactively upgraded |
-| Broader revised system excluding task autonomy | 78–84% | Core company memory and its principal postmortem repairs exist; open-world entity quality, large-run retrieval transition, causal-thesis recovery, calibration, human gap closure and customer-value evidence remain incomplete |
+| Scoped company-learning runtime implementation | 92–95% | The postmortem repairs and learned batched discovery are integrated, but canonical-link population, untouched learned generalization and broad semantic validation remain incomplete |
+| Customer-free objective substantiation | 70–76% | Entity pipeline metrics and one real learned benchmark now exist, but learned exact-span F1 is not exceptional, the final untouched deterministic holdout is weak, canonical linking is unproven, and the only authoritative 45-batch artifact remains the pre-fix `not_credible` run |
+| Broader revised system excluding task autonomy | 76–82% | Core company memory and principal repairs exist; open-world entity quality, canonical linking, pipeline population, large-run retrieval transition, causal-thesis recovery, calibration, human gap closure and customer-value evidence remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
@@ -719,6 +731,20 @@ No second large simulation is authorized or claimed; until the user requests
 one, the `be401f25` 45-batch verdict remains the authoritative large-run result.
 
 ### P0 — Required before believing the company-learning system broadly works
+
+0. **Make entity physics strong across the complete production-shaped pipeline**
+   - Populate and score every pipeline stage from persisted batched signals:
+     discovery, exact span, company-object type, resolver handoff, candidate-set
+     inclusion, abstention/review and canonical link.
+   - Raise learned discovery beyond the current fresh-run exact-span F1 of
+     `0.7207`; treat the post-hoc `0.8361` rescore as diagnostic evidence only.
+   - Run a new sealed untouched holdout after freezing policy and thresholds;
+     do not adapt against the final holdout or reuse the same provider outputs
+     as the generalization claim.
+   - Prove canonical-link coverage and accuracy. Current benchmark referents are
+     intentionally null and therefore make no canonical-link claim.
+   - Preserve the deterministic locator as explicit availability fallback, not
+     as evidence that learned discovery succeeded.
 
 1. **Synchronize the evaluator with the implemented company-learning system**
    - Update the objective-evaluation framework's current executable checkpoint
@@ -1487,3 +1513,26 @@ connection depend on the caller supplying the surrounding transaction.
   thresholds; it is not presented as a newly green gate.
 - No second large run was performed. These results prove the repaired contracts
   in focused paths, not their aggregate behavior across another 45-batch world.
+
+### 2026-07-17 — Entity extraction became measurable and learned, but not yet exceptional
+
+- `92ecf610` through `bbd794e8` added gold exact-span/type evaluation, sealed
+  batched corpora and two deterministic holdout stages. The initially adapted
+  holdout became strong after targeted fixes; the final untouched holdout
+  remained weak, demonstrating that fixture adaptation is not generalization.
+- `0d74b0e9` added pipeline-stage metrics so discovery, typing, resolver handoff
+  and canonical linking can be diagnosed separately.
+- `72a1648c` routed persisted signal batches through learned discovery, typed
+  candidate assessment and the existing resolver. Deterministic discovery is a
+  recorded availability fallback rather than a parallel truth path.
+- A provider/model incident revealed that worker readiness did not prove the
+  learned-discovery provider was usable. `1359eb18` added startup preflight.
+- The one frozen real `gpt-5.4` run scored exact-span P/R/F1
+  `0.8163/0.6452/0.7207`, type accuracy `0.9556`, and negative cleanliness
+  `1.0`. It made no canonical-link claim.
+- `0582666a` repaired only uniquely source-verifiable offsets and `18aab465`
+  tuned admission. Rescoring the saved outputs produced exact-span P/R/F1
+  `0.8500/0.8226/0.8361` and type accuracy `0.9286`. This is explicitly a
+  post-hoc artifact rescore, not a new provider execution or untouched result.
+- The authoritative 45-batch verdict remains the pre-fix `not_credible` result.
+  No second large run was performed.

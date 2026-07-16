@@ -604,6 +604,60 @@ transport are excluded from this goal.
   the seven postmortem commits changes recovered-versus-terminal run accounting;
   this distinction must remain explicit in the next evaluator/runtime proof.
 
+### EDGE-030 — Deterministic fallback can conceal learned-discovery absence
+
+- **Status:** `bounded`
+- **Trigger:** Persisted batch processing can continue through the deterministic
+  locator when learned discovery is disabled or the provider fails.
+- **Current behavior:** The discovery result records `learned` versus
+  `deterministic_fallback` and provider readiness is preflighted at worker
+  startup.
+- **Risk:** Healthy fate closure may be mistaken for learned entity quality.
+- **Safe boundary:** Report mode, provider error and learned-provider exposure;
+  never aggregate fallback rows into a learned-quality claim.
+- **Return condition:** Company Vitals noncompensatorily separates learned,
+  fallback and unavailable populations and their quality/cost distributions.
+
+### EDGE-031 — Holdout adaptation masquerades as generalization
+
+- **Status:** `active`, P0
+- **Trigger:** The first deterministic holdout became strong after fixes made
+  against it, while the subsequently frozen untouched holdout remained weak.
+- **Risk:** Repeated fixture-driven tuning produces an attractive score without
+  robust open-company entity discovery.
+- **Safe boundary:** An adapted holdout is regression evidence only. A
+  generalization claim requires a newly sealed organization/entity/time split
+  scored once after policy and thresholds freeze.
+- **Return condition:** Strong continuous performance on a final untouched
+  holdout with error strata and uncertainty bounds reported.
+
+### EDGE-032 — Entity pipeline stops before canonical-link proof
+
+- **Status:** `active`, P0
+- **Current behavior:** Pipeline evaluator metrics exist for discovery, typing,
+  resolver handoff and canonical linking, and learned candidates enter the
+  existing resolver. The learned benchmark deliberately uses null canonical
+  referents, so canonical-link accuracy and coverage are unpopulated.
+- **Risk:** Good spans and types can coexist with wrong company identity, making
+  downstream Models and graph structure meaningless.
+- **Safe boundary:** State `no canonical-link claim`; do not infer link quality
+  from resolver handoff or fate closure.
+- **Return condition:** Sealed gold referents populate candidate inclusion,
+  abstention/review, link coverage, link accuracy and downstream wrong-link
+  impact through the production-shaped bridge.
+
+### EDGE-033 — Post-hoc learned-output repair is not an independent run
+
+- **Status:** `bounded`
+- **Trigger:** The original real `gpt-5.4` run scored P/R/F1
+  `0.8163/0.6452/0.7207`; uniquely source-verifiable offset repair plus threshold
+  rescore of the saved outputs scored `0.8500/0.8226/0.8361`.
+- **Risk:** The latter can be misreported as fresh provider or generalization
+  evidence.
+- **Safe boundary:** Label it an artifact rescore and preserve both metric sets.
+- **Return condition:** Execute a newly frozen benchmark once with the repaired
+  runtime and report it separately from the historical artifact.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title
