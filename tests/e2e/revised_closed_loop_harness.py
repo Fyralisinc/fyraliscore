@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -344,6 +345,7 @@ async def run_closed_loop_vertical(
     source_assertion_ref: str,
     semantic_frame_ref: str,
     started_at: datetime,
+    activation_worker: Any | None = None,
     finalize_episode_manifest: bool = True,
 ) -> ClosedLoopArtifacts:
     """Run one deterministic canonical loop over a simulated external world."""
@@ -908,43 +910,128 @@ async def run_closed_loop_vertical(
 
     agency = AgencyStateApplier()
     work_ledger = WorkLedgerApplier()
-    workflow_id = uuid7()
-    task_id = uuid7()
-    workflow_at = authorization_at + timedelta(minutes=1)
-    workflow = WorkflowRunSnapshot(
-        workflow_run_id=workflow_id,
-        tenant_id=tenant_id,
-        episode_id=episode_id,
-        intervention_spec_digest=spec.spec_digest,
-        workflow_spec_version_ref=spec.workflow_spec_version_ref,
-        state=WorkflowRunState.PLANNED,
-        authorization_decision_id=authorization.decision_id,
-        prerequisite_refs=("authorization:live",),
-        required_task_ids=(task_id,),
-        completion_predicate="the required delivery task has a succeeded receipt",
-        transition_reason="instantiate the authorized workflow",
-        created_at=workflow_at,
-        updated_at=workflow_at,
-    )
-    await _apply(
-        pool,
-        agency,
-        "apply_workflow_run",
-        command=WorkflowRunCommand(
-            context=_context(
-                tenant_id=tenant_id,
-                owner="AgencyStateApplier",
-                responsibility="workflow_run",
-                operation="create_workflow",
-                at=workflow_at,
-                key="closed-loop:workflow:create",
+    if activation_worker is None:
+        workflow_id = uuid7()
+        task_id = uuid7()
+        workflow_at = authorization_at + timedelta(minutes=1)
+        workflow = WorkflowRunSnapshot(
+            workflow_run_id=workflow_id,
+            tenant_id=tenant_id,
+            episode_id=episode_id,
+            intervention_spec_digest=spec.spec_digest,
+            workflow_spec_version_ref=spec.workflow_spec_version_ref,
+            state=WorkflowRunState.PLANNED,
+            authorization_decision_id=authorization.decision_id,
+            prerequisite_refs=("authorization:live",),
+            required_task_ids=(task_id,),
+            completion_predicate=(
+                "the required delivery task has a succeeded receipt"
             ),
-            expected_version=0,
-            snapshot=workflow,
-        ),
-        now=workflow_at,
+            transition_reason="instantiate the authorized workflow",
+            created_at=workflow_at,
+            updated_at=workflow_at,
+        )
+        await _apply(
+            pool,
+            agency,
+            "apply_workflow_run",
+            command=WorkflowRunCommand(
+                context=_context(
+                    tenant_id=tenant_id,
+                    owner="AgencyStateApplier",
+                    responsibility="workflow_run",
+                    operation="create_workflow",
+                    at=workflow_at,
+                    key="closed-loop:workflow:create",
+                ),
+                expected_version=0,
+                snapshot=workflow,
+            ),
+            now=workflow_at,
+        )
+        task_at = workflow_at
+        task = TaskSnapshot(
+            task_id=task_id,
+            tenant_id=tenant_id,
+            workflow_run_id=workflow_id,
+            episode_id=episode_id,
+            intervention_spec_digest=spec.spec_digest,
+            task_kind="external_effect",
+            state=TaskState.PLANNED,
+            target_grounding_refs=(
+                f"referent:{action_target.referent_id}:"
+                f"v{action_target.referent_version}",
+            ),
+            authorization_decision_id=authorization.decision_id,
+            external_effect_required=True,
+            transition_reason="create the governed delivery task",
+            created_at=task_at,
+            updated_at=task_at,
+        )
+        await _apply(
+            pool,
+            agency,
+            "apply_task",
+            command=TaskCommand(
+                context=_context(
+                    tenant_id=tenant_id,
+                    owner="AgencyStateApplier",
+                    responsibility="task",
+                    operation="task_planned",
+                    at=task_at,
+                    key="closed-loop:task:planned",
+                ),
+                expected_version=0,
+                snapshot=task,
+            ),
+            now=task_at,
+        )
+    else:
+        assert await activation_worker.process_batch(limit=10) == 1
+        async with pool.acquire() as conn:
+            activation = await conn.fetchrow(
+                """
+                SELECT workflow_run_id, task_id
+                FROM authorized_agency_activation_work_items
+                WHERE tenant_id=$1 AND authorization_decision_id=$2
+                  AND status='activated'
+                """,
+                tenant_id,
+                authorization.decision_id,
+            )
+            assert activation is not None
+            workflow_id = activation["workflow_run_id"]
+            task_id = activation["task_id"]
+            workflow_payload = await conn.fetchval(
+                """
+                SELECT snapshot
+                FROM agency_workflow_run_versions
+                WHERE tenant_id=$1 AND workflow_run_id=$2
+                  AND aggregate_version=1
+                """,
+                tenant_id,
+                workflow_id,
+            )
+            task_payload = await conn.fetchval(
+                """
+                SELECT snapshot
+                FROM agency_task_versions
+                WHERE tenant_id=$1 AND task_id=$2 AND aggregate_version=1
+                """,
+                tenant_id,
+                task_id,
+            )
+        workflow = WorkflowRunSnapshot.model_validate(workflow_payload)
+        task = TaskSnapshot.model_validate(task_payload)
+        assert workflow.state is WorkflowRunState.PLANNED
+        assert task.state is TaskState.PLANNED
+        workflow_at = workflow.created_at
+        task_at = task.created_at
+
+    workflow_active_at = max(
+        workflow_at + timedelta(minutes=1),
+        authorization_at + timedelta(minutes=1),
     )
-    workflow_active_at = workflow_at + timedelta(minutes=1)
     workflow = workflow.model_copy(
         update={
             "state": WorkflowRunState.ACTIVE,
@@ -970,32 +1057,15 @@ async def run_closed_loop_vertical(
         ),
         now=workflow_active_at,
     )
-
-    task_at = workflow_active_at + timedelta(minutes=1)
-    task = TaskSnapshot(
-        task_id=task_id,
-        tenant_id=tenant_id,
-        workflow_run_id=workflow_id,
-        episode_id=episode_id,
-        intervention_spec_digest=spec.spec_digest,
-        task_kind="external_effect",
-        state=TaskState.PLANNED,
-        target_grounding_refs=(
-            f"referent:{action_target.referent_id}:"
-            f"v{action_target.referent_version}",
-        ),
-        authorization_decision_id=authorization.decision_id,
-        external_effect_required=True,
-        transition_reason="create the governed delivery task",
-        created_at=task_at,
-        updated_at=task_at,
+    task_transition_at = max(
+        task_at + timedelta(minutes=1),
+        workflow_active_at + timedelta(minutes=1),
     )
     for expected_version, state, offset in (
-        (0, TaskState.PLANNED, 0),
-        (1, TaskState.READY, 1),
-        (2, TaskState.IN_PROGRESS, 2),
+        (1, TaskState.READY, 0),
+        (2, TaskState.IN_PROGRESS, 1),
     ):
-        at = task_at + timedelta(minutes=offset)
+        at = task_transition_at + timedelta(minutes=offset)
         task = task.model_copy(
             update={
                 "state": state,
@@ -1022,7 +1092,7 @@ async def run_closed_loop_vertical(
             now=at,
         )
 
-    work_at = task_at + timedelta(minutes=3)
+    work_at = task_transition_at + timedelta(minutes=2)
     obligation = WorkObligation(
         obligation_id=uuid7(),
         lineage_id=uuid7(),

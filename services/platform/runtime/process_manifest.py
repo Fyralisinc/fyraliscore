@@ -173,6 +173,15 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         has_healthcheck=True,
     ),
     _proc(
+        "agency_activation_worker",
+        "reasoning",
+        ("python", "scripts/run_agency_activation_worker.py"),
+        ("production",),
+        "Durable exact-authorization-to-planned-workflow/task activation worker.",
+        compose_service="agency_activation_worker",
+        has_healthcheck=True,
+    ),
+    _proc(
         "topology_sweeper",
         "reasoning",
         ("python", "scripts/run_topology_sweeper.py"),

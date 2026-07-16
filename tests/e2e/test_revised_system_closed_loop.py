@@ -21,6 +21,7 @@ from lib.shared.ids import uuid7
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.core import ingest_from_draft
 from services.ingest.ingestion.handlers.slack import handle_slack_message
+from services.workers.agency_activation_worker import AgencyActivationWorker
 from services.workers.entity_resolver.worker import EntityResolverWorker
 from services.workers.intervention_episode_coordinator import (
     InterventionEpisodeCoordinatorWorker,
@@ -191,6 +192,10 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
     assert model_id is not None
 
     loop_started_at = datetime.now(timezone.utc)
+    activation_worker = AgencyActivationWorker(
+        pool=fresh_db,
+        worker_id=f"pytest:agency-activation:{tenant_id}",
+    )
     artifacts = await run_closed_loop_vertical(
         pool=fresh_db,
         tenant_id=tenant_id,
@@ -199,6 +204,7 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
         source_assertion_ref=assertion["assertion_id"],
         semantic_frame_ref=frame["frame_id"],
         started_at=loop_started_at,
+        activation_worker=activation_worker,
         finalize_episode_manifest=False,
     )
     coordinator_stats = InterventionEpisodeCoordinatorWorkerStats()
@@ -288,6 +294,28 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
             """,
             tenant_id,
         )
+        activation_work_fates = dict(
+            await conn.fetch(
+                """
+                SELECT status, count(*)::integer AS count
+                FROM authorized_agency_activation_work_items
+                WHERE tenant_id=$1
+                GROUP BY status
+                """,
+                tenant_id,
+            )
+        )
+        activation_commands = await conn.fetch(
+            """
+            SELECT command_id, object_type, command
+            FROM agency_command_results
+            WHERE tenant_id=$1
+              AND writer_id='AgencyStateApplier'
+              AND semantic_idempotency_key LIKE 'agency-activation:%'
+            ORDER BY object_type
+            """,
+            tenant_id,
+        )
 
     assert state.episode_count == 1
     assert state.complete_episode_count == 1
@@ -301,9 +329,37 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
     assert state.manifest_work_item_count == 10
     assert state.manifest_work_applied_count == 10
     assert state.manifest_work_completion_rate == 1.0
+    assert state.activation_work_item_count == 1
+    assert state.activation_work_activated_count == 1
+    assert state.activation_work_completion_rate == 1.0
     assert cardinalities is not None
     assert set(dict(cardinalities).values()) == {1}
     assert manifest_work_fates == {"applied": 10}
+    assert activation_work_fates == {"activated": 1}
+    assert len(activation_commands) == 2
+    assert {row["object_type"] for row in activation_commands} == {
+        "workflow_run",
+        "task",
+    }
+    assert all(row["command_id"].version == 5 for row in activation_commands)
+    for row in activation_commands:
+        command = _json(row["command"])
+        authority = command["context"]["processing_authority"]
+        assert authority["principal_or_service_id"] == (
+            "service:agency-activation-worker"
+        )
+        assert authority["purpose"] == (
+            "authorized_internal_agency_activation"
+        )
+        assert authority["object_types"] == {
+            "universe": False,
+            "values": [row["object_type"]],
+        }
+        assert set(authority["source_labels"]["values"]) == {
+            "agency-canonical-event",
+            "authorization-decision",
+            "intervention-spec",
+        }
     assert len(manifest_commands) == 10
     for row in manifest_commands:
         command = _json(row["command"])
@@ -330,6 +386,7 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
 
     # The exact replays embedded in the harness must not create second heads.
     await semantic_worker.process_batch(limit=1000)
+    assert await activation_worker.process_batch(limit=10) == 0
     assert await coordinator.process_batch(limit=100) == 0
     async with fresh_db.acquire() as conn:
         assert await conn.fetchval(
