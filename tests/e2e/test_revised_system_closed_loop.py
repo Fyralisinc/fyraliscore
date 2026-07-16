@@ -22,6 +22,10 @@ from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.core import ingest_from_draft
 from services.ingest.ingestion.handlers.slack import handle_slack_message
 from services.workers.entity_resolver.worker import EntityResolverWorker
+from services.workers.intervention_episode_coordinator import (
+    InterventionEpisodeCoordinatorWorker,
+    InterventionEpisodeCoordinatorWorkerStats,
+)
 from services.workers.source_semantic_worker import SourceSemanticWorker
 from tests.e2e.revised_closed_loop_harness import run_closed_loop_vertical
 
@@ -195,7 +199,20 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
         source_assertion_ref=assertion["assertion_id"],
         semantic_frame_ref=frame["frame_id"],
         started_at=loop_started_at,
+        finalize_episode_manifest=False,
     )
+    coordinator_stats = InterventionEpisodeCoordinatorWorkerStats()
+    coordinator = InterventionEpisodeCoordinatorWorker(
+        pool=fresh_db,
+        worker_id=f"pytest:episode-manifest:{tenant_id}",
+    )
+    assert await coordinator.process_batch(
+        limit=100,
+        stats=coordinator_stats,
+    ) == 10
+    assert coordinator_stats.applied == 10
+    assert coordinator_stats.terminal_failures == 0
+    assert coordinator_stats.retries_scheduled == 0
 
     async with fresh_db.acquire() as conn:
         state = await evaluate_closed_loop_state(
@@ -249,6 +266,28 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
             """,
             tenant_id,
         )
+        manifest_work_fates = dict(
+            await conn.fetch(
+                """
+                SELECT status, count(*)::integer AS count
+                FROM intervention_episode_manifest_work_items
+                WHERE tenant_id=$1
+                GROUP BY status
+                """,
+                tenant_id,
+            )
+        )
+        manifest_commands = await conn.fetch(
+            """
+            SELECT command
+            FROM agency_command_results
+            WHERE tenant_id=$1
+              AND writer_id='EpisodeCoordinator'
+              AND semantic_idempotency_key LIKE 'episode-manifest:%'
+            ORDER BY created_at, id
+            """,
+            tenant_id,
+        )
 
     assert state.episode_count == 1
     assert state.complete_episode_count == 1
@@ -259,11 +298,39 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
     assert set(state.continuity_rates.values()) == {1.0}
     assert state.violation_count == 0
     assert "None observed in scope." in render_closed_loop_markdown(state)
+    assert state.manifest_work_item_count == 10
+    assert state.manifest_work_applied_count == 10
+    assert state.manifest_work_completion_rate == 1.0
     assert cardinalities is not None
     assert set(dict(cardinalities).values()) == {1}
+    assert manifest_work_fates == {"applied": 10}
+    assert len(manifest_commands) == 10
+    for row in manifest_commands:
+        command = _json(row["command"])
+        authority = command["context"]["processing_authority"]
+        assert authority["principal_or_service_id"] == (
+            "service:intervention-episode-coordinator"
+        )
+        assert authority["purpose"] == (
+            "intervention_episode_manifest_projection"
+        )
+        assert authority["operation"] == "link_revalidated_stage"
+        assert authority["object_types"] == {
+            "universe": False,
+            "values": ["intervention_episode"],
+        }
+        assert authority["source_labels"] == {
+            "universe": False,
+            "values": ["agency-canonical-event"],
+        }
+        assert len(authority["authority_basis_refs"]) == 1
+        assert authority["authority_basis_refs"][0].startswith(
+            "canonical-event:"
+        )
 
     # The exact replays embedded in the harness must not create second heads.
     await semantic_worker.process_batch(limit=1000)
+    assert await coordinator.process_batch(limit=100) == 0
     async with fresh_db.acquire() as conn:
         assert await conn.fetchval(
             "SELECT count(*) FROM models WHERE tenant_id=$1",
@@ -273,6 +340,22 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
             "SELECT count(*) FROM intervention_episode_heads WHERE tenant_id=$1",
             tenant_id,
         ) == 1
+        assert await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM intervention_episode_manifest_work_items
+            WHERE tenant_id=$1
+            """,
+            tenant_id,
+        ) == 10
+        assert await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM intervention_episode_versions
+            WHERE tenant_id=$1
+            """,
+            tenant_id,
+        ) == 11
 
     # An execution receipt cannot be relabeled as an independent Outcome.
     invalid_command = _json(outcome_command)

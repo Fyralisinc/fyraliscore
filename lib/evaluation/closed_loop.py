@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from datetime import datetime
-from typing import Any, Self
+from typing import Any, Mapping, Self
 from uuid import UUID
 
 import asyncpg
@@ -83,6 +83,11 @@ _STAGE_STORAGE = {
     "attribution": ("consequential_attributions", "id", "attribution"),
 }
 
+_MANIFEST_WORK_NONTERMINAL_FATES = frozenset(
+    {"pending", "processing", "retry_scheduled"}
+)
+_MANIFEST_WORK_TERMINAL_FATES = frozenset({"applied", "failed_terminal"})
+
 
 class _ClosedLoopModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
@@ -123,6 +128,16 @@ class ClosedLoopEvaluationState(_ClosedLoopModel):
     episode_count: int = Field(ge=0)
     complete_episode_count: int = Field(ge=0)
     closed_loop_completion_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    manifest_work_item_count: int = Field(ge=0)
+    manifest_work_applied_count: int = Field(ge=0)
+    manifest_work_incomplete_count: int = Field(ge=0)
+    manifest_work_terminal_failure_count: int = Field(ge=0)
+    manifest_work_completion_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    manifest_work_fate_counts: dict[str, int]
     stage_coverage_rates: dict[str, float | None]
     continuity_rates: dict[str, float | None]
     component_violation_counts: dict[str, int]
@@ -167,6 +182,29 @@ async def evaluate_closed_loop_state(
         scope.start,
         scope.end,
     )
+    manifest_work_rows = await conn.fetch(
+        """
+        SELECT status
+        FROM intervention_episode_manifest_work_items
+        WHERE tenant_id=$1
+          AND created_at < $3
+          AND (
+            updated_at >= $2
+            OR status IN ('pending', 'processing', 'retry_scheduled')
+          )
+        ORDER BY created_at, id
+        """,
+        scope.tenant_id,
+        scope.start,
+        scope.end,
+    )
+    (
+        manifest_work_count,
+        manifest_work_applied,
+        manifest_work_incomplete,
+        manifest_work_terminal_failures,
+        manifest_work_fates,
+    ) = _summarize_manifest_work_rows(manifest_work_rows)
     reports = tuple(
         [
             await _evaluate_episode(
@@ -206,6 +244,14 @@ async def evaluate_closed_loop_state(
             *(f"continuity_break:{name}" for name in report.continuity_breaks),
         )
     )
+    if manifest_work_incomplete:
+        incident_counts["episode_manifest_work_incomplete"] += (
+            manifest_work_incomplete
+        )
+    if manifest_work_terminal_failures:
+        incident_counts["episode_manifest_work_failed_terminal"] += (
+            manifest_work_terminal_failures
+        )
     component_violation_counts = {
         name: state.violation_count
         for name, state in component_states.items()
@@ -217,6 +263,15 @@ async def evaluate_closed_loop_state(
         episode_count=len(reports),
         complete_episode_count=complete_count,
         closed_loop_completion_rate=_rate(complete_count, len(reports)),
+        manifest_work_item_count=manifest_work_count,
+        manifest_work_applied_count=manifest_work_applied,
+        manifest_work_incomplete_count=manifest_work_incomplete,
+        manifest_work_terminal_failure_count=manifest_work_terminal_failures,
+        manifest_work_completion_rate=_rate(
+            manifest_work_applied,
+            manifest_work_count,
+        ),
+        manifest_work_fate_counts=dict(sorted(manifest_work_fates.items())),
         stage_coverage_rates=stage_coverage_rates,
         continuity_rates=continuity_rates,
         component_violation_counts=component_violation_counts,
@@ -227,6 +282,7 @@ async def evaluate_closed_loop_state(
             "This E3 vertical proves one mechanical joined loop, not intervention value across company worlds.",
             "Model-to-Concern and Concern-to-Proposal continuity are currently validated from exact durable references, not database foreign keys.",
             "An explicit withheld-credit attribution is a feedback fate, not evidence that an adaptive policy improved behavior.",
+            "Episode-manifest work is evaluated from current queue-head fates; pending, processing, and retry-scheduled items remain explicitly incomplete until applied.",
         ),
         artifact_refs=artifact_refs,
     )
@@ -502,8 +558,24 @@ def build_closed_loop_invariant_evidence(
             incident_id=f"{state.scope.run_id}:INV-22:{kind}",
             incident_class=kind,
             status=IncidentStatus.CONFIRMED,
-            severity=5 if "effect" in kind or "authorization" in kind else 4,
-            summary=f"Observed {count} closed-loop continuity violations.",
+            severity=(
+                5
+                if (
+                    "effect" in kind
+                    or "authorization" in kind
+                    or kind == "episode_manifest_work_failed_terminal"
+                )
+                else 4
+            ),
+            summary=(
+                f"Observed {count} terminal episode-manifest work failures."
+                if kind == "episode_manifest_work_failed_terminal"
+                else (
+                    f"Observed {count} incomplete episode-manifest work items."
+                    if kind == "episode_manifest_work_incomplete"
+                    else f"Observed {count} closed-loop continuity violations."
+                )
+            ),
             artifact_refs=state.artifact_refs,
         )
         for kind, count in state.incident_counts.items()
@@ -598,11 +670,33 @@ def render_closed_loop_markdown(state: ClosedLoopEvaluationState) -> str:
         f"- Complete joined episodes: {state.complete_episode_count}",
         f"- Completion rate: {_display_rate(state.closed_loop_completion_rate)}",
         "",
-        "## Required Stage Coverage",
+        "## Episode Manifest Work Queue",
         "",
-        "| Stage | Coverage |",
+        f"- Work items: {state.manifest_work_item_count}",
+        f"- Applied: {state.manifest_work_applied_count}",
+        f"- Incomplete: {state.manifest_work_incomplete_count}",
+        f"- Terminal failures: {state.manifest_work_terminal_failure_count}",
+        f"- Completion rate: {_display_rate(state.manifest_work_completion_rate)}",
+        "",
+        "| Fate | Count |",
         "| --- | ---: |",
     ]
+    if state.manifest_work_fate_counts:
+        lines.extend(
+            f"| {fate} | {count} |"
+            for fate, count in state.manifest_work_fate_counts.items()
+        )
+    else:
+        lines.append("| no exposure | 0 |")
+    lines.extend(
+        [
+            "",
+            "## Required Stage Coverage",
+            "",
+            "| Stage | Coverage |",
+            "| --- | ---: |",
+        ]
+    )
     lines.extend(
         f"| {stage} | {_display_rate(rate)} |"
         for stage, rate in state.stage_coverage_rates.items()
@@ -710,6 +804,30 @@ def _json(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         return json.loads(value)
     return dict(value)
+
+
+def _summarize_manifest_work_rows(
+    rows: list[Mapping[str, Any]],
+) -> tuple[int, int, int, int, dict[str, int]]:
+    fates = Counter(str(row["status"]) for row in rows)
+    unknown_fates = set(fates) - (
+        _MANIFEST_WORK_NONTERMINAL_FATES | _MANIFEST_WORK_TERMINAL_FATES
+    )
+    if unknown_fates:
+        raise ValueError(
+            "unknown InterventionEpisode manifest work fates: "
+            f"{sorted(unknown_fates)}"
+        )
+    applied = fates["applied"]
+    incomplete = sum(fates[fate] for fate in _MANIFEST_WORK_NONTERMINAL_FATES)
+    terminal_failures = fates["failed_terminal"]
+    return (
+        len(rows),
+        applied,
+        incomplete,
+        terminal_failures,
+        dict(sorted(fates.items())),
+    )
 
 
 def _rate(numerator: int, denominator: int) -> float | None:

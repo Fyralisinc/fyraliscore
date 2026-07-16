@@ -344,6 +344,7 @@ async def run_closed_loop_vertical(
     source_assertion_ref: str,
     semantic_frame_ref: str,
     started_at: datetime,
+    finalize_episode_manifest: bool = True,
 ) -> ClosedLoopArtifacts:
     """Run one deterministic canonical loop over a simulated external world."""
 
@@ -1528,33 +1529,34 @@ async def run_closed_loop_vertical(
             "updated_at": final_at,
         }
     )
-    final_command = EpisodeUpdateCommand(
-        context=_context(
-            tenant_id=tenant_id,
-            owner="EpisodeCoordinator",
-            responsibility="intervention_episode",
-            operation="complete_episode",
-            at=final_at,
-            key="closed-loop:episode:complete",
-        ),
-        expected_version=1,
-        episode=final_episode,
-    )
-    await _apply(
-        pool,
-        EpisodeCoordinator(),
-        "apply",
-        command=final_command,
-        now=final_at,
-    )
-    duplicate_episode = await _apply(
-        pool,
-        EpisodeCoordinator(),
-        "apply",
-        command=final_command,
-        now=final_at,
-    )
-    assert duplicate_episode.duplicate
+    if finalize_episode_manifest:
+        final_command = EpisodeUpdateCommand(
+            context=_context(
+                tenant_id=tenant_id,
+                owner="EpisodeCoordinator",
+                responsibility="intervention_episode",
+                operation="complete_episode",
+                at=final_at,
+                key="closed-loop:episode:complete",
+            ),
+            expected_version=1,
+            episode=final_episode,
+        )
+        await _apply(
+            pool,
+            EpisodeCoordinator(),
+            "apply",
+            command=final_command,
+            now=final_at,
+        )
+        duplicate_episode = await _apply(
+            pool,
+            EpisodeCoordinator(),
+            "apply",
+            command=final_command,
+            now=final_at,
+        )
+        assert duplicate_episode.duplicate
 
     return ClosedLoopArtifacts(
         tenant_id=tenant_id,
