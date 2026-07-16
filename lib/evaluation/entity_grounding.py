@@ -76,6 +76,7 @@ class EntityGroundingEvaluationState(_GroundingEvaluationModel):
     mention_detection_population_coverage: float | None = Field(
         default=None, ge=0.0, le=1.0
     )
+    gold_extraction_quality_measured: bool = False
     detected_mention_count: int = Field(ge=0)
     rejected_mention_count: int = Field(ge=0)
     explicit_anchor_count: int = Field(ge=0)
@@ -1216,6 +1217,7 @@ def analyze_entity_grounding_rows(
         mention_detection_count=mention_count,
         mention_detection_fate_counts=dict(sorted(detection_fates.items())),
         mention_detection_population_coverage=_ratio(mention_count, eligible_count),
+        gold_extraction_quality_measured=False,
         detected_mention_count=detected_count,
         rejected_mention_count=rejected_count,
         explicit_anchor_count=explicit_anchor_count,
@@ -1305,7 +1307,8 @@ def analyze_entity_grounding_rows(
             key: tuple(sorted(values)) for key, values in sorted(incident_refs.items())
         },
         uncertainty=(
-            "Exact explicit anchors are reconstructable for surfaced legacy phrase opportunities, but no gold mention population establishes mention precision or recall.",
+            "Mention-fate coverage is protocol closure over ingestion-produced candidates; it is not entity-extraction precision or recall.",
+            "No gold mention population establishes extraction precision, recall, boundary quality, typing quality, or canonical-link accuracy.",
             "Implicit, nested, quoted, abbreviated and elided mentions remain outside this deterministic bootstrap extractor.",
             "Legacy entity refs are not yet verified against a versioned CanonicalReferent registry.",
             "Resolution accuracy, calibration, cross-tenant noninterference, correction closure and downstream oracle gap require broader suites.",
@@ -1579,7 +1582,8 @@ def render_entity_grounding_markdown(state: EntityGroundingEvaluationState) -> s
         f"- Observation interval: `{state.scope.observation_start.isoformat()}` to `{state.scope.observation_end.isoformat()}`",
         f"- Eligible observations/opportunities: **{state.eligible_observations}/{state.eligible_opportunities}**",
         f"- Durable work coverage: **{state.work_head_count}/{state.eligible_opportunities} ({_format_rate(state.work_population_coverage)})**",
-        f"- Mention-fate coverage: **{state.mention_detection_count}/{state.eligible_opportunities} ({_format_rate(state.mention_detection_population_coverage)})**",
+        f"- Mention-candidate terminal-fate coverage: **{state.mention_detection_count}/{state.eligible_opportunities} ({_format_rate(state.mention_detection_population_coverage)})**",
+        "- Gold entity-extraction quality: **not measured** (fate coverage is not precision/recall)",
         f"- Exact explicit-anchor reconstructability: **{state.reconstructable_explicit_anchor_count}/{state.explicit_anchor_count} ({_format_rate(state.explicit_anchor_reconstructability_rate)})**",
         f"- Mention context continuity: **{state.mention_context_continuity_count}/{state.mention_detection_count} ({_format_rate(state.mention_context_continuity_rate)})**",
         f"- Mention protocol closure: **{state.mention_protocol_closure_count}/{state.mention_detection_count} ({_format_rate(state.mention_protocol_closure_rate)})**",

@@ -49,6 +49,9 @@ from lib.observability.health import (
 )
 from lib.observability.metrics import render_default
 from lib.shared.ids import uuid7
+from services.domain.entity_grounding import (
+    ensure_persisted_observation_mention_fates,
+)
 from services.domain.triggers import enqueue_trigger
 
 from services.reasoning.retrieval.primary import TriggerContext
@@ -1929,12 +1932,36 @@ class ThinkWorker:
         batch_id = uuid7()
         member_ids = [m["id"] for m in members]
         observation_ids = [m["observation_id"] for m in members if m["observation_id"]]
+        fate_coverage = await ensure_persisted_observation_mention_fates(
+            conn=conn,
+            tenant_id=tenant_id,
+            observation_ids=observation_ids,
+        )
+        if (
+            fate_coverage.eligible_opportunities
+            and fate_coverage.coverage != 1.0
+        ):
+            raise RuntimeError(
+                "persisted signal batch has incomplete mention-fate coverage: "
+                f"{fate_coverage.covered_opportunities}/"
+                f"{fate_coverage.eligible_opportunities}"
+            )
         payload = await self._build_t1_batch_payload(
             conn,
             batch_id=batch_id,
             members=members,
             observation_ids=observation_ids,
         )
+        payload["mention_fate_protocol"] = {
+            "eligible_opportunities": fate_coverage.eligible_opportunities,
+            "committed_fates": fate_coverage.committed_fates,
+            "existing_fates": fate_coverage.existing_fates,
+            "covered_opportunities": fate_coverage.covered_opportunities,
+            "coverage": fate_coverage.coverage,
+            "quality_boundary": (
+                "protocol_fate_coverage_not_gold_entity_extraction_quality"
+            ),
+        }
         primary_observation_id = observation_ids[0] if observation_ids else None
         await enqueue_trigger(
             conn,

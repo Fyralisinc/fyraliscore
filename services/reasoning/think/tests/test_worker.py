@@ -771,6 +771,146 @@ async def test_t1_batch_window_holds_fresh_partial_batches(
     assert all(row["completed_at"] is None for row in rows)
 
 
+async def test_t1_batch_closes_fates_for_persisted_signal_opportunities(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    texts = (
+        "NBI renewal is blocked",
+        "Frobozz-Widget needs evidence",
+        "No named customer appears here",
+    )
+    observations = [uuid7() for _ in texts]
+    actor_id = uuid7()
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO actors (id, tenant_id, type, display_name, status)
+            VALUES ($1, $2, 'human_internal', 'mention fate actor', 'active')
+            """,
+            actor_id,
+            tenant,
+        )
+        for observation_id, text in zip(observations, texts, strict=True):
+            await conn.execute(
+                """
+                INSERT INTO observations (
+                  id, tenant_id, occurred_at, kind, source_channel, actor_id,
+                  content, content_text, embedding, embedding_pending,
+                  trust_tier, entities_mentioned
+                ) VALUES (
+                  $1, $2, now(), 'signal', 'slack:message', $3,
+                  '{}'::jsonb, $4, NULL, TRUE, 'authoritative', '[]'::jsonb
+                )
+                """,
+                observation_id,
+                tenant,
+                actor_id,
+                text,
+            )
+    opportunities = {
+        observations[0]: ["NBI", "the renewal"],
+        observations[1]: ["Frobozz-Widget", "Enterprise"],
+        observations[2]: ["missing source surface"],
+    }
+    triggers = []
+    async with fresh_db.acquire() as conn:
+        for observation_id, phrases in opportunities.items():
+            await conn.execute(
+                """
+                UPDATE observations
+                SET content=jsonb_build_object('_unresolved_phrases', $2::jsonb)
+                WHERE tenant_id=$1 AND id=$3
+                """,
+                tenant,
+                json.dumps(phrases),
+                observation_id,
+            )
+    for observation_id in observations:
+        triggers.append(
+            await _enqueue_trigger_row(fresh_db, tenant, observation_id)
+        )
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET enqueued_at=now() - interval '10 seconds'
+            WHERE id=ANY($1::uuid[])
+            """,
+            triggers,
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="mention-fate-batcher",
+            tenant_filter=tenant,
+            t1_batch_window_s=1.0,
+            t1_batch_max_size=10,
+            t1_batch_min_size=2,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    expected = {
+        (observation_id, phrase)
+        for observation_id, phrases in opportunities.items()
+        for phrase in phrases
+    }
+    async with fresh_db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT h.source_observation_id, h.candidate_surface,
+                   h.current_detection_version, d.fate
+            FROM entity_mention_detection_heads h
+            JOIN entity_mention_detections d
+              ON d.tenant_id=h.tenant_id AND d.id=h.current_detection_id
+            WHERE h.tenant_id=$1
+              AND h.source_observation_id=ANY($2::uuid[])
+            """,
+            tenant,
+            observations,
+        )
+        detection_count = await conn.fetchval(
+            """
+            SELECT count(*) FROM entity_mention_detections
+            WHERE tenant_id=$1 AND source_observation_id=ANY($2::uuid[])
+            """,
+            tenant,
+            observations,
+        )
+
+    assert len(dispatched) == 1
+    assert dispatched[0]["payload"]["mention_fate_protocol"] == {
+        "eligible_opportunities": len(expected),
+        "committed_fates": len(expected),
+        "existing_fates": 0,
+        "covered_opportunities": len(expected),
+        "coverage": 1.0,
+        "quality_boundary": (
+            "protocol_fate_coverage_not_gold_entity_extraction_quality"
+        ),
+    }
+    assert {
+        (row["source_observation_id"], row["candidate_surface"]) for row in rows
+    } == expected
+    assert detection_count == len(expected)
+    assert all(row["current_detection_version"] == 1 for row in rows)
+    assert {row["fate"] for row in rows} == {
+        "detected",
+        "rejected_not_anchored",
+    }
+
+
 async def test_t1_batch_coalesces_ready_rows_and_attaches_members(
     fresh_db,
     tenant,

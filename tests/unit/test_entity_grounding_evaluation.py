@@ -638,7 +638,8 @@ def test_markdown_exposes_fates_incidents_and_proof_limits() -> None:
     rendered = render_entity_grounding_markdown(state)
 
     assert "Durable work coverage: **1/1 (100.0%)**" in rendered
-    assert "Mention-fate coverage: **1/1 (100.0%)**" in rendered
+    assert "Mention-candidate terminal-fate coverage: **1/1 (100.0%)**" in rendered
+    assert "Gold entity-extraction quality: **not measured**" in rendered
     assert "Exact explicit-anchor reconstructability: **1/1 (100.0%)**" in rendered
     assert "resolved_for_consumer: 1" in rendered
     assert "none observed in this scope" in rendered
