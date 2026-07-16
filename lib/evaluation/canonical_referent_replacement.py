@@ -9,11 +9,8 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.checklist_ratio import ChecklistRatio
 from lib.evaluation.company_learning_experiment import CanonicalEntityRef
-from lib.evaluation.company_learning_population import (
-    IntervalEstimate,
-    _wilson_estimate,
-)
 
 
 class _ReplacementModel(BaseModel):
@@ -58,9 +55,9 @@ class ReplacementProofCell(_ReplacementModel):
 class CanonicalResourceReplacementObservation(_ReplacementModel):
     """Raw evidence for the sealed end-to-end replacement obligations."""
 
-    schema_version: Literal[
+    schema_version: Literal["canonical-resource-replacement-observation-v1"] = (
         "canonical-resource-replacement-observation-v1"
-    ] = "canonical-resource-replacement-observation-v1"
+    )
     case_id: Literal["canonical-system-resource-replacement-v1"] = (
         "canonical-system-resource-replacement-v1"
     )
@@ -80,7 +77,7 @@ class CanonicalResourceReplacementObservation(_ReplacementModel):
     alias_current_successor_safe: ReplacementProofCell
     alias_asof_predecessor_safe: ReplacementProofCell
     exact_source_binding_boundary_safe: ReplacementProofCell
-    delayed_event_asof_safe: ReplacementProofCell
+    delayed_event_attachment_fail_closed: ReplacementProofCell
     old_attachment_immutable: ReplacementProofCell
     source_observation_immutable: ReplacementProofCell
     model_scope_immutable: ReplacementProofCell
@@ -119,10 +116,7 @@ class CanonicalResourceReplacementObservation(_ReplacementModel):
 
     @property
     def measurements(self) -> dict[str, ReplacementProofCell]:
-        return {
-            name: getattr(self, name)
-            for name in _MEASUREMENT_NAMES
-        }
+        return {name: getattr(self, name) for name in _MEASUREMENT_NAMES}
 
 
 _TRANSITION_MEASUREMENTS = (
@@ -140,7 +134,7 @@ _LIFECYCLE_MEASUREMENTS = (
 )
 _SOURCE_BOUNDARY_MEASUREMENTS = (
     "exact_source_binding_boundary_safe",
-    "delayed_event_asof_safe",
+    "delayed_event_attachment_fail_closed",
 )
 _IMMUTABILITY_MEASUREMENTS = (
     "old_attachment_immutable",
@@ -166,7 +160,7 @@ _SAFETY_MEASUREMENTS = (
     "alias_current_successor_safe",
     "alias_asof_predecessor_safe",
     "exact_source_binding_boundary_safe",
-    "delayed_event_asof_safe",
+    "delayed_event_attachment_fail_closed",
     "lineage_time_boundary_safe",
     "hard_dependency_rejected",
     "transaction_atomic",
@@ -193,16 +187,16 @@ class CanonicalResourceReplacementReport(_ReplacementModel):
     violating_measurement_count: int = Field(ge=0)
     safety_violation_count: int = Field(ge=0)
     immutability_violation_count: int = Field(ge=0)
-    runtime_support_rate: IntervalEstimate
-    overall_satisfaction_rate: IntervalEstimate | None
-    transition_control_rate: IntervalEstimate | None
-    lifecycle_alias_safety_rate: IntervalEstimate | None
-    source_boundary_rate: IntervalEstimate | None
-    immutability_rate: IntervalEstimate | None
-    projection_coherence_rate: IntervalEstimate | None
-    lineage_retrieval_rate: IntervalEstimate | None
-    dependency_atomicity_rate: IntervalEstimate | None
-    measurement_rates: dict[str, IntervalEstimate | None]
+    runtime_support_rate: ChecklistRatio
+    overall_satisfaction_rate: ChecklistRatio | None
+    transition_control_rate: ChecklistRatio | None
+    lifecycle_alias_safety_rate: ChecklistRatio | None
+    source_boundary_rate: ChecklistRatio | None
+    immutability_rate: ChecklistRatio | None
+    projection_coherence_rate: ChecklistRatio | None
+    lineage_retrieval_rate: ChecklistRatio | None
+    dependency_atomicity_rate: ChecklistRatio | None
+    measurement_rates: dict[str, ChecklistRatio | None]
     unsupported_reason_counts: dict[str, int]
     observation_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -222,6 +216,46 @@ class CanonicalResourceReplacementReport(_ReplacementModel):
         )
 
 
+class CanonicalReplacementDatabaseEvidence(_ReplacementModel):
+    """Digest-bound raw database evidence behind every replacement cell."""
+
+    schema_version: Literal["canonical-replacement-database-evidence-v1"] = (
+        "canonical-replacement-database-evidence-v1"
+    )
+    query_manifest: dict[str, str] = Field(min_length=1)
+    snapshots: dict[str, Any] = Field(min_length=1)
+    measurement_evidence: dict[str, tuple[str, ...]]
+
+    @model_validator(mode="after")
+    def every_measurement_maps_to_raw_evidence(self) -> Self:
+        if set(self.measurement_evidence) != set(_MEASUREMENT_NAMES):
+            raise ValueError(
+                "database evidence must map every sealed replacement measurement"
+            )
+        if any(
+            not query_name.strip() or not statement.strip()
+            for query_name, statement in self.query_manifest.items()
+        ):
+            raise ValueError("database query manifest entries must be non-empty")
+        snapshot_names = set(self.snapshots)
+        for measurement, references in self.measurement_evidence.items():
+            if not references:
+                raise ValueError(
+                    f"replacement measurement {measurement} lacks raw evidence"
+                )
+            unknown = set(references) - snapshot_names
+            if unknown:
+                raise ValueError(
+                    f"replacement measurement {measurement} references unknown "
+                    f"database evidence: {sorted(unknown)}"
+                )
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_sha256(self.model_dump(mode="json"))
+
+
 class CanonicalResourceReplacementEvidence(_ReplacementModel):
     schema_version: Literal["canonical-resource-replacement-evidence-v1"] = (
         "canonical-resource-replacement-evidence-v1"
@@ -230,6 +264,7 @@ class CanonicalResourceReplacementEvidence(_ReplacementModel):
     system_version: str = Field(min_length=1)
     created_at: str = Field(min_length=1)
     observation: CanonicalResourceReplacementObservation
+    database_evidence: CanonicalReplacementDatabaseEvidence
     report: CanonicalResourceReplacementReport
     artifact_refs: tuple[str, ...] = Field(min_length=1)
 
@@ -239,6 +274,12 @@ class CanonicalResourceReplacementEvidence(_ReplacementModel):
         if recomputed != self.report:
             raise ValueError(
                 "canonical replacement report does not match raw observation"
+            )
+        if set(self.database_evidence.measurement_evidence) != set(
+            self.observation.measurements
+        ):
+            raise ValueError(
+                "canonical replacement database evidence changed sealed scope"
             )
         return self
 
@@ -260,9 +301,7 @@ def evaluate_canonical_resource_replacement(
 
     measurements = observation.measurements
     observed = {
-        name: cell
-        for name, cell in measurements.items()
-        if cell.status == "observed"
+        name: cell for name, cell in measurements.items() if cell.status == "observed"
     }
     unsupported = {
         name: cell
@@ -273,9 +312,7 @@ def evaluate_canonical_resource_replacement(
         name: cell for name, cell in observed.items() if cell.satisfied is False
     }
     safety_violations = set(violating).intersection(_SAFETY_MEASUREMENTS)
-    immutability_violations = set(violating).intersection(
-        _IMMUTABILITY_MEASUREMENTS
-    )
+    immutability_violations = set(violating).intersection(_IMMUTABILITY_MEASUREMENTS)
     status: Literal["observed", "observed_with_gaps", "contradicted"] = (
         "contradicted"
         if violating
@@ -291,11 +328,8 @@ def evaluate_canonical_resource_replacement(
         violating_measurement_count=len(violating),
         safety_violation_count=len(safety_violations),
         immutability_violation_count=len(immutability_violations),
-        runtime_support_rate=_wilson_estimate(
-            [
-                float(cell.status == "observed")
-                for cell in measurements.values()
-            ]
+        runtime_support_rate=ChecklistRatio.from_flags(
+            [cell.status == "observed" for cell in measurements.values()]
         ),
         overall_satisfaction_rate=_rate(observed),
         transition_control_rate=_category_rate(
@@ -328,7 +362,7 @@ def evaluate_canonical_resource_replacement(
         ),
         measurement_rates={
             name: (
-                _wilson_estimate([float(bool(cell.satisfied))])
+                ChecklistRatio.from_flags([bool(cell.satisfied)])
                 if cell.status == "observed"
                 else None
             )
@@ -337,14 +371,11 @@ def evaluate_canonical_resource_replacement(
         unsupported_reason_counts=dict(
             sorted(
                 Counter(
-                    str(cell.unsupported_reason)
-                    for cell in unsupported.values()
+                    str(cell.unsupported_reason) for cell in unsupported.values()
                 ).items()
             )
         ),
-        observation_digest=canonical_sha256(
-            observation.model_dump(mode="json")
-        ),
+        observation_digest=canonical_sha256(observation.model_dump(mode="json")),
     )
 
 
@@ -362,25 +393,22 @@ def validate_canonical_resource_replacement_artifact(
 
 def _rate(
     observed: dict[str, ReplacementProofCell],
-) -> IntervalEstimate | None:
-    values = [float(bool(cell.satisfied)) for cell in observed.values()]
-    return _wilson_estimate(values) if values else None
+) -> ChecklistRatio | None:
+    values = [bool(cell.satisfied) for cell in observed.values()]
+    return ChecklistRatio.from_flags(values) if values else None
 
 
 def _category_rate(
     observed: dict[str, ReplacementProofCell],
     names: tuple[str, ...],
-) -> IntervalEstimate | None:
-    values = [
-        float(bool(observed[name].satisfied))
-        for name in names
-        if name in observed
-    ]
-    return _wilson_estimate(values) if values else None
+) -> ChecklistRatio | None:
+    values = [bool(observed[name].satisfied) for name in names if name in observed]
+    return ChecklistRatio.from_flags(values) if values else None
 
 
 __all__ = [
     "CanonicalResourceReplacementEvidence",
+    "CanonicalReplacementDatabaseEvidence",
     "CanonicalResourceReplacementObservation",
     "CanonicalResourceReplacementReport",
     "ReplacementProofCell",

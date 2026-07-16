@@ -29,7 +29,7 @@ MEASUREMENT_NAMES = {
     "alias_current_successor_safe",
     "alias_asof_predecessor_safe",
     "exact_source_binding_boundary_safe",
-    "delayed_event_asof_safe",
+    "delayed_event_attachment_fail_closed",
     "old_attachment_immutable",
     "source_observation_immutable",
     "model_scope_immutable",
@@ -75,6 +75,9 @@ async def test_db_runner_emits_self_authenticating_replacement_evidence(
     assert evidence.report.status == "observed"
     assert evidence.report.runtime_support_rate.point_estimate == 1.0
     assert evidence.report.full_scope_complete is True
+    assert set(evidence.database_evidence.measurement_evidence) == MEASUREMENT_NAMES
+    assert evidence.database_evidence.query_manifest
+    assert evidence.database_evidence.snapshots
     for name, cell in evidence.observation.measurements.items():
         assert cell.status == "observed"
         assert cell.satisfied is True
@@ -83,31 +86,53 @@ async def test_db_runner_emits_self_authenticating_replacement_evidence(
     artifact_path = tmp_path / ARTIFACT_NAME
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert payload["evidence_digest"] == evidence.digest
-    assert (
-        validate_canonical_resource_replacement_artifact(payload)
-        == evidence
+    assert validate_canonical_resource_replacement_artifact(payload) == evidence
+    foreign_before = evidence.database_evidence.snapshots["foreign_tenant_before"]
+    foreign_after = evidence.database_evidence.snapshots["foreign_tenant_after"]
+    assert foreign_before == foreign_after
+    assert foreign_after["transition_count"] == 0
+    assert foreign_after["cross_tenant_operation_count"] == 0
+    assert foreign_after["current_binding_ref"]["id"] == str(
+        first_ids.isolation_predecessor_id
     )
+    source_resolution = evidence.database_evidence.snapshots[
+        "source_binding_resolution"
+    ]
+    assert source_resolution["delayed_attachment_resolution"] is None
 
     payload["observation"]["transaction_atomic"]["satisfied"] = False
     with pytest.raises(ValueError, match="report does not match"):
         validate_canonical_resource_replacement_artifact(payload)
 
-    assert await db_pool.fetchval(
-        """
+    payload = evidence.artifact_payload()
+    payload["database_evidence"]["snapshots"]["foreign_tenant_after"][
+        "transition_count"
+    ] = 1
+    with pytest.raises(ValueError, match="evidence digest mismatch"):
+        validate_canonical_resource_replacement_artifact(payload)
+
+    assert (
+        await db_pool.fetchval(
+            """
         SELECT count(*)
         FROM canonical_referent_transitions
         WHERE tenant_id=$1
         """,
-        first_ids.tenant_id,
-    ) == 1
-    assert await db_pool.fetchval(
-        """
+            first_ids.tenant_id,
+        )
+        == 1
+    )
+    assert (
+        await db_pool.fetchval(
+            """
         SELECT count(*)
         FROM canonical_referent_transitions
         WHERE tenant_id=ANY($1::uuid[])
         """,
-        [
-            first_ids.isolation_tenant_id,
-            first_ids.atomicity_tenant_id,
-        ],
-    ) == 0
+            [
+                first_ids.isolation_tenant_id,
+                first_ids.atomicity_tenant_id,
+            ],
+        )
+        == 0
+    )

@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from lib.evaluation.canonical_referent_replacement import (
+    CanonicalReplacementDatabaseEvidence,
     CanonicalResourceReplacementEvidence,
     CanonicalResourceReplacementObservation,
     ReplacementProofCell,
@@ -29,7 +30,7 @@ MEASUREMENTS = (
     "alias_current_successor_safe",
     "alias_asof_predecessor_safe",
     "exact_source_binding_boundary_safe",
-    "delayed_event_asof_safe",
+    "delayed_event_attachment_fail_closed",
     "old_attachment_immutable",
     "source_observation_immutable",
     "model_scope_immutable",
@@ -53,8 +54,13 @@ def test_full_replacement_observation_is_continuous_and_noncompensatory() -> Non
     assert report.safety_violation_count == 0
     assert report.immutability_violation_count == 0
     assert report.runtime_support_rate.point_estimate == 1.0
+    assert report.runtime_support_rate.numerator == 20
+    assert report.runtime_support_rate.denominator == 20
+    assert report.runtime_support_rate.method == "descriptive_checklist_ratio"
     assert report.overall_satisfaction_rate is not None
     assert report.overall_satisfaction_rate.point_estimate == 1.0
+    assert report.overall_satisfaction_rate.numerator == 20
+    assert report.overall_satisfaction_rate.denominator == 20
     assert report.transition_control_rate.point_estimate == 1.0
     assert report.lifecycle_alias_safety_rate.point_estimate == 1.0
     assert report.source_boundary_rate.point_estimate == 1.0
@@ -74,7 +80,7 @@ def test_full_replacement_observation_is_continuous_and_noncompensatory() -> Non
         "alias_current_successor_safe",
         "alias_asof_predecessor_safe",
         "exact_source_binding_boundary_safe",
-        "delayed_event_asof_safe",
+        "delayed_event_attachment_fail_closed",
         "lineage_time_boundary_safe",
         "hard_dependency_rejected",
         "transaction_atomic",
@@ -94,6 +100,8 @@ def test_each_safety_failure_contradicts_without_compensation(
     assert report.safety_violation_count == 1
     assert report.full_scope_complete is False
     assert report.measurement_rates[measurement].point_estimate == 0.0
+    assert report.measurement_rates[measurement].numerator == 0
+    assert report.measurement_rates[measurement].denominator == 1
 
 
 @pytest.mark.parametrize(
@@ -116,6 +124,8 @@ def test_each_immutability_failure_is_a_hard_contradiction(
     assert report.status == "contradicted"
     assert report.immutability_violation_count == 1
     assert report.immutability_rate.point_estimate == pytest.approx(2 / 3)
+    assert report.immutability_rate.numerator == 2
+    assert report.immutability_rate.denominator == 3
 
 
 def test_runtime_gaps_are_measured_without_fabricated_evidence() -> None:
@@ -127,7 +137,7 @@ def test_runtime_gaps_are_measured_without_fabricated_evidence() -> None:
             "alias_current_successor_safe",
             "alias_asof_predecessor_safe",
             "exact_source_binding_boundary_safe",
-            "delayed_event_asof_safe",
+            "delayed_event_attachment_fail_closed",
             "old_attachment_immutable",
             "source_observation_immutable",
             "model_scope_immutable",
@@ -148,6 +158,8 @@ def test_runtime_gaps_are_measured_without_fabricated_evidence() -> None:
     assert report.observed_measurement_count == 5
     assert report.unsupported_measurement_count == 15
     assert report.runtime_support_rate.point_estimate == 0.25
+    assert report.runtime_support_rate.numerator == 5
+    assert report.runtime_support_rate.denominator == 20
     assert report.violating_measurement_count == 0
     assert report.lifecycle_alias_safety_rate is None
     assert report.immutability_rate is None
@@ -170,6 +182,8 @@ def test_completely_unsupported_runtime_remains_a_valid_gap_report() -> None:
     assert report.observed_measurement_count == 0
     assert report.unsupported_measurement_count == 20
     assert report.runtime_support_rate.point_estimate == 0.0
+    assert report.runtime_support_rate.numerator == 0
+    assert report.runtime_support_rate.denominator == 20
     assert report.overall_satisfaction_rate is None
     assert report.full_scope_complete is False
 
@@ -181,14 +195,13 @@ def test_evidence_reopens_raw_measurements_and_digest() -> None:
         system_version="pytest-system",
         created_at=TRANSACTION_AT.isoformat(),
         observation=observation,
+        database_evidence=_database_evidence(observation),
         report=evaluate_canonical_resource_replacement(observation),
         artifact_refs=("pytest:resource-replacement",),
     )
 
     assert (
-        validate_canonical_resource_replacement_artifact(
-            evidence.artifact_payload()
-        )
+        validate_canonical_resource_replacement_artifact(evidence.artifact_payload())
         == evidence
     )
 
@@ -267,11 +280,22 @@ def _observation() -> CanonicalResourceReplacementObservation:
         replacement_reason=(
             "The governed system identity replaced the legacy resource."
         ),
-        **{
-            name: _observed(True, name)
-            for name in MEASUREMENTS
-        },
+        **{name: _observed(True, name) for name in MEASUREMENTS},
         artifact_refs=("pytest:replacement-observation",),
+    )
+
+
+def _database_evidence(
+    observation: CanonicalResourceReplacementObservation,
+) -> CanonicalReplacementDatabaseEvidence:
+    snapshots = {
+        name: {"satisfied": cell.satisfied}
+        for name, cell in observation.measurements.items()
+    }
+    return CanonicalReplacementDatabaseEvidence(
+        query_manifest={"pytest": "SELECT synthetic_test_evidence"},
+        snapshots=snapshots,
+        measurement_evidence={name: (name,) for name in observation.measurements},
     )
 
 

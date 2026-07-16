@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 import asyncpg
 
 from lib.evaluation.canonical_referent_replacement import (
+    CanonicalReplacementDatabaseEvidence,
     CanonicalResourceReplacementEvidence,
     CanonicalResourceReplacementObservation,
     ReplacementProofCell,
@@ -57,6 +58,94 @@ REPLACEMENT_REASON = (
     "The governed billing platform replaced the legacy system resource."
 )
 _UUID_NAMESPACE = UUID("7c946c95-a7ca-5ed5-9195-b56b566739d8")
+_ATTACHMENT_SNAPSHOT_QUERY = """
+SELECT binding_id, binding_version, binding_lineage_id,
+       source_surface, normalized_source_surface,
+       attachment_authority_ref, observation_occurred_at
+FROM observation_source_identity_bindings
+WHERE tenant_id=$1 AND observation_id=$2
+"""
+_OBSERVATION_SNAPSHOT_QUERY = """
+SELECT occurred_at, kind, source_channel, content, content_text,
+       trust_tier, entities_mentioned
+FROM observations
+WHERE tenant_id=$1 AND id=$2
+"""
+_MODEL_SNAPSHOT_QUERY = """
+SELECT model.status, model."natural", model.proposition,
+       model.scope_entities, scope.entity_type,
+       scope.entity_id AS sidecar_entity_id
+FROM models model
+LEFT JOIN model_scope_entities scope
+  ON scope.tenant_id=model.tenant_id
+ AND scope.model_id=model.id
+ AND scope.entity_type='resource'
+WHERE model.tenant_id=$1 AND model.id=$2
+"""
+_REPLACEMENT_DATABASE_STATE_QUERY = """
+SELECT
+  (SELECT archived_at FROM resources
+   WHERE tenant_id=$1 AND id=$2) AS predecessor_archived_at,
+  (SELECT archived_at FROM resources
+   WHERE tenant_id=$1 AND id=$3) AS successor_archived_at,
+  (SELECT count(*) FROM projection_snapshots
+   WHERE tenant_id=$1 AND subject_key=$4) AS snapshot_count,
+  (SELECT count(*) FROM projection_dependencies
+   WHERE tenant_id=$1 AND subject_key=$4) AS dependency_count,
+  (SELECT count(*) FROM projection_refresh_jobs
+   WHERE tenant_id=$1 AND subject_key=$4) AS refresh_job_count,
+  (SELECT payload FROM projection_refresh_jobs
+   WHERE tenant_id=$1 AND subject_key=$4
+   ORDER BY created_at LIMIT 1) AS refresh_payload,
+  (SELECT count(*) FROM canonical_referent_transitions
+   WHERE tenant_id=$1 AND operation_ref=$5) AS transition_count,
+  (SELECT reason FROM canonical_referent_transitions
+   WHERE tenant_id=$1 AND operation_ref=$5) AS transition_reason,
+  (SELECT authority_ref FROM canonical_referent_transitions
+   WHERE tenant_id=$1 AND operation_ref=$5) AS transition_authority_ref,
+  (SELECT evidence_refs FROM canonical_referent_transitions
+   WHERE tenant_id=$1 AND operation_ref=$5) AS transition_evidence_refs
+"""
+_TENANT_ISOLATION_STATE_QUERY = """
+SELECT
+  (SELECT archived_at FROM resources
+   WHERE tenant_id=$1 AND id=$2) AS predecessor_archived_at,
+  (SELECT archived_at FROM resources
+   WHERE tenant_id=$1 AND id=$3) AS successor_archived_at,
+  (SELECT count(*) FROM canonical_referent_transitions
+   WHERE tenant_id=$1) AS transition_count,
+  (SELECT canonical_referent FROM source_identity_bindings
+   WHERE tenant_id=$1
+     AND source_system='jira'
+     AND source_native_identifier='jira:project:10042'
+     AND valid_to IS NULL
+     AND transaction_to IS NULL) AS current_binding_ref,
+  (SELECT count(*) FROM canonical_referent_transitions
+   WHERE operation_ref=$4) AS cross_tenant_operation_count
+"""
+_ATOMICITY_STATE_QUERY = """
+SELECT
+  (SELECT count(*) FROM canonical_referent_transitions
+   WHERE tenant_id=$1 AND operation_ref=$2) AS transition_count,
+  (SELECT archived_at FROM resources
+   WHERE tenant_id=$1 AND id=$3) AS archived_at,
+  (SELECT valid_until FROM entity_aliases
+   WHERE tenant_id=$1
+     AND alias_text='rollback legacy billing') AS alias_valid_until,
+  (SELECT count(*) FROM observations
+   WHERE tenant_id=$1
+     AND kind='state_change'
+     AND cause_id=$4) AS state_change_count
+"""
+_HARD_DEPENDENCY_STATE_QUERY = """
+SELECT
+  (SELECT count(*) FROM canonical_referent_transitions
+   WHERE tenant_id=$1 AND operation_ref=$2) AS transition_count,
+  (SELECT archived_at FROM resources
+   WHERE tenant_id=$1 AND id=$3) AS predecessor_archived_at,
+  (SELECT count(*) FROM resources
+   WHERE tenant_id=$1 AND id=$4) AS successor_count
+"""
 
 
 async def _register_codecs(conn: asyncpg.Connection) -> None:
@@ -92,6 +181,9 @@ class _ScenarioIds:
     atomicity_predecessor_id: UUID
     atomicity_successor_id: UUID
     atomicity_cause_event_id: UUID
+    isolation_predecessor_id: UUID
+    isolation_successor_id: UUID
+    isolation_cause_event_id: UUID
 
     @property
     def tenant_ids(self) -> tuple[UUID, ...]:
@@ -124,6 +216,9 @@ def scenario_ids(*, run_id: str, system_version: str) -> _ScenarioIds:
         atomicity_predecessor_id=stable("atomicity-predecessor"),
         atomicity_successor_id=stable("atomicity-successor"),
         atomicity_cause_event_id=stable("atomicity-cause-event"),
+        isolation_predecessor_id=stable("isolation-predecessor"),
+        isolation_successor_id=stable("isolation-successor"),
+        isolation_cause_event_id=stable("isolation-cause-event"),
     )
 
 
@@ -180,6 +275,14 @@ async def run_canonical_resource_replacement_experiment(
             source_channel="review:canonical-replacement",
             content_text="canonical replacement rollback authority",
         )
+        await _seed_observation(
+            conn,
+            tenant_id=ids.isolation_tenant_id,
+            observation_id=ids.isolation_cause_event_id,
+            occurred_at=database_now - timedelta(minutes=1),
+            source_channel="review:canonical-replacement",
+            content_text="foreign tenant canonical replacement authority",
+        )
         await _seed_resource(
             conn,
             tenant_id=ids.tenant_id,
@@ -215,6 +318,20 @@ async def run_canonical_resource_replacement_experiment(
             identity="Rollback Billing Platform",
             created_at=created_at + timedelta(hours=1),
         )
+        await _seed_resource(
+            conn,
+            tenant_id=ids.isolation_tenant_id,
+            resource_id=ids.isolation_predecessor_id,
+            identity="Legacy Billing",
+            created_at=created_at,
+        )
+        await _seed_resource(
+            conn,
+            tenant_id=ids.isolation_tenant_id,
+            resource_id=ids.isolation_successor_id,
+            identity="Billing Platform",
+            created_at=created_at + timedelta(hours=1),
+        )
         await insert_alias_with_connection(
             conn,
             phrase="legacy billing",
@@ -240,15 +357,28 @@ async def run_canonical_resource_replacement_experiment(
         await insert_alias_with_connection(
             conn,
             phrase="rollback legacy billing",
-            resolved_entity_ref=_ref(
-                ids.atomicity_predecessor_id
-            ).model_dump(mode="json"),
+            resolved_entity_ref=_ref(ids.atomicity_predecessor_id).model_dump(
+                mode="json"
+            ),
             source="resource_lifecycle",
             confidence=1.0,
             tenant_id=ids.atomicity_tenant_id,
             is_canonical=True,
             valid_from=created_at,
             source_event_id=ids.atomicity_cause_event_id,
+        )
+        await insert_alias_with_connection(
+            conn,
+            phrase="legacy billing",
+            resolved_entity_ref=_ref(ids.isolation_predecessor_id).model_dump(
+                mode="json"
+            ),
+            source="resource_lifecycle",
+            confidence=1.0,
+            tenant_id=ids.isolation_tenant_id,
+            is_canonical=True,
+            valid_from=created_at,
+            source_event_id=ids.isolation_cause_event_id,
         )
         binding = await source_repo.bind(
             tenant_id=ids.tenant_id,
@@ -267,6 +397,17 @@ async def run_canonical_resource_replacement_experiment(
             binding=binding,
             source_surface="Legacy Billing",
             attachment_authority_ref="jira:installation:replacement-proof",
+            conn=conn,
+        )
+        isolation_binding = await source_repo.bind(
+            tenant_id=ids.isolation_tenant_id,
+            source_system="jira",
+            source_native_identifier="jira:project:10042",
+            source_identity_authority_ref="jira:installation:replacement-proof",
+            canonical_ref=_ref(ids.isolation_predecessor_id).model_dump(mode="json"),
+            evidence_refs=("jira:project:10042",),
+            valid_from=created_at,
+            transaction_from=created_at,
             conn=conn,
         )
         await _seed_model_and_projection(
@@ -415,34 +556,44 @@ async def run_canonical_resource_replacement_experiment(
         ),
         invariant="CANONICAL_REFERENT_STALE_HEAD",
     )
+    foreign_operation_ref = f"{run_id}:replace:foreign-tenant:v1"
+    foreign_state_before = await _tenant_isolation_snapshot(
+        pool,
+        tenant_id=ids.isolation_tenant_id,
+        predecessor_id=ids.isolation_predecessor_id,
+        successor_id=ids.isolation_successor_id,
+        operation_ref=foreign_operation_ref,
+    )
     foreign_rejected = await _replacement_rejected_with(
         orchestrator,
         _command(
             tenant_id=ids.isolation_tenant_id,
-            operation_ref=f"{run_id}:replace:foreign-tenant:v1",
-            predecessor_id=ids.predecessor_id,
+            operation_ref=foreign_operation_ref,
+            predecessor_id=ids.isolation_predecessor_id,
             successor_id=ids.successor_id,
             effective_at=effective_at,
-            cause_event_id=ids.cause_event_id,
+            cause_event_id=ids.isolation_cause_event_id,
         ),
         invariant="CANONICAL_REPLACEMENT_ENDPOINT_MISSING",
     )
-    foreign_transition_count = await pool.fetchval(
-        """
-        SELECT count(*)
-        FROM canonical_referent_transitions
-        WHERE tenant_id=$1
-        """,
-        ids.isolation_tenant_id,
+    foreign_state_after = await _tenant_isolation_snapshot(
+        pool,
+        tenant_id=ids.isolation_tenant_id,
+        predecessor_id=ids.isolation_predecessor_id,
+        successor_id=ids.isolation_successor_id,
+        operation_ref=foreign_operation_ref,
     )
-    hard_dependency_rejected = await _prove_hard_dependency_rejection(
+    (
+        hard_dependency_rejected,
+        hard_dependency_state,
+    ) = await _prove_hard_dependency_rejection(
         pool=pool,
         orchestrator=orchestrator,
         ids=ids,
         effective_at=effective_at + timedelta(microseconds=2),
         run_id=run_id,
     )
-    atomicity_proven = await _prove_transaction_atomicity(
+    atomicity_proven, atomicity_state = await _prove_transaction_atomicity(
         pool=pool,
         ids=ids,
         effective_at=atomicity_effective_at,
@@ -502,8 +653,7 @@ async def run_canonical_resource_replacement_experiment(
     }
     proof_cells = {
         "transition_applied": _observed(
-            applied.transition.applied
-            and database_state["transition_count"] == 1,
+            applied.transition.applied and database_state["transition_count"] == 1,
             transition_ref,
         ),
         "operation_replay_idempotent": _observed(
@@ -515,17 +665,20 @@ async def run_canonical_resource_replacement_experiment(
             refresh_ref,
         ),
         "operation_conflict_rejected": _observed(
-            conflict_rejected
-            and replay_state["transition_count"] == 1,
+            conflict_rejected and replay_state["transition_count"] == 1,
             transition_ref,
         ),
         "stale_head_rejected": _observed(
-            stale_head_rejected
-            and replay_state["transition_count"] == 1,
+            stale_head_rejected and replay_state["transition_count"] == 1,
             transition_ref,
         ),
         "tenant_isolated": _observed(
-            foreign_rejected and foreign_transition_count == 0,
+            foreign_rejected
+            and foreign_state_before == foreign_state_after
+            and foreign_state_after["transition_count"] == 0
+            and foreign_state_after["cross_tenant_operation_count"] == 0
+            and _json_obj(foreign_state_after["current_binding_ref"])
+            == _ref_dict(ids.isolation_predecessor_id),
             transition_ref,
             f"postgres:tenants:{ids.isolation_tenant_id}",
         ),
@@ -539,8 +692,7 @@ async def run_canonical_resource_replacement_experiment(
             f"{resource_ref}:{ids.successor_id}",
         ),
         "alias_current_successor_safe": _observed(
-            current_old_alias is None
-            and current_successor_alias == successor_ref,
+            current_old_alias is None and current_successor_alias == successor_ref,
             alias_ref,
         ),
         "alias_asof_predecessor_safe": _observed(
@@ -553,7 +705,7 @@ async def run_canonical_resource_replacement_experiment(
             and _binding_ref(historical_binding) == expected_ref,
             binding_ref,
         ),
-        "delayed_event_asof_safe": _observed(
+        "delayed_event_attachment_fail_closed": _observed(
             _binding_ref(historical_binding) == expected_ref
             and delayed_attachment_resolution is None,
             binding_ref,
@@ -582,12 +734,9 @@ async def run_canonical_resource_replacement_experiment(
         "projection_single_refresh": _observed(
             database_state["refresh_job_count"] == 1
             and replay_state["refresh_job_count"] == 1
-            and refresh_payload.get("correction_kind")
-            == "canonical_referent_replaced"
-            and refresh_payload.get("canonical_referent")
-            == expected_projection_ref
-            and refresh_payload.get("scoped_model_ids")
-            == [str(ids.model_id)],
+            and refresh_payload.get("correction_kind") == "canonical_referent_replaced"
+            and refresh_payload.get("canonical_referent") == expected_projection_ref
+            and refresh_payload.get("scoped_model_ids") == [str(ids.model_id)],
             refresh_ref,
         ),
         "lineage_reason_correct": _observed(
@@ -608,10 +757,7 @@ async def run_canonical_resource_replacement_experiment(
         "hard_dependency_rejected": _observed(
             hard_dependency_rejected,
             hard_dependency_ref,
-            (
-                f"postgres:resources:{ids.tenant_id}:"
-                f"{ids.alternative_successor_id}"
-            ),
+            (f"postgres:resources:{ids.tenant_id}:" f"{ids.alternative_successor_id}"),
             (
                 f"postgres:resources:{ids.tenant_id}:"
                 f"{ids.missing_successor_id}:absent"
@@ -646,11 +792,123 @@ async def run_canonical_resource_replacement_experiment(
             atomicity_ref,
         ),
     )
+    raw_snapshots = {
+        "transition_apply": {
+            "applied": applied.transition.applied,
+            "state_changed": applied.state_changed,
+            "transition_id": str(applied.transition.transition_id),
+            "operation_ref": applied.transition.operation_ref,
+            "transaction_at": applied.transition.transaction_at,
+        },
+        "transition_replay": {
+            "applied": replay.transition.applied,
+            "state_changed": replay.state_changed,
+            "database_state": replay_state,
+        },
+        "transition_rejections": {
+            "operation_conflict_rejected": conflict_rejected,
+            "stale_head_rejected": stale_head_rejected,
+        },
+        "foreign_tenant_before": foreign_state_before,
+        "foreign_tenant_after": foreign_state_after,
+        "resource_projection_state_after": database_state,
+        "alias_resolution": {
+            "current_predecessor": current_old_alias,
+            "current_successor": current_successor_alias,
+            "historical_predecessor": historical_alias,
+        },
+        "source_binding_resolution": {
+            "current": _binding_payload(current_binding),
+            "historical": _binding_payload(historical_binding),
+            "effective_boundary": _binding_payload(boundary_binding),
+            "delayed_attachment_resolution": _resolved_binding_payload(
+                delayed_attachment_resolution
+            ),
+            "original_binding": _binding_payload(binding),
+            "foreign_colliding_binding": _binding_payload(isolation_binding),
+        },
+        "attachment_before": attachment_before,
+        "attachment_after": attachment_after,
+        "observation_before": observation_before,
+        "observation_after": observation_after,
+        "model_before": model_before,
+        "model_after": model_after,
+        "lineage_resolution": {
+            "before": _lineage_payload(lineage_before),
+            "at_boundary": _lineage_payload(lineage_at_boundary),
+        },
+        "hard_dependency_rejection": {
+            "rejected": hard_dependency_rejected,
+            "database_state": hard_dependency_state,
+        },
+        "transaction_atomicity": {
+            "proven": atomicity_proven,
+            "database_state": atomicity_state,
+        },
+    }
+    database_evidence = CanonicalReplacementDatabaseEvidence(
+        query_manifest={
+            "attachment_snapshot": _ATTACHMENT_SNAPSHOT_QUERY.strip(),
+            "observation_snapshot": _OBSERVATION_SNAPSHOT_QUERY.strip(),
+            "model_snapshot": _MODEL_SNAPSHOT_QUERY.strip(),
+            "replacement_database_state": (_REPLACEMENT_DATABASE_STATE_QUERY.strip()),
+            "tenant_isolation_state": _TENANT_ISOLATION_STATE_QUERY.strip(),
+            "atomicity_state": _ATOMICITY_STATE_QUERY.strip(),
+            "hard_dependency_state": _HARD_DEPENDENCY_STATE_QUERY.strip(),
+            "alias_resolution": (
+                "EntityAliasRepo.fast_path_resolve(phrase, tenant_id, as_of)"
+            ),
+            "source_binding_resolution": (
+                "SourceIdentityBindingRepo.find_current_binding, "
+                "find_visible_binding and resolve_observation_source"
+            ),
+            "lineage_resolution": (
+                "CanonicalReferentRegistryService.lineage_at("
+                "tenant_id, referent, valid_at, known_at)"
+            ),
+        },
+        snapshots=_json_safe(raw_snapshots),
+        measurement_evidence={
+            "transition_applied": ("transition_apply",),
+            "operation_replay_idempotent": ("transition_replay",),
+            "operation_conflict_rejected": ("transition_rejections",),
+            "stale_head_rejected": ("transition_rejections",),
+            "tenant_isolated": (
+                "foreign_tenant_before",
+                "foreign_tenant_after",
+            ),
+            "predecessor_retired": ("resource_projection_state_after",),
+            "successor_active": ("resource_projection_state_after",),
+            "alias_current_successor_safe": ("alias_resolution",),
+            "alias_asof_predecessor_safe": ("alias_resolution",),
+            "exact_source_binding_boundary_safe": ("source_binding_resolution",),
+            "delayed_event_attachment_fail_closed": ("source_binding_resolution",),
+            "old_attachment_immutable": (
+                "attachment_before",
+                "attachment_after",
+            ),
+            "source_observation_immutable": (
+                "observation_before",
+                "observation_after",
+            ),
+            "model_scope_immutable": ("model_before", "model_after"),
+            "projection_invalidated": ("resource_projection_state_after",),
+            "projection_single_refresh": (
+                "resource_projection_state_after",
+                "transition_replay",
+            ),
+            "lineage_reason_correct": ("resource_projection_state_after",),
+            "lineage_time_boundary_safe": ("lineage_resolution",),
+            "hard_dependency_rejected": ("hard_dependency_rejection",),
+            "transaction_atomic": ("transaction_atomicity",),
+        },
+    )
     evidence = CanonicalResourceReplacementEvidence(
         run_id=run_id,
         system_version=system_version,
         created_at=datetime.now(timezone.utc).isoformat(),
         observation=observation,
+        database_evidence=database_evidence,
         report=evaluate_canonical_resource_replacement(observation),
         artifact_refs=(f"artifact:{artifact_path}",),
     )
@@ -744,7 +1002,7 @@ async def _prove_transaction_atomicity(
     ids: _ScenarioIds,
     effective_at: datetime,
     run_id: str,
-) -> bool:
+) -> tuple[bool, dict[str, Any]]:
     class _FailingProjectionAdapter:
         async def invalidate_for_canonical_referent(self, *_args, **_kwargs):
             raise RuntimeError("forced projection failure after lifecycle repairs")
@@ -770,25 +1028,13 @@ async def _prove_transaction_atomicity(
         failed = str(exc) == "forced projection failure after lifecycle repairs"
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
-            SELECT
-              (SELECT count(*) FROM canonical_referent_transitions
-               WHERE tenant_id=$1 AND operation_ref=$2) AS transition_count,
-              (SELECT archived_at FROM resources
-               WHERE tenant_id=$1 AND id=$3) AS archived_at,
-              (SELECT valid_until FROM entity_aliases
-               WHERE tenant_id=$1
-                 AND alias_text='rollback legacy billing') AS alias_valid_until,
-              (SELECT count(*) FROM observations
-               WHERE tenant_id=$1
-                 AND kind='state_change'
-                 AND cause_id=$4) AS state_change_count
-            """,
+            _ATOMICITY_STATE_QUERY,
             ids.atomicity_tenant_id,
             operation_ref,
             ids.atomicity_predecessor_id,
             ids.atomicity_cause_event_id,
         )
+    state = dict(row) if row is not None else {}
     return bool(
         failed
         and row is not None
@@ -796,7 +1042,7 @@ async def _prove_transaction_atomicity(
         and row["archived_at"] is None
         and row["alias_valid_until"] is None
         and row["state_change_count"] == 0
-    )
+    ), state
 
 
 async def _prove_hard_dependency_rejection(
@@ -806,7 +1052,7 @@ async def _prove_hard_dependency_rejection(
     ids: _ScenarioIds,
     effective_at: datetime,
     run_id: str,
-) -> bool:
+) -> tuple[bool, dict[str, Any]]:
     operation_ref = f"{run_id}:replace:missing-successor:v1"
     rejected = await _replacement_rejected_with(
         orchestrator,
@@ -821,27 +1067,20 @@ async def _prove_hard_dependency_rejection(
         invariant="CANONICAL_REPLACEMENT_ENDPOINT_MISSING",
     )
     row = await pool.fetchrow(
-        """
-        SELECT
-          (SELECT count(*) FROM canonical_referent_transitions
-           WHERE tenant_id=$1 AND operation_ref=$2) AS transition_count,
-          (SELECT archived_at FROM resources
-           WHERE tenant_id=$1 AND id=$3) AS predecessor_archived_at,
-          (SELECT count(*) FROM resources
-           WHERE tenant_id=$1 AND id=$4) AS successor_count
-        """,
+        _HARD_DEPENDENCY_STATE_QUERY,
         ids.tenant_id,
         operation_ref,
         ids.alternative_successor_id,
         ids.missing_successor_id,
     )
+    state = dict(row) if row is not None else {}
     return bool(
         rejected
         and row is not None
         and row["transition_count"] == 0
         and row["predecessor_archived_at"] is None
         and row["successor_count"] == 0
-    )
+    ), state
 
 
 async def _seed_tenant(conn: asyncpg.Connection, tenant_id: UUID) -> None:
@@ -999,13 +1238,7 @@ async def _attachment_snapshot(
     observation_id: UUID,
 ) -> dict[str, Any]:
     row = await pool.fetchrow(
-        """
-        SELECT binding_id, binding_version, binding_lineage_id,
-               source_surface, normalized_source_surface,
-               attachment_authority_ref, observation_occurred_at
-        FROM observation_source_identity_bindings
-        WHERE tenant_id=$1 AND observation_id=$2
-        """,
+        _ATTACHMENT_SNAPSHOT_QUERY,
         tenant_id,
         observation_id,
     )
@@ -1019,12 +1252,7 @@ async def _observation_snapshot(
     observation_id: UUID,
 ) -> dict[str, Any]:
     row = await pool.fetchrow(
-        """
-        SELECT occurred_at, kind, source_channel, content, content_text,
-               trust_tier, entities_mentioned
-        FROM observations
-        WHERE tenant_id=$1 AND id=$2
-        """,
+        _OBSERVATION_SNAPSHOT_QUERY,
         tenant_id,
         observation_id,
     )
@@ -1038,17 +1266,7 @@ async def _model_snapshot(
     model_id: UUID,
 ) -> dict[str, Any]:
     row = await pool.fetchrow(
-        """
-        SELECT model.status, model."natural", model.proposition,
-               model.scope_entities, scope.entity_type,
-               scope.entity_id AS sidecar_entity_id
-        FROM models model
-        LEFT JOIN model_scope_entities scope
-          ON scope.tenant_id=model.tenant_id
-         AND scope.model_id=model.id
-         AND scope.entity_type='resource'
-        WHERE model.tenant_id=$1 AND model.id=$2
-        """,
+        _MODEL_SNAPSHOT_QUERY,
         tenant_id,
         model_id,
     )
@@ -1065,34 +1283,29 @@ async def _replacement_database_state(
     operation_ref: str,
 ) -> dict[str, Any]:
     row = await pool.fetchrow(
-        """
-        SELECT
-          (SELECT archived_at FROM resources
-           WHERE tenant_id=$1 AND id=$2) AS predecessor_archived_at,
-          (SELECT archived_at FROM resources
-           WHERE tenant_id=$1 AND id=$3) AS successor_archived_at,
-          (SELECT count(*) FROM projection_snapshots
-           WHERE tenant_id=$1 AND subject_key=$4) AS snapshot_count,
-          (SELECT count(*) FROM projection_dependencies
-           WHERE tenant_id=$1 AND subject_key=$4) AS dependency_count,
-          (SELECT count(*) FROM projection_refresh_jobs
-           WHERE tenant_id=$1 AND subject_key=$4) AS refresh_job_count,
-          (SELECT payload FROM projection_refresh_jobs
-           WHERE tenant_id=$1 AND subject_key=$4
-           ORDER BY created_at LIMIT 1) AS refresh_payload,
-          (SELECT count(*) FROM canonical_referent_transitions
-           WHERE tenant_id=$1 AND operation_ref=$5) AS transition_count,
-          (SELECT reason FROM canonical_referent_transitions
-           WHERE tenant_id=$1 AND operation_ref=$5) AS transition_reason,
-          (SELECT authority_ref FROM canonical_referent_transitions
-           WHERE tenant_id=$1 AND operation_ref=$5) AS transition_authority_ref,
-          (SELECT evidence_refs FROM canonical_referent_transitions
-           WHERE tenant_id=$1 AND operation_ref=$5) AS transition_evidence_refs
-        """,
+        _REPLACEMENT_DATABASE_STATE_QUERY,
         tenant_id,
         predecessor_id,
         successor_id,
         subject_key,
+        operation_ref,
+    )
+    return dict(row) if row is not None else {}
+
+
+async def _tenant_isolation_snapshot(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    predecessor_id: UUID,
+    successor_id: UUID,
+    operation_ref: str,
+) -> dict[str, Any]:
+    row = await pool.fetchrow(
+        _TENANT_ISOLATION_STATE_QUERY,
+        tenant_id,
+        predecessor_id,
+        successor_id,
         operation_ref,
     )
     return dict(row) if row is not None else {}
@@ -1108,6 +1321,32 @@ def _binding_ref(binding: Any) -> dict[str, Any] | None:
     }
 
 
+def _binding_payload(binding: Any) -> dict[str, Any] | None:
+    if binding is None:
+        return None
+    if hasattr(binding, "model_dump"):
+        return binding.model_dump(mode="json")
+    return _binding_ref(binding)
+
+
+def _resolved_binding_payload(resolution: Any) -> dict[str, Any] | None:
+    if resolution is None:
+        return None
+    return {
+        "binding": _binding_payload(resolution.binding),
+        "canonical_ref": resolution.canonical_ref,
+        "attachment_authority_ref": resolution.attachment_authority_ref,
+        "source_surface": resolution.source_surface,
+    }
+
+
+def _lineage_payload(lineage: Any) -> dict[str, Any]:
+    return {
+        "members": [member.model_dump(mode="json") for member in lineage.members],
+        "head": lineage.head.model_dump(mode="json"),
+    }
+
+
 def _json_obj(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -1115,6 +1354,20 @@ def _json_obj(value: Any) -> dict[str, Any]:
         decoded = json.loads(value)
         return decoded if isinstance(decoded, dict) else {}
     return {}
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return value
 
 
 def _observed(
@@ -1152,9 +1405,7 @@ async def _run(args: argparse.Namespace) -> int:
     print(
         json.dumps(
             {
-                "artifact_path": str(
-                    (args.output_dir / ARTIFACT_NAME).resolve()
-                ),
+                "artifact_path": str((args.output_dir / ARTIFACT_NAME).resolve()),
                 "evidence_digest": evidence.digest,
                 "report": evidence.report.model_dump(mode="json"),
             },
