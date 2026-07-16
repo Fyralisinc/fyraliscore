@@ -59,7 +59,9 @@ coherent diff.
   gain a pre-candidate mention stage; downstream records carry detection and
   mention identities; metadata-only false phrases cannot consume model budget
   or enter company identity reasoning.
-- **Implementation evidence:** Pending milestone commit.
+- **Implementation evidence:** Commit `97a95023` implements detected and
+  rejected mention fates, exact anchors, transactional lineage and continuous
+  evaluator coverage.
 
 ### DISC-002 — Context exposure and automatic admission are different decisions
 
@@ -82,8 +84,8 @@ coherent diff.
   for a consequential consumer.
 - **Evaluation consequence:** Report context usefulness, sufficiency,
   contamination and downstream admission safety separately.
-- **Implementation evidence:** Existing conversational-context component tests;
-  commit reference pending worktree stabilization.
+- **Implementation evidence:** Commit `97a95023` plus the conversational-context
+  component and evaluator tests.
 
 ### DISC-003 — Pre-model grounding state needs durable retry identity
 
@@ -132,6 +134,81 @@ coherent diff.
   database now would optimize an edge boundary before the core path runs.
 - **Return condition:** Revisit after the detected and rejected resolver paths
   pass end to end and before production cutover or cross-tenant adversarial proof.
+
+### DISC-005 — Live Slack mention discovery precedes the context that gives it meaning
+
+- **Date:** 2026-07-16
+- **Milestone:** Slack-to-grounding vertical
+- **Status:** `observed`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** ingestion mention opportunities, conversational
+  context, mention detection and entity resolver polling
+- **Observation:** The exact context, mention, candidate, assessment and
+  admission chain works once an unresolved phrase exists, but the live producer
+  only creates phrases that contain capitalization or a hyphen. Characteristic
+  Slack references such as `the project`, `the customer` and `it` therefore
+  never reach context selection unless a test or caller injects them manually.
+- **Architecture consequence:** Mention-opportunity creation must be a bounded,
+  source-anchored recall step rather than a proxy mention decision. It may
+  nominate proper names, source-native handles and a conservative vocabulary of
+  definite conversational references; exact mention detection and context-aware
+  grounding still decide their fate downstream.
+- **Evaluation consequence:** A production-shaped Slack fixture must begin at
+  ingestion with no hand-authored `_unresolved_phrases` and measure source-to-
+  opportunity recall separately from opportunity-to-detection correctness.
+- **Active slice:** Implement the bounded live opportunity handoff and prove a
+  lowercase definite reference reaches the already-working grounding chain.
+- **Deferred follow-up:** Learned open-class mention discovery, implicit-anchor
+  semantics and full gold recall/precision calibration remain after the thin
+  vertical is green.
+
+### DISC-006 — Successful grounding is not yet a consumed model dependency
+
+- **Date:** 2026-07-16
+- **Milestone:** Grounding-to-belief vertical
+- **Status:** `observed`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** resolver trigger handoff, source semantics,
+  epistemic admission, Think and Models
+- **Observation:** The resolver commits an exact GroundingAdmissionDecision and
+  enqueues a late T1 trigger, but the legacy reasoning path can reload the raw
+  Observation and create a Model without validating or persisting the grounding
+  dependency. Before the current fix, the trigger also used `entity_ref` while
+  Think hydrates `seed_entity_ids`, so even the admitted referent was dropped
+  from the effective reasoning seed.
+- **Architecture consequence:** First preserve the admitted referent and exact
+  assessment/admission references at the trigger boundary. Then add one narrow
+  ordinary asserted-report lane that persists source-semantic annotations, an
+  explicit belief-admission fate and exact grounding continuity before creating
+  one canonical belief Model. Other speech acts must terminate without belief
+  admission in this slice.
+- **Evaluation consequence:** Measure admission-to-trigger coverage, referent-
+  to-Think-scope continuity, trigger terminal fate, model source-provenance
+  closure, model grounding-dependency closure and complete vertical continuity.
+- **Active slice:** Trigger payload continuity and one isolated asserted-report
+  grounding-to-belief path with a question/non-admitted negative control.
+- **Deferred follow-up:** Legacy Think cutover, full source-native revision
+  storage, intent/action routing, graph edges and correction repair are outside
+  this first working vertical.
+
+### DISC-007 — Source-native conversation revisions remain a known adapter boundary
+
+- **Date:** 2026-07-16
+- **Milestone:** Slack-to-grounding vertical
+- **Status:** `deferred`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** Slack create/edit/delete/reaction reconstruction,
+  ConversationEventRevision and conversational topology
+- **Observation:** Slack ingestion preserves revision and topology metadata, but
+  the current context selector still adapts legacy Observation rows into
+  synthetic `observation:<id>:v1` revision references. There is no canonical
+  ConversationEventRevision store yet.
+- **Reason for deferral:** The normative checkpoint explicitly permits the
+  legacy-Observation adapter, and it can prove the first source-to-grounding-to-
+  belief loop. Building the full revision store before that proof would delay
+  the core vertical.
+- **Return condition:** Implement before claiming edit/delete/reaction replay,
+  late reinterpretation or source-native conversational fidelity as complete.
 
 ## Reconciliation Procedure
 

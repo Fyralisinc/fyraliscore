@@ -844,6 +844,7 @@ class EntityResolverWorker:
                     observation_id=observation_id,
                     payload={
                         "entity_ref": entity_ref,
+                        "seed_entity_ids": [entity_ref],
                         "resolution_assessment_ref": {
                             "id": grounding_episode.assessment.assessment_id,
                             "version": grounding_episode.assessment.assessment_version,
@@ -865,6 +866,7 @@ class EntityResolverWorker:
                         observation_id=observation_id,
                         payload={
                             "entity_ref": entity_ref,
+                            "seed_entity_ids": [entity_ref],
                             "resolution_assessment_ref": {
                                 "id": grounding_episode.assessment.assessment_id,
                                 "version": grounding_episode.assessment.assessment_version,

@@ -172,6 +172,28 @@ async def _count_trigger_rows(
         ) or 0
 
 
+async def _fetch_entity_resolved_triggers(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    observation_id: UUID,
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT id, tenant_id, trigger_kind, trigger_subkind,
+                   observation_id, payload
+            FROM think_trigger_queue
+            WHERE tenant_id = $1
+              AND observation_id = $2
+              AND trigger_kind = 'T1'
+              AND trigger_subkind = 'entity_resolved_late'
+            ORDER BY enqueued_at, id
+            """,
+            tenant_id,
+            observation_id,
+        )
+
+
 async def _count_state_change_obs(
     pool: asyncpg.Pool, tenant_id: UUID
 ) -> int:
@@ -365,6 +387,74 @@ async def test_top_level_unresolved_phrases_from_ingestion_are_processed(
     assert request["entity_mention_id"] == detection["mention_id"]
     assert '"mention_detection"' in provider.calls[0]["user"]
     assert str(detection["mention_id"]) in provider.calls[0]["user"]
+
+    # The exact admitted referent and grounding versions must survive the
+    # resolver -> Think queue boundary. ThinkWorker already rehydrates
+    # seed_entity_ids; this assertion protects the producer side of that
+    # existing contract.
+    triggers = await _fetch_entity_resolved_triggers(
+        resolver_db,
+        tenant_id,
+        obs_id,
+    )
+    assert len(triggers) == 1
+    trigger = triggers[0]
+    payload = trigger["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    admitted_ref = {
+        "type": "customer",
+        "id": "customer-nimbus",
+        "version": 1,
+    }
+    assert trigger["tenant_id"] == tenant_id
+    assert trigger["observation_id"] == obs_id
+    assert payload["entity_ref"] == admitted_ref
+    assert payload["seed_entity_ids"] == [admitted_ref]
+    assert payload["resolution_assessment_ref"] == {
+        "id": str(traces[0]["resolution_assessment_id"]),
+        "version": 1,
+    }
+    assert payload["grounding_admission_ref"]["id"] == str(
+        traces[0]["grounding_admission_id"]
+    )
+    assert payload["grounding_admission_ref"]["version"] == 1
+    async with resolver_db.acquire() as conn:
+        admission = await conn.fetchrow(
+            """
+            SELECT assessment_id, decision_version, expires_at
+            FROM grounding_admission_decisions
+            WHERE tenant_id = $1 AND id = $2
+            """,
+            tenant_id,
+            traces[0]["grounding_admission_id"],
+        )
+        assessment_version = await conn.fetchval(
+            """
+            SELECT assessment_version
+            FROM resolution_assessments
+            WHERE tenant_id = $1 AND id = $2
+            """,
+            tenant_id,
+            traces[0]["resolution_assessment_id"],
+        )
+    assert admission is not None
+    assert admission["assessment_id"] == traces[0]["resolution_assessment_id"]
+    assert assessment_version == payload["resolution_assessment_ref"]["version"]
+    assert admission["decision_version"] == payload["grounding_admission_ref"][
+        "version"
+    ]
+    assert admission["expires_at"].isoformat() == payload[
+        "grounding_admission_ref"
+    ]["expires_at"]
+
+    # A terminal grounding trace closes this processing generation, so replay
+    # must neither call the model nor enqueue a duplicate downstream trigger.
+    assert await worker.process_observation(obs_id, tenant_id) == []
+    assert len(provider.calls) == 1
+    assert len(
+        await _fetch_entity_resolved_triggers(resolver_db, tenant_id, obs_id)
+    ) == 1
 
 
 async def test_duplicate_top_level_and_metadata_phrases_are_deduped(

@@ -51,6 +51,7 @@ from lib.embeddings.ollama import (
     OllamaDimensionMismatch,
     OllamaError,
 )
+from lib.entity_mention_detection import extract_bootstrap_mention_opportunities
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ObservationCreate, ObservationRow
@@ -78,6 +79,7 @@ from services.domain.observations.repo import ObservationRepository
 # lookups against known aliases, so precision > recall here. Wave 2-B
 # entity resolver worker handles the long tail with LLM help.
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-]{1,}")
+_MAX_MENTION_OPPORTUNITIES = 50
 
 
 def _dedup_lock_key(source_channel: str, external_id: str) -> int:
@@ -463,7 +465,27 @@ async def _resolve_entities(
     tenant_id: UUID,
 ) -> _EntityResolution:
     entities_mentioned: list[dict[str, Any]] = list(draft.entities_hint)
-    unresolved_phrases: list[str] = list(draft.unresolved_phrases)
+    unresolved_phrases: list[str] = []
+    seen_opportunities: set[str] = set()
+
+    def add_opportunity(phrase: str) -> None:
+        normalized = normalize_phrase(phrase)
+        if (
+            not normalized
+            or normalized in seen_opportunities
+            or len(unresolved_phrases) >= _MAX_MENTION_OPPORTUNITIES
+        ):
+            return
+        seen_opportunities.add(normalized)
+        unresolved_phrases.append(phrase)
+
+    for phrase in draft.unresolved_phrases:
+        add_opportunity(phrase)
+    for phrase in extract_bootstrap_mention_opportunities(
+        draft.content_text,
+        max_opportunities=_MAX_MENTION_OPPORTUNITIES,
+    ):
+        add_opportunity(phrase)
     if alias_repo is None or not draft.content_text:
         return _EntityResolution(entities_mentioned, unresolved_phrases)
 
@@ -477,8 +499,9 @@ async def _resolve_entities(
             if key not in seen_ref_keys:
                 seen_ref_keys.add(key)
                 entities_mentioned.append(ref)
-        elif _looks_like_entity(phrase) and phrase not in unresolved_phrases:
-            unresolved_phrases.append(phrase)
+            # A known identity is a candidate seed. It does not suppress the
+            # exact source surface's independent mention-detection fate.
+            add_opportunity(phrase)
     return _EntityResolution(entities_mentioned, unresolved_phrases)
 
 
@@ -802,20 +825,6 @@ async def _publish_summarization_request_if_needed(
         raw_s3_key=raw_key if isinstance(raw_key, str) else None,
         ingress_kind=summary.get("ingress_kind"),  # type: ignore[arg-type]
     )
-
-
-def _looks_like_entity(phrase: str) -> bool:
-    """Heuristic: phrase has a capital letter or contains a hyphen.
-
-    This intentionally errs on the side of enqueueing fewer common
-    words for the resolver worker. Wave 2-B can refine the rule or
-    move to a POS tagger — the queue key is stable either way.
-    """
-    if not phrase:
-        return False
-    if "-" in phrase:
-        return True
-    return any(c.isupper() for c in phrase)
 
 
 class _PrecomputedEmbedder:

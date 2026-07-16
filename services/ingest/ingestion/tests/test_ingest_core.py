@@ -490,14 +490,46 @@ async def test_entity_alias_fast_path_resolves(
     )
     refs = r.observation.entities_mentioned
     assert {"type": "commitment", "id": "c-187"} in refs
+    assert "payments" in r.observation.content.get("_unresolved_phrases", [])
+
+
+@pytest.mark.asyncio
+async def test_slack_definite_reference_creates_live_mention_opportunity(
+    gateway_pool, tenant_id, _DeterministicEmbedder
+):
+    r = await _ingest_slack(
+        gateway_pool,
+        tenant_id,
+        text="the project is blocked",
+        embedder=_DeterministicEmbedder(),
+    )
+
+    assert r.observation.content.get("_unresolved_phrases") == ["the project"]
+
+
+@pytest.mark.asyncio
+async def test_slack_native_reference_opportunities_preserve_exact_surface(
+    gateway_pool, tenant_id, _DeterministicEmbedder
+):
+    r = await _ingest_slack(
+        gateway_pool,
+        tenant_id,
+        text="ask <@U01ALICE|Alice> in <#C01ENG|eng>",
+        embedder=_DeterministicEmbedder(),
+    )
+
+    assert r.observation.content.get("_unresolved_phrases") == [
+        "<@U01ALICE|Alice>",
+        "<#C01ENG|eng>",
+    ]
 
 
 @pytest.mark.asyncio
 async def test_unresolved_entity_phrase_queued_in_content(
     gateway_pool, tenant_id, _DeterministicEmbedder
 ):
-    # No aliases seeded — capitalized multi-word phrase looks like
-    # an entity reference so it lands in the resolver queue.
+    # No aliases seeded — the maximal hyphenated source surface lands in the
+    # resolver queue as a mention opportunity.
     r = await _ingest_slack(
         gateway_pool,
         tenant_id,
@@ -505,7 +537,7 @@ async def test_unresolved_entity_phrase_queued_in_content(
         embedder=_DeterministicEmbedder(),
     )
     unresolved = r.observation.content.get("_unresolved_phrases", [])
-    assert any("Frobozz-Widget" in p for p in unresolved)
+    assert unresolved == ["Frobozz-Widget"]
 
 
 @pytest.mark.asyncio
