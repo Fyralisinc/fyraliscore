@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -16,15 +17,18 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import asyncpg
+from lib.architecture_registry import load_architecture_registry
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_assurance import (
     CompanyLearningAssuranceSummary,
+    CorrectionAssurance,
     NegativeAssurance,
     PopulationAssurance,
     PositiveAssurance,
     SlackAssurance,
     validate_company_learning_assurance_components,
 )
+from lib.evaluation.proof import EvidenceTier
 from lib.evaluation.slack_reconstruction_gold import (
     evaluate_slack_reconstruction,
     load_slack_reconstruction_gold,
@@ -38,6 +42,9 @@ from scripts.run_company_learning_negative_controls_db import (
 )
 from scripts.run_company_learning_negative_controls_db import (
     run_negative_control_experiment_db,
+)
+from scripts.run_company_learning_correction_harness import (
+    run_company_learning_correction_harness,
 )
 from scripts.run_company_learning_population_harness import (
     ARTIFACT_NAME as POPULATION_ARTIFACT_NAME,
@@ -55,6 +62,14 @@ from scripts.run_company_learning_vitals_harness import (
 SUMMARY_ARTIFACT_NAME = "company_learning_assurance_summary.json"
 SLACK_OBSERVATIONS_NAME = "slack_reconstruction_observations.jsonl"
 SLACK_REPORT_NAME = "slack_reconstruction_existing_surface_report.json"
+ROOT = Path(__file__).resolve().parents[1]
+ARCHITECTURE_REGISTRY = ROOT / "architecture" / "registry.yaml"
+IMPLEMENTATION_PLAN = (
+    ROOT
+    / "docs"
+    / "plans"
+    / "revised-reality-belief-intent-system-implementation.md"
+)
 
 
 async def run_company_learning_assurance_suite(
@@ -66,13 +81,14 @@ async def run_company_learning_assurance_suite(
     llm_call_cost_usd: float = 0.001,
     slack_gold_path: Path = DEFAULT_GOLD,
 ) -> CompanyLearningAssuranceSummary:
-    """Run positive, negative, held-out population, and Slack assurance."""
+    """Run the complete active company-learning assurance profile."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     positive_dir = output_dir / "positive"
     negative_dir = output_dir / "negative"
     population_dir = output_dir / "population"
     slack_dir = output_dir / "slack"
+    correction_dir = output_dir / "correction"
 
     positive_result = await run_joined_company_learning_vitals(
         database_url=database_url,
@@ -127,6 +143,13 @@ async def run_company_learning_assurance_suite(
         await negative_pool.close()
     negative_path = negative_dir / NEGATIVE_ARTIFACT_NAME
     population_path = population_dir / POPULATION_ARTIFACT_NAME
+    correction_artifact = await run_company_learning_correction_harness(
+        database_url=database_url,
+        output_dir=correction_dir,
+        run_id=f"{run_id}:correction",
+        system_version=system_version,
+    )
+    correction_path = correction_dir / "correction_assurance.json"
 
     slack_cases = load_slack_reconstruction_gold(slack_gold_path)
     slack_observations = await observe_existing_slack_reconstruction(
@@ -171,6 +194,7 @@ async def run_company_learning_assurance_suite(
         ),
         "negative_evidence": str(negative_path.resolve()),
         "population_evidence": str(population_path.resolve()),
+        "correction_evidence": str(correction_path.resolve()),
         "slack_observations": str(slack_observations_path.resolve()),
         "slack_report": str(slack_report_path.resolve()),
     }
@@ -197,6 +221,18 @@ async def run_company_learning_assurance_suite(
                     f"{incident.case_id}/{incident.arm.value}/"
                     f"{incident.incident_class.value}"
                     for incident in population_incidents
+                ),
+                *(
+                    f"correction incident: {incident}"
+                    for incident in correction_artifact.incidents
+                ),
+                *(
+                    (
+                        "correction assurance did not converge across every "
+                        "sealed dependency and repair obligation",
+                    )
+                    if not correction_artifact.metrics.converged
+                    else ()
                 ),
             )
         )
@@ -226,6 +262,10 @@ async def run_company_learning_assurance_suite(
         "report": slack_report.digest,
         "gold_manifest": slack_report.gold_manifest_digest,
         "observations": slack_report.observation_digest,
+    }
+    correction_digests = {
+        "artifact": correction_artifact.digest,
+        **correction_artifact.component_digests,
     }
     proof_gaps = tuple(
         dict.fromkeys(
@@ -270,18 +310,30 @@ async def run_company_learning_assurance_suite(
                     if slack_report.status != "observed"
                     else ()
                 ),
-                (
-                    "suite: correction propagation through Models, relations, "
-                    "projections and T4 convergence is separately "
-                    "Postgres-proven, but this command does not execute that "
-                    "convergence burn."
+                *(
+                    f"correction: {gap}"
+                    for gap in correction_artifact.proof_gaps
                 ),
             )
         )
     )
+    architecture_digest = load_architecture_registry(
+        ARCHITECTURE_REGISTRY
+    ).digest
+    implementation_plan_digest = hashlib.sha256(
+        IMPLEMENTATION_PLAN.read_bytes()
+    ).hexdigest()
+    slack_scope_complete = bool(
+        slack_report.status == "observed"
+        and slack_report.metrics.case_count > 0
+        and slack_report.metrics.supported_case_count
+        == slack_report.metrics.case_count
+    )
     summary = CompanyLearningAssuranceSummary(
         run_id=run_id,
         system_version=system_version,
+        architecture_digest=architecture_digest,
+        implementation_plan_digest=implementation_plan_digest,
         created_at=datetime.now(timezone.utc).isoformat(),
         status="failed" if blocking_failures else "working",
         positive=PositiveAssurance(
@@ -322,11 +374,61 @@ async def run_company_learning_assurance_suite(
         slack=SlackAssurance(
             status=slack_report.status,
             metrics=slack_report.metrics.model_dump(mode="json"),
+            evidence_tier=EvidenceTier.E4,
+            scope_complete=slack_scope_complete,
+            open_world_complete=False,
+            blocking_for_active_slice=True,
             artifact_paths={
                 "slack_observations": artifact_paths["slack_observations"],
                 "slack_report": artifact_paths["slack_report"],
             },
             component_digests=slack_digests,
+        ),
+        correction=CorrectionAssurance(
+            status=correction_artifact.status,
+            evidence_tier=EvidenceTier.E4,
+            expected_dependency_count=(
+                correction_artifact.metrics.expected_dependency_count
+            ),
+            discovered_dependency_count=(
+                correction_artifact.metrics.discovered_dependency_count
+            ),
+            dependency_discovery_rate=(
+                correction_artifact.metrics.dependency_discovery_rate
+            ),
+            immediate_fence_rate=(
+                correction_artifact.metrics.immediate_fence_rate
+            ),
+            direct_repair_rate=(
+                correction_artifact.metrics.direct_repair_rate
+            ),
+            recursive_repair_rate=(
+                correction_artifact.metrics.recursive_repair_rate
+            ),
+            relation_retirement_rate=(
+                correction_artifact.metrics.relation_retirement_rate
+            ),
+            projection_invalidation_rate=(
+                correction_artifact.metrics.projection_invalidation_rate
+            ),
+            projection_rebuild_rate=(
+                correction_artifact.metrics.projection_rebuild_rate
+            ),
+            residual_unsafe_debt_count=(
+                correction_artifact.metrics.residual_unsafe_debt_count
+            ),
+            convergence_ratio=(
+                correction_artifact.metrics.convergence_ratio
+            ),
+            replay_idempotent=correction_artifact.metrics.replay_idempotent,
+            source_immutable=correction_artifact.metrics.source_immutable,
+            tenant_isolated=correction_artifact.metrics.tenant_isolated,
+            converged=correction_artifact.metrics.converged,
+            incidents=correction_artifact.incidents,
+            artifact_paths={
+                "correction_evidence": artifact_paths["correction_evidence"]
+            },
+            component_digests=correction_digests,
         ),
         population=PopulationAssurance(
             status=(
@@ -395,6 +497,10 @@ async def run_company_learning_assurance_suite(
                 f"population_{key}": value
                 for key, value in population_digests.items()
             },
+            **{
+                f"correction_{key}": value
+                for key, value in correction_digests.items()
+            },
         },
         artifact_paths=artifact_paths,
     )
@@ -449,7 +555,7 @@ async def _run(args: argparse.Namespace) -> int:
     print(
         "status={status} positive_lift={lift} negative_incidents={incidents} "
         "negative_status={negative} population={observed}/{registry} "
-        "slack_status={slack}".format(
+        "slack_status={slack} correction_status={correction}".format(
             status=summary.status,
             lift=summary.positive.adaptive_minus_frozen_correctness,
             incidents=summary.negative.safety_incident_count,
@@ -465,6 +571,7 @@ async def _run(args: argparse.Namespace) -> int:
                 else 0
             ),
             slack=summary.slack.status,
+            correction=summary.correction.status,
         )
     )
     for failure in summary.blocking_failures:
@@ -477,8 +584,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run positive corrective-memory Vitals, negative safety controls, "
-            "the sealed held-out population, and diagnostic Slack "
-            "reconstruction in one assurance command."
+            "the sealed held-out population, Slack reconstruction, and a "
+            "recursive correction convergence burn in one assurance command."
         )
     )
     parser.add_argument("--database-url", default=None)

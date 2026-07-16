@@ -6,6 +6,7 @@ report without rerunning Think or requiring a live database.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -46,6 +47,12 @@ from lib.evaluation.proof import (
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARCHITECTURE_REGISTRY = ROOT / "architecture" / "registry.yaml"
+DEFAULT_IMPLEMENTATION_PLAN = (
+    ROOT
+    / "docs"
+    / "plans"
+    / "revised-reality-belief-intent-system-implementation.md"
+)
 
 USEFUL_CONTEXT_GRADES = {
     "graph_context_used",
@@ -1050,8 +1057,8 @@ def _company_learning_assurance_summary(
                 "company-learning assurance artifact failed validation"
             ],
             "proof_gaps": [
-                "Combined positive, negative and Slack assurance evidence "
-                "could not be trusted."
+                "Combined positive, negative, population, Slack and correction "
+                "assurance evidence could not be trusted."
             ],
         }
     summary = _json_obj(assurance.get("summary"))
@@ -1074,9 +1081,18 @@ def _company_learning_assurance_summary(
         "summary_digest": assurance.get("summary_digest"),
         "run_id": summary.get("run_id"),
         "system_version": summary.get("system_version"),
+        "architecture_digest": summary.get("architecture_digest"),
+        "implementation_plan_digest": summary.get(
+            "implementation_plan_digest"
+        ),
+        "evaluation_profile": summary.get("evaluation_profile"),
+        "excluded_capabilities": _json_list(
+            summary.get("excluded_capabilities")
+        ),
         "positive": _json_obj(summary.get("positive")),
         "negative": _json_obj(summary.get("negative")),
         "slack": _json_obj(summary.get("slack")),
+        "correction": _json_obj(summary.get("correction")),
         "population": _json_obj(summary.get("population")),
         "component_digests": _json_obj(summary.get("component_digests")),
         "artifact_paths": _json_obj(summary.get("artifact_paths")),
@@ -1236,6 +1252,7 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
         positive = _json_obj(assurance.get("positive"))
         negative = _json_obj(assurance.get("negative"))
         slack = _json_obj(assurance.get("slack"))
+        correction = _json_obj(assurance.get("correction"))
         population = _json_obj(assurance.get("population"))
         slack_metrics = _json_obj(slack.get("metrics"))
         lines.extend(
@@ -1257,6 +1274,12 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
                     "- Held-out runtime coverage: "
                     f"{population.get('observed_pair_count', 'unknown')}/"
                     f"{population.get('registry_pair_count', 'unknown')}"
+                ),
+                (
+                    "- Correction convergence: "
+                    f"{correction.get('converged', 'unknown')} "
+                    "(residual unsafe debt="
+                    f"{correction.get('residual_unsafe_debt_count', 'unknown')})"
                 ),
             ]
         )
@@ -1353,6 +1376,20 @@ def _company_learning_assurance_for_report(
         if summary.system_version != _company_learning_system_version(bundle):
             raise ValueError(
                 "company-learning assurance system version does not match report"
+            )
+        registry = load_architecture_registry(DEFAULT_ARCHITECTURE_REGISTRY)
+        if summary.architecture_digest != registry.digest:
+            raise ValueError(
+                "company-learning assurance architecture digest does not match "
+                "the current registry"
+            )
+        implementation_plan_digest = hashlib.sha256(
+            DEFAULT_IMPLEMENTATION_PLAN.read_bytes()
+        ).hexdigest()
+        if summary.implementation_plan_digest != implementation_plan_digest:
+            raise ValueError(
+                "company-learning assurance implementation-plan digest does "
+                "not match the reviewed current plan"
             )
         canonical_payload = summary.artifact_payload()
         return {

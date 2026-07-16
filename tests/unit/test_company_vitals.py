@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 import pytest
 
+from lib.architecture_registry import load_architecture_registry
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_experiment import (
     ArmLineageRefs,
@@ -23,10 +26,15 @@ from lib.evaluation.company_learning_experiment import (
 )
 from lib.evaluation.company_learning_assurance import (
     CompanyLearningAssuranceSummary,
+    CorrectionAssurance,
     NegativeAssurance,
     PopulationAssurance,
     PositiveAssurance,
     SlackAssurance,
+)
+from lib.evaluation.correction_assurance import (
+    CorrectionRuntimeEvidence,
+    build_correction_assurance,
 )
 from lib.evaluation.company_learning_population import (
     HeldOutPairObservation,
@@ -42,6 +50,7 @@ from lib.evaluation.proof import (
     InvariantEvidenceManifest,
     InvariantRunEvidence,
 )
+from lib.evaluation.slack_reconstruction_gold import SlackGoldFamily
 from scripts.company_vitals import (
     _collect_company_learning_evaluation,
     _company_learning_evidence_bundle,
@@ -1184,6 +1193,18 @@ def _write_company_learning_assurance(
     blocking_failures: tuple[str, ...] = (),
 ) -> Path:
     system_version = "unreported-system-version"
+    repo_root = Path(__file__).resolve().parents[2]
+    architecture_digest = load_architecture_registry(
+        repo_root / "architecture" / "registry.yaml"
+    ).digest
+    implementation_plan_digest = hashlib.sha256(
+        (
+            repo_root
+            / "docs"
+            / "plans"
+            / "revised-reality-belief-intent-system-implementation.md"
+        ).read_bytes()
+    ).hexdigest()
     positive_report = {
         "run_id": "synthetic-vitals:positive",
         "system_version": system_version,
@@ -1214,10 +1235,12 @@ def _write_company_learning_assurance(
         "evidence_manifest": {
             "run_id": "synthetic-vitals:positive",
             "system_version": system_version,
+            "architecture_digest": architecture_digest,
         },
         "evidence_bundle": {
             "run_id": "synthetic-vitals:positive",
             "system_version": system_version,
+            "architecture_digest": architecture_digest,
         },
     }
     positive_evaluation_path = report_dir / "pytest-positive-evaluation.json"
@@ -1226,6 +1249,7 @@ def _write_company_learning_assurance(
         "bundle_version": "pytest-v1",
         "run_id": "synthetic-vitals:positive",
         "system_version": system_version,
+        "architecture_digest": architecture_digest,
         "evidence": [],
     }
     positive_bundle_path = report_dir / "pytest-positive-bundle.json"
@@ -1438,8 +1462,30 @@ def _write_company_learning_assurance(
     _write_jsonl(slack_observations_path, slack_observations)
     slack_metrics = {
         "case_count": 9,
+        "supported_case_count": 9,
+        "supported_case_rate": 1.0,
+        "correct_case_count": 9,
         "correct_case_rate": 1.0,
+        "mean_sufficient_set_recall": 1.0,
+        "complete_sufficient_set_rate": 1.0,
+        "selected_context_precision": 1.0,
         "contamination_rate": 0.0,
+        "reconstructability_rate": 1.0,
+        "mean_topology_recall": 1.0,
+        "edit_delete_correctness_rate": 1.0,
+        "long_range_recall": 1.0,
+        "cross_channel_recall": 1.0,
+        "budget_adherence_rate": 1.0,
+        "abstention_under_insufficiency_rate": 1.0,
+        "family_metrics": {
+            family.value: {
+                "case_count": 1,
+                "correct_case_rate": 1.0,
+                "contamination_rate": 0.0,
+                "mean_sufficient_set_recall": 1.0,
+            }
+            for family in SlackGoldFamily
+        },
     }
     slack_report = {
         "run_id": "synthetic-vitals:slack",
@@ -1448,6 +1494,11 @@ def _write_company_learning_assurance(
         "gold_manifest_digest": "c" * 64,
         "observation_digest": canonical_sha256(slack_observations),
         "metrics": slack_metrics,
+        "assessments": [],
+        "proof_gaps": (
+            "Synthetic Slack gold is not open-world evidence.",
+        ),
+        "artifact_refs": ("pytest://slack",),
     }
     slack_report_path = report_dir / "pytest-slack-report.json"
     _write_json(
@@ -1457,6 +1508,34 @@ def _write_company_learning_assurance(
             "report_digest": canonical_sha256(slack_report),
         },
     )
+    correction_runtime_evidence = CorrectionRuntimeEvidence(
+        expected_dependency_refs=("model:corrected",),
+        discovered_dependency_refs=("model:corrected",),
+        expected_immediate_fence_refs=("model:dependent",),
+        immediate_fence_refs=("model:dependent",),
+        expected_direct_repair_refs=("model:dependent",),
+        direct_repair_refs=("model:dependent",),
+        expected_recursive_repair_refs=("model:recursive",),
+        recursive_repair_refs=("model:recursive",),
+        expected_relation_retirement_refs=("relation:corrected",),
+        relation_retirement_refs=("relation:corrected",),
+        expected_projection_invalidation_refs=("projection:stale",),
+        projection_invalidation_refs=("projection:stale",),
+        expected_projection_rebuild_refs=("projection:fresh",),
+        projection_rebuild_refs=("projection:fresh",),
+        source_before_digest="d" * 64,
+        source_after_digest="d" * 64,
+        artifact_refs=("pytest://correction",),
+    )
+    correction_artifact = build_correction_assurance(
+        run_id="synthetic-vitals:correction",
+        system_version=system_version,
+        created_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
+        runtime_evidence=correction_runtime_evidence,
+        artifact_refs=("pytest://correction",),
+    )
+    correction_path = report_dir / "pytest-correction.json"
+    _write_json(correction_path, correction_artifact.artifact_payload())
     artifact_paths = {
         "positive_pair": str(positive_path),
         "positive_company_learning_evaluation": str(
@@ -1467,12 +1546,15 @@ def _write_company_learning_assurance(
         ),
         "negative_evidence": str(negative_path),
         "population_evidence": str(population_path),
+        "correction_evidence": str(correction_path),
         "slack_observations": str(slack_observations_path),
         "slack_report": str(slack_report_path),
     }
     summary = CompanyLearningAssuranceSummary(
         run_id="synthetic-vitals",
         system_version=system_version,
+        architecture_digest=architecture_digest,
+        implementation_plan_digest=implementation_plan_digest,
         created_at="2026-07-16T00:00:00+00:00",
         status=status,
         positive=PositiveAssurance(
@@ -1515,6 +1597,10 @@ def _write_company_learning_assurance(
         slack=SlackAssurance(
             status="observed",
             metrics=slack_metrics,
+            evidence_tier=EvidenceTier.E4,
+            scope_complete=True,
+            open_world_complete=False,
+            blocking_for_active_slice=True,
             artifact_paths={
                 "slack_observations": artifact_paths["slack_observations"],
                 "slack_report": artifact_paths["slack_report"],
@@ -1523,6 +1609,51 @@ def _write_company_learning_assurance(
                 "report": canonical_sha256(slack_report),
                 "gold_manifest": slack_report["gold_manifest_digest"],
                 "observations": canonical_sha256(slack_observations),
+            },
+        ),
+        correction=CorrectionAssurance(
+            status=correction_artifact.status,
+            evidence_tier=EvidenceTier.E3,
+            expected_dependency_count=(
+                correction_artifact.metrics.expected_dependency_count
+            ),
+            discovered_dependency_count=(
+                correction_artifact.metrics.discovered_dependency_count
+            ),
+            dependency_discovery_rate=(
+                correction_artifact.metrics.dependency_discovery_rate
+            ),
+            immediate_fence_rate=(
+                correction_artifact.metrics.immediate_fence_rate
+            ),
+            direct_repair_rate=correction_artifact.metrics.direct_repair_rate,
+            recursive_repair_rate=(
+                correction_artifact.metrics.recursive_repair_rate
+            ),
+            relation_retirement_rate=(
+                correction_artifact.metrics.relation_retirement_rate
+            ),
+            projection_invalidation_rate=(
+                correction_artifact.metrics.projection_invalidation_rate
+            ),
+            projection_rebuild_rate=(
+                correction_artifact.metrics.projection_rebuild_rate
+            ),
+            residual_unsafe_debt_count=(
+                correction_artifact.metrics.residual_unsafe_debt_count
+            ),
+            convergence_ratio=correction_artifact.metrics.convergence_ratio,
+            replay_idempotent=correction_artifact.metrics.replay_idempotent,
+            source_immutable=correction_artifact.metrics.source_immutable,
+            tenant_isolated=correction_artifact.metrics.tenant_isolated,
+            converged=correction_artifact.metrics.converged,
+            incidents=correction_artifact.incidents,
+            artifact_paths={
+                "correction_evidence": artifact_paths["correction_evidence"]
+            },
+            component_digests={
+                "artifact": correction_artifact.digest,
+                **correction_artifact.component_digests,
             },
         ),
         population=PopulationAssurance(
@@ -1568,6 +1699,13 @@ def _write_company_learning_assurance(
             "slack_report": canonical_sha256(slack_report),
             "slack_gold_manifest": slack_report["gold_manifest_digest"],
             "slack_observations": canonical_sha256(slack_observations),
+            **{
+                f"correction_{key}": value
+                for key, value in {
+                    "artifact": correction_artifact.digest,
+                    **correction_artifact.component_digests,
+                }.items()
+            },
             "population_evidence": population_payload["evidence_digest"],
             "population_registry": population_payload[
                 "registry_population_digest"

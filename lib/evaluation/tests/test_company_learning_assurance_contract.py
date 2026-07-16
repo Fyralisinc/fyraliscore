@@ -97,6 +97,7 @@ def _correction_artifact(
 def _correction_summary(
     *,
     path: str = "/tmp/correction-assurance.json",
+    artifact_digest: str | None = None,
     evidence_digest: str | None = None,
     artifact: CorrectionAssuranceArtifact | None = None,
     audit_digest: str | None = None,
@@ -104,12 +105,14 @@ def _correction_summary(
     artifact = artifact or _correction_artifact()
     metrics = artifact.metrics
     component_digests = {
-        "evidence": evidence_digest or artifact.digest,
+        "artifact": artifact_digest or artifact.digest,
+        "evidence": (
+            evidence_digest or artifact.component_digests["evidence"]
+        ),
     }
     if artifact.audit is not None:
         component_digests["audit"] = (
-            audit_digest
-            or canonical_sha256(artifact.audit.model_dump(mode="json"))
+            audit_digest or artifact.component_digests["audit"]
         )
     return CorrectionAssurance(
         status=artifact.status,
@@ -358,7 +361,7 @@ def test_correction_component_reopens_runtime_artifact_and_digest(
     )
     assurance = _correction_summary(
         path=str(artifact_path),
-        evidence_digest=artifact.digest,
+        artifact_digest=artifact.digest,
     )
 
     validated = validate_correction_assurance_component(
@@ -390,10 +393,10 @@ def test_correction_component_rejects_summary_digest_or_identity_mismatch(
     )
     wrong_digest = _correction_summary(
         path=str(artifact_path),
-        evidence_digest="e" * 64,
+        artifact_digest="e" * 64,
     )
 
-    with pytest.raises(ValueError, match="component digest mismatch"):
+    with pytest.raises(ValueError, match="artifact digest mismatch"):
         validate_correction_assurance_component(
             wrong_digest,
             run_id="pytest-assurance:correction",

@@ -203,11 +203,12 @@ class CorrectionAssurance(_SummaryModel):
                 "correction assurance requires exactly one evidence artifact"
             )
         if set(self.component_digests) not in (
-            {"evidence"},
-            {"evidence", "audit"},
+            {"artifact", "evidence"},
+            {"artifact", "evidence", "audit"},
         ):
             raise ValueError(
-                "correction assurance requires evidence and optional audit digests"
+                "correction assurance requires artifact, evidence and optional "
+                "audit digests"
             )
         return self
 
@@ -434,20 +435,24 @@ def validate_correction_assurance_component(
         raise ValueError("correction assurance run identity mismatch")
     if artifact.system_version != system_version:
         raise ValueError("correction assurance system version mismatch")
-    if assurance.component_digests["evidence"] != artifact.digest:
-        raise ValueError("correction assurance component digest mismatch")
+    if assurance.component_digests["artifact"] != artifact.digest:
+        raise ValueError("correction assurance artifact digest mismatch")
+    if (
+        assurance.component_digests["evidence"]
+        != artifact.component_digests["evidence"]
+    ):
+        raise ValueError("correction runtime-evidence digest mismatch")
     expected_digest_keys = (
-        {"evidence", "audit"}
+        {"artifact", "evidence", "audit"}
         if artifact.audit is not None
-        else {"evidence"}
+        else {"artifact", "evidence"}
     )
     if set(assurance.component_digests) != expected_digest_keys:
         raise ValueError(
             "correction audit digest presence does not match artifact"
         )
-    if artifact.audit is not None and (
-        assurance.component_digests["audit"]
-        != canonical_sha256(artifact.audit.model_dump(mode="json"))
+    if artifact.audit is not None and assurance.component_digests["audit"] != (
+        artifact.component_digests["audit"]
     ):
         raise ValueError("correction audit digest mismatch")
     metrics = artifact.metrics

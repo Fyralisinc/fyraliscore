@@ -48,6 +48,7 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert "positive_lift=1.0" in result.stdout
     assert "negative_incidents=0" in result.stdout
     assert "slack_status=observed" in result.stdout
+    assert "correction_status=working" in result.stdout
 
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     summary_digest = payload.pop("summary_digest")
@@ -55,6 +56,13 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
 
     assert summary.status == "working"
     assert summary.blocking_failures == ()
+    assert len(summary.architecture_digest) == 64
+    assert len(summary.implementation_plan_digest) == 64
+    assert summary.evaluation_profile == "autonomous-company-learning-v1"
+    assert summary.excluded_capabilities == (
+        "autonomous_task_planning",
+        "autonomous_task_execution",
+    )
     assert summary.positive.status == "observed"
     assert summary.positive.pair_count == 3
     assert summary.positive.adaptive_correctness_rate == 1.0
@@ -67,7 +75,10 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert summary.negative.adaptive_unsafe_count == 0
     assert summary.negative.frozen_unsafe_count == 0
     assert summary.slack.status == "observed"
-    assert summary.slack.diagnostic_only is True
+    assert summary.slack.evidence_tier.value == "E4"
+    assert summary.slack.scope_complete is True
+    assert summary.slack.open_world_complete is False
+    assert summary.slack.blocking_for_active_slice is True
     assert summary.slack.metrics["case_count"] == 9
     assert summary.slack.metrics["correct_case_rate"] == 1.0
     assert summary.slack.metrics["supported_case_rate"] == 1.0
@@ -97,9 +108,21 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
         in gap
         for gap in summary.proof_gaps
     )
-    assert any(
-        "does not execute that convergence burn"
-        in gap
+    assert summary.correction.status == "working"
+    assert summary.correction.converged is True
+    assert summary.correction.dependency_discovery_rate == 1.0
+    assert summary.correction.immediate_fence_rate == 1.0
+    assert summary.correction.direct_repair_rate == 1.0
+    assert summary.correction.recursive_repair_rate == 1.0
+    assert summary.correction.relation_retirement_rate == 1.0
+    assert summary.correction.projection_invalidation_rate == 1.0
+    assert summary.correction.projection_rebuild_rate == 1.0
+    assert summary.correction.residual_unsafe_debt_count == 0
+    assert summary.correction.replay_idempotent is True
+    assert summary.correction.source_immutable is True
+    assert summary.correction.tenant_isolated is True
+    assert not any(
+        "does not execute that convergence burn" in gap
         for gap in summary.proof_gaps
     )
     assert not any(
@@ -179,6 +202,8 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert assurance["status"] == "working"
     assert assurance["summary_digest"] == summary.digest
     assert assurance["slack"]["metrics"]["case_count"] == 9
+    assert assurance["correction"]["converged"] is True
+    assert assurance["correction"]["residual_unsafe_debt_count"] == 0
     assert assurance["population"]["registry_pair_count"] == 60
     assert assurance["population"]["observed_pair_count"] == 60
 

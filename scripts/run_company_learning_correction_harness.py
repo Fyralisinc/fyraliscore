@@ -491,6 +491,13 @@ async def _run_correction_burn(
         )
         if predecessor_trace is None:
             raise RuntimeError("seeded predecessor grounding trace disappeared")
+        predecessor_trace_payload = predecessor_trace["trace"] or {}
+        if isinstance(predecessor_trace_payload, str):
+            predecessor_trace_payload = json.loads(
+                predecessor_trace_payload
+            )
+        if not isinstance(predecessor_trace_payload, dict):
+            predecessor_trace_payload = {}
         corrected_referent = {
             "type": "customer",
             "id": "customer:corrected-nimbus",
@@ -522,7 +529,7 @@ async def _run_correction_burn(
             json.dumps(corrected_referent),
             json.dumps(
                 {
-                    **(predecessor_trace["trace"] or {}),
+                    **predecessor_trace_payload,
                     "supersedes_grounding_trace_id": str(
                         predecessor_trace_id
                     ),

@@ -252,7 +252,13 @@ def build_correction_assurance(
             "No post-correction read-only dependency census was attached."
         )
     else:
-        proof_gaps.update(audit.uncertainty)
+        proof_gaps.update(
+            uncertainty
+            for uncertainty in audit.uncertainty
+            if not uncertainty.startswith(
+                "This is an audit-only dependency census"
+            )
+        )
     if not expected_dependencies:
         proof_gaps.add("Expected correction dependencies were not sealed.")
     if not measured_rates:
