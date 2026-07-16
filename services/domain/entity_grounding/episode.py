@@ -67,6 +67,7 @@ from lib.contracts.perception import (
 )
 from lib.conversation_context_selection import select_context
 from lib.shared.ids import uuid7
+from lib.shared.entity_phrases import phrase_requires_context
 
 
 _CONTEXT_POLICY_VERSION = "resolver-context-policy-v2"
@@ -150,6 +151,12 @@ def build_grounding_episode(
     model_canonical_ref: dict[str, Any] | None,
     model_confidence: float,
     model_reasoning: str,
+    decision_source: str = "llm",
+    decision_metadata: dict[str, Any] | None = None,
+    assessment_calibration_cohort: str = (
+        "legacy-unstructured-phrase-resolution"
+    ),
+    assessment_scorer_version: str = _SCORER_VERSION,
     high_confidence: float,
     review_min: float,
     prepared_context_command: CommitInterpretationContextCommand,
@@ -206,7 +213,9 @@ def build_grounding_episode(
         "canonical_ref": model_canonical_ref,
         "confidence": model_confidence,
         "reasoning": model_reasoning,
+        "decision_source": decision_source,
         "closed_set_match": selected_candidate is not None,
+        **(decision_metadata or {}),
     }
     assessment = _build_assessment(
         candidate_set=candidate_set,
@@ -214,6 +223,8 @@ def build_grounding_episode(
         candidate_inputs=candidates,
         model_canonical_ref=model_canonical_ref,
         model_confidence=model_confidence,
+        calibration_cohort=assessment_calibration_cohort,
+        scorer_and_calibration_version=assessment_scorer_version,
         now=now,
     )
     admission, current_fate = _build_admission(
@@ -497,7 +508,7 @@ def prepare_context_selection(
         json.dumps(item, sort_keys=True, separators=(",", ":"))
         for item in boundary_hypotheses
     ) or ("same-source-space temporal boundary remains provisional",)
-    context_dependent = _phrase_requires_context(phrase)
+    context_dependent = phrase_requires_context(phrase)
     candidates: list[ConversationContextCandidate] = []
     probes: list[ContextProbeEnvelope] = []
     has_topology_basis = any(
@@ -695,34 +706,6 @@ def _processing_authority(
         decision_time=now - timedelta(microseconds=1),
         expires_at=now + timedelta(hours=1),
     )
-
-
-def _phrase_requires_context(phrase: str) -> bool:
-    normalized = " ".join(phrase.casefold().split())
-    tokens = {
-        token.strip(".,!?;:()[]{}\"'")
-        for token in normalized.split()
-    }
-    context_words = {
-        "it",
-        "this",
-        "that",
-        "these",
-        "those",
-        "they",
-        "them",
-        "he",
-        "she",
-        "we",
-        "same",
-        "again",
-        "here",
-        "there",
-        "above",
-        "former",
-        "latter",
-    }
-    return bool(tokens & context_words) or normalized.startswith("the ")
 
 
 def _context_layer(value: str) -> CandidateContextLayer:
@@ -1135,5 +1118,6 @@ __all__ = [
     "build_adjudicated_grounding_decision",
     "build_grounding_episode",
     "candidate_id_for_ref",
+    "phrase_requires_context",
     "prepare_context_selection",
 ]

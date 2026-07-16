@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 
 from lib.shared.errors import ValidationError
 from services.app.gateway.clarifications_router import (
+    _resolution_scope,
     _select_reviewed_candidate,
     build_clarifications_router,
 )
@@ -331,6 +332,8 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
     assert metadata["identity_basis_ref"] == f"clarification-request:{request_id}"
     assert metadata["clarification_request_id"] == str(request_id)
     assert metadata["adjudicated_by"] == str(actor_id)
+    assert metadata["resolution_scope"] == "source_context_only"
+    assert metadata["autonomous_replay_eligible"] is False
     assert metadata["grounding_feedback_lineage"]["grounding_trace_id"]
     assert len(successor_calls) == 1
     assert successor_calls[0]["conn"] is conn
@@ -372,6 +375,17 @@ def test_entity_resolution_cannot_accept_an_unreviewed_canonical_ref() -> None:
                 "id": "customer-injected",
                 "version": 1,
             },
+        )
+
+
+def test_contextual_phrase_cannot_be_promoted_to_tenant_global_memory() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="context-dependent phrases",
+    ):
+        _resolution_scope(
+            {"resolution_scope": "tenant_global_exact"},
+            phrase="the project",
         )
 
 

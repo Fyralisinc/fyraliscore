@@ -21,16 +21,19 @@ from lib.evaluation.entity_grounding import (
     GroundingEvaluationScope,
     evaluate_entity_grounding_state,
 )
+from lib.embeddings.ollama import EMBEDDING_DIM
 from lib.shared.ids import uuid7
 from services.app.gateway.clarifications_router import (
     _apply_entity_resolution_answer,
 )
 from services.domain.clarifications import answer_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.workers.entity_resolver.context import build_context
 from services.workers.entity_resolver.worker import (
     EntityResolverWorker,
     ResolverLLMBudget,
 )
+from services.workers.source_semantic_worker import SourceSemanticWorker
 
 
 pytestmark = pytest.mark.integration
@@ -744,12 +747,50 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     tenant_id: UUID,
 ) -> None:
     scope_start = datetime.now(timezone.utc) - timedelta(seconds=1)
+    adjudicator_id = uuid7()
+    customer_id = uuid7()
+    async with resolver_db.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "INSERT INTO tenants (id) VALUES ($1) ON CONFLICT DO NOTHING",
+            tenant_id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO actors (id, tenant_id, type, display_name, status)
+            VALUES ($1, $2, 'human_internal', 'Identity Admin', 'active')
+            """,
+            adjudicator_id,
+            tenant_id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO actor_roles (
+                tenant_id, actor_id, entity_type, entity_id, role
+            ) VALUES ($1, $2, 'tenant', NULL, 'admin')
+            """,
+            tenant_id,
+            adjudicator_id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO resources (
+                id, tenant_id, kind, identity, current_value,
+                metadata, archived_at
+            ) VALUES (
+                $1, $2, 'relational', 'Nimbus Bank',
+                '{"semantic_kind":"customer"}'::jsonb,
+                '{"semantic_kind":"customer"}'::jsonb, NULL
+            )
+            """,
+            customer_id,
+            tenant_id,
+        )
     await _seed_candidate_alias(
         resolver_db,
         tenant_id,
         alias="NBI",
         entity_type="customer",
-        entity_id="customer-nimbus",
+        entity_id=str(customer_id),
         source="manual",
         independently_governed=False,
     )
@@ -763,12 +804,7 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
         [
             _resolution_json(
                 type="customer",
-                id="customer-nimbus",
-                confidence=0.99,
-            ),
-            _resolution_json(
-                type="customer",
-                id="customer-nimbus",
+                id=str(customer_id),
                 confidence=0.99,
             ),
         ]
@@ -782,6 +818,7 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     assert await worker.process_observation(first_observation_id, tenant_id) == [
         ("NBI", "review")
     ]
+    assert len(provider.calls) == 1
     clarification = (await _fetch_clarification_rows(resolver_db, tenant_id))[0]
     payload = clarification["payload"]
     if isinstance(payload, str):
@@ -791,6 +828,8 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
         "action": "accept_candidate",
         "canonical_ref": candidate,
         "confidence": 0.99,
+        "resolution_scope": "tenant_global_exact",
+        "confirm_tenant_global_reuse": True,
     }
 
     async with resolver_db.acquire() as conn, conn.transaction():
@@ -799,7 +838,7 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
             tenant_id=tenant_id,
             request_id=clarification["id"],
             answer=answer,
-            answered_by=None,
+            answered_by=adjudicator_id,
         )
         assert answered is not None
         await _apply_entity_resolution_answer(
@@ -807,7 +846,7 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
             row=answered,
             answer=answer,
             tenant_id=tenant_id,
-            answered_by=None,
+            answered_by=adjudicator_id,
         )
 
     async with resolver_db.acquire() as conn:
@@ -827,12 +866,41 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     second_observation_id = await _seed_observation(
         resolver_db,
         tenant_id,
-        content_text="NBI is blocked again",
+        content_text="NBI is delayed",
         unresolved_phrases=["NBI"],
     )
+    async with resolver_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE observations
+            SET embedding=$1::vector, embedding_pending=FALSE
+            WHERE tenant_id=$2 AND id=$3
+            """,
+            json.dumps([0.01] * EMBEDDING_DIM),
+            tenant_id,
+            second_observation_id,
+        )
+    replay_context = await build_context(
+        pool=resolver_db,
+        tenant_id=tenant_id,
+        observation_id=second_observation_id,
+        phrase="NBI",
+    )
+    assert len(replay_context.recent_aliases) == 1
+    learned_alias = replay_context.recent_aliases[0]
+    assert learned_alias.adjudication_state == "active"
+    assert learned_alias.resolution_scope == "tenant_global_exact"
+    assert learned_alias.autonomous_replay_eligible is True
+    assert learned_alias.replay_lineage_valid is True
     assert await worker.process_observation(second_observation_id, tenant_id) == [
         ("NBI", "resolved")
     ]
+    assert len(provider.calls) == 1
+    semantic_worker = SourceSemanticWorker(
+        pool=resolver_db,
+        worker_id=f"pytest:governed-alias-replay:{tenant_id}",
+    )
+    assert await semantic_worker.process_batch(limit=100) == 1
 
     async with resolver_db.acquire() as conn:
         alias = await conn.fetchrow(
@@ -846,12 +914,42 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
         )
         trace = await conn.fetchrow(
             """
-            SELECT current_fate, selected_referent
-            FROM grounding_traces
-            WHERE tenant_id = $1 AND source_observation_id = $2
+            SELECT trace.current_fate, trace.selected_referent, trace.trace,
+                   assessment.model_output,
+                   assessment.scorer_and_calibration_version
+            FROM grounding_traces trace
+            JOIN resolution_assessments assessment
+              ON assessment.tenant_id=trace.tenant_id
+             AND assessment.id=trace.resolution_assessment_id
+            WHERE trace.tenant_id = $1 AND trace.source_observation_id = $2
             """,
             tenant_id,
             second_observation_id,
+        )
+        replay_model = await conn.fetchrow(
+            """
+            SELECT model.id, model.born_from_event_id,
+                   work.status AS semantic_work_status
+            FROM models model
+            JOIN source_semantic_work_items work
+              ON work.tenant_id=model.tenant_id
+             AND work.admitted_model_id=model.id
+            WHERE model.tenant_id=$1
+              AND model.born_from_event_id=$2
+            """,
+            tenant_id,
+            second_observation_id,
+        )
+        replay_feedback = await conn.fetchrow(
+            """
+            SELECT attempt_count, success_count, dropped_count, failure_count
+            FROM think_feedback_stats
+            WHERE tenant_id=$1
+              AND surface='entity_grounding'
+              AND op_type='autonomous_learning'
+              AND op_kind='governed_exact_alias_replay'
+            """,
+            tenant_id,
         )
         evaluation = await evaluate_entity_grounding_state(
             conn,
@@ -880,13 +978,171 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     selected = trace["selected_referent"]
     if isinstance(selected, str):
         selected = json.loads(selected)
-    assert selected["id"] == "customer-nimbus"
+    assert selected["id"] == str(customer_id)
+    model_output = trace["model_output"]
+    if isinstance(model_output, str):
+        model_output = json.loads(model_output)
+    assert model_output["decision_source"] == "governed_exact_alias_replay"
+    assert model_output["llm_invoked"] is False
+    assert model_output["identity_basis_ref"] == (
+        f"clarification-request:{clarification['id']}"
+    )
+    assert trace["scorer_and_calibration_version"] == (
+        "governed-exact-alias-replay-v1"
+    )
+    trace_payload = trace["trace"]
+    if isinstance(trace_payload, str):
+        trace_payload = json.loads(trace_payload)
+    assert trace_payload["model_output_is_evidence"] is False
+    assert await _fetch_obs_entities(resolver_db, second_observation_id) == []
+    assert replay_model is not None
+    assert replay_model["born_from_event_id"] == second_observation_id
+    assert replay_model["semantic_work_status"] == "belief_applied"
+    assert dict(replay_feedback) == {
+        "attempt_count": 1,
+        "success_count": 1,
+        "dropped_count": 0,
+        "failure_count": 0,
+    }
     assert evaluation.answered_entity_clarification_count == 1
     assert evaluation.answered_entity_clarification_lineage_coverage == 1.0
     assert evaluation.adjudicated_alias_count == 1
     assert evaluation.adjudicated_alias_lineage_coverage == 1.0
     assert evaluation.corrective_memory_observed_reuse_count == 1
     assert evaluation.duplicate_trace_count == 0
+    assert evaluation.alias_replay_exposure_count == 1
+    assert evaluation.alias_replay_resolution_rate == 1.0
+    assert evaluation.alias_replay_llm_avoided_count == 1
+    assert evaluation.unsafe_alias_replay_count == 0
+    assert evaluation.contextual_alias_replay_count == 0
+
+    # A contradictory source-native hint defeats deterministic alias replay.
+    # The adjudicated alias remains an authorized candidate, but the resolver
+    # must ask the model to assess the conflicting closed set.
+    conflicting_observation_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI is delayed",
+        unresolved_phrases=["NBI"],
+        entities_mentioned=[{"type": "customer", "id": "customer-other"}],
+    )
+    conflict_provider = ScriptedProvider(
+        [
+            _resolution_json(
+                type="customer",
+                id=str(customer_id),
+                confidence=0.99,
+            )
+        ]
+    )
+    conflict_worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=conflict_provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+    assert await conflict_worker.process_observation(
+        conflicting_observation_id,
+        tenant_id,
+    ) == [("NBI", "resolved")]
+    assert len(conflict_provider.calls) == 1
+
+
+async def test_contextual_adjudication_does_not_enable_global_deterministic_replay(
+    resolver_db: asyncpg.Pool,
+    tenant_id: UUID,
+) -> None:
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Project Northstar",
+        entity_type="goal",
+        entity_id="project-northstar",
+    )
+    first_observation_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="the project is blocked",
+        unresolved_phrases=["the project"],
+    )
+    provider = ScriptedProvider(
+        [
+            _resolution_json(
+                type="goal",
+                id="project-northstar",
+                confidence=0.97,
+            ),
+            _resolution_json(
+                type="goal",
+                id="project-northstar",
+                confidence=0.97,
+            ),
+        ]
+    )
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    assert await worker.process_observation(first_observation_id, tenant_id) == [
+        ("the project", "review")
+    ]
+    assert len(provider.calls) == 1
+    clarification = (await _fetch_clarification_rows(resolver_db, tenant_id))[0]
+    payload = clarification["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    candidate = payload["candidates"][0]["canonical_ref"]
+    answer = {
+        "action": "accept_candidate",
+        "canonical_ref": candidate,
+        "confidence": 0.99,
+    }
+
+    async with resolver_db.acquire() as conn, conn.transaction():
+        answered = await answer_clarification_request(
+            conn,
+            tenant_id=tenant_id,
+            request_id=clarification["id"],
+            answer=answer,
+            answered_by=None,
+        )
+        assert answered is not None
+        await _apply_entity_resolution_answer(
+            conn,
+            row=answered,
+            answer=answer,
+            tenant_id=tenant_id,
+            answered_by=None,
+        )
+
+    second_observation_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="the project is delayed",
+        unresolved_phrases=["the project"],
+    )
+    assert await worker.process_observation(second_observation_id, tenant_id) == [
+        ("the project", "review")
+    ]
+
+    # Human adjudication corrects the original occurrence. It must not turn a
+    # context-dependent description into a tenant-global exact-name shortcut.
+    assert len(provider.calls) == 2
+    assert "the project is delayed" in provider.calls[1]["user"]
+    async with resolver_db.acquire() as conn:
+        later_trace = await conn.fetchrow(
+            """
+            SELECT current_fate, selected_referent
+            FROM grounding_traces
+            WHERE tenant_id=$1 AND source_observation_id=$2
+              AND phrase='the project'
+            """,
+            tenant_id,
+            second_observation_id,
+        )
+    assert later_trace is not None
+    assert later_trace["current_fate"] == "review"
 
 
 # =====================================================================

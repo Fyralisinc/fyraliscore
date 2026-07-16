@@ -228,6 +228,26 @@ decisions will be added after the parallel audit lanes complete.
 - This removes one large accidental dependency from the company-physics path
   without renaming applied database objects.
 
+### Slice 4 — Governed exact-alias autonomous replay
+
+- Human correction defaults to `source_context_only`; tenant-global memory is
+  never inferred from lexical shape.
+- `tenant_global_exact` requires an explicit answer flag plus a currently
+  active tenant admin or leadership role. Obvious context-dependent phrases
+  cannot be promoted.
+- The learned replay decision is admitted only for an exact source-anchored
+  mention, one exact normalized canonical ref, a supported active tenant-local
+  target and complete clarification -> predecessor -> adjudicated-successor
+  lineage.
+- Alias, answer digest, authority, target and normalized ambiguity are
+  revalidated under the same transaction that appends grounding. A failed
+  fence falls through to the existing model/review path.
+- Replayed decisions use their own deterministic calibration cohort and scorer
+  identity, remain non-evidence policy memory and still traverse normal
+  grounding, source-semantics and canonical Model application.
+- The evaluator reports exposure, resolution rate, model calls avoided,
+  unsafe replay and contextual replay continuously; zero exposure is unknown.
+
 ## First Consolidation Targets
 
 1. Keep the source-semantic worker active until its Slack-to-Model vertical is

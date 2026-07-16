@@ -76,6 +76,13 @@ class RecentAlias:
     source: str
     identity_basis_class: str | None
     identity_basis_ref: str | None
+    adjudication_state: str | None = None
+    resolution_scope: str | None = None
+    autonomous_replay_eligible: bool = False
+    replay_lineage_valid: bool = False
+    adjudication_answer_digest: str | None = None
+    clarification_request_id: str | None = None
+    canonical_target_valid: bool = False
 
 
 @dataclass
@@ -87,6 +94,9 @@ class KnownEntityCandidate:
     source: str
     identity_basis_class: str | None
     identity_basis_ref: str | None
+    adjudication_state: str | None = None
+    resolution_scope: str | None = None
+    canonical_target_valid: bool = False
 
 
 @dataclass
@@ -206,6 +216,13 @@ class ResolverContext:
                     "alias_origin": a.source,
                     "governed_identity_basis_class": a.identity_basis_class,
                     "governed_identity_basis_ref": a.identity_basis_ref,
+                    "adjudication_state": a.adjudication_state,
+                    "resolution_scope": a.resolution_scope,
+                    "autonomous_replay_eligible": a.autonomous_replay_eligible,
+                    "replay_lineage_valid": a.replay_lineage_valid,
+                    "adjudication_answer_digest": a.adjudication_answer_digest,
+                    "clarification_request_id": a.clarification_request_id,
+                    "canonical_target_valid": a.canonical_target_valid,
                     "semantic_limit": (
                         "candidate navigation; automatic admission additionally "
                         "requires independently governed identity lineage"
@@ -222,6 +239,9 @@ class ResolverContext:
                     "alias_origin": c.source,
                     "governed_identity_basis_class": c.identity_basis_class,
                     "governed_identity_basis_ref": c.identity_basis_ref,
+                    "adjudication_state": c.adjudication_state,
+                    "resolution_scope": c.resolution_scope,
+                    "canonical_target_valid": c.canonical_target_valid,
                     "semantic_limit": (
                         "candidate navigation; automatic admission additionally "
                         "requires independently governed identity lineage"
@@ -323,16 +343,83 @@ async def build_context(
         # Prior aliases for the exact phrase (if any).
         alias_rows = await conn.fetch(
             """
-            SELECT id, alias_text, resolved_entity_ref, confidence,
-                   COALESCE(entity_metadata ->> 'source', 'unknown') AS source,
-                   entity_metadata ->> 'identity_basis_class' AS identity_basis_class,
-                   entity_metadata ->> 'identity_basis_ref' AS identity_basis_ref
-            FROM entity_aliases
-            WHERE tenant_id = $1
+            SELECT alias.id, alias.alias_text, alias.resolved_entity_ref,
+                   alias.confidence,
+                   COALESCE(
+                     alias.entity_metadata ->> 'source', 'unknown'
+                   ) AS source,
+                   alias.entity_metadata
+                     ->> 'identity_basis_class' AS identity_basis_class,
+                   alias.entity_metadata
+                     ->> 'identity_basis_ref' AS identity_basis_ref,
+                   alias.entity_metadata
+                     ->> 'adjudication_state' AS adjudication_state,
+                   alias.entity_metadata
+                     ->> 'resolution_scope' AS resolution_scope,
+                   COALESCE(
+                     alias.entity_metadata
+                       ->> 'autonomous_replay_eligible' = 'true',
+                     FALSE
+                   ) AS autonomous_replay_eligible,
+                   alias.entity_metadata
+                     ->> 'adjudication_answer_digest'
+                     AS adjudication_answer_digest,
+                   alias.entity_metadata
+                     ->> 'clarification_request_id'
+                     AS clarification_request_id,
+                   CASE
+                     WHEN COALESCE(
+                       alias.resolved_entity_ref ->> 'version', '1'
+                     ) <> '1' THEN FALSE
+                     WHEN alias.resolved_entity_ref ->> 'type' = 'actor'
+                     THEN EXISTS (
+                       SELECT 1 FROM actors target
+                       WHERE target.tenant_id=alias.tenant_id
+                         AND target.id::text
+                             = alias.resolved_entity_ref ->> 'id'
+                         AND target.status='active'
+                     )
+                     WHEN alias.resolved_entity_ref ->> 'type'
+                          IN ('resource', 'customer')
+                     THEN EXISTS (
+                       SELECT 1 FROM resources target
+                       WHERE target.tenant_id=alias.tenant_id
+                         AND target.id::text
+                             = alias.resolved_entity_ref ->> 'id'
+                         AND target.archived_at IS NULL
+                         AND (
+                           alias.resolved_entity_ref ->> 'type' <> 'customer'
+                           OR target.metadata ->> 'semantic_kind' = 'customer'
+                         )
+                     )
+                     ELSE FALSE
+                   END AS canonical_target_valid,
+                   EXISTS (
+                     SELECT 1
+                     FROM clarification_requests clarification
+                     JOIN grounding_traces predecessor
+                       ON predecessor.tenant_id=alias.tenant_id
+                      AND predecessor.id::text = alias.entity_metadata
+                        -> 'grounding_feedback_lineage'
+                        ->> 'grounding_trace_id'
+                     JOIN grounding_traces successor
+                       ON successor.tenant_id=predecessor.tenant_id
+                      AND successor.trace
+                        ->> 'supersedes_grounding_trace_id' = predecessor.id::text
+                     WHERE clarification.tenant_id=alias.tenant_id
+                       AND clarification.id::text = alias.entity_metadata
+                         ->> 'clarification_request_id'
+                       AND clarification.status='answered'
+                       AND clarification.source_observation_id=alias.source_event_id
+                       AND successor.trace ->> 'adjudication_ref'
+                           = 'clarification-request:' || clarification.id::text
+                       AND successor.selected_referent=alias.resolved_entity_ref
+                   ) AS replay_lineage_valid
+            FROM entity_aliases alias
+            WHERE alias.tenant_id = $1
               AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g')
                   = regexp_replace(lower($2::text), '\\s+', ' ', 'g')
             ORDER BY confidence DESC
-            LIMIT 5
             """,
             tenant_id,
             phrase,
@@ -346,6 +433,15 @@ async def build_context(
                 source=r["source"],
                 identity_basis_class=r["identity_basis_class"],
                 identity_basis_ref=r["identity_basis_ref"],
+                adjudication_state=r["adjudication_state"],
+                resolution_scope=r["resolution_scope"],
+                autonomous_replay_eligible=bool(
+                    r["autonomous_replay_eligible"]
+                ),
+                replay_lineage_valid=bool(r["replay_lineage_valid"]),
+                adjudication_answer_digest=r["adjudication_answer_digest"],
+                clarification_request_id=r["clarification_request_id"],
+                canonical_target_valid=bool(r["canonical_target_valid"]),
             )
             for r in alias_rows
         ]
@@ -355,9 +451,38 @@ async def build_context(
             SELECT id, alias_text, resolved_entity_ref, confidence,
                    COALESCE(entity_metadata ->> 'source', 'unknown') AS source,
                    entity_metadata ->> 'identity_basis_class' AS identity_basis_class,
-                   entity_metadata ->> 'identity_basis_ref' AS identity_basis_ref
-            FROM entity_aliases
-            WHERE tenant_id = $1
+                   entity_metadata ->> 'identity_basis_ref' AS identity_basis_ref,
+                   entity_metadata ->> 'adjudication_state' AS adjudication_state,
+                   entity_metadata ->> 'resolution_scope' AS resolution_scope,
+                   CASE
+                     WHEN COALESCE(
+                       alias.resolved_entity_ref ->> 'version', '1'
+                     ) <> '1' THEN FALSE
+                     WHEN alias.resolved_entity_ref ->> 'type' = 'actor'
+                     THEN EXISTS (
+                       SELECT 1 FROM actors target
+                       WHERE target.tenant_id=alias.tenant_id
+                         AND target.id::text
+                             = alias.resolved_entity_ref ->> 'id'
+                         AND target.status='active'
+                     )
+                     WHEN alias.resolved_entity_ref ->> 'type'
+                          IN ('resource', 'customer')
+                     THEN EXISTS (
+                       SELECT 1 FROM resources target
+                       WHERE target.tenant_id=alias.tenant_id
+                         AND target.id::text
+                             = alias.resolved_entity_ref ->> 'id'
+                         AND target.archived_at IS NULL
+                         AND (
+                           alias.resolved_entity_ref ->> 'type' <> 'customer'
+                           OR target.metadata ->> 'semantic_kind' = 'customer'
+                         )
+                     )
+                     ELSE FALSE
+                   END AS canonical_target_valid
+            FROM entity_aliases alias
+            WHERE alias.tenant_id = $1
             ORDER BY confidence DESC, confirmed_count DESC, last_used_at DESC
             LIMIT 200
             """,
@@ -623,6 +748,9 @@ def _rank_known_entity_candidates(
                 source=row["source"],
                 identity_basis_class=row["identity_basis_class"],
                 identity_basis_ref=row["identity_basis_ref"],
+                adjudication_state=row["adjudication_state"],
+                resolution_scope=row["resolution_scope"],
+                canonical_target_valid=bool(row["canonical_target_valid"]),
             ),
         ))
 

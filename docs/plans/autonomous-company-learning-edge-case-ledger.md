@@ -151,6 +151,36 @@ Everything else receives an explicit safe behavior and return condition here.
   source semantics, Model belief addresses, projections, and retrieval before
   widening automatic identity admission.
 
+### EDGE-012 — Governed exact-alias autonomous replay
+
+- **Status:** `resolved`
+- **Current behavior:** A privileged human may explicitly promote a stable,
+  non-contextual correction to `tenant_global_exact`. A later exact anchored
+  mention can reuse it without an LLM only after exact clarification/successor
+  lineage, current admin or leadership authority, one unambiguous normalized
+  alias population, an active supported tenant-local canonical target, and
+  transaction-time state revalidation. The normal grounding, admission,
+  source-semantic and Model path remains mandatory.
+- **Safety behavior:** Contextual phrases, conflicting source hints, malformed
+  or unsupported targets, stale authority, invalid lineage, revoked state and
+  normalized alias conflicts fall back to the ordinary model/review path.
+- **Evidence:** Real-Postgres adaptive tests compare the corrected later
+  occurrence against the frozen/model path, prove one avoided model call,
+  preserve exact grounding lineage and report continuous replay exposure,
+  resolution, safety and contextual-replay metrics.
+
+### EDGE-013 — Legacy adjudicated aliases without explicit scope
+
+- **Status:** `bounded`
+- **Current behavior:** Pre-scope adjudicated aliases remain available as
+  evidence to the existing LLM assessment path for compatibility, but they are
+  never eligible for deterministic autonomous replay.
+- **Safe boundary:** No legacy alias may gain tenant-global replay authority
+  from lexical shape, usage counters or historical confidence.
+- **Return condition:** Backfill only through explicit privileged review with
+  canonical-target and scope validation; otherwise leave legacy rows model-
+  mediated.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title

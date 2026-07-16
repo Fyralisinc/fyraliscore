@@ -30,11 +30,13 @@ from lib.evaluation.proof import (
     InvariantRunEvidence,
     MetricObservation,
 )
+from lib.shared.entity_phrases import phrase_requires_context
 
 
 _TERMINAL_WORK_FATES = frozenset(
     {"resolved_for_consumer", "review", "unresolved", "abstained", "exhausted", "escalated"}
 )
+_GOVERNED_ALIAS_REPLAY_SOURCE = "governed_exact_alias_replay"
 
 
 class _GroundingEvaluationModel(BaseModel):
@@ -153,6 +155,14 @@ class EntityGroundingEvaluationState(_GroundingEvaluationModel):
         default=None, ge=0.0, le=1.0
     )
     corrective_memory_observed_reuse_count: int = Field(ge=0)
+    alias_replay_exposure_count: int = Field(ge=0)
+    alias_replay_resolved_count: int = Field(ge=0)
+    alias_replay_resolution_rate: float | None = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    alias_replay_llm_avoided_count: int = Field(ge=0)
+    unsafe_alias_replay_count: int = Field(ge=0)
+    contextual_alias_replay_count: int = Field(ge=0)
     processing_class_counts: dict[str, int]
     incident_counts: dict[str, int]
     incident_refs: dict[str, tuple[str, ...]] = Field(default_factory=dict)
@@ -975,6 +985,11 @@ def analyze_entity_grounding_rows(
     source_mutations = 0
     review_fates = 0
     review_obligations = 0
+    alias_replay_exposures = 0
+    alias_replay_resolved = 0
+    alias_replay_llm_avoided = 0
+    unsafe_alias_replays = 0
+    contextual_alias_replays = 0
     request_ids: set[str] = set()
     set_request_ids: set[str] = set()
 
@@ -1056,6 +1071,37 @@ def analyze_entity_grounding_rows(
         model_output = _json(row.get("model_output")) or {}
         selected_candidate_id = row.get("selected_candidate_id")
         selected_referent = _json(row.get("selected_referent"))
+        decision_source = str(model_output.get("decision_source") or "")
+        if decision_source == _GOVERNED_ALIAS_REPLAY_SOURCE:
+            alias_replay_exposures += 1
+            llm_was_avoided = model_output.get("llm_invoked") is False
+            alias_replay_llm_avoided += int(llm_was_avoided)
+            replay_resolved = (
+                row.get("current_fate") == "resolved_for_consumer"
+                and isinstance(decision, dict)
+                and decision.get("disposition") == "single_referent"
+                and selected_candidate_id is not None
+                and selected_referent is not None
+            )
+            alias_replay_resolved += int(replay_resolved)
+            if (
+                model_output.get("resolution_scope") != "tenant_global_exact"
+                or phrase_requires_context(str(row.get("phrase") or ""))
+            ):
+                contextual_alias_replays += 1
+            if (
+                not llm_was_avoided
+                or (
+                    replay_resolved
+                    and (
+                        model_output.get("closed_set_match") is not True
+                        or not model_output.get("identity_basis_ref")
+                        or not isinstance(assessment, dict)
+                        or not assessment.get("identity_evidence_refs")
+                    )
+                )
+            ):
+                unsafe_alias_replays += 1
         if (
             model_output.get("closed_set_match") is False
             and (selected_candidate_id is not None or selected_referent is not None)
@@ -1113,6 +1159,8 @@ def analyze_entity_grounding_rows(
         "adjudicated_alias_without_grounding_lineage": (
             adjudicated_alias_count - adjudicated_alias_lineage_count
         ),
+        "unsafe_governed_alias_replay": unsafe_alias_replays,
+        "contextual_governed_alias_replay": contextual_alias_replays,
         "terminal_work_without_trace": len(trace_required_terminal) - traced_terminal,
     }
     for name, count in structural_incidents.items():
@@ -1209,6 +1257,15 @@ def analyze_entity_grounding_rows(
         corrective_memory_observed_reuse_count=(
             corrective_memory_observed_reuse_count
         ),
+        alias_replay_exposure_count=alias_replay_exposures,
+        alias_replay_resolved_count=alias_replay_resolved,
+        alias_replay_resolution_rate=_ratio(
+            alias_replay_resolved,
+            alias_replay_exposures,
+        ),
+        alias_replay_llm_avoided_count=alias_replay_llm_avoided,
+        unsafe_alias_replay_count=unsafe_alias_replays,
+        contextual_alias_replay_count=contextual_alias_replays,
         processing_class_counts=dict(
             sorted(Counter(str(row["processing_class"]) for row in work_by_key.values()).items())
         ),
@@ -1222,6 +1279,7 @@ def analyze_entity_grounding_rows(
             "Legacy entity refs are not yet verified against a versioned CanonicalReferent registry.",
             "Resolution accuracy, calibration, cross-tenant noninterference, correction closure and downstream oracle gap require broader suites.",
             "Observed corrective-memory reuse is an exposure count; no later matching signal is not treated as failed reuse.",
+            "Governed alias replay resolution measures exposed persisted decisions only; adaptive-versus-frozen lift still requires a paired experiment.",
             "Component integration evidence is below the E4 full-system simulation floor.",
         ),
         artifact_refs=artifact_refs,
@@ -1272,6 +1330,7 @@ def build_entity_grounding_invariant_evidence(
                     "resolution_assessment",
                     "registry_command_and_result",
                     "grounding_admission_versions",
+                    "governed_alias_replay_decision_source",
                 }
             ),
             "violations": (
@@ -1294,6 +1353,7 @@ def build_entity_grounding_invariant_evidence(
                 - state.answered_entity_clarification_lineage_count
                 + state.adjudicated_alias_count
                 - state.adjudicated_alias_lineage_count
+                + state.contextual_alias_replay_count
             ),
             "successes": (
                 state.stage_complete_trace_count
@@ -1309,6 +1369,7 @@ def build_entity_grounding_invariant_evidence(
                 "single_referent_without_identity_basis",
                 "answered_clarification_without_grounding_lineage",
                 "adjudicated_alias_without_grounding_lineage",
+                "contextual_governed_alias_replay",
             ),
         },
         "INV-06": {
@@ -1344,6 +1405,7 @@ def build_entity_grounding_invariant_evidence(
                 state.identity_registry_mutation_count
                 + state.resolver_created_alias_count
                 + state.single_referent_without_identity_basis_count
+                + state.unsafe_alias_replay_count
             ),
             "successes": max(
                 0,
@@ -1354,6 +1416,7 @@ def build_entity_grounding_invariant_evidence(
             "incident_prefixes": (
                 "resolver_mutated_identity",
                 "single_referent_without_identity_basis",
+                "unsafe_governed_alias_replay",
             ),
         },
     }
@@ -1407,7 +1470,15 @@ def build_entity_grounding_invariant_evidence(
                 incident_id=f"{state.scope.run_id}:{invariant_id}:{incident_class}",
                 incident_class=incident_class,
                 status=IncidentStatus.CONFIRMED,
-                severity=5 if "authority" in incident_class or "mutation" in incident_class else 4,
+                severity=(
+                    5
+                    if (
+                        "authority" in incident_class
+                        or "mutation" in incident_class
+                        or "unsafe" in incident_class
+                    )
+                    else 4
+                ),
                 summary=f"Observed {count} scoped {incident_class} violations.",
                 artifact_refs=state.artifact_refs,
             )
@@ -1421,6 +1492,35 @@ def build_entity_grounding_invariant_evidence(
         else:
             metric_denominator = state.trace_count
         successes = min(int(definition["successes"]), metric_denominator)
+        metric_observations = [
+            MetricObservation(
+                metric_id=str(definition["metric"]),
+                metric_version="entity-grounding-runtime-v1",
+                raw_numerator=float(successes),
+                raw_denominator=float(metric_denominator),
+                point_estimate=(
+                    successes / metric_denominator
+                    if metric_denominator
+                    else None
+                ),
+                violation_count=int(definition["violations"]),
+                severity_mass=float(definition["violations"]),
+                artifact_refs=state.artifact_refs,
+            )
+        ]
+        if invariant_id == "INV-05":
+            metric_observations.append(
+                MetricObservation(
+                    metric_id="entity.governed_alias_replay_resolution",
+                    metric_version="governed-exact-alias-replay-v1",
+                    raw_numerator=float(state.alias_replay_resolved_count),
+                    raw_denominator=float(state.alias_replay_exposure_count),
+                    point_estimate=state.alias_replay_resolution_rate,
+                    violation_count=0,
+                    severity_mass=0.0,
+                    artifact_refs=state.artifact_refs,
+                )
+            )
         rows.append(
             InvariantRunEvidence(
                 invariant_id=invariant_id,
@@ -1428,22 +1528,7 @@ def build_entity_grounding_invariant_evidence(
                 observed_trace_facts=definition["observed"],
                 executed_scenario_ids=frozenset(invariant.proof.suite_and_scenario_ids)
                 & executed_scenario_ids,
-                metric_observations=(
-                    MetricObservation(
-                        metric_id=str(definition["metric"]),
-                        metric_version="entity-grounding-runtime-v1",
-                        raw_numerator=float(successes),
-                        raw_denominator=float(metric_denominator),
-                        point_estimate=(
-                            successes / metric_denominator
-                            if metric_denominator
-                            else None
-                        ),
-                        violation_count=int(definition["violations"]),
-                        severity_mass=float(definition["violations"]),
-                        artifact_refs=state.artifact_refs,
-                    ),
-                ),
+                metric_observations=tuple(metric_observations),
                 incidents=incidents,
                 achieved_evidence_tier=EvidenceTier.E3,
                 denominator=denominator,
@@ -1475,6 +1560,9 @@ def render_entity_grounding_markdown(state: EntityGroundingEvaluationState) -> s
         f"- Answered entity-clarification lineage: **{state.answered_entity_clarification_lineage_count}/{state.answered_entity_clarification_count} ({_format_rate(state.answered_entity_clarification_lineage_coverage)})**",
         f"- Adjudicated-alias grounding lineage: **{state.adjudicated_alias_lineage_count}/{state.adjudicated_alias_count} ({_format_rate(state.adjudicated_alias_lineage_coverage)})**",
         f"- Corrective-memory future reuse observed: **{state.corrective_memory_observed_reuse_count}**",
+        f"- Governed alias replay resolution: **{state.alias_replay_resolved_count}/{state.alias_replay_exposure_count} ({_format_rate(state.alias_replay_resolution_rate)})**",
+        f"- Governed alias replay LLM calls avoided: **{state.alias_replay_llm_avoided_count}**",
+        f"- Unsafe/contextual governed alias replays: **{state.unsafe_alias_replay_count}/{state.contextual_alias_replay_count}**",
         "",
         "## Fate distribution",
         "",

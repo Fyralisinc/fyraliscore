@@ -49,6 +49,7 @@ from uuid import UUID
 
 import asyncpg
 
+from lib.contracts.kernel import canonical_sha256
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import EntityAliasRow
@@ -87,6 +88,219 @@ def _parse_jsonb_obj(raw: Any) -> dict[str, Any]:
     if isinstance(raw, str):
         return json.loads(raw)
     return raw
+
+
+async def validate_governed_alias_replay(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    alias_id: UUID,
+    phrase: str,
+    canonical_ref: dict[str, Any],
+    identity_basis_ref: str,
+    adjudication_answer_digest: str,
+) -> bool:
+    """Revalidate exact tenant-global alias authority inside the write transaction."""
+
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock($1)",
+        _advisory_lock_key(tenant_id, phrase),
+    )
+    rows = await conn.fetch(
+        """
+        SELECT id, actor_id, resolved_entity_ref, entity_metadata,
+               source_event_id
+        FROM entity_aliases
+        WHERE tenant_id=$1
+          AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g')
+              = regexp_replace(lower($2::text), '\\s+', ' ', 'g')
+        FOR SHARE
+        """,
+        tenant_id,
+        phrase,
+    )
+    if not rows or any(row["actor_id"] is not None for row in rows):
+        return False
+    refs = {
+        json.dumps(_parse_jsonb_obj(row["resolved_entity_ref"]), sort_keys=True)
+        for row in rows
+    }
+    if len(refs) != 1:
+        return False
+    selected = next((row for row in rows if row["id"] == alias_id), None)
+    if selected is None:
+        return False
+    selected_ref = _parse_jsonb_obj(selected["resolved_entity_ref"])
+    expected_ref = {
+        "type": str(canonical_ref.get("type") or ""),
+        "id": str(canonical_ref.get("id") or ""),
+        "version": int(canonical_ref.get("version", 1)),
+    }
+    materialized_ref = {
+        "type": str(selected_ref.get("type") or ""),
+        "id": str(selected_ref.get("id") or ""),
+        "version": int(selected_ref.get("version", 1)),
+    }
+    if materialized_ref != expected_ref:
+        return False
+    metadata = _parse_jsonb_obj(selected["entity_metadata"]) or {}
+    if (
+        metadata.get("source") != "manual"
+        or metadata.get("identity_basis_class") != "independently_adjudicated"
+        or metadata.get("identity_basis_ref") != identity_basis_ref
+        or metadata.get("adjudication_state") != "active"
+        or metadata.get("resolution_scope") != "tenant_global_exact"
+        or metadata.get("autonomous_replay_eligible") is not True
+        or metadata.get("adjudication_answer_digest")
+        != adjudication_answer_digest
+        or metadata.get("replay_policy_version")
+        != "governed-exact-alias-replay-v1"
+    ):
+        return False
+    clarification_id = metadata.get("clarification_request_id")
+    lineage = metadata.get("grounding_feedback_lineage")
+    if not isinstance(lineage, dict) or not clarification_id:
+        return False
+    clarification = await conn.fetchrow(
+        """
+        SELECT id, source_observation_id, payload, answer, answered_by
+        FROM clarification_requests
+        WHERE tenant_id=$1 AND id::text=$2 AND status='answered'
+        FOR SHARE
+        """,
+        tenant_id,
+        str(clarification_id),
+    )
+    if clarification is None or clarification["source_observation_id"] != selected[
+        "source_event_id"
+    ]:
+        return False
+    payload = _parse_jsonb_obj(clarification["payload"]) or {}
+    payload_lineage = payload.get("feedback_lineage")
+    if (
+        payload.get("phrase") != phrase
+        or not isinstance(payload_lineage, dict)
+        or payload_lineage != lineage
+    ):
+        return False
+    answer = _parse_jsonb_obj(clarification["answer"]) or {}
+    if isinstance(answer.get("value"), dict):
+        answer = {**answer["value"], **{k: v for k, v in answer.items() if k != "value"}}
+    if (
+        answer.get("action") not in {"accept_candidate", "create_new_entity"}
+        or answer.get("resolution_scope") != "tenant_global_exact"
+        or answer.get("confirm_tenant_global_reuse") is not True
+    ):
+        return False
+    answer_ref = answer.get("canonical_ref")
+    if isinstance(answer_ref, dict):
+        normalized_answer_ref = {
+            "type": str(answer_ref.get("type") or ""),
+            "id": str(answer_ref.get("id") or ""),
+            "version": int(answer_ref.get("version", 1)),
+        }
+        if normalized_answer_ref != expected_ref:
+            return False
+    answered_by = clarification["answered_by"]
+    if answered_by is None or metadata.get("adjudicated_by") != str(answered_by):
+        return False
+    digest = canonical_sha256(
+        {
+            "tenant_id": str(tenant_id),
+            "clarification_request_id": str(clarification["id"]),
+            "phrase": phrase,
+            "canonical_ref": canonical_ref,
+            "resolution_scope": "tenant_global_exact",
+            "answered_by": str(answered_by),
+            "feedback_lineage": payload_lineage,
+        }
+    )
+    if digest != adjudication_answer_digest:
+        return False
+    authorized = await conn.fetchval(
+        """
+        SELECT EXISTS (
+          SELECT 1
+          FROM actors actor
+          JOIN actor_roles role
+            ON role.tenant_id=actor.tenant_id
+           AND role.actor_id=actor.id
+           AND role.entity_type='tenant'
+           AND role.entity_id IS NULL
+           AND role.role IN ('admin', 'leadership')
+           AND role.revoked_at IS NULL
+          WHERE actor.tenant_id=$1
+            AND actor.id=$2
+            AND actor.status='active'
+        )
+        """,
+        tenant_id,
+        answered_by,
+    )
+    if not authorized:
+        return False
+    predecessor_trace_id = lineage.get("grounding_trace_id")
+    successor_valid = await conn.fetchval(
+        """
+        SELECT EXISTS (
+          SELECT 1
+          FROM grounding_traces predecessor
+          JOIN grounding_traces successor
+            ON successor.tenant_id=predecessor.tenant_id
+           AND successor.trace ->> 'supersedes_grounding_trace_id'
+               = predecessor.id::text
+          WHERE predecessor.tenant_id=$1
+            AND predecessor.id::text=$2
+            AND successor.trace ->> 'adjudication_ref'=$3
+            AND successor.current_fate='resolved_for_consumer'
+            AND successor.selected_referent=$4::jsonb
+        )
+        """,
+        tenant_id,
+        str(predecessor_trace_id or ""),
+        identity_basis_ref,
+        json.dumps(expected_ref),
+    )
+    if not successor_valid:
+        return False
+    try:
+        target_id = UUID(expected_ref["id"])
+    except (TypeError, ValueError):
+        return False
+    if expected_ref["version"] != 1:
+        return False
+    if expected_ref["type"] == "actor":
+        return bool(
+            await conn.fetchval(
+                """
+                SELECT EXISTS (
+                  SELECT 1 FROM actors
+                  WHERE tenant_id=$1 AND id=$2 AND status='active'
+                )
+                """,
+                tenant_id,
+                target_id,
+            )
+        )
+    if expected_ref["type"] in {"resource", "customer"}:
+        return bool(
+            await conn.fetchval(
+                """
+                SELECT EXISTS (
+                  SELECT 1 FROM resources
+                  WHERE tenant_id=$1 AND id=$2 AND archived_at IS NULL
+                    AND (
+                      $3 <> 'customer'
+                      OR metadata ->> 'semantic_kind' = 'customer'
+                    )
+                )
+                """,
+                tenant_id,
+                target_id,
+                expected_ref["type"],
+            )
+        )
+    return False
 
 
 async def insert_alias_with_connection(
@@ -630,4 +844,5 @@ __all__ = [
     "EntityAliasRepo",
     "insert_alias_with_connection",
     "normalize_phrase",
+    "validate_governed_alias_replay",
 ]

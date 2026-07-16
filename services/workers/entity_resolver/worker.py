@@ -42,6 +42,7 @@ import asyncpg
 import structlog
 
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
+from lib.contracts.perception import SufficiencyDisposition
 from lib.llm.provider import (
     LLMError,
     LLMParseError,
@@ -51,13 +52,18 @@ from lib.llm.provider import (
 )
 from lib.shared.ids import uuid7
 from services.domain.clarifications import open_clarification_request
-from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.domain.entity_aliases.repo import (
+    EntityAliasRepo,
+    validate_governed_alias_replay,
+)
+from services.domain.feedback_stats import record_feedback_stat
 from services.domain.entity_grounding import (
     ContextObservationInput,
     EntityGroundingRepo,
     GroundingCandidateInput,
     GroundingEpisode,
     build_grounding_episode,
+    candidate_id_for_ref,
 )
 from services.domain.source_semantics.repo import SourceSemanticRepo
 from services.workers.entity_resolver.context import (
@@ -90,6 +96,11 @@ class EntityResolution(BaseModel):
     canonical_ref: dict[str, Any] | None = None
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str = ""
+    decision_source: str = "llm"
+    identity_basis_ref: str | None = None
+    resolution_scope: str | None = None
+    alias_id: UUID | None = None
+    adjudication_answer_digest: str | None = None
 
 
 # =====================================================================
@@ -321,6 +332,26 @@ class EntityResolverWorker:
             )
             return "unresolved"
 
+        learned_resolution = self._governed_alias_replay(ctx)
+        if learned_resolution is not None:
+            if conn is not None:
+                async with conn.transaction():
+                    replayed = await self._commit_governed_alias_replay(
+                        conn=conn,
+                        ctx=ctx,
+                        resolution=learned_resolution,
+                    )
+                if replayed is not None:
+                    return replayed
+            async with self._pool.acquire() as owned, owned.transaction():
+                replayed = await self._commit_governed_alias_replay(
+                    conn=owned,
+                    ctx=ctx,
+                    resolution=learned_resolution,
+                )
+            if replayed is not None:
+                return replayed
+
         # Only source-anchored mentions are eligible to consume LLM budget.
         if not self._budget.check_and_consume(tenant_id):
             self._bump_requeue(observation_id)
@@ -392,6 +423,38 @@ class EntityResolverWorker:
             grounding_trace_id=trace_id,
             now=datetime.now(timezone.utc),
         )
+        if resolution.decision_source == "governed_exact_alias_replay":
+            replay_payload = {
+                "observation_id": str(observation_id),
+                "phrase": phrase,
+                "identity_basis_ref": resolution.identity_basis_ref,
+                "resolution_scope": resolution.resolution_scope,
+                "grounding_trace_id": str(trace_id),
+            }
+            await record_feedback_stat(
+                conn,
+                tenant_id=tenant_id,
+                surface="entity_grounding",
+                op_type="autonomous_learning",
+                op_kind="governed_exact_alias_replay",
+                outcome="attempt",
+                reason="governed_exact_alias_replay",
+                payload=replay_payload,
+            )
+            await record_feedback_stat(
+                conn,
+                tenant_id=tenant_id,
+                surface="entity_grounding",
+                op_type="autonomous_learning",
+                op_kind="governed_exact_alias_replay",
+                outcome=(
+                    "success"
+                    if episode.current_fate == "resolved_for_consumer"
+                    else "dropped"
+                ),
+                reason="governed_exact_alias_replay",
+                payload=replay_payload,
+            )
 
         if episode.current_fate == "resolved_for_consumer":
             selected_ref = episode.admitted_canonical_ref or {}
@@ -437,6 +500,47 @@ class EntityResolverWorker:
         )
         return "unresolved"
 
+    async def _commit_governed_alias_replay(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        ctx: ResolverContext,
+        resolution: EntityResolution,
+    ) -> ResolverDecision | None:
+        if (
+            resolution.alias_id is None
+            or resolution.canonical_ref is None
+            or resolution.identity_basis_ref is None
+            or resolution.adjudication_answer_digest is None
+        ):
+            return None
+        valid = await validate_governed_alias_replay(
+            conn,
+            tenant_id=ctx.tenant_id,
+            alias_id=resolution.alias_id,
+            phrase=ctx.phrase,
+            canonical_ref=resolution.canonical_ref,
+            identity_basis_ref=resolution.identity_basis_ref,
+            adjudication_answer_digest=(
+                resolution.adjudication_answer_digest
+            ),
+        )
+        if not valid:
+            return None
+        episode = self._build_grounding_episode(
+            ctx=ctx,
+            resolution=resolution,
+        )
+        return await self._commit_episode_and_route(
+            conn,
+            ctx=ctx,
+            resolution=resolution,
+            episode=episode,
+            phrase=ctx.phrase,
+            observation_id=ctx.observation_id,
+            tenant_id=ctx.tenant_id,
+        )
+
     def _build_grounding_episode(
         self,
         *,
@@ -478,6 +582,30 @@ class EntityResolverWorker:
             model_canonical_ref=resolution.canonical_ref,
             model_confidence=resolution.confidence,
             model_reasoning=resolution.reasoning,
+            decision_source=resolution.decision_source,
+            decision_metadata={
+                "identity_basis_ref": resolution.identity_basis_ref,
+                "resolution_scope": resolution.resolution_scope,
+                "alias_id": (
+                    str(resolution.alias_id)
+                    if resolution.alias_id is not None
+                    else None
+                ),
+                "adjudication_answer_digest": (
+                    resolution.adjudication_answer_digest
+                ),
+                "llm_invoked": resolution.decision_source == "llm",
+            },
+            assessment_calibration_cohort=(
+                "deterministic-human-memory-replay"
+                if resolution.decision_source == "governed_exact_alias_replay"
+                else "legacy-unstructured-phrase-resolution"
+            ),
+            assessment_scorer_version=(
+                "governed-exact-alias-replay-v1"
+                if resolution.decision_source == "governed_exact_alias_replay"
+                else "closed-set-llm-assessment-uncalibrated-v1"
+            ),
             high_confidence=self._high,
             review_min=self._review,
             prepared_context_command=ctx.context_selection_command,
@@ -511,8 +639,21 @@ class EntityResolverWorker:
                         if (
                             item.identity_basis_ref
                             and item.source in {"manual", "ingestion"}
-                            and item.identity_basis_class
-                            in {"source_authoritative", "independently_adjudicated"}
+                            and (
+                                item.identity_basis_class == "source_authoritative"
+                                or (
+                                    item.identity_basis_class
+                                    == "independently_adjudicated"
+                                    and (
+                                        item.resolution_scope is None
+                                        or (
+                                            item.adjudication_state == "active"
+                                            and item.resolution_scope
+                                            == "tenant_global_exact"
+                                        )
+                                    )
+                                )
+                            )
                         )
                         else ()
                     ),
@@ -530,14 +671,101 @@ class EntityResolverWorker:
                         if (
                             item.identity_basis_ref
                             and item.source in {"manual", "ingestion"}
-                            and item.identity_basis_class
-                            in {"source_authoritative", "independently_adjudicated"}
+                            and (
+                                item.identity_basis_class == "source_authoritative"
+                                or (
+                                    item.identity_basis_class
+                                    == "independently_adjudicated"
+                                    and (
+                                        item.resolution_scope is None
+                                        or (
+                                            item.adjudication_state == "active"
+                                            and item.resolution_scope
+                                            == "tenant_global_exact"
+                                        )
+                                    )
+                                )
+                            )
                         )
                         else ()
                     ),
                 )
             )
         return tuple(candidates)
+
+    @staticmethod
+    def _governed_alias_replay(
+        ctx: ResolverContext,
+    ) -> EntityResolution | None:
+        outcome = ctx.context_selection_outcome
+        if (
+            outcome is None
+            or outcome.snapshot.sufficiency_verdict.disposition
+            is not SufficiencyDisposition.OPERATIONALLY_SUFFICIENT
+        ):
+            return None
+        eligible = [
+            alias
+            for alias in ctx.recent_aliases
+            if (
+                alias.source == "manual"
+                and alias.identity_basis_class == "independently_adjudicated"
+                and alias.identity_basis_ref
+                and alias.identity_basis_ref.startswith("clarification-request:")
+                and alias.adjudication_state == "active"
+                and alias.resolution_scope == "tenant_global_exact"
+                and alias.autonomous_replay_eligible
+                and alias.replay_lineage_valid
+                and alias.canonical_target_valid
+                and alias.resolved_entity_ref.get("type")
+                and alias.resolved_entity_ref.get("id")
+            )
+        ]
+        refs: dict[str, tuple[dict[str, Any], Any]] = {}
+        for alias in eligible:
+            canonical_ref = {
+                "type": str(alias.resolved_entity_ref["type"]),
+                "id": str(alias.resolved_entity_ref["id"]),
+                "version": int(alias.resolved_entity_ref.get("version", 1)),
+            }
+            key = json.dumps(canonical_ref, sort_keys=True)
+            refs.setdefault(key, (canonical_ref, alias))
+        if len(refs) != 1:
+            return None
+        canonical_ref, replay_alias = next(iter(refs.values()))
+        if not replay_alias.adjudication_answer_digest:
+            return None
+        for source_ref in ctx.source_entities_mentioned:
+            if not isinstance(source_ref, dict):
+                continue
+            source_identity = (
+                str(source_ref.get("type") or ""),
+                str(source_ref.get("id") or ""),
+                int(source_ref.get("version", 1)),
+            )
+            learned_identity = (
+                canonical_ref["type"],
+                canonical_ref["id"],
+                canonical_ref["version"],
+            )
+            if source_identity != learned_identity:
+                return None
+        return EntityResolution(
+            candidate_id=candidate_id_for_ref(canonical_ref),
+            canonical_ref=canonical_ref,
+            confidence=1.0,
+            reasoning=(
+                "exact source-anchored mention matched one active, "
+                "lineage-valid human-adjudicated tenant alias"
+            ),
+            decision_source="governed_exact_alias_replay",
+            identity_basis_ref=replay_alias.identity_basis_ref,
+            resolution_scope="tenant_global_exact",
+            alias_id=replay_alias.alias_id,
+            adjudication_answer_digest=(
+                replay_alias.adjudication_answer_digest
+            ),
+        )
 
     # -----------------------------------------------------------------
     # LLM invocation with translation of SDK-layer errors.

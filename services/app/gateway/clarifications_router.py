@@ -11,7 +11,9 @@ from fastapi import APIRouter, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from lib.contracts.kernel import canonical_sha256
 from lib.shared.errors import ValidationError
+from lib.shared.entity_phrases import phrase_requires_context
 from lib.shared.ids import uuid7
 from services.app.gateway.auth import AuthContext
 from services.domain.clarifications import (
@@ -243,6 +245,16 @@ async def _apply_entity_resolution_answer(
             or reviewed_candidate.get("confidence")
             or 1.0
         )
+        resolution_scope = _resolution_scope(normalized, phrase=phrase)
+        await _authorize_resolution_scope(
+            conn,
+            tenant_id=tenant_id,
+            answered_by=answered_by,
+            resolution_scope=resolution_scope,
+            explicitly_confirmed=bool(
+                normalized.get("confirm_tenant_global_reuse")
+            ),
+        )
         await _finalize_entity_resolution(
             conn,
             row=row,
@@ -251,6 +263,7 @@ async def _apply_entity_resolution_answer(
             phrase=phrase,
             canonical_ref=canonical_ref,
             confidence=confidence,
+            resolution_scope=resolution_scope,
         )
         return
     if action in {"reject_candidate", "not_same_entity"}:
@@ -285,6 +298,16 @@ async def _apply_entity_resolution_answer(
         elif not canonical_ref.get("type"):
             raise ValidationError("entity creation canonical_ref missing type")
         confidence = float(normalized.get("confidence") or 1.0)
+        resolution_scope = _resolution_scope(normalized, phrase=phrase)
+        await _authorize_resolution_scope(
+            conn,
+            tenant_id=tenant_id,
+            answered_by=answered_by,
+            resolution_scope=resolution_scope,
+            explicitly_confirmed=bool(
+                normalized.get("confirm_tenant_global_reuse")
+            ),
+        )
         await _finalize_entity_resolution(
             conn,
             row=row,
@@ -293,6 +316,7 @@ async def _apply_entity_resolution_answer(
             phrase=phrase,
             canonical_ref=canonical_ref,
             confidence=confidence,
+            resolution_scope=resolution_scope,
         )
         return
     raise ValidationError("entity resolution answer action is invalid")
@@ -342,6 +366,61 @@ def _select_reviewed_candidate(
     raise ValidationError(
         "accepted canonical_ref must exactly match a reviewed candidate"
     )
+
+
+def _resolution_scope(answer: dict[str, Any], *, phrase: str) -> str:
+    scope = str(
+        answer.get("resolution_scope") or "source_context_only"
+    ).strip()
+    if scope not in {"source_context_only", "tenant_global_exact"}:
+        raise ValidationError("entity resolution scope is invalid")
+    if scope == "tenant_global_exact" and phrase_requires_context(phrase):
+        raise ValidationError(
+            "context-dependent phrases cannot become tenant-global aliases"
+        )
+    return scope
+
+
+async def _authorize_resolution_scope(
+    conn: Any,
+    *,
+    tenant_id: UUID,
+    answered_by: UUID | None,
+    resolution_scope: str,
+    explicitly_confirmed: bool,
+) -> None:
+    if resolution_scope != "tenant_global_exact":
+        return
+    if answered_by is None or not explicitly_confirmed:
+        raise ValidationError(
+            "tenant-global alias reuse requires an explicit privileged confirmation"
+        )
+    authorized = await conn.fetchval(
+        """
+        SELECT EXISTS (
+          SELECT 1
+          FROM actors actor
+          JOIN actor_roles role
+            ON role.tenant_id=actor.tenant_id
+           AND role.actor_id=actor.id
+           AND role.entity_type='tenant'
+           AND role.entity_id IS NULL
+           AND role.role IN ('admin', 'leadership')
+           AND role.revoked_at IS NULL
+          WHERE actor.tenant_id=$1
+            AND actor.id=$2
+            AND actor.status='active'
+        )
+        """,
+        tenant_id,
+        answered_by,
+    )
+    if not authorized:
+        raise ValidationError(
+            "answerer lacks tenant-global identity-adjudication authority"
+        )
+
+
 async def _finalize_entity_resolution(
     conn: Any,
     *,
@@ -351,6 +430,7 @@ async def _finalize_entity_resolution(
     phrase: str,
     canonical_ref: dict[str, Any],
     confidence: float,
+    resolution_scope: str,
 ) -> None:
     observation_id = _coerce_uuid(row.source_observation_id)
     payload = row.payload or {}
@@ -368,6 +448,7 @@ async def _finalize_entity_resolution(
         clarification_request_id=clarification_request_id,
         answered_by=answered_by,
         feedback_lineage=feedback_lineage,
+        resolution_scope=resolution_scope,
     )
     original_trace_id = _coerce_uuid(feedback_lineage.get("grounding_trace_id"))
     if (
@@ -656,11 +737,23 @@ async def _insert_manual_entity_alias(
     clarification_request_id: UUID | None,
     answered_by: UUID | None,
     feedback_lineage: dict[str, Any],
+    resolution_scope: str,
 ) -> None:
     clarification_ref = (
         f"clarification-request:{clarification_request_id}"
         if clarification_request_id is not None
         else "clarification-request:unknown"
+    )
+    answer_digest = canonical_sha256(
+        {
+            "tenant_id": str(tenant_id),
+            "clarification_request_id": str(clarification_request_id),
+            "phrase": phrase,
+            "canonical_ref": canonical_ref,
+            "resolution_scope": resolution_scope,
+            "answered_by": str(answered_by) if answered_by is not None else None,
+            "feedback_lineage": feedback_lineage,
+        }
     )
     await insert_alias_with_connection(
         conn,
@@ -680,6 +773,13 @@ async def _insert_manual_entity_alias(
             "adjudicated_by": str(answered_by) if answered_by is not None else None,
             "identity_basis_class": "independently_adjudicated",
             "identity_basis_ref": clarification_ref,
+            "adjudication_state": "active",
+            "adjudication_answer_digest": answer_digest,
+            "resolution_scope": resolution_scope,
+            "autonomous_replay_eligible": (
+                resolution_scope == "tenant_global_exact"
+            ),
+            "replay_policy_version": "governed-exact-alias-replay-v1",
             "grounding_feedback_lineage": feedback_lineage,
         },
         adjudicated=True,

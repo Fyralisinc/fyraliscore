@@ -35,6 +35,7 @@ def _fixture_rows(
     *,
     review: bool = False,
     content_text: str = "NBI renewal is blocked",
+    phrase: str = "NBI",
 ):
     tenant_id = uuid4()
     observation_id = uuid4()
@@ -42,7 +43,7 @@ def _fixture_rows(
     context_command, context_outcome = prepare_context_selection(
         tenant_id=tenant_id,
         observation_id=observation_id,
-        phrase="NBI",
+        phrase=phrase,
         occurred_at=NOW,
         source_channel="slack:message",
         source_space="C-finance",
@@ -55,7 +56,7 @@ def _fixture_rows(
     mention_command = prepare_entity_mention_detection(
         tenant_id=tenant_id,
         observation_id=observation_id,
-        phrase="NBI",
+        phrase=phrase,
         content_text=content_text,
         source_channel="slack:message",
         context_command=context_command,
@@ -68,7 +69,7 @@ def _fixture_rows(
         episode = build_grounding_episode(
             tenant_id=tenant_id,
             observation_id=observation_id,
-            phrase="NBI",
+            phrase=phrase,
             occurred_at=NOW,
             source_channel="slack:message",
             source_space="C-finance",
@@ -104,7 +105,7 @@ def _fixture_rows(
     observation = {
         "id": observation_id,
         "occurred_at": NOW,
-        "content": {"_unresolved_phrases": ["NBI"]},
+        "content": {"_unresolved_phrases": [phrase]},
         "content_text": content_text,
     }
     command_result_id = uuid4()
@@ -177,7 +178,7 @@ def _fixture_rows(
     work = {
         "id": uuid4(),
         "source_observation_id": observation_id,
-        "phrase": "NBI",
+        "phrase": phrase,
         "processing_generation": 1,
         "status": episode.current_fate if episode is not None else "unresolved",
         "processing_class": "R2",
@@ -191,7 +192,7 @@ def _fixture_rows(
         row = {
             "id": trace_id,
             "source_observation_id": observation_id,
-            "phrase": "NBI",
+            "phrase": phrase,
             "created_at": NOW + timedelta(minutes=1),
             "snapshot": episode.context_snapshot.model_dump(mode="json"),
             "request": episode.candidate_set.request.model_dump(mode="json"),
@@ -222,7 +223,7 @@ def _fixture_rows(
             {
                 "id": episode.candidate_set.request.request_id,
                 "source_observation_id": observation_id,
-                "phrase": "NBI",
+                "phrase": phrase,
                 "context_snapshot_id": detection.context_snapshot_id,
                 "entity_mention_detection_id": detection.detection_id,
                 "entity_mention_id": detection.mention.mention_id,
@@ -261,6 +262,82 @@ def test_clean_grounding_scope_reports_complete_continuity_without_incidents() -
     assert state.candidate_request_fate_coverage == 1.0
     assert state.incident_counts == {}
     assert state.processing_class_counts == {"R2": 1}
+
+
+def test_governed_exact_alias_replay_reports_resolution_and_llm_avoidance() -> None:
+    inputs = _fixture_rows()
+    inputs["episode_rows"][0]["model_output"].update(
+        {
+            "decision_source": "governed_exact_alias_replay",
+            "identity_basis_ref": "clarification-request:replay-1",
+            "resolution_scope": "tenant_global_exact",
+            "llm_invoked": False,
+        }
+    )
+
+    state = analyze_entity_grounding_rows(**inputs)
+
+    assert state.alias_replay_exposure_count == 1
+    assert state.alias_replay_resolved_count == 1
+    assert state.alias_replay_resolution_rate == 1.0
+    assert state.alias_replay_llm_avoided_count == 1
+    assert state.unsafe_alias_replay_count == 0
+    assert state.contextual_alias_replay_count == 0
+    evidence = build_entity_grounding_invariant_evidence(
+        state,
+        registry=REGISTRY,
+        executed_scenario_ids=frozenset(),
+    )
+    inv05 = next(item for item in evidence if item.invariant_id == "INV-05")
+    replay_metric = next(
+        item
+        for item in inv05.metric_observations
+        if item.metric_id == "entity.governed_alias_replay_resolution"
+    )
+    assert replay_metric.raw_numerator == 1
+    assert replay_metric.raw_denominator == 1
+    assert replay_metric.point_estimate == 1.0
+
+
+def test_governed_alias_replay_without_identity_basis_is_unsafe() -> None:
+    inputs = _fixture_rows()
+    row = inputs["episode_rows"][0]
+    row["model_output"].update(
+        {
+            "decision_source": "governed_exact_alias_replay",
+            "resolution_scope": "tenant_global_exact",
+            "llm_invoked": False,
+        }
+    )
+    row["assessment"]["identity_evidence_refs"] = []
+
+    state = analyze_entity_grounding_rows(**inputs)
+
+    assert state.alias_replay_exposure_count == 1
+    assert state.alias_replay_resolved_count == 1
+    assert state.unsafe_alias_replay_count == 1
+    assert state.incident_counts["unsafe_governed_alias_replay"] == 1
+
+
+def test_context_dependent_phrase_cannot_be_governed_alias_replay() -> None:
+    inputs = _fixture_rows(
+        phrase="the project",
+        content_text="the project is blocked",
+    )
+    inputs["episode_rows"][0]["model_output"].update(
+        {
+            "decision_source": "governed_exact_alias_replay",
+            "identity_basis_ref": "clarification-request:replay-contextual",
+            "resolution_scope": "source_context_only",
+            "llm_invoked": False,
+        }
+    )
+
+    state = analyze_entity_grounding_rows(**inputs)
+
+    assert state.alias_replay_exposure_count == 1
+    assert state.contextual_alias_replay_count == 1
+    assert state.incident_counts["contextual_governed_alias_replay"] == 1
 
 
 def test_adjudicated_successor_generation_is_history_not_duplicate_trace() -> None:
@@ -389,6 +466,12 @@ def test_zero_grounding_exposure_is_unknown_not_perfect() -> None:
     assert state.candidate_request_fate_coverage is None
     assert state.answered_entity_clarification_lineage_coverage is None
     assert state.adjudicated_alias_lineage_coverage is None
+    assert state.alias_replay_exposure_count == 0
+    assert state.alias_replay_resolved_count == 0
+    assert state.alias_replay_resolution_rate is None
+    assert state.alias_replay_llm_avoided_count == 0
+    assert state.unsafe_alias_replay_count == 0
+    assert state.contextual_alias_replay_count == 0
     assert "unknown/not exposed" in render_entity_grounding_markdown(state)
 
 
@@ -533,6 +616,16 @@ def test_proof_projection_is_continuous_and_honest_about_evidence_floor() -> Non
 
     assert len(evidence) == 4
     assert all(item.achieved_evidence_tier is EvidenceTier.E3 for item in evidence)
+    inv05_evidence = next(
+        item for item in evidence if item.invariant_id == "INV-05"
+    )
+    replay_metric = next(
+        item
+        for item in inv05_evidence.metric_observations
+        if item.metric_id == "entity.governed_alias_replay_resolution"
+    )
+    assert replay_metric.raw_denominator == 0
+    assert replay_metric.point_estimate is None
     inv06 = next(item for item in report.records if item.invariant_id == "INV-06")
     assert inv06.denominator_coverage == 1.0
     assert inv06.metric_observation_coverage == 1.0
