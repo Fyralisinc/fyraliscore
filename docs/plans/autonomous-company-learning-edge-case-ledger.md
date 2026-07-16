@@ -233,6 +233,12 @@ Everything else receives an explicit safe behavior and return condition here.
   candidate visibility, none-of-the-above availability, unsafe versus
   authoritative resolution, wrong Models, alias promotion, source immutability
   and exact family/entity/lifecycle strata.
+- **Current runtime evidence:** The first real-Postgres run executed `14/16`
+  cases and explicitly marked both source-ID cases unsupported. Archived and
+  inactive targets are now fenced safely. The adaptive arm still made `10/14`
+  unsafe learned-target resolutions across active collisions, while the frozen
+  arm safely contained `14/14`; candidate visibility, none-of-the-above and
+  source immutability remained `1.0`, with zero wrong Models.
 - **Return condition:** Execute the sealed registry on real PostgreSQL. Require
   zero learned-target or other unauthorized resolutions, zero wrong Models,
   zero promotion and complete safe containment for every supported case.

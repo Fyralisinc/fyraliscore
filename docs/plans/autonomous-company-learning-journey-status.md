@@ -886,3 +886,27 @@ not claimed by this working version.
 - The working-version evaluator currently adds one file-over-threshold debt
   item. It is recorded for later module decomposition rather than delaying the
   first honest end-to-end collision result.
+
+### 2026-07-16 — First honest collision runtime exposed the safety boundary
+
+- Added a reusable real-Postgres collision runner using the existing paired
+  tenant, clarification, alias, resolver, grounding and candidate-set seams
+  rather than a second entity-resolution subsystem.
+- Executed 14 supported cases and retained both source-native-ID cases as
+  explicitly unsupported because the runtime has no genuine persisted
+  `SourceIdentityBinding`.
+- The first report is correctly `contradicted`: the adaptive arm safely
+  contained `4/14` cases and incorrectly resolved the learned target in `10/14`;
+  the frozen arm safely contained `14/14`.
+- Both arms retained complete colliding-candidate visibility,
+  none-of-the-above availability and source immutability at `1.0`; no wrong
+  downstream Models or alias promotions were observed.
+- The liveness fence removed archived and inactive UUID-backed actor/resource/
+  customer targets from ingest fast paths and resolver candidate inputs. That
+  made all four stale-lifecycle cases safe while leaving the active ambiguity
+  failure visible.
+- Durable pre-fix artifact:
+  `/tmp/fyralis-variant-collisions-first-honest`.
+- The next core fix is narrow: multiple live exact candidates without one
+  decisive authority must force review/abstention; high model confidence cannot
+  select one side of the collision.
