@@ -56,7 +56,7 @@ def test_production_manifest_renders_operator_inventory() -> None:
     assert "| think_worker | reasoning | think_worker | True | False | `python scripts/run_think_worker.py` |" in markdown
     assert "| housekeeper_worker | reasoning | housekeeper_worker | True | False | `python scripts/run_housekeeper_worker.py` |" in markdown
     assert "| source_semantic_worker | reasoning | source_semantic_worker | True | False | `python scripts/run_source_semantic_worker.py` |" in markdown
-    assert "| intervention_episode_coordinator | reasoning | intervention_episode_coordinator | True | False | `python scripts/run_intervention_episode_coordinator.py` |" in markdown
+    assert "intervention_episode_coordinator" not in markdown
     assert "agency_activation_worker" not in markdown
     assert "work_scheduler_worker" not in markdown
 

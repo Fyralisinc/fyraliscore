@@ -17,8 +17,7 @@
 #             summarization_worker, summarization_batch_worker,
 #             embedding_worker
 #   app     : think_worker, post_commit_worker, anomaly_processor_worker,
-#             entity_resolver_worker, source_semantic_worker,
-#             intervention_episode_coordinator
+#             entity_resolver_worker, source_semantic_worker
 #   (UI + TLS edge live in the demo overlay repo's docker-compose.demo.yml)
 #
 # Secrets (per-source creds, MASTER_KEK, OAuth/HMAC keys) live in
@@ -524,19 +523,6 @@ services:
       SOURCE_SEMANTIC_LEASE_S: "120"
       SOURCE_SEMANTIC_RETRY_S: "30"
       SOURCE_SEMANTIC_MAX_ATTEMPTS: "5"
-
-  intervention_episode_coordinator:
-    <<: *worker
-    container_name: company_os_intervention_episode_coordinator
-    command: python scripts/run_intervention_episode_coordinator.py
-    healthcheck: *consumer-healthcheck
-    environment:
-      <<: *app-env
-      INTERVENTION_EPISODE_COORDINATOR_POLL_INTERVAL_S: "5"
-      INTERVENTION_EPISODE_COORDINATOR_BATCH_SIZE: "100"
-      INTERVENTION_EPISODE_COORDINATOR_LEASE_S: "120"
-      INTERVENTION_EPISODE_COORDINATOR_RETRY_S: "30"
-      INTERVENTION_EPISODE_COORDINATOR_MAX_ATTEMPTS: "5"
 
   # ---- retrieval/memory feature workers (ported from dev) -----------
   sage_structural_features_worker:

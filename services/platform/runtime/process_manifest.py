@@ -164,15 +164,6 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         has_healthcheck=True,
     ),
     _proc(
-        "intervention_episode_coordinator",
-        "reasoning",
-        ("python", "scripts/run_intervention_episode_coordinator.py"),
-        ("production",),
-        "Durable canonical-event-to-intervention-episode manifest worker.",
-        compose_service="intervention_episode_coordinator",
-        has_healthcheck=True,
-    ),
-    _proc(
         "topology_sweeper",
         "reasoning",
         ("python", "scripts/run_topology_sweeper.py"),
