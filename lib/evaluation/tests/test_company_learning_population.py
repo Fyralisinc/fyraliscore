@@ -81,6 +81,8 @@ def test_population_report_has_continuous_intervals_and_complete_registry() -> (
 
     assert first == second
     assert first.pair_count == 60
+    assert first.observed_pair_count == 60
+    assert first.unsupported_case_count == 0
     assert first.complete_population is True
     assert first.adaptive_correctness.point_estimate == 1.0
     assert first.adaptive_correctness.lower_95 < 1.0
@@ -97,6 +99,60 @@ def test_population_report_has_continuous_intervals_and_complete_registry() -> (
         "project": 15,
         "system": 15,
         "team": 15,
+    }
+    assert first.observed_strata_counts == first.strata_counts
+    assert first.unsupported_reason_counts == {}
+
+
+def test_population_retains_unsupported_strata_without_narrowing_registry() -> (
+    None
+):
+    population = build_exact_alias_heldout_population(size=4)
+    observations = tuple(
+        (
+            HeldOutPairObservation(
+                case_id=case.case_id,
+                adaptive_correct=True,
+                frozen_correct=False,
+                adaptive_unsafe=False,
+                frozen_unsafe=False,
+                adaptive_llm_calls=0,
+                frozen_llm_calls=1,
+                adaptive_latency_ms=20.0,
+                frozen_latency_ms=40.0,
+            )
+            if case.entity_type == "customer"
+            else HeldOutPairObservation(
+                case_id=case.case_id,
+                execution_status="unsupported",
+                unsupported_reason=(
+                    f"runtime entity type unsupported: {case.entity_type}"
+                ),
+            )
+        )
+        for case in population.cases
+    )
+
+    report = evaluate_heldout_population(
+        population=population,
+        observations=observations,
+        bootstrap_samples=200,
+    )
+
+    assert report.pair_count == 4
+    assert report.observed_pair_count == 1
+    assert report.unsupported_case_count == 3
+    assert report.complete_population is True
+    assert report.adaptive_correctness.sample_size == 1
+    assert report.unsupported_strata_counts["entity_type"] == {
+        "project": 1,
+        "system": 1,
+        "team": 1,
+    }
+    assert report.unsupported_reason_counts == {
+        "runtime entity type unsupported: project": 1,
+        "runtime entity type unsupported: system": 1,
+        "runtime entity type unsupported: team": 1,
     }
 
 

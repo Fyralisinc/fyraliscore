@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import random
 from statistics import fmean
-from typing import Callable, Self
+from typing import Callable, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -60,14 +60,44 @@ class HeldOutExactAliasPopulation(_PopulationModel):
 
 class HeldOutPairObservation(_PopulationModel):
     case_id: str = Field(min_length=1)
-    adaptive_correct: bool
-    frozen_correct: bool
-    adaptive_unsafe: bool
-    frozen_unsafe: bool
-    adaptive_llm_calls: int = Field(ge=0)
-    frozen_llm_calls: int = Field(ge=0)
-    adaptive_latency_ms: float = Field(ge=0.0)
-    frozen_latency_ms: float = Field(ge=0.0)
+    execution_status: Literal["observed", "unsupported"] = "observed"
+    unsupported_reason: str | None = None
+    adaptive_correct: bool | None = None
+    frozen_correct: bool | None = None
+    adaptive_unsafe: bool | None = None
+    frozen_unsafe: bool | None = None
+    adaptive_llm_calls: int | None = Field(default=None, ge=0)
+    frozen_llm_calls: int | None = Field(default=None, ge=0)
+    adaptive_latency_ms: float | None = Field(default=None, ge=0.0)
+    frozen_latency_ms: float | None = Field(default=None, ge=0.0)
+
+    @model_validator(mode="after")
+    def status_matches_measurement(self) -> Self:
+        measurements = (
+            self.adaptive_correct,
+            self.frozen_correct,
+            self.adaptive_unsafe,
+            self.frozen_unsafe,
+            self.adaptive_llm_calls,
+            self.frozen_llm_calls,
+            self.adaptive_latency_ms,
+            self.frozen_latency_ms,
+        )
+        if self.execution_status == "observed":
+            if self.unsupported_reason is not None or any(
+                value is None for value in measurements
+            ):
+                raise ValueError(
+                    "observed held-out cases require complete measurements"
+                )
+        elif (
+            not self.unsupported_reason
+            or any(value is not None for value in measurements)
+        ):
+            raise ValueError(
+                "unsupported held-out cases require one reason and no metrics"
+            )
+        return self
 
 
 class IntervalEstimate(_PopulationModel):
@@ -84,8 +114,13 @@ class HeldOutPopulationReport(_PopulationModel):
     population_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     observation_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     pair_count: int = Field(ge=0)
+    observed_pair_count: int = Field(ge=0)
+    unsupported_case_count: int = Field(ge=0)
     complete_population: bool
     strata_counts: dict[str, dict[str, int]]
+    observed_strata_counts: dict[str, dict[str, int]]
+    unsupported_strata_counts: dict[str, dict[str, int]]
+    unsupported_reason_counts: dict[str, int]
     adaptive_correctness: IntervalEstimate
     frozen_correctness: IntervalEstimate
     adaptive_minus_frozen_correctness: IntervalEstimate
@@ -170,6 +205,20 @@ def evaluate_heldout_population(
         )
     by_case = {observation.case_id: observation for observation in observations}
     ordered = tuple(by_case[case.case_id] for case in population.cases)
+    measured = tuple(
+        observation
+        for observation in ordered
+        if observation.execution_status == "observed"
+    )
+    unsupported = tuple(
+        observation
+        for observation in ordered
+        if observation.execution_status == "unsupported"
+    )
+    if not measured:
+        raise ValueError(
+            "held-out population has no runtime-supported measured cases"
+        )
     seed = int(
         canonical_sha256(
             {
@@ -182,22 +231,41 @@ def evaluate_heldout_population(
         )[:16],
         16,
     )
-    adaptive_correct = [float(item.adaptive_correct) for item in ordered]
-    frozen_correct = [float(item.frozen_correct) for item in ordered]
-    adaptive_unsafe = [float(item.adaptive_unsafe) for item in ordered]
-    frozen_unsafe = [float(item.frozen_unsafe) for item in ordered]
+    adaptive_correct = [
+        float(_required(item.adaptive_correct)) for item in measured
+    ]
+    frozen_correct = [
+        float(_required(item.frozen_correct)) for item in measured
+    ]
+    adaptive_unsafe = [
+        float(_required(item.adaptive_unsafe)) for item in measured
+    ]
+    frozen_unsafe = [
+        float(_required(item.frozen_unsafe)) for item in measured
+    ]
     lift = [
-        float(item.adaptive_correct) - float(item.frozen_correct)
-        for item in ordered
+        float(_required(item.adaptive_correct))
+        - float(_required(item.frozen_correct))
+        for item in measured
     ]
     llm_avoided = [
-        float(item.frozen_llm_calls - item.adaptive_llm_calls)
-        for item in ordered
+        float(
+            _required(item.frozen_llm_calls)
+            - _required(item.adaptive_llm_calls)
+        )
+        for item in measured
     ]
     latency_delta = [
-        item.adaptive_latency_ms - item.frozen_latency_ms
-        for item in ordered
+        _required(item.adaptive_latency_ms)
+        - _required(item.frozen_latency_ms)
+        for item in measured
     ]
+    observed_ids = {item.case_id for item in measured}
+    unsupported_ids = {item.case_id for item in unsupported}
+    unsupported_reasons: dict[str, int] = {}
+    for item in unsupported:
+        reason = str(item.unsupported_reason)
+        unsupported_reasons[reason] = unsupported_reasons.get(reason, 0) + 1
     return HeldOutPopulationReport(
         population_definition_version=population.population_definition_version,
         population_digest=population.digest,
@@ -205,8 +273,19 @@ def evaluate_heldout_population(
             [item.model_dump(mode="json") for item in ordered]
         ),
         pair_count=len(ordered),
+        observed_pair_count=len(measured),
+        unsupported_case_count=len(unsupported),
         complete_population=True,
         strata_counts=_strata_counts(population),
+        observed_strata_counts=_strata_counts(
+            population,
+            case_ids=observed_ids,
+        ),
+        unsupported_strata_counts=_strata_counts(
+            population,
+            case_ids=unsupported_ids,
+        ),
+        unsupported_reason_counts=dict(sorted(unsupported_reasons.items())),
         adaptive_correctness=_wilson_estimate(adaptive_correct),
         frozen_correctness=_wilson_estimate(frozen_correct),
         adaptive_minus_frozen_correctness=_bootstrap_mean_estimate(
@@ -242,6 +321,8 @@ def _recurrence_text(*, alias: str, wording: str, consequence: str) -> str:
 
 def _strata_counts(
     population: HeldOutExactAliasPopulation,
+    *,
+    case_ids: set[str] | None = None,
 ) -> dict[str, dict[str, int]]:
     fields: tuple[tuple[str, Callable[[HeldOutExactAliasCase], str]], ...] = (
         ("entity_type", lambda case: case.entity_type),
@@ -255,10 +336,18 @@ def _strata_counts(
     for field_name, getter in fields:
         counts: dict[str, int] = {}
         for case in population.cases:
+            if case_ids is not None and case.case_id not in case_ids:
+                continue
             value = getter(case)
             counts[value] = counts.get(value, 0) + 1
         result[field_name] = dict(sorted(counts.items()))
     return result
+
+
+def _required(value):
+    if value is None:
+        raise ValueError("observed held-out metric is unexpectedly missing")
+    return value
 
 
 def _wilson_estimate(values: list[float], z: float = 1.96) -> IntervalEstimate:
