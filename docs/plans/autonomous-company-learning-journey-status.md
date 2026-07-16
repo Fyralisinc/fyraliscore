@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `d6908b39`
+**Current checkpoint:** `abaadd10`
 
 **Last updated:** 2026-07-16
 
@@ -446,7 +446,27 @@ Task autonomy is excluded from all percentages.
 
 ### P0 — Required before believing the company-learning system broadly works
 
-1. **Add non-resolution and ambiguity controls**
+1. **Synchronize the evaluator with the implemented company-learning system**
+   - Update the objective-evaluation framework's current executable checkpoint
+     to reflect the sealed 60-case four-entity population, all nine Slack
+     reconstruction families, negative controls, recursive correction
+     convergence and trusted Company Vitals integration.
+   - Remove or narrow proof-gap statements that the executable evidence has
+     closed while preserving open-world, scale, source-breadth and E5 limits.
+   - Repair the stale implementation-plan digest and bind the combined
+     assurance summary to the reviewed architecture and implementation-plan
+     identity.
+   - Make correction convergence a first-class component of the combined
+     assurance command instead of citing a separately executed Postgres proof.
+   - Replace the hard-coded Slack `diagnostic_only` classification with explicit
+     evidence tier, scope completeness, open-world completeness and blocking
+     policy.
+   - Declare an active evaluator profile for autonomous company learning and
+     company modeling with autonomous task planning and execution excluded.
+   - Keep Company Vitals and the existing invariant-proof spine as the sole
+     system evaluator; do not create a parallel health or assurance framework.
+
+2. **Add non-resolution and ambiguity controls**
    - Contextual phrase negative.
    - Unrelated alias negative.
    - Homonym/local-association case.
@@ -457,13 +477,13 @@ Task autonomy is excluded from all percentages.
      Context-local adjudications no longer enter ingest entity hints, while
      tenant-global exact reuse remains adaptive `3/3` versus frozen `0/3`.
 
-2. **Expand beyond exact surface replay**
+3. **Expand beyond exact surface replay**
    - Unseen spelling and abbreviation variants.
    - Pronouns, descriptions and local nicknames.
    - Context-dependent references whose meaning changes by channel/thread/time.
    - Explicitly measure when retrieval/context helps and when it contaminates.
 
-3. **Prove Slack conversational reconstruction**
+4. **Prove Slack conversational reconstruction**
    - Source-native edit/delete/reaction behavior.
    - Cross-thread and cross-channel dependencies.
    - Long-range temporal context.
@@ -474,7 +494,7 @@ Task autonomy is excluded from all percentages.
      recall, edit/delete correctness, budget adherence, sufficient-set recall
      and safe abstention are all `1.0`.
 
-4. **Complete correction propagation**
+5. **Complete correction propagation**
    - Identify every accepted Model, relation, edge and projection that depended
      on the wrong grounding.
    - Fence unsafe reads immediately.
@@ -486,7 +506,7 @@ Task autonomy is excluded from all percentages.
      successful refresh-job consumption. Only larger/deeper cascade
      characterization remains.
 
-5. **Scale the held-out population**
+6. **Scale the held-out population**
    - Generate enough independent matched pairs for uncertainty intervals.
    - Stratify by source, ambiguity, entity type, context length and consequence.
    - Preserve every pair and prevent selective rerun reporting.
@@ -614,14 +634,17 @@ not claimed by this working version.
 
 ## Next Execution Sequence
 
-1. Add unseen spelling, abbreviation, rename and variant-alias populations.
-2. Add entity lifecycle cases: creation, merge, split, archive and resurrection.
-3. Repeat the causal suite across Jira, email and document sources.
-4. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
+1. Synchronize the normative evaluator and combined assurance contract with the
+   implemented company-learning system, including first-class correction
+   convergence and architecture-digest binding.
+2. Add unseen spelling, abbreviation, rename and variant-alias populations.
+3. Add entity lifecycle cases: creation, merge, split, archive and resurrection.
+4. Repeat the causal suite across Jira, email and document sources.
+5. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
    surfaces without giving SAGE canonical write authority.
-5. Add retention, forgetting and old-family regression evaluation.
-6. Run frozen real-provider and long-duration restart/load suites.
-7. Reassess progress from the same combined Company Vitals assurance report.
+6. Add retention, forgetting and old-family regression evaluation.
+7. Run frozen real-provider and long-duration restart/load suites.
+8. Reassess progress from the same combined Company Vitals assurance report.
 
 ## Progress Ledger
 
@@ -733,3 +756,14 @@ not claimed by this working version.
   consumed the queued refresh through the existing projection runtime.
 - Final trusted combined assurance: status `working`, positive lift `1.0`,
   negative incidents `0`, population `60/60`, Slack status `observed`.
+
+### 2026-07-16 — Evaluator synchronization promoted to P0
+
+- Audited the executable assurance suite against the normative objective
+  evaluation framework after the complete sealed working-version gate.
+- Confirmed that the executable evaluator reflects the latest population,
+  Slack, safety and trusted-report behavior, while the normative document still
+  contains stale proof boundaries and a stale implementation-plan digest.
+- Made evaluator synchronization, architecture identity binding, first-class
+  correction convergence and explicit task-autonomy exclusion the first P0
+  before further capability expansion.
