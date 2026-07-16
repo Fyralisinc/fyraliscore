@@ -226,6 +226,14 @@ an alias, select a canonical referent, mutate entity lifecycle, or write a
 Model. Safety fences and canonical writers remain deterministic owners outside
 the learned policy.
 
+The first non-exact implementation now reuses this boundary without promoting
+new aliases. A sealed 24-pair population exercises six mechanically rankable
+variant families across four entity types. The adaptive arm may expose the
+governed target candidate; the frozen arm may not consume clarification-learned
+candidate memory. Both still use the normal closed-set model path. This proves
+unambiguous candidate-memory lift, not collision safety, deterministic replay,
+canonical alias promotion or entity lifecycle.
+
 ### Runtime And Dormant Autonomy
 
 - Applied migrations are historical facts and remain untouched.
@@ -432,6 +440,24 @@ the learned policy.
   slice, so the added E4 experiment cannot silently upgrade incomplete
   structural proof.
 
+### Slice 10 — Governed non-exact candidate-memory variants
+
+- Added one immutable 24-case registry covering acronym, punctuation-compaction,
+  hyphen/spacing, anchored-short-form, omitted-letter and possessive/plural
+  variants across customer, project, team and system entities.
+- Reused the existing alias registry, lexical candidate scorer, closed candidate
+  set, resolver assessment, grounding and adaptive/frozen correction controls.
+  No second alias store, variant worker or canonical writer was added.
+- The causal mechanism is explicit: both arms receive the same scripted model
+  response, but only the adaptive arm may receive the governed target candidate.
+  The frozen arm must review or abstain because the model cannot invent IDs.
+- The full integration harness requires `24/24` adaptive correctness, zero
+  frozen target exposure, `24/24` frozen safe review/abstention, immutable source
+  evidence, zero control-integrity violations and zero hard-safety incidents.
+- The typed artifact remains a standalone proof until the combined assurance
+  command reopens and cross-binds it. Collision/homonym and entity-lifecycle
+  cases remain deliberately outside this positive population.
+
 ## Next Consolidation Targets
 
 1. Keep the source-semantic worker active until its Slack-to-Model vertical is
@@ -440,10 +466,9 @@ the learned policy.
    task-autonomy service and database naming while retaining compatibility.
 3. Feed typed grounding outcomes into existing reflective/retrieval learning
    before adding any new policy lifecycle.
-4. Expand the attached adaptive-versus-frozen recurrence experiment from exact
-   aliases to versioned orthographic and abbreviation families. Require the
-   declared collision/homonym/lifecycle suite above, unseen held-out variants
-   and enough matched pairs for uncertainty estimates before promotion.
+4. Attach the variant artifact to the trusted Company Vitals envelope, then add
+   the declared collision/homonym matrix and minimum rename/archive/name-reuse
+   lifecycle proof before any broader variant promotion.
 5. Expand correction closure from the first grounded-Model vertical to every
    materially dependent accepted Model, graph relation and projection.
 

@@ -413,10 +413,13 @@ It also proves:
 
 It does not yet prove:
 
-- performance on unseen alias spellings;
+- safety and calibration when unseen spellings, acronyms or short forms collide
+  with another permitted entity;
 - broad contextual references, descriptions or local nicknames beyond the
   sealed cases;
 - broad conflicting-evidence and homonym populations beyond one case each;
+- canonical entity lifecycle behavior for rename, archive/name reuse, merge,
+  split or resurrection;
 - open-world Slack reconstruction across long time spans and channels;
 - real-provider/model robustness;
 - equivalent behavior across Jira, email, documents and meetings;
@@ -437,7 +440,7 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias Slack clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared |
-| Active autonomous company-learning runtime | 82–86% | Exact-alias learning works across four entity types, all sealed Slack families and recursive correction convergence; variants, lifecycle and multi-source breadth remain |
+| Active autonomous company-learning runtime | 82–86% | Exact replay and unambiguous candidate-memory variants work across four entity types, all sealed Slack families and recursive correction convergence; collision safety, lifecycle and multi-source breadth remain |
 | Customer-free objective substantiation | 75–80% | The 60-case registry, nine-family Slack gold, negative controls, correction convergence and trusted combined report are green; open-world, retention and provider robustness remain |
 | Broader revised system excluding task autonomy | 72–77% | The core company-memory and autonomous correction loop is strong, but cross-source semantics, entity lifecycle, SAGE outcome adaptation and long-duration validation remain incomplete |
 
@@ -481,11 +484,20 @@ Task autonomy is excluded from all percentages.
      Context-local adjudications no longer enter ingest entity hints, while
      tenant-global exact reuse remains adaptive `3/3` versus frozen `0/3`.
 
-3. **Expand beyond exact surface replay**
+3. **Expand and adversarially bound non-exact surface reuse**
    - Unseen spelling and abbreviation variants.
    - Pronouns, descriptions and local nicknames.
    - Context-dependent references whose meaning changes by channel/thread/time.
    - Explicitly measure when retrieval/context helps and when it contaminates.
+   - Current result: a sealed 24-pair population covers six mechanically
+     rankable families across customer, project, team and system entities:
+     acronym, punctuation-compaction, hyphen/spacing, anchored short form,
+     omitted-letter subsequence and possessive/plural. The adaptive arm receives
+     the governed target candidate and resolves `24/24`; the frozen arm receives
+     no target-candidate exposure and safely reviews or abstains `24/24`.
+     Source evidence remains immutable and the report records zero hard-safety
+     incidents. This proves candidate-memory lift for unambiguous variants, not
+     collision safety or canonical alias promotion.
 
 4. **Prove Slack conversational reconstruction**
    - Source-native edit/delete/reaction behavior.
@@ -517,15 +529,31 @@ Task autonomy is excluded from all percentages.
    - Current result: all 60 cases are observed and pass, with 15 cases each for
      customer, project, team and system and zero incidents.
 
+7. **Prove variant collision and minimum entity-lifecycle safety**
+   - Colliding acronyms, short forms, punctuation forms and omitted-letter
+     variants across both the same and different entity types must review or
+     abstain rather than select the learned target.
+   - A true rename must preserve one referent only with explicit continuity and
+     valid-time lineage; an archived name reused by a new entity must not
+     redirect historical evidence.
+   - Merge, split, replacement and resurrection must use canonical lifecycle
+     writers and dependent repair rather than alias mutation.
+   - Current result: the architecture contracts distinguish resolution,
+     referent birth and merge/split, but the active actor/resource registries do
+     not yet implement or prove the complete versioned `EntityIdentityApplier`
+     lifecycle. The existing four negative controls include one homonym case,
+     not the variant-family collision matrix.
+
 ### P1 — Required for a strong multi-source product
 
 1. Converge source-semantic direct application and normal Think application on
    one validation/apply contract.
 2. Extend the same entity-learning loop to Jira, email, documents, meetings and
    other structured sources.
-3. Add entity lifecycle cases: creation, rename, merge, split, archive and
-   resurrection.
-4. Add actor/customer/project/system same-surface ambiguity.
+3. Extend the minimum P0 lifecycle proof to broad creation, transfer, merge,
+   split, archive and resurrection populations.
+4. Expand actor/customer/project/system same-surface ambiguity beyond the P0
+   variant-collision matrix.
 5. Measure correction retention, forgetting and old-family regression.
 6. Add cross-tenant adversarial suites beyond the current paired assertions.
 7. Neutralize remaining active command-kernel `agency_*` naming without
@@ -635,7 +663,7 @@ not claimed by this working version.
 
 ### Explicitly deferred production hardening
 
-- unseen spellings, abbreviations and larger homonym/conflict populations;
+- variant collisions, larger homonym/conflict populations and entity lifecycle;
 - open-world simulation, real-provider runs and customer E5 validation;
 - very large recursive correction cascades and sustained refresh load;
 - cross-source equivalence;
@@ -645,14 +673,20 @@ not claimed by this working version.
 
 ## Next Execution Sequence
 
-1. Add unseen spelling, abbreviation, rename and variant-alias populations.
-2. Add entity lifecycle cases: creation, merge, split, archive and resurrection.
-3. Repeat the causal suite across Jira, email and document sources.
-4. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
+1. Attach the sealed 24-pair variant artifact to the same digest-verified,
+   noncompensatory Company Vitals assurance envelope.
+2. Add a sealed collision matrix for acronym, short-form, normalization and
+   same-surface homonyms; require review/abstention and zero wrong Models.
+3. Implement the smallest canonical lifecycle proof: rename continuity,
+   archive/name reuse, stale-alias rejection and dependent repair.
+4. Add merge/split/replacement/resurrection cases through the canonical
+   identity writer rather than alias mutation.
+5. Repeat the causal suite across Jira, email and document sources.
+6. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
    surfaces without giving SAGE canonical write authority.
-5. Add retention, forgetting and old-family regression evaluation.
-6. Run frozen real-provider and long-duration restart/load suites.
-7. Reassess progress from the same combined Company Vitals assurance report.
+7. Add retention, forgetting and old-family regression evaluation.
+8. Run frozen real-provider and long-duration restart/load suites.
+9. Reassess progress from the same combined Company Vitals assurance report.
 
 ## Progress Ledger
 
@@ -796,3 +830,16 @@ not claimed by this working version.
 - Final status: `working`, no blocking failures, positive lift `1.0`, negative
   incidents `0`, population `60/60`, Slack scope complete at `9/9`, correction
   converged with every measured rate `1.0` and residual unsafe debt `0`.
+
+### 2026-07-16 — Governed variant candidate-memory population
+
+- Added a sealed 24-pair population with six non-exact variant families and six
+  cases for each of customer, project, team and system.
+- Preserved the causal boundary: both arms receive the same scripted model
+  response, while only the adaptive arm may expose the clarification-learned
+  target candidate.
+- The full integration harness requires adaptive correctness `1.0`, frozen
+  correctness `0.0`, frozen safe review/abstention `1.0`, source immutability
+  `1.0`, zero control-integrity violations and zero hard-safety incidents.
+- This is standalone E4-style component evidence until the combined assurance
+  command reopens, validates and cross-binds the variant artifact.

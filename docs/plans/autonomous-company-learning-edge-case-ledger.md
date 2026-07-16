@@ -199,6 +199,53 @@ Everything else receives an explicit safe behavior and return condition here.
   canonical-target and scope validation; otherwise leave legacy rows model-
   mediated.
 
+### EDGE-014 — Governed non-exact candidate-memory variants
+
+- **Status:** `resolved` for the sealed unambiguous population
+- **Current behavior:** The resolver can use an independently adjudicated long
+  form to expose the same governed target as a candidate for a later acronym,
+  punctuation/spacing form, anchored short form, omitted-letter form or
+  possessive/plural form. The normal closed-set model assessment and grounding
+  path remains mandatory; this is not deterministic replay or alias promotion.
+- **Evidence:** The sealed 24-pair real-Postgres harness covers six variant
+  families and four entity types. The adaptive arm resolves every target, the
+  frozen arm has zero target-candidate exposure and safely reviews or abstains,
+  and source immutability and zero hard-safety incidents are required.
+- **Remaining boundary:** Every case has one deliberately unambiguous target.
+  The proof does not cover competing variants, lifecycle changes or open-world
+  novelty, and is not yet in the committed combined assurance envelope.
+
+### EDGE-015 — Variant collision and homonym safety
+
+- **Status:** `open`
+- **Trigger:** An acronym, short form, normalized spelling or typo can rank two
+  permitted entities, including entities of different types or validity times.
+- **Risk:** Candidate-memory lift can become a high-confidence false merge or
+  wrong downstream Model even though the learned target was correct elsewhere.
+- **Safe boundary:** Candidate ranking may improve recall but must not remove
+  any colliding candidate, none-of-the-above or review/abstention fate. Usage,
+  confidence and SAGE utility cannot promote identity.
+- **Return condition:** Run a sealed collision matrix across all six variant
+  families, same- and cross-type homonyms, historical-name reuse, conflicting
+  source IDs and inactive targets. Require zero wrong resolutions/Models and
+  complete collision-triggered review or abstention before behavioral
+  promotion.
+
+### EDGE-016 — Rename and lifecycle changes cannot be aliases
+
+- **Status:** `open`
+- **Trigger:** A company object is renamed, archived and re-created, merged,
+  split, replaced or resurrected.
+- **Risk:** A timeless alias redirect can rewrite history, join distinct
+  entities or keep stale authority and dependencies alive.
+- **Safe boundary:** Keep the current referent and alias state unchanged unless
+  a canonical lifecycle owner establishes identity continuity, valid time,
+  predecessor/successor lineage and dependent repair. An alias adjudication
+  alone cannot merge or split referents.
+- **Return condition:** Prove rename continuity, archive/name reuse and
+  stale-alias rejection first; then prove merge/split/replacement/resurrection
+  through a versioned `EntityIdentityApplier` path with correction closure.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title
