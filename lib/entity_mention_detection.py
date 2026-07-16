@@ -358,6 +358,19 @@ def _keep_definite_reference(content_text: str, start: int, end: int) -> bool:
         if before[token.end() :].isspace() and _is_proper_acronym_or_hyphen(token.group(0)):
             return False
     following = content_text[end:]
+    # A definite common noun followed by a complement names the relationship
+    # to the complemented entity, not a second entity surface.  For example,
+    # ``the decision for Orion`` and ``the contract with Acme`` should leave
+    # Orion/Acme as the mention opportunity rather than manufacture an
+    # identity-bearing ``the decision``/``the contract`` candidate.  Keep
+    # bare anaphoric references (``the decision is blocked``), which can be
+    # resolved from source topology or contextual evidence downstream.
+    if re.match(
+        r"\s+(?:about|for|of|on|regarding|with)\b",
+        following,
+        flags=re.IGNORECASE,
+    ):
+        return False
     wrapper = re.match(r"\s+(program|initiative|effort)\b", following, flags=re.IGNORECASE)
     return wrapper is None
 

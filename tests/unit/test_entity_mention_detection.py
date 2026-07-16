@@ -164,6 +164,26 @@ def test_sentence_pronouns_temporal_words_and_generic_statuses_are_not_names() -
     assert extract_bootstrap_mention_opportunities(text) == ()
 
 
+def test_complemented_common_nouns_do_not_create_unnamed_entities() -> None:
+    text = (
+        "The decision for Orion Holdings is ready; "
+        "the contract with Nimbus Bank was reviewed; "
+        "the issue regarding Atlas Pay remains open."
+    )
+
+    assert extract_bootstrap_mention_opportunities(text) == (
+        "Orion Holdings",
+        "Nimbus Bank",
+        "Atlas Pay",
+    )
+
+
+def test_bare_definite_reference_remains_available_for_context_resolution() -> None:
+    assert extract_bootstrap_mention_opportunities(
+        "The decision is blocked pending review."
+    ) == ("The decision",)
+
+
 def test_locator_preserves_repeated_unicode_and_possessive_source_coordinates() -> None:
     text = "Café Ops met CAFE OPS; Acme's update followed Acme's review."
 
