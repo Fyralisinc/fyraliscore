@@ -1028,7 +1028,8 @@ def _company_learning_assurance_summary(
                 "Combined positive, negative, exact-alias population, "
                 "variant-alias population, collision population, Slack and "
                 "customer-lifecycle, active-learning-surface, retention and "
-                "correction assurance evidence could not be trusted."
+                "correction, canonical-replacement and source-binding-lifecycle "
+                "assurance evidence could not be trusted."
             ],
         }
     summary = _json_obj(assurance.get("summary"))
@@ -1064,6 +1065,12 @@ def _company_learning_assurance_summary(
         "customer_lifecycle": _json_obj(summary.get("customer_lifecycle")),
         "active_surfaces": _json_obj(summary.get("active_surfaces")),
         "retention": _json_obj(summary.get("retention")),
+        "canonical_replacement": _json_obj(
+            summary.get("canonical_replacement")
+        ),
+        "source_binding_lifecycle": _json_obj(
+            summary.get("source_binding_lifecycle")
+        ),
         "component_digests": _json_obj(summary.get("component_digests")),
         "artifact_paths": _json_obj(summary.get("artifact_paths")),
         "hard_failures": hard_failures,
@@ -1231,6 +1238,18 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
         )
         source_salience = _json_obj(active_surfaces.get("source_salience"))
         retention = _json_obj(assurance.get("retention"))
+        canonical_replacement = _json_obj(
+            assurance.get("canonical_replacement")
+        )
+        replacement_report = _json_obj(
+            canonical_replacement.get("report")
+        )
+        source_binding_lifecycle = _json_obj(
+            assurance.get("source_binding_lifecycle")
+        )
+        source_binding_report = _json_obj(
+            source_binding_lifecycle.get("report")
+        )
         slack_metrics = _json_obj(slack.get("metrics"))
         lines.extend(
             [
@@ -1324,6 +1343,36 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
                     f"{_fmt_score(retention.get('evidence_lineage_consistency_rate'))}, "
                     "hard incident rate="
                     f"{_fmt_score(retention.get('hard_safety_incident_rate'))}"
+                ),
+                (
+                    "- Canonical resource replacement: "
+                    f"{canonical_replacement.get('status', 'unknown')}, "
+                    f"{replacement_report.get('observed_measurement_count', 'unknown')}/"
+                    f"{replacement_report.get('expected_measurement_count', 'unknown')} "
+                    "(unsupported="
+                    f"{replacement_report.get('unsupported_measurement_count', 'unknown')}, "
+                    "violations="
+                    f"{replacement_report.get('violating_measurement_count', 'unknown')}, "
+                    "support="
+                    f"{_fmt_interval_point(replacement_report.get('runtime_support_rate'))}, "
+                    "satisfaction="
+                    f"{_fmt_interval_point(replacement_report.get('overall_satisfaction_rate'))}"
+                    ")"
+                ),
+                (
+                    "- Source-binding lifecycle: "
+                    f"{source_binding_lifecycle.get('status', 'unknown')}, "
+                    f"{source_binding_report.get('observed_measurement_count', 'unknown')}/"
+                    f"{source_binding_report.get('expected_measurement_count', 'unknown')} "
+                    "(unsupported="
+                    f"{source_binding_report.get('unsupported_measurement_count', 'unknown')}, "
+                    "violations="
+                    f"{source_binding_report.get('violating_measurement_count', 'unknown')}, "
+                    "support="
+                    f"{_fmt_interval_point(source_binding_report.get('runtime_support_rate'))}, "
+                    "satisfaction="
+                    f"{_fmt_interval_point(source_binding_report.get('overall_satisfaction_rate'))}"
+                    ")"
                 ),
             ]
         )

@@ -79,14 +79,80 @@ from lib.evaluation.proof import (
 from lib.evaluation.slack_reconstruction_gold import SlackGoldFamily
 from scripts.company_vitals import (
     _collect_company_learning_evaluation,
+    _company_learning_assurance_summary,
     _company_learning_evidence_bundle,
     _executed_scenario_ids,
     _load_artifact_bundle,
     apply_db_trace_to_signal_rows,
     build_vitals_from_report_dir,
+    render_vitals_markdown,
     write_vitals_artifacts,
 )
 from scripts.run_company_vitals_harness import main as vitals_main
+
+
+def test_vitals_exposes_new_lifecycle_assurance_without_scoring_it() -> None:
+    report = {
+        "status": "observed",
+        "expected_measurement_count": 20,
+        "observed_measurement_count": 20,
+        "unsupported_measurement_count": 0,
+        "violating_measurement_count": 0,
+        "runtime_support_rate": {"point_estimate": 1.0},
+        "overall_satisfaction_rate": {"point_estimate": 1.0},
+    }
+    binding_report = {
+        **report,
+        "expected_measurement_count": 12,
+        "observed_measurement_count": 12,
+    }
+    assurance = _company_learning_assurance_summary(
+        {
+            "valid": True,
+            "summary_digest": "a" * 64,
+            "summary": {
+                "status": "working",
+                "blocking_failures": [],
+                "canonical_replacement": {
+                    "status": "observed",
+                    "report": report,
+                },
+                "source_binding_lifecycle": {
+                    "status": "observed",
+                    "report": binding_report,
+                },
+            },
+        }
+    )
+
+    assert assurance["canonical_replacement"]["report"] == report
+    assert (
+        assurance["source_binding_lifecycle"]["report"]
+        == binding_report
+    )
+
+    markdown = render_vitals_markdown(
+        {
+            "run_id": "pytest-v7-vitals",
+            "status": "ok",
+            "overall_score": 1.0,
+            "scored_vitals": 0,
+            "total_vitals": 0,
+            "hard_failures": [],
+            "ranked_findings": [],
+            "company_physics": {
+                "status": "working",
+                "assurance_suite": assurance,
+            },
+            "vitals": {},
+            "proof_gaps": [],
+        }
+    )
+
+    assert "Canonical resource replacement: observed, 20/20" in markdown
+    assert "Source-binding lifecycle: observed, 12/12" in markdown
+    assert "## Vitals" in markdown
+    assert "| Vital | Score | Status | Key Metrics |" in markdown
 
 
 def test_company_vitals_writes_artifacts_from_e2e_report(tmp_path: Path) -> None:
