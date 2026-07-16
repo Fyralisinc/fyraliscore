@@ -454,9 +454,10 @@ canonical alias promotion or entity lifecycle.
 - The full integration harness requires `24/24` adaptive correctness, zero
   frozen target exposure, `24/24` frozen safe review/abstention, immutable source
   evidence, zero control-integrity violations and zero hard-safety incidents.
-- The typed artifact remains a standalone proof until the combined assurance
-  command reopens and cross-binds it. Collision/homonym and entity-lifecycle
-  cases remain deliberately outside this positive population.
+- Assurance v3 makes the typed artifact mandatory and noncompensatory, reopens
+  it and cross-binds its evidence, registry, population-report,
+  experiment-report and mechanism-metric digests. Collision/homonym and
+  entity-lifecycle cases remain deliberately outside this positive population.
 
 ## Next Consolidation Targets
 
@@ -466,9 +467,9 @@ canonical alias promotion or entity lifecycle.
    task-autonomy service and database naming while retaining compatibility.
 3. Feed typed grounding outcomes into existing reflective/retrieval learning
    before adding any new policy lifecycle.
-4. Attach the variant artifact to the trusted Company Vitals envelope, then add
-   the declared collision/homonym matrix and minimum rename/archive/name-reuse
-   lifecycle proof before any broader variant promotion.
+4. Add the declared collision/homonym matrix and minimum
+   rename/archive/name-reuse lifecycle proof before any broader variant
+   promotion.
 5. Expand correction closure from the first grounded-Model vertical to every
    materially dependent accepted Model, graph relation and projection.
 

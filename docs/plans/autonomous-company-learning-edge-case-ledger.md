@@ -213,7 +213,8 @@ Everything else receives an explicit safe behavior and return condition here.
   and source immutability and zero hard-safety incidents are required.
 - **Remaining boundary:** Every case has one deliberately unambiguous target.
   The proof does not cover competing variants, lifecycle changes or open-world
-  novelty, and is not yet in the committed combined assurance envelope.
+  novelty. Assurance v3 now treats this population as a mandatory,
+  noncompensatory component and reopens its typed evidence and digests.
 
 ### EDGE-015 — Variant collision and homonym safety
 

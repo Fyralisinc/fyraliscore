@@ -673,20 +673,18 @@ not claimed by this working version.
 
 ## Next Execution Sequence
 
-1. Attach the sealed 24-pair variant artifact to the same digest-verified,
-   noncompensatory Company Vitals assurance envelope.
-2. Add a sealed collision matrix for acronym, short-form, normalization and
+1. Add a sealed collision matrix for acronym, short-form, normalization and
    same-surface homonyms; require review/abstention and zero wrong Models.
-3. Implement the smallest canonical lifecycle proof: rename continuity,
+2. Implement the smallest canonical lifecycle proof: rename continuity,
    archive/name reuse, stale-alias rejection and dependent repair.
-4. Add merge/split/replacement/resurrection cases through the canonical
+3. Add merge/split/replacement/resurrection cases through the canonical
    identity writer rather than alias mutation.
-5. Repeat the causal suite across Jira, email and document sources.
-6. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
+4. Repeat the causal suite across Jira, email and document sources.
+5. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
    surfaces without giving SAGE canonical write authority.
-7. Add retention, forgetting and old-family regression evaluation.
-8. Run frozen real-provider and long-duration restart/load suites.
-9. Reassess progress from the same combined Company Vitals assurance report.
+6. Add retention, forgetting and old-family regression evaluation.
+7. Run frozen real-provider and long-duration restart/load suites.
+8. Reassess progress from the same combined Company Vitals assurance report.
 
 ## Progress Ledger
 
@@ -841,5 +839,7 @@ not claimed by this working version.
 - The full integration harness requires adaptive correctness `1.0`, frozen
   correctness `0.0`, frozen safe review/abstention `1.0`, source immutability
   `1.0`, zero control-integrity violations and zero hard-safety incidents.
-- This is standalone E4-style component evidence until the combined assurance
-  command reopens, validates and cross-binds the variant artifact.
+- Assurance v3 now makes the variant population mandatory and
+  noncompensatory, reopens its typed evidence, recomputes its digests and
+  requires complete `24/24` coverage plus valid mechanism metrics before the
+  combined result can remain `working`.
