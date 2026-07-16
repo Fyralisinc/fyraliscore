@@ -843,3 +843,25 @@ not claimed by this working version.
   noncompensatory, reopens its typed evidence, recomputes its digests and
   requires complete `24/24` coverage plus valid mechanism metrics before the
   combined result can remain `working`.
+
+### 2026-07-16 — Variant proof joined to the real-Postgres system gate
+
+- Integrated the variant population into the same executable assurance command,
+  artifact path set, component-digest namespace and trusted Company Vitals
+  envelope as the positive, negative, exact-population, Slack and correction
+  evidence.
+- The committed CLI integration test passed against local PostgreSQL, and the
+  post-commit architecture ratchets, production environment contract and all
+  seven import-linter contracts passed.
+- The exact commit-labelled artifact is
+  `/tmp/fyralis-company-learning-assurance-p0-6032fa84` with summary digest
+  `e170f96475bb44da4c5d4b9c528165c0f6847e56b0e84969066ba73cba7d998d`.
+- Final assurance status is `working` with no blocking failures: positive lift
+  `1.0`, four negative controls with zero incidents, exact aliases `60/60`,
+  variants `24/24`, Slack `9/9`, and correction convergence with zero residual
+  unsafe debt.
+- The variant mechanism evidence reports adaptive correctness `1.0`, frozen
+  correctness `0.0`, adaptive and frozen unsafe rates `0.0`, candidate-memory
+  mediated success `1.0`, adaptive target authorization `1.0`, frozen target
+  exposure `0.0`, frozen safe review/abstention `1.0`, source immutability
+  `1.0`, zero control-integrity violations and zero hard-safety incidents.
