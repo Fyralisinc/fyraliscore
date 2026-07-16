@@ -324,6 +324,65 @@ coherent diff.
   belief. Add grammar classes only with matched positive and negative semantic
   fixtures.
 
+### DISC-010 — The first joined feedback loop is mechanical proof, not learned autonomy
+
+- **Date:** 2026-07-16
+- **Milestone:** First closed intervention and feedback loop
+- **Status:** `deferred`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** governed intent, Concerns, consequential agency,
+  workflow/task/work ledgers, external effects, outcomes, settlement,
+  attribution and joined evaluation
+- **Working core boundary:** One real Slack payload now reaches one grounded
+  belief, one exactly accepted Goal, one plural-contributor Concern, one
+  proposal and preregistered prediction, one exact authorization, one
+  workflow/task/work/lease/effect chain, one independently simulated Outcome,
+  one Settlement and one conservative Attribution. The final attribution
+  explicitly withholds causal credit, and the Concern resolves from the
+  independent Outcome rather than from task completion. Duplicate intent,
+  effect-transition, episode and semantic-worker submissions preserve
+  cardinality-one heads. A cross-plane evaluator reports all thirteen required
+  stages and ten joined continuity checks continuously; zero exposure remains
+  unknown rather than successful E3 evidence.
+- **Implementation evidence:** The production-shaped E2E begins at Slack
+  ingestion and uses the canonical domain writers against a disposable
+  Postgres database. The simulated adapter and outcome oracle are test-only.
+  Migrations were moved after `0207`, and the execution migration preserves the
+  complete later writer constraint rather than replaying an older subset.
+- **Deferred architecture gaps:**
+  - The coordinator is a deterministic test harness, not a durable runtime
+    trigger/queue/orchestrator.
+  - Intent and Concern commands carry validated writer-scope epochs but do not
+    yet consult the canonical writer-epoch registry in the transaction.
+  - Intent application does not reject execution before `issued_at`; Concern
+    relies on construction-time validation rather than full transactional
+    revalidation; attention-binding registration still accepts a plain
+    registrar reference.
+  - Model-to-Concern and Concern-to-Proposal linkage is enforced through exact
+    durable references and the evaluator, not database foreign keys.
+  - Joined evaluation does not yet bind the Goal head to its exact interpreted
+    proposal/acceptance/source assertion and frame, nor every workflow/task/
+    effect authorization, episode, work-target, criterion and attention-binding
+    identity as one database-enforced chain.
+  - Exact intent acceptance uses wall-clock time internally, so fully
+    deterministic simulation-clock replay is not yet supported.
+  - Component evaluators still have some presentation-level zero-denominator
+    inconsistencies and metric identifier drift outside the joined report.
+  - One withheld-credit episode proves explicit feedback capture only. It does
+    not prove that accumulated feedback changes future inquiry, prediction,
+    proposal, abstention or routing policy, or that such changes improve
+    held-out company worlds.
+- **Reason for deferral:** None of these gaps invalidates the disposable
+  happy-path proof. Expanding into production orchestration, registry fencing,
+  complete relational hardening and adaptive-policy learning before this loop
+  turned green would have repeated the earlier horizontal implementation
+  failure mode.
+- **Return condition:** First replace the test coordinator with durable runtime
+  orchestration while preserving the same episode and evaluator. Then close the
+  exact authority/lineage checks, add failure/recovery scenarios and finally
+  demonstrate statistically useful policy improvement across held-out
+  simulated company worlds before claiming adaptive learning.
+
 ## Reconciliation Procedure
 
 At a reconciliation milestone:
