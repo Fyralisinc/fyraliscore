@@ -860,9 +860,14 @@ def _arm_responses(customer_id: UUID) -> list[dict[str, Any]]:
     ]
 
 
-def _resolver_response(customer_id: UUID, *, confidence: float) -> dict[str, Any]:
+def _resolver_response(
+    entity_id: UUID,
+    *,
+    confidence: float,
+    canonical_type: str = "customer",
+) -> dict[str, Any]:
     return {
-        "canonical_ref": {"type": "customer", "id": str(customer_id)},
+        "canonical_ref": {"type": canonical_type, "id": str(entity_id)},
         "confidence": confidence,
         "reasoning": "matched paired corrective-memory case",
     }

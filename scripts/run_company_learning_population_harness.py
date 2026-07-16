@@ -52,6 +52,7 @@ from scripts.company_learning_recurrence_runtime import (
     NegativeControlCaseDefinition,
 )
 from scripts.run_company_learning_negative_controls_db import (
+    RuntimeEntityTarget,
     _prepare_negative_arm,
     _recurrence_rows,
 )
@@ -72,7 +73,29 @@ DEFAULT_POPULATION = (
     / "held_out_exact_alias_population_v1.jsonl"
 )
 ARTIFACT_NAME = "company_learning_population_evidence.json"
-_SUPPORTED_RUNTIME_TYPES = {"customer": "customer"}
+_RUNTIME_TARGETS = {
+    "customer": RuntimeEntityTarget(
+        canonical_ref_type="customer",
+        logical_entity_type="customer",
+        semantic_kind="customer",
+    ),
+    "project": RuntimeEntityTarget(
+        canonical_ref_type="resource",
+        logical_entity_type="project",
+        semantic_kind="workstream",
+    ),
+    "team": RuntimeEntityTarget(
+        canonical_ref_type="actor",
+        logical_entity_type="team",
+        semantic_kind="team",
+        actor_type="group",
+    ),
+    "system": RuntimeEntityTarget(
+        canonical_ref_type="resource",
+        logical_entity_type="system",
+        semantic_kind="system",
+    ),
+}
 
 
 class _EvidenceModel(BaseModel):
@@ -211,6 +234,7 @@ async def run_population_experiment(
             assignment=runtime_assignment,
             arm=CorrectiveMemoryArm.ADAPTIVE,
             training_at=training_at,
+            runtime_target=_runtime_target(case),
         )
         frozen = await _prepare_negative_arm(
             pool=pool,
@@ -218,6 +242,7 @@ async def run_population_experiment(
             assignment=runtime_assignment,
             arm=CorrectiveMemoryArm.FROZEN,
             training_at=training_at,
+            runtime_target=_runtime_target(case),
         )
         recurrence_at = training_at + _distance(case.recurrence_distance)
         adaptive_result = await _run_recurrence(
@@ -334,18 +359,20 @@ async def run_population_experiment(
 
 
 def _assignment(case: HeldOutExactAliasCase) -> PopulationCaseAssignment:
-    runtime_type = _SUPPORTED_RUNTIME_TYPES.get(case.entity_type)
+    runtime_target = _RUNTIME_TARGETS.get(case.entity_type)
     return PopulationCaseAssignment(
         case_id=case.case_id,
         logical_entity_type=case.entity_type,
-        runtime_entity_type=runtime_type,
+        runtime_entity_type=(
+            runtime_target.canonical_ref_type if runtime_target else None
+        ),
         adaptive_tenant_id=uuid7(),
         frozen_tenant_id=uuid7(),
         adaptive_target_id=uuid7(),
         frozen_target_id=uuid7(),
         unsupported_reason=(
             None
-            if runtime_type
+            if runtime_target
             else (
                 "current corrective-memory runtime has no canonical target "
                 f"support for sealed entity type: {case.entity_type}"
@@ -360,7 +387,7 @@ def _runtime_definition(
     return NegativeControlCaseDefinition(
         case_id=case.case_id,
         kind=RecurrenceCaseKind.EXACT_ALIAS_POSITIVE,
-        entity_type="customer",
+        entity_type=_runtime_target(case).canonical_ref_type,
         slack_context=case.slack_context,
         wording_variant=case.wording_variant,
         consequence=case.consequence,
@@ -368,7 +395,7 @@ def _runtime_definition(
         alias_surface=case.alias_surface,
         training_text=case.training_text,
         training_phrase=case.alias_surface,
-        candidate_alias=f"Sealed customer {case.case_id}",
+        candidate_alias=f"Sealed {case.entity_type} {case.case_id}",
         recurrence_text=case.recurrence_text,
         recurrence_phrase=case.alias_surface,
         channel=f"C-{case.slack_context}-{case.case_id}",
@@ -510,7 +537,7 @@ def _sealed_case(
                 ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,
             ),
             expected_entity_ref=CanonicalEntityRef(
-                type="customer",
+                type=_runtime_target(case).canonical_ref_type,
                 id=str(assignment.adaptive_target_id),
             ),
             expected_model_count=0,
@@ -523,7 +550,7 @@ def _sealed_case(
                 ConsumerTerminalFate.ABSTAINED,
             ),
             expected_entity_ref=CanonicalEntityRef(
-                type="customer",
+                type=_runtime_target(case).canonical_ref_type,
                 id=str(assignment.frozen_target_id),
             ),
             expected_model_count=0,
@@ -531,6 +558,15 @@ def _sealed_case(
         ),
         artifact_refs=(f"population-case:{case.case_id}",),
     )
+
+
+def _runtime_target(case: HeldOutExactAliasCase) -> RuntimeEntityTarget:
+    try:
+        return _RUNTIME_TARGETS[case.entity_type]
+    except KeyError as exc:
+        raise ValueError(
+            f"unsupported held-out logical entity type: {case.entity_type}"
+        ) from exc
 
 
 def _pair_observation(

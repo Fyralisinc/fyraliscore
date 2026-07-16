@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,6 +85,22 @@ class _NegativeArmFoundation:
     clarification_request_id: UUID
     clarification_answer_digest: str
     adjudicated_alias_id: UUID
+
+
+@dataclass(frozen=True)
+class RuntimeEntityTarget:
+    """Canonical runtime storage/ref mapping for one logical entity kind."""
+
+    canonical_ref_type: Literal["actor", "customer", "resource"]
+    logical_entity_type: str
+    semantic_kind: str
+    actor_type: str | None = None
+
+    def canonical_ref(self, entity_id: UUID) -> dict[str, str]:
+        return {
+            "type": self.canonical_ref_type,
+            "id": str(entity_id),
+        }
 
 
 async def run_negative_control_experiment_db(
@@ -229,7 +245,13 @@ async def _prepare_negative_arm(
     assignment: NegativeControlAssignment,
     arm: CorrectiveMemoryArm,
     training_at: datetime,
+    runtime_target: RuntimeEntityTarget | None = None,
 ) -> _NegativeArmFoundation:
+    runtime_target = runtime_target or RuntimeEntityTarget(
+        canonical_ref_type="customer",
+        logical_entity_type=definition.entity_type,
+        semantic_kind="customer",
+    )
     tenant_id = (
         assignment.adaptive_tenant_id
         if arm is CorrectiveMemoryArm.ADAPTIVE
@@ -266,47 +288,36 @@ async def _prepare_negative_arm(
             tenant_id,
             adjudicator_id,
         )
-        await conn.executemany(
-            """
-            INSERT INTO resources (
-                id, tenant_id, kind, identity, current_value, metadata
-            ) VALUES (
-                $1, $2, 'relational', $3,
-                jsonb_build_object('semantic_kind', 'customer'),
-                jsonb_build_object('semantic_kind', 'customer')
-            )
-            """,
-            (
-                (target_id, tenant_id, definition.candidate_alias),
-                (
-                    conflicting_id,
-                    tenant_id,
-                    f"Conflicting {definition.candidate_alias}",
-                ),
-            ),
+        await _materialize_runtime_targets(
+            conn=conn,
+            tenant_id=tenant_id,
+            target_id=target_id,
+            conflicting_id=conflicting_id,
+            target_label=definition.candidate_alias,
+            runtime_target=runtime_target,
         )
 
     alias_repo = EntityAliasRepo(pool)
     await alias_repo.insert_alias(
         phrase=definition.training_phrase,
-        resolved_entity_ref={
-            "type": definition.entity_type,
-            "id": str(target_id),
-        },
-        source="manual",
-        confidence=0.99,
-        tenant_id=tenant_id,
-    )
-    await alias_repo.insert_alias(
-        phrase=f"Conflicting {definition.candidate_alias}",
-        resolved_entity_ref={
-            "type": definition.entity_type,
-            "id": str(conflicting_id),
-        },
+        resolved_entity_ref=runtime_target.canonical_ref(target_id),
         source="manual",
         confidence=0.99,
         tenant_id=tenant_id,
         extra_metadata={
+            "logical_entity_type": runtime_target.logical_entity_type,
+            "semantic_kind": runtime_target.semantic_kind,
+        },
+    )
+    await alias_repo.insert_alias(
+        phrase=f"Conflicting {definition.candidate_alias}",
+        resolved_entity_ref=runtime_target.canonical_ref(conflicting_id),
+        source="manual",
+        confidence=0.99,
+        tenant_id=tenant_id,
+        extra_metadata={
+            "logical_entity_type": runtime_target.logical_entity_type,
+            "semantic_kind": runtime_target.semantic_kind,
             "identity_basis_class": "source_authoritative",
             "identity_basis_ref": (
                 f"negative-control-fixture:{definition.case_id}:conflicting"
@@ -328,10 +339,15 @@ async def _prepare_negative_arm(
     )
     provider = _ScriptedResolver(
         [
-            _resolver_response(target_id, confidence=0.99),
+            _resolver_response(
+                target_id,
+                confidence=0.99,
+                canonical_type=runtime_target.canonical_ref_type,
+            ),
             _resolver_response(
                 recurrence_entity_id,
                 confidence=recurrence_confidence,
+                canonical_type=runtime_target.canonical_ref_type,
             ),
         ]
     )
@@ -417,7 +433,10 @@ async def _prepare_negative_arm(
     if alias is None:
         raise RuntimeError("adjudication did not persist corrective memory")
     alias_ref = _json(alias["resolved_entity_ref"])
-    if alias_ref.get("id") != str(target_id):
+    if (
+        alias_ref.get("type") != runtime_target.canonical_ref_type
+        or alias_ref.get("id") != str(target_id)
+    ):
         raise RuntimeError("training correction selected the wrong target")
     metadata = _json(alias["entity_metadata"])
     if metadata.get("resolution_scope") != definition.resolution_scope:
@@ -451,6 +470,67 @@ async def _prepare_negative_arm(
             metadata["adjudication_answer_digest"]
         ),
         adjudicated_alias_id=alias["id"],
+    )
+
+
+async def _materialize_runtime_targets(
+    *,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    target_id: UUID,
+    conflicting_id: UUID,
+    target_label: str,
+    runtime_target: RuntimeEntityTarget,
+) -> None:
+    metadata = {
+        "source": "company_learning_evaluation",
+        "logical_entity_type": runtime_target.logical_entity_type,
+        "semantic_kind": runtime_target.semantic_kind,
+    }
+    rows = (
+        (target_id, target_label),
+        (conflicting_id, f"Conflicting {target_label}"),
+    )
+    if runtime_target.canonical_ref_type == "actor":
+        await conn.executemany(
+            """
+            INSERT INTO actors (
+                id, tenant_id, type, display_name, status, metadata
+            ) VALUES ($1, $2, $3, $4, 'active', $5::jsonb)
+            """,
+            tuple(
+                (
+                    entity_id,
+                    tenant_id,
+                    runtime_target.actor_type or "group",
+                    label,
+                    json.dumps(metadata, sort_keys=True),
+                )
+                for entity_id, label in rows
+            ),
+        )
+        return
+    resource_kind = {
+        "customer": "relational",
+        "system": "infrastructure",
+        "workstream": "capacity",
+    }.get(runtime_target.semantic_kind, "relational")
+    await conn.executemany(
+        """
+        INSERT INTO resources (
+            id, tenant_id, kind, identity, current_value, metadata
+        ) VALUES ($1, $2, $3, $4, $5::jsonb, $5::jsonb)
+        """,
+        tuple(
+            (
+                entity_id,
+                tenant_id,
+                resource_kind,
+                label,
+                json.dumps(metadata, sort_keys=True),
+            )
+            for entity_id, label in rows
+        ),
     )
 
 
