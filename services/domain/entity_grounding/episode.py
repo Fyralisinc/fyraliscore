@@ -743,6 +743,9 @@ def prepare_context_selection(
                     }
                 ),
                 contamination_score=(
+                    1.0
+                    if phrase_requires_context(phrase) and not selected_inputs
+                    else
                     max(0.5, 0.02 * len(selected_inputs))
                     if ambiguity_refs
                     and selected_inputs

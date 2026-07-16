@@ -673,6 +673,41 @@ def test_evidence_relative_bare_name_ambiguity_requires_clarification() -> None:
     ) == (f"observation:{OBSERVATION}:v1",)
 
 
+def test_deictic_slack_phrase_keeps_best_safe_temporal_context() -> None:
+    temporal_id = uuid4()
+    _, outcome = prepare_context_selection(
+        tenant_id=TENANT,
+        observation_id=OBSERVATION,
+        phrase="it",
+        occurred_at=NOW,
+        source_channel="slack:message",
+        source_space="C-finance",
+        topology_incomplete=False,
+        boundary_hypotheses=(
+            {"kind": "same_source_space_temporal", "candidate_count": 1},
+        ),
+        context_observations=(ContextObservationInput(
+            observation_id=temporal_id,
+            occurred_at=NOW - timedelta(minutes=1),
+            source_channel="slack:message",
+            source_space="C-finance",
+            inclusion_layer="temporal_candidate",
+            inclusion_reasons=("same exact source space", "as-known cutoff"),
+            content_text="SAFE_FINANCE_CONTEXT",
+        ),),
+        selection_dependency_refs=(),
+        now=NOW + timedelta(seconds=1),
+        focal_content_text="what about it?",
+    )
+
+    assert tuple(
+        item.event_revision_id for item in outcome.snapshot.selected_items
+    ) == (
+        f"observation:{OBSERVATION}:v1",
+        f"observation:{temporal_id}:v1",
+    )
+
+
 def test_governed_exact_alias_preserves_self_contained_resolution() -> None:
     _, outcome = prepare_context_selection(
         tenant_id=TENANT,
