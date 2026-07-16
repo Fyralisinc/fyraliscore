@@ -48,7 +48,8 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert "positive_lift=1.0" in result.stdout
     assert "negative_incidents=0" in result.stdout
     assert "variant=24/24" in result.stdout
-    assert "collision=14/16" in result.stdout
+    assert "collision=16/16" in result.stdout
+    assert "lifecycle=8/8" in result.stdout
     assert "slack_status=observed" in result.stdout
     assert "correction_status=working" in result.stdout
 
@@ -111,69 +112,57 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert summary.variant_population.observed_pair_count == 24
     assert summary.variant_population.unsupported_case_count == 0
     assert summary.variant_population.runtime_support_rate == 1.0
+    assert summary.variant_population.adaptive_correctness.point_estimate == 1.0
+    assert summary.variant_population.frozen_correctness.point_estimate == 0.0
     assert (
-        summary.variant_population.adaptive_correctness.point_estimate
+        summary.variant_population.adaptive_minus_frozen_correctness.point_estimate
         == 1.0
     )
     assert (
-        summary.variant_population.frozen_correctness.point_estimate
+        summary.variant_population.mechanism_metrics.candidate_memory_mediated_success_rate
+        == 1.0
+    )
+    assert (
+        summary.variant_population.mechanism_metrics.frozen_target_candidate_exposure_rate
         == 0.0
     )
     assert (
-        summary.variant_population
-        .adaptive_minus_frozen_correctness.point_estimate
-        == 1.0
-    )
-    assert (
-        summary.variant_population.mechanism_metrics
-        .candidate_memory_mediated_success_rate
-        == 1.0
-    )
-    assert (
-        summary.variant_population.mechanism_metrics
-        .frozen_target_candidate_exposure_rate
-        == 0.0
-    )
-    assert (
-        summary.variant_population.mechanism_metrics
-        .control_integrity_violation_count
+        summary.variant_population.mechanism_metrics.control_integrity_violation_count
         == 0
     )
-    assert summary.variant_collision.status == "observed_with_gaps"
+    assert summary.variant_collision.status == "observed"
     assert summary.variant_collision.registry_pair_count == 16
-    assert summary.variant_collision.observed_pair_count == 14
-    assert summary.variant_collision.unsupported_case_count == 2
+    assert summary.variant_collision.observed_pair_count == 16
+    assert summary.variant_collision.unsupported_case_count == 0
+    assert summary.variant_collision.runtime_support_rate.point_estimate == 1.0
     assert (
-        summary.variant_collision.runtime_support_rate.point_estimate
-        == 14 / 16
+        summary.variant_collision.adaptive_safe_containment_rate.point_estimate == 1.0
     )
+    assert summary.variant_collision.adaptive_unsafe_rate.point_estimate == 0.0
+    assert summary.variant_collision.safety_incident_count == 0
+    assert summary.variant_collision.source_native_observed_case_count == 2
+    assert summary.variant_collision.source_native_unsupported_case_count == 0
     assert (
-        summary.variant_collision
-        .adaptive_safe_containment_rate.point_estimate
+        summary.variant_collision.source_native_adaptive_authoritative_resolution_rate.point_estimate
         == 1.0
     )
-    assert (
-        summary.variant_collision.adaptive_unsafe_rate.point_estimate
-        == 0.0
-    )
-    assert summary.variant_collision.safety_incident_count == 0
-    assert summary.variant_collision.source_native_observed_case_count == 0
-    assert summary.variant_collision.source_native_unsupported_case_count == 2
-    assert (
-        summary.variant_collision
-        .source_native_adaptive_authoritative_resolution_rate
-        is None
-    )
-    assert summary.variant_collision.full_scope_complete is False
+    assert summary.variant_collision.full_scope_complete is True
     assert summary.variant_collision.supported_scope_satisfied is True
-    assert any(
-        "variant_collision: supported collision safety observed 14/16"
-        in gap
-        for gap in summary.proof_gaps
+    assert summary.customer_lifecycle.status == "observed"
+    assert summary.customer_lifecycle.case_count == 8
+    assert summary.customer_lifecycle.observed_case_count == 8
+    assert summary.customer_lifecycle.unsupported_case_count == 0
+    assert summary.customer_lifecycle.violating_case_count == 0
+    assert summary.customer_lifecycle.rename_continuity_rate.point_estimate == 1.0
+    assert (
+        summary.customer_lifecycle.valid_time_resolution_accuracy.point_estimate == 1.0
     )
+    assert (
+        summary.customer_lifecycle.alias_interval_non_overlap_rate.point_estimate == 1.0
+    )
+    assert summary.customer_lifecycle.full_scope_complete is True
     assert not any(
-        "Slack reconstruction remains diagnostic and non-blocking"
-        in gap
+        "Slack reconstruction remains diagnostic and non-blocking" in gap
         for gap in summary.proof_gaps
     )
     assert summary.correction.status == "working"
@@ -190,58 +179,44 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert summary.correction.source_immutable is True
     assert summary.correction.tenant_isolated is True
     assert not any(
-        "does not execute that convergence burn" in gap
-        for gap in summary.proof_gaps
+        "does not execute that convergence burn" in gap for gap in summary.proof_gaps
     )
     assert not any(
-        "population: runtime coverage observed"
-        in gap
-        for gap in summary.proof_gaps
+        "population: runtime coverage observed" in gap for gap in summary.proof_gaps
     )
-    assert all(
-        Path(path).is_file()
-        for path in summary.artifact_paths.values()
-    )
-    assert all(
-        len(digest) == 64
-        for digest in summary.component_digests.values()
-    )
+    assert all(Path(path).is_file() for path in summary.artifact_paths.values())
+    assert all(len(digest) == 64 for digest in summary.component_digests.values())
     assert summary_digest == summary.digest
 
     positive_pair = json.loads(
-        Path(summary.artifact_paths["positive_pair"]).read_text(
-            encoding="utf-8"
-        )
+        Path(summary.artifact_paths["positive_pair"]).read_text(encoding="utf-8")
     )
     negative = json.loads(
-        Path(summary.artifact_paths["negative_evidence"]).read_text(
-            encoding="utf-8"
-        )
+        Path(summary.artifact_paths["negative_evidence"]).read_text(encoding="utf-8")
     )
     slack = json.loads(
-        Path(summary.artifact_paths["slack_report"]).read_text(
-            encoding="utf-8"
-        )
+        Path(summary.artifact_paths["slack_report"]).read_text(encoding="utf-8")
     )
     population = json.loads(
-        Path(summary.artifact_paths["population_evidence"]).read_text(
+        Path(summary.artifact_paths["population_evidence"]).read_text(encoding="utf-8")
+    )
+    variant_population = json.loads(
+        Path(summary.artifact_paths["variant_population_evidence"]).read_text(
             encoding="utf-8"
         )
     )
-    variant_population = json.loads(
-        Path(
-            summary.artifact_paths["variant_population_evidence"]
-        ).read_text(encoding="utf-8")
-    )
     variant_collision = json.loads(
-        Path(
-            summary.artifact_paths["variant_collision_evidence"]
-        ).read_text(encoding="utf-8")
+        Path(summary.artifact_paths["variant_collision_evidence"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    customer_lifecycle = json.loads(
+        Path(summary.artifact_paths["customer_lifecycle_evidence"]).read_text(
+            encoding="utf-8"
+        )
     )
     assert (
-        positive_pair["report"]["metrics"][
-            "adaptive_minus_frozen_correctness"
-        ]
+        positive_pair["report"]["metrics"]["adaptive_minus_frozen_correctness"]
         == summary.positive.adaptive_minus_frozen_correctness
     )
     assert len(negative["report"]["incidents"]) == (
@@ -252,29 +227,22 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert population["population_report"]["observed_pair_count"] == 60
     assert population["population_report"]["unsupported_case_count"] == 0
     assert variant_population["population_report"]["pair_count"] == 24
-    assert (
-        variant_population["population_report"]["observed_pair_count"]
-        == 24
-    )
+    assert variant_population["population_report"]["observed_pair_count"] == 24
     assert (
         variant_population["mechanism_metrics"][
             "candidate_memory_mediated_success_rate"
         ]
         == 1.0
     )
-    assert variant_collision["report"]["observed_pair_count"] == 14
-    assert variant_collision["report"]["unsupported_case_count"] == 2
-    assert variant_collision["report"]["status"] == "observed_with_gaps"
+    assert variant_collision["report"]["observed_pair_count"] == 16
+    assert variant_collision["report"]["unsupported_case_count"] == 0
+    assert variant_collision["report"]["status"] == "observed"
+    assert customer_lifecycle["report"]["observed_case_count"] == 8
+    assert customer_lifecycle["report"]["violating_case_count"] == 0
+    assert customer_lifecycle["report"]["status"] == "observed"
 
-    persisted_summary_path = (
-        output_dir
-        / "positive"
-        / "vitals"
-        / SUMMARY_ARTIFACT_NAME
-    )
-    persisted_payload = json.loads(
-        persisted_summary_path.read_text(encoding="utf-8")
-    )
+    persisted_summary_path = output_dir / "positive" / "vitals" / SUMMARY_ARTIFACT_NAME
+    persisted_payload = json.loads(persisted_summary_path.read_text(encoding="utf-8"))
     persisted_digest = persisted_payload.pop("summary_digest")
     persisted_summary = CompanyLearningAssuranceSummary.model_validate(
         persisted_payload
@@ -283,12 +251,9 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert persisted_digest == summary.digest
 
     vitals_scorecard = json.loads(
-        (
-            output_dir
-            / "positive"
-            / "vitals"
-            / "vitals_scorecard.json"
-        ).read_text(encoding="utf-8")
+        (output_dir / "positive" / "vitals" / "vitals_scorecard.json").read_text(
+            encoding="utf-8"
+        )
     )
     assurance = vitals_scorecard["company_physics"]["assurance_suite"]
     assert assurance["status"] == "working"
@@ -307,8 +272,11 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
         == 1.0
     )
     assert assurance["variant_collision"]["registry_pair_count"] == 16
-    assert assurance["variant_collision"]["observed_pair_count"] == 14
-    assert assurance["variant_collision"]["unsupported_case_count"] == 2
+    assert assurance["variant_collision"]["observed_pair_count"] == 16
+    assert assurance["variant_collision"]["unsupported_case_count"] == 0
+    assert assurance["customer_lifecycle"]["case_count"] == 8
+    assert assurance["customer_lifecycle"]["observed_case_count"] == 8
+    assert assurance["customer_lifecycle"]["violating_case_count"] == 0
 
 
 async def _run_cli(

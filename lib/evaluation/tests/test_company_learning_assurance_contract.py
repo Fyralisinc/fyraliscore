@@ -10,9 +10,14 @@ import pytest
 from pydantic import ValidationError
 
 from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.company_learning_experiment import (
+    ConsumerTerminalFate,
+    CorrectiveMemoryArm,
+)
 from lib.evaluation.company_learning_assurance import (
     CompanyLearningAssuranceSummary,
     CorrectionAssurance,
+    CustomerLifecycleAssurance,
     NegativeAssurance,
     PopulationAssurance,
     PositiveAssurance,
@@ -21,8 +26,13 @@ from lib.evaluation.company_learning_assurance import (
     VariantPopulationAssurance,
     validate_company_learning_assurance_artifact,
     validate_correction_assurance_component,
+    validate_customer_lifecycle_assurance_component,
     validate_variant_collision_assurance_component,
     validate_variant_population_assurance_component,
+)
+from lib.evaluation.company_learning_customer_lifecycle import (
+    build_customer_lifecycle_population,
+    evaluate_customer_lifecycle_population,
 )
 from lib.evaluation.company_learning_population import IntervalEstimate
 from lib.evaluation.company_learning_variant_population import (
@@ -34,9 +44,12 @@ from lib.evaluation.company_learning_variant_population import (
 )
 from lib.evaluation.company_learning_variant_collisions import (
     HeldOutVariantCollisionPopulation,
+    VariantCollisionArmObservation,
+    VariantCollisionDecisionBasis,
     VariantCollisionFamily,
     VariantCollisionPairObservation,
     VariantCollisionPopulationReport,
+    VariantCollisionTargetRole,
     build_variant_collision_population,
     evaluate_variant_collision_population,
 )
@@ -66,16 +79,24 @@ from lib.evaluation.tests.test_company_learning_variant_population import (
     _mechanisms as _variant_mechanisms,
 )
 from lib.evaluation.tests.test_company_learning_variant_collisions import (
+    _collision_refs,
+)
+from lib.evaluation.tests.test_company_learning_variant_collisions import (
     _safe_observations as _safe_collision_observations,
+)
+from lib.evaluation.tests.test_company_learning_customer_lifecycle import (
+    _safe_observations as _safe_lifecycle_observations,
+)
+from scripts.run_company_learning_customer_lifecycle_db import (
+    CompanyLearningCustomerLifecycleEvidence,
+    CustomerLifecycleRuntimeAssignment,
 )
 
 
 _DIGEST = "a" * 64
 _ARCHITECTURE_DIGEST = "b" * 64
 _IMPLEMENTATION_PLAN_DIGEST = "c" * 64
-_SOURCE_ID_GAP = (
-    "runtime lacks authenticated SourceIdentityBinding evidence"
-)
+_SOURCE_ID_GAP = "runtime lacks authenticated SourceIdentityBinding evidence"
 
 
 @dataclass(frozen=True)
@@ -97,21 +118,15 @@ class _CollisionEvidenceFixture:
 
     def _payload(self) -> dict[str, object]:
         return {
-            "schema_version": (
-                "company-learning-variant-collision-evidence-v1"
-            ),
+            "schema_version": ("company-learning-variant-collision-evidence-v1"),
             "created_at": self.created_at,
             "run_id": self.run_id,
             "system_version": self.system_version,
             "registry_path": self.registry_path,
-            "registry_population": self.registry_population.model_dump(
-                mode="json"
-            ),
+            "registry_population": self.registry_population.model_dump(mode="json"),
             "registry_population_digest": self.registry_population_digest,
             "assignments": list(self.assignments),
-            "observations": [
-                row.model_dump(mode="json") for row in self.observations
-            ],
+            "observations": [row.model_dump(mode="json") for row in self.observations],
             "report": self.report.model_dump(mode="json"),
             "artifact_refs": list(self.artifact_refs),
         }
@@ -137,18 +152,17 @@ def _interval(
 def _collision_assurance(
     *,
     path: str = "/tmp/variant-collision-evidence.json",
-    status: str = "observed_with_gaps",
-    observed_pair_count: int = 14,
-    unsupported_case_count: int = 2,
+    status: str = "observed",
+    observed_pair_count: int = 16,
+    unsupported_case_count: int = 0,
     adaptive_safe_containment_rate: float = 1.0,
     adaptive_unsafe_rate: float = 0.0,
     safety_incident_count: int = 0,
     source_native_authoritative_rate: float = 1.0,
 ) -> VariantCollisionAssurance:
-    behavior = lambda value: _interval(
-        value,
-        sample_size=observed_pair_count,
-    )
+    def behavior(value: float) -> IntervalEstimate:
+        return _interval(value, sample_size=observed_pair_count)
+
     return VariantCollisionAssurance(
         status=status,
         evidence_tier=EvidenceTier.E4,
@@ -159,27 +173,17 @@ def _collision_assurance(
             observed_pair_count / 16,
             sample_size=16,
         ),
-        adaptive_safe_containment_rate=behavior(
-            adaptive_safe_containment_rate
-        ),
+        adaptive_safe_containment_rate=behavior(adaptive_safe_containment_rate),
         frozen_safe_containment_rate=behavior(1.0),
         adaptive_unsafe_rate=behavior(adaptive_unsafe_rate),
         frozen_unsafe_rate=behavior(0.0),
         adaptive_unsafe_resolution_rate=behavior(adaptive_unsafe_rate),
         frozen_unsafe_resolution_rate=behavior(0.0),
         adaptive_authoritative_resolution_rate=behavior(
-            (
-                2 / observed_pair_count
-                if unsupported_case_count == 0
-                else 0.0
-            )
+            (2 / observed_pair_count if unsupported_case_count == 0 else 0.0)
         ),
         frozen_authoritative_resolution_rate=behavior(
-            (
-                2 / observed_pair_count
-                if unsupported_case_count == 0
-                else 0.0
-            )
+            (2 / observed_pair_count if unsupported_case_count == 0 else 0.0)
         ),
         adaptive_candidate_visibility_rate=behavior(1.0),
         frozen_candidate_visibility_rate=behavior(1.0),
@@ -194,9 +198,7 @@ def _collision_assurance(
         adaptive_source_immutability_rate=behavior(1.0),
         frozen_source_immutability_rate=behavior(1.0),
         safety_incident_count=safety_incident_count,
-        source_native_observed_case_count=(
-            2 if unsupported_case_count == 0 else 0
-        ),
+        source_native_observed_case_count=(2 if unsupported_case_count == 0 else 0),
         source_native_unsupported_case_count=unsupported_case_count,
         source_native_adaptive_authoritative_resolution_rate=(
             _interval(source_native_authoritative_rate, sample_size=2)
@@ -211,30 +213,19 @@ def _collision_assurance(
         unsupported_strata_counts={
             "collision_family": {
                 (
-                    VariantCollisionFamily
-                    .CONFLICTING_SOURCE_NATIVE_IDENTIFIER.value
+                    VariantCollisionFamily.CONFLICTING_SOURCE_NATIVE_IDENTIFIER.value
                 ): unsupported_case_count,
             },
             "learned_entity_type": (
-                {"system": 1, "team": 1}
-                if unsupported_case_count == 2
-                else {}
+                {"system": 1, "team": 1} if unsupported_case_count == 2 else {}
             ),
             "entity_type_relation": (
-                {"same_type": 2}
-                if unsupported_case_count == 2
-                else {}
+                {"same_type": 2} if unsupported_case_count == 2 else {}
             ),
-            "learned_lifecycle": (
-                {"active": 2}
-                if unsupported_case_count == 2
-                else {}
-            ),
+            "learned_lifecycle": ({"active": 2} if unsupported_case_count == 2 else {}),
         },
         unsupported_reason_counts=(
-            {_SOURCE_ID_GAP: unsupported_case_count}
-            if unsupported_case_count
-            else {}
+            {_SOURCE_ID_GAP: unsupported_case_count} if unsupported_case_count else {}
         ),
         artifact_paths={"variant_collision_evidence": path},
         component_digests={
@@ -260,8 +251,14 @@ def _collision_evidence(
         ):
             observations[index] = VariantCollisionPairObservation(
                 case_id=case.case_id,
-                execution_status="unsupported",
-                unsupported_reason=_SOURCE_ID_GAP,
+                adaptive=_authoritative_collision_arm(
+                    case=case,
+                    arm=CorrectiveMemoryArm.ADAPTIVE,
+                ),
+                frozen=_authoritative_collision_arm(
+                    case=case,
+                    arm=CorrectiveMemoryArm.FROZEN,
+                ),
             )
     typed_observations = tuple(observations)
     report = evaluate_variant_collision_population(
@@ -293,6 +290,39 @@ def _collision_evidence(
     )
 
 
+def _authoritative_collision_arm(
+    *,
+    case,
+    arm: CorrectiveMemoryArm,
+) -> VariantCollisionArmObservation:
+    learned_ref, conflicting_ref = _collision_refs(case)
+    visible_refs = (learned_ref, conflicting_ref)
+    assert case.conflicting_source_native_id is not None
+    return VariantCollisionArmObservation(
+        arm=arm,
+        consumer_fate=ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,
+        resolved_entity_ref=conflicting_ref,
+        decision_basis=(
+            VariantCollisionDecisionBasis.AUTHENTICATED_SOURCE_NATIVE_IDENTIFIER
+        ),
+        resolved_target_role=VariantCollisionTargetRole.CONFLICTING,
+        decisive_source_native_id=case.conflicting_source_native_id,
+        learned_alias_promoted=False,
+        candidate_set_digest=canonical_sha256(
+            [ref.model_dump(mode="json") for ref in visible_refs]
+        ),
+        candidate_set_size=2,
+        visible_candidate_refs=visible_refs,
+        learned_candidate_ref=learned_ref,
+        conflicting_candidate_ref=conflicting_ref,
+        both_colliding_candidates_visible=True,
+        none_of_above_available=True,
+        wrong_model_count=0,
+        source_observation_immutable=True,
+        artifact_refs=(f"pytest:source-native:{case.case_id}:{arm.value}",),
+    )
+
+
 def _collision_assurance_from_evidence(
     evidence: _CollisionEvidenceFixture,
     *,
@@ -309,59 +339,37 @@ def _collision_assurance_from_evidence(
         observed_pair_count=report.observed_pair_count,
         unsupported_case_count=report.unsupported_case_count,
         runtime_support_rate=report.runtime_support_rate,
-        adaptive_safe_containment_rate=(
-            report.adaptive_safe_containment_rate
-        ),
+        adaptive_safe_containment_rate=(report.adaptive_safe_containment_rate),
         frozen_safe_containment_rate=report.frozen_safe_containment_rate,
         adaptive_unsafe_rate=report.adaptive_unsafe_rate,
         frozen_unsafe_rate=report.frozen_unsafe_rate,
-        adaptive_unsafe_resolution_rate=(
-            report.adaptive_unsafe_resolution_rate
-        ),
-        frozen_unsafe_resolution_rate=(
-            report.frozen_unsafe_resolution_rate
-        ),
+        adaptive_unsafe_resolution_rate=(report.adaptive_unsafe_resolution_rate),
+        frozen_unsafe_resolution_rate=(report.frozen_unsafe_resolution_rate),
         adaptive_authoritative_resolution_rate=(
             report.adaptive_authoritative_resolution_rate
         ),
         frozen_authoritative_resolution_rate=(
             report.frozen_authoritative_resolution_rate
         ),
-        adaptive_candidate_visibility_rate=(
-            report.adaptive_candidate_visibility_rate
-        ),
-        frozen_candidate_visibility_rate=(
-            report.frozen_candidate_visibility_rate
-        ),
+        adaptive_candidate_visibility_rate=(report.adaptive_candidate_visibility_rate),
+        frozen_candidate_visibility_rate=(report.frozen_candidate_visibility_rate),
         adaptive_none_of_above_availability_rate=(
             report.adaptive_none_of_above_availability_rate
         ),
         frozen_none_of_above_availability_rate=(
             report.frozen_none_of_above_availability_rate
         ),
-        adaptive_learned_promotion_rate=(
-            report.adaptive_learned_promotion_rate
-        ),
-        frozen_learned_promotion_rate=(
-            report.frozen_learned_promotion_rate
-        ),
+        adaptive_learned_promotion_rate=(report.adaptive_learned_promotion_rate),
+        frozen_learned_promotion_rate=(report.frozen_learned_promotion_rate),
         adaptive_wrong_model_rate=report.adaptive_wrong_model_rate,
         frozen_wrong_model_rate=report.frozen_wrong_model_rate,
         adaptive_wrong_model_count=report.adaptive_wrong_model_count,
         frozen_wrong_model_count=report.frozen_wrong_model_count,
-        adaptive_source_immutability_rate=(
-            report.adaptive_source_immutability_rate
-        ),
-        frozen_source_immutability_rate=(
-            report.frozen_source_immutability_rate
-        ),
+        adaptive_source_immutability_rate=(report.adaptive_source_immutability_rate),
+        frozen_source_immutability_rate=(report.frozen_source_immutability_rate),
         safety_incident_count=report.safety_incident_count,
-        source_native_observed_case_count=(
-            source_native.observed_case_count
-        ),
-        source_native_unsupported_case_count=(
-            source_native.unsupported_case_count
-        ),
+        source_native_observed_case_count=(source_native.observed_case_count),
+        source_native_unsupported_case_count=(source_native.unsupported_case_count),
         source_native_adaptive_authoritative_resolution_rate=(
             source_native.adaptive_authoritative_resolution_rate
         ),
@@ -376,11 +384,133 @@ def _collision_assurance_from_evidence(
             "registry": evidence.registry_population_digest,
             "report": report.digest,
             "observations": canonical_sha256(
-                [
-                    row.model_dump(mode="json")
-                    for row in evidence.observations
-                ]
+                [row.model_dump(mode="json") for row in evidence.observations]
             ),
+        },
+    )
+
+
+def _lifecycle_evidence(
+    *,
+    run_id: str = "pytest-assurance:customer-lifecycle",
+    system_version: str = "pytest-system",
+) -> CompanyLearningCustomerLifecycleEvidence:
+    population = build_customer_lifecycle_population()
+    observations = _safe_lifecycle_observations()
+    report = evaluate_customer_lifecycle_population(
+        population=population,
+        observations=observations,
+    )
+    return CompanyLearningCustomerLifecycleEvidence(
+        created_at="2026-07-16T00:00:00+00:00",
+        run_id=run_id,
+        system_version=system_version,
+        registry_path="/tmp/customer-lifecycle-registry.jsonl",
+        registry_population=population,
+        registry_population_digest=population.digest,
+        assignments=tuple(
+            CustomerLifecycleRuntimeAssignment(
+                case_id=case.case_id,
+                tenant_id=uuid4(),
+                isolation_tenant_id=uuid4(),
+            )
+            for case in population.cases
+        ),
+        observations=observations,
+        report=report,
+        artifact_refs=("pytest:customer-lifecycle",),
+    )
+
+
+def _lifecycle_assurance_from_evidence(
+    evidence: CompanyLearningCustomerLifecycleEvidence,
+    *,
+    path: str,
+) -> CustomerLifecycleAssurance:
+    report = evidence.report
+    return CustomerLifecycleAssurance(
+        status="failed" if report.status == "contradicted" else report.status,
+        evidence_tier=EvidenceTier.E4,
+        case_count=report.case_count,
+        observed_case_count=report.observed_case_count,
+        unsupported_case_count=report.unsupported_case_count,
+        violating_case_count=report.violating_case_count,
+        runtime_support_rate=report.runtime_support_rate,
+        rename_continuity_rate=report.rename_continuity_rate,
+        valid_time_resolution_accuracy=report.valid_time_resolution_accuracy,
+        stale_alias_rejection_rate=report.stale_alias_rejection_rate,
+        current_alias_safety_rate=report.current_alias_safety_rate,
+        historical_name_reuse_accuracy=(report.historical_name_reuse_accuracy),
+        observation_immutability_rate=(report.observation_immutability_rate),
+        model_immutability_rate=report.model_immutability_rate,
+        archive_alias_rejection_rate=report.archive_alias_rejection_rate,
+        archived_mutation_rejection_rate=(report.archived_mutation_rejection_rate),
+        alias_interval_non_overlap_rate=(report.alias_interval_non_overlap_rate),
+        tenant_isolation_rate=report.tenant_isolation_rate,
+        replay_idempotency_rate=report.replay_idempotency_rate,
+        unsupported_reason_counts=report.unsupported_reason_counts,
+        artifact_paths={"customer_lifecycle_evidence": path},
+        component_digests={
+            "evidence": evidence.digest,
+            "registry": evidence.registry_population_digest,
+            "report": report.digest,
+            "observations": canonical_sha256(
+                [row.model_dump(mode="json") for row in evidence.observations]
+            ),
+        },
+    )
+
+
+def _lifecycle_assurance(
+    *,
+    path: str = "/tmp/customer-lifecycle-evidence.json",
+    metric_value: float = 1.0,
+    unsupported_case_count: int = 0,
+    violating_case_count: int = 0,
+) -> CustomerLifecycleAssurance:
+    observed = 8 - unsupported_case_count
+    metric = _interval(metric_value, sample_size=observed)
+    support = _interval(observed / 8, sample_size=8)
+    blocking = bool(
+        unsupported_case_count or violating_case_count or metric_value < 1.0
+    )
+    return CustomerLifecycleAssurance(
+        status=(
+            "failed"
+            if blocking
+            else "observed"
+            if observed == 8
+            else "observed_with_gaps"
+        ),
+        evidence_tier=EvidenceTier.E4,
+        case_count=8,
+        observed_case_count=observed,
+        unsupported_case_count=unsupported_case_count,
+        violating_case_count=violating_case_count,
+        runtime_support_rate=support,
+        rename_continuity_rate=metric,
+        valid_time_resolution_accuracy=metric,
+        stale_alias_rejection_rate=metric,
+        current_alias_safety_rate=metric,
+        historical_name_reuse_accuracy=metric,
+        observation_immutability_rate=metric,
+        model_immutability_rate=metric,
+        archive_alias_rejection_rate=metric,
+        archived_mutation_rejection_rate=metric,
+        alias_interval_non_overlap_rate=metric,
+        tenant_isolation_rate=metric,
+        replay_idempotency_rate=metric,
+        unsupported_reason_counts=(
+            {"unsupported lifecycle": unsupported_case_count}
+            if unsupported_case_count
+            else {}
+        ),
+        artifact_paths={"customer_lifecycle_evidence": path},
+        component_digests={
+            "evidence": _DIGEST,
+            "registry": _DIGEST,
+            "report": _DIGEST,
+            "observations": _DIGEST,
         },
     )
 
@@ -408,9 +538,7 @@ def _ideal_variant_mechanism_metrics(
         adaptive_target_candidate_authorization_rate=(
             adaptive_target_candidate_authorization_rate
         ),
-        frozen_target_candidate_exposure_rate=(
-            frozen_target_candidate_exposure_rate
-        ),
+        frozen_target_candidate_exposure_rate=(frozen_target_candidate_exposure_rate),
         candidate_authorization_gap=(
             adaptive_target_candidate_authorization_rate
             - frozen_target_candidate_exposure_rate
@@ -421,15 +549,11 @@ def _ideal_variant_mechanism_metrics(
         both_arms_scripted_target_response_rate=1.0,
         frozen_safe_review_or_abstention_rate=1.0,
         source_immutability_rate=1.0,
-        candidate_memory_mediated_success_rate=(
-            candidate_memory_mediated_success_rate
-        ),
+        candidate_memory_mediated_success_rate=(candidate_memory_mediated_success_rate),
         adaptive_mean_llm_calls=1.0,
         frozen_mean_llm_calls=1.0,
         hard_safety_incident_count=hard_safety_incident_count,
-        control_integrity_violation_count=(
-            control_integrity_violation_count
-        ),
+        control_integrity_violation_count=(control_integrity_violation_count),
         entity_type_counts={
             "customer": 6,
             "project": 6,
@@ -561,14 +685,10 @@ def _variant_assurance_from_evidence(
         registry_pair_count=report.pair_count,
         observed_pair_count=report.observed_pair_count,
         unsupported_case_count=report.unsupported_case_count,
-        runtime_support_rate=(
-            report.observed_pair_count / report.pair_count
-        ),
+        runtime_support_rate=(report.observed_pair_count / report.pair_count),
         adaptive_correctness=report.adaptive_correctness,
         frozen_correctness=report.frozen_correctness,
-        adaptive_minus_frozen_correctness=(
-            report.adaptive_minus_frozen_correctness
-        ),
+        adaptive_minus_frozen_correctness=(report.adaptive_minus_frozen_correctness),
         adaptive_unsafe_rate=report.adaptive_unsafe_rate,
         frozen_unsafe_rate=report.frozen_unsafe_rate,
         mechanism_metrics=mechanism_metrics,
@@ -655,14 +775,10 @@ def _correction_summary(
     metrics = artifact.metrics
     component_digests = {
         "artifact": artifact_digest or artifact.digest,
-        "evidence": (
-            evidence_digest or artifact.component_digests["evidence"]
-        ),
+        "evidence": (evidence_digest or artifact.component_digests["evidence"]),
     }
     if artifact.audit is not None:
-        component_digests["audit"] = (
-            audit_digest or artifact.component_digests["audit"]
-        )
+        component_digests["audit"] = audit_digest or artifact.component_digests["audit"]
     return CorrectionAssurance(
         status=artifact.status,
         evidence_tier=EvidenceTier.E4,
@@ -727,6 +843,7 @@ def _summary(
     correction: CorrectionAssurance | None = None,
     variant_population: VariantPopulationAssurance | None = None,
     variant_collision: VariantCollisionAssurance | None = None,
+    customer_lifecycle: CustomerLifecycleAssurance | None = None,
     status: str = "working",
     blocking_failures: tuple[str, ...] = (),
     architecture_digest: str = _ARCHITECTURE_DIGEST,
@@ -745,12 +862,8 @@ def _summary(
         hard_failures=(),
         artifact_paths={
             "positive_pair": "/tmp/positive-pair.json",
-            "positive_company_learning_evaluation": (
-                "/tmp/positive-evaluation.json"
-            ),
-            "positive_company_learning_evidence_bundle": (
-                "/tmp/positive-bundle.json"
-            ),
+            "positive_company_learning_evaluation": ("/tmp/positive-evaluation.json"),
+            "positive_company_learning_evidence_bundle": ("/tmp/positive-bundle.json"),
         },
         component_digests={
             "report": _DIGEST,
@@ -796,6 +909,7 @@ def _summary(
     correction = correction or _correction_summary()
     variant_population = variant_population or _variant_assurance()
     variant_collision = variant_collision or _collision_assurance()
+    customer_lifecycle = customer_lifecycle or _lifecycle_assurance()
     artifact_paths = {
         **positive.artifact_paths,
         **negative.artifact_paths,
@@ -803,6 +917,7 @@ def _summary(
         **correction.artifact_paths,
         **variant_population.artifact_paths,
         **variant_collision.artifact_paths,
+        **customer_lifecycle.artifact_paths,
         **population.artifact_paths,
     }
     component_digests = {
@@ -814,10 +929,7 @@ def _summary(
             f"negative_{key}": value
             for key, value in negative.component_digests.items()
         },
-        **{
-            f"slack_{key}": value
-            for key, value in slack.component_digests.items()
-        },
+        **{f"slack_{key}": value for key, value in slack.component_digests.items()},
         **{
             f"correction_{key}": value
             for key, value in correction.component_digests.items()
@@ -829,6 +941,10 @@ def _summary(
         **{
             f"variant_collision_{key}": value
             for key, value in variant_collision.component_digests.items()
+        },
+        **{
+            f"customer_lifecycle_{key}": value
+            for key, value in customer_lifecycle.component_digests.items()
         },
         **{
             f"population_{key}": value
@@ -849,6 +965,7 @@ def _summary(
         correction=correction,
         variant_population=variant_population,
         variant_collision=variant_collision,
+        customer_lifecycle=customer_lifecycle,
         population=population,
         proof_gaps=("not open-world or task-autonomy proof",),
         blocking_failures=blocking_failures,
@@ -857,10 +974,10 @@ def _summary(
     )
 
 
-def test_summary_v4_binds_reviewed_identity_and_active_scope() -> None:
+def test_summary_v5_binds_reviewed_identity_and_active_scope() -> None:
     summary = _summary()
 
-    assert summary.schema_version == "company-learning-assurance-summary-v4"
+    assert summary.schema_version == "company-learning-assurance-summary-v5"
     assert summary.architecture_digest == _ARCHITECTURE_DIGEST
     assert summary.implementation_plan_digest == _IMPLEMENTATION_PLAN_DIGEST
     assert summary.evaluation_profile == "autonomous-company-learning-v1"
@@ -868,9 +985,10 @@ def test_summary_v4_binds_reviewed_identity_and_active_scope() -> None:
         "autonomous_task_planning",
         "autonomous_task_execution",
     )
-    assert validate_company_learning_assurance_artifact(
-        summary.artifact_payload()
-    ) == summary
+    assert (
+        validate_company_learning_assurance_artifact(summary.artifact_payload())
+        == summary
+    )
 
     with pytest.raises(ValidationError, match="architecture_digest"):
         _summary(architecture_digest="not-a-digest")
@@ -995,11 +1113,14 @@ def test_variant_component_reopens_full_evidence_and_all_digests(
         path=str(artifact_path),
     )
 
-    assert validate_variant_population_assurance_component(
-        assurance,
-        run_id="pytest-assurance:variant",
-        system_version="pytest-system",
-    ) == evidence
+    assert (
+        validate_variant_population_assurance_component(
+            assurance,
+            run_id="pytest-assurance:variant",
+            system_version="pytest-system",
+        )
+        == evidence
+    )
 
     wrong_digest = assurance.model_copy(
         update={
@@ -1023,26 +1144,24 @@ def test_variant_component_reopens_full_evidence_and_all_digests(
         )
 
 
-def test_collision_supported_scope_is_safe_but_not_full_scope() -> None:
+def test_collision_full_source_surface_scope_is_mandatory() -> None:
     summary = _summary()
 
     assert summary.status == "working"
-    assert summary.variant_collision.status == "observed_with_gaps"
+    assert summary.variant_collision.status == "observed"
     assert summary.variant_collision.supported_scope_satisfied is True
-    assert summary.variant_collision.full_scope_complete is False
-    assert summary.variant_collision.observed_pair_count == 14
-    assert summary.variant_collision.unsupported_case_count == 2
-    assert summary.variant_collision.unsupported_reason_counts == {
-        _SOURCE_ID_GAP: 2
-    }
+    assert summary.variant_collision.full_scope_complete is True
+    assert summary.variant_collision.observed_pair_count == 16
+    assert summary.variant_collision.unsupported_case_count == 0
 
-    complete = _collision_assurance(
-        status="observed",
-        observed_pair_count=16,
-        unsupported_case_count=0,
+    incomplete = _collision_assurance(
+        status="observed_with_gaps",
+        observed_pair_count=14,
+        unsupported_case_count=2,
     )
-    assert complete.full_scope_complete is True
-    assert complete.source_native_scope_valid is True
+    assert incomplete.full_scope_complete is False
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(variant_collision=incomplete)
 
     review_only_source_scope = _collision_assurance(
         status="failed",
@@ -1054,6 +1173,67 @@ def test_collision_supported_scope_is_safe_but_not_full_scope() -> None:
     assert review_only_source_scope.source_native_scope_valid is False
     with pytest.raises(ValidationError, match="working assurance"):
         _summary(variant_collision=review_only_source_scope)
+
+
+@pytest.mark.parametrize(
+    "customer_lifecycle",
+    (
+        _lifecycle_assurance(metric_value=0.875, violating_case_count=1),
+        _lifecycle_assurance(unsupported_case_count=1),
+    ),
+    ids=("continuous-metric-regression", "unsupported-case"),
+)
+def test_customer_lifecycle_is_noncompensatory_for_working_status(
+    customer_lifecycle: CustomerLifecycleAssurance,
+) -> None:
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(customer_lifecycle=customer_lifecycle)
+
+    failed = _summary(
+        customer_lifecycle=customer_lifecycle,
+        status="failed",
+        blocking_failures=("customer lifecycle proof failed",),
+    )
+    assert failed.customer_lifecycle == customer_lifecycle
+
+
+def test_customer_lifecycle_component_reopens_and_recomputes_evidence(
+    tmp_path: Path,
+) -> None:
+    evidence = _lifecycle_evidence()
+    artifact_path = tmp_path / "customer_lifecycle_evidence.json"
+    artifact_path.write_text(
+        json.dumps(evidence.artifact_payload(), sort_keys=True),
+        encoding="utf-8",
+    )
+    assurance = _lifecycle_assurance_from_evidence(
+        evidence,
+        path=str(artifact_path),
+    )
+
+    assert (
+        validate_customer_lifecycle_assurance_component(
+            assurance,
+            run_id="pytest-assurance:customer-lifecycle",
+            system_version="pytest-system",
+        )
+        == evidence.report
+    )
+
+    wrong_digest = assurance.model_copy(
+        update={
+            "component_digests": {
+                **assurance.component_digests,
+                "observations": "f" * 64,
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="component digest mismatch"):
+        validate_customer_lifecycle_assurance_component(
+            wrong_digest,
+            run_id="pytest-assurance:customer-lifecycle",
+            system_version="pytest-system",
+        )
 
 
 def test_collision_unsafe_supported_evidence_is_noncompensatory() -> None:
@@ -1089,11 +1269,14 @@ def test_collision_component_reopens_and_recomputes_evidence(
         path=str(artifact_path),
     )
 
-    assert validate_variant_collision_assurance_component(
-        assurance,
-        run_id="pytest-assurance:collision",
-        system_version="pytest-system",
-    ) == evidence.report
+    assert (
+        validate_variant_collision_assurance_component(
+            assurance,
+            run_id="pytest-assurance:collision",
+            system_version="pytest-system",
+        )
+        == evidence.report
+    )
 
     wrong_digest = assurance.model_copy(
         update={
@@ -1185,11 +1368,14 @@ def test_correction_component_validates_optional_audit_digest(
         artifact=artifact,
     )
 
-    assert validate_correction_assurance_component(
-        assurance,
-        run_id="pytest-assurance:correction",
-        system_version="pytest-system",
-    ) == artifact
+    assert (
+        validate_correction_assurance_component(
+            assurance,
+            run_id="pytest-assurance:correction",
+            system_version="pytest-system",
+        )
+        == artifact
+    )
 
     with pytest.raises(ValueError, match="audit digest mismatch"):
         validate_correction_assurance_component(

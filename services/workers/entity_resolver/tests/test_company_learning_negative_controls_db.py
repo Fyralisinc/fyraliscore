@@ -7,7 +7,6 @@ import asyncpg
 import pytest
 
 from lib.evaluation.company_learning_experiment import (
-    CorrectiveMemoryArm,
     RecurrenceCaseKind,
 )
 from scripts.run_company_learning_negative_controls_db import (
@@ -42,13 +41,16 @@ async def test_negative_controls_fail_closed_on_real_postgres(
         RecurrenceCaseKind.HOMONYM_LOCAL_ASSOCIATION,
         RecurrenceCaseKind.CONFLICTING_SOURCE_HINT,
     }
-    assert len(
-        {
-            result.tenant_id
-            for pair in evidence.pairs
-            for result in (pair.adaptive, pair.frozen)
-        }
-    ) == 8
+    assert (
+        len(
+            {
+                result.tenant_id
+                for pair in evidence.pairs
+                for result in (pair.adaptive, pair.frozen)
+            }
+        )
+        == 8
+    )
     assert evidence.report.status == "observed"
     assert evidence.report.incidents == ()
     assert evidence.report.metrics.pair_count == 4
@@ -61,22 +63,11 @@ async def test_negative_controls_fail_closed_on_real_postgres(
         for result in (pair.adaptive, pair.frozen):
             expectation = cases[pair.case_id].expectation_for(result.arm)
             assert result.tenant_id == expectation.tenant_id
-            assert (
-                len(result.lineage.model_ids)
-                == expectation.expected_model_count
-            )
+            assert len(result.lineage.model_ids) == expectation.expected_model_count
             assert result.observed_safety_incidents == frozenset()
         if pair.case_id == "conflicting-source-hint":
-            adaptive_expectation = cases[pair.case_id].expectation_for(
-                CorrectiveMemoryArm.ADAPTIVE
-            )
-            assert pair.adaptive.resolved_entity_ref == (
-                adaptive_expectation.expected_entity_ref
-            )
-            assert (
-                pair.adaptive.decision_source
-                != "governed_exact_alias_replay"
-            )
+            assert pair.adaptive.resolved_entity_ref is None
+            assert pair.adaptive.decision_source != "governed_exact_alias_replay"
             assert pair.frozen.resolved_entity_ref is None
             assert pair.frozen.observed_safety_incidents == frozenset()
         else:

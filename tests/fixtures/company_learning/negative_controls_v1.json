@@ -82,7 +82,7 @@
       "resolution_scope": "tenant_global_exact",
       "inject_conflicting_source_hint": true,
       "recurrence_response": "conflicting_high",
-      "expected_model_count": 1
+      "expected_model_count": 0
     }
   ]
 }

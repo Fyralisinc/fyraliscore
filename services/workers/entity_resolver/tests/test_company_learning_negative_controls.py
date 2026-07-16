@@ -49,29 +49,31 @@ def test_negative_control_plan_is_typed_sealed_and_not_fabricated() -> None:
 
     assert plan.status == "not_executed"
     assert len(plan.assignments) == 4
-    assert len(
-        {
-            tenant_id
-            for assignment in plan.assignments
-            for tenant_id in (
-                assignment.adaptive_tenant_id,
-                assignment.frozen_tenant_id,
-            )
-        }
-    ) == 8
+    assert (
+        len(
+            {
+                tenant_id
+                for assignment in plan.assignments
+                for tenant_id in (
+                    assignment.adaptive_tenant_id,
+                    assignment.frozen_tenant_id,
+                )
+            }
+        )
+        == 8
+    )
     cases = {case.case_id: case for case in plan.spec.cases}
     conflict = cases["conflicting-source-hint"]
-    assert (
+    assert ConsumerTerminalFate.RESOLVED_FOR_CONSUMER not in (
         conflict.adaptive_expectation.allowed_consumer_fates
-        == (ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,)
     )
-    assert (
-        ConsumerTerminalFate.RESOLVED_FOR_CONSUMER
-        not in conflict.frozen_expectation.allowed_consumer_fates
+    assert ConsumerTerminalFate.RESOLVED_FOR_CONSUMER not in (
+        conflict.frozen_expectation.allowed_consumer_fates
     )
+    assert conflict.adaptive_expectation.expected_model_count == 0
     assert conflict.frozen_expectation.expected_model_count == 0
-    assert conflict.adaptive_expectation.expected_entity_ref is not None
-    assert conflict.frozen_expectation.expected_entity_ref is not None
+    assert conflict.adaptive_expectation.expected_entity_ref is None
+    assert conflict.frozen_expectation.expected_entity_ref is None
     for case_id in {
         "contextual-non-entity",
         "unrelated-alias",
@@ -124,9 +126,9 @@ def test_negative_control_plan_rejects_assignment_tampering() -> None:
         created_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
     )
     payload = plan.model_dump(mode="json")
-    payload["assignments"][1]["adaptive_tenant_id"] = payload[
-        "assignments"
-    ][0]["adaptive_tenant_id"]
+    payload["assignments"][1]["adaptive_tenant_id"] = payload["assignments"][0][
+        "adaptive_tenant_id"
+    ]
 
     with pytest.raises(
         ValidationError,

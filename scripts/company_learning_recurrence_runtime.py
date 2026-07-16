@@ -12,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_experiment import (
-    CanonicalEntityRef,
     ConsumerTerminalFate,
     CorrectiveMemoryExperimentReport,
     CorrectiveMemoryExperimentSpec,
@@ -26,11 +25,7 @@ from lib.shared.ids import uuid7
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_NEGATIVE_CONTROL_FIXTURE = (
-    ROOT
-    / "tests"
-    / "fixtures"
-    / "company_learning"
-    / "negative_controls_v1.json"
+    ROOT / "tests" / "fixtures" / "company_learning" / "negative_controls_v1.json"
 )
 
 
@@ -130,16 +125,12 @@ class NegativeControlExecutionPlan(_RuntimeModel):
             )
         ]
         if len(tenant_ids) != len(set(tenant_ids)):
-            raise ValueError(
-                "negative-control arms require globally distinct tenants"
-            )
+            raise ValueError("negative-control arms require globally distinct tenants")
         for case_id, case in cases.items():
             assignment = assignments[case_id]
             if (
-                case.adaptive_expectation.tenant_id
-                != assignment.adaptive_tenant_id
-                or case.frozen_expectation.tenant_id
-                != assignment.frozen_tenant_id
+                case.adaptive_expectation.tenant_id != assignment.adaptive_tenant_id
+                or case.frozen_expectation.tenant_id != assignment.frozen_tenant_id
             ):
                 raise ValueError(
                     "negative-control assignment tenants do not match sealed gold"
@@ -169,13 +160,9 @@ class NegativeControlExperimentEvidence(_RuntimeModel):
         if len(pair_case_ids) != len(set(pair_case_ids)):
             raise ValueError("negative-control result case IDs must be unique")
         if set(pair_case_ids) != sealed_case_ids:
-            raise ValueError(
-                "negative-control results must exactly cover sealed cases"
-            )
+            raise ValueError("negative-control results must exactly cover sealed cases")
         if self.report.spec_digest != self.spec.digest:
-            raise ValueError(
-                "negative-control report must compile the sealed spec"
-            )
+            raise ValueError("negative-control report must compile the sealed spec")
         if self.report.pairs != self.pairs:
             raise ValueError(
                 "negative-control evidence pairs must match compiled report"
@@ -190,9 +177,7 @@ class NegativeControlExperimentEvidence(_RuntimeModel):
 def load_negative_control_fixture(
     path: Path = DEFAULT_NEGATIVE_CONTROL_FIXTURE,
 ) -> NegativeControlFixture:
-    return NegativeControlFixture.model_validate_json(
-        path.read_text(encoding="utf-8")
-    )
+    return NegativeControlFixture.model_validate_json(path.read_text(encoding="utf-8"))
 
 
 def build_negative_control_plan(
@@ -218,8 +203,7 @@ def build_negative_control_plan(
     )
     by_case = {assignment.case_id: assignment for assignment in assignments}
     cases = tuple(
-        _sealed_case(case, assignment=by_case[case.case_id])
-        for case in fixture.cases
+        _sealed_case(case, assignment=by_case[case.case_id]) for case in fixture.cases
     )
     spec = CorrectiveMemoryExperimentSpec(
         experiment_id=f"corrective-memory-negative-controls:{run_id}",
@@ -243,10 +227,7 @@ def build_negative_control_plan(
             }
         ),
         provider_behavior_digest=canonical_sha256(
-            {
-                case.case_id: case.recurrence_response
-                for case in fixture.cases
-            }
+            {case.case_id: case.recurrence_response for case in fixture.cases}
         ),
         cases=cases,
         artifact_refs=(
@@ -293,25 +274,6 @@ def _sealed_case(
     *,
     assignment: NegativeControlAssignment,
 ) -> SealedRecurrenceCase:
-    is_conflict = (
-        definition.kind is RecurrenceCaseKind.CONFLICTING_SOURCE_HINT
-    )
-    adaptive_ref = (
-        CanonicalEntityRef(
-            type=definition.entity_type,
-            id=str(assignment.adaptive_conflicting_id),
-        )
-        if is_conflict
-        else None
-    )
-    frozen_ref = (
-        CanonicalEntityRef(
-            type=definition.entity_type,
-            id=str(assignment.frozen_conflicting_id),
-        )
-        if is_conflict
-        else None
-    )
     safe_fates = (
         ConsumerTerminalFate.REVIEW,
         ConsumerTerminalFate.ABSTAINED,
@@ -335,20 +297,16 @@ def _sealed_case(
         ),
         adaptive_expectation=SealedArmExpectation(
             tenant_id=assignment.adaptive_tenant_id,
-            allowed_consumer_fates=(
-                (ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,)
-                if is_conflict
-                else safe_fates
-            ),
-            expected_entity_ref=adaptive_ref,
+            allowed_consumer_fates=safe_fates,
+            expected_entity_ref=None,
             expected_model_count=definition.expected_model_count,
-            autonomous_resolution_permitted=is_conflict,
+            autonomous_resolution_permitted=False,
         ),
         frozen_expectation=SealedArmExpectation(
             tenant_id=assignment.frozen_tenant_id,
             allowed_consumer_fates=safe_fates,
-            expected_entity_ref=frozen_ref,
-            expected_model_count=0 if is_conflict else definition.expected_model_count,
+            expected_entity_ref=None,
+            expected_model_count=definition.expected_model_count,
             autonomous_resolution_permitted=False,
         ),
         artifact_refs=(f"fixture-case:{definition.case_id}",),

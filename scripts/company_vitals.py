@@ -4,6 +4,7 @@ The vitals harness is intentionally additive. It reads the artifacts produced by
 existing end-to-end runs and emits a normalized "where did value flow or leak?"
 report without rerunning Think or requiring a live database.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -48,10 +49,7 @@ from lib.evaluation.proof import (
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARCHITECTURE_REGISTRY = ROOT / "architecture" / "registry.yaml"
 DEFAULT_IMPLEMENTATION_PLAN = (
-    ROOT
-    / "docs"
-    / "plans"
-    / "revised-reality-belief-intent-system-implementation.md"
+    ROOT / "docs" / "plans" / "revised-reality-belief-intent-system-implementation.md"
 )
 
 USEFUL_CONTEXT_GRADES = {
@@ -262,32 +260,26 @@ def _build_vitals_scorecard(
         "authority_safety": _authority_safety_vital(bundle),
         "efficiency": _efficiency_vital(run_summary, source_scorecard),
     }
-    measurement_profile = str(
-        run_summary.get("vitals_measurement_profile") or "full"
-    )
+    measurement_profile = str(run_summary.get("vitals_measurement_profile") or "full")
     if measurement_profile not in {"full", "company_learning_only"}:
-        raise ValueError(
-            f"unknown Vitals measurement profile: {measurement_profile}"
-        )
+        raise ValueError(f"unknown Vitals measurement profile: {measurement_profile}")
     if measurement_profile == "company_learning_only":
         vitals = _company_learning_only_vitals(vitals)
 
     hard_failures = _hard_failures(vitals, benchmark)
     hard_failures.extend(
-        str(item)
-        for item in _json_list(company_physics.get("hard_failures"))
+        str(item) for item in _json_list(company_physics.get("hard_failures"))
     )
-    scored = [v["score"] for v in vitals.values() if isinstance(v.get("score"), (int, float))]
+    scored = [
+        v["score"] for v in vitals.values() if isinstance(v.get("score"), (int, float))
+    ]
     overall_score = round(sum(scored) / len(scored), 4) if scored else None
     status = "fail" if hard_failures else _status_from_score(overall_score)
     proof_gaps = _proof_gaps(vitals, source_scorecard, source_product_value)
     proof_gaps = sorted(
         {
             *proof_gaps,
-            *(
-                str(item)
-                for item in _json_list(company_physics.get("proof_gaps"))
-            ),
+            *(str(item) for item in _json_list(company_physics.get("proof_gaps"))),
         }
     )
     ranked_findings = _ranked_findings(vitals, hard_failures)
@@ -296,7 +288,9 @@ def _build_vitals_scorecard(
         "schema_version": 1,
         "generated_at": generated_at,
         "source_report_dir": str(report_path),
-        "run_id": run_summary.get("run_id") or benchmark.get("run_id") or report_path.name,
+        "run_id": run_summary.get("run_id")
+        or benchmark.get("run_id")
+        or report_path.name,
         "tenant_id": run_summary.get("tenant_id") or benchmark.get("tenant_id"),
         "status": status,
         "overall_score": overall_score,
@@ -369,9 +363,7 @@ def write_vitals_artifacts(
         company_learning_evaluation,
     )
     evidence_manifest_path = out / "company_learning_evidence_manifest.json"
-    evidence_manifest = _json_obj(
-        company_learning_evaluation.get("evidence_manifest")
-    )
+    evidence_manifest = _json_obj(company_learning_evaluation.get("evidence_manifest"))
     if evidence_manifest:
         _write_json(
             evidence_manifest_path,
@@ -380,9 +372,7 @@ def write_vitals_artifacts(
     else:
         evidence_manifest_path.unlink(missing_ok=True)
     evidence_bundle_path = out / "company_learning_evidence_bundle.json"
-    evidence_bundle = _json_obj(
-        company_learning_evaluation.get("evidence_bundle")
-    )
+    evidence_bundle = _json_obj(company_learning_evaluation.get("evidence_bundle"))
     if evidence_bundle:
         _write_json(evidence_bundle_path, evidence_bundle)
     else:
@@ -410,11 +400,17 @@ def write_vitals_artifacts(
     _write_jsonl(out / "retrieval_outcome_learning.jsonl", retrieval_outcome_rows)
     _write_jsonl(out / "latent_gap_candidates.jsonl", latent_gap_rows)
     _write_jsonl(out / "trigger_trace.jsonl", [_trigger_trace_row(bundle)])
-    _write_jsonl(out / "retrieval_trace.jsonl", [_retrieval_trace_row(bundle, scorecard)])
+    _write_jsonl(
+        out / "retrieval_trace.jsonl", [_retrieval_trace_row(bundle, scorecard)]
+    )
     _write_jsonl(out / "think_trace.jsonl", [_think_trace_row(bundle, scorecard)])
-    _write_jsonl(out / "validation_trace.jsonl", [_validation_trace_row(bundle, scorecard)])
+    _write_jsonl(
+        out / "validation_trace.jsonl", [_validation_trace_row(bundle, scorecard)]
+    )
     _write_jsonl(out / "model_delta.jsonl", _model_delta_rows(bundle))
-    _write_jsonl(out / "projection_trace.jsonl", [_projection_trace_row(bundle, scorecard)])
+    _write_jsonl(
+        out / "projection_trace.jsonl", [_projection_trace_row(bundle, scorecard)]
+    )
     _write_jsonl(
         out / "product_surface_trace.jsonl",
         [_product_surface_trace_row(bundle, scorecard)],
@@ -431,7 +427,9 @@ def write_vitals_artifacts(
         out / "self_improvement_trace.jsonl",
         [_self_improvement_trace_row(bundle, scorecard)],
     )
-    _write_jsonl(out / "governance_trace.jsonl", [_governance_trace_row(bundle, scorecard)])
+    _write_jsonl(
+        out / "governance_trace.jsonl", [_governance_trace_row(bundle, scorecard)]
+    )
     _write_jsonl(
         out / "authority_safety_trace.jsonl",
         [_authority_safety_trace_row(bundle, scorecard)],
@@ -501,14 +499,14 @@ async def collect_db_trace_for_report_dir(
                 tenant_id=str(selected_tenant_id),
                 observation_ids=observation_ids,
             )
-            trace["company_learning_evaluation"] = (
-                await _collect_company_learning_evaluation(
-                    conn,
-                    report_path=report_path,
-                    bundle=bundle,
-                    tenant_id=UUID(str(selected_tenant_id)),
-                    observation_ids=tuple(UUID(value) for value in observation_ids),
-                )
+            trace[
+                "company_learning_evaluation"
+            ] = await _collect_company_learning_evaluation(
+                conn,
+                report_path=report_path,
+                bundle=bundle,
+                tenant_id=UUID(str(selected_tenant_id)),
+                observation_ids=tuple(UUID(value) for value in observation_ids),
             )
     finally:
         await conn.close()
@@ -664,22 +662,17 @@ def _company_learning_evaluation_for_report(
     db_trace: dict[str, Any] | None,
     persisted_path: Path | None = None,
 ) -> dict[str, Any]:
-    live = _json_obj(
-        _json_obj(db_trace).get("company_learning_evaluation")
-    )
+    live = _json_obj(_json_obj(db_trace).get("company_learning_evaluation"))
     if live:
         return live
     persisted = _read_json(
-        persisted_path
-        or report_path / "vitals" / "company_learning_evaluation.json"
+        persisted_path or report_path / "vitals" / "company_learning_evaluation.json"
     )
     if not persisted or persisted.get("available") is not True:
         return persisted
     try:
         registry = load_architecture_registry(DEFAULT_ARCHITECTURE_REGISTRY)
-        state = CompanyLearningEvaluationState.model_validate(
-            persisted.get("state")
-        )
+        state = CompanyLearningEvaluationState.model_validate(persisted.get("state"))
         manifest = InvariantEvidenceManifest.model_validate(
             persisted.get("evidence_manifest")
         )
@@ -729,12 +722,9 @@ def _company_learning_evaluation_for_report(
             else None
         )
         if saved_evidence_bundle is not None and (
-            evidence_bundle is None
-            or saved_evidence_bundle != evidence_bundle
+            evidence_bundle is None or saved_evidence_bundle != evidence_bundle
         ):
-            raise ValueError(
-                "persisted company-learning evidence aggregation is stale"
-            )
+            raise ValueError("persisted company-learning evidence aggregation is stale")
         proof = compile_invariant_proof_matrix(
             registry,
             run_id=expected_run_id,
@@ -781,11 +771,7 @@ def _company_learning_run_id(
         bundle.get("storyline_scores")
     )
     run_summary = _json_obj(bundle.get("run_summary"))
-    return str(
-        run_summary.get("run_id")
-        or benchmark.get("run_id")
-        or report_path.name
-    )
+    return str(run_summary.get("run_id") or benchmark.get("run_id") or report_path.name)
 
 
 def _company_learning_manifest_observation_ids(
@@ -844,20 +830,14 @@ def _company_learning_evidence_bundle(
     experiment = _json_obj(artifact_bundle.get("company_learning_experiment"))
     if experiment.get("valid") is not True:
         return None
-    report = CorrectiveMemoryExperimentReport.model_validate(
-        experiment.get("report")
+    report = CorrectiveMemoryExperimentReport.model_validate(experiment.get("report"))
+    experiment_manifest = build_corrective_memory_experiment_evidence_manifest(
+        report,
+        architecture_digest=manifest.architecture_digest,
+        experiment_manifest_ref=manifest.experiment_manifest_ref,
+        report_cutoff=report_cutoff,
     )
-    experiment_manifest = (
-        build_corrective_memory_experiment_evidence_manifest(
-            report,
-            architecture_digest=manifest.architecture_digest,
-            experiment_manifest_ref=manifest.experiment_manifest_ref,
-            report_cutoff=report_cutoff,
-        )
-    )
-    return aggregate_invariant_evidence_manifests(
-        (manifest, experiment_manifest)
-    )
+    return aggregate_invariant_evidence_manifests((manifest, experiment_manifest))
 
 
 def _executed_scenario_ids(bundle: dict[str, Any]) -> frozenset[str]:
@@ -888,24 +868,18 @@ def _active_company_learning_proof_summary(
             sorted(
                 {
                     state: sum(
-                        str(row.get("substantiation_state")) == state
-                        for row in records
+                        str(row.get("substantiation_state")) == state for row in records
                     )
                     for state in {
-                        str(row.get("substantiation_state"))
-                        for row in records
+                        str(row.get("substantiation_state")) for row in records
                     }
                 }.items()
             )
         ),
         "confirmed_incident_count": sum(
-            _as_int(row.get("confirmed_incident_count"))
-            for row in records
+            _as_int(row.get("confirmed_incident_count")) for row in records
         ),
-        "violation_count": sum(
-            _as_int(row.get("violation_count"))
-            for row in records
-        ),
+        "violation_count": sum(_as_int(row.get("violation_count")) for row in records),
         "records": records,
     }
 
@@ -995,9 +969,7 @@ def _company_physics_section(
             "company-physics registered invariant proof is contradicted"
         )
     proof_gaps = {
-        str(item)
-        for item in _json_list(state.get("proof_gaps"))
-        if str(item).strip()
+        str(item) for item in _json_list(state.get("proof_gaps")) if str(item).strip()
     }
     for row in _json_list(proof_summary.get("records")):
         if not isinstance(row, dict):
@@ -1024,9 +996,7 @@ def _company_physics_section(
         "scope": _json_obj(state.get("scope")),
         "learning_loop": _json_obj(state.get("learning_loop")),
         "components": {
-            "conversation_context": _json_obj(
-                state.get("conversation_context")
-            ),
+            "conversation_context": _json_obj(state.get("conversation_context")),
             "entity_grounding": _json_obj(state.get("entity_grounding")),
             "source_semantics": _json_obj(state.get("source_semantics")),
         },
@@ -1053,13 +1023,12 @@ def _company_learning_assurance_summary(
             "source_path": assurance.get("source_path"),
             "error": assurance.get("error") or "assurance_artifact_invalid",
             "detail": assurance.get("detail"),
-            "hard_failures": [
-                "company-learning assurance artifact failed validation"
-            ],
+            "hard_failures": ["company-learning assurance artifact failed validation"],
             "proof_gaps": [
                 "Combined positive, negative, exact-alias population, "
                 "variant-alias population, collision population, Slack and "
-                "correction assurance evidence could not be trusted."
+                "customer-lifecycle and correction assurance evidence could "
+                "not be trusted."
             ],
         }
     summary = _json_obj(assurance.get("summary"))
@@ -1070,8 +1039,7 @@ def _company_learning_assurance_summary(
         if str(item).strip()
     ]
     hard_failures = [
-        f"company-learning assurance: {failure}"
-        for failure in blocking_failures
+        f"company-learning assurance: {failure}" for failure in blocking_failures
     ]
     if status == "failed" and not hard_failures:
         hard_failures.append("company-learning assurance suite failed")
@@ -1083,24 +1051,17 @@ def _company_learning_assurance_summary(
         "run_id": summary.get("run_id"),
         "system_version": summary.get("system_version"),
         "architecture_digest": summary.get("architecture_digest"),
-        "implementation_plan_digest": summary.get(
-            "implementation_plan_digest"
-        ),
+        "implementation_plan_digest": summary.get("implementation_plan_digest"),
         "evaluation_profile": summary.get("evaluation_profile"),
-        "excluded_capabilities": _json_list(
-            summary.get("excluded_capabilities")
-        ),
+        "excluded_capabilities": _json_list(summary.get("excluded_capabilities")),
         "positive": _json_obj(summary.get("positive")),
         "negative": _json_obj(summary.get("negative")),
         "slack": _json_obj(summary.get("slack")),
         "correction": _json_obj(summary.get("correction")),
         "population": _json_obj(summary.get("population")),
-        "variant_population": _json_obj(
-            summary.get("variant_population")
-        ),
-        "variant_collision": _json_obj(
-            summary.get("variant_collision")
-        ),
+        "variant_population": _json_obj(summary.get("variant_population")),
+        "variant_collision": _json_obj(summary.get("variant_collision")),
+        "customer_lifecycle": _json_obj(summary.get("customer_lifecycle")),
         "component_digests": _json_obj(summary.get("component_digests")),
         "artifact_paths": _json_obj(summary.get("artifact_paths")),
         "hard_failures": hard_failures,
@@ -1261,6 +1222,7 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
         slack = _json_obj(assurance.get("slack"))
         correction = _json_obj(assurance.get("correction"))
         population = _json_obj(assurance.get("population"))
+        lifecycle = _json_obj(assurance.get("customer_lifecycle"))
         slack_metrics = _json_obj(slack.get("metrics"))
         lines.extend(
             [
@@ -1287,6 +1249,13 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
                     f"{correction.get('converged', 'unknown')} "
                     "(residual unsafe debt="
                     f"{correction.get('residual_unsafe_debt_count', 'unknown')})"
+                ),
+                (
+                    "- Customer identity lifecycle: "
+                    f"{lifecycle.get('observed_case_count', 'unknown')}/"
+                    f"{lifecycle.get('case_count', 'unknown')} "
+                    "(violations="
+                    f"{lifecycle.get('violating_case_count', 'unknown')})"
                 ),
             ]
         )
@@ -1328,17 +1297,13 @@ def _load_artifact_bundle(report_dir: Path) -> dict[str, Any]:
         "models": _read_jsonl(report_dir / "models.jsonl"),
         "model_edges": _read_jsonl(report_dir / "model_edges.jsonl"),
     }
-    bundle["company_learning_experiment"] = (
-        _company_learning_experiment_for_report(
-            report_dir,
-            bundle=bundle,
-        )
+    bundle["company_learning_experiment"] = _company_learning_experiment_for_report(
+        report_dir,
+        bundle=bundle,
     )
-    bundle["company_learning_assurance"] = (
-        _company_learning_assurance_for_report(
-            report_dir,
-            bundle=bundle,
-        )
+    bundle["company_learning_assurance"] = _company_learning_assurance_for_report(
+        report_dir,
+        bundle=bundle,
     )
     return bundle
 
@@ -1353,9 +1318,7 @@ def _company_learning_assurance_for_report(
             path
             for path in (
                 report_dir / "company_learning_assurance_summary.json",
-                report_dir
-                / "vitals"
-                / "company_learning_assurance_summary.json",
+                report_dir / "vitals" / "company_learning_assurance_summary.json",
             )
             if path.exists()
         ),
@@ -1538,7 +1501,9 @@ def apply_db_trace_to_signal_rows(
                     think_rows,
                     "selected_observation_ids",
                 ),
-                "referenced_model_ids": _context_ids(think_rows, "referenced_model_ids"),
+                "referenced_model_ids": _context_ids(
+                    think_rows, "referenced_model_ids"
+                ),
                 "referenced_observation_ids": _context_ids(
                     think_rows,
                     "referenced_observation_ids",
@@ -1607,13 +1572,16 @@ def classify_signal_fate(trace: dict[str, Any]) -> tuple[str, list[str], list[st
     leaks: list[str] = []
 
     if not trigger_rows and not routing_rows and not inquiry_rows:
-        return "no_think_trigger", ["no trigger, route, or inquiry row found"], [
-            "no_think_trigger"
-        ]
+        return (
+            "no_think_trigger",
+            ["no trigger, route, or inquiry row found"],
+            ["no_think_trigger"],
+        )
 
     if trigger_rows:
         pending = [
-            row for row in trigger_rows
+            row
+            for row in trigger_rows
             if not row.get("completed_at") and not _json_list(trace.get("think_runs"))
         ]
         if pending:
@@ -1624,13 +1592,16 @@ def classify_signal_fate(trace: dict[str, Any]) -> tuple[str, list[str], list[st
         row for row in think_rows if str(row.get("status") or "") == "failed"
     ]
     successful_think = [
-        row for row in think_rows
+        row
+        for row in think_rows
         if str(row.get("status") or "") in {"success", "skipped_idempotent"}
     ]
     if failed_think and not successful_think:
-        return "think_failed", [f"{len(failed_think)} Think run(s) failed."], [
-            "think_failed"
-        ]
+        return (
+            "think_failed",
+            [f"{len(failed_think)} Think run(s) failed."],
+            ["think_failed"],
+        )
 
     if model_rows:
         born = [row for row in model_rows if row.get("provenance") == "born_from_event"]
@@ -1640,7 +1611,9 @@ def classify_signal_fate(trace: dict[str, Any]) -> tuple[str, list[str], list[st
         if born:
             reasons.append(f"{len(born)} model(s) born from this observation.")
         if supported:
-            reasons.append(f"{len(supported)} model(s) cite this observation as support.")
+            reasons.append(
+                f"{len(supported)} model(s) cite this observation as support."
+            )
 
     if reading_rows:
         kinds = sorted({str(row.get("reading_kind") or "") for row in reading_rows})
@@ -1649,7 +1622,9 @@ def classify_signal_fate(trace: dict[str, Any]) -> tuple[str, list[str], list[st
     if edge_rows:
         reasons.append(f"{len(edge_rows)} model edge(s) cite this observation.")
     if relation_claim_rows:
-        reasons.append(f"{len(relation_claim_rows)} relation claim(s) cite this observation.")
+        reasons.append(
+            f"{len(relation_claim_rows)} relation claim(s) cite this observation."
+        )
     if relation_instance_rows:
         reasons.append(
             f"{len(relation_instance_rows)} relation instance(s) cite this observation."
@@ -1662,7 +1637,10 @@ def classify_signal_fate(trace: dict[str, Any]) -> tuple[str, list[str], list[st
         event_types = sorted({str(row.get("event_type") or "") for row in outcome_rows})
         reasons.append(f"inquiry outcome events: {', '.join(event_types)}.")
 
-    if any(str(row.get("event_type") or "").startswith("recommendation_") for row in outcome_rows):
+    if any(
+        str(row.get("event_type") or "").startswith("recommendation_")
+        for row in outcome_rows
+    ):
         return "decision_outcome_recorded", reasons, leaks
     if outcome_rows:
         return "self_improvement_event_created", reasons, leaks
@@ -1682,23 +1660,47 @@ def classify_signal_fate(trace: dict[str, Any]) -> tuple[str, list[str], list[st
         if any(row.get("provenance") == "born_from_event" for row in model_rows):
             return "model_created", reasons, leaks
         return "model_updated", reasons, leaks
-    if any(str(row.get("stop_status") or "") == "human_validation_required" for row in inquiry_rows):
+    if any(
+        str(row.get("stop_status") or "") == "human_validation_required"
+        for row in inquiry_rows
+    ):
         return "human_feedback_requested", reasons, leaks
     if successful_think:
         grades = {
-            str(_json_obj(_json_obj(row.get("ops_applied")).get("context_use")).get("context_use_grade") or "")
+            str(
+                _json_obj(_json_obj(row.get("ops_applied")).get("context_use")).get(
+                    "context_use_grade"
+                )
+                or ""
+            )
             for row in successful_think
         }
         if "justified_noop_context_used" in grades:
-            return "think_noop_justified", reasons or ["successful justified no-op"], leaks
+            return (
+                "think_noop_justified",
+                reasons or ["successful justified no-op"],
+                leaks,
+            )
         leaks.append("think_success_without_durable_trace")
-        return "think_noop_suspicious", reasons or ["Think succeeded without durable trace."], leaks
+        return (
+            "think_noop_suspicious",
+            reasons or ["Think succeeded without durable trace."],
+            leaks,
+        )
     if trigger_rows:
-        return "trigger_pending", reasons or ["trigger exists but no completion trace"], leaks
-    return "raw_only_unmodeled", reasons or ["observation has no durable trace"], [
-        *leaks,
+        return (
+            "trigger_pending",
+            reasons or ["trigger exists but no completion trace"],
+            leaks,
+        )
+    return (
         "raw_only_unmodeled",
-    ]
+        reasons or ["observation has no durable trace"],
+        [
+            *leaks,
+            "raw_only_unmodeled",
+        ],
+    )
 
 
 async def _collect_db_trace(
@@ -1831,16 +1833,16 @@ async def _collect_db_trace(
             model_to_obs.setdefault(str(row.get("model_id")), set()).add(obs_id)
 
     if await has_table("model_edges"):
-        has_evidence_events = await _column_exists(conn, "model_edges", "evidence_event_ids")
+        has_evidence_events = await _column_exists(
+            conn, "model_edges", "evidence_event_ids"
+        )
         evidence_select = (
             "evidence_event_ids"
             if has_evidence_events
             else "'{}'::uuid[] AS evidence_event_ids"
         )
         evidence_condition = (
-            "OR evidence_event_ids && $2::uuid[]"
-            if has_evidence_events
-            else ""
+            "OR evidence_event_ids && $2::uuid[]" if has_evidence_events else ""
         )
         rows = await conn.fetch(
             f"""
@@ -1862,7 +1864,11 @@ async def _collect_db_trace(
             related = set()
             if str(row.get("created_by_event_id")) in by_obs:
                 related.add(str(row["created_by_event_id"]))
-            related.update(obs_id for obs_id in _uuid_strings(row.get("evidence_event_ids")) if obs_id in by_obs)
+            related.update(
+                obs_id
+                for obs_id in _uuid_strings(row.get("evidence_event_ids"))
+                if obs_id in by_obs
+            )
             for obs_id in related:
                 _append_trace(by_obs, obs_id, "model_edges", row)
 
@@ -1888,7 +1894,11 @@ async def _collect_db_trace(
             related = set()
             if str(row.get("source_observation_id")) in by_obs:
                 related.add(str(row["source_observation_id"]))
-            related.update(obs_id for obs_id in _uuid_strings(row.get("evidence_event_ids")) if obs_id in by_obs)
+            related.update(
+                obs_id
+                for obs_id in _uuid_strings(row.get("evidence_event_ids"))
+                if obs_id in by_obs
+            )
             for obs_id in related:
                 _append_trace(by_obs, obs_id, "relation_claims", row)
 
@@ -1914,7 +1924,11 @@ async def _collect_db_trace(
             related = set()
             if str(row.get("source_observation_id")) in by_obs:
                 related.add(str(row["source_observation_id"]))
-            related.update(obs_id for obs_id in _uuid_strings(row.get("evidence_event_ids")) if obs_id in by_obs)
+            related.update(
+                obs_id
+                for obs_id in _uuid_strings(row.get("evidence_event_ids"))
+                if obs_id in by_obs
+            )
             for obs_id in related:
                 _append_trace(by_obs, obs_id, "relation_instances", row)
 
@@ -1995,7 +2009,9 @@ async def _collect_db_trace(
         )
         for raw in rows:
             row = _record_to_dict(raw)
-            _append_trace(by_obs, str(row.get("signal_ref_id")), "routing_decisions", row)
+            _append_trace(
+                by_obs, str(row.get("signal_ref_id")), "routing_decisions", row
+            )
 
     if await has_table("inquiry_sessions"):
         rows = await conn.fetch(
@@ -2146,7 +2162,9 @@ def _metabolism_vital(
     planned = len(bundle["planned_signals"])
     manifested = len(bundle["signal_manifest"])
     observed = sum(1 for row in signal_rows if row.get("observation_id"))
-    trace_resolved = sum(1 for row in signal_rows if row.get("final_fate") != "trace_unresolved")
+    trace_resolved = sum(
+        1 for row in signal_rows if row.get("final_fate") != "trace_unresolved"
+    )
     valuable = sum(1 for row in signal_rows if row.get("gold_value_class") != "noise")
     leakage = sum(1 for row in signal_rows if row.get("leak_flags"))
     fate_counts: dict[str, int] = {}
@@ -2253,11 +2271,15 @@ def _control_plane_vital(
             f"Post-commit queue did not drain: pending={pending_post_commit}."
         )
     if dead_lettered:
-        findings.append(f"Post-commit dead letters present: dead_lettered={dead_lettered}.")
+        findings.append(
+            f"Post-commit dead letters present: dead_lettered={dead_lettered}."
+        )
     if required_failures:
         findings.append("Required-run health failures are present.")
     if not findings:
-        findings.append("Required queues and failure counters are clean in the report artifacts.")
+        findings.append(
+            "Required queues and failure counters are clean in the report artifacts."
+        )
     return _vital(
         score=_avg(components),
         metrics={
@@ -2281,7 +2303,9 @@ def _retrieval_vital(
     retrieval_dim = _dimension(source_scorecard, "retrieval_usefulness")
     metrics = _json_obj(retrieval_dim.get("metrics"))
     total_context = sum(_as_int(v) for v in distribution.values())
-    useful_context = sum(_as_int(distribution.get(key)) for key in USEFUL_CONTEXT_GRADES)
+    useful_context = sum(
+        _as_int(distribution.get(key)) for key in USEFUL_CONTEXT_GRADES
+    )
     context_ratio = _ratio(useful_context, total_context)
     contract_total = _as_int(contract.get("context_use_runs"))
     contract_failed = _as_int(contract.get("graph_relation_contract_failed_runs"))
@@ -2322,8 +2346,14 @@ def _reasoning_vital(
     benchmark: dict[str, Any],
 ) -> dict[str, Any]:
     amplification = _json_obj(benchmark.get("run_amplification"))
-    success = _as_int(run_summary.get("think_runs_success"), _as_int(amplification.get("think_runs_success")))
-    failed = _as_int(run_summary.get("think_runs_failed"), _as_int(amplification.get("think_runs_failed")))
+    success = _as_int(
+        run_summary.get("think_runs_success"),
+        _as_int(amplification.get("think_runs_success")),
+    )
+    failed = _as_int(
+        run_summary.get("think_runs_failed"),
+        _as_int(amplification.get("think_runs_failed")),
+    )
     validation_errors = _as_int(amplification.get("validation_error_count"))
     total = success + failed
     success_score = _ratio(success, total)
@@ -2346,9 +2376,7 @@ def _reasoning_vital(
 
 
 def _model_atomicity_vital(models: list[dict[str, Any]]) -> dict[str, Any]:
-    active = [
-        row for row in models if str(row.get("status") or "active") == "active"
-    ]
+    active = [row for row in models if str(row.get("status") or "active") == "active"]
     if not active:
         return _vital(
             score=None,
@@ -2360,7 +2388,9 @@ def _model_atomicity_vital(models: list[dict[str, Any]]) -> dict[str, Any]:
     falsifier_known = any("falsifier" in row for row in active)
     supported = sum(1 for row in active if (_model_support_count(row) or 0) > 0)
     falsifiable = sum(
-        1 for row in active if _json_obj(row.get("falsifier")) or row.get("resolution_criteria")
+        1
+        for row in active
+        if _json_obj(row.get("falsifier")) or row.get("resolution_criteria")
     )
     wrapper_like = [row for row in active if _is_wrapper_model(row)]
     broad_scope = [row for row in active if _model_scope_size(row) > 14]
@@ -2376,9 +2406,13 @@ def _model_atomicity_vital(models: list[dict[str, Any]]) -> dict[str, Any]:
     score = _avg(components)
     proof_gaps = []
     if not support_known:
-        proof_gaps.append("Model artifacts do not expose support counts for atomicity scoring.")
+        proof_gaps.append(
+            "Model artifacts do not expose support counts for atomicity scoring."
+        )
     if not falsifier_known:
-        proof_gaps.append("Model artifacts do not expose falsifiers for atomicity scoring.")
+        proof_gaps.append(
+            "Model artifacts do not expose falsifiers for atomicity scoring."
+        )
     findings = [
         (
             f"Atomicity proxy found {len(wrapper_like)} wrapper-like, "
@@ -2387,7 +2421,9 @@ def _model_atomicity_vital(models: list[dict[str, Any]]) -> dict[str, Any]:
         )
     ]
     if wrapper_like:
-        findings.append("Wrapper/window Models should usually be split or demoted into residual/inquiry state.")
+        findings.append(
+            "Wrapper/window Models should usually be split or demoted into residual/inquiry state."
+        )
     return _vital(
         score=score,
         metrics={
@@ -2412,9 +2448,7 @@ def _company_object_spine_vital(
     bundle: dict[str, Any],
     models: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    active = [
-        row for row in models if str(row.get("status") or "active") == "active"
-    ]
+    active = [row for row in models if str(row.get("status") or "active") == "active"]
     if not active:
         return _vital(
             score=None,
@@ -2457,7 +2491,8 @@ def _company_object_spine_vital(
     ]
     expected_customers = _expected_customer_keys(bundle)
     customer_anchor_refs = [
-        ref for ref in anchor_model_counts
+        ref
+        for ref in anchor_model_counts
         if ref.startswith("customer:") or ref.startswith("customer_resource:")
     ]
     expected_types = {
@@ -2486,14 +2521,16 @@ def _company_object_spine_vital(
         if expected_customers
         else None
     )
-    score = _avg([
-        binding_coverage,
-        anchor_diversity_score,
-        mention_binding_score,
-        richness_score,
-        overbroad_penalty_score,
-        customer_presence_score,
-    ])
+    score = _avg(
+        [
+            binding_coverage,
+            anchor_diversity_score,
+            mention_binding_score,
+            richness_score,
+            overbroad_penalty_score,
+            customer_presence_score,
+        ]
+    )
     proof_gaps = []
     if not expected_customers:
         proof_gaps.append(
@@ -2546,15 +2583,19 @@ def _compression_vital(
 ) -> dict[str, Any]:
     compression_dim = _dimension(source_scorecard, "compression")
     graph = _json_obj(run_summary.get("graph_health"))
-    observations = _as_int(run_summary.get("observation_count"), _as_int(run_summary.get("signal_count")))
+    observations = _as_int(
+        run_summary.get("observation_count"), _as_int(run_summary.get("signal_count"))
+    )
     active_models = _as_int(run_summary.get("active_models"), len(models))
     duplicate_groups = _as_int(graph.get("exact_duplicate_natural_groups"))
     duplicate_score = 1.0 if duplicate_groups == 0 else 1.0 / (1.0 + duplicate_groups)
-    score = _avg([
-        _as_float_or_none(compression_dim.get("score")),
-        duplicate_score,
-        1.0 if active_models or observations == 0 else 0.0,
-    ])
+    score = _avg(
+        [
+            _as_float_or_none(compression_dim.get("score")),
+            duplicate_score,
+            1.0 if active_models or observations == 0 else 0.0,
+        ]
+    )
     metrics = {
         "active_models": active_models,
         "observations": observations,
@@ -2578,7 +2619,9 @@ def _coherence_vital(
 ) -> dict[str, Any]:
     graph = _json_obj(run_summary.get("graph_health"))
     edge_dim = _dimension(source_scorecard, "edge_intelligence")
-    active_models = _as_int(graph.get("active_model_count"), _as_int(run_summary.get("active_models")))
+    active_models = _as_int(
+        graph.get("active_model_count"), _as_int(run_summary.get("active_models"))
+    )
     active_edges = _as_int(graph.get("active_edge_count"), len(edges))
     isolated_ratio = _as_float(graph.get("isolated_model_ratio"))
     largest_component_ratio = _as_float(graph.get("largest_component_ratio"))
@@ -2623,9 +2666,7 @@ def _edge_specificity_vital(
     edges: list[dict[str, Any]],
     run_summary: dict[str, Any],
 ) -> dict[str, Any]:
-    active = [
-        row for row in edges if str(row.get("status") or "active") == "active"
-    ]
+    active = [row for row in edges if str(row.get("status") or "active") == "active"]
     if not active:
         return _vital(
             score=None,
@@ -2634,11 +2675,13 @@ def _edge_specificity_vital(
             proof_gaps=["Edge specificity requires exported model edge artifacts."],
         )
     generic = [
-        row for row in active
+        row
+        for row in active
         if str(row.get("edge_kind") or "").casefold() in GENERIC_EDGE_KINDS
     ]
     missing_explanation = [
-        row for row in active
+        row
+        for row in active
         if not str(row.get("explanation") or row.get("metadata") or "").strip()
     ]
     kind_counts = _count_by(active, "edge_kind")
@@ -2649,7 +2692,9 @@ def _edge_specificity_vital(
         for row in active
         if _as_float(row.get("confidence", row.get("weight"))) >= 0.55
     )
-    ontology_gaps = _as_int(_json_obj(run_summary.get("capability_probe_counts")).get("ontology_gap"))
+    ontology_gaps = _as_int(
+        _json_obj(run_summary.get("capability_probe_counts")).get("ontology_gap")
+    )
     components = [
         1.0 - _ratio(len(generic), len(active)),
         1.0 - _ratio(len(missing_explanation), len(active)),
@@ -2666,7 +2711,9 @@ def _edge_specificity_vital(
         )
     ]
     if generic:
-        findings.append("Generic edge kinds should become ontology-gap candidates or specific relationship kinds.")
+        findings.append(
+            "Generic edge kinds should become ontology-gap candidates or specific relationship kinds."
+        )
     proof_gaps = []
     if not confidence_known:
         proof_gaps.append("Edge artifact rows do not expose confidence/weight.")
@@ -2716,7 +2763,9 @@ def _active_frontier_vital(
     # avoid raw-only loss, and enough graph linkage to make the frontier usable.
     if observations == 0 and active_models == 0:
         score = None
-        proof_gaps = ["Active-frontier health requires observations or active model counts."]
+        proof_gaps = [
+            "Active-frontier health requires observations or active model counts."
+        ]
     else:
         if observations == 0:
             size_score = 1.0
@@ -2729,13 +2778,19 @@ def _active_frontier_vital(
         else:
             size_score = max(0.2, 1.0 / ratio)
         edge_density = _ratio(active_edges, active_models)
-        score = _avg([
-            size_score,
-            min(1.0, edge_density / 1.5) if active_models else None,
-            1.0 - isolated_ratio if graph else None,
-            _as_float_or_none(compression_dim.get("score")),
-        ])
-        proof_gaps = [] if graph else ["Graph health metrics were not present for active-frontier scoring."]
+        score = _avg(
+            [
+                size_score,
+                min(1.0, edge_density / 1.5) if active_models else None,
+                1.0 - isolated_ratio if graph else None,
+                _as_float_or_none(compression_dim.get("score")),
+            ]
+        )
+        proof_gaps = (
+            []
+            if graph
+            else ["Graph health metrics were not present for active-frontier scoring."]
+        )
     return _vital(
         score=score,
         metrics={
@@ -2776,12 +2831,18 @@ def _create_update_balance_vital(signal_rows: list[dict[str, Any]]) -> dict[str,
     total = creates + updates
     if not resolved:
         score = None
-        proof_gaps = ["Create/update balance requires DB-backed signal fate resolution."]
-        findings = ["Artifact-only traces cannot prove whether Think creates or edits dominantly."]
+        proof_gaps = [
+            "Create/update balance requires DB-backed signal fate resolution."
+        ]
+        findings = [
+            "Artifact-only traces cannot prove whether Think creates or edits dominantly."
+        ]
     elif total == 0:
         score = 0.0
         proof_gaps = []
-        findings = ["Resolved signals did not create or update durable model-layer state."]
+        findings = [
+            "Resolved signals did not create or update durable model-layer state."
+        ]
     else:
         create_share = creates / total
         # Best health is a mixed frontier. Penalize both all-create and all-update.
@@ -2791,7 +2852,9 @@ def _create_update_balance_vital(signal_rows: list[dict[str, Any]]) -> dict[str,
             f"Create/update balance saw creates={creates}, updates={updates}, create_share={round(create_share, 4)}."
         ]
         if create_share in {0.0, 1.0}:
-            findings.append("Dominant one-sided create/update behavior should be treated as a model metabolism anomaly.")
+            findings.append(
+                "Dominant one-sided create/update behavior should be treated as a model metabolism anomaly."
+            )
     return _vital(
         score=score,
         metrics={
@@ -2886,7 +2949,9 @@ def _projection_vital(run_summary: dict[str, Any]) -> dict[str, Any]:
     )
     proof_gaps = []
     if topology_status == "skipped":
-        proof_gaps.append("Topology optimizer was skipped, so projection/topology closure is only partially proven.")
+        proof_gaps.append(
+            "Topology optimizer was skipped, so projection/topology closure is only partially proven."
+        )
     missing_families = _json_list(
         projection_report.get("missing_entity_projection_families")
     )
@@ -2923,9 +2988,7 @@ def _projection_vital(run_summary: dict[str, Any]) -> dict[str, Any]:
             "projection_refresh_jobs": projection_report.get("refresh_job_count"),
             "pending_projection_refresh_jobs": pending_refresh_jobs,
             "failed_projection_refresh_jobs": failed_refresh_jobs,
-            "jobs_to_snapshots_ratio": projection_report.get(
-                "jobs_to_snapshots_ratio"
-            ),
+            "jobs_to_snapshots_ratio": projection_report.get("jobs_to_snapshots_ratio"),
         },
         findings=findings,
         proof_gaps=proof_gaps,
@@ -2940,7 +3003,9 @@ def _product_utility_vital(product_value: dict[str, Any]) -> dict[str, Any]:
         findings=[
             "Uses the existing product-value eval overall score as the product utility proxy."
         ],
-        proof_gaps=[] if score is not None else ["Product value evals were not present."],
+        proof_gaps=[]
+        if score is not None
+        else ["Product value evals were not present."],
     )
 
 
@@ -2962,7 +3027,9 @@ def _human_loop_vital(product_value: dict[str, Any]) -> dict[str, Any]:
         findings=[
             "Artifact-only human-loop health uses question-policy, negative-learning, and experience-metabolism proxies."
         ],
-        proof_gaps=[] if score is not None else ["Human feedback outcome events were not observed."],
+        proof_gaps=[]
+        if score is not None
+        else ["Human feedback outcome events were not observed."],
     )
 
 
@@ -2982,7 +3049,9 @@ def _decision_outcome_vital(product_value: dict[str, Any]) -> dict[str, Any]:
         findings=[
             "Decision outcome learning uses decision-impact and prediction-lifecycle proxies until explicit outcome waves are traced."
         ],
-        proof_gaps=[] if score is not None else ["Decision outcome evals were not present."],
+        proof_gaps=[]
+        if score is not None
+        else ["Decision outcome evals were not present."],
     )
 
 
@@ -3003,7 +3072,9 @@ def _organizational_change_vital(bundle: dict[str, Any]) -> dict[str, Any]:
         findings=[
             "Looks for explicit org/strategy/segment-change signals in artifact-only mode."
         ],
-        proof_gaps=[] if matched else ["No explicit organizational-change wave was detected."],
+        proof_gaps=[]
+        if matched
+        else ["No explicit organizational-change wave was detected."],
     )
 
 
@@ -3036,7 +3107,9 @@ def _self_improvement_vital(
         findings=[
             "Self-improvement health uses adaptive lifecycle plus experience, negative-learning, and question-policy proxies."
         ],
-        proof_gaps=[] if score is not None else ["No self-improvement proxy metrics were present."],
+        proof_gaps=[]
+        if score is not None
+        else ["No self-improvement proxy metrics were present."],
     )
 
 
@@ -3050,11 +3123,14 @@ def _governance_vital(
     support_known = any("supporting_event_ids" in row for row in active_models)
     falsifier_known = any("falsifier" in row for row in active_models)
     unsupported = [
-        row for row in active_models
-        if "supporting_event_ids" in row and not _json_list(row.get("supporting_event_ids"))
+        row
+        for row in active_models
+        if "supporting_event_ids" in row
+        and not _json_list(row.get("supporting_event_ids"))
     ]
     without_falsifier = [
-        row for row in active_models
+        row
+        for row in active_models
         if "falsifier" in row and not _json_obj(row.get("falsifier"))
     ]
     high_conf_unsupported = [
@@ -3069,11 +3145,14 @@ def _governance_vital(
     score = _avg(components)
     proof_gaps = []
     if score is None:
-        proof_gaps.append("Model artifact rows do not expose enough support/falsifier fields for governance scoring.")
+        proof_gaps.append(
+            "Model artifact rows do not expose enough support/falsifier fields for governance scoring."
+        )
     return _vital(
         score=score,
         metrics={
-            "active_models": len(active_models) or _as_int(run_summary.get("active_models")),
+            "active_models": len(active_models)
+            or _as_int(run_summary.get("active_models")),
             "supporting_event_ids_known": support_known,
             "falsifier_known": falsifier_known,
             "unsupported_active_models": len(unsupported),
@@ -3108,7 +3187,9 @@ def _efficiency_vital(
 ) -> dict[str, Any]:
     efficiency_dim = _dimension(source_scorecard, "efficiency")
     metrics = dict(_json_obj(efficiency_dim.get("metrics")))
-    cost = _json_obj(run_summary.get("cost")) or _json_obj(run_summary.get("think_cost_profile"))
+    cost = _json_obj(run_summary.get("cost")) or _json_obj(
+        run_summary.get("think_cost_profile")
+    )
     if cost:
         metrics["reported_cost"] = cost
     return _vital(
@@ -3126,17 +3207,12 @@ def _residual_channel_vital(
     residual_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     resolved = [
-        row for row in signal_rows
-        if row.get("final_fate") != "trace_unresolved"
+        row for row in signal_rows if row.get("final_fate") != "trace_unresolved"
     ]
-    valuable = [
-        row for row in resolved
-        if row.get("gold_value_class") != "noise"
-    ]
+    valuable = [row for row in resolved if row.get("gold_value_class") != "noise"]
     by_kind = _count_by(residual_rows, "residual_kind")
     absorption_ready = [
-        row for row in residual_rows
-        if row.get("status") in {"candidate", "open"}
+        row for row in residual_rows if row.get("status") in {"candidate", "open"}
     ]
     if not resolved:
         score = None
@@ -3193,9 +3269,7 @@ def _coherence_repair_vital(
     else:
         score = 1.0 / (1.0 + high + (0.5 * medium))
         proof_gaps = []
-        findings = [
-            f"Identified {len(repair_rows)} coherence repair candidate(s)."
-        ]
+        findings = [f"Identified {len(repair_rows)} coherence repair candidate(s)."]
         if repair_rows:
             findings.append(
                 "Repair candidates should reduce duplicate, isolated, "
@@ -3219,11 +3293,11 @@ def _retrieval_outcome_learning_vital(
     outcome_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     resolved = [
-        row for row in signal_rows
-        if row.get("final_fate") != "trace_unresolved"
+        row for row in signal_rows if row.get("final_fate") != "trace_unresolved"
     ]
     learnable = [
-        row for row in outcome_rows
+        row
+        for row in outcome_rows
         if row.get("selected_context_count") or row.get("omitted_evidence_count")
     ]
     if not resolved:
@@ -3241,10 +3315,7 @@ def _retrieval_outcome_learning_vital(
         ]
         findings = ["No retrieval decisions were attributable to downstream fates."]
     else:
-        reward = _avg([
-            _as_float(row.get("outcome_reward"))
-            for row in learnable
-        ])
+        reward = _avg([_as_float(row.get("outcome_reward")) for row in learnable])
         score = reward
         proof_gaps = []
         findings = [
@@ -3259,10 +3330,9 @@ def _retrieval_outcome_learning_vital(
             "resolved_signal_fates": len(resolved),
             "outcome_rows": len(outcome_rows),
             "learnable_retrieval_decisions": len(learnable),
-            "average_outcome_reward": _avg([
-                _as_float(row.get("outcome_reward"))
-                for row in learnable
-            ]),
+            "average_outcome_reward": _avg(
+                [_as_float(row.get("outcome_reward")) for row in learnable]
+            ),
             "outcome_classes": _count_by(outcome_rows, "outcome_class"),
         },
         findings=findings,
@@ -3276,12 +3346,10 @@ def _latent_gap_vital(
     latent_gap_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     resolved = [
-        row for row in signal_rows
-        if row.get("final_fate") != "trace_unresolved"
+        row for row in signal_rows if row.get("final_fate") != "trace_unresolved"
     ]
     open_residuals = [
-        row for row in residual_rows
-        if row.get("status") in {"candidate", "open"}
+        row for row in residual_rows if row.get("status") in {"candidate", "open"}
     ]
     if not resolved:
         score = None
@@ -3353,17 +3421,25 @@ def _dark_matter_loop_vital(
             "Dark-matter loop health requires DB-backed missingness traces or latent-bridge/question-policy evals."
         ]
     else:
-        gap_conversion = _ratio(len(latent_gap_rows), len(open_residuals)) if open_residuals else 1.0
-        human_route_score = _ratio(human_requests, len(latent_gap_rows)) if latent_gap_rows else None
-        score = _avg([
-            latent_bridge_score,
-            question_policy_score,
-            gap_conversion,
-            human_route_score,
-        ])
+        gap_conversion = (
+            _ratio(len(latent_gap_rows), len(open_residuals)) if open_residuals else 1.0
+        )
+        human_route_score = (
+            _ratio(human_requests, len(latent_gap_rows)) if latent_gap_rows else None
+        )
+        score = _avg(
+            [
+                latent_bridge_score,
+                question_policy_score,
+                gap_conversion,
+                human_route_score,
+            ]
+        )
         proof_gaps = []
         if latent_gap_rows and human_requests == 0:
-            proof_gaps.append("Latent gaps were detected, but no human-validation route was proven.")
+            proof_gaps.append(
+                "Latent gaps were detected, but no human-validation route was proven."
+            )
     return _vital(
         score=score,
         metrics={
@@ -3393,7 +3469,9 @@ def _sage_policy_effect_vital(
     topology = _json_obj(run_summary.get("topology_optimizer_status"))
     adaptive = _dimension(source_scorecard, "adaptive_lifecycle")
     evals = _json_obj(product_value.get("evals"))
-    topology_completed = _as_int(topology.get("completed"), _as_int(topology.get("processed")))
+    topology_completed = _as_int(
+        topology.get("completed"), _as_int(topology.get("processed"))
+    )
     topology_failed = _as_int(topology.get("failed"))
     topology_status = str(topology.get("status") or "")
     experience_score = _eval_score(evals, "experience_metabolism")
@@ -3408,15 +3486,19 @@ def _sage_policy_effect_vital(
     else:
         topology_score = None
         if topology_status:
-            topology_score = 1.0 if topology_completed > 0 and topology_failed == 0 else 0.0
+            topology_score = (
+                1.0 if topology_completed > 0 and topology_failed == 0 else 0.0
+            )
             if topology_status == "skipped":
                 topology_score = 0.25
-        score = _avg([
-            topology_score,
-            experience_score,
-            negative_learning_score,
-            adaptive_score,
-        ])
+        score = _avg(
+            [
+                topology_score,
+                experience_score,
+                negative_learning_score,
+                adaptive_score,
+            ]
+        )
         proof_gaps = []
         if topology_status == "skipped":
             proof_gaps.append("SAGE topology optimizer was skipped.")
@@ -3446,9 +3528,11 @@ def _pattern_cascade_vital(
     edge_dim = _dimension(source_scorecard, "edge_intelligence")
     reasoning_dim = _dimension(source_scorecard, "reasoning_value")
     pattern_signals = [
-        row for row in signal_rows
+        row
+        for row in signal_rows
         if any(
-            term in " ".join(
+            term
+            in " ".join(
                 str(row.get(key) or "")
                 for key in ("family", "sequence", "source_channel", "storyline_id")
             ).casefold()
@@ -3467,16 +3551,20 @@ def _pattern_cascade_vital(
     cascaded = [
         row for row in pattern_signals if row.get("final_fate") in downstream_fates
     ]
-    score = _avg([
-        _ratio(len(cascaded), len(pattern_signals)) if pattern_signals else None,
-        _as_float_or_none(edge_dim.get("score")),
-        _as_float_or_none(reasoning_dim.get("score")),
-        _eval_score(evals, "latent_bridge_inference"),
-        _eval_score(evals, "decision_impact"),
-    ])
+    score = _avg(
+        [
+            _ratio(len(cascaded), len(pattern_signals)) if pattern_signals else None,
+            _as_float_or_none(edge_dim.get("score")),
+            _as_float_or_none(reasoning_dim.get("score")),
+            _eval_score(evals, "latent_bridge_inference"),
+            _eval_score(evals, "decision_impact"),
+        ]
+    )
     proof_gaps = []
     if not pattern_signals:
-        proof_gaps.append("No explicit pattern/recurrence signals were detectable in artifacts.")
+        proof_gaps.append(
+            "No explicit pattern/recurrence signals were detectable in artifacts."
+        )
     return _vital(
         score=score,
         metrics={
@@ -3485,7 +3573,9 @@ def _pattern_cascade_vital(
             "pattern_cascade_ratio": _ratio(len(cascaded), len(pattern_signals)),
             "edge_intelligence_score": edge_dim.get("score"),
             "reasoning_value_score": reasoning_dim.get("score"),
-            "latent_bridge_inference_score": _eval_score(evals, "latent_bridge_inference"),
+            "latent_bridge_inference_score": _eval_score(
+                evals, "latent_bridge_inference"
+            ),
             "decision_impact_score": _eval_score(evals, "decision_impact"),
         },
         findings=[
@@ -3511,7 +3601,9 @@ def _ask_signal_learning_vital(product_value: dict[str, Any]) -> dict[str, Any]:
         findings=[
             "Ask/user-signal learning is currently scored through question-policy, negative-learning, and experience-metabolism proxies."
         ],
-        proof_gaps=[] if score is not None else ["Ask conversation-to-user-model learning was not proven by artifacts."],
+        proof_gaps=[]
+        if score is not None
+        else ["Ask conversation-to-user-model learning was not proven by artifacts."],
     )
 
 
@@ -3526,20 +3618,28 @@ def _simplification_pressure_vital(
     isolated_ratio = _as_float(graph.get("isolated_model_ratio"))
     orphan_edges = _as_int(graph.get("orphan_edge_count"))
     duplicate_edges = _as_int(graph.get("duplicate_directed_edge_count"))
-    score = _avg([
-        1.0 if duplicate_groups == 0 else 1.0 / (1.0 + duplicate_groups),
-        1.0 - isolated_ratio if graph else None,
-        1.0 if orphan_edges == 0 else 0.5,
-        1.0 if duplicate_edges == 0 else 0.5,
-        _as_float_or_none(compression.get("score")),
-        _as_float_or_none(robustness.get("score")),
-    ])
-    proof_gaps = [] if graph else ["Graph health metrics were not present for simplification scoring."]
+    score = _avg(
+        [
+            1.0 if duplicate_groups == 0 else 1.0 / (1.0 + duplicate_groups),
+            1.0 - isolated_ratio if graph else None,
+            1.0 if orphan_edges == 0 else 0.5,
+            1.0 if duplicate_edges == 0 else 0.5,
+            _as_float_or_none(compression.get("score")),
+            _as_float_or_none(robustness.get("score")),
+        ]
+    )
+    proof_gaps = (
+        []
+        if graph
+        else ["Graph health metrics were not present for simplification scoring."]
+    )
     findings = [
         "Simplification pressure uses duplicate, isolated, orphan, and robustness/compression proxies."
     ]
     if duplicate_groups or duplicate_edges or orphan_edges:
-        findings.append("Redundant graph artifacts should feed repair or deletion/merge decisions.")
+        findings.append(
+            "Redundant graph artifacts should feed repair or deletion/merge decisions."
+        )
     return _vital(
         score=score,
         metrics={
@@ -3593,7 +3693,9 @@ def _build_signal_metabolism_rows(bundle: dict[str, Any]) -> list[dict[str, Any]
                 "applied_edge_ids": [],
                 "projection_subjects": [],
                 "product_surface_refs": [],
-                "final_fate": "trace_unresolved" if observation_id else "raw_only_unmodeled",
+                "final_fate": "trace_unresolved"
+                if observation_id
+                else "raw_only_unmodeled",
                 "fate_reasons": [
                     "artifact_only_renderer_cannot_join_signal_to_think_run"
                     if observation_id
@@ -3755,16 +3857,20 @@ def _coherence_repair_candidate_rows(
         )
 
     actionable_residual_rows = [
-        row for row in residual_rows
-        if row.get("status") in {"candidate", "open"}
+        row for row in residual_rows if row.get("status") in {"candidate", "open"}
     ]
     residuals_by_kind = _group_by(actionable_residual_rows, "residual_kind")
     for kind, grouped in sorted(residuals_by_kind.items()):
-        priority = "high" if kind in {
-            "counterevidence_unattached",
-            "relation_unanchored",
-            "valuable_unmodeled",
-        } else "medium"
+        priority = (
+            "high"
+            if kind
+            in {
+                "counterevidence_unattached",
+                "relation_unanchored",
+                "valuable_unmodeled",
+            }
+            else "medium"
+        )
         add(
             f"residual_{kind}",
             priority=priority,
@@ -3783,7 +3889,8 @@ def _coherence_repair_candidate_rows(
         )
 
     unresolved = [
-        row for row in signal_rows
+        row
+        for row in signal_rows
         if row.get("final_fate") in {"no_think_trigger", "trigger_pending"}
     ]
     if unresolved:
@@ -3806,14 +3913,12 @@ def _retrieval_outcome_learning_rows(
         final_fate = str(row.get("final_fate") or "unknown")
         if final_fate == "trace_unresolved":
             continue
-        selected_context_count = (
-            len(_json_list(row.get("retrieved_model_ids")))
-            + len(_json_list(row.get("retrieved_observation_ids")))
+        selected_context_count = len(_json_list(row.get("retrieved_model_ids"))) + len(
+            _json_list(row.get("retrieved_observation_ids"))
         )
-        referenced_context_count = (
-            len(_json_list(row.get("referenced_model_ids")))
-            + len(_json_list(row.get("referenced_observation_ids")))
-        )
+        referenced_context_count = len(
+            _json_list(row.get("referenced_model_ids"))
+        ) + len(_json_list(row.get("referenced_observation_ids")))
         db_trace = _json_obj(row.get("db_trace"))
         omitted_count = _as_int(db_trace.get("omitted_evidence_count"))
         reward, outcome_class = _retrieval_outcome_reward(row)
@@ -3868,9 +3973,8 @@ def _latent_gap_candidate_rows(
             persisted_cluster_keys.add((gap_kind, tuple(sorted(supporting_ids))))
             rows.append(
                 {
-                    "candidate_id": candidate_id or hypothesis.get(
-                        "residual_cluster_hash"
-                    ),
+                    "candidate_id": candidate_id
+                    or hypothesis.get("residual_cluster_hash"),
                     "status": hypothesis.get("status") or "candidate",
                     "gap_kind": gap_kind,
                     "storyline_id": signal.get("storyline_id"),
@@ -3914,9 +4018,7 @@ def _latent_gap_candidate_rows(
             continue
         rows.append(
             {
-                "candidate_id": (
-                    f"latent_gap:{storyline_id}:{family}:{residual_kind}"
-                ),
+                "candidate_id": (f"latent_gap:{storyline_id}:{family}:{residual_kind}"),
                 "status": "candidate_not_canonical_fact",
                 "gap_kind": residual_kind,
                 "storyline_id": storyline_id,
@@ -3956,7 +4058,9 @@ def _model_delta_rows(bundle: dict[str, Any]) -> list[dict[str, Any]]:
                 "claim_role": row.get("claim_role"),
                 "confidence": row.get("confidence"),
                 "natural": row.get("natural"),
-                "supporting_event_count": len(_json_list(row.get("supporting_event_ids"))),
+                "supporting_event_count": len(
+                    _json_list(row.get("supporting_event_ids"))
+                ),
                 "scope_entity_count": len(_json_list(row.get("scope_entities"))),
                 "scope_actor_count": len(_json_list(row.get("scope_actors"))),
             }
@@ -3974,7 +4078,9 @@ def _graph_coherence_payload(
         "graph_health": graph,
         "model_coherence_vital": _json_obj(scorecard["vitals"].get("model_coherence")),
         "edge_kind_distribution": _json_obj(run_summary.get("edge_kind_distribution")),
-        "edge_review_distribution": _json_obj(run_summary.get("edge_review_distribution")),
+        "edge_review_distribution": _json_obj(
+            run_summary.get("edge_review_distribution")
+        ),
     }
 
 
@@ -4036,7 +4142,8 @@ def _think_trace_row(
         "think_runs_success": run_summary.get("think_runs_success"),
         "think_runs_failed": run_summary.get("think_runs_failed"),
         "latency_breakdown": run_summary.get("latency_breakdown"),
-        "think_cost_profile": run_summary.get("think_cost_profile") or run_summary.get("cost"),
+        "think_cost_profile": run_summary.get("think_cost_profile")
+        or run_summary.get("cost"),
         "vital": scorecard["vitals"]["reasoning_throughput"],
     }
 
@@ -4300,20 +4407,17 @@ def _residual_kind_for_signal(row: dict[str, Any]) -> str | None:
     final_fate = str(row.get("final_fate") or "")
     if final_fate == "trace_unresolved":
         return None
-    if (
-        row.get("gold_value_class") == "counterevidence"
-        and final_fate not in {
-            "counterevidence_attached",
-            "falsifier_created",
-            "evidence_attached",
-            "model_updated",
-            "edge_created",
-            "relation_frame_created",
-            "projection_updated",
-            "decision_outcome_recorded",
-            "self_improvement_event_created",
-        }
-    ):
+    if row.get("gold_value_class") == "counterevidence" and final_fate not in {
+        "counterevidence_attached",
+        "falsifier_created",
+        "evidence_attached",
+        "model_updated",
+        "edge_created",
+        "relation_frame_created",
+        "projection_updated",
+        "decision_outcome_recorded",
+        "self_improvement_event_created",
+    }:
         return "counterevidence_unattached"
     if final_fate in RESIDUAL_KIND_BY_FATE:
         return RESIDUAL_KIND_BY_FATE[final_fate]
@@ -4344,10 +4448,7 @@ def _residual_reason(row: dict[str, Any], residual_kind: str) -> str:
 def _residual_summary(row: dict[str, Any], residual_kind: str) -> str:
     signal = row.get("signal_id") or row.get("observation_id") or "unknown signal"
     family = row.get("family") or "unknown family"
-    return (
-        f"{residual_kind} for {signal} in {family}; "
-        f"fate={row.get('final_fate')}"
-    )
+    return f"{residual_kind} for {signal} in {family}; fate={row.get('final_fate')}"
 
 
 def _repair_action_for_residual_kind(kind: str) -> str:
@@ -4556,9 +4657,7 @@ def _mentions_are_bound(row: dict[str, Any], mention_types: set[str]) -> bool:
         "actor": has_actor,
         "commitment": bool({"commitment", "goal"} & entity_types),
         "decision": "decision" in entity_types,
-        "recurring_event": bool(
-            {"event", "recurring_event", "pattern"} & entity_types
-        ),
+        "recurring_event": bool({"event", "recurring_event", "pattern"} & entity_types),
     }
     return all(checks.get(kind, True) for kind in mention_types)
 
@@ -4586,7 +4685,9 @@ def _is_conjunction_heavy_model(row: dict[str, Any]) -> bool:
     natural = str(row.get("natural") or "")
     if len(natural) < 90:
         return False
-    marker_count = sum(natural.casefold().count(marker) for marker in MODEL_CONJUNCTION_MARKERS)
+    marker_count = sum(
+        natural.casefold().count(marker) for marker in MODEL_CONJUNCTION_MARKERS
+    )
     comma_count = natural.count(",")
     return marker_count + comma_count >= 4
 
@@ -4721,7 +4822,9 @@ def _record_to_dict(row: Any) -> dict[str, Any]:
     return _json_safe(dict(row))
 
 
-def _db_trace_counts(by_observation: dict[str, dict[str, list[dict[str, Any]]]]) -> dict[str, Any]:
+def _db_trace_counts(
+    by_observation: dict[str, dict[str, list[dict[str, Any]]]],
+) -> dict[str, Any]:
     totals: dict[str, int] = {}
     resolved = 0
     for trace in by_observation.values():

@@ -44,6 +44,8 @@ from lib.evaluation.company_learning_population import (
 from lib.evaluation.tests.test_company_learning_assurance_contract import (
     _collision_assurance_from_evidence,
     _collision_evidence,
+    _lifecycle_assurance_from_evidence,
+    _lifecycle_evidence,
     _variant_assurance_from_evidence,
     _variant_evidence,
 )
@@ -89,14 +91,18 @@ def test_company_vitals_writes_artifacts_from_e2e_report(tmp_path: Path) -> None
     assert scorecard["status"] == "ok"
     assert scorecard["hard_failures"] == []
     assert scorecard["vitals"]["control_plane_health"]["score"] == 1.0
-    assert scorecard["vitals"]["retrieval_roi"]["metrics"]["useful_context_ratio"] == 0.75
+    assert (
+        scorecard["vitals"]["retrieval_roi"]["metrics"]["useful_context_ratio"] == 0.75
+    )
     assert scorecard["vitals"]["authority_safety"]["status"] == "not_observed"
     assert scorecard["company_physics"]["status"] == "not_observed"
     assert scorecard["company_physics"]["noncompensatory"] is True
 
     signal_rows = [
         json.loads(line)
-        for line in (result.output_dir / "signal_metabolism.jsonl").read_text().splitlines()
+        for line in (result.output_dir / "signal_metabolism.jsonl")
+        .read_text()
+        .splitlines()
     ]
     assert len(signal_rows) == 2
     assert signal_rows[0]["final_fate"] == "trace_unresolved"
@@ -109,7 +115,9 @@ def test_company_vitals_reports_hard_gate_failure(tmp_path: Path) -> None:
     scorecard = build_vitals_from_report_dir(report_dir)
 
     assert scorecard["status"] == "fail"
-    assert any("trigger queue did not drain" in item for item in scorecard["hard_failures"])
+    assert any(
+        "trigger queue did not drain" in item for item in scorecard["hard_failures"]
+    )
     assert scorecard["vitals"]["control_plane_health"]["status"] == "watch"
 
 
@@ -158,12 +166,18 @@ def test_company_physics_is_precise_and_does_not_change_overall_score(
     assert scorecard["score_coverage"] == baseline["score_coverage"]
     assert "company_physics" not in scorecard["vitals"]
     assert scorecard["company_physics"]["status"] == "substantiated"
-    assert scorecard["company_physics"]["learning_loop"][
-        "governed_alias_replay_resolution_rate"
-    ] == 1.0
-    assert scorecard["company_physics"]["components"]["entity_grounding"][
-        "alias_replay_exposure_count"
-    ] == 2
+    assert (
+        scorecard["company_physics"]["learning_loop"][
+            "governed_alias_replay_resolution_rate"
+        ]
+        == 1.0
+    )
+    assert (
+        scorecard["company_physics"]["components"]["entity_grounding"][
+            "alias_replay_exposure_count"
+        ]
+        == 2
+    )
 
 
 def test_company_physics_incidents_are_noncompensatory_hard_failures(
@@ -183,9 +197,7 @@ def test_company_physics_incidents_are_noncompensatory_hard_failures(
                 "conversation_context": {},
                 "entity_grounding": {},
                 "source_semantics": {},
-                "incident_counts": {
-                    "entity_grounding.unsafe_governed_alias_replay": 1
-                },
+                "incident_counts": {"entity_grounding.unsafe_governed_alias_replay": 1},
                 "proof_gaps": [],
                 "artifact_refs": ["pytest://company-physics-incident"],
             },
@@ -229,42 +241,46 @@ def test_combined_assurance_is_non_scoring_and_persists_for_rerender(
         ]
         == 1.0
     )
-    assert assurance["variant_collision"]["status"] == "observed_with_gaps"
+    assert assurance["variant_collision"]["status"] == "observed"
     assert assurance["variant_collision"]["registry_pair_count"] == 16
-    assert assurance["variant_collision"]["observed_pair_count"] == 14
-    assert assurance["variant_collision"]["unsupported_case_count"] == 2
+    assert assurance["variant_collision"]["observed_pair_count"] == 16
+    assert assurance["variant_collision"]["unsupported_case_count"] == 0
+    assert assurance["variant_collision"]["source_native_observed_case_count"] == 2
+    assert assurance["variant_collision"]["source_native_unsupported_case_count"] == 0
     assert (
-        assurance["variant_collision"][
-            "source_native_observed_case_count"
+        assurance["variant_collision"]["adaptive_safe_containment_rate"][
+            "point_estimate"
         ]
-        == 0
+        == 1.0
     )
+    assert assurance["customer_lifecycle"]["status"] == "observed"
+    assert assurance["customer_lifecycle"]["case_count"] == 8
+    assert assurance["customer_lifecycle"]["observed_case_count"] == 8
+    assert assurance["customer_lifecycle"]["violating_case_count"] == 0
     assert (
-        assurance["variant_collision"][
-            "source_native_unsupported_case_count"
+        assurance["customer_lifecycle"]["alias_interval_non_overlap_rate"][
+            "point_estimate"
         ]
-        == 2
-    )
-    assert (
-        assurance["variant_collision"][
-            "adaptive_safe_containment_rate"
-        ]["point_estimate"]
         == 1.0
     )
     assert "scorecard" not in assurance["positive"]["component_digests"]
-    persisted = (
-        first.output_dir / "company_learning_assurance_summary.json"
-    )
+    persisted = first.output_dir / "company_learning_assurance_summary.json"
     assert persisted.exists()
-    assert "Combined assurance: working" in (
-        first.output_dir / "vitals_summary.md"
-    ).read_text()
+    assert (
+        "Combined assurance: working"
+        in (first.output_dir / "vitals_summary.md").read_text()
+    )
+    assert (
+        "Customer identity lifecycle: 8/8"
+        in (first.output_dir / "vitals_summary.md").read_text()
+    )
 
     source.unlink()
     rerender = write_vitals_artifacts(report_dir)
-    assert rerender.scorecard["company_physics"]["assurance_suite"][
-        "summary_digest"
-    ] == assurance["summary_digest"]
+    assert (
+        rerender.scorecard["company_physics"]["assurance_suite"]["summary_digest"]
+        == assurance["summary_digest"]
+    )
 
 
 def test_tampered_combined_assurance_fails_closed_noncompensatorily(
@@ -275,11 +291,7 @@ def test_tampered_combined_assurance_fails_closed_noncompensatorily(
     payload = json.loads(artifact.read_text())
     payload["negative"]["adaptive_unsafe_count"] = 1
     payload["summary_digest"] = canonical_sha256(
-        {
-            key: value
-            for key, value in payload.items()
-            if key != "summary_digest"
-        }
+        {key: value for key, value in payload.items() if key != "summary_digest"}
     )
     _write_json(artifact, payload)
 
@@ -302,9 +314,7 @@ def test_stale_combined_assurance_component_fails_closed(
     report_dir = _write_report_dir(tmp_path)
     artifact = _write_company_learning_assurance(report_dir)
     summary_payload = json.loads(artifact.read_text())
-    negative_path = Path(
-        summary_payload["artifact_paths"]["negative_evidence"]
-    )
+    negative_path = Path(summary_payload["artifact_paths"]["negative_evidence"])
     negative = json.loads(negative_path.read_text())
     negative["report"]["metrics"]["adaptive_unsafe_count"] = 1
     _write_json(negative_path, negative)
@@ -325,11 +335,7 @@ def test_inconsistent_population_accounting_fails_even_with_new_digest(
     payload = json.loads(artifact.read_text())
     payload["population"]["unsupported_case_count"] = 44
     payload["summary_digest"] = canonical_sha256(
-        {
-            key: value
-            for key, value in payload.items()
-            if key != "summary_digest"
-        }
+        {key: value for key, value in payload.items() if key != "summary_digest"}
     )
     _write_json(artifact, payload)
 
@@ -347,9 +353,7 @@ def test_resealed_population_raw_result_mismatch_fails_closed(
     report_dir = _write_report_dir(tmp_path)
     artifact = _write_company_learning_assurance(report_dir)
     summary = json.loads(artifact.read_text())
-    population_path = Path(
-        summary["artifact_paths"]["population_evidence"]
-    )
+    population_path = Path(summary["artifact_paths"]["population_evidence"])
     population = json.loads(population_path.read_text())
     observed = next(
         row
@@ -358,26 +362,14 @@ def test_resealed_population_raw_result_mismatch_fails_closed(
     )
     observed["adaptive_correct"] = False
     population["evidence_digest"] = canonical_sha256(
-        {
-            key: value
-            for key, value in population.items()
-            if key != "evidence_digest"
-        }
+        {key: value for key, value in population.items() if key != "evidence_digest"}
     )
     _write_json(population_path, population)
     new_evidence_digest = population["evidence_digest"]
-    summary["population"]["component_digests"][
-        "evidence"
-    ] = new_evidence_digest
-    summary["component_digests"]["population_evidence"] = (
-        new_evidence_digest
-    )
+    summary["population"]["component_digests"]["evidence"] = new_evidence_digest
+    summary["component_digests"]["population_evidence"] = new_evidence_digest
     summary["summary_digest"] = canonical_sha256(
-        {
-            key: value
-            for key, value in summary.items()
-            if key != "summary_digest"
-        }
+        {key: value for key, value in summary.items() if key != "summary_digest"}
     )
     _write_json(artifact, summary)
 
@@ -509,15 +501,12 @@ def test_corrective_memory_experiment_aggregates_into_canonical_proof(
     assert evidence.executed_scenario_ids == frozenset(
         {"ENTITY-CORRECTIVE-MEMORY-PAIR"}
     )
-    assert {
-        metric.metric_id for metric in evidence.metric_observations
-    } == {"inv.entity_corrective_memory_lift"}
+    assert {metric.metric_id for metric in evidence.metric_observations} == {
+        "inv.entity_corrective_memory_lift"
+    }
     assert evidence.applicable_exposures == 3
     aggregation = evidence_bundle.aggregation[0]
-    assert (
-        aggregation.mode
-        is EvidenceAggregationMode.DECLARED_DISJOINT_PARTITION_UNION
-    )
+    assert aggregation.mode is EvidenceAggregationMode.DECLARED_DISJOINT_PARTITION_UNION
     assert set(aggregation.population_partition_values) == {
         "entity_grounding",
         "corrective_memory_pair_experiment",
@@ -551,8 +540,7 @@ def test_tampered_corrective_memory_experiment_fails_closed(
     assert experiment["error"] == "experiment_artifact_invalid"
     assert _executed_scenario_ids(_load_artifact_bundle(report_dir)) == frozenset()
     assert any(
-        "failed validation" in gap
-        for gap in scorecard["company_physics"]["proof_gaps"]
+        "failed validation" in gap for gap in scorecard["company_physics"]["proof_gaps"]
     )
 
 
@@ -570,9 +558,7 @@ def test_corrective_memory_experiment_persists_for_artifact_only_rerender(
     )
 
     first = write_vitals_artifacts(report_dir)
-    persisted = (
-        first.output_dir / "company_learning_scenario_evidence.json"
-    )
+    persisted = first.output_dir / "company_learning_scenario_evidence.json"
     assert persisted.exists()
     source.unlink()
 
@@ -624,9 +610,7 @@ def test_artifact_only_rerender_rejects_invalid_saved_company_learning_evidence(
     }
 
     first = write_vitals_artifacts(report_dir, db_trace=db_trace)
-    assert (
-        first.output_dir / "company_learning_evidence_manifest.json"
-    ).exists()
+    assert (first.output_dir / "company_learning_evidence_manifest.json").exists()
     second = write_vitals_artifacts(report_dir)
     rerendered = json.loads(
         (second.output_dir / "company_learning_evaluation.json").read_text()
@@ -636,9 +620,7 @@ def test_artifact_only_rerender_rejects_invalid_saved_company_learning_evidence(
     assert rerendered["status"] == "unavailable"
     assert rerendered["error"] == "persisted_evaluation_invalid"
     assert second.scorecard["company_physics"]["status"] == "unavailable"
-    assert not (
-        second.output_dir / "company_learning_evidence_manifest.json"
-    ).exists()
+    assert not (second.output_dir / "company_learning_evidence_manifest.json").exists()
 
 
 def test_custom_output_dir_is_the_persisted_evaluation_source(
@@ -671,9 +653,7 @@ def test_custom_output_dir_is_the_persisted_evaluation_source(
         (output_dir / "company_learning_evaluation.json").read_text()
     )
     assert persisted == unavailable
-    assert rerender.scorecard["company_physics"]["error"] == (
-        "sealed-test-unavailable"
-    )
+    assert rerender.scorecard["company_physics"]["error"] == ("sealed-test-unavailable")
     assert "custom output marker" in rerender.scorecard["proof_gaps"]
 
 
@@ -919,12 +899,16 @@ def test_company_vitals_emits_residual_repair_retrieval_and_latent_traces(
     assert all(row["next_evidence_needed"] for row in latent)
 
     scorecard = json.loads((result.output_dir / "vitals_scorecard.json").read_text())
-    assert scorecard["vitals"]["residual_channel"]["metrics"][
-        "residual_candidate_count"
-    ] == 2
-    assert scorecard["vitals"]["retrieval_outcome_learning"]["metrics"][
-        "learnable_retrieval_decisions"
-    ] == 1
+    assert (
+        scorecard["vitals"]["residual_channel"]["metrics"]["residual_candidate_count"]
+        == 2
+    )
+    assert (
+        scorecard["vitals"]["retrieval_outcome_learning"]["metrics"][
+            "learnable_retrieval_decisions"
+        ]
+        == 1
+    )
 
 
 def test_company_vitals_prefers_persisted_residual_lifecycle_rows(
@@ -1107,7 +1091,10 @@ def _write_report_dir(
                         "metrics": {"model_updates": 1, "model_inserts": 1},
                     },
                     "edge_intelligence": {"score": 1.0, "metrics": {}},
-                    "efficiency": {"score": 0.9, "metrics": {"cost_per_signal_usd": 0.01}},
+                    "efficiency": {
+                        "score": 0.9,
+                        "metrics": {"cost_per_signal_usd": 0.01},
+                    },
                     "retrieval_usefulness": {
                         "score": 0.9,
                         "metrics": {"model_or_graph_context_use_score": 0.75},
@@ -1326,17 +1313,13 @@ def _write_company_learning_assurance(
             {
                 "case_id": case.case_id,
                 "logical_entity_type": case.entity_type,
-                "runtime_entity_type": (
-                    "customer" if supported else None
-                ),
+                "runtime_entity_type": ("customer" if supported else None),
                 "adaptive_tenant_id": str(adaptive_tenant_id),
                 "frozen_tenant_id": str(frozen_tenant_id),
                 "adaptive_target_id": str(adaptive_target_id),
                 "frozen_target_id": str(frozen_target_id),
                 "unsupported_reason": (
-                    None
-                    if supported
-                    else "unsupported non-customer runtime"
+                    None if supported else "unsupported non-customer runtime"
                 ),
             }
         )
@@ -1474,13 +1457,9 @@ def _write_company_learning_assurance(
         "system_version": system_version,
         "registry_population_digest": population.digest,
         "execution_population": execution_population,
-        "selected_case_ids": [
-            case.case_id for case in population.cases
-        ],
+        "selected_case_ids": [case.case_id for case in population.cases],
         "assignments": population_assignments,
-        "raw_pairs": [
-            pair.model_dump(mode="json") for pair in population_pairs
-        ],
+        "raw_pairs": [pair.model_dump(mode="json") for pair in population_pairs],
         "observations": [
             observation.model_dump(mode="json")
             for observation in population_observations
@@ -1488,9 +1467,7 @@ def _write_company_learning_assurance(
         "population_report": population_report_payload,
         "experiment_report": population_experiment.model_dump(mode="json"),
     }
-    population_payload["evidence_digest"] = canonical_sha256(
-        population_payload
-    )
+    population_payload["evidence_digest"] = canonical_sha256(population_payload)
     population_path = report_dir / "pytest-population.json"
     _write_json(population_path, population_payload)
 
@@ -1532,9 +1509,7 @@ def _write_company_learning_assurance(
         "observation_digest": canonical_sha256(slack_observations),
         "metrics": slack_metrics,
         "assessments": [],
-        "proof_gaps": (
-            "Synthetic Slack gold is not open-world evidence.",
-        ),
+        "proof_gaps": ("Synthetic Slack gold is not open-world evidence.",),
         "artifact_refs": ("pytest://slack",),
     }
     slack_report_path = report_dir / "pytest-slack-report.json"
@@ -1585,19 +1560,22 @@ def _write_company_learning_assurance(
     )
     collision_path = report_dir / "pytest-variant-collision.json"
     _write_json(collision_path, collision_evidence.artifact_payload())
+    lifecycle_evidence = _lifecycle_evidence(
+        run_id="synthetic-vitals:customer-lifecycle",
+        system_version=system_version,
+    )
+    lifecycle_path = report_dir / "pytest-customer-lifecycle.json"
+    _write_json(lifecycle_path, lifecycle_evidence.artifact_payload())
     artifact_paths = {
         "positive_pair": str(positive_path),
-        "positive_company_learning_evaluation": str(
-            positive_evaluation_path
-        ),
-        "positive_company_learning_evidence_bundle": str(
-            positive_bundle_path
-        ),
+        "positive_company_learning_evaluation": str(positive_evaluation_path),
+        "positive_company_learning_evidence_bundle": str(positive_bundle_path),
         "negative_evidence": str(negative_path),
         "population_evidence": str(population_path),
         "correction_evidence": str(correction_path),
         "variant_population_evidence": str(variant_path),
         "variant_collision_evidence": str(collision_path),
+        "customer_lifecycle_evidence": str(lifecycle_path),
         "slack_observations": str(slack_observations_path),
         "slack_report": str(slack_report_path),
     }
@@ -1608,6 +1586,10 @@ def _write_company_learning_assurance(
     collision_assurance = _collision_assurance_from_evidence(
         collision_evidence,
         path=artifact_paths["variant_collision_evidence"],
+    )
+    lifecycle_assurance = _lifecycle_assurance_from_evidence(
+        lifecycle_evidence,
+        path=artifact_paths["customer_lifecycle_evidence"],
     )
     summary = CompanyLearningAssuranceSummary(
         run_id="synthetic-vitals",
@@ -1630,12 +1612,8 @@ def _write_company_learning_assurance(
             },
             component_digests={
                 "report": positive_report_digest,
-                "company_learning_evaluation": canonical_sha256(
-                    positive_evaluation
-                ),
-                "company_learning_evidence_bundle": canonical_sha256(
-                    positive_bundle
-                ),
+                "company_learning_evaluation": canonical_sha256(positive_evaluation),
+                "company_learning_evidence_bundle": canonical_sha256(positive_bundle),
             },
         ),
         negative=NegativeAssurance(
@@ -1644,9 +1622,7 @@ def _write_company_learning_assurance(
             safety_incident_count=0,
             adaptive_unsafe_count=0,
             frozen_unsafe_count=0,
-            artifact_paths={
-                "negative_evidence": artifact_paths["negative_evidence"]
-            },
+            artifact_paths={"negative_evidence": artifact_paths["negative_evidence"]},
             component_digests={
                 "evidence": negative_payload["evidence_digest"],
                 "report": canonical_sha256(negative_report),
@@ -1682,13 +1658,9 @@ def _write_company_learning_assurance(
             dependency_discovery_rate=(
                 correction_artifact.metrics.dependency_discovery_rate
             ),
-            immediate_fence_rate=(
-                correction_artifact.metrics.immediate_fence_rate
-            ),
+            immediate_fence_rate=(correction_artifact.metrics.immediate_fence_rate),
             direct_repair_rate=correction_artifact.metrics.direct_repair_rate,
-            recursive_repair_rate=(
-                correction_artifact.metrics.recursive_repair_rate
-            ),
+            recursive_repair_rate=(correction_artifact.metrics.recursive_repair_rate),
             relation_retirement_rate=(
                 correction_artifact.metrics.relation_retirement_rate
             ),
@@ -1717,6 +1689,7 @@ def _write_company_learning_assurance(
         ),
         variant_population=variant_assurance,
         variant_collision=collision_assurance,
+        customer_lifecycle=lifecycle_assurance,
         population=PopulationAssurance(
             status="observed_with_gaps",
             registry_pair_count=60,
@@ -1738,9 +1711,7 @@ def _write_company_learning_assurance(
             },
             component_digests={
                 "evidence": population_payload["evidence_digest"],
-                "registry": population_payload[
-                    "registry_population_digest"
-                ],
+                "registry": population_payload["registry_population_digest"],
                 "report": canonical_sha256(population_report_payload),
             },
         ),
@@ -1775,13 +1746,13 @@ def _write_company_learning_assurance(
                 f"variant_collision_{key}": value
                 for key, value in collision_assurance.component_digests.items()
             },
+            **{
+                f"customer_lifecycle_{key}": value
+                for key, value in lifecycle_assurance.component_digests.items()
+            },
             "population_evidence": population_payload["evidence_digest"],
-            "population_registry": population_payload[
-                "registry_population_digest"
-            ],
-            "population_report": canonical_sha256(
-                population_report_payload
-            ),
+            "population_registry": population_payload["registry_population_digest"],
+            "population_report": canonical_sha256(population_report_payload),
         },
         artifact_paths=artifact_paths,
     )
@@ -1817,9 +1788,7 @@ def _write_corrective_memory_experiment(
         ),
         adaptive_expectation=SealedArmExpectation(
             tenant_id=adaptive_tenant_id,
-            allowed_consumer_fates=(
-                ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,
-            ),
+            allowed_consumer_fates=(ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,),
             expected_entity_ref=adaptive_ref,
             expected_model_count=1,
             autonomous_resolution_permitted=True,
@@ -1839,12 +1808,8 @@ def _write_corrective_memory_experiment(
         system_version=system_version,
         created_at="2026-07-16T00:00:00+00:00",
         scenario_ids=("ENTITY-CORRECTIVE-MEMORY-PAIR",),
-        company_foundation_digest=canonical_sha256(
-            {"company": "pytest-foundation"}
-        ),
-        provider_behavior_digest=canonical_sha256(
-            {"provider": "pytest-scripted"}
-        ),
+        company_foundation_digest=canonical_sha256({"company": "pytest-foundation"}),
+        provider_behavior_digest=canonical_sha256({"provider": "pytest-scripted"}),
         cases=(case,),
         artifact_refs=("pytest://experiment-spec",),
     )

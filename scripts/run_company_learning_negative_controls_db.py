@@ -130,9 +130,7 @@ async def run_negative_control_experiment_db(
     sealed_cases = {case.case_id: case for case in plan.spec.cases}
     assignments = {row.case_id: row for row in plan.assignments}
     required_case_ids = set(definitions)
-    if required_case_ids != set(sealed_cases) or required_case_ids != set(
-        assignments
-    ):
+    if required_case_ids != set(sealed_cases) or required_case_ids != set(assignments):
         raise RuntimeError(
             "negative-control runtime inputs do not exactly cover sealed cases"
         )
@@ -183,9 +181,7 @@ async def run_negative_control_experiment_db(
                 case_id=definition.case_id,
                 adaptive=adaptive_result,
                 frozen=frozen_result,
-                artifact_refs=(
-                    f"negative-control-pair:{definition.case_id}",
-                ),
+                artifact_refs=(f"negative-control-pair:{definition.case_id}",),
             )
         )
 
@@ -233,9 +229,7 @@ async def _assert_fresh_assignments(
             list(tenant_ids),
         )
     if existing:
-        raise RuntimeError(
-            "negative-control execution requires fresh, unused tenants"
-        )
+        raise RuntimeError("negative-control execution requires fresh, unused tenants")
 
 
 async def _prepare_negative_arm(
@@ -319,16 +313,12 @@ async def _prepare_negative_arm(
     )
     await alias_repo.insert_alias(
         phrase=f"Conflicting {definition.candidate_alias}",
-        resolved_entity_ref=conflicting_runtime_target.canonical_ref(
-            conflicting_id
-        ),
+        resolved_entity_ref=conflicting_runtime_target.canonical_ref(conflicting_id),
         source="manual",
         confidence=0.99,
         tenant_id=tenant_id,
         extra_metadata={
-            "logical_entity_type": (
-                conflicting_runtime_target.logical_entity_type
-            ),
+            "logical_entity_type": (conflicting_runtime_target.logical_entity_type),
             "semantic_kind": conflicting_runtime_target.semantic_kind,
             "identity_basis_class": "source_authoritative",
             "identity_basis_ref": (
@@ -365,9 +355,7 @@ async def _prepare_negative_arm(
             _resolver_response(
                 recurrence_entity_id,
                 confidence=recurrence_confidence,
-                canonical_type=(
-                    recurrence_runtime_target.canonical_ref_type
-                ),
+                canonical_type=(recurrence_runtime_target.canonical_ref_type),
             ),
         ]
     )
@@ -375,9 +363,7 @@ async def _prepare_negative_arm(
         pool=pool,
         llm=provider,
         alias_repo=alias_repo,
-        corrective_memory_reuse_enabled=(
-            arm is CorrectiveMemoryArm.ADAPTIVE
-        ),
+        corrective_memory_reuse_enabled=(arm is CorrectiveMemoryArm.ADAPTIVE),
     )
     semantic_worker = SourceSemanticWorker(
         pool=pool,
@@ -422,9 +408,7 @@ async def _prepare_negative_arm(
         )
         answer: dict[str, Any] = {
             "action": "accept_candidate",
-            "canonical_ref": request.payload["candidates"][0][
-                "canonical_ref"
-            ],
+            "canonical_ref": request.payload["candidates"][0]["canonical_ref"],
             "confidence": 0.99,
             "resolution_scope": definition.resolution_scope,
         }
@@ -460,10 +444,9 @@ async def _prepare_negative_arm(
     if alias is None:
         raise RuntimeError("adjudication did not persist corrective memory")
     alias_ref = _json(alias["resolved_entity_ref"])
-    if (
-        alias_ref.get("type") != runtime_target.canonical_ref_type
-        or alias_ref.get("id") != str(target_id)
-    ):
+    if alias_ref.get("type") != runtime_target.canonical_ref_type or alias_ref.get(
+        "id"
+    ) != str(target_id):
         raise RuntimeError("training correction selected the wrong target")
     metadata = _json(alias["entity_metadata"])
     if metadata.get("resolution_scope") != definition.resolution_scope:
@@ -474,9 +457,7 @@ async def _prepare_negative_arm(
         worker=semantic_worker,
     )
     if arm is CorrectiveMemoryArm.FROZEN:
-        visible = await _FrozenCorrectiveMemoryAliasRepo(
-            pool
-        ).fast_path_resolve_many(
+        visible = await _FrozenCorrectiveMemoryAliasRepo(pool).fast_path_resolve_many(
             [definition.training_phrase],
             tenant_id,
         )
@@ -493,9 +474,7 @@ async def _prepare_negative_arm(
         semantic_worker=semantic_worker,
         training_observation_id=training_observation_id,
         clarification_request_id=request.id,
-        clarification_answer_digest=str(
-            metadata["adjudication_answer_digest"]
-        ),
+        clarification_answer_digest=str(metadata["adjudication_answer_digest"]),
         adjudicated_alias_id=alias["id"],
     )
 
@@ -523,10 +502,7 @@ async def _materialize_runtime_targets(
         conn=conn,
         tenant_id=tenant_id,
         entity_id=conflicting_id,
-        label=(
-            conflicting_target_label
-            or f"Conflicting {target_label}"
-        ),
+        label=(conflicting_target_label or f"Conflicting {target_label}"),
         runtime_target=conflicting_runtime_target,
     )
 
@@ -682,10 +658,27 @@ async def _run_negative_recurrence(
     ):
         incidents.add(HardSafetyIncidentClass.CONTEXTUAL_ALIAS_GLOBALIZED)
     expected_ref = case.expectation_for(foundation.arm).expected_entity_ref
-    if definition.kind is RecurrenceCaseKind.CONFLICTING_SOURCE_HINT:
-        if foundation.arm is CorrectiveMemoryArm.ADAPTIVE and (
-            expected_ref is None
-            or resolved_ref != expected_ref
+    if (
+        definition.kind is RecurrenceCaseKind.CONFLICTING_SOURCE_HINT
+        and foundation.arm is CorrectiveMemoryArm.ADAPTIVE
+    ):
+        learned_ref = CanonicalEntityRef(
+            type=definition.entity_type,
+            id=str(foundation.target_id),
+        )
+        conflicting_ref = CanonicalEntityRef(
+            type=definition.entity_type,
+            id=str(foundation.conflicting_id),
+        )
+        visible_refs = {
+            ref
+            for candidate in observed["candidates"]
+            if (ref := _candidate_ref(candidate)) is not None
+        }
+        if (
+            learned_ref not in visible_refs
+            or conflicting_ref not in visible_refs
+            or resolved_ref == learned_ref
             or decision_source == "governed_exact_alias_replay"
         ):
             incidents.add(HardSafetyIncidentClass.CONFLICTING_EVIDENCE_IGNORED)
@@ -703,20 +696,15 @@ async def _run_negative_recurrence(
         latency_ms=latency_ms,
         estimated_cost_usd=llm_calls * llm_call_cost_usd,
         source_semantic_admitted=any(
-            str(model["semantic_work_status"]) == "belief_applied"
-            for model in models
+            str(model["semantic_work_status"]) == "belief_applied" for model in models
         ),
         lineage=ArmLineageRefs(
             training_observation_id=foundation.training_observation_id,
             recurrence_observation_id=observation_id,
             clarification_request_id=foundation.clarification_request_id,
-            clarification_answer_digest=(
-                foundation.clarification_answer_digest
-            ),
+            clarification_answer_digest=(foundation.clarification_answer_digest),
             adjudicated_alias_id=foundation.adjudicated_alias_id,
-            grounding_trace_id=(
-                trace["grounding_trace_id"] if trace else None
-            ),
+            grounding_trace_id=(trace["grounding_trace_id"] if trace else None),
             source_semantic_interpretation_id=(
                 trace["interpretation_id"] if trace else None
             ),
@@ -824,6 +812,7 @@ async def _recurrence_rows(
             SELECT trace.id AS grounding_trace_id,
                    trace.current_fate,
                    trace.selected_referent,
+                   candidate_set.candidates,
                    assessment.model_output,
                    interpretation.id AS interpretation_id,
                    admission.id AS semantic_admission_id
@@ -831,6 +820,9 @@ async def _recurrence_rows(
             JOIN resolution_assessments assessment
               ON assessment.tenant_id=trace.tenant_id
              AND assessment.id=trace.resolution_assessment_id
+            LEFT JOIN entity_candidate_sets candidate_set
+              ON candidate_set.tenant_id=trace.tenant_id
+             AND candidate_set.id=trace.candidate_set_id
             LEFT JOIN source_semantic_interpretations interpretation
               ON interpretation.tenant_id=trace.tenant_id
              AND interpretation.grounding_trace_id=trace.id
@@ -845,17 +837,20 @@ async def _recurrence_rows(
             tenant_id,
             observation_id,
         )
-        entities = _json(
-            await conn.fetchval(
-                """
+        entities = (
+            _json(
+                await conn.fetchval(
+                    """
                 SELECT entities_mentioned
                 FROM observations
                 WHERE tenant_id=$1 AND id=$2
                 """,
-                tenant_id,
-                observation_id,
+                    tenant_id,
+                    observation_id,
+                )
             )
-        ) or []
+            or []
+        )
         models = await conn.fetch(
             """
             SELECT model.id, model.scope_entities,
@@ -901,9 +896,26 @@ async def _recurrence_rows(
         "trace": trace,
         "entities": [_json(item) for item in entities],
         "models": models,
+        "candidates": _json(trace["candidates"]) if trace else [],
         "aliases": alias_rows,
         "self_authored": int(self_authored or 0),
     }
+
+
+def _candidate_ref(candidate: Any) -> CanonicalEntityRef | None:
+    if not isinstance(candidate, dict):
+        return None
+    if candidate.get("kind") != "canonical_referent":
+        return None
+    if not candidate.get("candidate_type") or not candidate.get(
+        "canonical_referent_id"
+    ):
+        return None
+    return CanonicalEntityRef(
+        type=str(candidate["candidate_type"]),
+        id=str(candidate["canonical_referent_id"]),
+        version=int(candidate.get("canonical_referent_version") or 1),
+    )
 
 
 def _unsafe_alias_globalization(
@@ -917,9 +929,7 @@ def _unsafe_alias_globalization(
     if definition.kind is RecurrenceCaseKind.UNRELATED_NEGATIVE_CONTROL:
         return any(
             (
-                _json(row["entity_metadata"]).get(
-                    "identity_basis_class"
-                )
+                _json(row["entity_metadata"]).get("identity_basis_class")
                 == "independently_adjudicated"
             )
             for row in alias_rows
@@ -942,9 +952,7 @@ def _unsafe_alias_globalization(
         (
             (_json(row["entity_metadata"]) or {}).get("resolution_scope")
             == "tenant_global_exact"
-            or (_json(row["entity_metadata"]) or {}).get(
-                "autonomous_replay_eligible"
-            )
+            or (_json(row["entity_metadata"]) or {}).get("autonomous_replay_eligible")
             is True
         )
         for row in alias_rows
@@ -964,10 +972,7 @@ def _wrong_models(
     if expected_ref is None:
         return bool(models)
     expected = expected_ref.model_dump(mode="json")
-    return any(
-        _json(model["scope_entities"]) != [expected]
-        for model in models
-    )
+    return any(_json(model["scope_entities"]) != [expected] for model in models)
 
 
 async def _assert_pair_isolation(
