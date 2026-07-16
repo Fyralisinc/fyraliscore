@@ -1,0 +1,8 @@
+{"case_id":"CLI-001","case_version":"v1","initial_identity":"Acme","renamed_identity":"Acme Holdings","reuse_initial_identity":true}
+{"case_id":"CLI-002","case_version":"v1","initial_identity":"Nimbus","renamed_identity":"Nimbus Labs","reuse_initial_identity":false}
+{"case_id":"CLI-003","case_version":"v1","initial_identity":"Northstar","renamed_identity":"Northstar Group","reuse_initial_identity":true}
+{"case_id":"CLI-004","case_version":"v1","initial_identity":"Blue Harbor","renamed_identity":"Blue Harbor Systems","reuse_initial_identity":false}
+{"case_id":"CLI-005","case_version":"v1","initial_identity":"Cedar","renamed_identity":"Cedar Analytics","reuse_initial_identity":true}
+{"case_id":"CLI-006","case_version":"v1","initial_identity":"Orbit","renamed_identity":"Orbit Cloud","reuse_initial_identity":false}
+{"case_id":"CLI-007","case_version":"v1","initial_identity":"Pioneer","renamed_identity":"Pioneer Works","reuse_initial_identity":true}
+{"case_id":"CLI-008","case_version":"v1","initial_identity":"Vertex","renamed_identity":"Vertex AI","reuse_initial_identity":false}
