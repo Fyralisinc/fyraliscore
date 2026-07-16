@@ -16,8 +16,18 @@ from lib.evaluation.company_learning_assurance import (
     PopulationAssurance,
     PositiveAssurance,
     SlackAssurance,
+    VariantPopulationAssurance,
     validate_company_learning_assurance_artifact,
     validate_correction_assurance_component,
+    validate_variant_population_assurance_component,
+)
+from lib.evaluation.company_learning_population import IntervalEstimate
+from lib.evaluation.company_learning_variant_population import (
+    CompanyLearningVariantPopulationEvidence,
+    VariantAliasExecutionObservation,
+    VariantAliasMechanismMetrics,
+    build_variant_alias_population,
+    evaluate_variant_alias_population,
 )
 from lib.evaluation.correction_assurance import (
     CorrectionAssuranceArtifact,
@@ -29,11 +39,240 @@ from lib.evaluation.correction_propagation import (
     CorrectionPropagationScope,
 )
 from lib.evaluation.proof import EvidenceTier
+from lib.evaluation.tests.test_company_learning_variant_population import (
+    FIXTURE as VARIANT_FIXTURE,
+)
+from lib.evaluation.tests.test_company_learning_variant_population import (
+    _assignments as _variant_assignments,
+)
+from lib.evaluation.tests.test_company_learning_variant_population import (
+    _experiment_report as _variant_experiment_report,
+)
+from lib.evaluation.tests.test_company_learning_variant_population import (
+    _mechanism_metrics as _variant_mechanism_metrics,
+)
+from lib.evaluation.tests.test_company_learning_variant_population import (
+    _mechanisms as _variant_mechanisms,
+)
 
 
 _DIGEST = "a" * 64
 _ARCHITECTURE_DIGEST = "b" * 64
 _IMPLEMENTATION_PLAN_DIGEST = "c" * 64
+
+
+def _interval(
+    point_estimate: float,
+    *,
+    sample_size: int = 24,
+) -> IntervalEstimate:
+    return IntervalEstimate(
+        point_estimate=point_estimate,
+        lower_95=point_estimate,
+        upper_95=point_estimate,
+        method="pytest-exact",
+        sample_size=sample_size,
+    )
+
+
+def _ideal_variant_mechanism_metrics(
+    *,
+    observed_pair_count: int = 24,
+    unsupported_case_count: int = 0,
+    adaptive_target_candidate_authorization_rate: float = 1.0,
+    frozen_target_candidate_exposure_rate: float = 0.0,
+    candidate_memory_mediated_success_rate: float = 1.0,
+    hard_safety_incident_count: int = 0,
+    control_integrity_violation_count: int = 0,
+) -> VariantAliasMechanismMetrics:
+    runtime_support_rate = observed_pair_count / 24
+    return VariantAliasMechanismMetrics(
+        selected_case_count=24,
+        observed_pair_count=observed_pair_count,
+        unsupported_case_count=unsupported_case_count,
+        full_registry_coverage_rate=1.0,
+        observed_execution_rate=runtime_support_rate,
+        adaptive_correctness_rate=1.0,
+        frozen_correctness_rate=0.0,
+        adaptive_minus_frozen_correctness=1.0,
+        adaptive_target_candidate_authorization_rate=(
+            adaptive_target_candidate_authorization_rate
+        ),
+        frozen_target_candidate_exposure_rate=(
+            frozen_target_candidate_exposure_rate
+        ),
+        candidate_authorization_gap=(
+            adaptive_target_candidate_authorization_rate
+            - frozen_target_candidate_exposure_rate
+        ),
+        adaptive_closed_set_match_rate=1.0,
+        frozen_closed_set_match_rate=0.0,
+        both_arms_one_llm_call_rate=1.0,
+        both_arms_scripted_target_response_rate=1.0,
+        frozen_safe_review_or_abstention_rate=1.0,
+        source_immutability_rate=1.0,
+        candidate_memory_mediated_success_rate=(
+            candidate_memory_mediated_success_rate
+        ),
+        adaptive_mean_llm_calls=1.0,
+        frozen_mean_llm_calls=1.0,
+        hard_safety_incident_count=hard_safety_incident_count,
+        control_integrity_violation_count=(
+            control_integrity_violation_count
+        ),
+        entity_type_counts={
+            "customer": 6,
+            "project": 6,
+            "system": 6,
+            "team": 6,
+        },
+        variant_family_counts={
+            "acronym_from_long_form": 4,
+            "anchored_short_form": 4,
+            "hyphen_spacing": 4,
+            "orthographic_omission_subsequence": 4,
+            "possessive_or_plural": 4,
+            "punctuation_compact_form": 4,
+        },
+    )
+
+
+def _variant_assurance(
+    *,
+    path: str = "/tmp/variant-population-evidence.json",
+    status: str = "observed",
+    observed_pair_count: int = 24,
+    unsupported_case_count: int = 0,
+    adaptive_unsafe_rate: float = 0.0,
+    frozen_unsafe_rate: float = 0.0,
+    mechanism_metrics: VariantAliasMechanismMetrics | None = None,
+    component_digests: dict[str, str] | None = None,
+) -> VariantPopulationAssurance:
+    return VariantPopulationAssurance(
+        status=status,
+        evidence_tier=EvidenceTier.E4,
+        registry_pair_count=24,
+        observed_pair_count=observed_pair_count,
+        unsupported_case_count=unsupported_case_count,
+        runtime_support_rate=observed_pair_count / 24,
+        adaptive_correctness=_interval(
+            1.0,
+            sample_size=observed_pair_count,
+        ),
+        frozen_correctness=_interval(
+            0.0,
+            sample_size=observed_pair_count,
+        ),
+        adaptive_minus_frozen_correctness=_interval(
+            1.0,
+            sample_size=observed_pair_count,
+        ),
+        adaptive_unsafe_rate=_interval(
+            adaptive_unsafe_rate,
+            sample_size=observed_pair_count,
+        ),
+        frozen_unsafe_rate=_interval(
+            frozen_unsafe_rate,
+            sample_size=observed_pair_count,
+        ),
+        mechanism_metrics=mechanism_metrics
+        or _ideal_variant_mechanism_metrics(
+            observed_pair_count=observed_pair_count,
+            unsupported_case_count=unsupported_case_count,
+        ),
+        artifact_paths={"variant_population_evidence": path},
+        component_digests=component_digests
+        or {
+            "evidence": _DIGEST,
+            "registry": _DIGEST,
+            "report": _DIGEST,
+            "experiment_report": _DIGEST,
+            "mechanism_metrics": _DIGEST,
+        },
+    )
+
+
+def _variant_evidence(
+    *,
+    run_id: str = "pytest-assurance:variant",
+    system_version: str = "pytest-system",
+) -> CompanyLearningVariantPopulationEvidence:
+    population = build_variant_alias_population()
+    report = _variant_experiment_report(population).model_copy(
+        update={
+            "run_id": run_id,
+            "system_version": system_version,
+        }
+    )
+    observations = tuple(
+        VariantAliasExecutionObservation(case_id=case.case_id)
+        for case in population.cases
+    )
+    population_report = evaluate_variant_alias_population(
+        population=population,
+        experiment_report=report,
+        observations=observations,
+        bootstrap_samples=200,
+    )
+    assignments = _variant_assignments(population, report)
+    return CompanyLearningVariantPopulationEvidence(
+        created_at="2026-07-16T00:00:00+00:00",
+        run_id=report.run_id,
+        system_version=report.system_version,
+        execution_mode="full",
+        selection_policy="full_registry_once_no_selective_reruns",
+        registry_path=str(VARIANT_FIXTURE),
+        registry_population=population,
+        registry_population_digest=population.digest,
+        selected_case_ids=tuple(case.case_id for case in population.cases),
+        assignments=assignments,
+        observations=observations,
+        raw_pairs=report.pairs,
+        experiment_report=report,
+        population_report=population_report,
+        mechanism_pairs=_variant_mechanisms(report, assignments),
+        mechanism_metrics=_variant_mechanism_metrics(population),
+        artifact_refs=("pytest:variant-assurance-evidence",),
+    )
+
+
+def _variant_assurance_from_evidence(
+    evidence: CompanyLearningVariantPopulationEvidence,
+    *,
+    path: str,
+) -> VariantPopulationAssurance:
+    report = evidence.population_report
+    mechanism_metrics = evidence.mechanism_metrics
+    assert report is not None
+    assert mechanism_metrics is not None
+    return VariantPopulationAssurance(
+        status="observed",
+        evidence_tier=EvidenceTier.E4,
+        registry_pair_count=report.pair_count,
+        observed_pair_count=report.observed_pair_count,
+        unsupported_case_count=report.unsupported_case_count,
+        runtime_support_rate=(
+            report.observed_pair_count / report.pair_count
+        ),
+        adaptive_correctness=report.adaptive_correctness,
+        frozen_correctness=report.frozen_correctness,
+        adaptive_minus_frozen_correctness=(
+            report.adaptive_minus_frozen_correctness
+        ),
+        adaptive_unsafe_rate=report.adaptive_unsafe_rate,
+        frozen_unsafe_rate=report.frozen_unsafe_rate,
+        mechanism_metrics=mechanism_metrics,
+        artifact_paths={"variant_population_evidence": path},
+        component_digests={
+            "evidence": evidence.digest,
+            "registry": evidence.registry_population_digest,
+            "report": report.digest,
+            "experiment_report": evidence.experiment_report.digest,
+            "mechanism_metrics": canonical_sha256(
+                mechanism_metrics.model_dump(mode="json")
+            ),
+        },
+    )
 
 
 def _correction_artifact(
@@ -176,6 +415,7 @@ def _summary(
     *,
     slack: SlackAssurance | None = None,
     correction: CorrectionAssurance | None = None,
+    variant_population: VariantPopulationAssurance | None = None,
     status: str = "working",
     blocking_failures: tuple[str, ...] = (),
     architecture_digest: str = _ARCHITECTURE_DIGEST,
@@ -243,11 +483,13 @@ def _summary(
     )
     slack = slack or _slack_assurance()
     correction = correction or _correction_summary()
+    variant_population = variant_population or _variant_assurance()
     artifact_paths = {
         **positive.artifact_paths,
         **negative.artifact_paths,
         **slack.artifact_paths,
         **correction.artifact_paths,
+        **variant_population.artifact_paths,
         **population.artifact_paths,
     }
     component_digests = {
@@ -268,6 +510,10 @@ def _summary(
             for key, value in correction.component_digests.items()
         },
         **{
+            f"variant_population_{key}": value
+            for key, value in variant_population.component_digests.items()
+        },
+        **{
             f"population_{key}": value
             for key, value in population.component_digests.items()
         },
@@ -284,6 +530,7 @@ def _summary(
         negative=negative,
         slack=slack,
         correction=correction,
+        variant_population=variant_population,
         population=population,
         proof_gaps=("not open-world or task-autonomy proof",),
         blocking_failures=blocking_failures,
@@ -292,10 +539,10 @@ def _summary(
     )
 
 
-def test_summary_v2_binds_reviewed_identity_and_active_scope() -> None:
+def test_summary_v3_binds_reviewed_identity_and_active_scope() -> None:
     summary = _summary()
 
-    assert summary.schema_version == "company-learning-assurance-summary-v2"
+    assert summary.schema_version == "company-learning-assurance-summary-v3"
     assert summary.architecture_digest == _ARCHITECTURE_DIGEST
     assert summary.implementation_plan_digest == _IMPLEMENTATION_PLAN_DIGEST
     assert summary.evaluation_profile == "autonomous-company-learning-v1"
@@ -348,6 +595,114 @@ def test_slack_proof_semantics_are_explicit_and_noncompensatory() -> None:
     }
     with pytest.raises(ValidationError):
         SlackAssurance.model_validate(old_payload)
+
+
+@pytest.mark.parametrize(
+    "variant_population",
+    (
+        _variant_assurance(
+            status="observed_with_gaps",
+            observed_pair_count=23,
+            unsupported_case_count=1,
+        ),
+        _variant_assurance(
+            status="failed",
+            mechanism_metrics=_ideal_variant_mechanism_metrics(
+                candidate_memory_mediated_success_rate=0.99,
+                control_integrity_violation_count=1,
+            ),
+        ),
+        _variant_assurance(
+            status="failed",
+            mechanism_metrics=_ideal_variant_mechanism_metrics(
+                adaptive_target_candidate_authorization_rate=0.99,
+                control_integrity_violation_count=1,
+            ),
+        ),
+        _variant_assurance(
+            status="failed",
+            mechanism_metrics=_ideal_variant_mechanism_metrics(
+                frozen_target_candidate_exposure_rate=0.01,
+                control_integrity_violation_count=1,
+            ),
+        ),
+        _variant_assurance(
+            status="failed",
+            adaptive_unsafe_rate=1 / 24,
+            mechanism_metrics=_ideal_variant_mechanism_metrics(
+                hard_safety_incident_count=1,
+            ),
+        ),
+        _variant_assurance(
+            status="failed",
+            mechanism_metrics=_ideal_variant_mechanism_metrics(
+                control_integrity_violation_count=1,
+            ),
+        ),
+    ),
+    ids=(
+        "incomplete-sealed-coverage",
+        "candidate-memory-mediation",
+        "adaptive-authorization",
+        "frozen-exposure",
+        "safety-incident",
+        "control-integrity",
+    ),
+)
+def test_variant_population_is_noncompensatory_for_working_status(
+    variant_population: VariantPopulationAssurance,
+) -> None:
+    with pytest.raises(ValidationError, match="working assurance"):
+        _summary(variant_population=variant_population)
+
+    failed = _summary(
+        variant_population=variant_population,
+        status="failed",
+        blocking_failures=("variant population requirement failed",),
+    )
+    assert failed.variant_population == variant_population
+
+
+def test_variant_component_reopens_full_evidence_and_all_digests(
+    tmp_path: Path,
+) -> None:
+    evidence = _variant_evidence()
+    artifact_path = tmp_path / "variant_population_evidence.json"
+    artifact_path.write_text(
+        json.dumps(evidence.artifact_payload(), sort_keys=True),
+        encoding="utf-8",
+    )
+    assurance = _variant_assurance_from_evidence(
+        evidence,
+        path=str(artifact_path),
+    )
+
+    assert validate_variant_population_assurance_component(
+        assurance,
+        run_id="pytest-assurance:variant",
+        system_version="pytest-system",
+    ) == evidence
+
+    wrong_digest = assurance.model_copy(
+        update={
+            "component_digests": {
+                **assurance.component_digests,
+                "report": "f" * 64,
+            }
+        }
+    )
+    with pytest.raises(ValueError, match="component digest mismatch"):
+        validate_variant_population_assurance_component(
+            wrong_digest,
+            run_id="pytest-assurance:variant",
+            system_version="pytest-system",
+        )
+    with pytest.raises(ValueError, match="run identity mismatch"):
+        validate_variant_population_assurance_component(
+            assurance,
+            run_id="another-run:variant",
+            system_version="pytest-system",
+        )
 
 
 def test_correction_component_reopens_runtime_artifact_and_digest(

@@ -18,7 +18,13 @@ from lib.evaluation.company_learning_experiment import (
 from lib.evaluation.company_learning_population import (
     HeldOutExactAliasPopulation,
     HeldOutPairObservation,
+    IntervalEstimate,
     evaluate_heldout_population,
+)
+from lib.evaluation.company_learning_variant_population import (
+    CompanyLearningVariantPopulationEvidence,
+    VariantAliasMechanismMetrics,
+    validate_variant_population_evidence_artifact,
 )
 from lib.evaluation.correction_assurance import (
     CorrectionAssuranceArtifact,
@@ -32,6 +38,9 @@ from lib.evaluation.slack_reconstruction_gold import (
 
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_SEALED_VARIANT_POPULATION_DIGEST = (
+    "d51087c86ff9a80d3729d3ad9147f14109570b00ab24df025220936017dc4e58"
+)
 
 
 class _SummaryModel(BaseModel):
@@ -267,9 +276,154 @@ class PopulationAssurance(_SummaryModel):
         return self
 
 
+class VariantPopulationAssurance(_SummaryModel):
+    status: Literal["observed", "observed_with_gaps", "failed"]
+    evidence_tier: EvidenceTier
+    registry_pair_count: int = Field(ge=0)
+    observed_pair_count: int = Field(ge=0)
+    unsupported_case_count: int = Field(ge=0)
+    runtime_support_rate: float = Field(ge=0.0, le=1.0)
+    adaptive_correctness: IntervalEstimate
+    frozen_correctness: IntervalEstimate
+    adaptive_minus_frozen_correctness: IntervalEstimate
+    adaptive_unsafe_rate: IntervalEstimate
+    frozen_unsafe_rate: IntervalEstimate
+    mechanism_metrics: VariantAliasMechanismMetrics
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def exact_variant_population_accounting(self) -> Self:
+        if self.registry_pair_count != 24:
+            raise ValueError(
+                "variant assurance requires the sealed 24-case registry"
+            )
+        if (
+            self.observed_pair_count + self.unsupported_case_count
+            != self.registry_pair_count
+        ):
+            raise ValueError(
+                "variant observed and unsupported counts must partition "
+                "the registry"
+            )
+        expected_rate = self.observed_pair_count / self.registry_pair_count
+        if abs(self.runtime_support_rate - expected_rate) > 1e-12:
+            raise ValueError(
+                "variant population runtime support rate is inconsistent"
+            )
+        estimates = (
+            self.adaptive_correctness,
+            self.frozen_correctness,
+            self.adaptive_minus_frozen_correctness,
+            self.adaptive_unsafe_rate,
+            self.frozen_unsafe_rate,
+        )
+        if any(
+            estimate.sample_size != self.observed_pair_count
+            for estimate in estimates
+        ):
+            raise ValueError(
+                "variant continuous metrics must cover every observed pair"
+            )
+        metrics = self.mechanism_metrics
+        expected_mechanism_accounting = {
+            "selected_case_count": self.registry_pair_count,
+            "observed_pair_count": self.observed_pair_count,
+            "unsupported_case_count": self.unsupported_case_count,
+            "full_registry_coverage_rate": 1.0,
+            "observed_execution_rate": self.runtime_support_rate,
+            "adaptive_correctness_rate": (
+                self.adaptive_correctness.point_estimate
+            ),
+            "frozen_correctness_rate": (
+                self.frozen_correctness.point_estimate
+            ),
+            "adaptive_minus_frozen_correctness": (
+                self.adaptive_minus_frozen_correctness.point_estimate
+            ),
+        }
+        if any(
+            not _metric_values_match(
+                getattr(metrics, field_name),
+                expected_value,
+            )
+            for field_name, expected_value in (
+                expected_mechanism_accounting.items()
+            )
+        ):
+            raise ValueError(
+                "variant mechanism metrics do not match summary accounting"
+            )
+        if set(self.artifact_paths) != {"variant_population_evidence"}:
+            raise ValueError(
+                "variant assurance requires exactly one evidence artifact"
+            )
+        if set(self.component_digests) != {
+            "evidence",
+            "registry",
+            "report",
+            "experiment_report",
+            "mechanism_metrics",
+        }:
+            raise ValueError(
+                "variant assurance requires evidence, registry, report, "
+                "experiment-report and mechanism-metrics digests"
+            )
+        expected_status = (
+            "failed"
+            if self.has_unsafe_or_invalid_mechanism
+            else (
+                "observed"
+                if self.has_complete_sealed_coverage
+                else "observed_with_gaps"
+            )
+        )
+        if self.status != expected_status:
+            raise ValueError(
+                "variant assurance status does not match coverage, safety "
+                "and mechanism evidence"
+            )
+        if self.status == "observed" and self.evidence_tier.rank < 4:
+            raise ValueError(
+                "observed variant assurance requires at least E4 evidence"
+            )
+        return self
+
+    @property
+    def has_complete_sealed_coverage(self) -> bool:
+        return bool(
+            self.observed_pair_count == self.registry_pair_count
+            and self.unsupported_case_count == 0
+            and self.runtime_support_rate == 1.0
+            and self.mechanism_metrics.full_registry_coverage_rate == 1.0
+            and self.mechanism_metrics.observed_execution_rate == 1.0
+        )
+
+    @property
+    def has_unsafe_or_invalid_mechanism(self) -> bool:
+        metrics = self.mechanism_metrics
+        return bool(
+            self.adaptive_unsafe_rate.point_estimate > 0.0
+            or self.frozen_unsafe_rate.point_estimate > 0.0
+            or metrics.hard_safety_incident_count > 0
+            or metrics.control_integrity_violation_count > 0
+            or metrics.candidate_memory_mediated_success_rate != 1.0
+            or metrics.adaptive_target_candidate_authorization_rate != 1.0
+            or metrics.frozen_target_candidate_exposure_rate != 0.0
+        )
+
+    @property
+    def working_requirements_satisfied(self) -> bool:
+        return bool(
+            self.status == "observed"
+            and self.has_complete_sealed_coverage
+            and not self.has_unsafe_or_invalid_mechanism
+        )
+
+
 class CompanyLearningAssuranceSummary(_SummaryModel):
-    schema_version: Literal["company-learning-assurance-summary-v2"] = (
-        "company-learning-assurance-summary-v2"
+    schema_version: Literal["company-learning-assurance-summary-v3"] = (
+        "company-learning-assurance-summary-v3"
     )
     run_id: str = Field(min_length=1)
     system_version: str = Field(min_length=1)
@@ -288,6 +442,7 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
     negative: NegativeAssurance
     slack: SlackAssurance
     correction: CorrectionAssurance
+    variant_population: VariantPopulationAssurance
     population: PopulationAssurance | None = None
     proof_gaps: tuple[str, ...]
     blocking_failures: tuple[str, ...]
@@ -310,6 +465,7 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             **self.negative.artifact_paths,
             **self.slack.artifact_paths,
             **self.correction.artifact_paths,
+            **self.variant_population.artifact_paths,
             **(
                 self.population.artifact_paths
                 if self.population is not None
@@ -337,6 +493,12 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
                 f"correction_{key}": value
                 for key, value in self.correction.component_digests.items()
             },
+            **{
+                f"variant_population_{key}": value
+                for key, value in (
+                    self.variant_population.component_digests.items()
+                )
+            },
             **(
                 {
                     f"population_{key}": value
@@ -362,6 +524,7 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
             or not self.correction.source_immutable
             or not self.correction.tenant_isolated
             or not self.correction.replay_idempotent
+            or self.variant_population.has_unsafe_or_invalid_mechanism
         )
         blocking_component = bool(
             (
@@ -369,6 +532,7 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
                 and not self.slack.active_slice_satisfied
             )
             or not self.correction.converged
+            or not self.variant_population.working_requirements_satisfied
         )
         if self.status == "working" and (
             self.blocking_failures or unsafe_component or blocking_component
@@ -483,6 +647,90 @@ def validate_correction_assurance_component(
     return artifact
 
 
+def validate_variant_population_assurance_component(
+    assurance: VariantPopulationAssurance,
+    *,
+    run_id: str,
+    system_version: str,
+) -> CompanyLearningVariantPopulationEvidence:
+    """Reopen and cross-bind the sealed variant population evidence."""
+
+    payload = _read_json_file(
+        assurance.artifact_paths["variant_population_evidence"]
+    )
+    evidence = validate_variant_population_evidence_artifact(payload)
+    if evidence.run_id != run_id:
+        raise ValueError("variant assurance run identity mismatch")
+    if evidence.system_version != system_version:
+        raise ValueError("variant assurance system version mismatch")
+    if evidence.execution_mode != "full":
+        raise ValueError(
+            "variant assurance requires one full sealed-population execution"
+        )
+    if (
+        evidence.registry_population_digest
+        != _SEALED_VARIANT_POPULATION_DIGEST
+    ):
+        raise ValueError("variant assurance registry identity mismatch")
+    registry_ids = tuple(
+        case.case_id for case in evidence.registry_population.cases
+    )
+    if (
+        len(registry_ids) != 24
+        or evidence.selected_case_ids != registry_ids
+    ):
+        raise ValueError(
+            "variant assurance does not cover the exact sealed registry"
+        )
+    report = evidence.population_report
+    mechanism_metrics = evidence.mechanism_metrics
+    if report is None:
+        raise ValueError("variant assurance population report is missing")
+    if mechanism_metrics is None or not evidence.mechanism_pairs:
+        raise ValueError("variant assurance mechanism evidence is missing")
+    if len(evidence.mechanism_pairs) != report.observed_pair_count:
+        raise ValueError(
+            "variant mechanism evidence must cover every observed pair"
+        )
+
+    expected_digests = {
+        "evidence": evidence.digest,
+        "registry": evidence.registry_population_digest,
+        "report": report.digest,
+        "experiment_report": evidence.experiment_report.digest,
+        "mechanism_metrics": canonical_sha256(
+            mechanism_metrics.model_dump(mode="json")
+        ),
+    }
+    if assurance.component_digests != expected_digests:
+        raise ValueError("variant assurance component digest mismatch")
+
+    expected_values = {
+        "registry_pair_count": report.pair_count,
+        "observed_pair_count": report.observed_pair_count,
+        "unsupported_case_count": report.unsupported_case_count,
+        "runtime_support_rate": (
+            report.observed_pair_count / report.pair_count
+        ),
+        "adaptive_correctness": report.adaptive_correctness,
+        "frozen_correctness": report.frozen_correctness,
+        "adaptive_minus_frozen_correctness": (
+            report.adaptive_minus_frozen_correctness
+        ),
+        "adaptive_unsafe_rate": report.adaptive_unsafe_rate,
+        "frozen_unsafe_rate": report.frozen_unsafe_rate,
+        "mechanism_metrics": mechanism_metrics,
+    }
+    if any(
+        getattr(assurance, field_name) != expected_value
+        for field_name, expected_value in expected_values.items()
+    ):
+        raise ValueError(
+            "variant assurance does not match population evidence"
+        )
+    return evidence
+
+
 def validate_company_learning_assurance_components(
     summary: CompanyLearningAssuranceSummary,
 ) -> None:
@@ -495,6 +743,7 @@ def validate_company_learning_assurance_components(
         "negative_evidence",
         "population_evidence",
         "correction_evidence",
+        "variant_population_evidence",
         "slack_observations",
         "slack_report",
     }
@@ -693,6 +942,11 @@ def validate_company_learning_assurance_components(
         run_id=f"{summary.run_id}:correction",
         system_version=summary.system_version,
     )
+    validate_variant_population_assurance_component(
+        summary.variant_population,
+        run_id=f"{summary.run_id}:variant",
+        system_version=summary.system_version,
+    )
 
     slack_envelope = _read_json_file(summary.artifact_paths["slack_report"])
     slack_report = _object(
@@ -760,6 +1014,14 @@ def _population_safety_incident_count(
         if isinstance(value, int):
             return value
     return 0
+
+
+def _metric_values_match(observed: Any, expected: Any) -> bool:
+    if isinstance(observed, float) or isinstance(expected, float):
+        if observed is None or expected is None:
+            return observed is expected
+        return abs(float(observed) - float(expected)) <= 1e-12
+    return observed == expected
 
 
 def _read_json_file(path_value: str) -> dict[str, Any]:
