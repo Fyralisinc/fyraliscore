@@ -177,6 +177,7 @@ class EntityResolverWorker:
         budget: ResolverLLMBudget | None = None,
         high_confidence: float = HIGH_CONFIDENCE,
         review_min: float = REVIEW_MIN,
+        corrective_memory_reuse_enabled: bool = True,
         logger: Any | None = None,
     ) -> None:
         self._pool = pool
@@ -190,6 +191,7 @@ class EntityResolverWorker:
         self._budget = budget or ResolverLLMBudget()
         self._high = high_confidence
         self._review = review_min
+        self._corrective_memory_reuse_enabled = corrective_memory_reuse_enabled
         self._log = logger or _log
         self._retry_after: dict[UUID, float] = {}
         # Observation -> number of requeues (for backoff).
@@ -301,6 +303,8 @@ class EntityResolverWorker:
             observation_id=observation_id,
             phrase=phrase,
         )
+        if not self._corrective_memory_reuse_enabled:
+            self._hide_clarification_learned_aliases(ctx)
         if (
             ctx.context_selection_command is None
             or ctx.context_selection_outcome is None
@@ -395,6 +399,36 @@ class EntityResolverWorker:
                 observation_id=observation_id,
                 tenant_id=tenant_id,
             )
+
+    @staticmethod
+    def _hide_clarification_learned_aliases(ctx: ResolverContext) -> None:
+        """Make the frozen experiment arm blind to corrective-memory aliases.
+
+        Clarification answers still persist normally in the canonical alias
+        registry. This read-side control removes only aliases whose governed
+        identity was learned from a clarification, from both deterministic
+        replay and the LLM's candidate context. Manually curated aliases with
+        any other identity basis remain available.
+        """
+
+        def is_clarification_learned(alias: Any) -> bool:
+            identity_basis_ref = alias.identity_basis_ref
+            return (
+                alias.identity_basis_class == "independently_adjudicated"
+                and isinstance(identity_basis_ref, str)
+                and identity_basis_ref.startswith("clarification-request:")
+            )
+
+        ctx.recent_aliases = [
+            alias
+            for alias in ctx.recent_aliases
+            if not is_clarification_learned(alias)
+        ]
+        ctx.known_entity_candidates = [
+            candidate
+            for candidate in ctx.known_entity_candidates
+            if not is_clarification_learned(candidate)
+        ]
 
     async def _commit_episode_and_route(
         self,

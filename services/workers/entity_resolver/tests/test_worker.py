@@ -1161,6 +1161,101 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     ) == [("NBI", "resolved")]
     assert len(conflict_provider.calls) == 1
 
+    # The frozen experiment arm preserves the adjudicated alias in storage but
+    # cannot see or replay it. An unrelated manual candidate remains available
+    # to the model, proving that the control disables learned corrective memory
+    # rather than all alias-backed candidate generation.
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Nimbus Bank",
+        entity_type="customer",
+        entity_id=str(customer_id),
+        source="manual",
+    )
+    frozen_observation_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI renewal is delayed again",
+        unresolved_phrases=["NBI"],
+    )
+    frozen_provider = ScriptedProvider(
+        [
+            _resolution_json(
+                type="customer",
+                id=str(customer_id),
+                confidence=0.99,
+            )
+        ]
+    )
+    frozen_worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=frozen_provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+        corrective_memory_reuse_enabled=False,
+    )
+
+    assert await frozen_worker.process_observation(
+        frozen_observation_id,
+        tenant_id,
+    ) == [("NBI", "resolved")]
+    assert len(frozen_provider.calls) == 1
+    frozen_prompt = frozen_provider.calls[0]["user"]
+    assert '"alias":"NBI"' not in frozen_prompt
+    assert f"clarification-request:{clarification['id']}" not in frozen_prompt
+    assert '"alias":"Nimbus Bank"' in frozen_prompt
+    assert f"test-adjudication:customer:{customer_id}" in frozen_prompt
+
+    async with resolver_db.acquire() as conn:
+        persisted_alias = await conn.fetchrow(
+            """
+            SELECT resolved_entity_ref, entity_metadata
+            FROM entity_aliases
+            WHERE tenant_id=$1 AND alias_text='NBI'
+            """,
+            tenant_id,
+        )
+        frozen_trace = await conn.fetchrow(
+            """
+            SELECT assessment.model_output
+            FROM grounding_traces trace
+            JOIN resolution_assessments assessment
+              ON assessment.tenant_id=trace.tenant_id
+             AND assessment.id=trace.resolution_assessment_id
+            WHERE trace.tenant_id=$1
+              AND trace.source_observation_id=$2
+            """,
+            tenant_id,
+            frozen_observation_id,
+        )
+        replay_attempt_count = await conn.fetchval(
+            """
+            SELECT attempt_count
+            FROM think_feedback_stats
+            WHERE tenant_id=$1
+              AND surface='entity_grounding'
+              AND op_type='autonomous_learning'
+              AND op_kind='governed_exact_alias_replay'
+            """,
+            tenant_id,
+        )
+
+    assert persisted_alias is not None
+    persisted_metadata = persisted_alias["entity_metadata"]
+    if isinstance(persisted_metadata, str):
+        persisted_metadata = json.loads(persisted_metadata)
+    assert persisted_metadata["identity_basis_ref"] == (
+        f"clarification-request:{clarification['id']}"
+    )
+    assert persisted_metadata["autonomous_replay_eligible"] is True
+    assert frozen_trace is not None
+    frozen_model_output = frozen_trace["model_output"]
+    if isinstance(frozen_model_output, str):
+        frozen_model_output = json.loads(frozen_model_output)
+    assert frozen_model_output["decision_source"] == "llm"
+    assert frozen_model_output["llm_invoked"] is True
+    assert replay_attempt_count == 1
+
 
 async def test_contextual_adjudication_does_not_enable_global_deterministic_replay(
     resolver_db: asyncpg.Pool,
