@@ -12,6 +12,8 @@ from typing import Literal, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from lib.evaluation.entity_pipeline_gold import EntityPipelineMetrics
+
 
 class _Record(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
@@ -89,6 +91,7 @@ class GoldEntityExtractionReport(_Record):
     overall: EntityExtractionMetrics
     by_source: dict[str, EntityExtractionMetrics]
     by_slack_context: dict[str, EntityExtractionMetrics]
+    entity_pipeline: EntityPipelineMetrics | None = None
     uncertainties: tuple[str, ...] = ()
 
 
@@ -97,6 +100,7 @@ def evaluate_gold_entity_extraction(
     signals: Sequence[GoldSignal],
     gold_mentions: Sequence[GoldMention],
     predictions: Sequence[PredictedMention],
+    entity_pipeline: EntityPipelineMetrics | None = None,
     partial_match_iou: float = 0.01,
 ) -> GoldEntityExtractionReport:
     """Score predictions against gold spans using deterministic one-to-one matching.
@@ -136,6 +140,7 @@ def evaluate_gold_entity_extraction(
         overall=overall,
         by_source=by_source,
         by_slack_context=by_slack,
+        entity_pipeline=entity_pipeline,
         uncertainties=tuple(uncertainty),
     )
 
