@@ -19,6 +19,7 @@ if __package__ in {None, ""}:
 
 import asyncpg
 
+from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.source_identity_binding_lifecycle import (
     BindingLifecycleProofCell,
     SourceIdentityBindingLifecycleEvidence,
@@ -33,6 +34,7 @@ from services.domain.source_identity_bindings import SourceIdentityBindingRepo
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_NAME = "source_identity_binding_lifecycle_evidence.json"
+QUERY_MANIFEST_NAME = "source_identity_binding_lifecycle_query_manifest.json"
 CASE_ID = "source-identity-binding-lifecycle-v1"
 _UUID_NAMESPACE = UUID("29d09a2d-7778-5d29-97dc-185963bf138d")
 VALID_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -42,6 +44,52 @@ NEW_EVENT_AT = datetime(2026, 4, 1, tzinfo=timezone.utc)
 SURFACE = "ENG"
 SOURCE_SYSTEM = "jira"
 SOURCE_IDENTIFIER = "jira:system:eng"
+_OBSERVATION_SNAPSHOT_SQL = """
+SELECT *
+FROM observations
+WHERE tenant_id=$1 AND id=$2
+ORDER BY occurred_at
+"""
+_ATTACHMENT_SNAPSHOT_SQL = """
+SELECT *
+FROM observation_source_identity_bindings
+WHERE tenant_id=$1 AND observation_id=$2
+ORDER BY observation_occurred_at, binding_version, normalized_source_surface
+"""
+_COLLIDING_CURRENT_BINDINGS_SQL = """
+SELECT *
+FROM source_identity_bindings
+WHERE tenant_id=ANY($1::uuid[])
+  AND source_system=$2
+  AND source_native_identifier=$3
+  AND valid_to IS NULL
+  AND transaction_to IS NULL
+ORDER BY tenant_id, binding_version
+"""
+_COLLIDING_BINDING_LINEAGES_SQL = """
+SELECT *
+FROM source_identity_bindings
+WHERE tenant_id=ANY($1::uuid[])
+  AND source_system=$2
+  AND source_native_identifier=$3
+ORDER BY tenant_id, binding_version
+"""
+_COLLIDING_ATTACHMENTS_SQL = """
+SELECT *
+FROM observation_source_identity_bindings
+WHERE tenant_id=ANY($1::uuid[])
+ORDER BY tenant_id, observation_id, binding_version, normalized_source_surface
+"""
+_DIRECT_OVERLAP_INSERT_SQL = """
+INSERT INTO source_identity_bindings (
+  id, tenant_id, lineage_id, binding_version, source_system,
+  source_native_identifier, source_identity_authority_ref,
+  canonical_referent, valid_from, transaction_from, evidence_refs,
+  lifecycle_operation_kind, lifecycle_operation_ref
+) VALUES (
+  $1, $2, $1, 1, $3, $4, $5, $6::jsonb, $7, $8, $9, 'bind', $10
+)
+"""
 
 
 class _RollbackProbe(RuntimeError):
@@ -54,8 +102,12 @@ class _ScenarioIds:
     foreign_tenant_id: UUID
     old_resource_id: UUID
     new_resource_id: UUID
+    foreign_old_resource_id: UUID
+    foreign_new_resource_id: UUID
     original_observation_id: UUID
     delayed_observation_id: UUID
+    foreign_observation_id: UUID
+    direct_overlap_binding_id: UUID
 
     @property
     def tenant_ids(self) -> tuple[UUID, UUID]:
@@ -73,8 +125,12 @@ def _scenario_ids(*, run_id: str, system_version: str) -> _ScenarioIds:
         foreign_tenant_id=stable("foreign-tenant"),
         old_resource_id=stable("old-resource"),
         new_resource_id=stable("new-resource"),
+        foreign_old_resource_id=stable("foreign-old-resource"),
+        foreign_new_resource_id=stable("foreign-new-resource"),
         original_observation_id=stable("original-observation"),
         delayed_observation_id=stable("delayed-observation"),
+        foreign_observation_id=stable("foreign-observation"),
+        direct_overlap_binding_id=stable("direct-overlap-binding"),
     )
 
 
@@ -92,6 +148,8 @@ async def run_source_identity_binding_lifecycle_experiment(
     if not run_id or not system_version:
         raise ValueError("run_id and system_version are required")
     ids = _scenario_ids(run_id=run_id, system_version=system_version)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    query_entries: list[dict[str, Any]] = []
     await _require_utf8(pool)
     await _require_fresh_tenants(pool, ids.tenant_ids)
     await _seed_foundation(pool, ids=ids)
@@ -110,10 +168,26 @@ async def run_source_identity_binding_lifecycle_experiment(
         valid_from=VALID_FROM,
         transaction_from=datetime(2026, 1, 2, tzinfo=timezone.utc),
     )
-    before_observation = await _observation_snapshot(
+    foreign_original = await repo.bind(
+        tenant_id=ids.foreign_tenant_id,
+        source_system=SOURCE_SYSTEM,
+        source_native_identifier=SOURCE_IDENTIFIER,
+        source_identity_authority_ref="foreign-jira-system-contract-v1",
+        canonical_ref={
+            "type": "resource",
+            "id": str(ids.foreign_old_resource_id),
+            "version": 1,
+        },
+        evidence_refs=("foreign:jira:system:eng:v1",),
+        valid_from=VALID_FROM,
+        transaction_from=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    before_observation = await _capture_single_row(
         pool,
-        tenant_id=ids.tenant_id,
-        observation_id=ids.original_observation_id,
+        query_entries=query_entries,
+        name="primary_observation_before",
+        sql=_OBSERVATION_SNAPSHOT_SQL,
+        parameters=(ids.tenant_id, ids.original_observation_id),
     )
     await repo.attach_to_observation(
         tenant_id=ids.tenant_id,
@@ -122,6 +196,37 @@ async def run_source_identity_binding_lifecycle_experiment(
         source_surface=SURFACE,
         attachment_authority_ref="jira-envelope-v1",
     )
+    before_attachment = await _capture_single_row(
+        pool,
+        query_entries=query_entries,
+        name="primary_attachment_before",
+        sql=_ATTACHMENT_SNAPSHOT_SQL,
+        parameters=(ids.tenant_id, ids.original_observation_id),
+    )
+    await repo.attach_to_observation(
+        tenant_id=ids.foreign_tenant_id,
+        observation_id=ids.foreign_observation_id,
+        binding=foreign_original,
+        source_surface=SURFACE,
+        attachment_authority_ref="foreign-jira-envelope-v1",
+    )
+    foreign_transition = await repo.supersede(
+        tenant_id=ids.foreign_tenant_id,
+        binding_lineage_id=foreign_original.binding_lineage_id or "",
+        expected_binding_version=1,
+        effective_at=EFFECTIVE_AT,
+        operation_ref="foreign:supersede:jira-system-eng",
+        reason="Foreign tenant canonical system resource was replaced.",
+        evidence_refs=("foreign:review:system-replacement",),
+        new_canonical_ref={
+            "type": "resource",
+            "id": str(ids.foreign_new_resource_id),
+            "version": 1,
+        },
+        new_source_identity_authority_ref="foreign-jira-system-contract-v2",
+        new_evidence_refs=("foreign:jira:system:eng:v2",),
+    )
+    _, foreign_successor = foreign_transition.result_bindings
     transition = await repo.supersede(
         tenant_id=ids.tenant_id,
         binding_lineage_id=original.binding_lineage_id or "",
@@ -195,16 +300,6 @@ async def run_source_identity_binding_lifecycle_experiment(
         ),
         match="stale binding version",
     )
-    attachment = await pool.fetchrow(
-        """
-        SELECT binding_id, binding_version, source_surface,
-               attachment_authority_ref
-        FROM observation_source_identity_bindings
-        WHERE tenant_id=$1 AND observation_id=$2
-        """,
-        ids.tenant_id,
-        ids.original_observation_id,
-    )
     conflicting_attachment_rejected = await _raises(
         repo.attach_to_observation(
             tenant_id=ids.tenant_id,
@@ -247,25 +342,62 @@ async def run_source_identity_binding_lifecycle_experiment(
     )
     overlap_prevented = await _overlap_proof(
         repo=repo,
+        pool=pool,
+        query_entries=query_entries,
         tenant_id=ids.tenant_id,
         old_resource_id=ids.old_resource_id,
         new_resource_id=ids.new_resource_id,
         native_id="jira:system:scheduled",
+        direct_overlap_binding_id=ids.direct_overlap_binding_id,
     )
     foreign_tenant_isolated = await _foreign_tenant_proof(
         repo=repo,
         ids=ids,
         original=original,
+        successor=successor,
+        foreign_original=foreign_original,
+        foreign_successor=foreign_successor,
+        foreign_transaction_at=foreign_transition.transaction_at,
     )
     transaction_atomic = await _transaction_atomicity_proof(
         repo=repo,
         pool=pool,
         ids=ids,
     )
-    after_observation = await _observation_snapshot(
+    after_observation = await _capture_single_row(
         pool,
-        tenant_id=ids.tenant_id,
-        observation_id=ids.original_observation_id,
+        query_entries=query_entries,
+        name="primary_observation_after",
+        sql=_OBSERVATION_SNAPSHOT_SQL,
+        parameters=(ids.tenant_id, ids.original_observation_id),
+    )
+    after_attachment = await _capture_single_row(
+        pool,
+        query_entries=query_entries,
+        name="primary_attachment_after",
+        sql=_ATTACHMENT_SNAPSHOT_SQL,
+        parameters=(ids.tenant_id, ids.original_observation_id),
+    )
+    await _capture_rows(
+        pool,
+        query_entries=query_entries,
+        name="colliding_tenant_current_bindings",
+        sql=_COLLIDING_CURRENT_BINDINGS_SQL,
+        parameters=(list(ids.tenant_ids), SOURCE_SYSTEM, SOURCE_IDENTIFIER),
+    )
+    await _capture_rows(
+        pool,
+        query_entries=query_entries,
+        name="colliding_tenant_binding_lineages",
+        sql=_COLLIDING_BINDING_LINEAGES_SQL,
+        parameters=(list(ids.tenant_ids), SOURCE_SYSTEM, SOURCE_IDENTIFIER),
+    )
+    await _capture_rows(
+        pool,
+        query_entries=query_entries,
+        name="colliding_tenant_attachments",
+        sql=_COLLIDING_ATTACHMENTS_SQL,
+        parameters=(list(ids.tenant_ids),),
     )
     supersession_correct = bool(
         transition.applied
@@ -292,19 +424,32 @@ async def run_source_identity_binding_lifecycle_experiment(
         and delayed.canonical_ref["id"] == str(ids.old_resource_id)
     )
     exact_attachment_preserved = bool(
-        attachment is not None
-        and str(attachment["binding_id"]) == original.binding_id
-        and int(attachment["binding_version"]) == 1
-        and attachment["source_surface"] == SURFACE
-        and attachment["attachment_authority_ref"] == "jira-envelope-v1"
+        str(after_attachment["binding_id"]) == original.binding_id
+        and int(after_attachment["binding_version"]) == 1
+        and after_attachment["source_surface"] == SURFACE
+        and after_attachment["attachment_authority_ref"] == "jira-envelope-v1"
         and conflicting_attachment_rejected
     )
-    source_immutable = before_observation == after_observation
+    source_immutable = bool(
+        before_observation == after_observation
+        and before_attachment == after_attachment
+    )
     replay_idempotent = bool(
         not replay.applied
         and replay.result_bindings == transition.result_bindings
         and close_replay
         and revoke_replay
+    )
+    query_manifest = _write_query_manifest(
+        output_dir=output_dir,
+        run_id=run_id,
+        system_version=system_version,
+        query_entries=query_entries,
+    )
+    query_manifest_path = (output_dir / QUERY_MANIFEST_NAME).resolve()
+    query_manifest_ref = (
+        f"artifact:{query_manifest_path}"
+        f"#sha256:{query_manifest['manifest_digest']}"
     )
     observation = SourceIdentityBindingLifecycleObservation(
         tenant_id=ids.tenant_id,
@@ -331,7 +476,7 @@ async def run_source_identity_binding_lifecycle_experiment(
         ),
         exact_attachment_preserved=_cell(
             exact_attachment_preserved,
-            f"attachment:{ids.original_observation_id}:{original.binding_id}:1",
+            query_manifest_ref,
         ),
         closure_correct=_cell(
             close_correct,
@@ -347,7 +492,7 @@ async def run_source_identity_binding_lifecycle_experiment(
         ),
         overlap_prevented=_cell(
             overlap_prevented,
-            "overlap:jira:system:scheduled",
+            query_manifest_ref,
         ),
         stale_version_rejected=_cell(
             stale_rejected,
@@ -359,11 +504,11 @@ async def run_source_identity_binding_lifecycle_experiment(
         ),
         foreign_tenant_isolated=_cell(
             foreign_tenant_isolated,
-            f"tenant:{ids.foreign_tenant_id}",
+            query_manifest_ref,
         ),
         source_immutable=_cell(
             source_immutable,
-            f"observation:{ids.original_observation_id}:snapshot",
+            query_manifest_ref,
         ),
         transaction_atomic=_cell(
             transaction_atomic,
@@ -373,6 +518,7 @@ async def run_source_identity_binding_lifecycle_experiment(
             f"binding-lineage:{original.binding_lineage_id}",
             f"observation:{ids.original_observation_id}",
             f"observation:{ids.delayed_observation_id}",
+            query_manifest_ref,
         ),
     )
     report = evaluate_source_identity_binding_lifecycle(observation)
@@ -382,9 +528,11 @@ async def run_source_identity_binding_lifecycle_experiment(
         created_at=datetime.now(timezone.utc).isoformat(),
         observation=observation,
         report=report,
-        artifact_refs=(f"artifact:{(output_dir / ARTIFACT_NAME).resolve()}",),
+        artifact_refs=(
+            f"artifact:{(output_dir / ARTIFACT_NAME).resolve()}",
+            query_manifest_ref,
+        ),
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / ARTIFACT_NAME).write_text(
         json.dumps(evidence.artifact_payload(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -431,9 +579,19 @@ async def _seed_foundation(
         "INSERT INTO tenants (id) VALUES ($1)",
         ((ids.tenant_id,), (ids.foreign_tenant_id,)),
     )
-    for resource_id, identity in (
-        (ids.old_resource_id, "Legacy billing system"),
-        (ids.new_resource_id, "Billing platform"),
+    for tenant_id, resource_id, identity in (
+        (ids.tenant_id, ids.old_resource_id, "Legacy billing system"),
+        (ids.tenant_id, ids.new_resource_id, "Billing platform"),
+        (
+            ids.foreign_tenant_id,
+            ids.foreign_old_resource_id,
+            "Foreign legacy billing system",
+        ),
+        (
+            ids.foreign_tenant_id,
+            ids.foreign_new_resource_id,
+            "Foreign billing platform",
+        ),
     ):
         await pool.execute(
             """
@@ -446,7 +604,7 @@ async def _seed_foundation(
             )
             """,
             resource_id,
-            ids.tenant_id,
+            tenant_id,
             identity,
         )
     await _seed_observation(
@@ -462,6 +620,13 @@ async def _seed_foundation(
         observation_id=ids.delayed_observation_id,
         occurred_at=OLD_EVENT_AT,
         external_id="jira-lifecycle-delayed",
+    )
+    await _seed_observation(
+        pool,
+        tenant_id=ids.foreign_tenant_id,
+        observation_id=ids.foreign_observation_id,
+        occurred_at=OLD_EVENT_AT,
+        external_id="jira-lifecycle-foreign",
     )
 
 
@@ -571,10 +736,13 @@ async def _terminal_operation_proof(
 async def _overlap_proof(
     *,
     repo: SourceIdentityBindingRepo,
+    pool: asyncpg.Pool,
+    query_entries: list[dict[str, Any]],
     tenant_id: UUID,
     old_resource_id: UUID,
     new_resource_id: UUID,
     native_id: str,
+    direct_overlap_binding_id: UUID,
 ) -> bool:
     binding = await repo.bind(
         tenant_id=tenant_id,
@@ -599,7 +767,7 @@ async def _overlap_proof(
         reason="Scheduled source identity closure.",
         evidence_refs=("review:scheduled-close",),
     )
-    return await _raises(
+    repository_overlap_prevented = await _raises(
         repo.bind(
             tenant_id=tenant_id,
             source_system=SOURCE_SYSTEM,
@@ -615,6 +783,47 @@ async def _overlap_proof(
         ),
         match="valid-time interval overlaps",
     )
+    direct_valid_from = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    direct_transaction_from = datetime.now(timezone.utc)
+    direct_parameters = (
+        direct_overlap_binding_id,
+        tenant_id,
+        SOURCE_SYSTEM,
+        native_id,
+        "direct-sql-overlap-contract",
+        {
+            "type": "resource",
+            "id": str(new_resource_id),
+            "version": 1,
+        },
+        direct_valid_from,
+        direct_transaction_from,
+        [f"{native_id}:direct-sql-overlap"],
+        f"bind:{direct_overlap_binding_id}:1",
+    )
+    direct_overlap_prevented = False
+    error: dict[str, Any] | None = None
+    try:
+        await pool.execute(_DIRECT_OVERLAP_INSERT_SQL, *direct_parameters)
+    except asyncpg.ExclusionViolationError as exc:
+        error = {
+            "class": type(exc).__name__,
+            "sqlstate": exc.sqlstate,
+            "constraint_name": exc.constraint_name,
+        }
+        direct_overlap_prevented = bool(
+            exc.constraint_name
+            == "source_identity_bindings_no_valid_time_overlap"
+        )
+    query_entries.append(
+        _rejected_write_entry(
+            name="direct_sql_overlap_rejection",
+            sql=_DIRECT_OVERLAP_INSERT_SQL,
+            parameters=direct_parameters,
+            error=error,
+        )
+    )
+    return repository_overlap_prevented and direct_overlap_prevented
 
 
 async def _foreign_tenant_proof(
@@ -622,13 +831,29 @@ async def _foreign_tenant_proof(
     repo: SourceIdentityBindingRepo,
     ids: _ScenarioIds,
     original: Any,
+    successor: Any,
+    foreign_original: Any,
+    foreign_successor: Any,
+    foreign_transaction_at: datetime,
 ) -> bool:
+    primary_current = await repo.find_current_binding(
+        tenant_id=ids.tenant_id,
+        source_system=SOURCE_SYSTEM,
+        source_native_identifier=SOURCE_IDENTIFIER,
+    )
     foreign_current = await repo.find_current_binding(
         tenant_id=ids.foreign_tenant_id,
         source_system=SOURCE_SYSTEM,
         source_native_identifier=SOURCE_IDENTIFIER,
     )
     foreign_resolution = await repo.resolve_observation_source(
+        tenant_id=ids.foreign_tenant_id,
+        observation_id=ids.foreign_observation_id,
+        phrase=SURFACE,
+        valid_at=OLD_EVENT_AT,
+        known_at=foreign_transaction_at - timedelta(microseconds=1),
+    )
+    cross_tenant_observation_resolution = await repo.resolve_observation_source(
         tenant_id=ids.foreign_tenant_id,
         observation_id=ids.original_observation_id,
         phrase=SURFACE,
@@ -648,8 +873,18 @@ async def _foreign_tenant_proof(
         match="no current binding",
     )
     return bool(
-        foreign_current is None
-        and foreign_resolution is None
+        primary_current == successor
+        and foreign_current == foreign_successor
+        and foreign_current.canonical_referent_id
+        == str(ids.foreign_new_resource_id)
+        and foreign_current.canonical_referent_id
+        != successor.canonical_referent_id
+        and foreign_resolution is not None
+        and foreign_resolution.binding.binding_id
+        == foreign_original.binding_id
+        and foreign_resolution.canonical_ref["id"]
+        == str(ids.foreign_old_resource_id)
+        and cross_tenant_observation_resolution is None
         and foreign_operation_rejected
     )
 
@@ -729,22 +964,202 @@ async def _transaction_atomicity_proof(
     )
 
 
-async def _observation_snapshot(
+async def _capture_rows(
     pool: asyncpg.Pool,
     *,
-    tenant_id: UUID,
-    observation_id: UUID,
-) -> Any:
-    return await pool.fetchrow(
-        """
-        SELECT occurred_at, source_channel, content, content_text,
-               entities_mentioned, external_id
-        FROM observations
-        WHERE tenant_id=$1 AND id=$2
-        """,
-        tenant_id,
-        observation_id,
+    query_entries: list[dict[str, Any]],
+    name: str,
+    sql: str,
+    parameters: tuple[Any, ...],
+) -> list[dict[str, Any]]:
+    rows = [
+        _json_value(dict(row))
+        for row in await pool.fetch(sql, *parameters)
+    ]
+    normalized_parameters = _json_value(parameters)
+    query_entries.append(
+        {
+            "name": name,
+            "operation": "select",
+            "sql": sql.strip(),
+            "parameters": normalized_parameters,
+            "query_digest": canonical_sha256(
+                {
+                    "sql": sql.strip(),
+                    "parameters": normalized_parameters,
+                }
+            ),
+            "row_count": len(rows),
+            "rows": rows,
+            "row_digest": canonical_sha256(rows),
+        }
     )
+    return rows
+
+
+async def _capture_single_row(
+    pool: asyncpg.Pool,
+    *,
+    query_entries: list[dict[str, Any]],
+    name: str,
+    sql: str,
+    parameters: tuple[Any, ...],
+) -> dict[str, Any]:
+    rows = await _capture_rows(
+        pool,
+        query_entries=query_entries,
+        name=name,
+        sql=sql,
+        parameters=parameters,
+    )
+    if len(rows) != 1:
+        raise RuntimeError(
+            f"source identity lifecycle query {name!r} returned "
+            f"{len(rows)} rows, expected 1"
+        )
+    return rows[0]
+
+
+def _rejected_write_entry(
+    *,
+    name: str,
+    sql: str,
+    parameters: tuple[Any, ...],
+    error: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized_parameters = _json_value(parameters)
+    normalized_error = _json_value(error)
+    return {
+        "name": name,
+        "operation": "rejected_write",
+        "sql": sql.strip(),
+        "parameters": normalized_parameters,
+        "query_digest": canonical_sha256(
+            {
+                "sql": sql.strip(),
+                "parameters": normalized_parameters,
+            }
+        ),
+        "outcome": "rejected" if error is not None else "accepted",
+        "error": normalized_error,
+        "error_digest": canonical_sha256(normalized_error),
+    }
+
+
+def _write_query_manifest(
+    *,
+    output_dir: Path,
+    run_id: str,
+    system_version: str,
+    query_entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    payload = {
+        "schema_version": "source-identity-binding-query-manifest-v1",
+        "run_id": run_id,
+        "system_version": system_version,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "queries": query_entries,
+    }
+    manifest = {
+        **payload,
+        "manifest_digest": canonical_sha256(payload),
+    }
+    path = output_dir / QUERY_MANIFEST_NAME
+    path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    reopened = validate_source_identity_binding_query_manifest(
+        json.loads(path.read_text(encoding="utf-8"))
+    )
+    if reopened != manifest:
+        raise RuntimeError(
+            "source identity lifecycle query manifest failed reopen validation"
+        )
+    return manifest
+
+
+def validate_source_identity_binding_query_manifest(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Recompute every query/result digest in the raw audit manifest."""
+
+    supplied_digest = str(payload.get("manifest_digest") or "")
+    body = {
+        key: value
+        for key, value in payload.items()
+        if key != "manifest_digest"
+    }
+    if body.get("schema_version") != (
+        "source-identity-binding-query-manifest-v1"
+    ):
+        raise ValueError("source identity query manifest schema mismatch")
+    if supplied_digest != canonical_sha256(body):
+        raise ValueError("source identity query manifest digest mismatch")
+    queries = body.get("queries")
+    if not isinstance(queries, list) or not queries:
+        raise ValueError("source identity query manifest requires queries")
+    names: set[str] = set()
+    for entry in queries:
+        if not isinstance(entry, dict):
+            raise ValueError("source identity query manifest entry is invalid")
+        name = str(entry.get("name") or "")
+        if not name or name in names:
+            raise ValueError("source identity query manifest names must be unique")
+        names.add(name)
+        expected_query_digest = canonical_sha256(
+            {
+                "sql": entry.get("sql"),
+                "parameters": entry.get("parameters"),
+            }
+        )
+        if entry.get("query_digest") != expected_query_digest:
+            raise ValueError(
+                f"source identity query digest mismatch for {name}"
+            )
+        if entry.get("operation") == "select":
+            rows = entry.get("rows")
+            if not isinstance(rows, list):
+                raise ValueError(
+                    f"source identity query rows missing for {name}"
+                )
+            if entry.get("row_count") != len(rows):
+                raise ValueError(
+                    f"source identity query row count mismatch for {name}"
+                )
+            if entry.get("row_digest") != canonical_sha256(rows):
+                raise ValueError(
+                    f"source identity query row digest mismatch for {name}"
+                )
+        elif entry.get("operation") == "rejected_write":
+            if entry.get("error_digest") != canonical_sha256(
+                entry.get("error")
+            ):
+                raise ValueError(
+                    f"source identity query error digest mismatch for {name}"
+                )
+        else:
+            raise ValueError(
+                f"source identity query operation is invalid for {name}"
+            )
+    return payload
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _json_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, bytes):
+        return value.hex()
+    return value
 
 
 async def _raises(awaitable: Awaitable[Any], *, match: str) -> bool:
@@ -803,5 +1218,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "ARTIFACT_NAME",
+    "QUERY_MANIFEST_NAME",
     "run_source_identity_binding_lifecycle_experiment",
+    "validate_source_identity_binding_query_manifest",
 ]
