@@ -682,13 +682,6 @@ async def promote_resource_candidate(
         resource_id = resource.id
 
     canonical_ref = _resource_canonical_ref(candidate, resource_id)
-    await _insert_entity_aliases(
-        conn,
-        candidate=candidate,
-        canonical_ref=canonical_ref,
-        alias_mappings=plan.alias_mappings,
-        source_event_id=cause_event_id,
-    )
     await mark_candidate_resolution(
         conn,
         candidate=candidate,
@@ -698,7 +691,10 @@ async def promote_resource_candidate(
         metadata_patch={
             "promotion": "resource",
             "resource_id": str(resource_id),
-            "resource_alias_mapping_count": len(plan.alias_mappings),
+            "resource_alias_candidate_count": len(plan.alias_mappings),
+            "canonical_alias_write": (
+                "withheld_pending_grounded_adjudication"
+            ),
         },
     )
     backfilled_models = await backfill_promoted_candidate_scopes(
@@ -714,7 +710,8 @@ async def promote_resource_candidate(
     return {
         "canonical_ref": canonical_ref,
         "resource_id": resource_id,
-        "alias_mapping_count": len(plan.alias_mappings),
+        "alias_mapping_count": 0,
+        "alias_candidate_count": len(plan.alias_mappings),
         "backfilled_models": backfilled_models,
         "linked_customer_commitments": linked_customer_commitments,
     }
@@ -1362,57 +1359,6 @@ async def _backfill_canonical_ref_for_candidate(
     return 0
 
 
-async def _insert_entity_aliases(
-    conn: asyncpg.Connection,
-    *,
-    candidate: SubstrateCandidate,
-    canonical_ref: Mapping[str, Any],
-    alias_mappings: list[dict[str, Any]],
-    source_event_id: UUID,
-) -> None:
-    seen: set[str] = set()
-    for mapping in alias_mappings:
-        phrase = str(mapping.get("phrase") or "").strip()
-        if not phrase or phrase.casefold() in seen:
-            continue
-        seen.add(phrase.casefold())
-        await conn.execute(
-            """
-            INSERT INTO entity_aliases (
-              id, tenant_id, alias_text, actor_id, resolved_entity_ref,
-              is_canonical, entity_metadata, confidence, confirmed_count,
-              contested_count, source_event_id
-            )
-            SELECT $1, $2, $3, NULL, $4::jsonb,
-                   $5, $6::jsonb, $7, 0, 0, $8
-            WHERE NOT EXISTS (
-              SELECT 1
-              FROM entity_aliases
-              WHERE tenant_id = $2
-                AND alias_text = $3
-                AND actor_id IS NULL
-                AND resolved_entity_ref = $4::jsonb
-            )
-            """,
-            uuid7(),
-            candidate.tenant_id,
-            phrase,
-            json.dumps(dict(canonical_ref), sort_keys=True, default=str),
-            phrase.casefold() == candidate.label.casefold(),
-            json.dumps(
-                {
-                    "source": mapping.get("source") or "substrate_promotion",
-                    "promoted_from_candidate_id": str(candidate.id),
-                    "candidate_kind": candidate.kind,
-                },
-                sort_keys=True,
-                default=str,
-            ),
-            float(mapping.get("confidence", candidate.confidence)),
-            source_event_id,
-        )
-
-
 def _candidate_cause_event_id(candidate: SubstrateCandidate) -> UUID:
     if not candidate.evidence_observation_ids:
         raise ValidationError(
@@ -1838,7 +1784,7 @@ def _entity_alias_mappings(
         {
             "phrase": candidate.label,
             "resolved_entity_ref": canonical_ref,
-            "source": "resolver_worker",
+            "source": "candidate_proposal",
             "confidence": candidate.confidence,
         }
     ]
@@ -1850,7 +1796,7 @@ def _entity_alias_mappings(
             {
                 "phrase": str(phrase),
                 "resolved_entity_ref": canonical_ref,
-                "source": "resolver_worker",
+                "source": "candidate_proposal",
                 "confidence": float(alias.get("confidence", candidate.confidence)),
             }
         )

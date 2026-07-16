@@ -478,13 +478,18 @@ async def test_promote_resource_candidate_creates_customer_and_backfills_scopes(
     assert created_calls[0]["created_by_event_id"] == candidate.evidence_observation_ids[0]
     assert created_calls[0]["metadata"]["promoted_from_candidate_id"] == str(candidate.id)
     assert result["backfilled_models"] == 1
+    assert result["alias_mapping_count"] == 0
+    assert result["alias_candidate_count"] == 2
     entity_types = [
         args[2]
         for query, args in conn.executed
         if "INSERT INTO model_scope_entities" in query
     ]
     assert entity_types == ["resource", "customer"]
-    assert any("INSERT INTO entity_aliases" in query for query, _args in conn.executed)
+    assert not any(
+        "INSERT INTO entity_aliases" in query
+        for query, _args in conn.executed
+    )
     assert any(
         "UPDATE substrate_candidates" in query and args[2] == "promoted"
         for query, args in conn.executed

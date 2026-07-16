@@ -175,47 +175,55 @@ async def test_insert_alias_on_conflict_preserves_first_row(
     assert second.resolved_entity_ref == ref1
 
 
-async def test_adjudicated_alias_replaces_guess_and_records_identity_basis(
-    fresh_db: asyncpg.Pool,
+async def test_resolver_worker_cannot_write_canonical_alias(
     repo: EntityAliasRepo,
     tenant: uuid.UUID,
 ) -> None:
-    guessed_ref = {"type": "customer", "id": "customer-wrong"}
-    adjudicated_ref = {"type": "customer", "id": "customer-nimbus"}
-    original = await repo.insert_alias(
-        phrase="NBI",
-        resolved_entity_ref=guessed_ref,
-        source="resolver_worker",
-        confidence=0.55,
-        tenant_id=tenant,
-    )
-
-    async with fresh_db.acquire() as conn, conn.transaction():
-        corrected = await insert_alias_with_connection(
-            conn,
+    with pytest.raises(ValidationError, match="unknown alias source"):
+        await repo.insert_alias(
             phrase="NBI",
-            resolved_entity_ref=adjudicated_ref,
+            resolved_entity_ref={"type": "customer", "id": "customer-nimbus"},
+            source="resolver_worker",
+            confidence=0.55,
+            tenant_id=tenant,
+        )
+
+
+async def test_untraced_adjudicated_alias_write_fails(
+    fresh_db: asyncpg.Pool,
+    tenant: uuid.UUID,
+) -> None:
+    target = {"type": "customer", "id": str(uuid7())}
+    repo = EntityAliasRepo(fresh_db)
+    with pytest.raises(
+        ValidationError,
+        match="require an authorized adjudication trace",
+    ):
+        await repo.insert_alias(
+            phrase="NBI",
+            resolved_entity_ref=target,
             source="manual",
             confidence=0.99,
             tenant_id=tenant,
-            extra_metadata={
-                "identity_basis_class": "independently_adjudicated",
-                "identity_basis_ref": "clarification-request:test",
-            },
-            adjudicated=True,
         )
-
-    assert corrected.id == original.id
-    assert corrected.resolved_entity_ref == adjudicated_ref
-    assert corrected.entity_metadata["source"] == "manual"
-    assert corrected.entity_metadata["identity_basis_class"] == (
-        "independently_adjudicated"
-    )
-    assert corrected.entity_metadata["identity_basis_ref"] == (
-        "clarification-request:test"
-    )
-    assert corrected.confirmed_count == 1
-    assert corrected.contested_count == 1
+    async with fresh_db.acquire() as conn, conn.transaction():
+        with pytest.raises(
+            ValidationError,
+            match="authorized promotion trace and grounding lineage",
+        ):
+            await insert_alias_with_connection(
+                conn,
+                phrase="NBI",
+                resolved_entity_ref=target,
+                source="manual",
+                confidence=0.99,
+                tenant_id=tenant,
+                extra_metadata={
+                    "identity_basis_class": "independently_adjudicated",
+                    "identity_basis_ref": "clarification-request:test",
+                },
+                adjudicated=True,
+            )
 
 
 # ---------------------------------------------------------------------
@@ -423,7 +431,7 @@ async def test_fast_path_resolve_many_returns_unambiguous_refs(
     await repo.insert_alias(
         phrase="Paula Bulk",
         resolved_entity_ref={"type": "actor", "id": str(paula_eng.id)},
-        source="manual",
+        source="ingestion",
         confidence=0.8,
         actor_id=paula_eng.id,
         tenant_id=tenant,
@@ -431,7 +439,7 @@ async def test_fast_path_resolve_many_returns_unambiguous_refs(
     await repo.insert_alias(
         phrase="Paula Bulk",
         resolved_entity_ref={"type": "actor", "id": str(paula_mkt.id)},
-        source="manual",
+        source="ingestion",
         confidence=0.8,
         actor_id=paula_mkt.id,
         tenant_id=tenant,
@@ -470,7 +478,7 @@ async def test_fast_path_excludes_inactive_actor_and_keeps_active_collision_targ
     await repo.insert_alias(
         phrase="Owner",
         resolved_entity_ref={"type": "actor", "id": str(retired.id)},
-        source="manual",
+        source="ingestion",
         confidence=0.99,
         actor_id=retired.id,
         tenant_id=tenant,
@@ -478,7 +486,7 @@ async def test_fast_path_excludes_inactive_actor_and_keeps_active_collision_targ
     await repo.insert_alias(
         phrase="Owner",
         resolved_entity_ref={"type": "actor", "id": str(active.id)},
-        source="manual",
+        source="ingestion",
         confidence=0.90,
         actor_id=active.id,
         tenant_id=tenant,
@@ -566,7 +574,7 @@ async def test_fast_path_excludes_archived_resource_and_customer(
         await repo.insert_alias(
             phrase=phrase,
             resolved_entity_ref=ref,
-            source="manual",
+                source="resource_lifecycle",
             confidence=0.99,
             tenant_id=tenant,
         )

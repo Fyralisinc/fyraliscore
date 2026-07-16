@@ -274,10 +274,12 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
                 "source_observation_id": str(observation_id),
                 "payload": {
                     "phrase": "Alpen",
-                    "feedback_lineage": {
-                        "grounding_trace_id": str(grounding_trace_id),
-                        "resolution_assessment_id": str(uuid4()),
-                    },
+                        "feedback_lineage": {
+                            "grounding_trace_id": str(grounding_trace_id),
+                            "candidate_set_id": str(uuid4()),
+                            "resolution_assessment_id": str(uuid4()),
+                            "grounding_admission_id": str(uuid4()),
+                        },
                     "candidates": [
                         {
                             "canonical_ref": canonical_ref,
@@ -392,7 +394,9 @@ def test_contextual_phrase_cannot_be_promoted_to_tenant_global_memory() -> None:
         )
 
 
-def test_clarification_answer_creates_new_customer_entity(monkeypatch) -> None:
+def test_untraced_clarification_cannot_create_new_customer_entity(
+    monkeypatch,
+) -> None:
     tenant_id = uuid4()
     actor_id = uuid4()
     request_id = uuid4()
@@ -450,18 +454,13 @@ def test_clarification_answer_creates_new_customer_entity(monkeypatch) -> None:
         },
     )
 
-    assert response.status_code == 200
-    assert created_calls
-    assert created_calls[0]["kind"] == "relational"
-    assert created_calls[0]["identity"] == "Beta Corp"
-    assert created_calls[0]["created_by_event_id"] == observation_id
-    assert alias_calls[0]["resolved_entity_ref"]["type"] == "customer"
-    assert alias_calls[0]["resolved_entity_ref"]["id"] == str(resource_id)
-    assert alias_calls[0]["resolved_entity_ref"]["resource_id"] == str(resource_id)
-    assert alias_calls[0]["extra_metadata"]["identity_basis_class"] == (
-        "independently_adjudicated"
+    assert response.status_code == 400
+    assert created_calls == []
+    assert alias_calls == []
+    assert not any(
+        "UPDATE entity_review_queue" in query
+        for query, _args in conn.executed
     )
-    assert any("UPDATE entity_review_queue" in query for query, _args in conn.executed)
 
 
 def test_clarification_answer_rejects_entity_resolution_candidate(monkeypatch) -> None:

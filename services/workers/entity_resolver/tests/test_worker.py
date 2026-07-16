@@ -806,11 +806,9 @@ async def test_ambiguous_confidence_goes_to_review_queue(
     }
 
 
-@pytest.mark.parametrize("alias_source", ["resolver_worker", "manual"])
 async def test_alias_without_governed_identity_basis_cannot_auto_admit(
     resolver_db: asyncpg.Pool,
     tenant_id: UUID,
-    alias_source: str,
 ):
     await _seed_candidate_alias(
         resolver_db,
@@ -818,7 +816,7 @@ async def test_alias_without_governed_identity_basis_cannot_auto_admit(
         alias="Legacy NBI guess",
         entity_type="customer",
         entity_id="customer-nimbus",
-        source=alias_source,
+        source="manual",
         independently_governed=False,
     )
     obs_id = await _seed_observation(
@@ -895,7 +893,7 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
         alias="NBI",
         entity_type="customer",
         entity_id=str(customer_id),
-        source="manual",
+        source="ingestion",
         independently_governed=False,
     )
     first_observation_id = await _seed_observation(
@@ -1005,42 +1003,6 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
         worker_id=f"pytest:governed-alias-replay:{tenant_id}",
     )
     assert await semantic_worker.process_batch(limit=100) == 3
-    unrelated_observation_id = await _seed_observation(
-        resolver_db,
-        tenant_id,
-        content_text="UNRELATED is noisy",
-        unresolved_phrases=["UNRELATED"],
-    )
-    await EntityAliasRepo(resolver_db).insert_alias(
-        phrase="UNRELATED",
-        resolved_entity_ref={"type": "customer", "id": str(customer_id)},
-        source="resolver_worker",
-        confidence=0.51,
-        tenant_id=tenant_id,
-        source_event_id=unrelated_observation_id,
-    )
-    async with resolver_db.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO observations (
-                id, tenant_id, occurred_at, kind, source_channel,
-                content, content_text, trust_tier, cause_id
-            ) VALUES (
-                $1, $2, now(), 'state_change', 'internal:state_change',
-                $3::jsonb, 'unrelated resolver state', 'authoritative', $4
-            )
-            """,
-            uuid7(),
-            tenant_id,
-            json.dumps(
-                {
-                    "_state_change_kind": "entity_late_resolution",
-                    "source_observation_id": str(unrelated_observation_id),
-                }
-            ),
-            unrelated_observation_id,
-        )
-
     async with resolver_db.acquire() as conn:
         alias = await conn.fetchrow(
             """
@@ -1053,7 +1015,7 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
         )
         trace = await conn.fetchrow(
             """
-            SELECT trace.current_fate, trace.selected_referent, trace.trace,
+            SELECT trace.id, trace.current_fate, trace.selected_referent, trace.trace,
                    assessment.model_output,
                    assessment.scorer_and_calibration_version
             FROM grounding_traces trace
@@ -1153,6 +1115,7 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
         f"clarification-request:{clarification['id']}"
     )
     assert metadata["grounding_feedback_lineage"]["grounding_trace_id"]
+    assert UUID(metadata["grounding_successor_trace_id"])
     assert alias["confirmed_count"] == 1
     assert alias["contested_count"] == 1
     assert trace is not None
@@ -1265,7 +1228,7 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
         alias="Nimbus Bank",
         entity_type="customer",
         entity_id=str(customer_id),
-        source="manual",
+        source="ingestion",
     )
     frozen_observation_id = await _seed_observation(
         resolver_db,
@@ -1906,6 +1869,28 @@ async def test_end_to_end_50_mixed_events(
         )
     assert all(r["c"] == 1 for r in alias_rows)
     assert len(alias_rows) == n_phrases
+    async with resolver_db.acquire() as conn:
+        candidate_set_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM entity_candidate_sets
+            WHERE tenant_id=$1
+            """,
+            tenant_id,
+        )
+        work_fates = await conn.fetch(
+            """
+            SELECT status, count(*) AS count
+            FROM entity_grounding_work_items
+            WHERE tenant_id=$1
+            GROUP BY status
+            """,
+            tenant_id,
+        )
+    assert candidate_set_count == n_phrases
+    assert {row["status"]: row["count"] for row in work_fates} == {
+        "resolved_for_consumer": n_phrases
+    }
 
     assert await _count_state_change_obs(resolver_db, tenant_id) == 0
     traces = await _fetch_grounding_traces(resolver_db, tenant_id)

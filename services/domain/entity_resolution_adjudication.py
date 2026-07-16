@@ -103,6 +103,7 @@ async def adjudicate_entity_resolution_clarification(
         return
     if action == "create_new_entity":
         payload = clarification.payload or {}
+        _require_grounding_feedback_lineage(payload)
         phrase = str(
             normalized.get("label")
             or normalized.get("identity")
@@ -146,6 +147,23 @@ async def adjudicate_entity_resolution_clarification(
         )
         return
     raise ValidationError("entity resolution answer action is invalid")
+
+
+def _require_grounding_feedback_lineage(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    lineage = payload.get("feedback_lineage")
+    if (
+        not isinstance(lineage, dict)
+        or not lineage.get("grounding_trace_id")
+        or not lineage.get("candidate_set_id")
+        or not lineage.get("resolution_assessment_id")
+        or not lineage.get("grounding_admission_id")
+    ):
+        raise ValidationError(
+            "entity promotion requires the exact reviewed grounding lineage"
+        )
+    return lineage
 
 
 def _normalized_answer(answer: dict[str, Any]) -> dict[str, Any]:
@@ -258,10 +276,28 @@ async def _finalize_entity_resolution(
 ) -> None:
     observation_id = _coerce_uuid(clarification.source_observation_id)
     payload = clarification.payload or {}
-    feedback_lineage = payload.get("feedback_lineage")
-    if not isinstance(feedback_lineage, dict):
-        feedback_lineage = {}
+    feedback_lineage = _require_grounding_feedback_lineage(payload)
     clarification_request_id = _coerce_uuid(clarification.id)
+    original_trace_id = _coerce_uuid(feedback_lineage.get("grounding_trace_id"))
+    if (
+        original_trace_id is None
+        or clarification_request_id is None
+        or observation_id is None
+    ):
+        raise ValidationError(
+            "entity adjudication requires the exact reviewed grounding lineage"
+        )
+    successor_trace_id = await EntityGroundingRepo.append_adjudicated_successor(
+        conn,
+        tenant_id=tenant_id,
+        original_trace_id=original_trace_id,
+        clarification_request_id=clarification_request_id,
+        source_observation_id=observation_id,
+        phrase=phrase,
+        expected_lineage=feedback_lineage,
+        canonical_ref=canonical_ref,
+        now=datetime.now(timezone.utc),
+    )
     await _insert_manual_entity_alias(
         conn,
         tenant_id=tenant_id,
@@ -273,30 +309,14 @@ async def _finalize_entity_resolution(
         answered_by=answered_by,
         feedback_lineage=feedback_lineage,
         resolution_scope=resolution_scope,
+        grounding_successor_trace_id=successor_trace_id,
     )
-    original_trace_id = _coerce_uuid(feedback_lineage.get("grounding_trace_id"))
-    if (
-        original_trace_id is not None
-        and clarification_request_id is not None
-        and observation_id is not None
-    ):
-        successor_trace_id = await EntityGroundingRepo.append_adjudicated_successor(
-            conn,
-            tenant_id=tenant_id,
-            original_trace_id=original_trace_id,
-            clarification_request_id=clarification_request_id,
-            source_observation_id=observation_id,
-            phrase=phrase,
-            expected_lineage=feedback_lineage,
-            canonical_ref=canonical_ref,
-            now=datetime.now(timezone.utc),
-        )
-        await SourceSemanticRepo().enqueue_work(
-            conn,
-            tenant_id=tenant_id,
-            grounding_trace_id=successor_trace_id,
-            now=datetime.now(timezone.utc),
-        )
+    await SourceSemanticRepo().enqueue_work(
+        conn,
+        tenant_id=tenant_id,
+        grounding_trace_id=successor_trace_id,
+        now=datetime.now(timezone.utc),
+    )
     if clarification.object_kind == "entity_review" and clarification.object_id is not None:
         await _mark_entity_review_resolved(
             conn,
@@ -542,6 +562,7 @@ async def _insert_manual_entity_alias(
     answered_by: UUID | None,
     feedback_lineage: dict[str, Any],
     resolution_scope: str,
+    grounding_successor_trace_id: UUID,
 ) -> None:
     clarification_ref = (
         f"clarification-request:{clarification_request_id}"
@@ -583,6 +604,9 @@ async def _insert_manual_entity_alias(
             "autonomous_replay_eligible": resolution_scope == "tenant_global_exact",
             "replay_policy_version": "governed-exact-alias-replay-v1",
             "grounding_feedback_lineage": feedback_lineage,
+            "grounding_successor_trace_id": str(
+                grounding_successor_trace_id
+            ),
         },
         adjudicated=True,
     )

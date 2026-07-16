@@ -56,12 +56,11 @@ from lib.shared.ids import uuid7
 from lib.shared.types import EntityAliasRow
 
 
-# Legal `source` labels for `insert_alias`. These mirror BUILD-PLAN
-# 1-B ("ingestion" | "resolver_worker" | "manual"). The repo rejects
-# unknown values locally so callers get a clear error before touching
-# the DB.
+# Resolver output is assessment/candidate state, never canonical identity.
+# Canonical aliases may be seeded by ingestion, written by an independently
+# adjudicated manual transition, or maintained by resource lifecycle code.
 _LEGAL_SOURCES: frozenset[str] = frozenset(
-    ("ingestion", "resolver_worker", "manual", "resource_lifecycle")
+    ("ingestion", "manual", "resource_lifecycle")
 )
 
 _WHITESPACE_RE = re.compile(r"\s+", flags=re.UNICODE)
@@ -137,6 +136,22 @@ def _parse_jsonb_obj(raw: Any) -> dict[str, Any]:
     if isinstance(raw, str):
         return json.loads(raw)
     return raw
+
+
+def _requires_identity_write_authority(
+    resolved_entity_ref: dict[str, Any],
+) -> bool:
+    if resolved_entity_ref.get("type") not in {
+        "actor",
+        "resource",
+        "customer",
+    }:
+        return False
+    try:
+        UUID(str(resolved_entity_ref.get("id") or ""))
+    except ValueError:
+        return False
+    return True
 
 
 async def validate_governed_alias_replay(
@@ -417,6 +432,25 @@ async def insert_alias_with_connection(
 
     metadata: dict[str, Any] = dict(extra_metadata or {})
     metadata["source"] = source
+    if (
+        source == "manual"
+        and _requires_identity_write_authority(resolved_entity_ref)
+        and not adjudicated
+    ):
+        raise ValidationError(
+            "UUID-backed canonical aliases require an authorized "
+            "adjudication trace",
+            field="adjudicated",
+        )
+    if adjudicated:
+        await _validate_adjudicated_alias_authority(
+            conn,
+            tenant_id=tenant_id,
+            phrase=phrase,
+            resolved_entity_ref=resolved_entity_ref,
+            source_event_id=source_event_id,
+            metadata=metadata,
+        )
     alias_id = uuid7()
 
     if actor_id is None:
@@ -652,6 +686,90 @@ async def close_aliases_for_entity_with_connection(
     return int(result.rsplit(" ", 1)[-1])
 
 
+async def _validate_adjudicated_alias_authority(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    phrase: str,
+    resolved_entity_ref: dict[str, Any],
+    source_event_id: UUID | None,
+    metadata: dict[str, Any],
+) -> None:
+    """Require an answered clarification and exact grounding successor."""
+
+    if metadata.get("source") != "manual":
+        raise ValidationError(
+            "adjudicated alias writes require the manual authority lane",
+            field="source",
+        )
+    clarification_id = str(
+        metadata.get("clarification_request_id") or ""
+    ).strip()
+    identity_basis_ref = str(
+        metadata.get("identity_basis_ref") or ""
+    ).strip()
+    successor_trace_id = str(
+        metadata.get("grounding_successor_trace_id") or ""
+    ).strip()
+    lineage = metadata.get("grounding_feedback_lineage")
+    if (
+        metadata.get("identity_basis_class") != "independently_adjudicated"
+        or not clarification_id
+        or identity_basis_ref
+        != f"clarification-request:{clarification_id}"
+        or not successor_trace_id
+        or not isinstance(lineage, dict)
+        or not lineage.get("grounding_trace_id")
+        or source_event_id is None
+    ):
+        raise ValidationError(
+            "adjudicated alias requires an authorized promotion trace and "
+            "grounding lineage",
+            field="extra_metadata",
+        )
+    authorized = await conn.fetchval(
+        """
+        SELECT EXISTS (
+          SELECT 1
+          FROM clarification_requests clarification
+          JOIN grounding_traces predecessor
+            ON predecessor.tenant_id=clarification.tenant_id
+           AND predecessor.id::text=$6
+          JOIN grounding_traces successor
+            ON successor.tenant_id=predecessor.tenant_id
+           AND successor.id::text=$7
+           AND successor.trace ->> 'supersedes_grounding_trace_id'
+               = predecessor.id::text
+          WHERE clarification.tenant_id=$1
+            AND clarification.id::text=$2
+            AND clarification.kind='entity_resolution'
+            AND clarification.status='answered'
+            AND clarification.source_observation_id=$3
+            AND clarification.payload -> 'feedback_lineage'=$4::jsonb
+            AND successor.trace ->> 'adjudication_ref'=$5
+            AND successor.current_fate='resolved_for_consumer'
+            AND successor.source_observation_id=$3
+            AND successor.phrase=$8
+            AND successor.selected_referent=$9::jsonb
+        )
+        """,
+        tenant_id,
+        clarification_id,
+        source_event_id,
+        json.dumps(lineage, sort_keys=True, default=str),
+        identity_basis_ref,
+        str(lineage["grounding_trace_id"]),
+        successor_trace_id,
+        phrase,
+        json.dumps(resolved_entity_ref, sort_keys=True, default=str),
+    )
+    if not authorized:
+        raise ValidationError(
+            "adjudicated alias authority does not match grounding lineage",
+            field="extra_metadata",
+        )
+
+
 class EntityAliasRepo:
     """Repository for entity_aliases."""
 
@@ -860,7 +978,7 @@ class EntityAliasRepo:
         DO UPDATE that effectively preserves the first-seen row but
         bumps last_used_at).
 
-        `source` is a label (ingestion|resolver_worker|manual) — S6.1
+        `source` is a label (ingestion|manual|resource_lifecycle) — S6.1
         has no dedicated `source` column, so the value lands in the
         JSONB `entity_metadata.source` sidecar. Callers that need to
         filter on source should use a GIN-friendly query such as
