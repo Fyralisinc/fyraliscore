@@ -1485,6 +1485,7 @@ class EntityResolverWorker:
         *,
         limit: int = 50,
         since_ms: int | None = None,
+        tenant_id: UUID | None = None,
     ) -> int:
         """Scan the `limit` most recent observations that still have
         unresolved phrases and process each one. Returns count of
@@ -1492,7 +1493,8 @@ class EntityResolverWorker:
 
         `since_ms` is an optional epoch-ms watermark; when None, scan
         everything with non-empty `_unresolved_phrases` regardless of
-        age.
+        age. `tenant_id` bounds a simulation or tenant-specific worker run;
+        omitting it preserves the production global-poll behavior.
 
         Uses a single connection for bounded polling. Durable grounding fates
         make terminal phrases invisible without mutating Observation content.
@@ -1503,7 +1505,8 @@ class EntityResolverWorker:
                 """
                 SELECT o.id, o.tenant_id
                 FROM observations o
-                WHERE (
+                WHERE ($2::uuid IS NULL OR o.tenant_id = $2)
+                AND ((
                     CASE
                         WHEN jsonb_typeof(
                             o.content -> '_unresolved_phrases'
@@ -1552,11 +1555,12 @@ class EntityResolverWorker:
                                   lower(head.candidate_surface), '\\s+', ' ', 'g'
                                 )
                       )
-                )
+                ))
                 ORDER BY o.occurred_at DESC
                 LIMIT $1
                 """,
                 limit,
+                tenant_id,
             )
             for r in rows:
                 decisions = await self.process_observation(

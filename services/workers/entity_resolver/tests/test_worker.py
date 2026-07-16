@@ -1674,7 +1674,7 @@ async def test_process_pending_finds_top_level_unresolved_phrases(
         alias_repo=EntityAliasRepo(resolver_db),
     )
 
-    processed = await worker.process_pending(limit=1)
+    processed = await worker.process_pending(limit=1, tenant_id=tenant_id)
 
     assert processed == 1
     assert len(provider.calls) == 1
@@ -1706,7 +1706,7 @@ async def test_process_pending_preserves_source_and_uses_trace_as_terminal_fate(
         alias_repo=EntityAliasRepo(resolver_db),
     )
 
-    assert await worker.process_pending(limit=1) == 1
+    assert await worker.process_pending(limit=1, tenant_id=tenant_id) == 1
     assert await worker.process_observation(obs_id, tenant_id) == []
     assert len(provider.calls) == 1
 
@@ -1741,7 +1741,7 @@ async def test_process_pending_keeps_rate_limited_unresolved_phrases(
         budget=ResolverLLMBudget(per_minute=0),
     )
 
-    assert await worker.process_pending(limit=1) == 1
+    assert await worker.process_pending(limit=1, tenant_id=tenant_id) == 1
     assert len(provider.calls) == 0
 
     async with resolver_db.acquire() as conn:
@@ -2017,7 +2017,7 @@ async def test_persisted_batch_detection_heads_feed_grounding_without_redetectio
         alias_repo=EntityAliasRepo(resolver_db),
         budget=ResolverLLMBudget(per_minute=1000),
     )
-    assert await worker.process_pending(limit=10) == 2
+    assert await worker.process_pending(limit=10, tenant_id=tenant_id) == 2
 
     async with resolver_db.acquire() as conn:
         rows = await conn.fetch(

@@ -275,7 +275,9 @@ async def test_slack_thread_review_adjudication_reaches_original_grounded_belief
     assert "thread/reply/edit lineage" in selected_by_id[root_revision][
         "inclusion_reasons"
     ]
-    assert snapshot["sufficiency_verdict"]["disposition"] == "needs_expansion"
+    assert snapshot["sufficiency_verdict"]["disposition"] == (
+        "operationally_sufficient"
+    )
 
     mention = _json(row["mention"])
     anchor = mention["primary_anchor"]
@@ -310,15 +312,15 @@ async def test_slack_thread_review_adjudication_reaches_original_grounded_belief
         "version": 1,
     }
 
-    # A context-dependent Slack phrase cannot be auto-admitted merely because
-    # its threaded root is useful. Lock the current conservative behavior: the
-    # exact assessment reaches a live review obligation, while no downstream
-    # Think trigger receives an unapproved seed_entity_ids value.
+    # The exact thread makes the evidence boundary operationally sufficient,
+    # but context sufficiency is not identity authority. A context-dependent
+    # phrase still reaches review, and no downstream Think trigger receives an
+    # unapproved seed_entity_ids value.
     assert decisions == [("the project", "review")]
     assert row["current_fate"] == "review"
     assert row["admission_disposition"] == "review"
     assert row["admission_reason_codes"] == [
-        "context_not_operationally_sufficient:needs_expansion"
+        "context_dependent_phrase_requires_human_discriminator"
     ]
     assert downstream == []
     assert clarification is not None
