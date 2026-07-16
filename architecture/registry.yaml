@@ -1,0 +1,1546 @@
+meta:
+  registry_id: fyralis-architecture
+  registry_version: constitutional-kernel-v2
+  scope: constitutional kernel plus staged evidence, grounding, operational and evaluation contracts
+  maturity: candidate
+  completeness_target: full durable semantic registry and INV-01 through INV-42 proof mapping
+  documents:
+    - path: docs/plans/revised-reality-belief-intent-system-implementation.md
+      sha256: a3e75c96080101cc547b5ea144c51a57988b6ff5f054aa32b57d1d234daecf4a
+      role: normative implementation projection
+    - path: docs/evaluation/revised-system-objective-evaluation-framework.md
+      sha256: c1bfbac26726d68ce77ec57dcdb6419af41a8ffdf7f8f076534f74bd3b8a5fd6
+      role: normative evaluation projection
+
+writers:
+  - writer_id: ProposalAppender
+    owner: P6 proposal identity and review fate
+    package: services.domain.intent
+    implementation_status: implemented
+  - writer_id: IntentApplier
+    owner: P4 constituted company intent
+    package: services.domain.intent
+    implementation_status: partial
+  - writer_id: ConcernApplier
+    owner: P4 governed attention and scoped gaps
+    package: services.domain.concerns
+    implementation_status: implemented
+  - writer_id: EpisodeCoordinator
+    owner: P6 intervention-episode stage-link manifest only
+    package: services.domain.outcomes
+    implementation_status: implemented
+  - writer_id: PredictionWriter
+    owner: P6 immutable prediction preregistration
+    package: services.domain.outcomes
+    implementation_status: implemented
+  - writer_id: AuthorizationApplier
+    owner: P2 exact proposal and InterventionSpec authorization decisions
+    package: services.domain.outcomes
+    implementation_status: implemented
+  - writer_id: OutcomeRecorder
+    owner: P1G independent outcome measurement
+    package: services.domain.outcomes
+    implementation_status: implemented
+  - writer_id: SettlementApplier
+    owner: P6 prediction outcome comparison and residual classification
+    package: services.domain.outcomes
+    implementation_status: implemented
+  - writer_id: AttributionApplier
+    owner: P6 conservative causal credit and withholding
+    package: services.domain.outcomes
+    implementation_status: implemented
+  - writer_id: AgencyStateApplier
+    owner: P6 business workflow-run and task state
+    package: services.domain.execution
+    implementation_status: implemented
+  - writer_id: ExecutionLedgerApplier
+    owner: P6 action-adapter capability external-effect attempt and execution-receipt truth
+    package: services.domain.execution
+    implementation_status: implemented
+  - writer_id: PolicyRegistryApplier
+    owner: P7 control and learned-artifact governance
+    package: services.domain.control
+    implementation_status: implemented
+  - writer_id: RepresentationRegistryApplier
+    owner: P3 belief and representation admission
+    package: services.domain.models
+    implementation_status: planned
+  - writer_id: WorkLedgerApplier
+    owner: P9 runtime and metabolism governor
+    package: services.domain.execution
+    implementation_status: implemented
+  - writer_id: RepairLedgerApplier
+    owner: P9 correction invalidation repair and convergence
+    package: services.domain.repair
+    implementation_status: implemented
+  - writer_id: ArchitectureRegistrySteward
+    owner: P0 architecture registry and evidence coordination
+    package: lib.architecture_registry
+    implementation_status: implemented
+  - writer_id: WriterEpochApplier
+    owner: P9 writer ownership and cutover
+    package: services.domain.writer_epochs
+    implementation_status: implemented
+  - writer_id: EvidenceAppender
+    owner: P1A source fidelity and evidence
+    package: services.ingest
+    implementation_status: partial
+  - writer_id: GroundingAnnotationAppender
+    owner: P1A2 through P1D perception annotations
+    package: services.domain.conversation_context
+    implementation_status: partial
+  - writer_id: EntityIdentityApplier
+    owner: P1E canonical referent lifecycle
+    package: services.domain.entities
+    implementation_status: partial
+  - writer_id: GroundingAdmissionApplier
+    owner: P1F consumer-specific grounding admission
+    package: services.domain.entity_grounding
+    implementation_status: partial
+
+contracts:
+  - contract_id: GovernedIntentProtocol
+    contract_kind: intent_admission_protocol
+    commitment_class: constitutional_invariant
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: intent_agency
+    durability: canonical
+    writer_id: IntentApplier
+    traits: [proposal, exact_acceptance, authority, grounding, lifecycle, total_fate, single_writer]
+    invariant_ids: [INV-01, INV-13, INV-16, INV-21, INV-23, INV-26, INV-29, INV-33, INV-35]
+    dependency_ids: [GroundingAdmission, AuthorityContextAlgebra, CommandEventResultOutboxProtocol]
+  - contract_id: AuthorityBasisSurvivalReducer
+    contract_kind: intent_repair_protocol
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: intent_repair
+    durability: canonical
+    writer_id: IntentApplier
+    traits: [authority, correction, lifecycle, deterministic_reducer, no_implicit_reactivation]
+    invariant_ids: [INV-14, INV-21, INV-24, INV-30]
+    dependency_ids: [GovernedIntentProtocol]
+  - contract_id: AttentionGovernanceConcernReducer
+    contract_kind: attention_control_protocol
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: partial
+    semantic_plane: intent_control
+    durability: canonical
+    writer_id: ConcernApplier
+    traits: [human_attention, plural_contributors, monotone_composition, deterministic_reducer, total_fate]
+    invariant_ids: [INV-01, INV-20, INV-31, INV-32, INV-37]
+    dependency_ids: [GovernedIntentProtocol, HumanAttentionEnvelope]
+  - contract_id: PredictionInterventionSettlementBoundary
+    contract_kind: consequential_episode_boundary
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: partial
+    semantic_plane: brain_agency_outcome
+    durability: canonical
+    writer_ids: [ProposalAppender, EpisodeCoordinator, PredictionWriter, AuthorizationApplier, OutcomeRecorder, SettlementApplier]
+    traits: [preregistration, immutable_spec, exact_authorization, independent_outcome, settlement, residual]
+    invariant_ids: [INV-09, INV-10, INV-11, INV-12, INV-16, INV-22, INV-30, INV-35]
+    dependency_ids: [GovernedIntentProtocol, AuthorityContextAlgebra, CommandEventResultOutboxProtocol]
+  - contract_id: OutcomeAttributionBoundary
+    contract_kind: learning_evidence_boundary
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: partial
+    semantic_plane: outcome_control_learning
+    durability: canonical
+    writer_ids: [OutcomeRecorder, SettlementApplier, AttributionApplier]
+    traits: [independent_outcome, residual_distribution, causal_uncertainty, withheld_credit, correction]
+    invariant_ids: [INV-10, INV-11, INV-30, INV-34, INV-38]
+    dependency_ids: [PredictionInterventionSettlementBoundary, TenantInfluenceLineage]
+  - contract_id: WorkflowTaskStateProtocol
+    contract_kind: business_execution_state_protocol
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: partial
+    semantic_plane: agency_execution
+    durability: canonical
+    writer_id: AgencyStateApplier
+    traits: [workflow_state, task_state, exact_spec_continuity, exact_authorization, receipt_backed_completion, deterministic_reducer, single_writer]
+    invariant_ids: [INV-10, INV-12, INV-16, INV-22, INV-29, INV-35]
+    dependency_ids: [PredictionInterventionSettlementBoundary, AuthorityContextAlgebra, CommandEventResultOutboxProtocol]
+  - contract_id: WorkLeaseFateProtocol
+    contract_kind: runtime_work_and_lease_protocol
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: partial
+    semantic_plane: runtime_metabolism
+    durability: canonical
+    writer_id: WorkLedgerApplier
+    traits: [work_generation, total_fate, processing_envelope, lease, monotonic_fence, attempt_budget, reconciliation, deterministic_reducer, single_writer]
+    invariant_ids: [INV-12, INV-16, INV-18, INV-20, INV-23, INV-29, INV-31, INV-32, INV-41]
+    dependency_ids: [ProcessingClassPolicy, ProcessingClassDecision, UsefulSafeFate, CommandEventResultOutboxProtocol]
+  - contract_id: FailureOwnerTerminalizationProtocol
+    contract_kind: failure_quarantine_owner_handshake_protocol
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: partial
+    semantic_plane: runtime_metabolism
+    durability: canonical
+    writer_id: WorkLedgerApplier
+    traits: [failure_generation, classification, quarantine, retry_budget, effect_uncertainty, owner_terminalization, exact_owner_result, multiaggregate_transition, deterministic_reducer, single_writer]
+    invariant_ids: [INV-16, INV-23, INV-29]
+    dependency_ids: [WorkLeaseFateProtocol, CommandEventResultOutboxProtocol, MultiAggregateMutationPlan]
+  - contract_id: ExternalEffectReceiptProtocol
+    contract_kind: external_effect_truth_protocol
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: partial
+    semantic_plane: agency_external_effect
+    durability: canonical
+    writer_id: ExecutionLedgerApplier
+    traits: [adapter_capability, exact_authorization, provider_idempotency, dispatch_intent, external_observation, unknown_reconciliation, immutable_receipt, compensation_link, deterministic_reducer, single_writer]
+    invariant_ids: [INV-10, INV-12, INV-16, INV-22, INV-23, INV-29, INV-35]
+    dependency_ids: [WorkflowTaskStateProtocol, WorkLeaseFateProtocol, PredictionInterventionSettlementBoundary, AuthorityContextAlgebra, CommandEventResultOutboxProtocol]
+  - contract_id: DependencyInvalidationRepairProtocol
+    contract_kind: correction_dependency_repair_protocol
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: partial
+    semantic_plane: correction_repair
+    durability: canonical
+    writer_id: RepairLedgerApplier
+    traits: [exact_source_commit, invalidation_epoch, dependency_edge, immediate_fence, repair_generation, total_fate, dependent_owner_result, immutable_receipt, deterministic_reducer, single_writer]
+    invariant_ids: [INV-14, INV-16, INV-24, INV-29]
+    dependency_ids: [EventPositionWatermarkVector, WorkLeaseFateProtocol, CommandEventResultOutboxProtocol]
+  - contract_id: RepairConvergenceProtocol
+    contract_kind: correction_convergence_protocol
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: partial
+    semantic_plane: correction_repair
+    durability: canonical
+    writer_id: RepairLedgerApplier
+    traits: [complete_denominator, coverage_basis, current_tail_fates, historical_generation_count, watermark_catch_up, repeated_stable_scan, source_fence, explicit_residue, no_false_convergence]
+    invariant_ids: [INV-14, INV-18, INV-24, INV-29]
+    dependency_ids: [DependencyInvalidationRepairProtocol, EventPositionWatermarkVector]
+  - contract_id: ProcessingClassPolicy
+    contract_kind: policy
+    commitment_class: governed_policy
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: control
+    durability: canonical
+    writer_id: PolicyRegistryApplier
+    traits: [proportional_processing, economic_operating_envelope]
+    invariant_ids: [INV-31, INV-41]
+  - contract_id: ProcessingClassDecision
+    contract_kind: embedded_decision
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: control_runtime
+    durability: embedded
+    traits: [proportional_processing, authority, useful_safe_fate]
+    invariant_ids: [INV-31, INV-32, INV-41]
+    dependency_ids: [ProcessingClassPolicy, EconomicOperatingEnvelope]
+  - contract_id: EconomicOperatingEnvelope
+    contract_kind: policy
+    commitment_class: governed_policy
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: control_evaluation
+    durability: canonical
+    writer_id: PolicyRegistryApplier
+    traits: [economic_operating_envelope]
+    invariant_ids: [INV-31, INV-32, INV-41]
+  - contract_id: UsefulSafeFate
+    contract_kind: embedded_fate
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: control_runtime
+    durability: embedded
+    traits: [useful_safe_fate, proportional_processing, economic_operating_envelope]
+    invariant_ids: [INV-32, INV-41]
+    dependency_ids: [ProcessingClassDecision, EconomicOperatingEnvelope]
+  - contract_id: IntentAcquisitionLoop
+    contract_kind: component_boundary
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: planned
+    semantic_plane: grounding_intent_control
+    durability: temporary
+    traits: [grounding, authority, lifecycle, human_attention]
+    invariant_ids: [INV-33, INV-37]
+  - contract_id: BootstrapPolicy
+    contract_kind: policy
+    commitment_class: governed_policy
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: control_learning
+    durability: canonical
+    writer_id: PolicyRegistryApplier
+    traits: [lifecycle, model_policy_reproducibility]
+    invariant_ids: [INV-34]
+  - contract_id: GovernedControlPolicyProtocol
+    contract_kind: control_learning_boundary
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: partial
+    semantic_plane: outcome_control_learning
+    durability: canonical
+    writer_id: PolicyRegistryApplier
+    traits: [preregistration, lifecycle, authority, provenance, model_policy_reproducibility, learned_artifact_influence]
+    invariant_ids: [INV-30, INV-34, INV-38]
+    dependency_ids: [OutcomeAttributionBoundary, BootstrapPolicy, LearnedArtifactManifest]
+  - contract_id: SemanticComputationalCommitBoundary
+    contract_kind: boundary
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: implemented
+    semantic_plane: cross_cutting
+    durability: embedded
+    traits: [semantic_decision, computational_bundle, commit_authority]
+    invariant_ids: [INV-35]
+  - contract_id: RepresentationAdmissionScope
+    contract_kind: control_object
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: control_evaluation
+    durability: canonical
+    writer_id: RepresentationRegistryApplier
+    traits: [lifecycle, provenance, representation_utility]
+    invariant_ids: [INV-15, INV-36]
+  - contract_id: HumanAttentionEnvelope
+    contract_kind: embedded_policy
+    commitment_class: governed_policy
+    maturity: experimental
+    implementation_status: planned
+    semantic_plane: cross_plane_control
+    durability: embedded
+    traits: [authority, economic_operating_envelope, useful_safe_fate]
+    invariant_ids: [INV-33, INV-37, INV-41]
+  - contract_id: LearnedArtifactManifest
+    contract_kind: control_object
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: control_audit
+    durability: canonical
+    writer_id: PolicyRegistryApplier
+    traits: [authority, provenance, lifecycle, learned_artifact_influence]
+    invariant_ids: [INV-38]
+  - contract_id: TenantInfluenceLineage
+    contract_kind: control_object
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: control_audit
+    durability: canonical
+    writer_id: PolicyRegistryApplier
+    traits: [authority, provenance, temporality, learned_artifact_influence]
+    invariant_ids: [INV-38]
+    dependency_ids: [LearnedArtifactManifest]
+  - contract_id: ArchitectureHypothesis
+    contract_kind: design_evidence
+    commitment_class: empirical_hypothesis
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: build_time_architecture
+    durability: build_time
+    writer_id: ArchitectureRegistrySteward
+    traits: [preregistration, evidence_scope, rollback]
+    invariant_ids: [INV-39, INV-40]
+  - contract_id: ArchitectureDecisionRecord
+    contract_kind: design_evidence
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: build_time_architecture
+    durability: build_time
+    writer_id: ArchitectureRegistrySteward
+    traits: [evidence_scope, compatibility, follow_up_obligation]
+    invariant_ids: [INV-39, INV-40]
+    dependency_ids: [ArchitectureHypothesis]
+  - contract_id: ArchitectureCommitmentClass
+    contract_kind: vocabulary
+    commitment_class: constitutional_invariant
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: build_time_architecture
+    durability: build_time
+    writer_id: ArchitectureRegistrySteward
+    traits: [change_control, evidence_floor]
+    invariant_ids: [INV-40, INV-42]
+  - contract_id: ArchitectureContractRegistry
+    contract_kind: build_time_registry
+    commitment_class: constitutional_invariant
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: build_time_architecture
+    durability: build_time
+    writer_id: ArchitectureRegistrySteward
+    traits: [unique_identity, writer_ownership, proof_mapping, projection_drift]
+    invariant_ids: [INV-42]
+    dependency_ids: [ArchitectureCommitmentClass]
+  - contract_id: InvariantProofMatrix
+    contract_kind: evaluation_projection
+    commitment_class: stable_semantic_contract
+    maturity: experimental
+    implementation_status: implemented
+    semantic_plane: evaluator_only
+    durability: build_time
+    writer_id: ArchitectureRegistrySteward
+    traits: [proof_mapping, denominator, evidence_tier, evidence_compatibility, provenance_preserving_aggregation]
+    invariant_ids: [INV-42]
+    dependency_ids: [ArchitectureContractRegistry]
+  - contract_id: OrthogonalSemanticAxes
+    contract_kind: semantic_kernel
+    commitment_class: constitutional_invariant
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: cross_cutting
+    durability: embedded
+    traits: [semantic_axes, plane_ownership, write_authority]
+    invariant_ids: [INV-04, INV-08, INV-17, INV-26, INV-35]
+  - contract_id: BitemporalInterval
+    contract_kind: temporal_kernel
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: cross_cutting
+    durability: embedded
+    traits: [valid_time, transaction_time, cutoff]
+    invariant_ids: [INV-09, INV-14, INV-16, INV-27]
+  - contract_id: AuthorityContextAlgebra
+    contract_kind: authority_kernel
+    commitment_class: constitutional_invariant
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: cross_cutting
+    durability: embedded
+    traits: [processing_authority, consumption_authority, monotone_restriction, noninterference]
+    invariant_ids: [INV-02, INV-06, INV-12, INV-16, INV-17, INV-21, INV-27, INV-38]
+  - contract_id: WriterScopeEpoch
+    contract_kind: ownership_fence
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: control_runtime
+    durability: canonical
+    writer_id: WriterEpochApplier
+    traits: [single_writer, writer_epoch, cutover, fencing]
+    invariant_ids: [INV-08, INV-16, INV-23, INV-29, INV-35, INV-42]
+    dependency_ids: [BitemporalInterval]
+  - contract_id: CommandEventResultOutboxProtocol
+    contract_kind: transactional_protocol
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: cross_cutting
+    durability: embedded
+    traits: [command, idempotency, result, canonical_event, outbox, consumer_fate]
+    invariant_ids: [INV-06, INV-12, INV-16, INV-19, INV-22, INV-23, INV-24, INV-29]
+    dependency_ids: [WriterScopeEpoch, EventPositionWatermarkVector]
+  - contract_id: MultiAggregateMutationPlan
+    contract_kind: transactional_protocol
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: cross_cutting
+    durability: embedded
+    traits: [bounded_write_set, deterministic_lock_order, isolation, all_or_nothing]
+    invariant_ids: [INV-28, INV-29]
+    dependency_ids: [WriterScopeEpoch]
+  - contract_id: EventPositionWatermarkVector
+    contract_kind: progress_kernel
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: cross_cutting
+    durability: embedded
+    traits: [partition_position, snapshot, catch_up, repair, cutover]
+    invariant_ids: [INV-14, INV-16, INV-18, INV-19, INV-23, INV-24, INV-29]
+  - contract_id: ContractCompatibilityManifest
+    contract_kind: compatibility_protocol
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: build_time_architecture
+    durability: build_time
+    writer_id: ArchitectureRegistrySteward
+    traits: [readers_first, dual_decode, semantic_migration, removal_watermark]
+    invariant_ids: [INV-16, INV-29, INV-40, INV-42]
+    dependency_ids: [EventPositionWatermarkVector]
+  - contract_id: ProposalValidationApply
+    contract_kind: semantic_write_convention
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: implemented
+    semantic_plane: cross_cutting
+    durability: embedded
+    traits: [proposal, deterministic_validation, named_applier, command_result]
+    invariant_ids: [INV-04, INV-05, INV-08, INV-13, INV-15, INV-26, INV-35]
+    dependency_ids: [CommandEventResultOutboxProtocol]
+  - contract_id: EvidenceLineageAndRevision
+    contract_kind: evidence_boundary
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: evidence
+    durability: canonical
+    writer_id: EvidenceAppender
+    traits: [source_identity, revision, exact_coordinate, typed_retention_absence, lineage]
+    invariant_ids: [INV-03, INV-04, INV-14, INV-16, INV-17, INV-19, INV-26]
+    dependency_ids: [BitemporalInterval, OrthogonalSemanticAxes]
+  - contract_id: IngestionReceipt
+    contract_kind: delivery_generation_protocol
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: evidence_control
+    durability: canonical
+    writer_id: EvidenceAppender
+    traits: [raw_durability, capture_generation, processing_generation, total_fate, owner_terminalization]
+    invariant_ids: [INV-18, INV-19, INV-23, INV-29]
+    dependency_ids: [AuthorityContextAlgebra, CommandEventResultOutboxProtocol]
+  - contract_id: ConversationInterpretationContext
+    contract_kind: perception_boundary
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: grounding_perception
+    durability: canonical
+    writer_id: GroundingAnnotationAppender
+    traits: [source_topology, authorized_context, temporary_episode_hypothesis, discourse_referent, sufficiency, selection_dependency]
+    invariant_ids: [INV-02, INV-04, INV-07, INV-14, INV-16, INV-25, INV-27, INV-31, INV-32]
+    dependency_ids: [EvidenceLineageAndRevision, AuthorityContextAlgebra, BitemporalInterval]
+  - contract_id: SourceSemanticAdmission
+    contract_kind: perception_boundary
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: grounding_perception
+    durability: canonical
+    writer_id: GroundingAnnotationAppender
+    traits: [source_assertion, semantic_frame, speech_act, attribution, operators, legal_destination]
+    invariant_ids: [INV-04, INV-08, INV-13, INV-17, INV-26, INV-33, INV-35]
+    dependency_ids: [ConversationInterpretationContext, EvidenceLineageAndRevision, ProposalValidationApply]
+  - contract_id: EntityGroundingStages
+    contract_kind: perception_boundary
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: grounding_perception
+    durability: canonical
+    writer_id: GroundingAnnotationAppender
+    traits: [mention_anchor, entity_mention, type_assessment, local_role, open_world, stage_separation]
+    invariant_ids: [INV-04, INV-05, INV-07, INV-08, INV-26, INV-35]
+    dependency_ids: [SourceSemanticAdmission, ConversationInterpretationContext]
+  - contract_id: EntityCandidateRequestFate
+    contract_kind: grounding_protocol
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: grounding_perception_control
+    durability: canonical
+    writer_id: GroundingAnnotationAppender
+    traits: [self_contained_digest, authority_prefilter, required_lane_fates, immutable_candidate_set, open_set, total_fate]
+    invariant_ids: [INV-02, INV-05, INV-06, INV-16, INV-23, INV-27, INV-31, INV-32]
+    dependency_ids: [EntityGroundingStages, AuthorityContextAlgebra, CommandEventResultOutboxProtocol]
+  - contract_id: EntityIdentityLifecycle
+    contract_kind: identity_registry
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: grounding_identity
+    durability: canonical
+    writer_id: EntityIdentityApplier
+    traits: [canonical_referent, source_identity_binding, referent_track, create_merge_split, versioned_lineage]
+    invariant_ids: [INV-05, INV-07, INV-14, INV-16, INV-27]
+    dependency_ids: [EntityCandidateRequestFate, BitemporalInterval]
+  - contract_id: GroundingAdmission
+    contract_kind: consumption_boundary
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: grounding_control
+    durability: canonical
+    writer_id: GroundingAdmissionApplier
+    traits: [resolution_assessment, consumer_purpose_risk, live_consumption_authority, distribution_or_single_or_abstain, expiry]
+    invariant_ids: [INV-02, INV-05, INV-06, INV-07, INV-12, INV-16, INV-27, INV-31, INV-32]
+    dependency_ids: [EntityCandidateRequestFate, EntityIdentityLifecycle, AuthorityContextAlgebra]
+  - contract_id: GroundingContinuityTrace
+    contract_kind: grounding_lineage
+    commitment_class: stable_semantic_contract
+    maturity: candidate
+    implementation_status: partial
+    semantic_plane: grounding_control
+    durability: canonical
+    writer_id: GroundingAnnotationAppender
+    traits: [context_snapshot, request_digest, immutable_candidate_set, resolution_assessment, consumer_admission, total_fate, no_truth_mutation]
+    invariant_ids: [INV-04, INV-05, INV-06, INV-07, INV-16, INV-23, INV-27, INV-32]
+    dependency_ids: [ConversationInterpretationContext, EntityCandidateRequestFate, GroundingAdmission]
+
+invariants:
+  - invariant_id: INV-01
+    title: Intent does not alter factual probability without evidence
+    evidence_floor: E4
+    owner: E3
+    implementation_status: planned
+    contract_ids: [GovernedIntentProtocol, AttentionGovernanceConcernReducer]
+    proof:
+      invariant_version: inv-01-v1
+      object_and_transition_scope: Goal, Priority or Concern change through BeliefAssertion proposal and apply
+      eligibility_predicate_version: goal-only-matched-pair-v1
+      exposure_unit: eligible goal-only matched branch pair
+      fate_vocabulary_version: intent-belief-comparison-fates-v1
+      mutually_exclusive_fates: [belief_invariant, unsupported_belief_delta, unpaired, indeterminate]
+      mandatory_trace_facts: [evidence_cutoff_and_hash, belief_proposal_and_apply_versions, intent_and_criterion_versions, before_and_after_probability]
+      oracle_or_metamorphic_relation: hold evidence fixed while changing only authorized goals and require belief probability invariance
+      suite_and_scenario_ids: [META-INTENT-01, BELIEF-INTENT-SEALED]
+      continuous_metric_ids: [inv.intent_belief_invariance]
+      incident_class: intent_contaminated_factual_belief
+      known_blind_spots: [Model stochasticity can widen equivalence tolerance.]
+  - invariant_id: INV-02
+    title: Less authority never yields more information or action
+    evidence_floor: E4
+    owner: E3
+    implementation_status: planned
+    contract_ids: [AuthorityContextAlgebra]
+    proof:
+      invariant_version: inv-02-v1
+      object_and_transition_scope: processing and consumption authority through candidates, reads, delivery and action
+      eligibility_predicate_version: matched-authority-reduction-v1
+      exposure_unit: matched authority-reduction pair
+      fate_vocabulary_version: authority-comparison-fates-v1
+      mutually_exclusive_fates: [nonincreasing, information_increase, action_increase, unnecessary_withholding, indeterminate]
+      mandatory_trace_facts: [processing_and_consumption_fingerprints, grants_and_revocations, candidate_read_and_action_fates, exposed_features_counts_and_timing]
+      oracle_or_metamorphic_relation: traverse a restriction lattice and require less authority never to increase information or action
+      suite_and_scenario_ids: [META-AUTH-01, AUTH-NONINTERFERENCE]
+      continuous_metric_ids: [inv.authority_monotonicity]
+      incident_class: authority_noninterference_violation
+      known_blind_spots: [Unmodeled side channels and external-provider timing.]
+  - invariant_id: INV-03
+    title: Repetition and copied lineage are not corroboration
+    evidence_floor: E4
+    owner: E5
+    implementation_status: planned
+    contract_ids: [EvidenceLineageAndRevision]
+    proof:
+      invariant_version: inv-03-v1
+      object_and_transition_scope: evidence lineage through summaries, projections, beliefs and answers
+      eligibility_predicate_version: duplicate-lineage-pair-v1
+      exposure_unit: duplicate-lineage metamorphic pair
+      fate_vocabulary_version: lineage-dedup-fates-v1
+      mutually_exclusive_fates: [deduplicated, support_inflated, confidence_inflated, lineage_unknown]
+      mandatory_trace_facts: [direct_parent_lineage, independent_source_set, confidence_before_and_after, applied_evidence_delta]
+      oracle_or_metamorphic_relation: duplicate one lineage one, ten and one hundred times without adding an independent source
+      suite_and_scenario_ids: [META-LINEAGE-01]
+      continuous_metric_ids: [inv.lineage_dedup]
+      incident_class: copied_lineage_counted_as_corroboration
+      known_blind_spots: [Unknown upstream copying outside observable lineage.]
+  - invariant_id: INV-04
+    title: Grounding interpretation never re-enters evidence as independent fact
+    evidence_floor: E4
+    owner: E3S
+    implementation_status: partial
+    contract_ids: [OrthogonalSemanticAxes, ProposalValidationApply, EvidenceLineageAndRevision, ConversationInterpretationContext, SourceSemanticAdmission, EntityGroundingStages, GroundingContinuityTrace]
+    proof:
+      invariant_version: inv-04-v1
+      object_and_transition_scope: conversation Evidence through grounding interpretations and attempted evidence re-entry
+      eligibility_predicate_version: derived-object-reentry-v1
+      exposure_unit: derived-object exposure to an evidence admission path
+      fate_vocabulary_version: perception-reentry-fates-v1
+      mutually_exclusive_fates: [rejected_as_derived, admitted_as_dependent_interpretation, admitted_as_independent_evidence, provenance_adjudication]
+      mandatory_trace_facts: [content_epistemic_and_plane_axes, source_revision, annotation_writer, reingest_lineage]
+      oracle_or_metamorphic_relation: feed derived interpretations back through source-shaped inputs and preserve their dependent status
+      suite_and_scenario_ids: [META-PLANE-01, EVIDENCE-REENTRY]
+      continuous_metric_ids: [inv.perception_reentry]
+      incident_class: interpretation_reentered_as_independent_evidence
+      known_blind_spots: [Human export and later resubmission may require provenance adjudication.]
+  - invariant_id: INV-05
+    title: Entity extraction typing resolution creation and merge stay separate
+    evidence_floor: E4
+    owner: E3E
+    implementation_status: partial
+    contract_ids: [ProposalValidationApply, EntityGroundingStages, EntityCandidateRequestFate, EntityIdentityLifecycle, GroundingAdmission, GroundingContinuityTrace]
+    proof:
+      invariant_version: inv-05-v1
+      object_and_transition_scope: material mention through detection, typing, candidate resolution, referent birth and merge
+      eligibility_predicate_version: material-mention-v1
+      exposure_unit: material mention
+      fate_vocabulary_version: entity-stage-fates-v1
+      mutually_exclusive_fates: [resolved_existing, created_new, local_unresolved, rejected, expired, quarantined]
+      mandatory_trace_facts: [mention_anchor, type_assessment_and_admission, candidate_request_and_set, resolution_assessment, registry_command_and_result, grounding_admission_versions]
+      oracle_or_metamorphic_relation: ambiguous, novel and wrong-type entity ladder with stage-specific oracle labels
+      suite_and_scenario_ids: [ENTITY-STAGE-FATE, ENTITY-ORACLE-LADDER]
+      continuous_metric_ids: [inv.entity_stage_separation]
+      incident_class: collapsed_or_untraceable_entity_stage
+      known_blind_spots: [Gold ambiguity in implicit mentions.]
+  - invariant_id: INV-06
+    title: Every candidate-generation request has one complete authority-safe fate
+    evidence_floor: E4
+    owner: E3E
+    implementation_status: partial
+    contract_ids: [AuthorityContextAlgebra, CommandEventResultOutboxProtocol, EntityCandidateRequestFate, GroundingAdmission, GroundingContinuityTrace]
+    proof:
+      invariant_version: inv-06-v1
+      object_and_transition_scope: accepted EntityCandidateGenerationRequest through one immutable set or terminal fate
+      eligibility_predicate_version: accepted-candidate-request-digest-v1
+      exposure_unit: accepted candidate-generation request digest
+      fate_vocabulary_version: candidate-request-fates-v1
+      mutually_exclusive_fates: [immutable_set, no_permitted_candidates, rejected, failed, expired, quarantined]
+      mandatory_trace_facts: [request_digest, permitted_lanes, per_lane_fate, command_result, set_hash_and_version, lineage_head, authority_fingerprint]
+      oracle_or_metamorphic_relation: retry, redrive and crash branches plus impermissible-population twins
+      suite_and_scenario_ids: [CANDIDATE-FATE, META-CANDIDATE-NI]
+      continuous_metric_ids: [inv.candidate_total_fate]
+      incident_class: missing_multiple_or_authority_unsafe_candidate_fate
+      known_blind_spots: [Search-provider internals may be opaque.]
+  - invariant_id: INV-07
+    title: Local coreference does not imply global identity merge
+    evidence_floor: E4
+    owner: E3E
+    implementation_status: partial
+    contract_ids: [ConversationInterpretationContext, EntityGroundingStages, EntityIdentityLifecycle, GroundingAdmission, GroundingContinuityTrace]
+    proof:
+      invariant_version: inv-07-v1
+      object_and_transition_scope: local association or coreference through any global identity bind or merge
+      eligibility_predicate_version: local-association-v1
+      exposure_unit: eligible local association
+      fate_vocabulary_version: local-global-identity-fates-v1
+      mutually_exclusive_fates: [local_only, globally_linked_with_evidence, globally_merged_with_evidence, unjustified_globalization, unresolved]
+      mandatory_trace_facts: [local_role_binding_or_referent_track, merge_proposal, independent_identity_evidence, registry_result]
+      oracle_or_metamorphic_relation: same-message collaborators, homonyms and local pronouns without independent merge evidence
+      suite_and_scenario_ids: [ENTITY-LOCAL-NOT-GLOBAL]
+      continuous_metric_ids: [inv.local_global_separation]
+      incident_class: local_association_globalized_without_evidence
+      known_blind_spots: [Sparse worlds may not reveal delayed merge harm.]
+  - invariant_id: INV-08
+    title: Semantic axes plane and write authority never collapse
+    evidence_floor: E3
+    owner: E3
+    implementation_status: partial
+    contract_ids: [OrthogonalSemanticAxes, WriterScopeEpoch]
+    proof:
+      invariant_version: inv-08-v1
+      object_and_transition_scope: every durable semantic object and transition across orthogonal axes and writer scope
+      eligibility_predicate_version: durable-semantic-object-transition-v1
+      exposure_unit: durable object or transition
+      fate_vocabulary_version: semantic-axis-fates-v1
+      mutually_exclusive_fates: [conformant, missing_axis, illegal_axis_combination, illegal_writer, unknown_type]
+      mandatory_trace_facts: [all_registered_orthogonal_axes, input_and_output_schema, writer_scope_and_epoch, transition_identity]
+      oracle_or_metamorphic_relation: permute axes independently and attempt every illegal writer transition
+      suite_and_scenario_ids: [SEMANTIC-AXES, WRITER-SCOPE]
+      continuous_metric_ids: [inv.axis_conformance]
+      incident_class: semantic_axis_or_writer_collapse
+      known_blind_spots: [New semantic types absent from the registry remain unknown.]
+  - invariant_id: INV-09
+    title: Prediction precedes outcome and remains immutable
+    evidence_floor: E4
+    owner: E7
+    implementation_status: planned
+    contract_ids: [BitemporalInterval, PredictionInterventionSettlementBoundary]
+    proof:
+      invariant_version: inv-09-v1
+      object_and_transition_scope: eligible consequential prediction commit through first outcome visibility and later edit attempts
+      eligibility_predicate_version: consequential-prediction-v1
+      exposure_unit: eligible consequential prediction
+      fate_vocabulary_version: prediction-registration-fates-v1
+      mutually_exclusive_fates: [preregistered_immutable, late, mutated_after_outcome, missing, censored]
+      mandatory_trace_facts: [prediction_commit_position_cutoff_and_hash, first_outcome_visible_position, all_prediction_edit_attempts]
+      oracle_or_metamorphic_relation: reveal outcome evidence only after prediction registration and attempt post-outcome mutation
+      suite_and_scenario_ids: [META-PREDICTION-01]
+      continuous_metric_ids: [inv.prediction_preregistration]
+      incident_class: late_or_postdicted_prediction
+      known_blind_spots: [Outcome leakage through uninstrumented sources.]
+  - invariant_id: INV-10
+    title: Execution and task completion are not outcome
+    evidence_floor: E4
+    owner: E7
+    implementation_status: planned
+    contract_ids: [PredictionInterventionSettlementBoundary, OutcomeAttributionBoundary]
+    proof:
+      invariant_version: inv-10-v1
+      object_and_transition_scope: executed intervention episode through task, effect, independent outcome and settlement
+      eligibility_predicate_version: executed-episode-due-for-measurement-v1
+      exposure_unit: executed episode due for outcome measurement
+      fate_vocabulary_version: execution-outcome-fates-v1
+      mutually_exclusive_fates: [outcome_measured, outcome_censored, outcome_failed, execution_only, falsely_closed]
+      mandatory_trace_facts: [workflow_and_task, external_or_internal_effect, execution_receipt, independent_outcome, settlement_links]
+      oracle_or_metamorphic_relation: complete execution without changing the world and require outcome to remain unresolved
+      suite_and_scenario_ids: [META-OUTCOME-01]
+      continuous_metric_ids: [inv.execution_outcome_separation]
+      incident_class: execution_misclassified_as_outcome
+      known_blind_spots: [Long-censored outcomes remain unresolved rather than erroneous.]
+  - invariant_id: INV-11
+    title: Residual is not causal proof
+    evidence_floor: E5
+    owner: E7
+    implementation_status: planned
+    contract_ids: [PredictionInterventionSettlementBoundary, OutcomeAttributionBoundary]
+    proof:
+      invariant_version: inv-11-v1
+      object_and_transition_scope: settled prediction residual through classification and any causal attribution
+      eligibility_predicate_version: settled-residual-v1
+      exposure_unit: settled residual
+      fate_vocabulary_version: residual-attribution-fates-v1
+      mutually_exclusive_fates: [measurement_error, execution_failure, exogenous_shock, model_error, structural_change_candidate, attributed, withheld]
+      mandatory_trace_facts: [prediction, effect, measurement, shock_or_confounder, settlement, attribution, causal_uncertainty]
+      oracle_or_metamorphic_relation: known-mechanism residual worlds requiring separation and attribution withholding
+      suite_and_scenario_ids: [RESIDUAL-TAXONOMY, ATTRIBUTION-WITHHOLD]
+      continuous_metric_ids: [inv.residual_attribution]
+      incident_class: residual_treated_as_causal_proof
+      known_blind_spots: [Simulator causal fidelity caps the claim.]
+  - invariant_id: INV-12
+    title: Every external action is authorized fenced idempotent and reconcilable
+    evidence_floor: E4
+    owner: E7
+    implementation_status: partial
+    contract_ids: [AuthorityContextAlgebra, CommandEventResultOutboxProtocol, WorkflowTaskStateProtocol, WorkLeaseFateProtocol, ExternalEffectReceiptProtocol]
+    proof:
+      invariant_version: inv-12-v1
+      object_and_transition_scope: reserved external action through authorization, provider call, effect observation and reconciliation
+      eligibility_predicate_version: reserved-external-effect-attempt-v1
+      exposure_unit: reserved external-effect attempt
+      fate_vocabulary_version: external-effect-fates-v1
+      mutually_exclusive_fates: [succeeded, failed, unknown_reconciling, partially_effective, compensated, cancelled, rejected]
+      mandatory_trace_facts: [spec_and_capability_hashes, authorization_epoch, live_fence, semantic_provider_key, dispatch_before_call, effect_observations, reconciliation_or_compensation]
+      oracle_or_metamorphic_relation: crash, timeout, partial-effect and duplicate-provider boundaries
+      suite_and_scenario_ids: [EFFECT-FENCE, CHAOS-EFFECT]
+      continuous_metric_ids: [inv.external_effect_safety]
+      incident_class: unauthorized_or_duplicate_external_effect
+      known_blind_spots: [Providers without authoritative reconciliation require explicit residual risk.]
+  - invariant_id: INV-13
+    title: Free text is proposal and constitutive intent is exact governed command
+    evidence_floor: E4
+    owner: E3I
+    implementation_status: planned
+    contract_ids: [ProposalValidationApply]
+    proof:
+      invariant_version: inv-13-v1
+      object_and_transition_scope: intent-bearing text or typed command through proposal normalization, acceptance and constitution
+      eligibility_predicate_version: intent-bearing-input-v1
+      exposure_unit: intent-bearing interpretation or direct typed command
+      fate_vocabulary_version: intent-admission-fates-v1
+      mutually_exclusive_fates: [proposal_only, exactly_accepted, direct_typed_constituted, rejected, expired, grounding_required]
+      mandatory_trace_facts: [source_semantics, normalized_proposal_digest, proposal_appender_result, exact_acceptance, authority_basis_and_survival_policy, grounding_admission_decision]
+      oracle_or_metamorphic_relation: fake approval, material proposal edit, replay and high-risk grounding branches
+      suite_and_scenario_ids: [INTENT-ADMISSION, META-INTENT-DIGEST]
+      continuous_metric_ids: [inv.intent_admission]
+      incident_class: free_text_bypassed_intent_constitution
+      known_blind_spots: [Institutional and legal validity needs domain review.]
+  - invariant_id: INV-14
+    title: Correction repairs current dependents and preserves historical state
+    evidence_floor: E4
+    owner: E3D
+    implementation_status: partial
+    contract_ids: [BitemporalInterval, EventPositionWatermarkVector, EvidenceLineageAndRevision, ConversationInterpretationContext, EntityIdentityLifecycle, DependencyInvalidationRepairProtocol, RepairConvergenceProtocol]
+    proof:
+      invariant_version: inv-14-v1
+      object_and_transition_scope: canonical correction through invalidation, dependency repair, current convergence and historical as-known query
+      eligibility_predicate_version: correction-with-material-dependents-v1
+      exposure_unit: correction by oracle-expected material dependent
+      fate_vocabulary_version: correction-repair-fates-v1
+      mutually_exclusive_fates: [repaired, superseded, unaffected, censored, residue_declared, unsafe_unresolved]
+      mandatory_trace_facts: [old_and_new_source_generations, invalidation_epoch, dependency_edges, repair_obligation_and_receipt_lineage, as_of_snapshots]
+      oracle_or_metamorphic_relation: correct evidence after consequential use and compare current repair with preserved as-known history
+      suite_and_scenario_ids: [CORRECTION-CLOSURE, META-ASOF]
+      continuous_metric_ids: [inv.correction_closure]
+      incident_class: correction_failed_to_close_material_dependency
+      known_blind_spots: [Dependency oracle is exact only in synthetic worlds.]
+  - invariant_id: INV-15
+    title: Optional durable relations require truth evidence and scoped utility
+    evidence_floor: E5
+    owner: E5R
+    implementation_status: partial
+    contract_ids: [RepresentationAdmissionScope]
+    proof:
+      invariant_version: inv-15-v1
+      object_and_transition_scope: optional inferred relation candidate through truth admission, utility scope, live fence and durable projection
+      eligibility_predicate_version: optional-inferred-representation-v1
+      exposure_unit: optional inferred candidate or admitted belief
+      fate_vocabulary_version: representation-admission-fates-v1
+      mutually_exclusive_fates: [temporary_shadow, truth_rejected, utility_rejected, admitted, invalidated, expired, instance_escalated]
+      mandatory_trace_facts: [scope_hypothesis, candidate_membership_and_assignment, complete_denominator, immutable_measurement, heterogeneity_and_escalation_decision, live_fence, belief_and_projector_versions]
+      oracle_or_metamorphic_relation: family-control paired exposure, harmful cohort, corrected outcome and invalidation
+      suite_and_scenario_ids: [REP-UTILITY, REP-CORRECTION]
+      continuous_metric_ids: [inv.representation_admission]
+      incident_class: unqualified_optional_relation_made_durable_or_visible
+      known_blind_spots: [Long-horizon value, sparse subgroups and interference.]
+  - invariant_id: INV-16
+    title: Consequential results are reconstructable from exact dependencies
+    evidence_floor: E4
+    owner: E4
+    implementation_status: partial
+    contract_ids: [BitemporalInterval, AuthorityContextAlgebra, WriterScopeEpoch, CommandEventResultOutboxProtocol, EventPositionWatermarkVector, ContractCompatibilityManifest, GroundingContinuityTrace, WorkflowTaskStateProtocol, WorkLeaseFateProtocol, FailureOwnerTerminalizationProtocol, ExternalEffectReceiptProtocol, DependencyInvalidationRepairProtocol, RepairConvergenceProtocol]
+    proof:
+      invariant_version: inv-16-v1
+      object_and_transition_scope: consequential durable result through complete dependency manifest and deterministic replay
+      eligibility_predicate_version: consequential-result-v1
+      exposure_unit: consequential durable result
+      fate_vocabulary_version: reconstructability-fates-v1
+      mutually_exclusive_fates: [byte_reconstructed, semantically_reconstructed, incomplete_trace, replay_diverged, externally_unreconstructable]
+      mandatory_trace_facts: [complete_dependency_manifest, object_event_and_result_ids, component_and_contract_versions, authority_context, provenance_and_validation, trace_and_artifact_hashes]
+      oracle_or_metamorphic_relation: delete rebuildable caches and replay from the recorded cutoff, configuration and dependencies
+      suite_and_scenario_ids: [TRACE-RECONSTRUCT, REPLAY-CONSEQUENTIAL]
+      continuous_metric_ids: [inv.reconstructability]
+      incident_class: consequential_result_not_reconstructable
+      known_blind_spots: [Third-party systems may retain only limited receipts.]
+  - invariant_id: INV-17
+    title: Internal output cannot become independent evidence
+    evidence_floor: E4
+    owner: E3
+    implementation_status: planned
+    contract_ids: [OrthogonalSemanticAxes, AuthorityContextAlgebra, EvidenceLineageAndRevision, SourceSemanticAdmission]
+    proof:
+      invariant_version: inv-17-v1
+      object_and_transition_scope: Fyralis-produced content through any later source-shaped evidence admission
+      eligibility_predicate_version: system-output-reentry-v1
+      exposure_unit: system-output re-entry exposure
+      fate_vocabulary_version: self-evidence-fates-v1
+      mutually_exclusive_fates: [rejected_as_self_output, admitted_as_dependent_copy, human_endorsement_separated, admitted_as_independent_support]
+      mandatory_trace_facts: [origin_class, complete_lineage, ingest_path, source_authentication, independence_decision]
+      oracle_or_metamorphic_relation: resubmit a Fyralis answer, summary and projection with and without independent human endorsement
+      suite_and_scenario_ids: [EVIDENCE-SELF-CITE]
+      continuous_metric_ids: [inv.self_evidence]
+      incident_class: system_output_counted_as_independent_evidence
+      known_blind_spots: [Independent human endorsement must be separated from copied content.]
+  - invariant_id: INV-18
+    title: Stable reality and discharged obligations converge to quiescence
+    evidence_floor: E4
+    owner: E3D
+    implementation_status: planned
+    contract_ids: [EventPositionWatermarkVector]
+    proof:
+      invariant_version: inv-18-v1
+      object_and_transition_scope: stable external reality and work cutoff through drain, repeated watermarks and semantic quiescence
+      eligibility_predicate_version: stable-horizon-v1
+      exposure_unit: registered obligation lineage in a stable horizon
+      fate_vocabulary_version: quiescence-fates-v1
+      mutually_exclusive_fates: [due_terminal, future_eligible, deferred_with_wake, suppressed, quarantined, active, orphaned]
+      mandatory_trace_facts: [complete_obligation_lineage_denominator, due_and_future_state, active_leases, effects, repairs, outboxes, policy_and_version_changes, repeated_watermark_vectors]
+      oracle_or_metamorphic_relation: stop external input, hold truth and policy fixed, drain and repeat stable scans
+      suite_and_scenario_ids: [QUIESCENCE-STABLE, CHAOS-DRAIN]
+      continuous_metric_ids: [inv.quiescence]
+      incident_class: nonquiescent_or_false_drained_state
+      known_blind_spots: [Periodic duties require a declared future-eligibility horizon.]
+  - invariant_id: INV-19
+    title: Ingestion receipt capture and processing generations have total fate
+    evidence_floor: E4
+    owner: E3D
+    implementation_status: planned
+    contract_ids: [CommandEventResultOutboxProtocol, EventPositionWatermarkVector, IngestionReceipt]
+    proof:
+      invariant_version: inv-19-v1
+      object_and_transition_scope: emitted connector delivery through durable receipt, capture and processing generations and owner terminalization
+      eligibility_predicate_version: emitted-source-delivery-v1
+      exposure_unit: delivery, receipt or processing generation
+      fate_vocabulary_version: ingestion-generation-fates-v1
+      mutually_exclusive_fates: [durable_current, superseded, failed_terminal, quarantined, rejected, missing, orphaned]
+      mandatory_trace_facts: [delivery_hash_and_cursor, capture_generation_config_and_fate, processing_generation_digest_parent_and_fate, raw_reference_and_ack, failure_or_work_record, owner_command_and_result]
+      oracle_or_metamorphic_relation: model-based generation reducer with duplicate, redrive and crash at every handshake boundary
+      suite_and_scenario_ids: [INGEST-GENERATIONS, CHAOS-INGEST-HANDSHAKE]
+      continuous_metric_ids: [inv.ingestion_total_fate]
+      incident_class: predurable_ack_or_orphaned_ingestion_generation
+      known_blind_spots: [Connector-known source gaps may cap the emitted denominator.]
+  - invariant_id: INV-20
+    title: Complete attention governance controls autonomous work
+    evidence_floor: E4
+    owner: E3I
+    implementation_status: planned
+    contract_ids: [AttentionGovernanceConcernReducer]
+    proof:
+      invariant_version: inv-20-v1
+      object_and_transition_scope: attention source and binding through criterion, contributor, composed work envelope and fate
+      eligibility_predicate_version: attention-governance-exposure-v1
+      exposure_unit: source, modifier, disposition or autonomous-work exposure
+      fate_vocabulary_version: attention-binding-fates-v1
+      mutually_exclusive_fates: [passive, eligible, narrowed, deferred, suppressed, prohibited, violated]
+      mandatory_trace_facts: [source_binding_criterion_and_contributor_versions, priority_modifier, disposition_capability, composed_work_envelope, work_fate]
+      oracle_or_metamorphic_relation: all source kinds, incomplete bindings and modifier-composition permutations
+      suite_and_scenario_ids: [ATTENTION-BINDING, META-ATTENTION-MEET]
+      continuous_metric_ids: [inv.binding_envelope]
+      incident_class: attention_binding_or_nonwaivability_violation
+      known_blind_spots: [Legal interpretation of nonwaivability needs governed fixtures.]
+  - invariant_id: INV-21
+    title: Constituted intent follows authority-basis survival policy
+    evidence_floor: E4
+    owner: E3I
+    implementation_status: planned
+    contract_ids: [AuthorityContextAlgebra]
+    proof:
+      invariant_version: inv-21-v1
+      object_and_transition_scope: constituted intent through authority-basis change, immediate fence and governed survival reducer
+      eligibility_predicate_version: basis-change-dependent-intent-v1
+      exposure_unit: basis-change by dependent-intent pair
+      fate_vocabulary_version: intent-survival-fates-v1
+      mutually_exclusive_fates: [survives, suspended, invalidated, requires_reauthorization, superseded, expired]
+      mandatory_trace_facts: [basis_snapshot_and_change_class, survival_mode, grounding_dependencies, immediate_fence, intent_applier_fate, repair_lineage]
+      oracle_or_metamorphic_relation: every basis and survival mode with same or changed referent and replacement basis
+      suite_and_scenario_ids: [INTENT-SURVIVAL, META-NO-REACTIVATION]
+      continuous_metric_ids: [inv.basis_survival_accuracy]
+      incident_class: incorrect_or_implicit_intent_survival
+      known_blind_spots: [Irreversible real-world legal consequences require expert review.]
+  - invariant_id: INV-22
+    title: Proposal and intervention specification preserve exact effect continuity
+    evidence_floor: E4
+    owner: E7
+    implementation_status: partial
+    contract_ids: [PredictionInterventionSettlementBoundary, CommandEventResultOutboxProtocol, WorkflowTaskStateProtocol, WorkLeaseFateProtocol, ExternalEffectReceiptProtocol]
+    proof:
+      invariant_version: inv-22-v1
+      object_and_transition_scope: Proposal and exact InterventionSpec registration through authorized delivery effect and episode trace
+      eligibility_predicate_version: proposal-or-delivery-candidate-v1
+      exposure_unit: action proposal, intervention episode or external delivery candidate
+      fate_vocabulary_version: proposal-delivery-fates-v1
+      mutually_exclusive_fates: [registered_in_app, authorized_dispatched, delivered, reconciled, rejected, failed, unknown]
+      mandatory_trace_facts: [proposal_spec_authority_work_lease_effect_receipt_and_episode_versions, semantic_hashes, all_transition_fates, in_app_projection_identity]
+      oracle_or_metamorphic_relation: mutate spec fields, fake approval, crash after send and duplicate provider request
+      suite_and_scenario_ids: [PROPOSAL-SPEC, DELIVERY-EFFECT]
+      continuous_metric_ids: [inv.spec_continuity]
+      incident_class: proposal_spec_or_delivery_effect_discontinuity
+      known_blind_spots: [Provider receipt semantics can remain partially observable.]
+  - invariant_id: INV-23
+    title: Work lease and failure reducers are total and fenced
+    evidence_floor: E4
+    owner: E3D
+    implementation_status: partial
+    contract_ids: [WriterScopeEpoch, CommandEventResultOutboxProtocol, EventPositionWatermarkVector, GroundingContinuityTrace, WorkLeaseFateProtocol, FailureOwnerTerminalizationProtocol, ExternalEffectReceiptProtocol]
+    proof:
+      invariant_version: inv-23-v1
+      object_and_transition_scope: WorkObligation generation through decision, lease, worker result, failure and owner terminalization
+      eligibility_predicate_version: work-generation-v1
+      exposure_unit: work generation, lease, failure or owner-terminalization handshake
+      fate_vocabulary_version: work-lease-fates-v1
+      mutually_exclusive_fates: [completed, deferred, suppressed, failed, quarantined, superseded, active_reconciling, orphaned]
+      mandatory_trace_facts: [obligation_lineage_generation_and_state, binding_envelope, work_decision, lease_fence, worker_result, failure_record, owner_handshake]
+      oracle_or_metamorphic_relation: model-based transitions with expiry, takeover, stale worker, poison and redrive
+      suite_and_scenario_ids: [WORK-LEASE-REDUCER, CHAOS-OWNER-TERM]
+      continuous_metric_ids: [inv.work_lease_fate]
+      incident_class: illegal_stale_or_orphaned_work_transition
+      known_blind_spots: [Provider-side effects can keep legal reconciliation open.]
+  - invariant_id: INV-24
+    title: Repair has complete acyclic lineage watermarks and residue
+    evidence_floor: E4
+    owner: E3D
+    implementation_status: partial
+    contract_ids: [CommandEventResultOutboxProtocol, EventPositionWatermarkVector, DependencyInvalidationRepairProtocol, RepairConvergenceProtocol]
+    proof:
+      invariant_version: inv-24-v1
+      object_and_transition_scope: repair request through dependency discovery, successor lineage, child work, receipt and convergence
+      eligibility_predicate_version: correction-material-dependent-v1
+      exposure_unit: correction by oracle material dependent and logical repair lineage
+      fate_vocabulary_version: repair-lineage-fates-v1
+      mutually_exclusive_fates: [repaired, unaffected, superseded, deferred, censored, residue_declared, unsafe_unresolved, lineage_invalid]
+      mandatory_trace_facts: [repair_request_and_epoch, oracle_and_index_dependents, watermark_vector, generation_parent_and_head, child_work, dependent_owner_result, repair_receipt, residue_and_convergence]
+      oracle_or_metamorphic_relation: hidden dependents, partition rebalance, supersession, redrive and deletion
+      suite_and_scenario_ids: [REPAIR-LINEAGE, CHAOS-REPAIR-REBALANCE]
+      continuous_metric_ids: [inv.repair_closure]
+      incident_class: repair_dependency_or_lineage_closure_failure
+      known_blind_spots: [Oracle dependency coverage is exact only in instrumented worlds.]
+  - invariant_id: INV-25
+    title: Temporary dependencies are embedded and projections rebuild equivalently
+    evidence_floor: E4
+    owner: E3
+    implementation_status: partial
+    contract_ids: [ConversationInterpretationContext]
+    proof:
+      invariant_version: inv-25-v1
+      object_and_transition_scope: selected context dependency embedded in owner through named one-writer projection and rebuild
+      eligibility_predicate_version: required-context-consumer-projection-v1
+      exposure_unit: required consumer, projection build or matched query
+      fate_vocabulary_version: derived-embedding-fates-v1
+      mutually_exclusive_fates: [embedded_and_equivalent, standalone_dependency, rebuild_diverged, wrong_writer, stale, authority_leak, missing]
+      mandatory_trace_facts: [snapshot_and_selected_hypothesis_hash, packet_manifest_in_consumer, projection_inputs, transform_version, inherited_authority, writer_scope]
+      oracle_or_metamorphic_relation: rebuild from zero, invoke wrong writer, correct sources and reduce authority
+      suite_and_scenario_ids: [DERIVED-EMBEDDING, PROJECTION-REBUILD]
+      continuous_metric_ids: [inv.derived_embedding]
+      incident_class: derived_dependency_or_projection_authority_violation
+      known_blind_spots: [Nondeterministic ranking requires semantic rather than byte equality.]
+  - invariant_id: INV-26
+    title: Source assertions frames and speech acts preserve expression semantics
+    evidence_floor: E4
+    owner: E3S
+    implementation_status: planned
+    contract_ids: [OrthogonalSemanticAxes, ProposalValidationApply, EvidenceLineageAndRevision, SourceSemanticAdmission, EntityGroundingStages]
+    proof:
+      invariant_version: inv-26-v1
+      object_and_transition_scope: eligible source expression through SourceAssertion, SemanticFrame, SpeechAct and legal destination command
+      eligibility_predicate_version: eligible-source-act-v1
+      exposure_unit: eligible source act or gold semantic-frame role
+      fate_vocabulary_version: source-semantic-fates-v1
+      mutually_exclusive_fates: [preserved_and_routed, extraction_loss, operator_loss, role_loss, class_collapse, misrouted, ambiguous]
+      mandatory_trace_facts: [exact_source_coordinates, source_and_attributed_speakers, predicate_and_arguments, negation_modality_condition_quantity_and_time, uncertainty, destination_command_and_result]
+      oracle_or_metamorphic_relation: perturb each semantic operator independently and substitute oracle destination planes
+      suite_and_scenario_ids: [SOURCE-SEMANTICS, META-FRAME-OPERATOR]
+      continuous_metric_ids: [inv.source_semantics]
+      incident_class: source_semantic_or_plane_routing_loss
+      known_blind_spots: [Human ambiguity and sarcasm cap single-label gold.]
+  - invariant_id: INV-27
+    title: Bitemporal and processing-consumption authority compose correctly
+    evidence_floor: E4
+    owner: E3
+    implementation_status: partial
+    contract_ids: [BitemporalInterval, AuthorityContextAlgebra, ConversationInterpretationContext, EntityCandidateRequestFate, EntityIdentityLifecycle, GroundingAdmission, GroundingContinuityTrace]
+    proof:
+      invariant_version: inv-27-v1
+      object_and_transition_scope: bitemporal query and consequential consumption across processing and consumption authority
+      eligibility_predicate_version: bitemporal-query-or-use-v1
+      exposure_unit: bitemporal query or consequential use decision
+      fate_vocabulary_version: time-authority-fates-v1
+      mutually_exclusive_fates: [authorized_as_known, authorized_current, withheld, stale, future_leak, mixed_label_leak, revoked]
+      mandatory_trace_facts: [temporal_mode_and_cutoff, object_versions, processing_and_consumption_fingerprints_and_epochs, restriction_join, live_revocation, use_decision]
+      oracle_or_metamorphic_relation: branch as-known versus current across the complete authority restriction lattice
+      suite_and_scenario_ids: [BITEMPORAL-ALGEBRA, AUTHORITY-TWO-STAGE]
+      continuous_metric_ids: [inv.time_authority]
+      incident_class: temporal_or_two_stage_authority_violation
+      known_blind_spots: [External retention may prevent retrospective reconstruction.]
+  - invariant_id: INV-28
+    title: Concern preserves scoped gap contributors and total reduction
+    evidence_floor: E4
+    owner: E3I
+    implementation_status: planned
+    contract_ids: [MultiAggregateMutationPlan]
+    proof:
+      invariant_version: inv-28-v1
+      object_and_transition_scope: scoped gap and contributor events through per-criterion reduction and atomic successor correction
+      eligibility_predicate_version: concern-gap-or-transition-v1
+      exposure_unit: gold gap, contributor event, criterion pair, reducer transition or correction plan
+      fate_vocabulary_version: concern-reducer-fates-v1
+      mutually_exclusive_fates: [open, partially_applicable, resolved, suppressed, superseded, expired, forked_invalid]
+      mandatory_trace_facts: [gap_key, complete_contributor_history, criterion_and_binding_state, reducer_version, cas_attempts, mutation_plan, predecessor_and_successor]
+      oracle_or_metamorphic_relation: concurrent event permutations, partial dispositions and corrected-key races
+      suite_and_scenario_ids: [CONCERN-REDUCER, META-CONCERN-CAS]
+      continuous_metric_ids: [inv.concern_reducer]
+      incident_class: concern_contributor_loss_or_false_global_state
+      known_blind_spots: [Consequence and materiality oracle is simulator-dependent.]
+  - invariant_id: INV-29
+    title: Command state result event and outbox commit atomically
+    evidence_floor: E4
+    owner: E3D
+    implementation_status: partial
+    contract_ids: [WriterScopeEpoch, CommandEventResultOutboxProtocol, MultiAggregateMutationPlan, ContractCompatibilityManifest, WorkflowTaskStateProtocol, WorkLeaseFateProtocol, FailureOwnerTerminalizationProtocol, ExternalEffectReceiptProtocol, DependencyInvalidationRepairProtocol, RepairConvergenceProtocol]
+    proof:
+      invariant_version: inv-29-v1
+      object_and_transition_scope: command through atomic state, result, event and required outbox commit plus consumer fate
+      eligibility_predicate_version: accepted-command-or-required-delivery-v1
+      exposure_unit: command, commit, required outbox or delivery
+      fate_vocabulary_version: transport-atomicity-fates-v1
+      mutually_exclusive_fates: [atomically_committed, duplicate_same_hash, conflict, rejected_stale_writer, delivered, deferred, failed, orphaned]
+      mandatory_trace_facts: [command_key_hash_scope_and_epoch, aggregate_version, command_result, event_sequence_and_position, required_outboxes, consumer_receipts]
+      oracle_or_metamorphic_relation: crash every commit and consume boundary plus key-hash conflict and writer transfer
+      suite_and_scenario_ids: [TRANSPORT-ATOMICITY, WRITER-CUTOVER]
+      continuous_metric_ids: [inv.transport_atomicity]
+      incident_class: partial_atomic_bundle_or_stale_writer_commit
+      known_blind_spots: [Storage guarantees differ by deployment topology.]
+  - invariant_id: INV-30
+    title: Corrections close over settlement reward policy and dependent intent
+    evidence_floor: E4
+    owner: E7
+    implementation_status: planned
+    contract_ids: [AuthorityBasisSurvivalReducer, PredictionInterventionSettlementBoundary, OutcomeAttributionBoundary, GovernedControlPolicyProtocol]
+    proof:
+      invariant_version: inv-30-v1
+      object_and_transition_scope: corrected dependency through settlement, attribution, reward, policy lifecycle and separately applied dependent intent
+      eligibility_predicate_version: corrected-policy-dependent-descendant-v1
+      exposure_unit: corrected dependency by affected descendant
+      fate_vocabulary_version: policy-correction-fates-v1
+      mutually_exclusive_fates: [reward_retracted, policy_restricted, policy_replaced, policy_rolled_back, intent_repaired, unaffected, censored, contaminated]
+      mandatory_trace_facts: [corrected_dependency, settlement_and_attribution, reward_retraction, policy_fence_lifecycle_and_cas, repair_receipts, separate_intent_applier_fate]
+      oracle_or_metamorphic_relation: correct evidence after policy activation then roll back or replace policy and separately repair intent
+      suite_and_scenario_ids: [POLICY-CORRECTION, META-POLICY-INTENT-SEPARATION]
+      continuous_metric_ids: [inv.policy_correction]
+      incident_class: corrected_evidence_left_policy_or_intent_contamination
+      known_blind_spots: [Long-lag downstream policy effects can remain censored.]
+  - invariant_id: INV-31
+    title: Processing rigor is proportional without weakening semantic law
+    evidence_floor: E4
+    owner: E6V
+    implementation_status: partial
+    contract_ids: [ProcessingClassPolicy, ProcessingClassDecision, EconomicOperatingEnvelope]
+    proof:
+      invariant_version: inv-31-v1
+      object_and_transition_scope: eligible processing opportunity through class decision, stages and terminal fate
+      eligibility_predicate_version: processing-opportunity-v1
+      exposure_unit: class-eligible processing opportunity
+      fate_vocabulary_version: processing-class-fates-v1
+      mutually_exclusive_fates: [R0, R1, R2, R3, R4, R5, rejected]
+      mandatory_trace_facts:
+        - eligibility_features
+        - risk_consequence_estimate
+        - available_budget
+        - selected_class_and_reason
+        - stages_attempted_and_skipped
+        - semantic_outputs
+        - invariant_incidents
+        - resource_cost
+      oracle_or_metamorphic_relation: matched class ladder under consequence, uncertainty, reversibility, value and budget perturbations
+      suite_and_scenario_ids: [RIGOR-LADDER, META-RIGOR-MONOTONE]
+      continuous_metric_ids: [inv.proportional_rigor]
+      incident_class: proportional_rigor_law_violation
+      known_blind_spots:
+        - Oracle-minimal sufficient processing class is estimated in open worlds.
+  - invariant_id: INV-32
+    title: Every eligible opportunity receives a timely useful safe fate
+    evidence_floor: E4
+    owner: E6V
+    implementation_status: partial
+    contract_ids: [ProcessingClassDecision, UsefulSafeFate, EconomicOperatingEnvelope, GroundingContinuityTrace]
+    proof:
+      invariant_version: inv-32-v1
+      object_and_transition_scope: eligible service opportunity through one timely useful safe or justified no-result fate
+      eligibility_predicate_version: service-opportunity-v1
+      exposure_unit: eligible service opportunity
+      fate_vocabulary_version: useful-safe-fates-v1
+      mutually_exclusive_fates: [complete_result, partial_result, clarification_requested, calibrated_abstention, deferred, impossible_under_constraints, unresolved]
+      mandatory_trace_facts:
+        - opportunity_id_and_class
+        - oracle_answerability_or_actionability
+        - start_and_deadline
+        - attempted_processing_classes
+        - terminal_or_deferred_fate
+        - usefulness_assessment
+        - safety_assessment
+        - resource_cost
+      oracle_or_metamorphic_relation: answerable and unanswerable twins under constrained budget and provider outage
+      suite_and_scenario_ids: [SAFE-LIVENESS, META-OPPORTUNITY-FATE]
+      continuous_metric_ids: [inv.safe_liveness]
+      incident_class: unsafe_silent_or_late_fate
+      known_blind_spots:
+        - Human utility labels and long-censored action value limit oracle certainty.
+  - invariant_id: INV-33
+    title: Intent acquisition preserves constituted expressed proposed and absent states
+    evidence_floor: E4
+    owner: E3I
+    implementation_status: planned
+    contract_ids: [IntentAcquisitionLoop, HumanAttentionEnvelope]
+    proof:
+      invariant_version: inv-33-v1
+      object_and_transition_scope: intent-bearing observation through proposal, interaction and separately constituted command
+      eligibility_predicate_version: intent-acquisition-opportunity-v1
+      exposure_unit: oracle-relevant intent acquisition opportunity
+      fate_vocabulary_version: intent-acquisition-fates-v1
+      mutually_exclusive_fates: [constituted, expressed, proposed, behavioral_evidence_only, conflicted, absent, expired]
+      mandatory_trace_facts:
+        - intent_acquisition_opportunity
+        - observation_basis
+        - intent_state_distribution
+        - proposed_interpretation_and_version
+        - target_principal
+        - interaction_and_burden
+        - response_correction_or_expiry
+        - constituted_command_and_result
+      oracle_or_metamorphic_relation: latent-intent worlds with silence, conflict, deceptive behavior and paraphrase
+      suite_and_scenario_ids: [INTENT-ACQUISITION, META-BEHAVIOR-NOT-INTENT]
+      continuous_metric_ids: [inv.intent_acquisition]
+      incident_class: intent_state_or_authority_collapse
+      known_blind_spots:
+        - Real institutional legitimacy and response propensity require pilot evidence.
+  - invariant_id: INV-34
+    title: Every adaptive loop has a governed useful bootstrap contract
+    evidence_floor: E4
+    owner: E7
+    implementation_status: partial
+    contract_ids: [BootstrapPolicy, GovernedControlPolicyProtocol]
+    proof:
+      invariant_version: inv-34-v1
+      object_and_transition_scope: adaptive loop creation through bootstrap, shadow evidence, promotion, rollback or expiry
+      eligibility_predicate_version: adaptive-loop-cold-start-v1
+      exposure_unit: adaptive-loop cold-start episode
+      fate_vocabulary_version: bootstrap-fates-v1
+      mutually_exclusive_fates: [bootstrap_active, shadowed, promoted, frozen_fallback, rolled_back, expired]
+      mandatory_trace_facts:
+        - loop_kind_and_version
+        - bootstrap_policy
+        - prior_provenance
+        - evidence_count_and_quality
+        - shadow_assignments
+        - promotion_criteria_and_decision
+        - rollback_state
+        - terminal_fate
+      oracle_or_metamorphic_relation: new tenant, domain, entity and consumer from zero through mature feedback
+      suite_and_scenario_ids: [LOOP-BOOTSTRAP, META-NO-EVIDENCE-PROMOTION]
+      continuous_metric_ids: [inv.loop_bootstrap]
+      incident_class: unearned_adaptive_promotion
+      known_blind_spots:
+        - Rare loops may remain legitimately censored before promotion.
+  - invariant_id: INV-35
+    title: Semantic computational and commit architectures remain orthogonal
+    evidence_floor: E4
+    owner: E3S
+    implementation_status: partial
+    contract_ids: [SemanticComputationalCommitBoundary, OrthogonalSemanticAxes, WriterScopeEpoch]
+    proof:
+      invariant_version: inv-35-v1
+      object_and_transition_scope: semantic decision records through model-call bundles and writer-scoped commit results
+      eligibility_predicate_version: semantic-decision-commit-v1
+      exposure_unit: eligible semantic decision and commit attempt
+      fate_vocabulary_version: inference-topology-fates-v1
+      mutually_exclusive_fates: [decided_not_committed, committed, rejected, deferred, failed]
+      mandatory_trace_facts:
+        - semantic_decision_ids_types_and_distributions
+        - computational_bundle_and_shared_features
+        - intermediate_alternatives
+        - commit_commands_and_results
+        - writer_scopes
+        - correction_dependencies
+        - resource_cost
+      oracle_or_metamorphic_relation: equal-information staged, joint and hybrid topology with single-field perturbation
+      suite_and_scenario_ids: [INFERENCE-TOPOLOGY, META-COMPUTE-COMMIT]
+      continuous_metric_ids: [inv.inference_topology]
+      incident_class: semantic_compute_commit_collapse
+      known_blind_spots:
+        - Provider internals may hide latent coupling even when outputs are separated.
+  - invariant_id: INV-36
+    title: Representation utility uses explicit family-consumer-risk-cohort scope
+    evidence_floor: E5
+    owner: E5R
+    implementation_status: partial
+    contract_ids: [RepresentationAdmissionScope]
+    proof:
+      invariant_version: inv-36-v1
+      object_and_transition_scope: optional representation family scope through cohort exposure, decision, fence and instance escalation
+      eligibility_predicate_version: representation-family-scope-v1
+      exposure_unit: relation-family by consumer by risk by organization-cohort scope
+      fate_vocabulary_version: representation-scope-fates-v1
+      mutually_exclusive_fates: [shadow, admitted, rejected, expired, invalidated, escalated_per_instance]
+      mandatory_trace_facts:
+        - scope_definition_and_version
+        - candidate_membership
+        - immutable_assignment
+        - complete_cohort_denominator
+        - heterogeneity_and_tail_analysis
+        - admission_decision_and_fence
+        - instance_escalation
+        - consumer_outcomes
+      oracle_or_metamorphic_relation: family admission versus no, all and per-instance branches plus leave-one-cohort-out
+      suite_and_scenario_ids: [REP-FAMILY-UTILITY, META-REP-SCOPE]
+      continuous_metric_ids: [inv.representation_scope]
+      incident_class: representation_scope_overreach
+      known_blind_spots:
+        - Sparse families and interference can weakly identify subgroup effects.
+  - invariant_id: INV-37
+    title: Human attention is a governed scarce resource
+    evidence_floor: E4
+    owner: E6V
+    implementation_status: planned
+    contract_ids: [HumanAttentionEnvelope, IntentAcquisitionLoop]
+    proof:
+      invariant_version: inv-37-v1
+      object_and_transition_scope: eligible human interaction through routing, burden, response interpretation and downstream effect
+      eligibility_predicate_version: governed-human-interaction-v1
+      exposure_unit: eligible human interaction
+      fate_vocabulary_version: human-attention-fates-v1
+      mutually_exclusive_fates: [answered, corrected, rejected, ignored, deferred, abandoned, not_delivered]
+      mandatory_trace_facts:
+        - eligible_interaction
+        - recipient_capability_and_authority
+        - expected_information_or_regret_value
+        - interruption_policy_and_budget
+        - timing_and_channel
+        - response_or_nonresponse
+        - human_minutes_and_steps
+        - fatigue_or_trust_state
+        - downstream_effect
+      oracle_or_metamorphic_relation: equal-information routing, batch-versus-interrupt and fatigue/nonresponse worlds
+      suite_and_scenario_ids: [HUMAN-ATTENTION, META-NONRESPONSE-NOT-REJECTION]
+      continuous_metric_ids: [inv.human_attention]
+      incident_class: unauthorized_or_wasteful_interruption
+      known_blind_spots:
+        - Synthetic actors poorly reproduce social interruption and surveillance effects.
+  - invariant_id: INV-38
+    title: Learned state has training use tenant influence and deletion authority
+    evidence_floor: E4
+    owner: E3M
+    implementation_status: partial
+    contract_ids: [LearnedArtifactManifest, TenantInfluenceLineage, GovernedControlPolicyProtocol]
+    proof:
+      invariant_version: inv-38-v1
+      object_and_transition_scope: training artifact admission through learned-state use, tenant influence and deletion or unlearning fate
+      eligibility_predicate_version: learned-state-exposure-v1
+      exposure_unit: artifact-model-consumer exposure and affected deletion obligation
+      fate_vocabulary_version: learned-state-authority-fates-v1
+      mutually_exclusive_fates: [eligible_active, restricted, isolated, retrained, unlearned, deleted, residual_declared, rejected]
+      mandatory_trace_facts:
+        - training_artifact_ids
+        - tenant_purpose_and_source_labels
+        - authority_or_consent_basis
+        - transformation_and_aggregation
+        - model_assignment_and_version
+        - learned_state_consumers
+        - deletion_or_revocation_request
+        - influence_obligations_and_attestation
+        - residual_influence_probes
+      oracle_or_metamorphic_relation: tenant add-remove twins, canaries, membership probes and retrain, unlearn or isolate branches
+      suite_and_scenario_ids: [MODEL-STATE-AUTHORITY, META-LEARNED-NONINTERFERENCE]
+      continuous_metric_ids: [inv.model_state_authority]
+      incident_class: unauthorized_learned_state_influence
+      known_blind_spots:
+        - Black-box tests cannot prove formal noninterference or complete unlearning of opaque weights.
+  - invariant_id: INV-39
+    title: Architecture evolves through preregistered evidence and decisions
+    evidence_floor: E3
+    owner: E12
+    implementation_status: partial
+    contract_ids: [ArchitectureHypothesis, ArchitectureDecisionRecord]
+    proof:
+      invariant_version: inv-39-v1
+      object_and_transition_scope: eligible architecture change through preregistered hypothesis, experiment, decision and follow-up
+      eligibility_predicate_version: architecture-decision-v1
+      exposure_unit: eligible architecture decision
+      fate_vocabulary_version: architecture-learning-fates-v1
+      mutually_exclusive_fates: [proposed, experimenting, accepted, rejected, deferred, rolled_back, expired]
+      mandatory_trace_facts:
+        - hypothesis_version_and_commitment_class
+        - predicted_effects
+        - frozen_experiment_design
+        - suite_separation
+        - immutable_results
+        - decision_record_and_rationale
+        - implementation_compatibility
+        - rollback_and_regression_traces
+      oracle_or_metamorphic_relation: retrospective replay and prospective alternative-mechanism experiment
+      suite_and_scenario_ids: [ARCH-META-LEARNING, META-DESIGN-POSTDICTION]
+      continuous_metric_ids: [inv.architecture_learning]
+      incident_class: undocumented_or_postdicted_architecture_change
+      known_blind_spots:
+        - Few high-level design decisions limit power and invite evaluator dependence.
+  - invariant_id: INV-40
+    title: Every architecture commitment has class-correct evidence and change control
+    evidence_floor: E3
+    owner: E12
+    implementation_status: partial
+    contract_ids: [ArchitectureCommitmentClass, ArchitectureHypothesis, ArchitectureDecisionRecord, ContractCompatibilityManifest]
+    proof:
+      invariant_version: inv-40-v1
+      object_and_transition_scope: active architecture commitment through classification, evidence, approval and change control
+      eligibility_predicate_version: active-architecture-commitment-v1
+      exposure_unit: active architecture registry commitment
+      fate_vocabulary_version: commitment-control-fates-v1
+      mutually_exclusive_fates: [active, experimental, superseded, rejected, retired]
+      mandatory_trace_facts:
+        - registry_item_and_commitment_class
+        - classification_rationale
+        - dependency_and_compatibility_scope
+        - required_evidence
+        - approval
+        - change_and_version_history
+        - generated_consumers
+      oracle_or_metamorphic_relation: class mutation, unsupported freeze and constitutional-law-as-policy attacks
+      suite_and_scenario_ids: [ARCH-COMMITMENT-CLASS, META-CLASS-CONTROL]
+      continuous_metric_ids: [inv.architecture_commitment_class]
+      incident_class: architecture_commitment_control_violation
+      known_blind_spots:
+        - Classification includes architectural judgment requiring independent review.
+  - invariant_id: INV-41
+    title: The complete lawful path is economically operable
+    evidence_floor: E4
+    owner: E6V
+    implementation_status: partial
+    contract_ids: [EconomicOperatingEnvelope, ProcessingClassPolicy, UsefulSafeFate]
+    proof:
+      invariant_version: inv-41-v1
+      object_and_transition_scope: lawful service opportunity through native resource use, budget decision and useful safe fate
+      eligibility_predicate_version: economic-operating-cohort-v1
+      exposure_unit: eligible opportunity in a declared scale-risk-value cohort
+      fate_vocabulary_version: economic-operability-fates-v1
+      mutually_exclusive_fates: [within_envelope, safely_degraded, deferred, rejected, envelope_breached, law_bypassed]
+      mandatory_trace_facts:
+        - per_stage_resource_ledger
+        - fixed_and_variable_cost
+        - human_and_operator_minutes
+        - source_traffic_and_scale
+        - processing_class
+        - useful_terminal_outcome
+        - budget_decision
+        - bypass_or_invariant_incident
+      oracle_or_metamorphic_relation: load, provider-price, cost and human-attention scarcity sweeps
+      suite_and_scenario_ids: [ECONOMIC-OPERABILITY, META-BUDGET-SAFETY]
+      continuous_metric_ids: [inv.economic_correctness]
+      incident_class: economic_pressure_semantic_bypass
+      known_blind_spots:
+        - Simulated willingness to pay and provider pricing do not prove commercial viability.
+  - invariant_id: INV-42
+    title: One canonical architecture registry owns identity and proof mappings
+    evidence_floor: E3
+    owner: E12
+    implementation_status: partial
+    contract_ids: [ArchitectureContractRegistry, ArchitectureCommitmentClass, InvariantProofMatrix, ContractCompatibilityManifest]
+    proof:
+      invariant_version: inv-42-v1
+      object_and_transition_scope: canonical registry item through every required generated or checked projection
+      eligibility_predicate_version: architecture-registry-item-projection-v1
+      exposure_unit: registry item by required projection
+      fate_vocabulary_version: registry-projection-fates-v1
+      mutually_exclusive_fates: [equivalent, missing, stale, orphaned, duplicate_authority, conflicting]
+      mandatory_trace_facts:
+        - registry_digest_and_version
+        - stable_item_ids
+        - projection_generator_or_checker_version
+        - artifact_digests
+        - projection_coverage
+        - drift_or_conflict_fate
+        - compatibility_decision
+      oracle_or_metamorphic_relation: mutate each canonical field and projection independently and require precise drift detection
+      suite_and_scenario_ids: [ARCH-REGISTRY, META-REGISTRY-DRIFT]
+      continuous_metric_ids: [inv.architecture_registry]
+      incident_class: architecture_duplicate_authority_or_drift
+      known_blind_spots:
+        - Natural-language explanatory completeness still requires review.
+
+projections:
+  - projection_id: implementation-plan
+    path: docs/plans/revised-reality-belief-intent-system-implementation.md
+    verification: digest
+    required_for_complete: true
+  - projection_id: evaluation-framework-and-invariant-matrix
+    path: docs/evaluation/revised-system-objective-evaluation-framework.md
+    verification: digest
+    required_for_complete: true
+  - projection_id: executable-runtime-contracts
+    path: lib/contracts/runtime.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: executable-execution-contracts
+    path: lib/contracts/execution.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: executable-failure-and-owner-terminalization-contracts
+    path: lib/contracts/failure.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: executable-dependency-repair-contracts
+    path: lib/contracts/repair.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: executable-c0a-kernel-contracts
+    path: lib/contracts/kernel.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: executable-c0b-perception-contracts
+    path: lib/contracts/perception.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: executable-architecture-contracts
+    path: lib/contracts/architecture.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: architecture-registry-checker
+    path: scripts/check_architecture_registry.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: invariant-proof-compiler
+    path: lib/evaluation/proof.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: objective-evaluation-report-compiler
+    path: scripts/report_objective_evaluation_state.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: executable-execution-evaluator
+    path: lib/evaluation/execution.py
+    verification: checked
+    required_for_complete: true
+  - projection_id: executable-repair-evaluator
+    path: lib/evaluation/repair.py
+    verification: checked
+    required_for_complete: true
