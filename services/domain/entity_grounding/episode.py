@@ -135,7 +135,12 @@ class AdjudicatedGroundingDecision:
 def candidate_id_for_ref(canonical_ref: dict[str, Any]) -> str:
     """Stable closed-set identifier for a tenant-local canonical ref."""
 
-    return f"candidate:canonical:{canonical_sha256(canonical_ref)}"
+    normalized = {
+        "type": str(canonical_ref.get("type") or ""),
+        "id": str(canonical_ref.get("id") or ""),
+        "version": int(canonical_ref.get("version", 1)),
+    }
+    return f"candidate:canonical:{canonical_sha256(normalized)}"
 
 
 def estimate_context_tokens(text: str) -> int:

@@ -560,6 +560,18 @@ def test_candidate_ids_are_canonical_and_order_independent() -> None:
     assert candidate_id_for_ref(CUSTOMER) == candidate_id_for_ref(same_different_order)
 
 
+def test_candidate_ids_normalize_implicit_version_one() -> None:
+    explicit_version = {
+        "type": "customer",
+        "id": "customer:nimbus",
+        "version": 1,
+    }
+
+    assert candidate_id_for_ref(CUSTOMER) == candidate_id_for_ref(
+        explicit_version
+    )
+
+
 def test_human_adjudication_builds_an_independently_grounded_successor() -> None:
     original = _episode(
         candidate_id=candidate_id_for_ref(CUSTOMER),
