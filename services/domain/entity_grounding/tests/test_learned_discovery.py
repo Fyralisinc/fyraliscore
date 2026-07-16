@@ -6,9 +6,13 @@ import pytest
 
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from services.domain.entity_grounding.learned_discovery import (
+    DISCOVERY_BATCHES,
+    DISCOVERY_READINESS,
+    DiscoveryProviderPreflightError,
     LearnedMentionBatch,
     PersistedSignalText,
     discover_batch_mentions,
+    preflight_structured_discovery,
 )
 
 
@@ -22,6 +26,25 @@ class ScriptedProvider:
         if isinstance(self.response, Exception):
             raise self.response
         return LearnedMentionBatch.model_validate(self.response)
+
+
+class PreflightProvider:
+    def __init__(self, response: dict | Exception):
+        self.response = response
+
+    async def structured(self, **kwargs):
+        if isinstance(self.response, Exception):
+            raise self.response
+        return kwargs["schema"].model_validate(self.response)
+
+
+@pytest.fixture(autouse=True)
+def _reset_discovery_metrics():
+    DISCOVERY_BATCHES.reset()
+    DISCOVERY_READINESS.reset()
+    yield
+    DISCOVERY_BATCHES.reset()
+    DISCOVERY_READINESS.reset()
 
 
 @pytest.mark.asyncio
@@ -75,3 +98,39 @@ async def test_provider_failure_falls_back_without_partial_learned_output() -> N
     assert result.candidates == ()
     assert result.provider_error and "provider unavailable" in result.provider_error
     assert len(provider.calls) == 1
+    assert DISCOVERY_BATCHES.get(
+        mode="deterministic_fallback", outcome="provider_error"
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_preflight_marks_structured_provider_ready() -> None:
+    await preflight_structured_discovery(PreflightProvider({"ready": True}))
+
+    assert DISCOVERY_READINESS.get(state="ready") == 1
+    assert DISCOVERY_READINESS.get(state="failed") == 0
+
+
+@pytest.mark.asyncio
+async def test_preflight_classifies_outdated_transport_as_configuration_failure() -> None:
+    provider = PreflightProvider(
+        RuntimeError("model is not supported by this version; upgrade Codex")
+    )
+
+    with pytest.raises(DiscoveryProviderPreflightError) as raised:
+        await preflight_structured_discovery(provider)
+
+    assert raised.value.code == "unsupported_or_outdated_model"
+    assert raised.value.retryable is False
+    assert DISCOVERY_READINESS.get(state="failed") == 1
+
+
+@pytest.mark.asyncio
+async def test_preflight_classifies_transient_startup_outage_separately() -> None:
+    with pytest.raises(DiscoveryProviderPreflightError) as raised:
+        await preflight_structured_discovery(
+            PreflightProvider(RuntimeError("temporary connection reset"))
+        )
+
+    assert raised.value.code == "provider_unavailable"
+    assert raised.value.retryable is True

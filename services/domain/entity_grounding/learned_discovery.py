@@ -10,12 +10,24 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
+from lib.observability.metrics import counter, gauge
 DISCOVERY_VERSION = "learned-persisted-batch-entity-discovery-v1"
 MIN_ACCEPTED_CONFIDENCE = 0.80
 CompanyEntityType = Literal[
     "person", "team", "customer", "project", "product", "system",
     "workstream", "goal", "commitment", "decision", "resource", "other",
 ]
+
+DISCOVERY_BATCHES = counter(
+    "entity_discovery_batches_total",
+    "Persisted signal batches processed by learned entity discovery.",
+    ("mode", "outcome"),
+)
+DISCOVERY_READINESS = gauge(
+    "entity_discovery_provider_ready",
+    "Whether the configured learned entity-discovery provider passed preflight.",
+    ("state",),
+)
 
 
 class StructuredDiscoveryProvider(Protocol):
@@ -54,6 +66,10 @@ class LearnedMentionBatch(_Strict):
     mentions: tuple[LearnedMention, ...]
 
 
+class _DiscoveryPreflightResult(_Strict):
+    ready: Literal[True]
+
+
 @dataclass(frozen=True)
 class PersistedSignalText:
     signal_id: UUID
@@ -81,6 +97,76 @@ class LearnedDiscoveryResult:
     provider_error: str | None = None
 
 
+class DiscoveryProviderPreflightError(RuntimeError):
+    """Startup failure proving that structured discovery is unavailable."""
+
+    def __init__(self, message: str, *, code: str, retryable: bool) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
+_UNSUPPORTED_CONFIGURATION_MARKERS = (
+    "unsupported model",
+    "unsupported value",
+    "model is not supported",
+    "model does not support",
+    "unknown model",
+    "unknown variant",
+    "model_not_found",
+    "invalid model",
+    "upgrade codex",
+    "update codex",
+    "outdated codex",
+    "older version of codex",
+    "not supported by this version",
+)
+
+
+async def preflight_structured_discovery(
+    provider: StructuredDiscoveryProvider,
+) -> None:
+    """Prove the selected transport/model can complete a tiny structured turn.
+
+    This intentionally runs before worker health starts. Unsupported models and
+    outdated local transports are configuration failures, not retryable batch
+    incidents; callers may only change models through an explicit allowlist.
+    """
+
+    for state in ("ready", "failed"):
+        DISCOVERY_READINESS.set(0, state=state)
+    try:
+        result = await provider.structured(
+            system="Return the requested readiness object exactly.",
+            user='Return {"ready": true}.',
+            schema=_DiscoveryPreflightResult,
+            temperature=0.0,
+            max_tokens=32,
+        )
+        if result.ready is not True:
+            raise ValueError("structured readiness response was not true")
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"[:500]
+        normalized = message.casefold()
+        unsupported = any(
+            marker in normalized for marker in _UNSUPPORTED_CONFIGURATION_MARKERS
+        )
+        is_configuration = unsupported or isinstance(exc, (TypeError, ValueError))
+        DISCOVERY_READINESS.set(1, state="failed")
+        raise DiscoveryProviderPreflightError(
+            message,
+            code=(
+                "unsupported_or_outdated_model"
+                if unsupported
+                else "provider_configuration"
+                if is_configuration
+                else "provider_unavailable"
+            ),
+            retryable=not is_configuration,
+        ) from exc
+    DISCOVERY_READINESS.set(1, state="ready")
+
+
 async def discover_batch_mentions(
     *,
     provider: StructuredDiscoveryProvider | None,
@@ -89,6 +175,8 @@ async def discover_batch_mentions(
     """Use exactly one structured call, then distrust and verify its coordinates."""
 
     if provider is None or not signals:
+        if signals:
+            DISCOVERY_BATCHES.inc(mode="deterministic_fallback", outcome="disabled")
         return LearnedDiscoveryResult((), "deterministic_fallback")
     payload = [
         {
@@ -114,9 +202,14 @@ async def discover_batch_mentions(
             max_tokens=min(4096, 256 + 160 * len(signals)),
         )
     except Exception as exc:  # provider failure must not block deterministic coverage
+        DISCOVERY_BATCHES.inc(
+            mode="deterministic_fallback",
+            outcome="provider_error",
+        )
         return LearnedDiscoveryResult(
             (), "deterministic_fallback", f"{type(exc).__name__}: {exc}"[:500]
         )
+    DISCOVERY_BATCHES.inc(mode="learned", outcome="success")
     return LearnedDiscoveryResult(
         _verify_candidates(learned.mentions, signals),
         "learned",
@@ -199,7 +292,9 @@ def _verify_candidates(
 
 
 __all__ = [
-    "DISCOVERY_VERSION", "LearnedDiscoveryResult", "LearnedMentionBatch",
+    "DISCOVERY_VERSION", "DiscoveryProviderPreflightError",
+    "LearnedDiscoveryResult", "LearnedMentionBatch",
     "PersistedSignalText", "StructuredDiscoveryProvider",
     "VerifiedMentionCandidate", "discover_batch_mentions",
+    "preflight_structured_discovery",
 ]
