@@ -56,6 +56,9 @@ from services.ingest.ingestion.handlers import (
     ObservationDraft,
     register,
 )
+from services.ingest.ingestion.source_identity import (
+    StructuredSourceIdentityClaim,
+)
 
 
 _CHANNEL = "google_drive:file"
@@ -124,6 +127,29 @@ def _mime_label(mime: Any) -> str:
     return _MIME_LABEL.get(mime, mime.split("/")[-1] or "file")
 
 
+def _file_identity_claims(
+    file_id: Any,
+    file_name: Any,
+) -> list[StructuredSourceIdentityClaim]:
+    if (
+        not isinstance(file_id, str)
+        or not file_id.strip()
+        or not isinstance(file_name, str)
+        or not file_name.strip()
+    ):
+        return []
+    return [
+        StructuredSourceIdentityClaim(
+            source_system="google_drive",
+            source_native_identifier=f"google_drive:file:{file_id}",
+            source_surface=file_name,
+            claim_authority_ref=(
+                "google-drive-handler:structured-file-fields-v1"
+            ),
+        )
+    ]
+
+
 @register(_CHANNEL)
 async def handle_google_drive_file(
     payload: dict[str, Any], headers: dict[str, str]
@@ -159,7 +185,8 @@ def _build_file_draft(payload: dict[str, Any]) -> ObservationDraft:
 
     kind = "state_change" if removed else "signal"
 
-    name = payload.get("name") or "(untitled)"
+    source_file_name = payload.get("name")
+    name = source_file_name or "(untitled)"
     mime = payload.get("mimeType")
     label = _mime_label(mime)
     version = payload.get("version")
@@ -285,6 +312,10 @@ def _build_file_draft(payload: dict[str, Any]) -> ObservationDraft:
         ),
         external_id=external_id,
         entities_hint=entities,
+        source_identity_claims=_file_identity_claims(
+            file_id,
+            source_file_name,
+        ),
         raw_payload=payload,
     )
 
@@ -301,7 +332,8 @@ def _build_comment_draft(payload: dict[str, Any]) -> ObservationDraft:
     if not isinstance(file_id, str) or not file_id:
         raise ValidationError("google drive comment missing file id", channel=_COMMENT_CHANNEL)
 
-    file_name = payload.get("_fyralis_file_name") or file_id
+    source_file_name = payload.get("_fyralis_file_name")
+    file_name = source_file_name or file_id
     owner_email = payload.get("_fyralis_owner_email")
     resolved = bool(payload.get("resolved"))
     author_email, author_name = _user_ref(payload.get("author"))
@@ -380,6 +412,10 @@ def _build_comment_draft(payload: dict[str, Any]) -> ObservationDraft:
         source_actor_ref=(f"email:{author_email}" if author_email else None),
         external_id=external_id,
         entities_hint=entities,
+        source_identity_claims=_file_identity_claims(
+            file_id,
+            source_file_name,
+        ),
         raw_payload=payload,
     )
 
@@ -395,7 +431,8 @@ def _build_revision_draft(payload: dict[str, Any]) -> ObservationDraft:
     if not isinstance(file_id, str) or not file_id:
         raise ValidationError("google drive revision missing file id", channel=_REVISION_CHANNEL)
 
-    file_name = payload.get("_fyralis_file_name") or file_id
+    source_file_name = payload.get("_fyralis_file_name")
+    file_name = source_file_name or file_id
     owner_email = payload.get("_fyralis_owner_email")
     modified = payload.get("modifiedTime")
     editor_email, editor_name = _user_ref(payload.get("lastModifyingUser"))
@@ -437,6 +474,10 @@ def _build_revision_draft(payload: dict[str, Any]) -> ObservationDraft:
         source_actor_ref=(f"email:{editor_email}" if editor_email else None),
         external_id=external_id,
         entities_hint=entities,
+        source_identity_claims=_file_identity_claims(
+            file_id,
+            source_file_name,
+        ),
         raw_payload=payload,
     )
 

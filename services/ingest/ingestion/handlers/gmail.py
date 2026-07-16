@@ -40,6 +40,9 @@ from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import ObservationDraft, register
+from services.ingest.ingestion.source_identity import (
+    StructuredSourceIdentityClaim,
+)
 
 # Note: the following modules are DB-touching and used ONLY by
 # `dispatch_gmail_message_resource` (the inline-path dispatcher used
@@ -205,10 +208,31 @@ async def handle_gmail(
     body_text = (
         _extract_body(message_resource) if scope_used == "gmail.readonly" else None
     )
+    thread_id = message_resource.get("threadId")
+    subject = headers.get("subject")
+    source_identity_claims: list[StructuredSourceIdentityClaim] = []
+    if (
+        isinstance(thread_id, str)
+        and thread_id.strip()
+        and isinstance(subject, str)
+        and subject.strip()
+    ):
+        source_identity_claims.append(
+            StructuredSourceIdentityClaim(
+                source_system="gmail",
+                source_native_identifier=(
+                    f"gmail:{gmail_installation_id}:thread:{thread_id}"
+                ),
+                source_surface=subject,
+                claim_authority_ref=(
+                    "gmail-handler:structured-thread-subject-fields-v1"
+                ),
+            )
+        )
 
     content: dict[str, Any] = {
         "message_id": message_id,
-        "thread_id_gmail": message_resource.get("threadId"),
+        "thread_id_gmail": thread_id,
         "from": headers.get("from"),
         "to": _split_addrs(headers.get("to")),
         "cc": _split_addrs(headers.get("cc")),
@@ -247,6 +271,7 @@ async def handle_gmail(
         occurred_at=_internal_date_to_dt(message_resource.get("internalDate")),
         source_actor_ref=f"email:{from_email}" if from_email else None,
         entities_hint=entities,
+        source_identity_claims=source_identity_claims,
         trust_tier=TRUST_TIER,  # type: ignore[arg-type]
         raw_payload={"gmail_message_id": message_id},
     )

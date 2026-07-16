@@ -89,6 +89,19 @@ class TestHandleGmail:
             "gmail:00000000-0000-0000-0000-000000000002:abc@mail"
         )
         assert draft.source_actor_ref == "email:alice@x.com"
+        assert [
+            (
+                claim.source_native_identifier,
+                claim.source_surface,
+            )
+            for claim in draft.source_identity_claims
+        ] == [
+            (
+                "gmail:00000000-0000-0000-0000-000000000002:"
+                "thread:thr-1",
+                "hello",
+            )
+        ]
 
     async def test_readonly_extracts_body(self) -> None:
         draft = await handle_gmail(
@@ -102,6 +115,25 @@ class TestHandleGmail:
         assert draft.content["_gmail_thread_canonical_id"] == (
             "00000000-0000-0000-0000-000000000001"
         )
+
+    @pytest.mark.parametrize(
+        ("thread_id", "subject"),
+        [
+            (None, "hello"),
+            ("thr-1", ""),
+        ],
+    )
+    async def test_missing_thread_id_or_subject_emits_no_identity_claim(
+        self,
+        thread_id: str | None,
+        subject: str,
+    ) -> None:
+        payload = _payload(subject=subject)
+        payload["message_resource"]["threadId"] = thread_id
+
+        draft = await handle_gmail(payload, {})
+
+        assert draft.source_identity_claims == []
 
     async def test_entity_hints_include_recipients(self) -> None:
         draft = await handle_gmail(_payload(to="bob@y.com, carol@z.com"), {})

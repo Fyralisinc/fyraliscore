@@ -59,6 +59,13 @@ async def test_edit_is_signal_with_versioned_external_id_and_content():
     assert "Roadmap: ship Atlas" in draft.content_text
     assert draft.source_actor_ref == "email:bob@acme.com"
     assert draft.occurred_at.isoformat().startswith("2026-04-20T10:00:00")
+    assert [
+        (
+            claim.source_native_identifier,
+            claim.source_surface,
+        )
+        for claim in draft.source_identity_claims
+    ] == [("google_drive:file:file-1", "Q3 Planning")]
 
 
 async def test_version_bump_changes_external_id():
@@ -93,6 +100,13 @@ async def test_removed_change_without_version():
     assert draft.kind == "state_change"
     assert draft.external_id == "gdrive:file-9:removed:2026-04-21T08:00:00.000Z"
     assert draft.occurred_at.isoformat().startswith("2026-04-21T08:00:00")
+    assert draft.source_identity_claims == []
+
+
+async def test_file_without_source_name_emits_no_identity_claim():
+    draft = await handle_google_drive_file(_file(name=""), {})
+    assert draft.content["name"] == "(untitled)"
+    assert draft.source_identity_claims == []
 
 
 async def test_external_sharing_recipient_flagged():
@@ -104,6 +118,10 @@ async def test_external_sharing_recipient_flagged():
     assert by_id["bob@acme.com"]["role"] == "editor"
     # The document itself is an entity.
     assert any(e["type"] == "document" and e["id"] == "file-1" for e in draft.entities_hint)
+    assert draft.source_identity_claims[0].source_native_identifier == (
+        "google_drive:file:file-1"
+    )
+    assert draft.source_identity_claims[0].source_surface == "Q3 Planning"
 
 
 async def test_pdf_file_extracts_metadata_only_label():
@@ -174,6 +192,15 @@ async def test_comment_without_author_email_falls_back_to_name():
     assert draft.source_actor_ref is None  # no email to anchor an actor ref
 
 
+async def test_comment_without_source_file_name_emits_no_identity_claim():
+    draft = await handle_google_drive_file(
+        _comment(_fyralis_file_name=""),
+        {},
+    )
+    assert draft.content["file_name"] == "file-1"
+    assert draft.source_identity_claims == []
+
+
 # --- revision records --------------------------------------------------------
 
 def _revision(**over):
@@ -202,6 +229,19 @@ async def test_revision_is_signal_with_stable_id():
     assert "saved a revision of 'Q3 Planning'" in draft.content_text
     assert draft.source_actor_ref == "email:bob@acme.com"
     assert draft.occurred_at.isoformat().startswith("2026-04-20T10:00:00")
+    assert draft.source_identity_claims[0].source_native_identifier == (
+        "google_drive:file:file-1"
+    )
+    assert draft.source_identity_claims[0].source_surface == "Q3 Planning"
+
+
+async def test_revision_without_source_file_name_emits_no_identity_claim():
+    draft = await handle_google_drive_file(
+        _revision(_fyralis_file_name=""),
+        {},
+    )
+    assert draft.content["file_name"] == "file-1"
+    assert draft.source_identity_claims == []
 
 
 async def test_comment_missing_file_id_raises():
