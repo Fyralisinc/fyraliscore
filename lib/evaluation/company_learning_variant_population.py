@@ -6,15 +6,20 @@ import json
 from collections import Counter
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_experiment import (
+    CanonicalEntityRef,
+    ConsumerTerminalFate,
     CorrectiveMemoryArm,
     CorrectiveMemoryArmAssessment,
     CorrectiveMemoryExperimentReport,
+    HardSafetyIncidentClass,
+    PairedRecurrenceResult,
     RecurrenceCaseKind,
 )
 from lib.evaluation.company_learning_population import (
@@ -168,6 +173,183 @@ class VariantAliasExecutionObservation(_VariantPopulationModel):
         return self
 
 
+class VariantAliasCaseAssignment(_VariantPopulationModel):
+    case_id: str = Field(min_length=1)
+    logical_entity_type: str = Field(min_length=1)
+    runtime_entity_type: str = Field(min_length=1)
+    adaptive_tenant_id: UUID
+    frozen_tenant_id: UUID
+    adaptive_target_id: UUID
+    frozen_target_id: UUID
+    adaptive_conflicting_id: UUID
+    frozen_conflicting_id: UUID
+
+
+class VariantAliasArmMechanismEvidence(_VariantPopulationModel):
+    case_id: str = Field(min_length=1)
+    arm: CorrectiveMemoryArm
+    tenant_id: UUID
+    target_id: UUID
+    worker_decision: str = Field(min_length=1)
+    candidate_set_id: UUID | None = None
+    candidate_set_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    candidate_set_size: int = Field(ge=0)
+    authorized_candidate_refs: tuple[CanonicalEntityRef, ...]
+    target_candidate_authorized: bool
+    target_candidate_evidence_refs: tuple[str, ...]
+    closed_set_match: bool
+    model_output_ref: CanonicalEntityRef | None = None
+    model_output_confidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    scripted_high_confidence_target_response_observed: bool
+    llm_call_count: int = Field(ge=0)
+    source_observation_immutable: bool
+
+    @model_validator(mode="after")
+    def mechanism_state_is_coherent(self) -> Self:
+        if (self.candidate_set_id is None) != (
+            self.candidate_set_hash is None
+        ):
+            raise ValueError(
+                "candidate set identity and hash must be present together"
+            )
+        refs = [
+            (ref.type, ref.id, ref.version)
+            for ref in self.authorized_candidate_refs
+        ]
+        if len(refs) != len(set(refs)):
+            raise ValueError(
+                "authorized mechanism candidates must be unique"
+            )
+        target_visible = any(
+            ref.id == str(self.target_id)
+            for ref in self.authorized_candidate_refs
+        )
+        if self.target_candidate_authorized != target_visible:
+            raise ValueError(
+                "target authorization does not match candidate evidence"
+            )
+        if (
+            self.target_candidate_authorized
+            and not self.target_candidate_evidence_refs
+        ):
+            raise ValueError(
+                "authorized targets require candidate evidence references"
+            )
+        if self.closed_set_match and self.model_output_ref not in (
+            *self.authorized_candidate_refs,
+        ):
+            raise ValueError(
+                "closed-set matches must select an authorized candidate"
+            )
+        return self
+
+
+class VariantAliasPairMechanismEvidence(_VariantPopulationModel):
+    case_id: str = Field(min_length=1)
+    adaptive: VariantAliasArmMechanismEvidence
+    frozen: VariantAliasArmMechanismEvidence
+
+    @model_validator(mode="after")
+    def one_case_two_arms(self) -> Self:
+        if self.adaptive.arm is not CorrectiveMemoryArm.ADAPTIVE:
+            raise ValueError("adaptive mechanism evidence has the wrong arm")
+        if self.frozen.arm is not CorrectiveMemoryArm.FROZEN:
+            raise ValueError("frozen mechanism evidence has the wrong arm")
+        if {
+            self.case_id,
+            self.adaptive.case_id,
+            self.frozen.case_id,
+        } != {self.case_id}:
+            raise ValueError("mechanism evidence case identities differ")
+        return self
+
+
+class VariantAliasMechanismMetrics(_VariantPopulationModel):
+    selected_case_count: int = Field(ge=1)
+    observed_pair_count: int = Field(ge=0)
+    unsupported_case_count: int = Field(ge=0)
+    full_registry_coverage_rate: float = Field(ge=0.0, le=1.0)
+    observed_execution_rate: float = Field(ge=0.0, le=1.0)
+    adaptive_correctness_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    frozen_correctness_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    adaptive_minus_frozen_correctness: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+    )
+    adaptive_target_candidate_authorization_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    frozen_target_candidate_exposure_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    candidate_authorization_gap: float | None = Field(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+    )
+    adaptive_closed_set_match_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    frozen_closed_set_match_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    both_arms_one_llm_call_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    both_arms_scripted_target_response_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    frozen_safe_review_or_abstention_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    source_immutability_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    candidate_memory_mediated_success_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    adaptive_mean_llm_calls: float | None = Field(default=None, ge=0.0)
+    frozen_mean_llm_calls: float | None = Field(default=None, ge=0.0)
+    hard_safety_incident_count: int = Field(ge=0)
+    control_integrity_violation_count: int = Field(ge=0)
+    entity_type_counts: dict[str, int]
+    variant_family_counts: dict[str, int]
+
+
 class VariantAliasStratumReport(_VariantPopulationModel):
     sealed_case_count: int = Field(ge=0)
     observed_case_count: int = Field(ge=0)
@@ -251,6 +433,463 @@ class VariantAliasPopulationReport(_VariantPopulationModel):
     @property
     def digest(self) -> str:
         return canonical_sha256(self.model_dump(mode="json"))
+
+
+class CompanyLearningVariantPopulationEvidence(_VariantPopulationModel):
+    schema_version: Literal[
+        "company-learning-variant-population-evidence-v1"
+    ] = "company-learning-variant-population-evidence-v1"
+    created_at: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    system_version: str = Field(min_length=1)
+    execution_mode: Literal["smoke", "full"]
+    selection_policy: Literal[
+        "deterministic_registry_prefix_smoke",
+        "full_registry_once_no_selective_reruns",
+    ]
+    registry_path: str = Field(min_length=1)
+    registry_population: HeldOutVariantAliasPopulation
+    registry_population_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selected_case_ids: tuple[str, ...] = Field(min_length=1)
+    assignments: tuple[VariantAliasCaseAssignment, ...] = Field(min_length=1)
+    observations: tuple[VariantAliasExecutionObservation, ...] = Field(
+        min_length=1
+    )
+    raw_pairs: tuple[PairedRecurrenceResult, ...]
+    experiment_report: CorrectiveMemoryExperimentReport
+    population_report: VariantAliasPopulationReport | None = None
+    mechanism_pairs: tuple[VariantAliasPairMechanismEvidence, ...] = ()
+    mechanism_metrics: VariantAliasMechanismMetrics | None = None
+    artifact_refs: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def exact_cross_bound_evidence(self) -> Self:
+        registry_ids = tuple(
+            case.case_id for case in self.registry_population.cases
+        )
+        selected_ids = self.selected_case_ids
+        if selected_ids != registry_ids[: len(selected_ids)]:
+            raise ValueError(
+                "variant selection must preserve a deterministic registry prefix"
+            )
+        if self.registry_population_digest != self.registry_population.digest:
+            raise ValueError("variant registry digest does not match registry")
+        expected_policy = (
+            "full_registry_once_no_selective_reruns"
+            if self.execution_mode == "full"
+            else "deterministic_registry_prefix_smoke"
+        )
+        if self.selection_policy != expected_policy:
+            raise ValueError(
+                "variant selection policy does not match execution mode"
+            )
+        assignment_ids = tuple(row.case_id for row in self.assignments)
+        observation_ids = tuple(row.case_id for row in self.observations)
+        if assignment_ids != selected_ids or observation_ids != selected_ids:
+            raise ValueError(
+                "assignments and observations must preserve selected order"
+            )
+        runtime_types = {
+            "customer": "customer",
+            "project": "resource",
+            "team": "actor",
+            "system": "resource",
+        }
+        selected_cases = {
+            case.case_id: case
+            for case in self.registry_population.cases[: len(selected_ids)]
+        }
+        for assignment in self.assignments:
+            case = selected_cases[assignment.case_id]
+            if (
+                assignment.logical_entity_type != case.entity_type
+                or assignment.runtime_entity_type
+                != runtime_types[case.entity_type]
+            ):
+                raise ValueError(
+                    "variant assignment entity type does not match registry"
+                )
+        _validate_assignment_isolation(self.assignments)
+        observed_ids = tuple(
+            row.case_id
+            for row in self.observations
+            if row.execution_status == "observed"
+        )
+        if tuple(pair.case_id for pair in self.raw_pairs) != observed_ids:
+            raise ValueError("raw pairs must exactly cover observed cases")
+        if self.experiment_report.run_id != self.run_id:
+            raise ValueError("variant evidence report run identity mismatch")
+        if self.experiment_report.system_version != self.system_version:
+            raise ValueError(
+                "variant evidence report system version mismatch"
+            )
+        if self.experiment_report.pairs != self.raw_pairs:
+            raise ValueError("experiment report must retain every raw pair")
+        _validate_experiment_report(
+            self.experiment_report,
+            observed_ids=set(observed_ids),
+        )
+        if self.mechanism_pairs:
+            if tuple(
+                pair.case_id for pair in self.mechanism_pairs
+            ) != observed_ids:
+                raise ValueError(
+                    "mechanism pairs must exactly cover observed cases"
+                )
+            _validate_mechanism_pairs(
+                assignments=self.assignments,
+                raw_pairs=self.raw_pairs,
+                mechanisms=self.mechanism_pairs,
+            )
+        if self.mechanism_metrics is not None:
+            _validate_mechanism_metrics(
+                metrics=self.mechanism_metrics,
+                registry=self.registry_population,
+                selected_case_ids=selected_ids,
+                observations=self.observations,
+                report=self.experiment_report,
+                mechanisms=self.mechanism_pairs,
+            )
+        if self.execution_mode == "full":
+            if selected_ids != registry_ids or self.population_report is None:
+                raise ValueError(
+                    "full execution requires all cases and a population report"
+                )
+            method = (
+                self.population_report.adaptive_minus_frozen_correctness.method
+            )
+            try:
+                bootstrap_samples = int(method.rsplit("_", 1)[1])
+            except (IndexError, ValueError) as exc:
+                raise ValueError(
+                    "variant population bootstrap method is invalid"
+                ) from exc
+            recomputed = evaluate_variant_alias_population(
+                population=self.registry_population,
+                experiment_report=self.experiment_report,
+                observations=self.observations,
+                bootstrap_samples=bootstrap_samples,
+            )
+            if recomputed != self.population_report:
+                raise ValueError(
+                    "variant population report does not match recomputation"
+                )
+        elif self.population_report is not None:
+            raise ValueError(
+                "smoke execution cannot claim a full population report"
+            )
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_sha256(self.model_dump(mode="json"))
+
+    def artifact_payload(self) -> dict[str, Any]:
+        return {
+            **self.model_dump(mode="json"),
+            "evidence_digest": self.digest,
+        }
+
+
+def validate_variant_population_evidence_artifact(
+    payload: dict[str, Any],
+) -> CompanyLearningVariantPopulationEvidence:
+    """Validate one persisted evidence envelope and its self digest."""
+
+    supplied_digest = str(payload.get("evidence_digest") or "")
+    evidence = CompanyLearningVariantPopulationEvidence.model_validate(
+        {
+            key: value
+            for key, value in payload.items()
+            if key != "evidence_digest"
+        }
+    )
+    if supplied_digest != evidence.digest:
+        raise ValueError("variant population evidence digest mismatch")
+    return evidence
+
+
+def _validate_assignment_isolation(
+    assignments: tuple[VariantAliasCaseAssignment, ...],
+) -> None:
+    tenant_ids = [
+        tenant_id
+        for assignment in assignments
+        for tenant_id in (
+            assignment.adaptive_tenant_id,
+            assignment.frozen_tenant_id,
+        )
+    ]
+    if len(tenant_ids) != len(set(tenant_ids)):
+        raise ValueError("every variant arm requires a fresh tenant")
+    entity_ids = [
+        entity_id
+        for assignment in assignments
+        for entity_id in (
+            assignment.adaptive_target_id,
+            assignment.frozen_target_id,
+            assignment.adaptive_conflicting_id,
+            assignment.frozen_conflicting_id,
+        )
+    ]
+    if len(entity_ids) != len(set(entity_ids)):
+        raise ValueError(
+            "variant target and conflicting entities must be unique"
+        )
+
+
+def _validate_mechanism_pairs(
+    *,
+    assignments: tuple[VariantAliasCaseAssignment, ...],
+    raw_pairs: tuple[PairedRecurrenceResult, ...],
+    mechanisms: tuple[VariantAliasPairMechanismEvidence, ...],
+) -> None:
+    assignment_by_case = {
+        assignment.case_id: assignment for assignment in assignments
+    }
+    pair_by_case = {pair.case_id: pair for pair in raw_pairs}
+    for mechanism in mechanisms:
+        assignment = assignment_by_case[mechanism.case_id]
+        pair = pair_by_case[mechanism.case_id]
+        for arm_mechanism, result, expected_tenant, expected_target in (
+            (
+                mechanism.adaptive,
+                pair.adaptive,
+                assignment.adaptive_tenant_id,
+                assignment.adaptive_target_id,
+            ),
+            (
+                mechanism.frozen,
+                pair.frozen,
+                assignment.frozen_tenant_id,
+                assignment.frozen_target_id,
+            ),
+        ):
+            if (
+                arm_mechanism.tenant_id != expected_tenant
+                or result.tenant_id != expected_tenant
+                or arm_mechanism.target_id != expected_target
+                or arm_mechanism.llm_call_count != result.llm_call_count
+            ):
+                raise ValueError(
+                    "variant mechanism lineage does not match assignments"
+                )
+            source_mutated = (
+                HardSafetyIncidentClass.SOURCE_OBSERVATION_MUTATED
+                in result.observed_safety_incidents
+            )
+            if arm_mechanism.source_observation_immutable == source_mutated:
+                raise ValueError(
+                    "variant source immutability does not match pair result"
+                )
+            if (
+                arm_mechanism.scripted_high_confidence_target_response_observed
+                and (
+                    arm_mechanism.model_output_ref is None
+                    or arm_mechanism.model_output_ref.id
+                    != str(expected_target)
+                    or arm_mechanism.model_output_confidence is None
+                    or arm_mechanism.model_output_confidence < 0.8
+                )
+            ):
+                raise ValueError(
+                    "variant scripted target response evidence is inconsistent"
+                )
+
+
+def _validate_mechanism_metrics(
+    *,
+    metrics: VariantAliasMechanismMetrics,
+    registry: HeldOutVariantAliasPopulation,
+    selected_case_ids: tuple[str, ...],
+    observations: tuple[VariantAliasExecutionObservation, ...],
+    report: CorrectiveMemoryExperimentReport,
+    mechanisms: tuple[VariantAliasPairMechanismEvidence, ...],
+) -> None:
+    selected_cases = tuple(
+        case
+        for case in registry.cases
+        if case.case_id in set(selected_case_ids)
+    )
+    pair_count = len(report.pairs)
+    unsupported_count = sum(
+        observation.execution_status == "unsupported"
+        for observation in observations
+    )
+    core_expected: dict[str, Any] = {
+        "selected_case_count": len(selected_case_ids),
+        "observed_pair_count": pair_count,
+        "unsupported_case_count": unsupported_count,
+        "full_registry_coverage_rate": (
+            len(selected_case_ids) / len(registry.cases)
+        ),
+        "observed_execution_rate": pair_count / len(selected_case_ids),
+        "adaptive_correctness_rate": (
+            report.metrics.adaptive_correctness_rate
+        ),
+        "frozen_correctness_rate": report.metrics.frozen_correctness_rate,
+        "adaptive_minus_frozen_correctness": (
+            report.metrics.adaptive_minus_frozen_correctness
+        ),
+        "hard_safety_incident_count": len(report.incidents),
+        "entity_type_counts": dict(
+            sorted(
+                Counter(case.entity_type for case in selected_cases).items()
+            )
+        ),
+        "variant_family_counts": dict(
+            sorted(
+                Counter(
+                    case.variant_family.value for case in selected_cases
+                ).items()
+            )
+        ),
+    }
+    if any(
+        not _metric_value_matches(getattr(metrics, key), value)
+        for key, value in core_expected.items()
+    ):
+        raise ValueError(
+            "variant mechanism metrics do not match population evidence"
+        )
+    if not mechanisms:
+        mechanism_fields = (
+            metrics.adaptive_target_candidate_authorization_rate,
+            metrics.frozen_target_candidate_exposure_rate,
+            metrics.candidate_authorization_gap,
+            metrics.adaptive_closed_set_match_rate,
+            metrics.frozen_closed_set_match_rate,
+            metrics.both_arms_one_llm_call_rate,
+            metrics.both_arms_scripted_target_response_rate,
+            metrics.frozen_safe_review_or_abstention_rate,
+            metrics.source_immutability_rate,
+            metrics.candidate_memory_mediated_success_rate,
+            metrics.adaptive_mean_llm_calls,
+            metrics.frozen_mean_llm_calls,
+        )
+        if any(value is not None for value in mechanism_fields):
+            raise ValueError(
+                "mechanism metrics require per-pair mechanism evidence"
+            )
+        if metrics.control_integrity_violation_count:
+            raise ValueError(
+                "control violations require mechanism evidence"
+            )
+        return
+    assessment = {
+        (row.case_id, row.arm): row for row in report.assessments
+    }
+    pair_by_case = {pair.case_id: pair for pair in report.pairs}
+    adaptive_authorized = sum(
+        pair.adaptive.target_candidate_authorized for pair in mechanisms
+    )
+    frozen_exposed = sum(
+        pair.frozen.target_candidate_authorized for pair in mechanisms
+    )
+    adaptive_closed = sum(
+        pair.adaptive.closed_set_match for pair in mechanisms
+    )
+    frozen_closed = sum(
+        pair.frozen.closed_set_match for pair in mechanisms
+    )
+    one_call = sum(
+        pair.adaptive.llm_call_count == 1
+        and pair.frozen.llm_call_count == 1
+        for pair in mechanisms
+    )
+    scripted = sum(
+        pair.adaptive.scripted_high_confidence_target_response_observed
+        and pair.frozen.scripted_high_confidence_target_response_observed
+        for pair in mechanisms
+    )
+    immutable = sum(
+        pair.adaptive.source_observation_immutable
+        and pair.frozen.source_observation_immutable
+        for pair in mechanisms
+    )
+    safe_frozen = sum(
+        pair_by_case[row.case_id].frozen.consumer_fate
+        in {
+            ConsumerTerminalFate.REVIEW,
+            ConsumerTerminalFate.ABSTAINED,
+            ConsumerTerminalFate.REJECTED,
+            ConsumerTerminalFate.NO_ADMISSION,
+        }
+        and pair_by_case[row.case_id].frozen.resolved_entity_ref is None
+        for row in mechanisms
+    )
+    ideal = sum(
+        mechanism.adaptive.target_candidate_authorized
+        and not mechanism.frozen.target_candidate_authorized
+        and mechanism.adaptive.closed_set_match
+        and not mechanism.frozen.closed_set_match
+        and mechanism.adaptive.llm_call_count == 1
+        and mechanism.frozen.llm_call_count == 1
+        and mechanism.adaptive.scripted_high_confidence_target_response_observed
+        and mechanism.frozen.scripted_high_confidence_target_response_observed
+        and mechanism.adaptive.source_observation_immutable
+        and mechanism.frozen.source_observation_immutable
+        and assessment[
+            (mechanism.case_id, CorrectiveMemoryArm.ADAPTIVE)
+        ].correct
+        and pair_by_case[mechanism.case_id].frozen.consumer_fate
+        in {
+            ConsumerTerminalFate.REVIEW,
+            ConsumerTerminalFate.ABSTAINED,
+            ConsumerTerminalFate.REJECTED,
+            ConsumerTerminalFate.NO_ADMISSION,
+        }
+        and pair_by_case[mechanism.case_id].frozen.resolved_entity_ref is None
+        for mechanism in mechanisms
+    )
+    rate = lambda value: value / pair_count if pair_count else None
+    adaptive_auth_rate = rate(adaptive_authorized)
+    frozen_exposure_rate = rate(frozen_exposed)
+    mechanism_expected = {
+        "adaptive_target_candidate_authorization_rate": adaptive_auth_rate,
+        "frozen_target_candidate_exposure_rate": frozen_exposure_rate,
+        "candidate_authorization_gap": (
+            adaptive_auth_rate - frozen_exposure_rate
+            if adaptive_auth_rate is not None
+            and frozen_exposure_rate is not None
+            else None
+        ),
+        "adaptive_closed_set_match_rate": rate(adaptive_closed),
+        "frozen_closed_set_match_rate": rate(frozen_closed),
+        "both_arms_one_llm_call_rate": rate(one_call),
+        "both_arms_scripted_target_response_rate": rate(scripted),
+        "frozen_safe_review_or_abstention_rate": rate(safe_frozen),
+        "source_immutability_rate": rate(immutable),
+        "candidate_memory_mediated_success_rate": rate(ideal),
+        "adaptive_mean_llm_calls": (
+            sum(pair.adaptive.llm_call_count for pair in report.pairs)
+            / pair_count
+            if pair_count
+            else None
+        ),
+        "frozen_mean_llm_calls": (
+            sum(pair.frozen.llm_call_count for pair in report.pairs)
+            / pair_count
+            if pair_count
+            else None
+        ),
+        "control_integrity_violation_count": pair_count - ideal,
+    }
+    if any(
+        not _metric_value_matches(getattr(metrics, key), value)
+        for key, value in mechanism_expected.items()
+    ):
+        raise ValueError(
+            "variant mechanism metrics do not match mechanism evidence"
+        )
+
+
+def _metric_value_matches(observed: Any, expected: Any) -> bool:
+    if isinstance(observed, float) or isinstance(expected, float):
+        if observed is None or expected is None:
+            return observed is expected
+        return abs(float(observed) - float(expected)) <= 1e-12
+    return observed == expected
 
 
 def build_variant_alias_population() -> HeldOutVariantAliasPopulation:
@@ -856,14 +1495,20 @@ def _is_subsequence(needle: str, haystack: str) -> bool:
 
 
 __all__ = [
+    "CompanyLearningVariantPopulationEvidence",
     "HeldOutVariantAliasCase",
     "HeldOutVariantAliasPopulation",
     "VARIANT_ALIAS_SCENARIO_ID",
+    "VariantAliasArmMechanismEvidence",
+    "VariantAliasCaseAssignment",
     "VariantAliasExecutionObservation",
     "VariantAliasFamily",
+    "VariantAliasMechanismMetrics",
+    "VariantAliasPairMechanismEvidence",
     "VariantAliasPopulationReport",
     "VariantAliasStratumReport",
     "build_variant_alias_population",
     "evaluate_variant_alias_population",
     "load_variant_alias_population",
+    "validate_variant_population_evidence_artifact",
 ]
