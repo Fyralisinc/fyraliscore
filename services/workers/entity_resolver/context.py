@@ -53,6 +53,7 @@ from services.domain.source_identity_bindings import (
     ResolvedSourceIdentityBinding,
     SourceIdentityBindingRepo,
 )
+from lib.conversation_context_selection import select_context
 
 
 _DEFAULT_RECENT_OBS = 20
@@ -628,22 +629,111 @@ async def build_context(
             )
             or source_identity_binding is not None,
         )
-        context.context_selection_command = selection_command
-        context.context_selection_outcome = selection_outcome
-        context.mention_detection_command = prepare_entity_mention_detection(
+        committed = await _load_committed_mention_annotation(
+            conn=conn,
             tenant_id=tenant_id,
             observation_id=observation_id,
             phrase=phrase,
-            content_text=content_text,
-            source_channel=source_channel,
-            context_command=selection_command,
-            context_outcome=selection_outcome,
-            now=prepared_at,
         )
+        if committed is None:
+            context.context_selection_command = selection_command
+            context.context_selection_outcome = selection_outcome
+            context.mention_detection_command = prepare_entity_mention_detection(
+                tenant_id=tenant_id,
+                observation_id=observation_id,
+                phrase=phrase,
+                content_text=content_text,
+                source_channel=source_channel,
+                context_command=selection_command,
+                context_outcome=selection_outcome,
+                now=prepared_at,
+            )
+        else:
+            (
+                context.context_selection_command,
+                context.context_selection_outcome,
+                context.mention_detection_command,
+            ) = committed
         return context
     finally:
         if conn_owned is not None:
             await pool.release(conn_owned)
+
+
+async def _load_committed_mention_annotation(
+    *,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    observation_id: UUID,
+    phrase: str,
+) -> tuple[
+    CommitInterpretationContextCommand,
+    ContextSelectionOutcome,
+    CommitEntityMentionDetectionCommand,
+] | None:
+    """Rehydrate the exact immutable annotation selected before resolution.
+
+    Persisted batch discovery owns mention detection.  The resolver must replay
+    that command and context snapshot, not create a second mention with new IDs.
+    Commands are retained in the agency ledger precisely for this handoff.
+    """
+
+    row = await conn.fetchrow(
+        """
+        SELECT detection_result.command AS detection_command,
+               context_result.command AS context_command,
+               snapshot.aggregate_version,
+               snapshot.id AS snapshot_id,
+               snapshot.snapshot,
+               snapshot.selection_dependency
+        FROM entity_mention_detection_heads head
+        JOIN entity_mention_detections detection
+          ON detection.tenant_id=head.tenant_id
+         AND detection.id=head.current_detection_id
+        JOIN agency_command_results detection_result
+          ON detection_result.id=detection.command_result_id
+        JOIN interpretation_context_snapshots snapshot
+          ON snapshot.tenant_id=detection.tenant_id
+         AND snapshot.id=detection.context_snapshot_id
+        JOIN agency_command_results context_result
+          ON context_result.id=snapshot.command_result_id
+        WHERE head.tenant_id=$1
+          AND head.source_observation_id=$2
+          AND regexp_replace(lower(head.candidate_surface), '\\s+', ' ', 'g')
+              = regexp_replace(lower($3::text), '\\s+', ' ', 'g')
+          AND detection.fate='detected'
+        ORDER BY detection.detection_version DESC
+        LIMIT 1
+        """,
+        tenant_id,
+        observation_id,
+        phrase,
+    )
+    if row is None:
+        return None
+    context_command = CommitInterpretationContextCommand.model_validate(
+        _parse_jsonb(row["context_command"])
+    )
+    detection_command = CommitEntityMentionDetectionCommand.model_validate(
+        _parse_jsonb(row["detection_command"])
+    )
+    snapshot_payload = _parse_jsonb(row["snapshot"])
+    dependency_payload = _parse_jsonb(row["selection_dependency"])
+    outcome = select_context(
+        context_command,
+        aggregate_version=int(row["aggregate_version"]),
+        snapshot_id=row["snapshot_id"],
+        dependency_id=UUID(str(dependency_payload["dependency_id"])),
+        frozen_at=datetime.fromisoformat(
+            str(snapshot_payload["frozen_at"]).replace("Z", "+00:00")
+        ),
+    )
+    if (
+        outcome.snapshot.snapshot_content_hash
+        != detection_command.detection.context_snapshot_digest
+    ):
+        raise ValueError("committed mention context digest does not reconstruct")
+    return context_command, outcome, detection_command
 
 
 async def _load_context_candidates(

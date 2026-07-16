@@ -37,6 +37,10 @@ from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.domain.entity_resolution_adjudication import (
     adjudicate_entity_resolution_clarification,
 )
+from services.domain.entity_grounding.mention_fates import (
+    ensure_observation_mention_fates,
+    ensure_persisted_observation_mention_fates,
+)
 from services.workers.entity_resolver.context import build_context
 from services.workers.entity_resolver.worker import (
     EntityResolverWorker,
@@ -1927,6 +1931,141 @@ async def test_end_to_end_50_mixed_events(
     assert state.mention_outbox_coverage == 1.0
     assert state.detected_mention_to_candidate_continuity_rate == 1.0
     assert state.incident_counts == {}
+
+
+async def test_persisted_batch_detection_heads_feed_grounding_without_redetection(
+    resolver_db: asyncpg.Pool,
+    tenant_id: UUID,
+) -> None:
+    """A persisted batch, not connector metadata, is resolver work authority."""
+
+    base = datetime(2026, 7, 17, tzinfo=timezone.utc)
+    known_id = "customer-nimbus"
+    known = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="Nimbus Bank renewal delayed",
+        unresolved_phrases=[],
+        source_channel="email",
+        occurred_at=base,
+    )
+    unknown = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="Unknown initiative remains unclear",
+        unresolved_phrases=[],
+        source_channel="email",
+        occurred_at=base + timedelta(seconds=1),
+    )
+    rejected = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="Routine update with no named object",
+        unresolved_phrases=[],
+        source_channel="email",
+        occurred_at=base + timedelta(seconds=2),
+    )
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Nimbus Bank",
+        entity_type="customer",
+        entity_id=known_id,
+    )
+    async with resolver_db.acquire() as conn, conn.transaction():
+        coverage = await ensure_persisted_observation_mention_fates(
+            conn=conn,
+            tenant_id=tenant_id,
+            observation_ids=(known, unknown),
+            now=base + timedelta(seconds=2),
+        )
+        rejected_coverage = await ensure_observation_mention_fates(
+            conn=conn,
+            tenant_id=tenant_id,
+            observation_id=rejected,
+            occurred_at=base + timedelta(seconds=2),
+            source_channel="email",
+            content={},
+            content_text="Routine update with no named object",
+            phrases=("Ghost",),
+            now=base + timedelta(seconds=3),
+        )
+        annotation_counts_before = await conn.fetchrow(
+            """
+            SELECT
+              (SELECT count(*) FROM entity_mention_detections
+               WHERE tenant_id=$1) AS detections,
+              (SELECT count(*) FROM interpretation_context_snapshots
+               WHERE tenant_id=$1) AS contexts
+            """,
+            tenant_id,
+        )
+    assert coverage.eligible_opportunities == 2
+    assert coverage.committed_fates == 2
+    assert rejected_coverage.committed_fates == 1
+
+    # Poll order is newest first: unknown safely abstains, known resolves.
+    provider = ScriptedProvider(
+        [
+            _resolution_json(type=None, confidence=0.1, reasoning="no candidate"),
+            _resolution_json(type="customer", id=known_id, confidence=0.99),
+        ]
+    )
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+        budget=ResolverLLMBudget(per_minute=1000),
+    )
+    assert await worker.process_pending(limit=10) == 2
+
+    async with resolver_db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT trace.source_observation_id, trace.current_fate,
+                   trace.selected_referent,
+                   trace.entity_mention_detection_id AS trace_detection_id,
+                   head.current_detection_id AS committed_detection_id,
+                   candidate.candidates,
+                   assessment.model_output
+            FROM grounding_traces trace
+            JOIN entity_mention_detection_heads head
+              ON head.tenant_id=trace.tenant_id
+             AND head.source_observation_id=trace.source_observation_id
+             AND regexp_replace(lower(head.candidate_surface), '\\s+', ' ', 'g')
+                 = regexp_replace(lower(trace.phrase), '\\s+', ' ', 'g')
+            JOIN entity_candidate_sets candidate
+              ON candidate.id=trace.candidate_set_id
+            JOIN resolution_assessments assessment
+              ON assessment.id=trace.resolution_assessment_id
+            WHERE trace.tenant_id=$1
+            ORDER BY trace.source_observation_id
+            """,
+            tenant_id,
+        )
+        annotation_counts_after = await conn.fetchrow(
+            """
+            SELECT
+              (SELECT count(*) FROM entity_mention_detections
+               WHERE tenant_id=$1) AS detections,
+              (SELECT count(*) FROM interpretation_context_snapshots
+               WHERE tenant_id=$1) AS contexts
+            """,
+            tenant_id,
+        )
+    assert len(rows) == 2
+    by_observation = {row["source_observation_id"]: row for row in rows}
+    assert all(
+        row["trace_detection_id"] == row["committed_detection_id"]
+        for row in rows
+    )
+    assert by_observation[known]["current_fate"] == "resolved_for_consumer"
+    assert dict(by_observation[known]["selected_referent"])["id"] == known_id
+    assert by_observation[unknown]["current_fate"] == "unresolved"
+    assert by_observation[unknown]["selected_referent"] is None
+    assert len(provider.calls) == 2
+    assert annotation_counts_after == annotation_counts_before
+    assert rejected not in by_observation
 
 
 # =====================================================================

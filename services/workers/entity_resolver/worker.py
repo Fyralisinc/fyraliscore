@@ -1173,6 +1173,19 @@ class EntityResolverWorker:
               o.content,
               COALESCE(
                 (
+                  SELECT array_agg(head.candidate_surface ORDER BY head.candidate_surface)
+                  FROM entity_mention_detection_heads head
+                  JOIN entity_mention_detections detection
+                    ON detection.tenant_id=head.tenant_id
+                   AND detection.id=head.current_detection_id
+                  WHERE head.tenant_id=o.tenant_id
+                    AND head.source_observation_id=o.id
+                    AND detection.fate='detected'
+                ),
+                ARRAY[]::text[]
+              ) AS detected_phrases,
+              COALESCE(
+                (
                   SELECT array_agg(gt.phrase)
                   FROM grounding_traces gt
                   WHERE gt.tenant_id = o.tenant_id
@@ -1238,9 +1251,16 @@ class EntityResolverWorker:
             except ValueError:
                 return True
 
+        discovered = _extract_unresolved_phrases(content)
+        discovered.extend(
+            phrase
+            for phrase in row["detected_phrases"]
+            if isinstance(phrase, str) and phrase.strip()
+        )
+        unique_discovered = list(dict.fromkeys(discovered))
         return [
             phrase
-            for phrase in _extract_unresolved_phrases(content)
+            for phrase in unique_discovered
             if phrase not in terminal_phrases and ready(phrase)
         ]
 
@@ -1373,6 +1393,25 @@ class EntityResolverWorker:
                         ELSE 0
                     END
                 ) > 0
+                OR EXISTS (
+                    SELECT 1
+                    FROM entity_mention_detection_heads head
+                    JOIN entity_mention_detections detection
+                      ON detection.tenant_id=head.tenant_id
+                     AND detection.id=head.current_detection_id
+                    WHERE head.tenant_id=o.tenant_id
+                      AND head.source_observation_id=o.id
+                      AND detection.fate='detected'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM grounding_traces trace
+                        WHERE trace.tenant_id=o.tenant_id
+                          AND trace.source_observation_id=o.id
+                          AND regexp_replace(lower(trace.phrase), '\\s+', ' ', 'g')
+                              = regexp_replace(
+                                  lower(head.candidate_surface), '\\s+', ' ', 'g'
+                                )
+                      )
+                )
                 ORDER BY o.occurred_at DESC
                 LIMIT $1
                 """,
