@@ -20,6 +20,15 @@ from lib.evaluation.company_learning_population import (
     HeldOutPairObservation,
     evaluate_heldout_population,
 )
+from lib.evaluation.correction_assurance import (
+    CorrectionAssuranceArtifact,
+    validate_correction_assurance_artifact as _validate_correction_artifact,
+)
+from lib.evaluation.proof import EvidenceTier
+from lib.evaluation.slack_reconstruction_gold import (
+    SlackGoldFamily,
+    SlackReconstructionReport,
+)
 
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -88,9 +97,119 @@ class NegativeAssurance(_SummaryModel):
 class SlackAssurance(_SummaryModel):
     status: str
     metrics: dict[str, Any]
-    diagnostic_only: Literal[True] = True
+    evidence_tier: EvidenceTier
+    scope_complete: bool
+    open_world_complete: bool
+    blocking_for_active_slice: bool
     artifact_paths: dict[str, str]
     component_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def explicit_proof_scope_is_coherent(self) -> Self:
+        if self.scope_complete != (self.status == "observed"):
+            raise ValueError(
+                "Slack scope completeness must match observed status"
+            )
+        if self.open_world_complete and not self.scope_complete:
+            raise ValueError(
+                "open-world Slack proof requires complete active scope"
+            )
+        if self.open_world_complete and self.evidence_tier.rank < 5:
+            raise ValueError(
+                "open-world Slack proof requires at least E5 evidence"
+            )
+        return self
+
+    @property
+    def active_slice_satisfied(self) -> bool:
+        case_count = self.metrics.get("case_count")
+        supported_count = self.metrics.get("supported_case_count")
+        correct_count = self.metrics.get("correct_case_count")
+        contamination_rate = self.metrics.get("contamination_rate")
+        return bool(
+            self.scope_complete
+            and isinstance(case_count, int)
+            and case_count > 0
+            and supported_count == case_count
+            and correct_count == case_count
+            and contamination_rate == 0.0
+        )
+
+
+class CorrectionAssurance(_SummaryModel):
+    status: Literal["working", "failed", "incomplete"]
+    evidence_tier: EvidenceTier
+    expected_dependency_count: int = Field(ge=0)
+    discovered_dependency_count: int = Field(ge=0)
+    dependency_discovery_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    immediate_fence_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    direct_repair_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    recursive_repair_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    relation_retirement_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    projection_invalidation_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    projection_rebuild_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    residual_unsafe_debt_count: int = Field(ge=0)
+    convergence_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
+    replay_idempotent: bool
+    source_immutable: bool
+    tenant_isolated: bool
+    converged: bool
+    incidents: tuple[str, ...]
+    artifact_paths: dict[str, str]
+    component_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def correction_state_is_coherent(self) -> Self:
+        if self.status == "working" and not self.converged:
+            raise ValueError("working correction assurance must converge")
+        if self.status == "failed" and self.converged and not self.incidents:
+            raise ValueError(
+                "failed correction assurance requires non-convergence or incidents"
+            )
+        if self.converged and self.evidence_tier.rank < 3:
+            raise ValueError(
+                "converged correction assurance requires at least E3 evidence"
+            )
+        if set(self.artifact_paths) != {"correction_evidence"}:
+            raise ValueError(
+                "correction assurance requires exactly one evidence artifact"
+            )
+        if set(self.component_digests) not in (
+            {"evidence"},
+            {"evidence", "audit"},
+        ):
+            raise ValueError(
+                "correction assurance requires evidence and optional audit digests"
+            )
+        return self
 
 
 class PopulationAssurance(_SummaryModel):
@@ -148,16 +267,26 @@ class PopulationAssurance(_SummaryModel):
 
 
 class CompanyLearningAssuranceSummary(_SummaryModel):
-    schema_version: Literal["company-learning-assurance-summary-v1"] = (
-        "company-learning-assurance-summary-v1"
+    schema_version: Literal["company-learning-assurance-summary-v2"] = (
+        "company-learning-assurance-summary-v2"
     )
     run_id: str = Field(min_length=1)
     system_version: str = Field(min_length=1)
+    architecture_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    implementation_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evaluation_profile: Literal["autonomous-company-learning-v1"] = (
+        "autonomous-company-learning-v1"
+    )
+    excluded_capabilities: tuple[str, ...] = (
+        "autonomous_task_planning",
+        "autonomous_task_execution",
+    )
     created_at: str = Field(min_length=1)
     status: Literal["working", "failed"]
     positive: PositiveAssurance
     negative: NegativeAssurance
     slack: SlackAssurance
+    correction: CorrectionAssurance
     population: PopulationAssurance | None = None
     proof_gaps: tuple[str, ...]
     blocking_failures: tuple[str, ...]
@@ -166,10 +295,20 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
 
     @model_validator(mode="after")
     def coherent_noncompensatory_summary(self) -> Self:
+        expected_exclusions = (
+            "autonomous_task_planning",
+            "autonomous_task_execution",
+        )
+        if self.excluded_capabilities != expected_exclusions:
+            raise ValueError(
+                "autonomous company-learning profile must explicitly exclude "
+                "task planning and execution"
+            )
         nested_paths = {
             **self.positive.artifact_paths,
             **self.negative.artifact_paths,
             **self.slack.artifact_paths,
+            **self.correction.artifact_paths,
             **(
                 self.population.artifact_paths
                 if self.population is not None
@@ -193,6 +332,10 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
                 f"slack_{key}": value
                 for key, value in self.slack.component_digests.items()
             },
+            **{
+                f"correction_{key}": value
+                for key, value in self.correction.component_digests.items()
+            },
             **(
                 {
                     f"population_{key}": value
@@ -213,9 +356,21 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
                 self.population is not None
                 and _population_safety_incident_count(self.population) > 0
             )
+            or self.correction.incidents
+            or self.correction.residual_unsafe_debt_count
+            or not self.correction.source_immutable
+            or not self.correction.tenant_isolated
+            or not self.correction.replay_idempotent
+        )
+        blocking_component = bool(
+            (
+                self.slack.blocking_for_active_slice
+                and not self.slack.active_slice_satisfied
+            )
+            or not self.correction.converged
         )
         if self.status == "working" and (
-            self.blocking_failures or unsafe_component
+            self.blocking_failures or unsafe_component or blocking_component
         ):
             raise ValueError(
                 "working assurance cannot contain blocking or unsafe evidence"
@@ -227,6 +382,10 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
         if unsafe_component and not self.blocking_failures:
             raise ValueError(
                 "unsafe component evidence requires blocking failures"
+            )
+        if blocking_component and not self.blocking_failures:
+            raise ValueError(
+                "blocking component evidence requires blocking failures"
             )
         return self
 
@@ -259,6 +418,66 @@ def validate_company_learning_assurance_artifact(
     return summary
 
 
+def validate_correction_assurance_component(
+    assurance: CorrectionAssurance,
+    *,
+    run_id: str,
+    system_version: str,
+) -> CorrectionAssuranceArtifact:
+    """Reopen and cross-bind one correction component to its summary."""
+
+    payload = _read_json_file(
+        assurance.artifact_paths["correction_evidence"]
+    )
+    artifact = _validate_correction_artifact(payload)
+    if artifact.run_id != run_id:
+        raise ValueError("correction assurance run identity mismatch")
+    if artifact.system_version != system_version:
+        raise ValueError("correction assurance system version mismatch")
+    if assurance.component_digests["evidence"] != artifact.digest:
+        raise ValueError("correction assurance component digest mismatch")
+    expected_digest_keys = (
+        {"evidence", "audit"}
+        if artifact.audit is not None
+        else {"evidence"}
+    )
+    if set(assurance.component_digests) != expected_digest_keys:
+        raise ValueError(
+            "correction audit digest presence does not match artifact"
+        )
+    if artifact.audit is not None and (
+        assurance.component_digests["audit"]
+        != canonical_sha256(artifact.audit.model_dump(mode="json"))
+    ):
+        raise ValueError("correction audit digest mismatch")
+    metrics = artifact.metrics
+    expected = {
+        "status": artifact.status,
+        "expected_dependency_count": metrics.expected_dependency_count,
+        "discovered_dependency_count": metrics.discovered_dependency_count,
+        "dependency_discovery_rate": metrics.dependency_discovery_rate,
+        "immediate_fence_rate": metrics.immediate_fence_rate,
+        "direct_repair_rate": metrics.direct_repair_rate,
+        "recursive_repair_rate": metrics.recursive_repair_rate,
+        "relation_retirement_rate": metrics.relation_retirement_rate,
+        "projection_invalidation_rate": metrics.projection_invalidation_rate,
+        "projection_rebuild_rate": metrics.projection_rebuild_rate,
+        "residual_unsafe_debt_count": metrics.residual_unsafe_debt_count,
+        "convergence_ratio": metrics.convergence_ratio,
+        "replay_idempotent": metrics.replay_idempotent,
+        "source_immutable": metrics.source_immutable,
+        "tenant_isolated": metrics.tenant_isolated,
+        "converged": metrics.converged,
+        "incidents": artifact.incidents,
+    }
+    if any(
+        getattr(assurance, field_name) != expected_value
+        for field_name, expected_value in expected.items()
+    ):
+        raise ValueError("correction assurance does not match artifact evidence")
+    return artifact
+
+
 def validate_company_learning_assurance_components(
     summary: CompanyLearningAssuranceSummary,
 ) -> None:
@@ -270,6 +489,7 @@ def validate_company_learning_assurance_components(
         "positive_company_learning_evidence_bundle",
         "negative_evidence",
         "population_evidence",
+        "correction_evidence",
         "slack_observations",
         "slack_report",
     }
@@ -323,6 +543,7 @@ def validate_company_learning_assurance_components(
         positive_evaluation,
         run_id=f"{summary.run_id}:positive",
         system_version=summary.system_version,
+        architecture_digest=summary.architecture_digest,
     )
 
     positive_bundle = _read_json_file(
@@ -338,6 +559,11 @@ def validate_company_learning_assurance_components(
         positive_bundle,
         run_id=f"{summary.run_id}:positive",
         system_version=summary.system_version,
+    )
+    _assert_architecture_identity(
+        positive_bundle,
+        architecture_digest=summary.architecture_digest,
+        label="positive evidence bundle",
     )
 
     negative = _read_json_file(summary.artifact_paths["negative_evidence"])
@@ -457,8 +683,18 @@ def validate_company_learning_assurance_components(
         assurance=summary.population,
     )
 
+    validate_correction_assurance_component(
+        summary.correction,
+        run_id=f"{summary.run_id}:correction",
+        system_version=summary.system_version,
+    )
+
     slack_envelope = _read_json_file(summary.artifact_paths["slack_report"])
-    slack_report = slack_envelope.get("report")
+    slack_report = _object(
+        slack_envelope.get("report"),
+        "Slack report",
+    )
+    typed_slack_report = SlackReconstructionReport.model_validate(slack_report)
     _assert_run_identity(
         slack_report,
         run_id=f"{summary.run_id}:slack",
@@ -483,6 +719,22 @@ def validate_company_learning_assurance_components(
         or summary.slack.metrics != slack_report.get("metrics")
     ):
         raise ValueError("Slack assurance does not match evidence")
+    expected_scope_complete = bool(
+        typed_slack_report.status == "observed"
+        and typed_slack_report.metrics.case_count > 0
+        and typed_slack_report.metrics.supported_case_count
+        == typed_slack_report.metrics.case_count
+        and set(typed_slack_report.metrics.family_metrics)
+        == {family.value for family in SlackGoldFamily}
+    )
+    if summary.slack.evidence_tier is not EvidenceTier.E4:
+        raise ValueError("Slack synthetic gold must declare E4 evidence")
+    if summary.slack.scope_complete != expected_scope_complete:
+        raise ValueError("Slack scope completeness does not match evidence")
+    if summary.slack.open_world_complete:
+        raise ValueError(
+            "Slack synthetic gold cannot claim open-world completeness"
+        )
     observations = _read_jsonl_file(
         summary.artifact_paths["slack_observations"]
     )
@@ -543,11 +795,24 @@ def _assert_run_identity(
         raise ValueError("assurance component system version mismatch")
 
 
+def _assert_architecture_identity(
+    payload: Any,
+    *,
+    architecture_digest: str,
+    label: str,
+) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} identity payload is missing")
+    if payload.get("architecture_digest") != architecture_digest:
+        raise ValueError(f"{label} architecture digest mismatch")
+
+
 def _assert_positive_evaluation_identity(
     payload: dict[str, Any],
     *,
     run_id: str,
     system_version: str,
+    architecture_digest: str,
 ) -> None:
     state_scope = _object(
         _object(payload.get("state"), "positive evaluation state").get(
@@ -563,6 +828,11 @@ def _assert_positive_evaluation_identity(
             identity,
             run_id=run_id,
             system_version=system_version,
+        )
+        _assert_architecture_identity(
+            identity,
+            architecture_digest=architecture_digest,
+            label=f"positive {field}",
         )
 
 
