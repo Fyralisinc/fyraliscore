@@ -21,6 +21,7 @@ boundary catch invalid values before they hit Postgres.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, get_args
 from uuid import UUID
 
@@ -35,6 +36,11 @@ from lib.shared.types import (
     ResourceRow,
     ResourceTemporalCharacter,
     ResourceUtilizationState,
+)
+from services.domain.entity_aliases.repo import (
+    close_aliases_for_entity_with_connection,
+    insert_alias_with_connection,
+    normalize_phrase,
 )
 from services.domain.observations.state_change import emit_state_change
 from services.platform.access_control.authority import record_resource_access_labels
@@ -68,6 +74,94 @@ def _resource_row_from_record(row: asyncpg.Record | dict[str, Any]) -> ResourceR
     if data.get("metadata") is not None:
         data["metadata"] = _json_obj(data.get("metadata"))
     return ResourceRow.model_validate(data)
+
+
+def _is_customer_resource(row: asyncpg.Record | dict[str, Any]) -> bool:
+    return (
+        row["kind"] == "relational"
+        and _json_obj(row.get("metadata")).get("semantic_kind") == "customer"
+    )
+
+
+def _customer_ref(resource_id: UUID) -> dict[str, str]:
+    return {"type": "customer", "id": str(resource_id)}
+
+
+def _same_customer_ref(
+    actual: dict[str, Any],
+    expected: dict[str, str],
+) -> bool:
+    return (
+        str(actual.get("type") or "") == "customer"
+        and str(actual.get("id") or "") == expected["id"]
+        and str(actual.get("version", 1)) == "1"
+    )
+
+
+async def _ensure_customer_alias(
+    tx: asyncpg.Connection,
+    *,
+    row: asyncpg.Record | dict[str, Any],
+    phrase: str,
+    valid_from: datetime,
+    source_event_id: UUID | None,
+) -> None:
+    expected_ref = _customer_ref(row["id"])
+    normalized = normalize_phrase(phrase)
+    await tx.execute("LOCK TABLE entity_aliases IN SHARE ROW EXCLUSIVE MODE")
+    current_rows = await tx.fetch(
+        """
+        SELECT resolved_entity_ref
+        FROM entity_aliases
+        WHERE tenant_id = $1
+          AND actor_id IS NULL
+          AND valid_until IS NULL
+          AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g') = $2
+        """,
+        row["tenant_id"],
+        normalized,
+    )
+    conflicting_refs = [
+        ref
+        for current in current_rows
+        if not _same_customer_ref(
+            (ref := _json_obj(current["resolved_entity_ref"])),
+            expected_ref,
+        )
+    ]
+    if conflicting_refs:
+        raise InvariantViolation(
+            "CUSTOMER_IDENTITY_ALIAS",
+            "normalized customer name is already assigned to another current entity",
+            resource_id=str(row["id"]),
+            identity=phrase,
+            normalized_identity=normalized,
+            conflicting_refs=conflicting_refs,
+        )
+
+    alias = await insert_alias_with_connection(
+        tx,
+        phrase=phrase,
+        resolved_entity_ref=expected_ref,
+        source="resource_lifecycle",
+        confidence=1.0,
+        tenant_id=row["tenant_id"],
+        source_event_id=source_event_id,
+        is_canonical=True,
+        valid_from=valid_from,
+        extra_metadata={
+            "identity_basis_class": "canonical_resource_identity",
+            "resource_id": str(row["id"]),
+        },
+    )
+    if not _same_customer_ref(alias.resolved_entity_ref, expected_ref):
+        raise InvariantViolation(
+            "CUSTOMER_IDENTITY_ALIAS",
+            "customer name is already assigned to another current entity",
+            resource_id=str(row["id"]),
+            identity=phrase,
+            conflicting_ref=alias.resolved_entity_ref,
+        )
 
 
 # =====================================================================
@@ -154,6 +248,15 @@ async def create(
             md_json,
             created_by_event_id,
         )
+        assert row is not None
+        if _is_customer_resource(row):
+            await _ensure_customer_alias(
+                tx,
+                row=row,
+                phrase=identity,
+                valid_from=row["created_at"],
+                source_event_id=created_by_event_id,
+            )
         await emit_state_change(
             tx,
             kind="resource_created",
@@ -268,6 +371,143 @@ async def update_attributes(
 
 
 # =====================================================================
+# Customer identity lifecycle
+# =====================================================================
+
+async def rename_customer(
+    resource_id: UUID,
+    *,
+    new_identity: str,
+    cause_event_id: UUID,
+    effective_at: datetime | None = None,
+    conn: asyncpg.Connection | None = None,
+) -> ResourceRow:
+    """Rename one customer without changing its canonical resource id.
+
+    The old canonical name becomes a closed alias interval and the new name
+    starts a successor interval at the same instant. Historical observations
+    and model scopes therefore keep pointing at the same immutable customer id.
+    """
+    new_identity = new_identity.strip()
+    if not new_identity:
+        raise ValidationError("new_identity is required", field="new_identity")
+    if effective_at is not None and effective_at.tzinfo is None:
+        raise ValidationError(
+            "effective_at must be timezone-aware",
+            field="effective_at",
+        )
+
+    async def _do(tx: asyncpg.Connection) -> ResourceRow:
+        row = await tx.fetchrow(
+            "SELECT * FROM resources WHERE id = $1 FOR UPDATE",
+            resource_id,
+        )
+        if row is None:
+            raise ValidationError(
+                "resource not found",
+                resource_id=str(resource_id),
+            )
+        if not _is_customer_resource(row):
+            raise InvariantViolation(
+                "CUSTOMER_RESOURCE_KIND",
+                "only relational resources with semantic_kind=customer can be renamed",
+                resource_id=str(resource_id),
+                resource_kind=row["kind"],
+            )
+        if row["archived_at"] is not None:
+            raise InvariantViolation(
+                "CUSTOMER_ACTIVE",
+                "cannot rename an archived customer",
+                resource_id=str(resource_id),
+            )
+
+        old_identity = str(row["identity"])
+        if old_identity == new_identity:
+            return _resource_row_from_record(row)
+
+        database_now = await tx.fetchval("SELECT now()")
+        boundary = effective_at or database_now
+        if boundary <= row["created_at"]:
+            raise ValidationError(
+                "effective_at must be later than customer creation",
+                field="effective_at",
+                created_at=row["created_at"].isoformat(),
+            )
+        if boundary > database_now:
+            raise ValidationError(
+                "future-effective customer renames are not supported",
+                field="effective_at",
+            )
+
+        await _ensure_customer_alias(
+            tx,
+            row=row,
+            phrase=old_identity,
+            valid_from=row["created_at"],
+            source_event_id=row["last_updated_by_event_id"],
+        )
+        expected_ref = _customer_ref(resource_id)
+        closed_count = await close_aliases_for_entity_with_connection(
+            tx,
+            tenant_id=row["tenant_id"],
+            resolved_entity_ref=expected_ref,
+            valid_until=boundary,
+            validity_event_id=cause_event_id,
+            validity_reason="customer_renamed",
+            phrases=[old_identity],
+        )
+        if closed_count < 1:
+            raise InvariantViolation(
+                "CUSTOMER_IDENTITY_ALIAS",
+                "customer rename could not close the prior canonical name",
+                resource_id=str(resource_id),
+                old_identity=old_identity,
+            )
+
+        updated = await tx.fetchrow(
+            """
+            UPDATE resources
+            SET identity = $2,
+                last_updated_at = $3,
+                last_updated_by_event_id = $4
+            WHERE id = $1
+            RETURNING *
+            """,
+            resource_id,
+            new_identity,
+            database_now,
+            cause_event_id,
+        )
+        assert updated is not None
+        await _ensure_customer_alias(
+            tx,
+            row=updated,
+            phrase=new_identity,
+            valid_from=boundary,
+            source_event_id=cause_event_id,
+        )
+        await emit_state_change(
+            tx,
+            kind="customer_renamed",
+            entity_id=resource_id,
+            tenant_id=row["tenant_id"],
+            cause_event_id=cause_event_id,
+            entity_kind="resource",
+            metadata={
+                "old_identity": old_identity,
+                "new_identity": new_identity,
+                "effective_at": boundary.isoformat(),
+            },
+        )
+        return _resource_row_from_record(updated)
+
+    if conn is None:
+        async with transaction() as tx:
+            return await _do(tx)
+    return await _do(conn)
+
+
+# =====================================================================
 # Archive
 # =====================================================================
 
@@ -299,6 +539,16 @@ async def archive(
             """,
             resource_id,
         )
+        if _is_customer_resource(row):
+            assert updated is not None
+            await close_aliases_for_entity_with_connection(
+                tx,
+                tenant_id=row["tenant_id"],
+                resolved_entity_ref=_customer_ref(resource_id),
+                valid_until=updated["archived_at"],
+                validity_event_id=cause_event_id,
+                validity_reason="customer_archived",
+            )
         await emit_state_change(
             tx,
             kind="resource_archived",

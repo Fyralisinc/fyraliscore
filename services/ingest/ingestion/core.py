@@ -507,7 +507,11 @@ async def _resolve_entities(
 
     seen_ref_keys = {json.dumps(e, sort_keys=True) for e in entities_mentioned}
     phrases = candidate_phrases(draft.content_text)
-    resolved_by_norm = await alias_repo.fast_path_resolve_many(phrases, tenant_id)
+    resolved_by_norm = await alias_repo.fast_path_resolve_many(
+        phrases,
+        tenant_id,
+        as_of=draft.occurred_at,
+    )
     for phrase in phrases:
         ref = resolved_by_norm.get(normalize_phrase(phrase))
         if ref is not None:

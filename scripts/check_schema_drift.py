@@ -396,6 +396,10 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("first_seen_at", TS, False, default=True),
             _col("last_used_at", TS, False, default=True),
             _col("source_event_id", UUID, True),
+            _col("valid_from", TS, False, default=True),
+            _col("valid_until", TS, True),
+            _col("validity_event_id", UUID, True),
+            _col("validity_reason", TEXT, True),
         ]),
         indexes={
             "entity_aliases_pkey",
@@ -405,6 +409,8 @@ EXPECTED_TABLES: dict[str, Table] = {
             "aliases_actor_idx",
             "aliases_entity_idx",
             "aliases_canonical_idx",
+            "aliases_normalized_validity_idx",
+            "aliases_current_entity_idx",
         },
     ),
     # -----------------------------------------------------------------

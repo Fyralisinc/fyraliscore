@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -60,15 +61,19 @@ from lib.shared.types import EntityAliasRow
 # unknown values locally so callers get a clear error before touching
 # the DB.
 _LEGAL_SOURCES: frozenset[str] = frozenset(
-    ("ingestion", "resolver_worker", "manual")
+    ("ingestion", "resolver_worker", "manual", "resource_lifecycle")
 )
 
 _WHITESPACE_RE = re.compile(r"\s+", flags=re.UNICODE)
 
 # Actors and resources are the canonical entity classes whose lifecycle is
-# represented in the current schema. Other ref types are source-native or
-# legacy references and remain eligible for the generic alias fast path.
-_ACTIVE_CANONICAL_TARGET_SQL = r"""
+# represented in the current schema. Customer resources have valid-time
+# archival semantics; actor history is intentionally out of scope here.
+# Other ref types are source-native or legacy references and remain eligible
+# for the generic alias fast path.
+#
+# `$3` is the caller's event time. NULL means current-time resolution.
+_VALID_CANONICAL_TARGET_SQL = r"""
 (
   COALESCE(resolved_entity_ref ->> 'type', '')
     NOT IN ('actor', 'resource', 'customer')
@@ -94,7 +99,10 @@ _ACTIVE_CANONICAL_TARGET_SQL = r"""
           FROM resources target
           WHERE target.tenant_id = entity_aliases.tenant_id
             AND target.id::text = resolved_entity_ref ->> 'id'
-            AND target.archived_at IS NULL
+            AND (
+              target.archived_at IS NULL
+              OR target.archived_at > COALESCE($3::timestamptz, now())
+            )
             AND (
               resolved_entity_ref ->> 'type' <> 'customer'
               OR target.metadata ->> 'semantic_kind' = 'customer'
@@ -155,6 +163,8 @@ async def validate_governed_alias_replay(
         WHERE tenant_id=$1
           AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g')
               = regexp_replace(lower($2::text), '\\s+', ' ', 'g')
+          AND valid_from <= now()
+          AND valid_until IS NULL
         FOR SHARE
         """,
         tenant_id,
@@ -358,6 +368,10 @@ async def insert_alias_with_connection(
     alias_embedding: list[float] | None = None,
     extra_metadata: dict[str, Any] | None = None,
     adjudicated: bool = False,
+    valid_from: datetime | None = None,
+    valid_until: datetime | None = None,
+    validity_event_id: UUID | None = None,
+    validity_reason: str | None = None,
 ) -> EntityAliasRow:
     """Insert one alias on a caller-owned connection and transaction."""
 
@@ -381,12 +395,35 @@ async def insert_alias_with_connection(
             "resolved_entity_ref must be a non-empty JSON object",
             field="resolved_entity_ref",
         )
+    if valid_from is not None and valid_from.tzinfo is None:
+        raise ValidationError(
+            "valid_from must be timezone-aware",
+            field="valid_from",
+        )
+    if valid_until is not None and valid_until.tzinfo is None:
+        raise ValidationError(
+            "valid_until must be timezone-aware",
+            field="valid_until",
+        )
+    if (
+        valid_from is not None
+        and valid_until is not None
+        and valid_until < valid_from
+    ):
+        raise ValidationError(
+            "valid_until must not be earlier than valid_from",
+            field="valid_until",
+        )
 
     metadata: dict[str, Any] = dict(extra_metadata or {})
     metadata["source"] = source
     alias_id = uuid7()
 
     if actor_id is None:
+        # Match PostgreSQL's eventual INSERT lock order before taking the
+        # per-name advisory lock. Customer lifecycle writes take a stronger
+        # table lock, so this ordering avoids table/advisory deadlocks.
+        await conn.execute("LOCK TABLE entity_aliases IN ROW EXCLUSIVE MODE")
         lock_key = _advisory_lock_key(tenant_id, phrase)
         await conn.execute("SELECT pg_advisory_xact_lock($1)", lock_key)
         existing = await conn.fetchrow(
@@ -400,6 +437,7 @@ async def insert_alias_with_connection(
             WHERE tenant_id = $1
               AND alias_text = $2
               AND actor_id IS NULL
+              AND valid_until IS NULL
             """,
             tenant_id,
             phrase,
@@ -456,13 +494,15 @@ async def insert_alias_with_connection(
                 actor_id, resolved_entity_ref, is_canonical,
                 entity_metadata, confidence,
                 confirmed_count, contested_count,
-                first_seen_at, last_used_at, source_event_id
+                first_seen_at, last_used_at, source_event_id,
+                valid_from, valid_until, validity_event_id, validity_reason
             ) VALUES (
                 $1, $2, $3, $4,
                 NULL, $5::jsonb, $6,
                 $7::jsonb, $8,
                 0, 0,
-                now(), now(), $9
+                COALESCE($9::timestamptz, now()), now(), $10,
+                COALESCE($9::timestamptz, now()), $11, $12, $13
             )
             RETURNING id, tenant_id, alias_text, alias_embedding,
                       actor_id, resolved_entity_ref, is_canonical,
@@ -478,7 +518,11 @@ async def insert_alias_with_connection(
             is_canonical,
             json.dumps(metadata),
             confidence,
+            valid_from,
             source_event_id,
+            valid_until,
+            validity_event_id,
+            validity_reason,
         )
         assert row is not None
         return _hydrate_alias(row)
@@ -490,13 +534,15 @@ async def insert_alias_with_connection(
             actor_id, resolved_entity_ref, is_canonical,
             entity_metadata, confidence,
             confirmed_count, contested_count,
-            first_seen_at, last_used_at, source_event_id
+            first_seen_at, last_used_at, source_event_id,
+            valid_from, valid_until, validity_event_id, validity_reason
         ) VALUES (
             $1, $2, $3, $4,
             $5, $6::jsonb, $7,
             $8::jsonb, $9,
             0, 0,
-            now(), now(), $10
+            COALESCE($10::timestamptz, now()), now(), $11,
+            COALESCE($10::timestamptz, now()), $12, $13, $14
         )
         ON CONFLICT (tenant_id, alias_text, actor_id)
         DO UPDATE SET last_used_at = now()
@@ -515,10 +561,95 @@ async def insert_alias_with_connection(
         is_canonical,
         json.dumps(metadata),
         confidence,
+        valid_from,
         source_event_id,
+        valid_until,
+        validity_event_id,
+        validity_reason,
     )
     assert row is not None
     return _hydrate_alias(row)
+
+
+async def close_aliases_for_entity_with_connection(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    resolved_entity_ref: dict[str, Any],
+    valid_until: datetime,
+    validity_event_id: UUID | None,
+    validity_reason: str,
+    phrases: list[str] | None = None,
+) -> int:
+    """Close every current object alias for one canonical entity.
+
+    Lifecycle mutations are rare and correctness-sensitive. A table-level
+    writer lock prevents an alias insert from racing between the close and the
+    successor-name insert in the same customer transaction.
+    """
+    if valid_until.tzinfo is None:
+        raise ValidationError(
+            "valid_until must be timezone-aware",
+            field="valid_until",
+        )
+    if not resolved_entity_ref:
+        raise ValidationError(
+            "resolved_entity_ref must be a non-empty JSON object",
+            field="resolved_entity_ref",
+        )
+    if not validity_reason.strip():
+        raise ValidationError(
+            "validity_reason must be non-empty",
+            field="validity_reason",
+        )
+
+    normalized_phrases: list[str] | None = None
+    if phrases is not None:
+        normalized_phrases = sorted(
+            {
+                normalized
+                for phrase in phrases
+                if phrase
+                and (normalized := normalize_phrase(phrase))
+            }
+        )
+    await conn.execute("LOCK TABLE entity_aliases IN SHARE ROW EXCLUSIVE MODE")
+    result = await conn.execute(
+        """
+        UPDATE entity_aliases
+        SET valid_until = $3,
+            validity_event_id = $4,
+            validity_reason = $5,
+            entity_metadata = COALESCE(entity_metadata, '{}'::jsonb)
+              || jsonb_build_object(
+                   'validity_reason', $5::text,
+                   'validity_event_id', CASE
+                     WHEN $4::uuid IS NULL THEN NULL
+                     ELSE $4::uuid::text
+                   END
+                 )
+        WHERE tenant_id = $1
+          AND actor_id IS NULL
+          AND resolved_entity_ref ->> 'type' = $2::jsonb ->> 'type'
+          AND resolved_entity_ref ->> 'id' = $2::jsonb ->> 'id'
+          AND COALESCE(resolved_entity_ref ->> 'version', '1')
+              = COALESCE($2::jsonb ->> 'version', '1')
+          AND valid_from <= $3
+          AND valid_until IS NULL
+          AND (
+            $6::text[] IS NULL
+            OR regexp_replace(lower(alias_text), '\\s+', ' ', 'g')
+               = ANY($6::text[])
+          )
+        """,
+        tenant_id,
+        json.dumps(resolved_entity_ref),
+        valid_until,
+        validity_event_id,
+        validity_reason,
+        normalized_phrases,
+    )
+    return int(result.rsplit(" ", 1)[-1])
 
 
 class EntityAliasRepo:
@@ -531,7 +662,11 @@ class EntityAliasRepo:
     # fast_path_resolve
     # -----------------------------------------------------------------
     async def fast_path_resolve(
-        self, phrase: str, tenant_id: UUID
+        self,
+        phrase: str,
+        tenant_id: UUID,
+        *,
+        as_of: datetime | None = None,
     ) -> dict[str, Any] | None:
         """
         O(1)-ish lookup by normalized alias_text within a tenant.
@@ -553,6 +688,8 @@ class EntityAliasRepo:
         norm = normalize_phrase(phrase)
         if not norm:
             return None
+        if as_of is not None and as_of.tzinfo is None:
+            raise ValidationError("as_of must be timezone-aware", field="as_of")
 
         # We only need to know whether the normalized phrase maps to
         # zero, one, or multiple canonical refs. Fetching at most two
@@ -564,6 +701,11 @@ class EntityAliasRepo:
             FROM entity_aliases
             WHERE tenant_id = $1
               AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g') = $2
+              AND valid_from <= COALESCE($3::timestamptz, now())
+              AND (
+                valid_until IS NULL
+                OR valid_until > COALESCE($3::timestamptz, now())
+              )
               AND NOT (
                 COALESCE(
                   entity_metadata ->> 'identity_basis_class'
@@ -583,11 +725,12 @@ class EntityAliasRepo:
                   )
                 )
               )
-              AND {_ACTIVE_CANONICAL_TARGET_SQL}
+              AND {_VALID_CANONICAL_TARGET_SQL}
             LIMIT 2
             """,
             tenant_id,
             norm,
+            as_of,
         )
         if not rows:
             return None
@@ -607,7 +750,11 @@ class EntityAliasRepo:
         return None
 
     async def fast_path_resolve_many(
-        self, phrases: list[str], tenant_id: UUID
+        self,
+        phrases: list[str],
+        tenant_id: UUID,
+        *,
+        as_of: datetime | None = None,
     ) -> dict[str, dict[str, Any]]:
         """
         Bulk version of :meth:`fast_path_resolve`.
@@ -630,6 +777,8 @@ class EntityAliasRepo:
             norms.append(norm)
         if not norms:
             return {}
+        if as_of is not None and as_of.tzinfo is None:
+            raise ValidationError("as_of must be timezone-aware", field="as_of")
 
         rows = await self._pool.fetch(
             f"""
@@ -639,6 +788,11 @@ class EntityAliasRepo:
             FROM entity_aliases
             WHERE tenant_id = $1
               AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g') = ANY($2::text[])
+              AND valid_from <= COALESCE($3::timestamptz, now())
+              AND (
+                valid_until IS NULL
+                OR valid_until > COALESCE($3::timestamptz, now())
+              )
               AND NOT (
                 COALESCE(
                   entity_metadata ->> 'identity_basis_class'
@@ -658,10 +812,11 @@ class EntityAliasRepo:
                   )
                 )
               )
-              AND {_ACTIVE_CANONICAL_TARGET_SQL}
+              AND {_VALID_CANONICAL_TARGET_SQL}
             """,
             tenant_id,
             norms,
+            as_of,
         )
 
         refs_by_norm: dict[str, dict[str, dict[str, Any]]] = {}
@@ -693,6 +848,10 @@ class EntityAliasRepo:
         alias_embedding: list[float] | None = None,
         extra_metadata: dict[str, Any] | None = None,
         adjudicated: bool = False,
+        valid_from: datetime | None = None,
+        valid_until: datetime | None = None,
+        validity_event_id: UUID | None = None,
+        validity_reason: str | None = None,
     ) -> EntityAliasRow:
         """
         Insert an alias. Idempotent on (tenant_id, alias_text, actor_id)
@@ -722,6 +881,10 @@ class EntityAliasRepo:
                     alias_embedding=alias_embedding,
                     extra_metadata=extra_metadata,
                     adjudicated=adjudicated,
+                    valid_from=valid_from,
+                    valid_until=valid_until,
+                    validity_event_id=validity_event_id,
+                    validity_reason=validity_reason,
                 )
 
     # -----------------------------------------------------------------
@@ -799,6 +962,8 @@ class EntityAliasRepo:
                      AS normalized
             FROM entity_aliases
             WHERE tenant_id = $1
+              AND valid_from <= now()
+              AND (valid_until IS NULL OR valid_until > now())
             ORDER BY normalized, confidence DESC
             """,
             tenant_id,
@@ -873,6 +1038,38 @@ class EntityAliasRepo:
         )
         return [r["alias_text"] for r in rows]
 
+    async def list_history(
+        self,
+        phrase: str,
+        tenant_id: UUID,
+    ) -> list[dict[str, Any]]:
+        """Return the complete valid-time history for one normalized name."""
+        if not phrase or not phrase.strip():
+            return []
+        norm = normalize_phrase(phrase)
+        rows = await self._pool.fetch(
+            """
+            SELECT id, alias_text, resolved_entity_ref, is_canonical,
+                   confidence, first_seen_at, last_used_at,
+                   source_event_id, valid_from, valid_until,
+                   validity_event_id, validity_reason
+            FROM entity_aliases
+            WHERE tenant_id = $1
+              AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g') = $2
+            ORDER BY valid_from ASC, first_seen_at ASC, id ASC
+            """,
+            tenant_id,
+            norm,
+        )
+        history: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["resolved_entity_ref"] = _parse_jsonb_obj(
+                item["resolved_entity_ref"]
+            )
+            history.append(item)
+        return history
+
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -924,6 +1121,7 @@ def _hydrate_alias(row: asyncpg.Record) -> EntityAliasRow:
 
 __all__ = [
     "EntityAliasRepo",
+    "close_aliases_for_entity_with_connection",
     "insert_alias_with_connection",
     "normalize_phrase",
     "validate_governed_alias_replay",
