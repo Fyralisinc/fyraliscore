@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from lib.evaluation.correction_assurance import (
     CorrectionRuntimeEvidence,
     build_correction_assurance,
@@ -17,6 +19,9 @@ from lib.evaluation.correction_propagation import (
     CorrectionPropagationScope,
 )
 from scripts.run_correction_assurance import ARTIFACT_NAME, main
+from scripts.run_company_learning_correction_harness import (
+    run_company_learning_correction_harness,
+)
 
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=timezone.utc)
@@ -202,3 +207,14 @@ def test_cli_writes_json_and_readable_markdown(tmp_path: Path) -> None:
     )
     assert "Dependency discovery: **5/5**" in markdown
     assert "Residual unsafe debt: **0**" in markdown
+
+
+async def test_executable_harness_requires_an_explicit_database(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="pool or database_url"):
+        await run_company_learning_correction_harness(
+            output_dir=tmp_path,
+            run_id="pytest-no-database",
+            system_version="pytest",
+        )
