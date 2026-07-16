@@ -4,6 +4,7 @@ import pytest
 
 from lib.evaluation.company_learning_active_surfaces import (
     ActiveLearningSurfacesEvidence,
+    SEALED_ACTIVE_SURFACE_CLAIMS,
     SourceSalienceObservation,
     StructuredIdentitySurfaceObservation,
     evaluate_active_learning_surfaces,
@@ -18,7 +19,7 @@ def test_active_surface_report_is_continuous_and_noncompensatory() -> None:
     )
 
     assert report.status == "observed"
-    assert report.structured_identity.observed_case_count == 4
+    assert report.structured_identity.observed_case_count == 6
     assert report.structured_identity.violating_case_count == 0
     assert report.structured_identity.runtime_support_rate.point_estimate == 1.0
     assert report.structured_identity.handler_non_authority_rate.point_estimate == 1.0
@@ -90,7 +91,7 @@ def test_each_salience_safety_failure_contradicts(
 def test_unsupported_surface_is_a_continuous_support_failure() -> None:
     identity = list(_safe_identity())
     identity[1] = StructuredIdentitySurfaceObservation(
-        case_id="linear",
+        case_id="linear_issue_bundle",
         execution_status="unsupported",
         unsupported_reason="linear runtime unavailable",
     )
@@ -101,7 +102,9 @@ def test_unsupported_surface_is_a_continuous_support_failure() -> None:
     )
 
     assert report.status == "contradicted"
-    assert report.structured_identity.runtime_support_rate.point_estimate == 0.75
+    assert report.structured_identity.runtime_support_rate.point_estimate == (
+        5 / 6
+    )
     assert report.structured_identity.unsupported_reason_counts == {
         "linear runtime unavailable": 1
     }
@@ -146,6 +149,8 @@ def _safe_identity() -> tuple[StructuredIdentitySurfaceObservation, ...]:
     return tuple(
         StructuredIdentitySurfaceObservation(
             case_id=source,
+            expected_claims=SEALED_ACTIVE_SURFACE_CLAIMS[source],
+            observed_claims=SEALED_ACTIVE_SURFACE_CLAIMS[source],
             claim_emitted=True,
             claim_preserved=True,
             preexisting_binding_attached=True,
@@ -158,10 +163,15 @@ def _safe_identity() -> tuple[StructuredIdentitySurfaceObservation, ...]:
             source_observation_immutable=True,
             artifact_refs=(f"pytest:{source}",),
         )
-        for source in ("jira", "linear", "google_drive", "gmail")
+        for source in (
+            "jira_project",
+            "linear_issue_bundle",
+            "google_drive_file",
+            "google_drive_comment",
+            "google_drive_revision",
+            "gmail_thread",
+        )
     )
-
-
 def _safe_salience() -> tuple[SourceSalienceObservation, ...]:
     values = {
         "settled_useful": (1.0, 1.2, True, False),

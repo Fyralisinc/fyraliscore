@@ -37,6 +37,7 @@ from lib.evaluation.company_learning_assurance import (
 )
 from lib.evaluation.company_learning_active_surfaces import (
     ActiveLearningSurfacesEvidence,
+    SEALED_ACTIVE_SURFACE_CLAIMS,
     SourceSalienceObservation,
     StructuredIdentitySurfaceObservation,
     evaluate_active_learning_surfaces,
@@ -865,6 +866,8 @@ def _active_surfaces_evidence(
     identity = tuple(
         StructuredIdentitySurfaceObservation(
             case_id=case_id,
+            expected_claims=SEALED_ACTIVE_SURFACE_CLAIMS[case_id],
+            observed_claims=SEALED_ACTIVE_SURFACE_CLAIMS[case_id],
             claim_emitted=True,
             claim_preserved=True,
             preexisting_binding_attached=True,
@@ -877,7 +880,14 @@ def _active_surfaces_evidence(
             source_observation_immutable=True,
             artifact_refs=(f"pytest:{case_id}",),
         )
-        for case_id in ("jira", "linear", "google_drive", "gmail")
+        for case_id in (
+            "jira_project",
+            "linear_issue_bundle",
+            "google_drive_file",
+            "google_drive_comment",
+            "google_drive_revision",
+            "gmail_thread",
+        )
     )
     salience = tuple(
         SourceSalienceObservation(
@@ -961,44 +971,68 @@ def _retention_evidence(
     )
     cases = (
         RetentionCaseSpec(
-            case_id="exact",
+            case_id="retention-exact",
             behavior=RetentionBehavior.EXACT_ALIAS,
-            family="exact",
+            family="exact_alias_positive",
             expected_ref=CanonicalEntityRef(type="customer", id="exact"),
             horizons=horizons,
             allowed_terminal_fates=(ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,),
         ),
         RetentionCaseSpec(
-            case_id="variant",
+            case_id="retention-variant",
             behavior=RetentionBehavior.VARIANT_ALIAS,
-            family="variant",
+            family="acronym_from_long_form",
             expected_ref=CanonicalEntityRef(type="customer", id="variant"),
             horizons=horizons,
             allowed_terminal_fates=(ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,),
             candidate_authorization_required=True,
         ),
         RetentionCaseSpec(
-            case_id="corrected",
+            case_id="retention-correction",
             behavior=RetentionBehavior.CORRECTED_ALIAS,
-            family="corrected",
+            family="authoritative_exact_correction",
             expected_ref=CanonicalEntityRef(type="customer", id="corrected"),
             horizons=(horizons[-1],),
             allowed_terminal_fates=(ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,),
             correction_authority_required=True,
         ),
-        RetentionCaseSpec(
-            case_id="negative",
-            behavior=RetentionBehavior.NEGATIVE_CONTROL,
-            family="negative",
-            horizons=(horizons[-1],),
-            allowed_terminal_fates=(ConsumerTerminalFate.REVIEW,),
+        *(
+            RetentionCaseSpec(
+                case_id=f"retention-negative:{case_id}",
+                behavior=RetentionBehavior.NEGATIVE_CONTROL,
+                family=family,
+                horizons=(horizons[-1],),
+                allowed_terminal_fates=(ConsumerTerminalFate.REVIEW,),
+            )
+            for case_id, family in (
+                ("contextual-non-entity", "contextual_phrase_negative"),
+                ("unrelated-alias", "unrelated_negative_control"),
+                ("same-surface-homonym", "homonym_local_association"),
+                ("conflicting-source-hint", "conflicting_source_hint"),
+            )
         ),
-        RetentionCaseSpec(
-            case_id="collision",
-            behavior=RetentionBehavior.COLLISION_CONTROL,
-            family="collision",
-            horizons=(horizons[-1],),
-            allowed_terminal_fates=(ConsumerTerminalFate.REVIEW,),
+        *(
+            RetentionCaseSpec(
+                case_id=f"retention-collision:{case_id}",
+                behavior=RetentionBehavior.COLLISION_CONTROL,
+                family=family,
+                horizons=(horizons[-1],),
+                allowed_terminal_fates=(ConsumerTerminalFate.REVIEW,),
+            )
+            for case_id, family in (
+                (
+                    "heldout-variant-collision-00",
+                    "same_type_acronym_collision",
+                ),
+                (
+                    "heldout-variant-collision-06",
+                    "punctuation_unicode_normalization_collision",
+                ),
+                (
+                    "heldout-variant-collision-08",
+                    "contextual_channel_local_nickname",
+                ),
+            )
         ),
     )
     spec = RetentionRunSpec(
@@ -1359,6 +1393,50 @@ def test_active_surface_component_reopens_raw_evidence(
         )
 
 
+def test_active_surface_component_binds_sealed_source_contracts(
+    tmp_path: Path,
+) -> None:
+    evidence = _active_surfaces_evidence()
+    identity = list(evidence.identity_observations)
+    original = identity[0]
+    changed_claim = original.expected_claims[0].model_copy(
+        update={"source_native_identifier": "jira:wrong:project:10000"}
+    )
+    identity[0] = original.model_copy(
+        update={
+            "expected_claims": (changed_claim,),
+            "observed_claims": (changed_claim,),
+        }
+    )
+    changed = ActiveLearningSurfacesEvidence(
+        run_id=evidence.run_id,
+        system_version=evidence.system_version,
+        created_at=evidence.created_at,
+        identity_observations=tuple(identity),
+        salience_observations=evidence.salience_observations,
+        report=evaluate_active_learning_surfaces(
+            identity_observations=tuple(identity),
+            salience_observations=evidence.salience_observations,
+        ),
+        artifact_refs=evidence.artifact_refs,
+    )
+    artifact_path = tmp_path / "changed-active-surfaces.json"
+    artifact_path.write_text(
+        json.dumps(changed.artifact_payload()),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="expected claim contract"):
+        validate_active_surfaces_assurance_component(
+            _active_surfaces_assurance(
+                path=str(artifact_path),
+                evidence=changed,
+            ),
+            run_id=changed.run_id,
+            system_version=changed.system_version,
+        )
+
+
 def test_retention_component_recomputes_raw_observations(
     tmp_path: Path,
 ) -> None:
@@ -1386,6 +1464,79 @@ def test_retention_component_recomputes_raw_observations(
             assurance,
             run_id="pytest-assurance:retention",
             system_version="pytest-system",
+        )
+
+
+def test_retention_component_rejects_reduced_green_scope(
+    tmp_path: Path,
+) -> None:
+    payload, _ = _retention_evidence()
+    full_spec = RetentionRunSpec.model_validate(payload["spec"])
+    selected_ids = {
+        "retention-exact",
+        "retention-variant",
+        "retention-correction",
+        "retention-negative:contextual-non-entity",
+        "retention-collision:heldout-variant-collision-00",
+    }
+    reduced_spec = full_spec.model_copy(
+        update={
+            "cases": tuple(
+                case for case in full_spec.cases if case.case_id in selected_ids
+            )
+        }
+    )
+    reduced_observations = tuple(
+        RetentionObservation.model_validate(row)
+        for row in payload["observations"]
+        if row["case_id"] in selected_ids
+    )
+    reduced_report = evaluate_company_learning_retention(
+        spec=reduced_spec,
+        observations=reduced_observations,
+        artifact_refs=("pytest:reduced-retention",),
+    )
+    reduced_payload = {
+        "spec": reduced_spec.model_dump(mode="json"),
+        "observations": [
+            row.model_dump(mode="json") for row in reduced_observations
+        ],
+        "report": reduced_report.model_dump(mode="json"),
+        "report_digest": reduced_report.digest,
+    }
+    artifact_path = tmp_path / "reduced-retention.json"
+    artifact_path.write_text(json.dumps(reduced_payload), encoding="utf-8")
+    baseline = _retention_assurance()
+    reduced_assurance = RetentionAssurance.model_validate(
+        {
+            **baseline.model_dump(mode="json"),
+            "status": "observed_with_degradation",
+            "expected_observation_count": (
+                reduced_report.expected_observation_count
+            ),
+            "observed_observation_count": (
+                reduced_report.observed_observation_count
+            ),
+            "horizon_metrics": [
+                row.model_dump(mode="json")
+                for row in reduced_report.horizon_metrics
+            ],
+            "family_counts": reduced_report.family_counts,
+            "artifact_paths": {"retention_evidence": str(artifact_path)},
+            "component_digests": {
+                "artifact": canonical_sha256(reduced_payload),
+                "spec": reduced_spec.digest,
+                "report": reduced_report.digest,
+                "observations": reduced_report.observation_digest,
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="sealed scope"):
+        validate_retention_assurance_component(
+            reduced_assurance,
+            run_id=reduced_spec.run_id,
+            system_version=reduced_spec.system_version,
         )
 
 

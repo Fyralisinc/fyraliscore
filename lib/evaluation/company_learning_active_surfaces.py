@@ -22,10 +22,94 @@ class _SurfaceModel(BaseModel):
     )
 
 
+class StructuredIdentityClaimContract(_SurfaceModel):
+    source_system: str = Field(min_length=1)
+    source_native_identifier: str = Field(min_length=1)
+    source_surface: str = Field(min_length=1)
+    claim_authority_ref: str = Field(min_length=1)
+
+
+_LINEAR_CLAIMS = (
+    StructuredIdentityClaimContract(
+        source_system="linear",
+        source_native_identifier="linear:project:project-1",
+        source_surface="Billing Reliability",
+        claim_authority_ref=(
+            "linear-handler:structured-project-name-field-v1"
+        ),
+    ),
+    StructuredIdentityClaimContract(
+        source_system="linear",
+        source_native_identifier="linear:team:team-1",
+        source_surface="ENG",
+        claim_authority_ref="linear-handler:structured-team-key-field-v1",
+    ),
+    StructuredIdentityClaimContract(
+        source_system="linear",
+        source_native_identifier="linear:team:team-1",
+        source_surface="Engineering",
+        claim_authority_ref="linear-handler:structured-team-name-field-v1",
+    ),
+)
+_DRIVE_CLAIM = (
+    StructuredIdentityClaimContract(
+        source_system="google_drive",
+        source_native_identifier=(
+            "google_drive:file:drive-file-active-surface"
+        ),
+        source_surface="Revenue Planning",
+        claim_authority_ref="google-drive-handler:structured-file-fields-v1",
+    ),
+)
+SEALED_ACTIVE_SURFACE_CLAIMS: dict[
+    str,
+    tuple[StructuredIdentityClaimContract, ...],
+] = {
+    "jira_project": (
+        StructuredIdentityClaimContract(
+            source_system="jira",
+            source_native_identifier=(
+                "jira:acme.atlassian.net:project:10000"
+            ),
+            source_surface="ENG",
+            claim_authority_ref=(
+                "jira-handler:structured-project-field-v1"
+            ),
+        ),
+    ),
+    "linear_issue_bundle": _LINEAR_CLAIMS,
+    "google_drive_file": _DRIVE_CLAIM,
+    "google_drive_comment": _DRIVE_CLAIM,
+    "google_drive_revision": _DRIVE_CLAIM,
+    "gmail_thread": (
+        StructuredIdentityClaimContract(
+            source_system="gmail",
+            source_native_identifier=(
+                "gmail:00000000-0000-0000-0000-000000000002:"
+                "thread:gmail-thread-active-surface"
+            ),
+            source_surface="Executive Planning",
+            claim_authority_ref=(
+                "gmail-handler:structured-thread-subject-fields-v1"
+            ),
+        ),
+    ),
+}
+
+
 class StructuredIdentitySurfaceObservation(_SurfaceModel):
-    case_id: Literal["jira", "linear", "google_drive", "gmail"]
+    case_id: Literal[
+        "jira_project",
+        "linear_issue_bundle",
+        "google_drive_file",
+        "google_drive_comment",
+        "google_drive_revision",
+        "gmail_thread",
+    ]
     execution_status: Literal["observed", "unsupported"] = "observed"
     unsupported_reason: str | None = None
+    expected_claims: tuple[StructuredIdentityClaimContract, ...] | None = None
+    observed_claims: tuple[StructuredIdentityClaimContract, ...] | None = None
     claim_emitted: bool | None = None
     claim_preserved: bool | None = None
     preexisting_binding_attached: bool | None = None
@@ -41,6 +125,8 @@ class StructuredIdentitySurfaceObservation(_SurfaceModel):
     @model_validator(mode="after")
     def complete_execution(self) -> Self:
         measurements = (
+            self.expected_claims,
+            self.observed_claims,
             self.claim_emitted,
             self.claim_preserved,
             self.preexisting_binding_attached,
@@ -67,12 +153,17 @@ class StructuredIdentitySurfaceObservation(_SurfaceModel):
             or not self.artifact_refs
         ):
             raise ValueError("observed identity surfaces require complete evidence")
+        elif not self.expected_claims:
+            raise ValueError(
+                "observed identity surfaces require an explicit source contract"
+            )
         return self
 
     @property
     def safe(self) -> bool:
         return bool(
             self.claim_emitted
+            and self.observed_claims == self.expected_claims
             and self.claim_preserved
             and self.preexisting_binding_attached
             and not self.handler_created_authority
@@ -310,7 +401,14 @@ def _evaluate_identity(
 ) -> StructuredIdentitySurfaceReport:
     _require_exact_ids(
         observations,
-        {"jira", "linear", "google_drive", "gmail"},
+        {
+            "jira_project",
+            "linear_issue_bundle",
+            "google_drive_file",
+            "google_drive_comment",
+            "google_drive_revision",
+            "gmail_thread",
+        },
         "identity",
     )
     observed = tuple(row for row in observations if row.execution_status == "observed")
@@ -319,11 +417,11 @@ def _evaluate_identity(
     violating = sum(not row.safe for row in observed)
     return StructuredIdentitySurfaceReport(
         status=(
-            "observed" if len(observed) == 4 and violating == 0 else "contradicted"
+            "observed" if len(observed) == 6 and violating == 0 else "contradicted"
         ),
-        case_count=4,
+        case_count=6,
         observed_case_count=len(observed),
-        unsupported_case_count=4 - len(observed),
+        unsupported_case_count=6 - len(observed),
         violating_case_count=violating,
         unsupported_reason_counts=_unsupported_reasons(observations),
         runtime_support_rate=_wilson_estimate(
@@ -456,6 +554,8 @@ __all__ = [
     "ActiveLearningSurfacesEvidence",
     "SourceSalienceObservation",
     "SourceSalienceSurfaceReport",
+    "SEALED_ACTIVE_SURFACE_CLAIMS",
+    "StructuredIdentityClaimContract",
     "StructuredIdentitySurfaceObservation",
     "StructuredIdentitySurfaceReport",
     "evaluate_active_learning_surfaces",

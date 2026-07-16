@@ -484,16 +484,17 @@ async def run_company_learning_assurance_suite(
                     "split, replacement and resurrection remain unproven."
                 ),
                 (
-                    "source_identity_lifecycle: old observation attachments "
-                    "remain storage-exact after rebind/revocation, while "
-                    "operational reads stale-fence them; this does not prove "
-                    "historical attachment replay as current authority."
+                    "source_identity_lifecycle: focused tests cover storage-exact "
+                    "old attachments and operational stale fencing after "
+                    "rebind/revocation, but v6 has no typed, reopened, "
+                    "digest-bound lifecycle assurance component."
                 ),
                 (
-                    "source_identity_lifecycle: overlap prevention is proven "
-                    "through the repository guard; direct SQL writers, "
-                    "database-native exclusion, and caller-owned transaction "
-                    "atomicity remain explicit boundaries."
+                    "source_identity_lifecycle: focused tests cover the "
+                    "repository overlap guard only. V6 does not validate or "
+                    "digest-bind lifecycle behavior, direct SQL writers, "
+                    "database-native exclusion, or caller-owned transaction "
+                    "atomicity."
                 ),
                 (
                     "connectors: governed Jira, Linear, Google Drive and Gmail "

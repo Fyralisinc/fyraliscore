@@ -36,6 +36,7 @@ from lib.evaluation.company_learning_assurance import (
 )
 from lib.evaluation.company_learning_active_surfaces import (
     ActiveLearningSurfacesEvidence,
+    SEALED_ACTIVE_SURFACE_CLAIMS,
     SourceSalienceObservation,
     StructuredIdentitySurfaceObservation,
     evaluate_active_learning_surfaces,
@@ -283,7 +284,7 @@ def test_combined_assurance_is_non_scoring_and_persists_for_rerender(
     assert assurance["active_surfaces"]["status"] == "observed"
     identity = assurance["active_surfaces"]["structured_identity"]
     assert identity["status"] == "observed"
-    assert identity["observed_case_count"] == 4
+    assert identity["observed_case_count"] == 6
     assert identity["violating_case_count"] == 0
     assert identity["governed_attachment_rate"]["point_estimate"] == 1.0
     salience = assurance["active_surfaces"]["source_salience"]
@@ -292,7 +293,7 @@ def test_combined_assurance_is_non_scoring_and_persists_for_rerender(
     assert salience["violating_case_count"] == 0
     assert salience["salience_direction_rate"]["point_estimate"] == 1.0
     assert assurance["retention"]["status"] == "observed"
-    assert assurance["retention"]["observed_observation_count"] == 9
+    assert assurance["retention"]["observed_observation_count"] == 14
     assert assurance["retention"]["overall_positive_retention_rate"] == 1.0
     assert assurance["retention"]["overall_forgetting_rate"] == 0.0
     assert assurance["retention"]["restart_survival_rate"] == 1.0
@@ -312,7 +313,7 @@ def test_combined_assurance_is_non_scoring_and_persists_for_rerender(
         in (first.output_dir / "vitals_summary.md").read_text()
     )
     assert (
-        "Active structured identity: observed, 4/4"
+        "Active structured identity: observed, 6/6"
         in (first.output_dir / "vitals_summary.md").read_text()
     )
     assert (
@@ -1276,6 +1277,8 @@ def _active_surfaces_evidence(
     identity_observations = tuple(
         StructuredIdentitySurfaceObservation(
             case_id=case_id,
+            expected_claims=SEALED_ACTIVE_SURFACE_CLAIMS[case_id],
+            observed_claims=SEALED_ACTIVE_SURFACE_CLAIMS[case_id],
             claim_emitted=True,
             claim_preserved=True,
             preexisting_binding_attached=True,
@@ -1288,7 +1291,14 @@ def _active_surfaces_evidence(
             source_observation_immutable=True,
             artifact_refs=(f"pytest://active-surfaces/{case_id}",),
         )
-        for case_id in ("jira", "linear", "google_drive", "gmail")
+        for case_id in (
+            "jira_project",
+            "linear_issue_bundle",
+            "google_drive_file",
+            "google_drive_comment",
+            "google_drive_revision",
+            "gmail_thread",
+        )
     )
     salience_values = {
         "settled_useful": (1.0, 2.0, True),
@@ -1341,7 +1351,7 @@ def _retention_evidence(
         RetentionCaseSpec(
             case_id="retention-exact",
             behavior=RetentionBehavior.EXACT_ALIAS,
-            family="exact",
+            family="exact_alias_positive",
             expected_ref=exact_ref,
             horizons=horizons,
             allowed_terminal_fates=(ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,),
@@ -1349,34 +1359,58 @@ def _retention_evidence(
         RetentionCaseSpec(
             case_id="retention-variant",
             behavior=RetentionBehavior.VARIANT_ALIAS,
-            family="variant",
+            family="acronym_from_long_form",
             expected_ref=variant_ref,
             horizons=horizons,
             allowed_terminal_fates=(ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,),
             candidate_authorization_required=True,
         ),
         RetentionCaseSpec(
-            case_id="retention-corrected",
+            case_id="retention-correction",
             behavior=RetentionBehavior.CORRECTED_ALIAS,
-            family="corrected",
+            family="authoritative_exact_correction",
             expected_ref=corrected_ref,
             horizons=(horizons[-1],),
             allowed_terminal_fates=(ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,),
             correction_authority_required=True,
         ),
-        RetentionCaseSpec(
-            case_id="retention-negative",
-            behavior=RetentionBehavior.NEGATIVE_CONTROL,
-            family="negative",
-            horizons=(horizons[-1],),
-            allowed_terminal_fates=(ConsumerTerminalFate.REVIEW,),
+        *(
+            RetentionCaseSpec(
+                case_id=f"retention-negative:{case_id}",
+                behavior=RetentionBehavior.NEGATIVE_CONTROL,
+                family=family,
+                horizons=(horizons[-1],),
+                allowed_terminal_fates=(ConsumerTerminalFate.REVIEW,),
+            )
+            for case_id, family in (
+                ("contextual-non-entity", "contextual_phrase_negative"),
+                ("unrelated-alias", "unrelated_negative_control"),
+                ("same-surface-homonym", "homonym_local_association"),
+                ("conflicting-source-hint", "conflicting_source_hint"),
+            )
         ),
-        RetentionCaseSpec(
-            case_id="retention-collision",
-            behavior=RetentionBehavior.COLLISION_CONTROL,
-            family="collision",
-            horizons=(horizons[-1],),
-            allowed_terminal_fates=(ConsumerTerminalFate.REVIEW,),
+        *(
+            RetentionCaseSpec(
+                case_id=f"retention-collision:{case_id}",
+                behavior=RetentionBehavior.COLLISION_CONTROL,
+                family=family,
+                horizons=(horizons[-1],),
+                allowed_terminal_fates=(ConsumerTerminalFate.REVIEW,),
+            )
+            for case_id, family in (
+                (
+                    "heldout-variant-collision-00",
+                    "same_type_acronym_collision",
+                ),
+                (
+                    "heldout-variant-collision-06",
+                    "punctuation_unicode_normalization_collision",
+                ),
+                (
+                    "heldout-variant-collision-08",
+                    "contextual_channel_local_nickname",
+                ),
+            )
         ),
     )
     spec = RetentionRunSpec(

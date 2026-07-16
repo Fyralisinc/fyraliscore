@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -13,7 +14,9 @@ import asyncpg
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_active_surfaces import (
     ActiveLearningSurfacesEvidence,
+    SEALED_ACTIVE_SURFACE_CLAIMS,
     SourceSalienceObservation,
+    StructuredIdentityClaimContract,
     StructuredIdentitySurfaceObservation,
     evaluate_active_learning_surfaces,
 )
@@ -44,10 +47,15 @@ async def run_active_surfaces_experiment(
 ) -> ActiveLearningSurfacesEvidence:
     identity = tuple(
         [
-            await _identity_case(pool, "jira"),
-            await _identity_case(pool, "linear"),
-            await _identity_case(pool, "google_drive"),
-            await _identity_case(pool, "gmail"),
+            await _identity_case(pool, case_id)
+            for case_id in (
+                "jira_project",
+                "linear_issue_bundle",
+                "google_drive_file",
+                "google_drive_comment",
+                "google_drive_revision",
+                "gmail_thread",
+            )
         ]
     )
     salience = await _salience_cases(pool)
@@ -74,47 +82,48 @@ async def run_active_surfaces_experiment(
 
 async def _identity_case(
     pool: asyncpg.Pool,
-    source: str,
+    case_id: str,
 ) -> StructuredIdentitySurfaceObservation:
     tenant_id, foreign_tenant = uuid7(), uuid7()
     await pool.executemany(
         "INSERT INTO tenants (id) VALUES ($1)",
         [(tenant_id,), (foreign_tenant,)],
     )
-    payloads = {
-        "jira": _jira_payload,
-        "linear": _linear_payload,
-        "google_drive": _google_drive_payload,
-        "gmail": _gmail_payload,
-    }
-    handlers = {
-        "jira": handle_jira_issue,
-        "linear": handle_linear_webhook,
-        "google_drive": handle_google_drive_file,
-        "gmail": handle_gmail,
-    }
-    payload = payloads[source]()
-    handler = handlers[source]
+    payload, handler, expected_claims = _identity_contract(case_id)
     before_handler = await _binding_count(pool, tenant_id)
     draft = await handler(payload, {})
     handler_created = await _binding_count(pool, tenant_id) != before_handler
-    claim = draft.source_identity_claims[0]
-    _, wrong_source_binding_id = await _seed_source_binding(
-        pool,
-        tenant_id=tenant_id,
-        source_system=f"wrong-source:{source}",
-        source_native_identifier=claim.source_native_identifier,
-        source_surface=claim.source_surface,
+    observed_claims = tuple(
+        StructuredIdentityClaimContract(
+            source_system=claim.source_system,
+            source_native_identifier=claim.source_native_identifier,
+            source_surface=claim.source_surface,
+            claim_authority_ref=claim.claim_authority_ref,
+        )
+        for claim in draft.source_identity_claims
     )
-    _, foreign_binding_id = await _seed_source_binding(
-        pool,
-        tenant_id=foreign_tenant,
-        source_system=claim.source_system,
-        source_native_identifier=claim.source_native_identifier,
-        source_surface=claim.source_surface,
-    )
+    unique_contracts = {
+        (claim.source_system, claim.source_native_identifier): claim
+        for claim in expected_claims
+    }
+    wrong_source_binding_ids: set[str] = set()
+    for claim in unique_contracts.values():
+        _, binding_id = await _seed_source_binding(
+            pool,
+            tenant_id=tenant_id,
+            source_system=f"wrong-source:{claim.source_system}",
+            source_native_identifier=claim.source_native_identifier,
+            source_surface=claim.source_surface,
+        )
+        wrong_source_binding_ids.add(binding_id)
+        await _seed_source_binding(
+            pool,
+            tenant_id=foreign_tenant,
+            source_system=claim.source_system,
+            source_native_identifier=claim.source_native_identifier,
+            source_surface=claim.source_surface,
+        )
     before_ingest = await _binding_count(pool, tenant_id)
-
     missing = await ingest(
         draft.source_channel,
         payload,
@@ -139,20 +148,29 @@ async def _identity_case(
     )
     missing_authoritative = bool(missing_attachments)
     cross_source_leak = any(
-        str(row["binding_id"]) == wrong_source_binding_id
+        str(row["binding_id"]) in wrong_source_binding_ids
         for row in missing_attachments
+    )
+    foreign_contexts = await _contexts_for_claims(
+        pool=pool,
+        tenant_id=foreign_tenant,
+        observation_id=missing.observation.id,
+        claims=expected_claims,
     )
     cross_tenant_leak = any(
-        str(row["binding_id"]) == foreign_binding_id
-        for row in missing_attachments
+        context.source_identity_binding is not None
+        for context in foreign_contexts
     )
-    resource_id, _ = await _seed_source_binding(
-        pool,
-        tenant_id=tenant_id,
-        source_system=claim.source_system,
-        source_native_identifier=claim.source_native_identifier,
-        source_surface=claim.source_surface,
-    )
+    resource_ids: dict[tuple[str, str], UUID] = {}
+    for key, claim in unique_contracts.items():
+        resource_id, _ = await _seed_source_binding(
+            pool,
+            tenant_id=tenant_id,
+            source_system=claim.source_system,
+            source_native_identifier=claim.source_native_identifier,
+            source_surface=claim.source_surface,
+        )
+        resource_ids[key] = resource_id
     replay = await ingest(
         draft.source_channel,
         payload,
@@ -164,23 +182,23 @@ async def _identity_case(
     snapshot_before = await _observation_snapshot(
         pool, tenant_id, replay.observation.id
     )
-    attached = bool(
-        await pool.fetchval(
+    attached_surfaces = {
+        str(row["normalized_source_surface"])
+        for row in await pool.fetch(
             """
-            SELECT count(*) FROM observation_source_identity_bindings
+            SELECT normalized_source_surface
+            FROM observation_source_identity_bindings
             WHERE tenant_id=$1 AND observation_id=$2
-              AND normalized_source_surface=$3
             """,
             tenant_id,
             replay.observation.id,
-            " ".join(claim.source_surface.casefold().split()),
         )
-    )
-    exact = await build_context(
+    }
+    exact_contexts = await _contexts_for_claims(
         pool=pool,
         tenant_id=tenant_id,
         observation_id=replay.observation.id,
-        phrase=claim.source_surface,
+        claims=expected_claims,
     )
     forged = await build_context(
         pool=pool,
@@ -190,14 +208,30 @@ async def _identity_case(
     )
     snapshot_after = await _observation_snapshot(pool, tenant_id, replay.observation.id)
     return StructuredIdentitySurfaceObservation(
-        case_id=source,
-        claim_emitted=bool(draft.source_identity_claims),
-        claim_preserved=claim.source_surface
-        in replay.observation.content.get("_unresolved_phrases", []),
-        preexisting_binding_attached=(
-            attached
-            and exact.source_identity_binding is not None
-            and exact.source_identity_binding.canonical_ref["id"] == str(resource_id)
+        case_id=case_id,
+        expected_claims=expected_claims,
+        observed_claims=observed_claims,
+        claim_emitted=bool(observed_claims),
+        claim_preserved=all(
+            claim.source_surface
+            in replay.observation.content.get("_unresolved_phrases", [])
+            for claim in expected_claims
+        ),
+        preexisting_binding_attached=all(
+            " ".join(claim.source_surface.casefold().split())
+            in attached_surfaces
+            and context.source_identity_binding is not None
+            and context.source_identity_binding.canonical_ref["id"]
+            == str(
+                resource_ids[
+                    (claim.source_system, claim.source_native_identifier)
+                ]
+            )
+            for claim, context in zip(
+                expected_claims,
+                exact_contexts,
+                strict=True,
+            )
         ),
         handler_created_authority=handler_created,
         ingest_created_authority=ingest_created,
@@ -208,9 +242,67 @@ async def _identity_case(
         source_observation_immutable=snapshot_before == snapshot_after,
         artifact_refs=(
             f"observation:{replay.observation.id}",
-            f"resource:{resource_id}",
+            *(
+                f"resource:{resource_id}"
+                for resource_id in resource_ids.values()
+            ),
         ),
     )
+
+
+async def _contexts_for_claims(
+    *,
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    observation_id: UUID,
+    claims: tuple[StructuredIdentityClaimContract, ...],
+) -> tuple[Any, ...]:
+    return tuple(
+        [
+            await build_context(
+                pool=pool,
+                tenant_id=tenant_id,
+                observation_id=observation_id,
+                phrase=claim.source_surface,
+            )
+            for claim in claims
+        ]
+    )
+
+
+def _identity_contract(
+    case_id: str,
+) -> tuple[
+    dict[str, Any],
+    Any,
+    tuple[StructuredIdentityClaimContract, ...],
+]:
+    if case_id == "jira_project":
+        return (
+            _jira_payload(),
+            handle_jira_issue,
+            SEALED_ACTIVE_SURFACE_CLAIMS[case_id],
+        )
+    if case_id.startswith("linear_"):
+        return (
+            _linear_payload(),
+            handle_linear_webhook,
+            SEALED_ACTIVE_SURFACE_CLAIMS[case_id],
+        )
+    if case_id.startswith("google_drive_"):
+        record_type = case_id.removeprefix("google_drive_")
+        return (
+            _google_drive_payload(record_type),
+            handle_google_drive_file,
+            SEALED_ACTIVE_SURFACE_CLAIMS[case_id],
+        )
+    if case_id == "gmail_thread":
+        return (
+            _gmail_payload(),
+            handle_gmail,
+            SEALED_ACTIVE_SURFACE_CLAIMS[case_id],
+        )
+    raise ValueError(f"unknown active identity case: {case_id}")
 
 
 async def _salience_cases(
@@ -609,12 +701,31 @@ def _linear_payload() -> dict:
     }
 
 
-def _google_drive_payload() -> dict:
+def _google_drive_payload(record_type: str = "file") -> dict:
+    common = {
+        "_fyralis_file_id": "drive-file-active-surface",
+        "_fyralis_file_name": "Revenue Planning",
+        "modifiedTime": "2026-04-21T10:00:00Z",
+    }
+    if record_type == "comment":
+        return {
+            **common,
+            "_fyralis_record_type": "comment",
+            "id": "drive-comment-active-surface",
+            "content": "SALES is untrusted free text.",
+        }
+    if record_type == "revision":
+        return {
+            **common,
+            "_fyralis_record_type": "revision",
+            "id": "drive-revision-active-surface",
+            "lastModifyingUser": {"displayName": "SALES"},
+        }
     return {
         "id": "drive-file-active-surface",
         "name": "Revenue Planning",
         "version": "7",
-        "modifiedTime": "2026-04-21T10:00:00Z",
+        **common,
         "_fyralis_extracted_text": (
             "SALES is untrusted free text, not file identity."
         ),

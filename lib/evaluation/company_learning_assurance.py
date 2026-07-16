@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_active_surfaces import (
     ActiveLearningSurfacesReport,
+    SEALED_ACTIVE_SURFACE_CLAIMS,
     SourceSalienceSurfaceReport,
     StructuredIdentitySurfaceReport,
     validate_active_learning_surfaces_artifact,
@@ -35,6 +36,7 @@ from lib.evaluation.company_learning_population import (
 )
 from lib.evaluation.company_learning_retention import (
     CompanyLearningRetentionReport,
+    RetentionBehavior,
     RetentionHorizonMetrics,
     RetentionObservation,
     RetentionRunSpec,
@@ -806,7 +808,7 @@ class ActiveSurfacesAssurance(_SummaryModel):
         salience = self.source_salience
         return bool(
             identity.status == "observed"
-            and identity.case_count == 4
+            and identity.case_count == 6
             and identity.observed_case_count == identity.case_count
             and identity.unsupported_case_count == 0
             and identity.violating_case_count == 0
@@ -907,8 +909,20 @@ class RetentionAssurance(_SummaryModel):
     @property
     def has_retention_regression(self) -> bool:
         return bool(
-            self.expected_observation_count == 0
-            or self.observed_observation_count != self.expected_observation_count
+            self.expected_observation_count != 14
+            or self.observed_observation_count != 14
+            or {
+                (
+                    horizon.cycle_count,
+                    horizon.restart_count,
+                ): horizon.observed_count
+                for horizon in self.horizon_metrics
+            }
+            != {
+                (0, 0): 2,
+                (4, 1): 2,
+                (16, 2): 10,
+            }
             or self.exact_retention_rate < 1.0
             or self.variant_retention_rate < 1.0
             or self.corrected_retention_rate < 1.0
@@ -1475,6 +1489,13 @@ def validate_active_surfaces_assurance_component(
         raise ValueError("active surfaces run identity mismatch")
     if evidence.system_version != system_version:
         raise ValueError("active surfaces system version mismatch")
+    for observation in evidence.identity_observations:
+        if observation.expected_claims != SEALED_ACTIVE_SURFACE_CLAIMS[
+            observation.case_id
+        ]:
+            raise ValueError(
+                "active surfaces expected claim contract changed sealed scope"
+            )
     expected_digests = {
         "evidence": evidence.digest,
         "report": evidence.report.digest,
@@ -1521,6 +1542,7 @@ def validate_retention_assurance_component(
         raise ValueError("retention run identity mismatch")
     if spec.system_version != system_version:
         raise ValueError("retention system version mismatch")
+    _validate_retention_spec_scope(spec)
     observations = tuple(
         RetentionObservation.model_validate(row)
         for row in payload.get("observations") or ()
@@ -1577,6 +1599,123 @@ def validate_retention_assurance_component(
     ):
         raise ValueError("retention assurance does not match persisted evidence")
     return report
+
+
+def _validate_retention_spec_scope(spec: RetentionRunSpec) -> None:
+    expected_horizons = ((0, 0), (4, 1), (16, 2))
+    final_horizon = ((16, 2),)
+    expected_cases = {
+        "retention-exact": (
+            RetentionBehavior.EXACT_ALIAS,
+            "exact_alias_positive",
+            expected_horizons,
+        ),
+        "retention-variant": (
+            RetentionBehavior.VARIANT_ALIAS,
+            "acronym_from_long_form",
+            expected_horizons,
+        ),
+        "retention-correction": (
+            RetentionBehavior.CORRECTED_ALIAS,
+            "authoritative_exact_correction",
+            final_horizon,
+        ),
+        "retention-negative:contextual-non-entity": (
+            RetentionBehavior.NEGATIVE_CONTROL,
+            "contextual_phrase_negative",
+            final_horizon,
+        ),
+        "retention-negative:unrelated-alias": (
+            RetentionBehavior.NEGATIVE_CONTROL,
+            "unrelated_negative_control",
+            final_horizon,
+        ),
+        "retention-negative:same-surface-homonym": (
+            RetentionBehavior.NEGATIVE_CONTROL,
+            "homonym_local_association",
+            final_horizon,
+        ),
+        "retention-negative:conflicting-source-hint": (
+            RetentionBehavior.NEGATIVE_CONTROL,
+            "conflicting_source_hint",
+            final_horizon,
+        ),
+        "retention-collision:heldout-variant-collision-00": (
+            RetentionBehavior.COLLISION_CONTROL,
+            "same_type_acronym_collision",
+            final_horizon,
+        ),
+        "retention-collision:heldout-variant-collision-06": (
+            RetentionBehavior.COLLISION_CONTROL,
+            "punctuation_unicode_normalization_collision",
+            final_horizon,
+        ),
+        "retention-collision:heldout-variant-collision-08": (
+            RetentionBehavior.COLLISION_CONTROL,
+            "contextual_channel_local_nickname",
+            final_horizon,
+        ),
+    }
+    observed_cases = {
+        case.case_id: (
+            case.behavior,
+            case.family,
+            tuple(
+                (horizon.cycle_count, horizon.restart_count)
+                for horizon in case.horizons
+            ),
+        )
+        for case in spec.cases
+    }
+    if observed_cases != expected_cases:
+        raise ValueError("retention spec identity or family changed sealed scope")
+    by_behavior = {
+        behavior: tuple(
+            case for case in spec.cases if case.behavior is behavior
+        )
+        for behavior in RetentionBehavior
+    }
+    expected_counts = {
+        RetentionBehavior.EXACT_ALIAS: 1,
+        RetentionBehavior.VARIANT_ALIAS: 1,
+        RetentionBehavior.CORRECTED_ALIAS: 1,
+        RetentionBehavior.NEGATIVE_CONTROL: 4,
+        RetentionBehavior.COLLISION_CONTROL: 3,
+    }
+    if {
+        behavior: len(cases) for behavior, cases in by_behavior.items()
+    } != expected_counts:
+        raise ValueError("retention spec does not match sealed behavior scope")
+    expected_horizon_set = set(expected_horizons)
+    final_horizon_set = set(final_horizon)
+    for behavior in (
+        RetentionBehavior.EXACT_ALIAS,
+        RetentionBehavior.VARIANT_ALIAS,
+    ):
+        horizons = {
+            (row.cycle_count, row.restart_count)
+            for row in by_behavior[behavior][0].horizons
+        }
+        if horizons != expected_horizon_set:
+            raise ValueError(
+                f"retention {behavior.value} horizons changed sealed scope"
+            )
+    for behavior in (
+        RetentionBehavior.CORRECTED_ALIAS,
+        RetentionBehavior.NEGATIVE_CONTROL,
+        RetentionBehavior.COLLISION_CONTROL,
+    ):
+        if any(
+            {
+                (row.cycle_count, row.restart_count)
+                for row in case.horizons
+            }
+            != final_horizon_set
+            for case in by_behavior[behavior]
+        ):
+            raise ValueError(
+                f"retention {behavior.value} must be final-horizon only"
+            )
 
 
 def validate_company_learning_assurance_components(
