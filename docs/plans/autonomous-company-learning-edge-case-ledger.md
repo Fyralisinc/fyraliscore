@@ -620,16 +620,25 @@ transport are excluded from this goal.
 
 ### EDGE-031 — Holdout adaptation masquerades as generalization
 
-- **Status:** `active`, P0
+- **Status:** `bounded`
 - **Trigger:** The first deterministic holdout became strong after fixes made
-  against it, while the subsequently frozen untouched holdout remained weak.
+  against it, while a later untouched deterministic holdout remained weak.
+  This historical failure mode remains relevant even though learned v3 is
+  independently strong at the complete extraction-path level.
 - **Risk:** Repeated fixture-driven tuning produces an attractive score without
   robust open-company entity discovery.
 - **Safe boundary:** An adapted holdout is regression evidence only. A
   generalization claim requires a newly sealed organization/entity/time split
   scored once after policy and thresholds freeze.
-- **Return condition:** Strong continuous performance on a final untouched
-  holdout with error strata and uncertainty bounds reported.
+- **Current evidence:** Sealed v3 was organization/entity/time/text-disjoint
+  and executed exactly once. Raw model exact F1 was `0.762590`; 13 uniquely
+  source-repaired coordinates lifted the complete extraction path to F1
+  `0.942857`, type accuracy `0.985714`, negative cleanliness `1.0`, with source
+  strata and the workstream F1 `0.5` tail reported. Report SHA is
+  `4427b73f…2263eca`.
+- **Return condition:** Preserve v3 without selective rerun and require a new
+  sealed population for any materially changed prompt/policy. Canonical-link
+  and company-scale claims still require their own gold.
 
 ### EDGE-032 — Entity pipeline stops before canonical-link proof
 
@@ -648,19 +657,20 @@ transport are excluded from this goal.
 
 ### EDGE-033 — Post-hoc learned-output repair is not an independent run
 
-- **Status:** `bounded`
+- **Status:** `closed for extraction generalization; historical warning retained`
 - **Trigger:** The original real `gpt-5.4` run scored P/R/F1
   `0.8163/0.6452/0.7207`; uniquely source-verifiable offset repair plus threshold
   rescore of the saved outputs scored `0.8500/0.8226/0.8361`.
 - **Risk:** The latter can be misreported as fresh provider or generalization
   evidence.
 - **Safe boundary:** Label it an artifact rescore and preserve both metric sets.
-- **Return condition:** Execute a newly frozen benchmark once with the repaired
-  runtime and report it separately from the historical artifact.
+- **Return condition:** Satisfied by sealed one-shot v3 at `0d9d8e65`; keep the
+  historical v1 rescore labeled post-hoc and separate forever.
 
 ### EDGE-034 — Learned discovery has batch-atomic schema failure and systematic semantic tails
 
-- **Status:** `active`, P0
+- **Status:** `bounded`; v2 failure retained, v3 complete extraction path
+  strong, raw-coordinate and workstream-boundary tails remain
 - **Immutable evidence boundary:** The sealed v2 corpus has 80 unique signals,
   eight genuine ten-signal batches, 40 hard negatives and 114 exact typed gold
   spans (SHA-256
@@ -724,21 +734,66 @@ transport are excluded from this goal.
   replies (one boundary, two types). Standalone, ordinary threaded and channel
   follow-up negatives stayed clean, but these small strata do not establish
   general reliability.
-- **Separate development corpus:** Do not tune on sealed v2. Build an unsealed,
-  versioned development set with independently authored organizations and
+- **Separate development corpus:** Do not tune on sealed v2 or v3. The unsealed,
+  versioned development set contains independently authored organizations and
   surfaces, balanced by source, Slack context and all 11 entity types. Include
   (1) valid responses containing one deliberately invalid enum or malformed
   sibling, (2) role-bearing prefix/suffix boundary pairs, (3) ambiguous
   product/customer/team/system/resource contexts, (4) multilingual and symbol
   identifiers, and (5) source-specific syntax negatives. Track item-isolation
   recovery, exact boundary F1, per-type confusion, negative cleanliness,
-  abstention/coverage and fallback-only recall separately. Freeze a new
-  organization/entity/time-split holdout only after policy, prompt, schema and
-  thresholds are fixed.
-- **Return condition:** A malformed candidate cannot erase valid siblings;
-  learned and fallback populations remain separately attributable; the
-  development suite closes the boundary/type/negative tails; and a newly
-  sealed untouched run demonstrates the improvement without post-hoc rescoring.
+  abstention/coverage and fallback-only recall separately. Any future sealed
+  organization/entity/time-split evidence must remain separate from it.
+- **V3 update:** The sealed one-shot run completed all four ten-signal batches
+  with exactly four calls and no schema/provider errors. It matched 70/70 gold
+  mentions by overlap and 66/70 exactly. Raw exact F1 was `0.762590`; 13 model
+  coordinate errors were uniquely source-repaired, so post-verification F1
+  `0.942857` measures the complete extraction path, not direct model offsets.
+  Type accuracy was `0.985714`, cleanliness `1.0`, and source F1 Slack `0.9545`,
+  email `0.9286`, Jira `0.95`. Four boundary errors remain. Workstream exact
+  F1 is `0.5` (2/4), though all four overlap and workstream type is `1.0`.
+- **Return condition:** Learned and fallback populations remain separately
+  attributable; malformed-sibling isolation remains regression tested; and a
+  future prompt change addresses workstream boundaries on development data and
+  earns new sealed evidence rather than rescoring/rerunning v3.
+
+### EDGE-035 — High-confidence wrong type can drive consequential admission
+
+- **Status:** `active`, P0 noncompensatory risk
+- **Trigger:** Sealed v3 contains one exact-span, high-confidence (`0.92`)
+  prediction routed as `resource` where evaluator gold is `goal`. The frozen
+  example is not a tuning fixture; the risk class is what matters.
+- **Risk:** Exact detection and high confidence can conceal the wrong
+  company-object physics, causing a Model, edge, authority decision or learned
+  outcome to be admitted under the wrong semantics.
+- **Safe boundary:** Span correctness never compensates for consequential type
+  error. Preserve the type distribution and abstain/review before any
+  consequential write when the consequence-specific type threshold is unmet.
+- **Current work:** Boundary and type-uncertainty behavior is being improved on
+  mutable development data. The four frozen-v3 boundary errors and this type
+  error remain immutable evaluation evidence; v3 is not rescored or rerun.
+- **Return condition:** A sealed production-shaped pipeline suite shows zero
+  wrong-type consequential admissions, calibrated type risk at automatic
+  coverage, and complete downstream containment/repair for injected mistakes.
+
+### EDGE-036 — Entity correctness can silently corrupt relation topology
+
+- **Status:** `active`, P0 measurement gap narrowed
+- **Trigger:** A missed, false or wrongly linked mention can create a wrong
+  active edge, reverse direction, choose the wrong relation type, or contaminate
+  Models beyond the originating grounding case.
+- **Current behavior:** `a8487036` extends the persisted entity-pipeline
+  evaluator with evaluator-owned admission/non-admission expectations, endpoint
+  identity, type, direction, exact mention-lineage, unexpected-edge, harmful
+  relation/model propagation, unknown-endpoint and unlineaged-active-edge
+  metrics. Shared endpoint adjacency is not accepted as causal origin.
+- **Risk:** Strong extraction can coexist with a meaningless or poisoned
+  company graph, especially while canonical links are unmeasured.
+- **Safe boundary:** Treat the evaluator as stage-localization machinery only.
+  Do not infer topology quality from its existence or from v3 extraction.
+- **Return condition:** Execute populated production-shaped relation gold from
+  persisted batched signals through canonical linking and graph admission,
+  including no-edge, wrong-link, reversed-edge, wrong-type and repair cases.
 
 ## Entry Template
 

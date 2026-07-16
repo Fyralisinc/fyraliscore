@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `38838612`
+**Current checkpoint:** `0d9d8e65`
 
 **Last updated:** 2026-07-17
 
@@ -309,7 +309,8 @@ flowchart LR
 | Sealed v2 recovered run | 80 signals, eight ten-signal batches, 114 spans and 40 negatives; exact recovered P/R/F1 `0.8020/0.7105/0.7535`, type accuracy `0.8163`, negative cleanliness `0.95`; one schema-invalid batch | Exact recovery of completed structured turns, not a rerun; exposes batch-atomic schema loss and makes no canonical-link claim |
 | Mutable development feedback | A checkpointed `gpt-5.4` run processed four genuine ten-signal batches with one call each and zero provider errors; post-verification P/R/F1 was `0.7727/0.7969/0.7846`, type accuracy `0.8906`, negative cleanliness `1.0` | Development feedback only. The inspected corpus/results informed later prompt work and cannot be used as holdout or generalization evidence |
 | Complete-boundary and role-type prompt | The current production prompt requires per-signal completeness, exact complete written designations, role-grounded closed types and transport-coordinate negatives | Implemented with focused prompt/schema tests at `813848ce`; not yet scored by a fresh untouched provider run |
-| Frozen untouched v3 | 40 signals in four ten-signal batches, organization/entity/time/text-disjoint, SHA-256 `e6d582…a43bc4`, sealed at `38838612` with zero executions and one allowed provider run | Created and frozen but not executed; no v3 quality or generalization claim yet |
+| Sealed one-shot v3 | 40 signals/4x10, 70 gold, 20 negatives, four calls/no errors; raw exact F1 `0.762590`; 13 uniquely source-repaired coordinates; complete path 70/70 overlap, 66/70 exact, post F1 `0.942857`, type `0.985714`, cleanliness `1.0`; report SHA `4427b73f…2263eca` | Strong complete-pipeline extraction generalization, not direct model-offset quality. Four boundaries, workstream F1 `0.5`, and one exact high-confidence resource-vs-goal type error remain; no canonical-link/company-scale claim |
+| Relation-topology evaluator | Gold edge admission/non-admission, endpoint, type, direction, mention-lineage, unexpected-edge, harmful-propagation, unknown-endpoint and unlineaged-edge metrics extend the entity pipeline | Implemented and focused-test proven at `a8487036`; not yet a populated production-shaped topology proof |
 
 ## Important Implementation Checkpoints
 
@@ -357,6 +358,8 @@ flowchart LR
 | `5b708d0c` | Added the contract-validated, per-batch checkpointed mutable development runner and explicitly non-generalization report |
 | `813848ce` | Clarified complete mention boundaries, role-grounded company-object types and transport-coordinate negatives in the learned prompt/schema |
 | `38838612` | Froze the untouched one-shot v3 holdout, disjoint from v1, v2 and mutable development data |
+| `a8487036` | Extended entity-pipeline evaluation through downstream relation topology and harmful propagation |
+| `0d9d8e65` | Sealed the completed one-shot v3 receipt and runner contract around the immutable extraction report |
 | `d6908b39` | Removed proof gaps already closed by the complete sealed run |
 | `ac963125` | Reused grounding/source-semantic outcomes as bounded SAGE source-salience memory |
 | `4b6ef3c8` | Added governed Linear project/team structured identity transport |
@@ -726,8 +729,8 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
-| Scoped company-learning runtime implementation | 92–95% | The postmortem repairs and learned batched discovery are integrated, but canonical-link population, untouched learned generalization and broad semantic validation remain incomplete |
-| Customer-free objective substantiation | 70–76% | Entity pipeline metrics and one real learned benchmark now exist, but learned exact-span F1 is not exceptional, the final untouched deterministic holdout is weak, canonical linking is unproven, and the only authoritative 45-batch artifact remains the pre-fix `not_credible` run |
+| Scoped company-learning runtime implementation | 92–95% | The postmortem repairs, learned batched discovery and strong v3 complete-pipeline extraction evidence are integrated; raw offset quality, type uncertainty, canonical-link population, populated topology proof and broad semantic validation remain incomplete |
+| Customer-free objective substantiation | 74–80% | V3 strongly validates the complete extraction path on its population, but 13 repairs separate model from pipeline quality, residual boundary/type risk remains, canonical linking and company-scale topology are unproven, and the authoritative 45-batch artifact remains `not_credible` |
 | Broader revised system excluding task autonomy | 76–82% | Core company memory and principal repairs exist; open-world entity quality, canonical linking, pipeline population, large-run retrieval transition, causal-thesis recovery, calibration, human gap closure and customer-value evidence remain incomplete |
 
 Task autonomy is excluded from all percentages.
@@ -748,8 +751,11 @@ one, the `be401f25` 45-batch verdict remains the authoritative large-run result.
    - Treat historical v1 fresh F1 `0.7207`, its post-hoc `0.8361` rescore,
      sealed-v2 recovered F1 `0.7535`, and mutable-development F1 `0.7846` as
      distinct non-current-prompt populations.
-   - Execute the already frozen v3 holdout exactly once; preserve digest
-     `e6d582…a43bc4` and do not adapt policy, prompt or thresholds against it.
+   - Preserve the completed v3 report unchanged. Raw model F1 is `0.762590`;
+     13 unique-source repairs produce complete-path F1 `0.942857`. Four
+     boundaries and workstream F1 `0.5` remain; do not selectively rerun it.
+   - Treat a high-confidence exact-span wrong type as noncompensatory whenever
+     it reaches consequential Model, relation, authority or learning admission.
    - Prove canonical-link coverage and accuracy. Current benchmark referents are
      intentionally null and therefore make no canonical-link claim.
    - Preserve the deterministic locator as explicit availability fallback, not
@@ -1096,21 +1102,24 @@ authority.
 
 The next sequence is validation and remaining pipeline closure:
 
-1. Preserve the current complete-boundary/role-type prompt, extraction policy
-   and thresholds without adapting them against frozen v3.
-2. Execute frozen v3 once in its four genuine ten-signal batches, verifying its
-   pre-call digest and zero-execution metadata before provider construction.
+1. Preserve the completed v3 one-shot receipt, corpus digest and report SHA;
+   treat any future prompt tuning as a new version requiring new evidence.
+2. Continue the in-progress boundary/type-uncertainty work on development data:
+   diagnose all four residual boundaries (especially workstream) and preserve
+   uncertainty for consequential type admission; do not rescore/rerun v3.
 3. Keep historical v1 fresh output, its post-hoc rescore, recovered sealed v2,
    mutable development, deterministic fallback and frozen v3 as separate
    report populations.
 4. Populate canonical-link candidate recall, selected-link accuracy, coverage,
    abstention/review and lineage from persisted batched signals through the
    governed resolver/adjudication boundary.
-5. Verify tenant-scoped resolver polling, provider outage/fallback and partial
+5. Populate evaluator-owned relation expectations and run the new topology
+   metrics through admitted and rejected grounding cases.
+6. Verify tenant-scoped resolver polling, provider outage/fallback and partial
    batch failure without allowing fallback evidence to inflate learned quality.
-6. Coalesce projection refresh work and govern T4 repair by durable-outcome
+7. Coalesce projection refresh work and govern T4 repair by durable-outcome
    ROI.
-7. Run focused regression/evaluator suites. Do not run a second large company
+8. Run focused regression/evaluator suites. Do not run a second large company
    simulation unless the user explicitly requests it; the existing 45-batch
    verdict remains authoritative and `not_credible`.
 
@@ -1578,11 +1587,26 @@ The next sequence is validation and remaining pipeline closure:
 - `813848ce` then strengthened the production extraction contract around
   complete written boundaries, role-grounded types, per-signal omission passes
   and transport-coordinate negatives. Focused tests prove the prompt/schema
-  contract, but no fresh untouched provider run has scored that revision.
-- Historical v1, sealed v2, mutable development and frozen untouched v3 remain
-  distinct. V3 was sealed at `38838612` with 40 signals in four ten-signal
-  batches, digest `e6d582…a43bc4`, zero executions and one allowed run. It has
-  not been executed.
+  contract, and the later sealed one-shot v3 run supplies its untouched
+  extraction evidence.
+- Historical v1, sealed v2, mutable development and sealed untouched v3 remain
+  distinct. V3's sole allowed execution completed in four calls without
+  provider error. Raw exact F1 was `0.762590`; production verification uniquely
+  source-repaired 13 coordinate errors, yielding complete-path 70/70 overlap,
+  66/70 exact, P/R/F1 `0.942857`, type accuracy `0.985714`, negative
+  cleanliness `1.0`, and source F1 Slack `0.9545`, email `0.9286`, Jira `0.95`.
+  Four boundary errors remain; workstream boundary F1 is `0.5`. One exact
+  high-confidence (`0.92`) mention was routed as resource rather than gold
+  goal. Report SHA is `4427b73f…2263eca`; canonical referents remain null.
+- `a8487036` extended the persisted entity-pipeline evaluator into relation
+  admission, endpoints, type, direction, exact mention lineage, unexpected
+  edges and harmful topology propagation. Focused tests prove the metric
+  mechanics, not production-shaped graph quality.
+- This is strong one-shot complete-pipeline extraction generalization evidence,
+  not direct model-offset quality. It does not establish canonical linking,
+  populated relation-topology quality or the complete company-learning loop.
+  Wrong-type consequential admission remains noncompensatory, boundary/type
+  uncertainty work is in progress, and the 45-batch verdict is `not_credible`.
 - These focused changes do not revise the historical large-run outcome: the 50
   resolver-owned canonical writes remain incidents in that artifact even
   though the mechanism now forbids them. The authoritative 45-batch verdict is

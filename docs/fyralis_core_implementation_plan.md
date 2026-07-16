@@ -1586,18 +1586,51 @@ distinct:
    `1.0`. Because its examples and results were inspected before the current
    boundary/type prompt was frozen, it is not generalization evidence for that
    prompt.
-4. Frozen v3 is the next untouched organization/entity/time/text-disjoint
-   holdout: 40 signals in four ten-signal batches, digest
+4. Sealed v3 is the untouched organization/entity/time/text-disjoint holdout:
+   40 signals in four ten-signal batches, 70 gold mentions and 20 negatives,
+   corpus digest
    `e6d5821399403feeac727253f791a8bb0d98d1c42232376c3b30305f00a43bc4`.
-   It was sealed at `38838612` with zero provider executions and a one-shot
-   allowance. It has not been run. Until that one execution occurs, prior and
-   development evidence cannot prove the current prompt generalizes.
+   Its single authorized execution completed at `0d9d8e65`: exactly four
+   `gpt-5.4` calls and no provider errors. Raw model coordinates scored exact
+   P/R/F1 `0.768116/0.757143/0.762590`; production verification uniquely
+   source-repaired 13 coordinate errors. The complete extraction path then
+   produced 70/70 overlap matches, 66/70 exact, post-verification exact-span
+   P/R/F1 `0.942857/0.942857/0.942857`, type accuracy `0.985714` and negative
+   cleanliness `1.0`. Source F1 was Slack
+   `0.9545`, email `0.9286` and Jira `0.95`. Workstream boundary F1 remained
+   weak at `0.5` despite type accuracy `1.0`; four boundary errors remain in
+   total. One exact, high-confidence (`0.92`) mention was typed `resource`
+   instead of gold `goal`. The immutable report SHA-256 is
+   `4427b73f90b2baafb52efe1f44e615cac586c2956e61423fad2c8936d2263eca`.
+   This is strong one-shot **complete-pipeline extraction** generalization
+   evidence for the frozen prompt/policy on this population, not direct model
+   offset quality. All canonical referents are null, so it proves neither
+   canonical linking nor company-scale learning behavior. Boundary and type
+   uncertainty work continues on development data without changing or
+   selectively rerunning v3.
+
+Wrong-type consequential admission is a noncompensatory failure class: an exact
+span with high confidence must not silently create or update a Model, relation,
+authority decision or learned outcome under the wrong company-object type.
+Type uncertainty must be retained through candidate generation and resolve to
+abstention/review when the consequence-specific admission threshold is not met.
 
 The checkpointed development runner validates the gold/evaluator contract
 before provider construction, pins one `gpt-5.4` structured call per genuine
 ten-signal batch, and atomically records raw output, usage, exact errors and
 pre/post-verification metrics after every batch. Its artifacts must carry
 `development_only=true` and `generalization_claim_permitted=false`.
+
+The stage-level entity evaluator also accepts evaluator-owned relation
+expectations (`a8487036`). It joins active downstream relations through exact
+mention lineage and separately measures admission, endpoint identity, edge
+type, direction, lineage coverage/integrity, unexpected edges, harmful topology
+propagation, unknown endpoints and active relations without mention lineage.
+No-edge expectations test whether rejected, unresolved or unsafe grounding
+silently contaminates the company graph. Shared endpoint adjacency is never
+treated as causal origin; durable source-mention metadata is required. These
+metrics expose how entity errors propagate into topology, but become company
+quality evidence only when a populated gold relation suite is executed.
 
 ## 8.3 Anomaly processor
 
