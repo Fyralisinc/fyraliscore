@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
@@ -19,12 +20,25 @@ from services.domain.canonical_referents.types import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class CanonicalReferentReadResolution:
+    """Bitemporal lineage resolution for one exact requested referent."""
+
+    requested_ref: CanonicalReferentVersionRef
+    effective_ref: CanonicalReferentVersionRef
+    lineage: CanonicalReferentLineage
+
+    @property
+    def replaced(self) -> bool:
+        return self.requested_ref != self.effective_ref
+
+
 class CanonicalReferentRegistryService:
     """Apply exact 1->1 replacements without mutating physical entities."""
 
     def __init__(
         self,
-        pool: asyncpg.Pool,
+        pool: asyncpg.Pool | None,
         *,
         repo: CanonicalReferentTransitionRepo | None = None,
     ) -> None:
@@ -138,6 +152,8 @@ class CanonicalReferentRegistryService:
         if conn is not None:
             async with conn.transaction():
                 return await apply(conn)
+        if self._pool is None:
+            raise ValueError("canonical referent replacement requires a connection")
         async with self._pool.acquire() as owned, owned.transaction():
             return await apply(owned)
 
@@ -182,4 +198,28 @@ class CanonicalReferentRegistryService:
             valid_at=valid_at,
             known_at=known_at,
             conn=conn,
+        )
+
+    async def resolve_at(
+        self,
+        *,
+        tenant_id: UUID,
+        referent: CanonicalReferentVersionRef,
+        valid_at: datetime,
+        known_at: datetime,
+        conn: asyncpg.Connection | None = None,
+    ) -> CanonicalReferentReadResolution:
+        """Resolve one exact ref to the head visible at both time cutoffs."""
+
+        lineage = await self.lineage_at(
+            tenant_id=tenant_id,
+            referent=referent,
+            valid_at=valid_at,
+            known_at=known_at,
+            conn=conn,
+        )
+        return CanonicalReferentReadResolution(
+            requested_ref=referent,
+            effective_ref=lineage.head,
+            lineage=lineage,
         )

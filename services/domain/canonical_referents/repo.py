@@ -48,7 +48,7 @@ class _AdjacentReplacement:
 class CanonicalReferentTransitionRepo:
     """Read and append exact canonical-referent replacement edges."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: asyncpg.Pool | None) -> None:
         self._pool = pool
 
     async def lock_replacement_scope(
@@ -355,6 +355,8 @@ class CanonicalReferentTransitionRepo:
 
         if conn is not None:
             return await read(conn)
+        if self._pool is None:
+            raise ValueError("canonical referent lineage read requires a connection")
         async with self._pool.acquire() as owned:
             return await read(owned)
 
@@ -381,6 +383,8 @@ class CanonicalReferentTransitionRepo:
                 valid_at=valid_at,
                 known_at=known_at,
             )
+        if self._pool is None:
+            raise ValueError("canonical referent adjacency read requires a connection")
         async with self._pool.acquire() as owned:
             return await self._adjacent_replacement(
                 owned,

@@ -21,8 +21,9 @@ boundary catch invalid values before they hit Postgres.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, get_args
+from typing import TYPE_CHECKING, Any, get_args
 from uuid import UUID
 
 import asyncpg
@@ -46,10 +47,32 @@ from services.domain.observations.state_change import emit_state_change
 from services.platform.access_control.authority import record_resource_access_labels
 
 
+if TYPE_CHECKING:
+    from services.domain.canonical_referents.service import (
+        CanonicalReferentReadResolution,
+        CanonicalReferentRegistryService,
+    )
+    from services.domain.canonical_referents.types import (
+        CanonicalReferentVersionRef,
+    )
+
+
 _VALID_KINDS: tuple[str, ...] = get_args(ResourceKind)
 _VALID_UTILIZATION: tuple[str, ...] = get_args(ResourceUtilizationState)
 _VALID_CONTROLLABILITY: tuple[str, ...] = get_args(ResourceControllability)
 _VALID_TEMPORAL: tuple[str, ...] = get_args(ResourceTemporalCharacter)
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalResourceReadResult:
+    """One lineage-aware canonical resource read."""
+
+    resolution: CanonicalReferentReadResolution
+    resource: ResourceRow | None
+
+    @property
+    def effective_ref(self) -> CanonicalReferentVersionRef:
+        return self.resolution.effective_ref
 
 
 def _json_obj(value: Any) -> dict[str, Any]:
@@ -758,6 +781,101 @@ async def get(
     return _resource_row_from_record(row) if row else None
 
 
+async def get_by_canonical_ref(
+    *,
+    tenant_id: UUID,
+    canonical_ref: CanonicalReferentVersionRef,
+    valid_at: datetime,
+    known_at: datetime,
+    registry: CanonicalReferentRegistryService | None = None,
+    conn: asyncpg.Connection | None = None,
+) -> CanonicalResourceReadResult:
+    """Resolve canonical lineage, then hydrate its effective physical Resource.
+
+    The retained physical row is read without applying its present-day
+    ``archived_at`` filter. The bitemporal lineage is the lifecycle authority:
+    this preserves a predecessor read when the replacement was not yet
+    effective or not yet known, while resolving the same requested ref to its
+    successor for current cutoffs. ``resources.created_at`` fences knowledge
+    time only; it is not treated as the referent's valid-time birth.
+    """
+
+    from services.domain.canonical_referents.service import (
+        CanonicalReferentRegistryService,
+    )
+
+    if canonical_ref.type != "resource":
+        raise ValidationError(
+            "lineage-aware resource reads require a resource canonical ref",
+            canonical_referent_type=canonical_ref.type,
+        )
+    if canonical_ref.version != 1:
+        raise InvariantViolation(
+            "CANONICAL_RESOURCE_VERSION_UNSUPPORTED",
+            "physical resources do not expose a versioned row read",
+            canonical_ref=canonical_ref.model_dump(mode="json"),
+        )
+    try:
+        UUID(canonical_ref.id)
+    except ValueError as exc:
+        raise ValidationError(
+            "resource canonical ref id must be a UUID",
+            canonical_referent_id=canonical_ref.id,
+        ) from exc
+
+    resolver = registry or CanonicalReferentRegistryService(None)
+
+    async def read(target: asyncpg.Connection) -> CanonicalResourceReadResult:
+        resolution = await resolver.resolve_at(
+            tenant_id=tenant_id,
+            referent=canonical_ref,
+            valid_at=valid_at,
+            known_at=known_at,
+            conn=target,
+        )
+        if (
+            resolution.effective_ref.type != "resource"
+            or resolution.effective_ref.version != 1
+        ):
+            raise InvariantViolation(
+                "CANONICAL_RESOURCE_HEAD_UNSUPPORTED",
+                "effective canonical head is not a readable physical resource",
+                effective_ref=resolution.effective_ref.model_dump(mode="json"),
+            )
+        try:
+            effective_id = UUID(resolution.effective_ref.id)
+        except ValueError as exc:
+            raise InvariantViolation(
+                "CANONICAL_RESOURCE_HEAD_INVALID",
+                "effective resource head id is not a UUID",
+                effective_ref=resolution.effective_ref.model_dump(mode="json"),
+            ) from exc
+        row = await target.fetchrow(
+            """
+            SELECT *
+            FROM resources
+            WHERE tenant_id=$1
+              AND id=$2
+              AND created_at <= $3
+            """,
+            tenant_id,
+            effective_id,
+            known_at,
+        )
+        return CanonicalResourceReadResult(
+            resolution=resolution,
+            resource=_resource_row_from_record(row) if row else None,
+        )
+
+    if conn is not None:
+        return await read(conn)
+    from lib.shared.db import get_pool
+
+    pool = get_pool()
+    async with pool.acquire() as owned:
+        return await read(owned)
+
+
 # =====================================================================
 # Search
 # =====================================================================
@@ -854,6 +972,8 @@ __all__ = [
     "archive",
     "retire_non_customer_at",
     "get",
+    "get_by_canonical_ref",
+    "CanonicalResourceReadResult",
     "search_by_kind",
     "search_by_name_fuzzy",
 ]
