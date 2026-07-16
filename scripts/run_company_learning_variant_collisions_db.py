@@ -603,6 +603,7 @@ async def _ingest_authenticated_source_object(
         tenant_id=foundation.tenant_id,
         observation_id=result.observation.id,
         binding=binding,
+        source_surface=case.collision_surface,
         attachment_authority_ref=(
             f"{source_system}-ingestion-envelope-v1"
         ),

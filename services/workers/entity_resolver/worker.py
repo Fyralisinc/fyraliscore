@@ -53,6 +53,7 @@ from lib.llm.provider import (
 from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import (
     EntityAliasRepo,
+    normalize_phrase,
     validate_governed_alias_replay,
 )
 from services.domain.feedback_stats import record_feedback_stat
@@ -671,6 +672,12 @@ class EntityResolverWorker:
     def _candidate_inputs(ctx: ResolverContext) -> tuple[GroundingCandidateInput, ...]:
         candidates: list[GroundingCandidateInput] = []
         source_binding = ctx.source_identity_binding
+        if (
+            source_binding is not None
+            and normalize_phrase(ctx.phrase)
+            != normalize_phrase(source_binding.source_surface)
+        ):
+            source_binding = None
         source_binding_candidate_id = (
             candidate_id_for_ref(source_binding.canonical_ref)
             if source_binding is not None

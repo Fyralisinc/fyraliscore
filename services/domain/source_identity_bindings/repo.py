@@ -21,6 +21,7 @@ class ResolvedSourceIdentityBinding:
     binding: SourceIdentityBinding
     canonical_ref: dict[str, Any]
     attachment_authority_ref: str
+    source_surface: str
 
 
 class SourceIdentityBindingRepo:
@@ -116,6 +117,7 @@ class SourceIdentityBindingRepo:
         *,
         tenant_id: UUID,
         observation_id: UUID,
+        phrase: str,
         valid_at: datetime,
         known_at: datetime | None = None,
         conn: asyncpg.Connection | None = None,
@@ -128,13 +130,17 @@ class SourceIdentityBindingRepo:
         """
 
         known_at = known_at or datetime.now(timezone.utc)
+        normalized_phrase = _normalize_surface(phrase)
+        if not normalized_phrase:
+            return None
 
         async def read(
             target: asyncpg.Connection,
         ) -> ResolvedSourceIdentityBinding | None:
             rows = await target.fetch(
                 """
-                SELECT binding.*, attachment.attachment_authority_ref
+                SELECT binding.*, attachment.attachment_authority_ref,
+                       attachment.source_surface
                 FROM source_identity_bindings binding
                 JOIN observation_source_identity_bindings attachment
                   ON attachment.tenant_id=binding.tenant_id
@@ -147,19 +153,20 @@ class SourceIdentityBindingRepo:
                    attachment.observation_occurred_at
                 WHERE binding.tenant_id=$1
                   AND attachment.observation_id=$2
+                  AND attachment.normalized_source_surface=$3
                   AND split_part(
                     observation.source_channel, ':', 1
                   )=binding.source_system
-                  AND binding.valid_from <= $3
+                  AND binding.valid_from <= $4
                   AND (
-                    binding.valid_to IS NULL OR $3 < binding.valid_to
+                    binding.valid_to IS NULL OR $4 < binding.valid_to
                   )
-                  AND binding.transaction_from <= $4
+                  AND binding.transaction_from <= $5
                   AND (
                     binding.transaction_to IS NULL
-                    OR $4 < binding.transaction_to
+                    OR $5 < binding.transaction_to
                   )
-                  AND attachment.attached_at <= $4
+                  AND attachment.attached_at <= $5
                   AND CASE
                     WHEN binding.canonical_referent ->> 'type' = 'actor'
                     THEN EXISTS (
@@ -190,6 +197,7 @@ class SourceIdentityBindingRepo:
                 """,
                 tenant_id,
                 observation_id,
+                normalized_phrase,
                 valid_at,
                 known_at,
             )
@@ -202,6 +210,7 @@ class SourceIdentityBindingRepo:
                 attachment_authority_ref=row[
                     "attachment_authority_ref"
                 ],
+                source_surface=row["source_surface"],
             )
 
         if conn is not None:
@@ -217,6 +226,7 @@ class SourceIdentityBindingRepo:
         tenant_id: UUID,
         observation_id: UUID,
         binding: SourceIdentityBinding,
+        source_surface: str,
         attachment_authority_ref: str,
         conn: asyncpg.Connection | None = None,
     ) -> None:
@@ -224,6 +234,9 @@ class SourceIdentityBindingRepo:
 
         if binding.tenant_id != tenant_id:
             raise ValueError("source binding tenant does not match observation tenant")
+        normalized_surface = _normalize_surface(source_surface)
+        if not normalized_surface:
+            raise ValueError("source identity attachment surface is empty")
 
         async def write(target: asyncpg.Connection) -> None:
             observation = await target.fetchrow(
@@ -246,8 +259,9 @@ class SourceIdentityBindingRepo:
                 """
                 INSERT INTO observation_source_identity_bindings (
                     tenant_id, observation_id, observation_occurred_at,
-                    binding_id, binding_version, attachment_authority_ref
-                ) VALUES ($1, $2, $3, $4, $5, $6)
+                    binding_id, binding_version, source_surface,
+                    normalized_source_surface, attachment_authority_ref
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 ON CONFLICT DO NOTHING
                 """,
                 tenant_id,
@@ -255,6 +269,8 @@ class SourceIdentityBindingRepo:
                 observation["occurred_at"],
                 UUID(binding.binding_id),
                 binding.binding_version,
+                source_surface,
+                normalized_surface,
                 attachment_authority_ref,
             )
 
@@ -274,6 +290,12 @@ def _canonical_ref(value: dict[str, Any]) -> dict[str, Any]:
     if not entity_type or not entity_id or version < 1:
         raise ValueError("canonical_ref requires type, id and positive version")
     return {"type": entity_type, "id": entity_id, "version": version}
+
+
+def _normalize_surface(value: str) -> str:
+    """Match entity-grounding exact-surface casefold/whitespace semantics."""
+
+    return " ".join(value.casefold().split())
 
 
 def _binding_from_row(row: asyncpg.Record) -> SourceIdentityBinding:

@@ -8,6 +8,8 @@ import pytest
 
 from lib.shared.ids import uuid7
 from services.domain.source_identity_bindings import SourceIdentityBindingRepo
+from services.workers.entity_resolver.context import build_context
+from services.workers.entity_resolver.worker import EntityResolverWorker
 
 
 pytestmark = pytest.mark.integration
@@ -92,11 +94,14 @@ async def test_binding_requires_explicit_observation_attachment(
     assert await repo.resolve_observation_source(
         tenant_id=tenant_id,
         observation_id=observation_id,
+        phrase="Mercury",
         valid_at=now,
     ) is None
+
     assert await repo.resolve_observation_source(
         tenant_id=tenant_id,
         observation_id=observation_id,
+        phrase="Mercury",
         valid_at=now - timedelta(days=2),
     ) is None
 
@@ -117,6 +122,7 @@ async def test_binding_requires_explicit_observation_attachment(
             tenant_id=tenant_id,
             observation_id=observation_id,
             binding=wrong_system_binding,
+            source_surface="Mercury",
             attachment_authority_ref="jira-ingestion-envelope-v1",
         )
 
@@ -124,11 +130,13 @@ async def test_binding_requires_explicit_observation_attachment(
         tenant_id=tenant_id,
         observation_id=observation_id,
         binding=binding,
+        source_surface="Mercury",
         attachment_authority_ref="pagerduty-ingestion-envelope-v1",
     )
     resolved = await repo.resolve_observation_source(
         tenant_id=tenant_id,
         observation_id=observation_id,
+        phrase="  mercury  ",
         valid_at=now,
     )
     assert resolved is not None
@@ -142,9 +150,49 @@ async def test_binding_requires_explicit_observation_attachment(
         "id": str(resource_id),
         "version": 1,
     }
+    assert resolved.source_surface == "Mercury"
+    assert await repo.resolve_observation_source(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Mercury Billing",
+        valid_at=now,
+    ) is None
+
+    matching_context = await build_context(
+        pool=resolver_db,
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Mercury",
+    )
+    nonmatching_context = await build_context(
+        pool=resolver_db,
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="degraded",
+    )
+    assert matching_context.source_identity_binding is not None
+    assert nonmatching_context.source_identity_binding is None
+    source_inputs = EntityResolverWorker._candidate_inputs(
+        matching_context
+    )
+    decisive = tuple(
+        item
+        for item in source_inputs
+        if item.genuine_source_binding is not None
+    )
+    assert len(decisive) == 1
+    assert decisive[0].canonical_ref == resolved.canonical_ref
+    assert decisive[0].exact_mention_match is True
+    matching_context.phrase = "Mercury Billing"
+    assert all(
+        item.genuine_source_binding is None
+        for item in EntityResolverWorker._candidate_inputs(
+            matching_context
+        )
+    )
 
 
-async def test_multiple_attached_bindings_fail_closed(
+async def test_surface_specific_bindings_resolve_independently_and_fail_closed(
     resolver_db: asyncpg.Pool,
 ) -> None:
     now = datetime.now(timezone.utc)
@@ -189,16 +237,49 @@ async def test_multiple_attached_bindings_fail_closed(
         evidence_refs=("jira-team:second",),
         valid_from=now - timedelta(days=1),
     )
-    for binding in (first, second):
-        await repo.attach_to_observation(
-            tenant_id=tenant_id,
-            observation_id=observation_id,
-            binding=binding,
-            attachment_authority_ref="jira-ingestion-envelope-v1",
-        )
+    await repo.attach_to_observation(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        binding=first,
+        source_surface="Orion Reliability",
+        attachment_authority_ref="jira-ingestion-envelope-v1",
+    )
+    await repo.attach_to_observation(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        binding=second,
+        source_surface="Orion Sales",
+        attachment_authority_ref="jira-ingestion-envelope-v1",
+    )
+
+    first_resolved = await repo.resolve_observation_source(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="orion reliability",
+        valid_at=now,
+    )
+    second_resolved = await repo.resolve_observation_source(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="ORION SALES",
+        valid_at=now,
+    )
+    assert first_resolved is not None
+    assert first_resolved.binding == first
+    assert second_resolved is not None
+    assert second_resolved.binding == second
+
+    await repo.attach_to_observation(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        binding=second,
+        source_surface="Orion Reliability",
+        attachment_authority_ref="jira-ingestion-envelope-v1",
+    )
 
     assert await repo.resolve_observation_source(
         tenant_id=tenant_id,
         observation_id=observation_id,
+        phrase="Orion Reliability",
         valid_at=now,
     ) is None

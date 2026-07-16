@@ -222,9 +222,12 @@ class ResolverContext:
                         self.source_identity_binding
                         .attachment_authority_ref
                     ),
+                    "source_surface": (
+                        self.source_identity_binding.source_surface
+                    ),
                     "semantic_limit": (
                         "ingestion-authenticated source-object identity; "
-                        "decisive only for this exact source observation"
+                        "decisive only for this exact source surface"
                     ),
                 }
                 if self.source_identity_binding is not None
@@ -349,6 +352,7 @@ async def build_context(
             await SourceIdentityBindingRepo(None).resolve_observation_source(
                 tenant_id=tenant_id,
                 observation_id=observation_id,
+                phrase=phrase,
                 valid_at=occurred_at,
                 conn=conn,
             )
