@@ -282,7 +282,37 @@ def test_zero_grounding_exposure_is_unknown_not_perfect() -> None:
     assert state.terminal_trace_coverage is None
     assert state.stage_continuity_rate is None
     assert state.candidate_request_fate_coverage is None
+    assert state.answered_entity_clarification_lineage_coverage is None
+    assert state.adjudicated_alias_lineage_coverage is None
     assert "unknown/not exposed" in render_entity_grounding_markdown(state)
+
+
+def test_corrective_memory_lineage_and_reuse_are_reported_continuously() -> None:
+    inputs = _fixture_rows(review=True)
+    inputs.update(
+        {
+            "answered_entity_clarification_count": 2,
+            "answered_entity_clarification_lineage_count": 1,
+            "adjudicated_alias_count": 1,
+            "adjudicated_alias_lineage_count": 1,
+            "corrective_memory_observed_reuse_count": 1,
+        }
+    )
+    state = analyze_entity_grounding_rows(**inputs)
+
+    assert state.answered_entity_clarification_lineage_coverage == 0.5
+    assert state.adjudicated_alias_lineage_coverage == 1.0
+    assert state.corrective_memory_observed_reuse_count == 1
+    assert (
+        state.incident_counts[
+            "answered_clarification_without_grounding_lineage"
+        ]
+        == 1
+    )
+    assert "adjudicated_alias_without_grounding_lineage" not in state.incident_counts
+    rendered = render_entity_grounding_markdown(state)
+    assert "Answered entity-clarification lineage: **1/2 (50.0%)**" in rendered
+    assert "Corrective-memory future reuse observed: **1**" in rendered
 
 
 def test_evaluator_preserves_each_structural_failure_as_an_incident() -> None:

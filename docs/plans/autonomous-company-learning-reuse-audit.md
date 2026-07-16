@@ -208,6 +208,10 @@ decisions will be added after the parallel audit lanes complete.
 - A real-Postgres test proves an initially untrusted alias routes to review,
   adjudication upgrades its basis, and a later occurrence resolves for the
   consumer.
+- The entity-grounding evaluator now reports answered-clarification lineage,
+  adjudicated-alias lineage and observed future corrective-memory reuse. Missing
+  lineage is a localized incident; absence of a later matching signal is not
+  misreported as failed reuse.
 - This is corrective memory, not yet statistical policy learning or repair of
   the original dependent Model.
 

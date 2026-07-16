@@ -25,6 +25,7 @@ from lib.shared.ids import uuid7
 from services.app.gateway.clarifications_router import (
     _apply_entity_resolution_answer,
 )
+from services.domain.clarifications import answer_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.worker import (
     EntityResolverWorker,
@@ -742,6 +743,7 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     resolver_db: asyncpg.Pool,
     tenant_id: UUID,
 ) -> None:
+    scope_start = datetime.now(timezone.utc) - timedelta(seconds=1)
     await _seed_candidate_alias(
         resolver_db,
         tenant_id,
@@ -785,27 +787,25 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     if isinstance(payload, str):
         payload = json.loads(payload)
     candidate = payload["candidates"][0]["canonical_ref"]
+    answer = {
+        "action": "accept_candidate",
+        "canonical_ref": candidate,
+        "confidence": 0.99,
+    }
 
     async with resolver_db.acquire() as conn, conn.transaction():
+        answered = await answer_clarification_request(
+            conn,
+            tenant_id=tenant_id,
+            request_id=clarification["id"],
+            answer=answer,
+            answered_by=None,
+        )
+        assert answered is not None
         await _apply_entity_resolution_answer(
             conn,
-            row=type(
-                "ClarificationRow",
-                (),
-                {
-                    "id": clarification["id"],
-                    "payload": payload,
-                    "source_observation_id": clarification[
-                        "source_observation_id"
-                    ],
-                    "object_id": clarification["object_id"],
-                },
-            )(),
-            answer={
-                "action": "accept_candidate",
-                "canonical_ref": candidate,
-                "confidence": 0.99,
-            },
+            row=answered,
+            answer=answer,
             tenant_id=tenant_id,
             answered_by=None,
         )
@@ -839,6 +839,16 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
             tenant_id,
             second_observation_id,
         )
+        evaluation = await evaluate_entity_grounding_state(
+            conn,
+            scope=GroundingEvaluationScope(
+                tenant_id=tenant_id,
+                observation_start=scope_start,
+                observation_end=datetime.now(timezone.utc) + timedelta(seconds=1),
+                run_id="clarification-corrective-memory",
+            ),
+            artifact_refs=("pytest://clarification-corrective-memory",),
+        )
 
     assert alias is not None
     metadata = alias["entity_metadata"]
@@ -857,6 +867,11 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     if isinstance(selected, str):
         selected = json.loads(selected)
     assert selected["id"] == "customer-nimbus"
+    assert evaluation.answered_entity_clarification_count == 1
+    assert evaluation.answered_entity_clarification_lineage_coverage == 1.0
+    assert evaluation.adjudicated_alias_count == 1
+    assert evaluation.adjudicated_alias_lineage_coverage == 1.0
+    assert evaluation.corrective_memory_observed_reuse_count == 1
 
 
 # =====================================================================

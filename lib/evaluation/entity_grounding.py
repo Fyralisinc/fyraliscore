@@ -142,6 +142,17 @@ class EntityGroundingEvaluationState(_GroundingEvaluationModel):
     review_fate_count: int = Field(ge=0)
     review_obligation_count: int = Field(ge=0)
     review_obligation_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
+    answered_entity_clarification_count: int = Field(ge=0)
+    answered_entity_clarification_lineage_count: int = Field(ge=0)
+    answered_entity_clarification_lineage_coverage: float | None = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    adjudicated_alias_count: int = Field(ge=0)
+    adjudicated_alias_lineage_count: int = Field(ge=0)
+    adjudicated_alias_lineage_coverage: float | None = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    corrective_memory_observed_reuse_count: int = Field(ge=0)
     processing_class_counts: dict[str, int]
     incident_counts: dict[str, int]
     incident_refs: dict[str, tuple[str, ...]] = Field(default_factory=dict)
@@ -377,6 +388,69 @@ async def evaluate_entity_grounding_state(
         scope.observation_start,
         scope.observation_end,
     ) or 0
+    corrective_memory = await conn.fetchrow(
+        """
+        WITH answered AS (
+          SELECT id, tenant_id, source_observation_id, payload, answered_at
+          FROM clarification_requests
+          WHERE tenant_id = $1
+            AND kind = 'entity_resolution'
+            AND status = 'answered'
+            AND answered_at >= $2 AND answered_at < $3
+        ),
+        adjudicated_aliases AS (
+          SELECT a.*, answered.answered_at
+          FROM entity_aliases a
+          JOIN answered
+            ON a.tenant_id = answered.tenant_id
+           AND a.entity_metadata ->> 'clarification_request_id'
+               = answered.id::text
+          WHERE a.entity_metadata ->> 'identity_basis_class'
+                = 'independently_adjudicated'
+        )
+        SELECT
+          (SELECT COUNT(*) FROM answered) AS answered_count,
+          (
+            SELECT COUNT(*) FROM answered
+            WHERE jsonb_typeof(payload -> 'feedback_lineage') = 'object'
+              AND COALESCE(
+                payload -> 'feedback_lineage' ->> 'grounding_trace_id',
+                ''
+              ) <> ''
+          ) AS answered_lineage_count,
+          (SELECT COUNT(*) FROM adjudicated_aliases) AS alias_count,
+          (
+            SELECT COUNT(*) FROM adjudicated_aliases
+            WHERE jsonb_typeof(
+                    entity_metadata -> 'grounding_feedback_lineage'
+                  ) = 'object'
+              AND COALESCE(
+                entity_metadata
+                  -> 'grounding_feedback_lineage'
+                  ->> 'grounding_trace_id',
+                ''
+              ) <> ''
+          ) AS alias_lineage_count,
+          (
+            SELECT COUNT(*) FROM adjudicated_aliases alias
+            WHERE EXISTS (
+              SELECT 1
+              FROM grounding_traces trace
+              WHERE trace.tenant_id = alias.tenant_id
+                AND trace.phrase = alias.alias_text
+                AND trace.created_at > alias.answered_at
+                AND trace.current_fate = 'resolved_for_consumer'
+                AND trace.selected_referent ->> 'type'
+                    = alias.resolved_entity_ref ->> 'type'
+                AND trace.selected_referent ->> 'id'
+                    = alias.resolved_entity_ref ->> 'id'
+            )
+          ) AS observed_reuse_count
+        """,
+        scope.tenant_id,
+        scope.observation_start,
+        scope.observation_end,
+    )
     return analyze_entity_grounding_rows(
         scope=scope,
         observations=observations,
@@ -389,6 +463,21 @@ async def evaluate_entity_grounding_state(
         mention_outboxes=mention_outboxes,
         resolver_created_alias_count=int(resolver_aliases),
         self_authoritative_observation_count=int(self_observations),
+        answered_entity_clarification_count=int(
+            corrective_memory["answered_count"] if corrective_memory else 0
+        ),
+        answered_entity_clarification_lineage_count=int(
+            corrective_memory["answered_lineage_count"] if corrective_memory else 0
+        ),
+        adjudicated_alias_count=int(
+            corrective_memory["alias_count"] if corrective_memory else 0
+        ),
+        adjudicated_alias_lineage_count=int(
+            corrective_memory["alias_lineage_count"] if corrective_memory else 0
+        ),
+        corrective_memory_observed_reuse_count=int(
+            corrective_memory["observed_reuse_count"] if corrective_memory else 0
+        ),
         artifact_refs=artifact_refs,
     )
 
@@ -402,6 +491,11 @@ def analyze_entity_grounding_rows(
     resolver_created_alias_count: int,
     self_authoritative_observation_count: int,
     artifact_refs: tuple[str, ...],
+    answered_entity_clarification_count: int = 0,
+    answered_entity_clarification_lineage_count: int = 0,
+    adjudicated_alias_count: int = 0,
+    adjudicated_alias_lineage_count: int = 0,
+    corrective_memory_observed_reuse_count: int = 0,
     mention_detection_rows: Sequence[Mapping[str, Any]] = (),
     candidate_request_rows: Sequence[Mapping[str, Any]] = (),
     mention_commands: Sequence[Mapping[str, Any]] = (),
@@ -890,6 +984,13 @@ def analyze_entity_grounding_rows(
         "resolver_mutated_source_observation": source_mutations,
         "resolver_created_self_authoritative_observation": self_authoritative_observation_count,
         "review_without_obligation": review_fates - review_obligations,
+        "answered_clarification_without_grounding_lineage": (
+            answered_entity_clarification_count
+            - answered_entity_clarification_lineage_count
+        ),
+        "adjudicated_alias_without_grounding_lineage": (
+            adjudicated_alias_count - adjudicated_alias_lineage_count
+        ),
         "terminal_work_without_trace": len(trace_required_terminal) - traced_terminal,
     }
     for name, count in structural_incidents.items():
@@ -969,6 +1070,23 @@ def analyze_entity_grounding_rows(
         review_fate_count=review_fates,
         review_obligation_count=review_obligations,
         review_obligation_coverage=_ratio(review_obligations, review_fates),
+        answered_entity_clarification_count=answered_entity_clarification_count,
+        answered_entity_clarification_lineage_count=(
+            answered_entity_clarification_lineage_count
+        ),
+        answered_entity_clarification_lineage_coverage=_ratio(
+            answered_entity_clarification_lineage_count,
+            answered_entity_clarification_count,
+        ),
+        adjudicated_alias_count=adjudicated_alias_count,
+        adjudicated_alias_lineage_count=adjudicated_alias_lineage_count,
+        adjudicated_alias_lineage_coverage=_ratio(
+            adjudicated_alias_lineage_count,
+            adjudicated_alias_count,
+        ),
+        corrective_memory_observed_reuse_count=(
+            corrective_memory_observed_reuse_count
+        ),
         processing_class_counts=dict(
             sorted(Counter(str(row["processing_class"]) for row in work_by_key.values()).items())
         ),
@@ -981,6 +1099,7 @@ def analyze_entity_grounding_rows(
             "Implicit, nested, quoted, abbreviated and elided mentions remain outside this deterministic bootstrap extractor.",
             "Legacy entity refs are not yet verified against a versioned CanonicalReferent registry.",
             "Resolution accuracy, calibration, cross-tenant noninterference, correction closure and downstream oracle gap require broader suites.",
+            "Observed corrective-memory reuse is an exposure count; no later matching signal is not treated as failed reuse.",
             "Component integration evidence is below the E4 full-system simulation floor.",
         ),
         artifact_refs=artifact_refs,
@@ -1049,6 +1168,10 @@ def build_entity_grounding_invariant_evidence(
                 + state.identity_registry_mutation_count
                 + state.resolver_created_alias_count
                 + state.single_referent_without_identity_basis_count
+                + state.answered_entity_clarification_count
+                - state.answered_entity_clarification_lineage_count
+                + state.adjudicated_alias_count
+                - state.adjudicated_alias_lineage_count
             ),
             "successes": (
                 state.stage_complete_trace_count
@@ -1062,6 +1185,8 @@ def build_entity_grounding_invariant_evidence(
                 "incomplete_grounding",
                 "resolver_mutated_identity",
                 "single_referent_without_identity_basis",
+                "answered_clarification_without_grounding_lineage",
+                "adjudicated_alias_without_grounding_lineage",
             ),
         },
         "INV-06": {
@@ -1225,6 +1350,9 @@ def render_entity_grounding_markdown(state: EntityGroundingEvaluationState) -> s
         f"- Terminal trace coverage where a trace is required: **{state.traced_terminal_count}/{state.terminal_trace_required_count} ({_format_rate(state.terminal_trace_coverage)})**",
         f"- Stage continuity: **{state.stage_complete_trace_count}/{state.trace_count} ({_format_rate(state.stage_continuity_rate)})**",
         f"- Candidate request fate coverage: **{state.immutable_candidate_set_count}/{state.candidate_request_count} ({_format_rate(state.candidate_request_fate_coverage)})**",
+        f"- Answered entity-clarification lineage: **{state.answered_entity_clarification_lineage_count}/{state.answered_entity_clarification_count} ({_format_rate(state.answered_entity_clarification_lineage_coverage)})**",
+        f"- Adjudicated-alias grounding lineage: **{state.adjudicated_alias_lineage_count}/{state.adjudicated_alias_count} ({_format_rate(state.adjudicated_alias_lineage_coverage)})**",
+        f"- Corrective-memory future reuse observed: **{state.corrective_memory_observed_reuse_count}**",
         "",
         "## Fate distribution",
         "",
