@@ -253,7 +253,8 @@ flowchart LR
 | Held-out recurrence population | The sealed 60-case registry executes exactly once with continuous intervals, all four entity types and no selective reruns | Complete: 60/60 observed |
 | Slack conversational reconstruction | All nine target families are source-native, supported and correct with zero contamination | Complete for sealed gold: 9/9 |
 | Broad correction propagation | Wrong Models, recursive dependents, relations and projections are fenced or rebuilt; queued refresh work is consumed through the existing projector runtime | Complete for the seeded recursive cascade |
-| Cross-source company physics | Equivalent learning behavior across Jira, email, documents and other sources | Partial / unproven |
+| Cross-source company physics | Governed structured identity transport works through Jira and Linear using the shared ingestion/grounding path; equivalent causal learning across email, documents, meetings and remaining sources is unproven | Partial: Jira/Linear identity path proven |
+| SAGE feedback reuse | Grounding and source-semantic terminal outcomes alter future matching-source retrieval salience without truth or authority writes | Complete for first bounded source-salience bridge |
 | Long-duration autonomous learning | Drift, retention, rollback and regression behavior across many learning cycles | Not proven |
 
 ## Important Implementation Checkpoints
@@ -442,9 +443,9 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias Slack clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared |
-| Active autonomous company-learning runtime | 90–92% | Exact replay, unambiguous candidate-memory variants, the full 16-case collision matrix and the 8-case customer lifecycle proof are green; production connector claim transport, broader lifecycle and multi-source breadth remain |
-| Customer-free objective substantiation | 84–87% | The 60-case registry, nine-family Slack gold, negative controls, correction convergence, 24-case positive variants, 16-case collision matrix and 8-case lifecycle proof are green; open-world, retention and provider robustness remain |
-| Broader revised system excluding task autonomy | 76–80% | The core company-memory and autonomous correction loop is strong, but cross-source production semantics, merge/split/resurrection lifecycle, SAGE outcome adaptation and long-duration validation remain incomplete |
+| Active autonomous company-learning runtime | 92–94% | Exact replay, candidate-memory variants, collision safety, customer lifecycle, governed Jira/Linear identity transport and the first SAGE source-feedback bridge are green; broader lifecycle and multi-source causal breadth remain |
+| Customer-free objective substantiation | 85–88% | The complete v5 synthetic assurance population is green and the production-shaped Jira/Linear plus SAGE seams are focused-test proven; open-world, retention and provider robustness remain |
+| Broader revised system excluding task autonomy | 79–82% | The company-memory, correction and bounded policy-learning loop is strong, but email/document/meeting equivalence, merge/split/resurrection lifecycle and long-duration validation remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
@@ -559,6 +560,13 @@ Task autonomy is excluded from all percentages.
    one validation/apply contract.
 2. Extend the same entity-learning loop to Jira, email, documents, meetings and
    other structured sources.
+   - Current result: Jira project identities and Linear project/team identities
+     now use one typed `StructuredSourceIdentityClaim` path through inline and
+     Kafka normalization, observation persistence, governed binding lookup and
+     mention-scoped resolution. The handler cannot create authority, missing
+     bindings are inert, forged text is ignored and cross-source bindings fail
+     closed. Equivalent email, document, meeting and full causal-loop behavior
+     remains.
 3. Extend the customer lifecycle proof to creation/transfer plus merge, split,
    replacement, resurrection and non-customer populations.
 4. Expand actor/customer/project/system same-surface ambiguity beyond the P0
@@ -582,12 +590,13 @@ Task autonomy is excluded from all percentages.
 ## Working Version Runbook
 
 The primary runnable working version now executes the positive adaptive/frozen
-learning loop, real-Postgres negative controls, the sealed 60-case population
-the nine-family Slack reconstruction gold and the seeded recursive correction
-burn through one command. It writes one digest-sealed v2 assurance summary,
-reopens every component, checks the current architecture and implementation-plan
-digests and embeds the validated result into Company Vitals without adding a
-score.
+learning loop, real-Postgres negative controls, the sealed 60-case exact
+population, 24-case variant population, 16-case collision population, 8-case
+customer lifecycle population, nine-family Slack reconstruction gold and the
+seeded recursive correction burn through one command. It writes one
+digest-sealed v5 assurance summary, reopens every component, checks the current
+architecture and implementation-plan digests and embeds the validated result
+into Company Vitals without adding a score.
 
 ### Prerequisite and command
 
@@ -617,6 +626,9 @@ The output directory contains:
 - `positive/vitals/vitals_scorecard.json`;
 - `negative/company_learning_negative_controls_evidence.json`;
 - `population/company_learning_population_evidence.json`;
+- `variant-population/company_learning_variant_population_evidence.json`;
+- `variant-collision/company_learning_variant_collision_evidence.json`;
+- `customer-lifecycle/company_learning_customer_lifecycle_evidence.json`;
 - `slack/slack_reconstruction_observations.jsonl`;
 - `slack/slack_reconstruction_existing_surface_report.json`;
 - `correction/correction_assurance.json`;
@@ -630,7 +642,7 @@ A successful run:
 - prints the summary path, working status, positive adaptive lift, negative
   incident count, held-out coverage, Slack status and correction status;
 - validates and independently recomputes the positive, negative and held-out
-  population results;
+  exact, variant, collision and customer-lifecycle population results;
 - executes and validates recursive correction convergence rather than relying
   on a separately cited test;
 - joins real-database E3 runtime evidence with the paired E4 recurrence evidence
@@ -652,19 +664,23 @@ This working version proves a real-Postgres exact tenant-global learning slice,
 four matched negative controls, all 60 measured recurrence pairs, all nine
 Slack reconstruction families, all 24 positive variant cases, all 16 collision
 cases, all eight customer identity-lifecycle cases and a recursive correction
-cascade across Models, relations and projections. The joined E3/E4 evidence
-remains insufficient for broad invariant closure. It is not open-world or
-customer E5 evidence, does not prove equivalent multi-source production
-learning, and does not include autonomous task execution.
+cascade across Models, relations and projections. Separate production-shaped
+tests prove the same governed structured-identity transport for Jira and Linear.
+The joined E3/E4 evidence remains insufficient for broad invariant closure. It
+is not open-world or customer E5 evidence, does not yet prove equivalent causal
+learning across email/documents/meetings, and does not include autonomous task
+execution.
 
-The implementation assumes reuse of the existing SAGE learner, retrieval
-machinery, Model/event writers, projection runtime, grounding protocols and
-proof framework. This command does not prove generalized SAGE-mediated policy
-adaptation merely because SAGE exists in the repository. Future learning should
-feed outcome and utility evidence into those existing learning surfaces rather
-than create a second learner. SAGE may adapt retrieval and reasoning policy, but
-must not directly write canonical Models, graph truth, relations or source
-evidence.
+The implementation reuses the existing SAGE learner, retrieval machinery,
+Model/event writers, projection runtime, grounding protocols and proof
+framework. The first live bridge now folds tenant-scoped grounding/context/
+source-semantic terminal outcomes into SAGE source-salience priors: repeated
+useful outcomes can raise matching-source retrieval salience, corrected
+predecessors lose credit, safe no-admission remains low/near-neutral, and the
+profile is read-only policy memory with `canonical_write=false`,
+`salience_only=true` and `authority_effect=none`. This does not prove generalized
+route-specific causal optimization, calibrated weights or production-scale
+read performance.
 
 The typed experiment is bound to the report's run and system version and carries
 its own sealed digests. It is not yet cryptographically bound to the exact
@@ -676,7 +692,8 @@ not claimed by this working version.
 - larger open-world homonym/conflict populations;
 - merge/split/replacement/resurrection and non-customer identity lifecycle;
 - `SourceIdentityBinding` rebind/revocation;
-- production connector claim transport beyond the current evaluated surfaces;
+- production connector claim transport beyond the proven Jira/Linear identity
+  surfaces;
 - open-world simulation, real-provider runs and customer E5 validation;
 - very large recursive correction cascades and sustained refresh load;
 - cross-source equivalence;
@@ -688,12 +705,12 @@ not claimed by this working version.
 
 1. Add merge/split/replacement/resurrection cases through the canonical
    identity writer rather than alias mutation.
-2. Complete production connector claim transport, then repeat the causal suite
-   across Jira, email and document sources.
+2. Extend the governed claim transport beyond Jira/Linear and repeat the causal
+   suite across Jira, email and document sources.
 3. Add `SourceIdentityBinding` rebind/revocation lifecycle with stale-binding
    fencing and historical resolution.
-4. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
-   surfaces without giving SAGE canonical write authority.
+4. Calibrate and stratify the existing SAGE source-salience bridge with
+   route-specific attribution, temporal decay and production-scale cost proof.
 5. Add retention, forgetting and old-family regression evaluation.
 6. Run frozen real-provider and long-duration restart/load suites.
 7. Reassess progress from the same combined Company Vitals assurance report.
@@ -932,3 +949,28 @@ not claimed by this working version.
   `40c8c30c8bbc40d08e2160176a156c9d54398a2535d2d38e56af3718aa201214`.
 - Historical diagnostic artifact:
   `/tmp/fyralis-variant-collisions-first-honest`.
+
+### 2026-07-16 — Structured-source transport and SAGE feedback reuse activated
+
+- Added one typed `StructuredSourceIdentityClaim` transport through handler,
+  inline/Kafka normalization, observation persistence, governed binding lookup
+  and exact mention-surface grounding. Handlers can nominate only structured
+  source fields; they cannot create a binding or mutate canonical identity.
+- Jira project ID/key and Linear project/team ID plus name/key surfaces now use
+  this shared path. Real-Postgres controls prove missing bindings and missing
+  fields create no authority, forged title/text cannot impersonate a structured
+  identity, Jira bindings cannot satisfy Linear claims and delayed events use
+  event-time liveness.
+- Extended the existing SAGE company profile rather than adding a second
+  learner. Every completed grounding/source-semantic terminal contributes
+  bounded operational-yield evidence; corrected predecessors are negative,
+  correction successors and safe no-admission are low/near-neutral, and
+  repeated useful source outcomes can raise matching-source retrieval salience.
+- The SAGE bridge is tenant-isolated and read-only with no truth or authority
+  effect. In the focused real-Postgres proof, the corrected source effective
+  score was `-0.1420` with no salience lift, while the repeated useful source
+  scored `0.2911` and raised the relevant salience multiplier to `1.0466`.
+- Exact final committed assurance artifact:
+  `/tmp/fyralis-company-learning-assurance-v5-ac963125` with status `working`,
+  no blocking failures and summary digest
+  `3f67f9b5e5e488dabb9d9c279b5c9330094d62c7a4a6000abc2a2dd684fa6fa1`.

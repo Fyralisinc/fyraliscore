@@ -42,16 +42,15 @@ def _clean_variant_evidence() -> SimpleNamespace:
 
 
 def _clean_collision_evidence() -> SimpleNamespace:
+    source_adaptive = _point(1.0)
+    source_adaptive.sample_size = 2
+    source_frozen = _point(1.0)
+    source_frozen.sample_size = 2
     report = SimpleNamespace(
         pair_count=16,
-        observed_pair_count=14,
-        unsupported_case_count=2,
-        unsupported_reason_counts={
-            (
-                "runtime lacks authenticated SourceIdentityBinding "
-                "evidence"
-            ): 2
-        },
+        observed_pair_count=16,
+        unsupported_case_count=0,
+        unsupported_reason_counts={},
         adaptive_safe_containment_rate=_point(1.0),
         frozen_safe_containment_rate=_point(1.0),
         adaptive_candidate_visibility_rate=_point(1.0),
@@ -74,10 +73,10 @@ def _clean_collision_evidence() -> SimpleNamespace:
         stratum_reports={
             "collision_family": {
                 "conflicting_source_native_identifier": SimpleNamespace(
-                    observed_case_count=0,
-                    unsupported_case_count=2,
-                    adaptive_authoritative_resolution_rate=None,
-                    frozen_authoritative_resolution_rate=None,
+                    observed_case_count=2,
+                    unsupported_case_count=0,
+                    adaptive_authoritative_resolution_rate=source_adaptive,
+                    frozen_authoritative_resolution_rate=source_frozen,
                 )
             }
         },
@@ -95,9 +94,9 @@ def test_safe_supported_collision_scope_has_no_blocking_failures() -> None:
 
 def test_collision_safety_regression_blocks_without_hiding_scope() -> None:
     evidence = _clean_collision_evidence()
-    evidence.report.adaptive_safe_containment_rate = _point(13 / 14)
-    evidence.report.adaptive_unsafe_rate = _point(1 / 14)
-    evidence.report.adaptive_unsafe_resolution_rate = _point(1 / 14)
+    evidence.report.adaptive_safe_containment_rate = _point(15 / 16)
+    evidence.report.adaptive_unsafe_rate = _point(1 / 16)
+    evidence.report.adaptive_unsafe_resolution_rate = _point(1 / 16)
     evidence.report.safety_incident_count = 1
 
     failures = _variant_collision_failures(evidence)
@@ -112,15 +111,10 @@ def test_full_source_native_scope_requires_authoritative_resolution() -> None:
     source_native = evidence.report.stratum_reports["collision_family"][
         "conflicting_source_native_identifier"
     ]
-    source_native.observed_case_count = 2
-    source_native.unsupported_case_count = 0
     source_native.adaptive_authoritative_resolution_rate = _point(0.0)
     source_native.frozen_authoritative_resolution_rate = _point(0.0)
     source_native.adaptive_authoritative_resolution_rate.sample_size = 2
     source_native.frozen_authoritative_resolution_rate.sample_size = 2
-    evidence.report.observed_pair_count = 16
-    evidence.report.unsupported_case_count = 0
-    evidence.report.unsupported_reason_counts = {}
 
     failures = _variant_collision_failures(evidence)
 

@@ -421,8 +421,10 @@ async def run_company_learning_assurance_suite(
                     "revocation lifecycle remains unproven."
                 ),
                 (
-                    "connectors: production connector claim transport remains "
-                    "in progress."
+                    "connectors: governed Jira and Linear project/team identity "
+                    "claims now traverse production ingestion; equivalent "
+                    "email, document, meeting and remaining connector behavior "
+                    "remains unproven."
                 ),
                 *(
                     (

@@ -87,8 +87,10 @@ Everything else receives an explicit safe behavior and return condition here.
   cross-channel recall are `1.0`, selected contamination is `0.0`, and the
   high-similarity case abstains safely.
 - **Remaining boundary:** Open-ended channel discovery, arbitrary recurrence
-  distance, very large histories, cross-workspace Slack, non-Slack source
-  boundaries and source-equivalent email/Jira behavior remain unproven.
+  distance, very large histories, cross-workspace Slack and equivalent
+  conversational reconstruction across Jira, email, documents and meetings
+  remain unproven. Jira and Linear structured identity transport is now proven,
+  but that is narrower than conversational reconstruction.
 - **Return condition:** Reopen during multi-source and production-scale
   recurrence evaluation.
 
@@ -280,6 +282,47 @@ Everything else receives an explicit safe behavior and return condition here.
   split, replacement, resurrection, non-customer identity lifecycle and
   `SourceIdentityBinding` rebind/revocation through canonical lifecycle writers
   with correction closure.
+
+### EDGE-017 — Structured source claims cannot create identity authority
+
+- **Status:** `resolved` for Jira project and Linear project/team identity
+  surfaces; broader connector coverage remains `active`
+- **Trigger:** An authenticated structured source contains a stable object ID
+  and a human-readable key/name that may refer to a canonical company entity.
+- **Risk:** Treating handler JSON or matching text as authority can fabricate
+  identity, leak a binding across sources or apply one observation-level
+  binding to unrelated phrases.
+- **Safe boundary:** A handler may emit only a typed, source-namespaced claim.
+  Ingestion may attach it only to one pre-existing governed binding, one exact
+  normalized source surface and a matching source system. Missing or ambiguous
+  bindings fail closed; free text never creates authority.
+- **Current evidence:** Jira project and Linear project/team claims survive
+  inline and Kafka normalization and attach atomically to the durable
+  Observation. Real-Postgres tests prove exact resolver consumption, event-time
+  liveness, forged-text rejection, missing-binding inertness and cross-source
+  isolation.
+- **Return condition:** Extend the same contract to email, documents, meetings
+  and remaining connectors; add mention-specific multi-object populations and
+  causal learning proofs per source.
+
+### EDGE-018 — Company-learning feedback cannot become self-authorizing truth
+
+- **Status:** `resolved` for the first SAGE matching-source salience bridge;
+  calibration and route-specific attribution remain `active`
+- **Trigger:** Grounding and source-semantic terminal outcomes accumulate and
+  can improve future retrieval policy.
+- **Risk:** Rewarding model confidence or admitted Models as truth would create
+  a self-reinforcing loop that amplifies incorrect identity or company beliefs.
+- **Safe boundary:** Feedback is bounded operational-yield evidence only.
+  Corrected predecessors lose credit; correction successors, review and
+  no-admission remain low/near-neutral. The resulting profile is tenant-scoped,
+  `canonical_write=false`, `salience_only=true` and `authority_effect=none`.
+- **Current evidence:** Repeated useful source outcomes raise matching-source
+  retrieval salience, a corrected source does not, foreign-tenant outcomes are
+  excluded and before/after snapshots show no Model or grounding truth changes.
+- **Return condition:** Add empirical weight calibration, temporal decay,
+  route-specific causal attribution, retention/regression evaluation and
+  production-scale read-cost proof.
 
 ## Entry Template
 
