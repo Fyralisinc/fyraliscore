@@ -816,6 +816,16 @@ class EntityResolverWorker:
                 )
             )
         for item in exact_aliases:
+            # A contextual adjudication closes its original grounding episode;
+            # it is not tenant-wide candidate evidence. Reusing its exact
+            # surface here would let that local match merge with independent
+            # evidence from a different alias of the same referent, laundering
+            # two individually insufficient candidates into a resolution.
+            if (
+                item.identity_basis_class == "independently_adjudicated"
+                and item.resolution_scope == "source_context_only"
+            ):
+                continue
             alias_ref = f"entity-alias:{item.alias_id}"
             candidates.append(
                 GroundingCandidateInput(
@@ -859,6 +869,11 @@ class EntityResolverWorker:
             )
         for item in ctx.known_entity_candidates:
             if not _canonical_target_is_authorized(item):
+                continue
+            if (
+                item.identity_basis_class == "independently_adjudicated"
+                and item.resolution_scope == "source_context_only"
+            ):
                 continue
             alias_ref = f"entity-alias:{item.alias_id}"
             candidates.append(

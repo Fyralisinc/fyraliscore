@@ -287,6 +287,7 @@ def build_grounding_episode(
                 candidate_inputs=candidates,
             )
         ),
+        context_dependent_phrase=phrase_requires_context(phrase),
         conflict_requires_discriminator=conflict_requires_discriminator,
         genuine_source_binding=_source_binding_for_candidate(
             selected_candidate=selected_candidate,
@@ -424,6 +425,7 @@ def build_adjudicated_grounding_decision(
         context_disposition=snapshot.sufficiency_verdict.disposition,
         selected_candidate=selected_candidate,
         has_independent_identity_evidence=True,
+        context_dependent_phrase=False,
         conflict_requires_discriminator=False,
         genuine_source_binding=None,
         model_canonical_ref=canonical_ref,
@@ -1343,6 +1345,7 @@ def _build_admission(
     context_disposition: SufficiencyDisposition,
     selected_candidate: EntityCandidate | None,
     has_independent_identity_evidence: bool,
+    context_dependent_phrase: bool,
     conflict_requires_discriminator: bool,
     genuine_source_binding: SourceIdentityBinding | None,
     model_canonical_ref: dict[str, Any] | None,
@@ -1376,6 +1379,7 @@ def _build_admission(
         selected_candidate is not None
         and confidence > high_confidence
         and has_independent_identity_evidence
+        and not context_dependent_phrase
         and context_disposition is SufficiencyDisposition.OPERATIONALLY_SUFFICIENT
     ):
         disposition = GroundingAdmissionDisposition.SINGLE_REFERENT
@@ -1393,7 +1397,9 @@ def _build_admission(
                 if context_disposition
                 is not SufficiencyDisposition.OPERATIONALLY_SUFFICIENT
                 else (
-                    "material_candidate_requires_human_discriminator"
+                    "context_dependent_phrase_requires_human_discriminator"
+                    if context_dependent_phrase
+                    else "material_candidate_requires_human_discriminator"
                     if has_independent_identity_evidence
                     else "independent_identity_evidence_required"
                 )

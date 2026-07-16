@@ -6,7 +6,11 @@ from uuid import uuid4
 from lib.contracts.kernel import BitemporalInterval
 from lib.contracts.perception import SourceIdentityBinding
 from services.domain.source_identity_bindings import ResolvedSourceIdentityBinding
-from services.workers.entity_resolver.context import ResolverContext
+from services.workers.entity_resolver.context import (
+    KnownEntityCandidate,
+    RecentAlias,
+    ResolverContext,
+)
 from services.workers.entity_resolver.worker import EntityResolverWorker
 
 
@@ -84,3 +88,37 @@ def test_authenticated_source_binding_fails_closed_off_attached_surface() -> Non
         EntityResolverWorker._authenticated_source_identity_resolution(ctx)
         is None
     )
+
+
+def test_context_only_adjudication_is_not_reused_as_global_candidate() -> None:
+    ctx = ResolverContext(
+        observation_id=uuid4(),
+        phrase="the project",
+        tenant_id=uuid4(),
+        recent_aliases=[RecentAlias(
+            alias_id=uuid4(),
+            alias_text="the project",
+            resolved_entity_ref={"type": "goal", "id": "project-northstar"},
+            confidence=0.99,
+            source="manual",
+            identity_basis_class="independently_adjudicated",
+            identity_basis_ref="clarification-request:local-only",
+            adjudication_state="active",
+            resolution_scope="source_context_only",
+            canonical_target_valid=True,
+        )],
+        known_entity_candidates=[KnownEntityCandidate(
+            alias_id=uuid4(),
+            alias_text="the project",
+            resolved_entity_ref={"type": "goal", "id": "project-northstar"},
+            confidence=0.99,
+            source="manual",
+            identity_basis_class="independently_adjudicated",
+            identity_basis_ref="clarification-request:local-only",
+            adjudication_state="active",
+            resolution_scope="source_context_only",
+            canonical_target_valid=True,
+        )],
+    )
+
+    assert EntityResolverWorker._candidate_inputs(ctx) == ()
