@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `9d9db9e5`
+**Current checkpoint:** `04b0f0bd`
 
 **Last updated:** 2026-07-17
 
@@ -278,17 +278,18 @@ flowchart LR
 | Company-learning evaluator | Context, grounding and source-semantic state compile into one active-slice evaluation | Complete for measured slice |
 | Paired causal evaluator | Correctness is derived from sealed arm-specific gold and terminal consumer fate; incidents are noncompensatory | Complete for current case family |
 | Canonical proof integration | Experiment scenario and lift metric are registered under INV-05 and aggregated through canonical proof models | Complete |
-| Company Vitals | Reopens and validates positive, negative, population, Slack and correction artifacts; verifies architecture and implementation-plan identity; enforces noncompensatory safety; displays the combined assurance without score inflation | Complete for current assurance surfaces |
-| Evaluator synchronization | V2 assurance binds architecture/plan identity, explicit Slack proof scope, active company-learning scope and first-class correction convergence | Complete |
+| Company Vitals | Reopens and validates positive, negative, population, Slack, correction, active-surface and retention artifacts; verifies architecture and implementation-plan identity; enforces noncompensatory safety; displays the combined assurance without score inflation | Complete for assurance v6 |
+| Evaluator synchronization | V6 assurance binds architecture/plan identity, explicit Slack proof scope, active company-learning scope, correction convergence, structured-source/salience evidence and bounded retention | Complete |
 | Negative/adversarial recurrence families | Contextual phrase, source conflict, homonym and unrelated controls run on real Postgres with zero incidents | Complete for four sealed controls |
 | Held-out recurrence population | The sealed 60-case registry executes exactly once with continuous intervals, all four entity types and no selective reruns | Complete: 60/60 observed |
 | Slack conversational reconstruction | All nine target families are source-native, supported and correct with zero contamination | Complete for sealed gold: 9/9 |
 | Broad correction propagation | Wrong Models, recursive dependents, relations and projections are fenced or rebuilt; queued refresh work is consumed through the existing projector runtime | Complete for the seeded recursive cascade |
 | Cross-source company physics | Governed structured identity transport works through Jira, Linear, Google Drive and Gmail using the shared ingestion/grounding path; equivalent causal learning across these sources and meeting systems is unproven | Partial: Jira/Linear/Drive/Gmail identity path proven |
 | SAGE feedback reuse | Grounding and source-semantic terminal outcomes alter future matching-source retrieval salience without truth or authority writes | Complete for first bounded source-salience bridge |
-| Active-surface evaluator | A standalone real-Postgres artifact measures Jira/Linear structured identity and five source-salience cases with noncompensatory status | Complete standalone; pending assurance v6 join |
+| Active-surface evaluator | Six sealed identity surfaces across Jira, Linear, Google Drive and Gmail plus five source-salience cases are recomputed, reopened and gated noncompensatorily | Complete in assurance v6: identity 6/6, salience 5/5 |
 | Source-identity lifecycle | Bindings support idempotent close, revoke and supersede with valid-time history, immutable attachment versions and an overlap guard | Complete for repository path; historical attachment reconstruction and DB-level exclusion remain bounded |
-| Retention and forgetting evaluator | Exact and governed-variant behavior is measured at 0/4/16 alias-interference cycles and 0/1/2 worker-object restarts; correction, four negative controls and three collision families are checked noncompensatorily | Complete for bounded standalone proof; not process-restart or long-duration proof |
+| Retention and forgetting evaluator | Exact and governed-variant behavior is measured at 0/4/16 alias-interference cycles and 0/1/2 worker-object restarts; correction, four negative controls and three collision families are checked noncompensatorily | Complete in assurance v6: 14/14, forgetting 0.0; not process-restart or long-duration proof |
+| Canonical referent replacement | Typed transition schema, lifecycle invariants, idempotent operation registry and domain service establish a governed replacement foundation | Partial: foundation/registry complete; resource, alias, binding, projection and retrieval repair remain |
 | Long-duration autonomous learning | True process/deployment restart, unrelated end-to-end learning, drift, rollback and regression behavior across long runs | Not proven |
 
 ## Important Implementation Checkpoints
@@ -329,6 +330,12 @@ flowchart LR
 | `c64585fb` | Rejected overlapping source bindings after scheduled terminal transitions |
 | `33a50ac2` / `e9ca7057` | Defined and ran the bounded retention/forgetting regression proof |
 | `9d9db9e5` | Made correction-authority and negative/collision retention regressions noncompensatory |
+| `4d2023ac` | Added active-surface and retention components to assurance v6 and Company Vitals |
+| `00bf559f` | Sealed exact source-claim, cross-tenant and 14-observation retention scope |
+| `3a21f6b1` | Made Unicode corrective-memory verification use production Python normalization and retained exact authority checks |
+| `04b0f0bd` | Aligned the full CLI integration with the sealed six-surface identity scope |
+| `5149df1b` | Added canonical referent-transition schema and typed replacement invariants |
+| `43d86dd5` | Added the idempotent replacement transition registry and domain service |
 
 ## Current Validation Evidence
 
@@ -358,7 +365,7 @@ forcing every resolved signal to become a belief.
 
 ### Focused validation
 
-- trusted combined assurance CLI integration: `1 passed in 58.28s`;
+- trusted assurance v6 CLI integration: `1 passed in 31.43s`;
 - final combined assurance command: exit `0`, status `working`, no blocking
   failures;
 - focused evaluator, Vitals, Slack, grounding and correction unit suite:
@@ -372,6 +379,33 @@ forcing every resolved signal to become a belief.
 - changed-file Ruff and Python compilation: passed;
 - every combined-assurance component is reopened, identity-checked,
   digest-recomputed and cross-bound before Company Vitals accepts it.
+
+Exact assurance v6 artifact:
+
+`/tmp/fyralis-company-learning-assurance-v6-04b0f0bd-final/company_learning_assurance_summary.json`
+
+- schema: `company-learning-assurance-summary-v6`;
+- run identity: `final-04b0f0bd`;
+- system version: `04b0f0bd`;
+- file SHA-256:
+  `6c82f10ec8c8a1b79c069bc14a195415f9d625697b346a6e72e4bac25f55931f`;
+- summary digest:
+  `b4b039648f82b2156236853e36b3eb24a2ae118f932094beb2e9daabb424fbe3`;
+- status: `working`;
+- blocking failures: `0`;
+- structured identity: `6/6`;
+- source salience: `5/5`;
+- retention: `14/14`;
+- overall forgetting rate: `0.0`.
+
+The first disposable-Postgres attempt used `SQL_ASCII` and stopped on the
+sealed Unicode collision before summary creation. That was an environment
+bootstrap failure, not a system assertion failure. A subsequent UTF8 run
+exposed a separate harness-only verification mismatch: SQL `lower()` did not
+share Python `casefold()` behavior for fullwidth `Ａ`. Commit `3a21f6b1`
+changed the verifier to use the production Python normalization and retained
+exact target, scope and adjudication-authority checks. Dedicated active-surface
+database tests were already green; the fresh UTF8 full CLI then passed.
 
 ### Held-out population
 
@@ -439,20 +473,23 @@ source system and exact normalized surface. Missing IDs, names, subjects or
 bindings remain inert. Free text, a foreign source and a foreign tenant cannot
 create or consume authority.
 
-The standalone active-surface artifact currently runs two structured-identity
-cases, Jira and Linear, plus five source-salience cases. It reports:
+Assurance v6 now runs six sealed structured-identity surfaces:
 
 - overall status: `observed`;
-- structured identity: `2/2` observed, `0` violations;
+- Jira project;
+- one Linear issue bundle covering project name, team key and team name;
+- Google Drive file, comment and revision;
+- Gmail thread;
+- structured identity: `6/6` observed, `0` violations;
 - source salience: `5/5` observed, `0` violations;
 - salience direction rate: `1.0`;
 - noncompensatory structured-identity and source-salience status.
 
-Drive and Gmail are proven by their focused handler, normalization, ingestion
-and real-Postgres workspace-transport tests. They are not yet represented in
-the standalone active-surface artifact. That artifact itself has not yet been
-joined into the combined assurance contract; assurance v6 integration remains
-pending.
+The artifact records and checks exact expected versus observed source system,
+native identifier, source surface and authority reference. It also performs a
+real foreign-tenant consumer probe instead of inferring isolation from an empty
+attachment query. Assurance v6 reopens the raw observations, validates the
+sealed claim contracts and gates every metric at `1.0`.
 
 ### Source-identity lifecycle
 
@@ -505,6 +542,26 @@ negative-control and collision failures are noncompensatory after `9d9db9e5`;
 ordinary exact/variant forgetting remains continuously measurable rather than
 being collapsed into pass/fail.
 
+Assurance v6 now binds this exact 14-observation registry, including the named
+four negative controls, three representative collision families and exact
+horizon distribution. A smaller or substituted population cannot satisfy the
+combined `working` contract.
+
+### Canonical referent replacement foundation
+
+Commits `5149df1b` and `43d86dd5` add:
+
+- typed replacement transition kinds and lifecycle states;
+- a migration-backed transition and operation registry;
+- tenant isolation, idempotent operation references and request fingerprints;
+- stale expected-version rejection;
+- valid-time and transaction-time transition history;
+- a domain service that creates governed replacement transitions.
+
+This is a control-plane and lineage foundation, not completed replacement
+behavior. It does not yet repair or redirect canonical resources, aliases,
+source-identity bindings, Models/projections or retrieval results.
+
 ### Known validation caveat
 
 The repository-wide technical-debt budget currently fails on pre-existing
@@ -546,7 +603,8 @@ It also proves:
 It does not yet prove:
 
 - canonical merge, split, replacement or resurrection behavior beyond the
-  customer rename/archive/name-reuse proof;
+  customer rename/archive/name-reuse proof; the replacement transition
+  registry exists, but materialization and dependent repair remain;
 - open-world Slack reconstruction across long time spans and channels;
 - real-provider/model robustness;
 - equivalent causal learning across Jira, Linear, Drive, Gmail and meetings;
@@ -574,9 +632,9 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias Slack clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared |
-| Active autonomous company-learning runtime | 94–96% | Exact/variant reuse, collision safety, customer and source-binding lifecycle, Jira/Linear/Drive/Gmail identity transport, bounded retention and the first SAGE feedback bridge are green; broader causal source equivalence and process durability remain |
-| Customer-free objective substantiation | 88–91% | The complete v5 assurance is green and standalone active-surface plus retention artifacts add focused production-path evidence; v6 joining, open-world robustness and true restart proof remain |
-| Broader revised system excluding task autonomy | 82–85% | The company-memory, correction, structured-source and bounded policy-learning loop is strong, but meeting equivalence, merge/split/resurrection, second-correction and long-duration validation remain incomplete |
+| Active autonomous company-learning runtime | 95–97% | Exact/variant reuse, collision safety, customer/source-binding lifecycle, four-source identity transport, bounded retention and the first SAGE feedback bridge are green and joined in v6; broader causal source equivalence and process durability remain |
+| Customer-free objective substantiation | 91–94% | Assurance v6 is working with zero blockers and digest-bound active-surface plus retention evidence; open-world robustness, complete replacement repair and true restart proof remain |
+| Broader revised system excluding task autonomy | 84–87% | The company-memory, correction, structured-source and bounded policy-learning loop is strong, and replacement now has a governed registry foundation; meeting equivalence, merge/split/resurrection, replacement propagation, second-correction and long-duration validation remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
@@ -603,11 +661,12 @@ Task autonomy is excluded from all percentages.
      company modeling with autonomous task planning and execution excluded.
    - Keep Company Vitals and the existing invariant-proof spine as the sole
      system evaluator; do not create a parallel health or assurance framework.
-   - Current result: complete for the active profile. Assurance v5 runs and
+   - Current result: complete for the active profile. Assurance v6 runs and
      cross-validates positive, negative, exact population, variant population,
      collision, customer lifecycle, Slack reconstruction and correction
-     evidence; validates architecture and plan digests; excludes task autonomy;
-     and passes the real-Postgres CLI integration.
+     evidence plus active identity/salience and bounded retention; validates
+     architecture and plan digests; excludes task autonomy; and passes the
+     real-Postgres CLI integration.
 
 2. **Add non-resolution and ambiguity controls**
    - Contextual phrase negative.
@@ -683,20 +742,24 @@ Task autonomy is excluded from all percentages.
      resolution, stale/current alias safety, historical name reuse, old
      Observation/Model immutability, archive rejection, interval non-overlap,
      tenant isolation and replay idempotency are all `1.0`. Merge, split,
-     replacement, resurrection and non-customer identity lifecycle remain.
+     resurrection and non-customer identity lifecycle remain. Replacement has
+     a governed transition foundation, but materialization and dependent repair
+     remain.
 
-8. **Join newly active standalone evidence without weakening its boundaries**
-   - Reopen and digest-check the standalone active structured-identity/
-     source-salience artifact.
-   - Reopen and digest-check the standalone retention artifact.
-   - Convert the currently test-backed source-binding lifecycle evidence into
-     a typed artifact/component before joining it.
+8. **Keep active-surface and retention evidence joined without weakening its
+   boundaries**
+   - Emit, reopen and digest-check the active structured-identity/
+     source-salience component.
+   - Emit, reopen and digest-check the retention component.
+   - Keep the currently test-backed source-binding lifecycle evidence outside
+     combined assurance until it has a typed artifact/component.
    - Preserve their noncompensatory gates and explicit proof limitations.
-   - Current result: the active-surface and retention artifacts run
-     independently and pass their focused real-Postgres tests. Source-binding
-     lifecycle is focused-test proven but has no standalone typed artifact.
-     None are yet part of the combined assurance contract. Assurance v6
-     integration is pending and must not be inferred from these results.
+   - Current result: complete for active surfaces and retention in assurance
+     v6. Their raw evidence, exact registries, component digests, run/system
+     identity and noncompensatory status are reopened and recomputed by the
+     combined command. Source-binding lifecycle remains focused-test proven
+     without a standalone typed artifact and is explicitly outside v6's
+     digest-bound component set.
 
 ### P1 — Required for a strong multi-source product
 
@@ -713,6 +776,9 @@ Task autonomy is excluded from all percentages.
      and meeting-source support remain.
 3. Extend the customer lifecycle proof to creation/transfer plus merge, split,
    replacement, resurrection and non-customer populations.
+   - Current result: replacement now has typed transitions, a migration-backed
+     registry and a domain service. Resource/alias/binding mutation, projection
+     repair, retrieval redirection and end-to-end evaluation remain.
 4. Expand actor/customer/project/system same-surface ambiguity beyond the P0
    variant-collision matrix.
 5. Expand correction retention, forgetting and old-family regression.
@@ -742,12 +808,12 @@ The primary runnable working version now executes the positive adaptive/frozen
 learning loop, real-Postgres negative controls, the sealed 60-case exact
 population, 24-case variant population, 16-case collision population, 8-case
 customer lifecycle population, nine-family Slack reconstruction gold and the
-seeded recursive correction burn through one command. It writes one
-digest-sealed v5 assurance summary, reopens every component, checks the current
-architecture and implementation-plan digests and embeds the validated result
-into Company Vitals without adding a score. The newer active-surface and
-retention artifacts remain standalone and are not yet emitted or validated by
-this v5 command.
+seeded recursive correction burn through one command. Assurance v6 also runs
+the six-case structured-identity surface, five-case source-salience surface and
+14-observation retention registry. It writes one digest-sealed v6 assurance
+summary, reopens every component, checks the current architecture and
+implementation-plan digests and embeds the validated result into Company
+Vitals without adding a score.
 
 ### Prerequisite and command
 
@@ -780,15 +846,12 @@ The output directory contains:
 - `variant-population/company_learning_variant_population_evidence.json`;
 - `variant-collision/company_learning_variant_collision_evidence.json`;
 - `customer-lifecycle/company_learning_customer_lifecycle_evidence.json`;
+- `active-surfaces/company_learning_active_surfaces_evidence.json`;
+- `retention/company_learning_retention_evidence.json`;
 - `slack/slack_reconstruction_observations.jsonl`;
 - `slack/slack_reconstruction_existing_surface_report.json`;
 - `correction/correction_assurance.json`;
 - `correction/correction_assurance.md`.
-
-Additional standalone artifacts, pending assurance v6 integration, are:
-
-- `company_learning_active_surfaces_evidence.json`;
-- `company_learning_retention_evidence.json`.
 
 ### Successful-run behavior
 
@@ -798,7 +861,8 @@ A successful run:
 - prints the summary path, working status, positive adaptive lift, negative
   incident count, held-out coverage, Slack status and correction status;
 - validates and independently recomputes the positive, negative and held-out
-  exact, variant, collision and customer-lifecycle population results;
+  exact, variant, collision and customer-lifecycle population results plus the
+  active-surface and retention registries;
 - executes and validates recursive correction convergence rather than relying
   on a separately cited test;
 - joins real-database E3 runtime evidence with the paired E4 recurrence evidence
@@ -820,12 +884,13 @@ This working version proves a real-Postgres exact tenant-global learning slice,
 four matched negative controls, all 60 measured recurrence pairs, all nine
 Slack reconstruction families, all 24 positive variant cases, all 16 collision
 cases, all eight customer identity-lifecycle cases and a recursive correction
-cascade across Models, relations and projections. Separate production-shaped
-tests prove the same governed structured-identity transport for Jira, Linear,
-Google Drive and Gmail. The joined E3/E4 evidence remains insufficient for
-broad invariant closure. It is not open-world or customer E5 evidence, does not
-yet prove equivalent causal learning across those sources or meetings, and
-does not include autonomous task execution.
+cascade across Models, relations and projections. It also proves six sealed
+identity surfaces across Jira, Linear, Google Drive and Gmail, five bounded
+source-salience cases and the exact 14-observation retention registry. The
+joined E3/E4 evidence remains insufficient for broad invariant closure. It is
+not open-world or customer E5 evidence, does not yet prove equivalent causal
+learning across those sources or meetings, and does not include autonomous
+task execution.
 
 The implementation reuses the existing SAGE learner, retrieval machinery,
 Model/event writers, projection runtime, grounding protocols and proof
@@ -843,7 +908,7 @@ its own sealed digests. It is not yet cryptographically bound to the exact
 database tenant and observation manifest, so copied-artifact swap resistance is
 not claimed by this working version.
 
-The standalone retention artifact has a narrower boundary than its metric
+The v6 retention component has a narrower boundary than its metric
 names may suggest:
 
 - `restart_survival_rate` proves fresh `EntityResolverWorker` and
@@ -883,7 +948,9 @@ connection depend on the caller supplying the surrounding transaction.
 ### Explicitly deferred production hardening
 
 - larger open-world homonym/conflict populations;
-- merge/split/replacement/resurrection and non-customer identity lifecycle;
+- merge/split/resurrection and non-customer identity lifecycle, plus
+  replacement materialization and dependent repair from the completed
+  transition registry foundation;
 - source-binding historical attachment reconstruction, DB-level interval
   exclusion and caller-transaction enforcement;
 - production connector claim transport beyond the proven
@@ -897,16 +964,16 @@ connection depend on the caller supplying the surrounding transaction.
 
 ## Next Execution Sequence
 
-1. Join the standalone active-surface and retention evidence into assurance v6
-   without broadening their claims; first give the test-backed source-lifecycle
-   evidence a typed artifact/component.
+1. Complete canonical replacement propagation from the new transition registry
+   through resources, aliases, source bindings, Models/projections and
+   retrieval, then add an end-to-end repair evaluator.
 2. Add a true second-correction replacement case and independent Model/
    evidence-lineage validation.
 3. Replace object-only restart and direct alias interference with process
    restart plus unrelated end-to-end learning cycles; execute the remaining
    five collision families.
-4. Add merge/split/replacement/resurrection cases through the canonical
-   identity writer rather than alias mutation.
+4. Add merge/split/resurrection cases through the canonical identity writer
+   rather than alias mutation.
 5. Repeat the causal suite across Jira, Linear, Drive and Gmail, then add
    meeting sources.
 6. Complete source-binding historical reconstruction and move interval overlap
@@ -1187,8 +1254,9 @@ connection depend on the caller supplying the surrounding transaction.
   `2/2` Jira/Linear structured-identity result plus `5/5` source-salience cases
   with zero violations and salience direction `1.0`.
 - Drive/Gmail are focused-path proven but are not part of that checkpoint's
-  artifact. Assurance v6 integration remains in progress and is not claimed by
-  this record.
+  artifact. At that checkpoint assurance v6 integration was still in progress;
+  the later commit-labelled v6 result below supersedes that integration state
+  without changing what the historical artifact itself proved.
 
 ### 2026-07-17 — Versioned source-binding lifecycle
 
@@ -1220,3 +1288,37 @@ connection depend on the caller supplying the surrounding transaction.
   end-to-end learning cycles, a second correction, the remaining five collision
   families or independent semantic validation of Models and complete evidence
   lineage.
+
+### 2026-07-17 — Assurance v6 joined and trusted
+
+- Added active-surface and retention as first-class, noncompensatory combined
+  assurance components in `4d2023ac`.
+- Adversarial review in `00bf559f` sealed exact source claims, a direct
+  foreign-tenant probe, six identity surfaces and the exact named 14-observation
+  retention population rather than accepting reduced self-consistent evidence.
+- Kept source-binding lifecycle outside the digest-bound component set because
+  it remains focused-test-backed without a typed artifact.
+- The first disposable cluster was `SQL_ASCII` and failed before summary
+  creation on Unicode input; this was environment bootstrap, not system
+  behavior. On UTF8, a harness-only SQL/Python normalization mismatch was fixed
+  in `3a21f6b1`, and `04b0f0bd` aligned the CLI expectation with the sealed
+  six-surface scope.
+- Final real-Postgres CLI: `1 passed in 31.43s`, status `working`, zero blockers,
+  identity `6/6`, salience `5/5`, retention `14/14`, forgetting `0.0`.
+- Exact commit-labelled artifact:
+  `/tmp/fyralis-company-learning-assurance-v6-04b0f0bd-final/company_learning_assurance_summary.json`;
+  schema `company-learning-assurance-summary-v6`, run `final-04b0f0bd`, system
+  version `04b0f0bd`, file SHA-256
+  `6c82f10ec8c8a1b79c069bc14a195415f9d625697b346a6e72e4bac25f55931f`.
+- Trusted summary digest:
+  `b4b039648f82b2156236853e36b3eb24a2ae118f932094beb2e9daabb424fbe3`.
+
+### 2026-07-17 — Canonical replacement transition foundation
+
+- Added typed transition invariants and migration-backed canonical referent
+  transition/operation tables in `5149df1b`.
+- Added a tenant-isolated, idempotent transition registry and domain service in
+  `43d86dd5`, including stale-version and request-fingerprint protection.
+- This checkpoint records replacement intent and lifecycle history only.
+  Resource state, aliases, source bindings, projections, retrieval redirection
+  and end-to-end replacement repair remain to be implemented and evaluated.

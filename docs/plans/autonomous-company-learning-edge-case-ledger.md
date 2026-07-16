@@ -275,14 +275,20 @@ Everything else receives an explicit safe behavior and return condition here.
   overlap, isolates tenants and makes rename/archive replay idempotent. All
   continuous metrics are `1.0`, all `8/8` cases execute and no violations are
   recorded.
-- **Assurance boundary:** Assurance v5 reopens and recomputes the lifecycle
-  artifact and blocks `working` on any unsupported case, metric below `1.0`,
-  overlap, mutation, tenant leak or replay divergence.
+- **Assurance boundary:** Assurance v5, inherited by v6, reopens and recomputes
+  the lifecycle artifact and blocks `working` on any unsupported case, metric
+  below `1.0`, overlap, mutation, tenant leak or replay divergence.
+- **Replacement foundation:** Commits `5149df1b` and `43d86dd5` add typed
+  canonical replacement transitions, a migration-backed operation registry,
+  stale-version and idempotency guards, and a domain service. They establish
+  governed transition intent and history but do not yet mutate or repair the
+  resource, aliases, source bindings, projections or retrieval views.
 - **Return condition:** Prove rename continuity, archive/name reuse and
   stale-alias rejection first — complete for customers. Reopen for merge,
-  split, replacement, resurrection and non-customer identity lifecycle through
-  canonical lifecycle writers with correction closure. Source-binding close,
-  revoke and supersede now have a separate bounded contract in EDGE-019.
+  split, resurrection and non-customer identity lifecycle through canonical
+  lifecycle writers with correction closure. Complete replacement
+  materialization and dependent repair from the new registry. Source-binding
+  close, revoke and supersede have a separate bounded contract in EDGE-019.
 
 ### EDGE-017 — Structured source claims cannot create identity authority
 
@@ -306,10 +312,12 @@ Everything else receives an explicit safe behavior and return condition here.
   consumption, event-time liveness, forged-text rejection, missing
   ID/name/subject and missing-binding inertness, source isolation and tenant
   isolation.
-- **Evaluator boundary:** The standalone active-surface artifact at checkpoint
-  `41ae2771` covers exactly Jira and Linear (`2/2`) plus five source-salience
-  cases. Drive and Gmail are focused-test proven but are not represented in
-  that historical artifact. Assurance v6 integration is still pending.
+- **Evaluator boundary:** Assurance v6 now seals and reopens six identity
+  surfaces: Jira project, one Linear issue bundle covering project/team claims,
+  Google Drive file/comment/revision and Gmail thread. All `6/6` are observed
+  with zero violations, alongside `5/5` source-salience cases. Exact expected
+  and observed source systems, native IDs, surfaces and authority references
+  are digest-bound, and foreign-tenant consumption is probed directly.
 - **Return condition:** Extend the same contract to meetings and remaining
   connectors; add mention-specific multi-object populations and causal learning
   proofs per source. Do not infer causal equivalence from transport tests.
@@ -366,20 +374,24 @@ Everything else receives an explicit safe behavior and return condition here.
 
 ### EDGE-020 — Retention metrics can overstate restart and learning durability
 
-- **Status:** `resolved` for the bounded standalone population; long-duration
+- **Status:** `resolved` for the bounded assurance v6 population; long-duration
   durability remains `active`
 - **Trigger:** Learned exact, variant or corrected behavior is reevaluated after
   intervening system activity or a nominal restart.
 - **Risk:** A perfect retention score can be mistaken for proof of process,
   queue, database or deployment durability, or for resistance to unrelated
   end-to-end learning interference.
-- **Current evidence:** A sealed standalone real-Postgres run observes `14/14`
-  cases. Exact, governed-variant and corrected retention, restart survival,
-  correction authority, source immutability, Model consistency and
-  evidence-lineage consistency are `1.0`; forgetting, unsafe globalization and
-  hard-safety incidents are `0.0`; all four existing negative controls and
+- **Current evidence:** The sealed real-Postgres retention component observes
+  `14/14` cases. Exact, governed-variant and corrected retention, restart
+  survival, correction authority, source immutability, Model consistency and
+  evidence-lineage consistency are `1.0`; forgetting, unsafe globalization
+  and hard-safety incidents are `0.0`; all four existing negative controls and
   three representative collision families remain safe; retention-horizon AUC
   is `1.0`. Safety regressions are noncompensatory.
+- **Assurance integration:** V6 binds the exact 14 observations, named negative
+  and collision families, and 2/2/10 horizon distribution. It reopens raw
+  evidence, recomputes the report and blocks `working` on forgetting, coverage,
+  authority, consistency, immutability or safety regression.
 - **Restart boundary:** The restart metric constructs fresh
   `EntityResolverWorker` and `SourceSemanticWorker` objects in the same process
   against the same connection pool and database. It does not terminate the
@@ -406,20 +418,53 @@ Everything else receives an explicit safe behavior and return condition here.
 
 ### EDGE-021 — Standalone learning evidence is not combined assurance
 
-- **Status:** `active`
+- **Status:** `resolved` for active surfaces and retention; source-binding
+  lifecycle remains `bounded`
 - **Trigger:** A focused evaluator passes before its evidence is registered,
   reopened and recomputed by the combined assurance contract.
 - **Risk:** A standalone result can be reported as system-wide proof without
   digest binding, component-accounting checks or fail-closed combined status.
-- **Current behavior:** The active-surface artifact covers the historical
-  Jira/Linear `2/2` and source-salience `5/5` population. The retention artifact
-  covers its bounded `14/14` population. Both are standalone. Source-binding
-  lifecycle is test-backed and has no typed artifact.
-- **Safe boundary:** Do not claim these components are integrated in assurance
-  v5 or v6 until the combined command emits, reopens, digest-checks, recomputes
-  and noncompensatorily gates them.
-- **Return condition:** Complete assurance v6 integration and add a typed
-  source-lifecycle component without broadening any proof boundary.
+- **Current behavior:** Assurance v6 emits, reopens, digest-checks, recomputes
+  and noncompensatorily gates the `6/6` identity, `5/5` salience and `14/14`
+  retention components. The final working artifact has zero blockers.
+  Source-binding lifecycle remains focused-test-backed with no typed assurance
+  component.
+- **Evidence:** The commit-labelled artifact is
+  `/tmp/fyralis-company-learning-assurance-v6-04b0f0bd-final/company_learning_assurance_summary.json`
+  with schema `company-learning-assurance-summary-v6`, run
+  `final-04b0f0bd`, system version `04b0f0bd`, file SHA-256
+  `6c82f10ec8c8a1b79c069bc14a195415f9d625697b346a6e72e4bac25f55931f`
+  and summary digest
+  `b4b039648f82b2156236853e36b3eb24a2ae118f932094beb2e9daabb424fbe3`.
+- **Safe boundary:** Claim combined proof only for the active-surface and
+  retention scopes actually represented by v6. Do not infer that source-binding
+  lifecycle is digest-bound.
+- **Return condition:** Add a typed source-lifecycle component without
+  broadening its historical-reconstruction or database-enforcement boundary.
+
+### EDGE-022 — Assurance database encoding and Unicode verifier parity
+
+- **Status:** `resolved`
+- **Trigger:** A disposable company-learning database or harness verifier
+  handles Unicode collision fixtures differently from production
+  normalization.
+- **Risk:** Environment bootstrap or verifier defects can stop summary creation
+  and be misreported as company-learning system failures.
+- **Observed behavior:** The first disposable cluster used `SQL_ASCII` and
+  rejected the sealed Unicode collision before evaluation. A fresh UTF8 cluster
+  then exposed a harness-only mismatch for fullwidth `Ａ`: PostgreSQL
+  `lower()` under the C locale did not match Python `casefold()`, even though
+  the corrective-memory row existed with the correct target and authority.
+- **Resolution:** Disposable assurance clusters must use UTF8. Commit
+  `3a21f6b1` makes harness verification use the production Python normalizer
+  and still checks exact target, resolution scope, clarification lineage,
+  adjudication state and answer digest.
+- **Evidence:** The focused 16-case collision suite and the full assurance v6
+  CLI pass on fresh UTF8 PostgreSQL. The final CLI completes in `31.43s`; the
+  commit-labelled v6 artifact is the exact evidence recorded under EDGE-021.
+- **Return condition:** Reopen if a new database locale/encoding or Unicode
+  normalization family causes harness and production lookup semantics to
+  diverge.
 
 ## Entry Template
 
