@@ -25,17 +25,12 @@ FIXTURE = (
 )
 
 
-def test_gold_fixture_seals_four_representative_families() -> None:
+def test_gold_fixture_seals_all_nine_reconstruction_families() -> None:
     cases = load_slack_reconstruction_gold(FIXTURE)
 
-    assert len(cases) == 4
-    assert {case.family for case in cases} == {
-        SlackGoldFamily.THREAD_ROOT_REPLIES,
-        SlackGoldFamily.EDIT_REVISION,
-        SlackGoldFamily.LONG_RANGE_RECURRENCE,
-        SlackGoldFamily.HIGH_SIMILARITY_CONTAMINATION,
-    }
-    assert len({case.case_id for case in cases}) == 4
+    assert len(cases) == 9
+    assert {case.family for case in cases} == set(SlackGoldFamily)
+    assert len({case.case_id for case in cases}) == 9
     assert all(len(case.digest) == 64 for case in cases)
 
 
@@ -51,7 +46,7 @@ def test_perfect_observations_receive_full_continuous_credit() -> None:
 
     metrics = report.metrics
     assert report.status == "observed"
-    assert metrics.case_count == 4
+    assert metrics.case_count == 9
     assert metrics.supported_case_rate == 1.0
     assert metrics.correct_case_rate == 1.0
     assert metrics.mean_sufficient_set_recall == 1.0
@@ -63,10 +58,10 @@ def test_perfect_observations_receive_full_continuous_credit() -> None:
     assert metrics.long_range_recall == 1.0
     assert metrics.budget_adherence_rate == 1.0
     assert metrics.abstention_under_insufficiency_rate == 1.0
-    assert sum(
+    assert not any(
         gap.startswith("Gold family not yet sealed:")
         for gap in report.proof_gaps
-    ) == 5
+    )
 
 
 def test_contamination_and_unsafe_resolution_reduce_metrics_continuously() -> None:
@@ -89,8 +84,13 @@ def test_contamination_and_unsafe_resolution_reduce_metrics_continuously() -> No
         selected_token_count=13,
         artifact_refs=("pytest://thread-contaminated",),
     )
-    insufficient = cases[-1]
-    observations[-1] = SlackReconstructionObservation(
+    insufficient_index = next(
+        index
+        for index, case in enumerate(cases)
+        if case.family is SlackGoldFamily.HIGH_SIMILARITY_CONTAMINATION
+    )
+    insufficient = cases[insufficient_index]
+    observations[insufficient_index] = SlackReconstructionObservation(
         case_id=insufficient.case_id,
         candidate_event_revision_ids=insufficient.candidate_event_revision_ids,
         selected_event_revision_ids=insufficient.candidate_event_revision_ids,
@@ -110,11 +110,13 @@ def test_contamination_and_unsafe_resolution_reduce_metrics_continuously() -> No
     )
 
     assessments = {item.case_id: item for item in report.assessments}
-    assert report.metrics.correct_case_rate == 0.5
-    assert report.metrics.mean_sufficient_set_recall == pytest.approx(2 / 3)
+    assert report.metrics.correct_case_rate == pytest.approx(7 / 9)
+    assert report.metrics.mean_sufficient_set_recall == pytest.approx(5 / 6)
     assert report.metrics.contamination_rate > 0.0
     assert report.metrics.selected_context_precision < 1.0
-    assert report.metrics.abstention_under_insufficiency_rate == 0.0
+    assert report.metrics.abstention_under_insufficiency_rate == pytest.approx(
+        2 / 3
+    )
     assert assessments[thread.case_id].sufficient_set_recall == 0.0
     assert assessments[thread.case_id].contamination_count == 1
     assert assessments[insufficient.case_id].contamination_count == 2
@@ -146,8 +148,13 @@ def test_candidate_population_omission_cannot_hide_contamination() -> None:
         _perfect_observation(case)
         for case in cases
     ]
-    insufficient = cases[-1]
-    observations[-1] = SlackReconstructionObservation(
+    insufficient_index = next(
+        index
+        for index, case in enumerate(cases)
+        if case.family is SlackGoldFamily.HIGH_SIMILARITY_CONTAMINATION
+    )
+    insufficient = cases[insufficient_index]
+    observations[insufficient_index] = SlackReconstructionObservation(
         case_id=insufficient.case_id,
         candidate_event_revision_ids=(
             insufficient.focal_event_revision_id,
@@ -180,7 +187,7 @@ def test_candidate_population_omission_cannot_hide_contamination() -> None:
     assert assessment.candidate_population_match is False
     assert assessment.candidate_reconstructable is False
     assert assessment.correct is False
-    assert report.metrics.reconstructability_rate == 0.75
+    assert report.metrics.reconstructability_rate == pytest.approx(8 / 9)
 
 
 def test_cli_writes_report_for_complete_observed_population(
@@ -221,7 +228,7 @@ def test_cli_writes_report_for_complete_observed_population(
     output_path = output_dir / "slack_reconstruction_gold_report.json"
     assert output_path.is_file()
     payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert payload["report"]["metrics"]["case_count"] == 4
+    assert payload["report"]["metrics"]["case_count"] == 9
     assert payload["report"]["metrics"]["correct_case_rate"] == 1.0
     assert len(payload["report_digest"]) == 64
     assert f"report={output_path}" in capsys.readouterr().out
@@ -232,7 +239,7 @@ def _perfect_observation(
 ) -> SlackReconstructionObservation:
     if case.insufficient_evidence:
         selected = (case.focal_event_revision_id,)
-        disposition = SufficiencyDisposition.NEEDS_CLARIFICATION
+        disposition = case.allowed_dispositions[0]
     else:
         selected = tuple(
             dict.fromkeys(

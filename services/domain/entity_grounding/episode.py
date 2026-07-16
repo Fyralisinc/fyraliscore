@@ -542,6 +542,16 @@ def prepare_context_selection(
         for item in context_items
         if item.layer is CandidateContextLayer.TEMPORAL
     )
+    temporal_anchor_strengths = {
+        item.event_revision_id: _salient_source_anchor_count(
+            input_by_revision[item.event_revision_id].content_text
+        )
+        for item in temporal_items
+    }
+    strongest_temporal_anchor = max(
+        temporal_anchor_strengths.values(),
+        default=0,
+    )
     groups.extend(
         (focal, item)
         for item in temporal_items[: request.budget.max_events - 1]
@@ -692,7 +702,20 @@ def prepare_context_selection(
                     if ambiguity_refs
                     and selected_inputs
                     and not boundary_resolved
-                    else min(1.0, 0.02 * len(selected_inputs))
+                    else min(
+                        1.0,
+                        0.02 * len(selected_inputs)
+                        + _relative_temporal_anchor_penalty(
+                            phrase=phrase,
+                            selected=selected,
+                            temporal_anchor_strengths=(
+                                temporal_anchor_strengths
+                            ),
+                            strongest_temporal_anchor=(
+                                strongest_temporal_anchor
+                            ),
+                        ),
+                    )
                 ),
             )
         )
@@ -794,6 +817,26 @@ _AMBIGUITY_STOPWORDS = {
     "to",
     "was",
 }
+_NON_REFERENTIAL_CAPITALIZED_TOKENS = {
+    "A",
+    "An",
+    "Are",
+    "Did",
+    "Do",
+    "Does",
+    "He",
+    "I",
+    "Is",
+    "It",
+    "She",
+    "That",
+    "The",
+    "They",
+    "This",
+    "Those",
+    "We",
+    "Will",
+}
 
 
 def _evidence_relative_ambiguity_refs(
@@ -873,6 +916,39 @@ def _candidate_boundary_probe(
             for item in selected_context
         )
     return bool(resolved), signatures
+
+
+def _relative_temporal_anchor_penalty(
+    *,
+    phrase: str,
+    selected: tuple[SelectedContextItem, ...],
+    temporal_anchor_strengths: dict[str, int],
+    strongest_temporal_anchor: int,
+) -> float:
+    """Penalize a generic temporal mention when a named source anchor exists."""
+
+    if (
+        not phrase_requires_context(phrase)
+        or strongest_temporal_anchor <= 0
+        or len(selected) != 2
+        or selected[1].layer is not CandidateContextLayer.TEMPORAL
+    ):
+        return 0.0
+    selected_strength = temporal_anchor_strengths.get(
+        selected[1].event_revision_id,
+        0,
+    )
+    return 0.25 if selected_strength < strongest_temporal_anchor else 0.0
+
+
+def _salient_source_anchor_count(text: str) -> int:
+    return len(
+        {
+            token
+            for token in re.findall(r"\b[A-Z][A-Za-z0-9_-]{2,}\b", text)
+            if token not in _NON_REFERENTIAL_CAPITALIZED_TOKENS
+        }
+    )
 
 
 def _tokens(text: str) -> tuple[str, ...]:

@@ -39,20 +39,21 @@ async def test_existing_surface_produces_honest_slack_gold_measurement() -> None
     )
 
     by_case = {observation.case_id: observation for observation in observations}
-    assert len(observations) == 4
-    assert report.status == "observed"
-    assert report.metrics.correct_case_rate == 0.75
-    assert report.metrics.mean_sufficient_set_recall == 1.0
-    assert report.metrics.complete_sufficient_set_rate == 1.0
-    assert report.metrics.reconstructability_rate == 1.0
-    assert report.metrics.contamination_rate == pytest.approx(1 / 9)
-    assert report.metrics.selected_context_precision == pytest.approx(8 / 9)
+    assert len(observations) == 9
+    assert report.status == "observed_with_gaps"
+    assert report.metrics.correct_case_rate == pytest.approx(2 / 3)
+    assert report.metrics.mean_sufficient_set_recall == pytest.approx(5 / 6)
+    assert report.metrics.complete_sufficient_set_rate == pytest.approx(5 / 6)
+    assert report.metrics.reconstructability_rate == pytest.approx(2 / 3)
+    assert report.metrics.contamination_rate == 0.0
+    assert report.metrics.selected_context_precision == 1.0
     assert report.metrics.mean_topology_recall == 1.0
-    assert report.metrics.edit_delete_correctness_rate == 1.0
+    assert report.metrics.edit_delete_correctness_rate == 0.5
     assert report.metrics.long_range_recall == 1.0
-    assert report.metrics.budget_adherence_rate == 0.75
+    assert report.metrics.cross_channel_recall == 0.0
+    assert report.metrics.budget_adherence_rate == 1.0
     assert report.metrics.abstention_under_insufficiency_rate == 1.0
-    assert report.metrics.supported_case_rate == 1.0
+    assert report.metrics.supported_case_rate == pytest.approx(2 / 3)
 
     thread = by_case["slack-thread-dependency-v1"]
     assert len(thread.candidate_event_revision_ids) == 4
@@ -78,6 +79,46 @@ async def test_existing_surface_produces_honest_slack_gold_measurement() -> None
         contamination.candidate_event_revision_ids[0],
     )
     assert contamination.disposition.value == "needs_clarification"
+
+    long_range = by_case["slack-long-range-recurrence-v1"]
+    assert long_range.selected_event_revision_ids == (
+        "observation:33333333-3333-4333-8333-333333333302:v1",
+        "observation:33333333-3333-4333-8333-333333333301:v1",
+    )
+    assert long_range.disposition.value == "operationally_sufficient"
+
+    cross_thread = by_case["slack-cross-thread-dependency-v1"]
+    assert cross_thread.selected_event_revision_ids == (
+        "observation:55555555-5555-4555-8555-555555555503:v1",
+        "observation:55555555-5555-4555-8555-555555555501:v1",
+    )
+    assert cross_thread.disposition.value == "operationally_sufficient"
+    assert cross_thread.unsupported_reasons == ()
+
+    pronoun = by_case["slack-pronoun-coreference-v1"]
+    assert len(pronoun.selected_event_revision_ids) == 3
+    assert pronoun.disposition.value == "operationally_sufficient"
+    assert len(pronoun.selected_topology_edge_ids) == 2
+
+    deletion = by_case["slack-deletion-tombstone-v1"]
+    assert deletion.disposition.value == "non_identifiable"
+    assert deletion.unsupported_reasons == (
+        "deletion_tombstone:handler:validation_error",
+        "focal_event_not_supported_by_slack_handler",
+    )
+
+    reaction = by_case["slack-reaction-evidence-v1"]
+    assert reaction.disposition.value == "non_identifiable"
+    assert reaction.unsupported_reasons == (
+        "reaction_evidence:handler:validation_error",
+        "focal_event_not_supported_by_slack_handler",
+    )
+
+    cross_channel = by_case["slack-cross-channel-dependency-v1"]
+    assert cross_channel.disposition.value == "needs_expansion"
+    assert cross_channel.unsupported_reasons == (
+        "required_context_outside_current_same_channel_candidate_lane",
+    )
 
 
 def test_existing_surface_observer_cli_writes_replayable_artifacts(
@@ -108,11 +149,15 @@ def test_existing_surface_observer_cli_writes_replayable_artifacts(
     )
     assert observations_path.is_file()
     assert report_path.is_file()
-    assert len(observations_path.read_text(encoding="utf-8").splitlines()) == 4
+    assert len(observations_path.read_text(encoding="utf-8").splitlines()) == 9
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["report"]["status"] == "observed"
-    assert payload["report"]["metrics"]["correct_case_rate"] == 0.75
-    assert payload["report"]["metrics"]["mean_sufficient_set_recall"] == 1.0
+    assert payload["report"]["status"] == "observed_with_gaps"
+    assert payload["report"]["metrics"]["correct_case_rate"] == pytest.approx(
+        2 / 3
+    )
+    assert payload["report"]["metrics"][
+        "mean_sufficient_set_recall"
+    ] == pytest.approx(5 / 6)
     assert len(payload["report_digest"]) == 64
     output = capsys.readouterr().out
     assert f"observations={observations_path}" in output
