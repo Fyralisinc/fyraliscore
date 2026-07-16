@@ -12,7 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from lib.observability.metrics import counter, gauge
 DISCOVERY_VERSION = "learned-persisted-batch-entity-discovery-v1"
-MIN_ACCEPTED_CONFIDENCE = 0.80
+# Below this point the candidate remains a governed non-entity fate. Identity
+# resolution still has its own stricter authority/selection gates.
+MIN_ACCEPTED_CONFIDENCE = 0.75
 CompanyEntityType = Literal[
     "person", "team", "customer", "project", "product", "system",
     "workstream", "goal", "commitment", "decision", "resource", "other",
