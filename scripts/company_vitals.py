@@ -24,8 +24,18 @@ from lib.evaluation.company_learning import (
     company_learning_assurance_status,
     evaluate_company_learning_state,
 )
+from lib.evaluation.company_learning_experiment import (
+    CorrectiveMemoryExperimentReport,
+    CorrectiveMemoryExperimentSpec,
+    evaluate_corrective_memory_experiment,
+)
+from lib.evaluation.company_learning_experiment_proof import (
+    build_corrective_memory_experiment_evidence_manifest,
+)
 from lib.evaluation.proof import (
+    InvariantEvidenceBundle,
     InvariantEvidenceManifest,
+    aggregate_invariant_evidence_manifests,
     compile_invariant_proof_matrix,
 )
 
@@ -168,7 +178,10 @@ def _build_vitals_scorecard(
             bundle=bundle,
             db_trace=db_trace,
         )
-    company_physics = _company_physics_section(company_learning_evaluation)
+    company_physics = _company_physics_section(
+        company_learning_evaluation,
+        experiment=_json_obj(bundle.get("company_learning_experiment")),
+    )
 
     vitals: dict[str, Any] = {
         "metabolism_yield": _metabolism_vital(signal_rows, bundle),
@@ -344,6 +357,13 @@ def write_vitals_artifacts(
         )
     else:
         evidence_manifest_path.unlink(missing_ok=True)
+    experiment = _json_obj(bundle.get("company_learning_experiment"))
+    experiment_payload = _json_obj(experiment.get("canonical_payload"))
+    if experiment.get("valid") is True and experiment_payload:
+        _write_json(
+            out / "company_learning_scenario_evidence.json",
+            experiment_payload,
+        )
     _write_json(out / "db_trace_summary.json", db_summary)
     _write_json(out / "graph_coherence.json", graph_coherence)
     _write_json(out / "proof_gaps.json", {"proof_gaps": scorecard["proof_gaps"]})
@@ -547,20 +567,30 @@ async def _collect_company_learning_evaluation(
             artifact_refs=(f"report-directory:{report_path}",),
         )
         registry = load_architecture_registry(DEFAULT_ARCHITECTURE_REGISTRY)
+        experiment_manifest_ref = _company_learning_experiment_manifest_ref(
+            bundle,
+            run_id=run_id,
+        )
         manifest = build_company_learning_evidence_manifest(
             state,
             registry=registry,
             system_version=_company_learning_system_version(bundle),
-            experiment_manifest_ref=_company_learning_experiment_manifest_ref(
-                bundle,
-                run_id=run_id,
-            ),
-            executed_scenario_ids=_executed_scenario_ids(bundle),
+            experiment_manifest_ref=experiment_manifest_ref,
+            executed_scenario_ids=frozenset(),
+        )
+        evidence_bundle = _company_learning_evidence_bundle(
+            manifest,
+            artifact_bundle=bundle,
+            report_cutoff=evaluation_cutoff.isoformat(),
         )
         proof = compile_invariant_proof_matrix(
             registry,
             run_id=run_id,
-            evidence=manifest.evidence,
+            evidence=(
+                evidence_bundle.evidence
+                if evidence_bundle is not None
+                else manifest.evidence
+            ),
         )
         assurance_status = company_learning_assurance_status(state, proof)
     except Exception as exc:  # noqa: BLE001 - best-effort old-report rerender
@@ -581,6 +611,11 @@ async def _collect_company_learning_evaluation(
         "evaluation_cutoff": evaluation_cutoff.isoformat(),
         "state": state.model_dump(mode="json"),
         "evidence_manifest": manifest.model_dump(mode="json"),
+        "evidence_bundle": (
+            evidence_bundle.model_dump(mode="json")
+            if evidence_bundle is not None
+            else None
+        ),
         "invariant_proof": proof.model_dump(mode="json"),
     }
 
@@ -645,10 +680,27 @@ def _company_learning_evaluation_for_report(
         )
         if cutoff.tzinfo is None or cutoff.utcoffset() is None:
             raise ValueError("persisted evaluation cutoff is not timezone-aware")
+        evidence_bundle = _company_learning_evidence_bundle(
+            manifest,
+            artifact_bundle=bundle,
+            report_cutoff=cutoff.isoformat(),
+        )
+        saved_bundle = _json_obj(persisted.get("evidence_bundle"))
+        if saved_bundle and (
+            evidence_bundle is None
+            or saved_bundle != evidence_bundle.model_dump(mode="json")
+        ):
+            raise ValueError(
+                "persisted company-learning evidence aggregation is stale"
+            )
         proof = compile_invariant_proof_matrix(
             registry,
             run_id=expected_run_id,
-            evidence=manifest.evidence,
+            evidence=(
+                evidence_bundle.evidence
+                if evidence_bundle is not None
+                else manifest.evidence
+            ),
         )
         return {
             **persisted,
@@ -656,6 +708,11 @@ def _company_learning_evaluation_for_report(
             "observed_slice_health": state.observed_slice_health,
             "state": state.model_dump(mode="json"),
             "evidence_manifest": manifest.model_dump(mode="json"),
+            "evidence_bundle": (
+                evidence_bundle.model_dump(mode="json")
+                if evidence_bundle is not None
+                else None
+            ),
             "invariant_proof": proof.model_dump(mode="json"),
         }
     except Exception as exc:  # noqa: BLE001 - fail closed on persisted proof
@@ -734,21 +791,41 @@ def _company_learning_experiment_manifest_ref(
     return f"company-learning-experiment:sha256:{digest}"
 
 
+def _company_learning_evidence_bundle(
+    manifest: InvariantEvidenceManifest,
+    *,
+    artifact_bundle: dict[str, Any],
+    report_cutoff: str,
+) -> InvariantEvidenceBundle | None:
+    experiment = _json_obj(artifact_bundle.get("company_learning_experiment"))
+    if experiment.get("valid") is not True:
+        return None
+    report = CorrectiveMemoryExperimentReport.model_validate(
+        experiment.get("report")
+    )
+    experiment_manifest = (
+        build_corrective_memory_experiment_evidence_manifest(
+            report,
+            architecture_digest=manifest.architecture_digest,
+            experiment_manifest_ref=manifest.experiment_manifest_ref,
+            report_cutoff=report_cutoff,
+        )
+    )
+    return aggregate_invariant_evidence_manifests(
+        (manifest, experiment_manifest)
+    )
+
+
 def _executed_scenario_ids(bundle: dict[str, Any]) -> frozenset[str]:
-    scenario_ids: set[str] = set()
-    for source in (
-        _json_obj(bundle.get("run_config")),
-        _json_obj(bundle.get("run_summary")),
-        _json_obj(bundle.get("benchmark_summary")),
-        _json_obj(bundle.get("storyline_scores")),
-    ):
-        for key in ("executed_scenario_ids", "scenario_ids"):
-            scenario_ids.update(
-                str(item)
-                for item in _json_list(source.get(key))
-                if str(item).strip()
-            )
-    return frozenset(scenario_ids)
+    experiment = _json_obj(bundle.get("company_learning_experiment"))
+    if experiment.get("valid") is not True:
+        return frozenset()
+    report = _json_obj(experiment.get("report"))
+    return frozenset(
+        str(item)
+        for item in _json_list(report.get("scenario_ids"))
+        if str(item).strip()
+    )
 
 
 def _active_company_learning_proof_summary(
@@ -791,25 +868,49 @@ def _active_company_learning_proof_summary(
 
 def _company_physics_section(
     evaluation: dict[str, Any] | None,
+    *,
+    experiment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     evaluation = _json_obj(evaluation)
+    experiment_summary = _corrective_memory_experiment_summary(experiment)
+    experiment_gaps = {
+        str(item)
+        for item in _json_list(experiment_summary.get("proof_gaps"))
+        if str(item).strip()
+    }
+    experiment_failures = [
+        str(item)
+        for item in _json_list(experiment_summary.get("hard_failures"))
+        if str(item).strip()
+    ]
+    experiments = (
+        {"corrective_memory_recurrence": experiment_summary}
+        if experiment_summary
+        else {}
+    )
     state = _json_obj(evaluation.get("state"))
     if evaluation.get("available") is not True or not state:
-        gaps = _json_list(evaluation.get("proof_gaps"))
+        gaps = {
+            str(item)
+            for item in _json_list(evaluation.get("proof_gaps"))
+            if str(item).strip()
+        }
         if not gaps:
-            gaps = [
+            gaps = {
                 "DB-backed company-physics evaluation was not collected; "
                 "context, grounding and source-semantic state are unknown."
-            ]
+            }
+        gaps.update(experiment_gaps)
         return {
             "status": str(evaluation.get("status") or "not_observed"),
             "noncompensatory": True,
             "learning_loop": {},
             "components": {},
             "incident_counts": {},
-            "hard_failures": [],
-            "proof_gaps": gaps,
+            "hard_failures": experiment_failures,
+            "proof_gaps": sorted(gaps),
             "error": evaluation.get("error"),
+            "experiments": experiments,
         }
     incidents = _json_obj(state.get("incident_counts"))
     status = str(evaluation.get("status") or "insufficient")
@@ -846,6 +947,8 @@ def _company_physics_section(
             for gap in _json_list(row.get("proof_gaps"))
             if str(gap).strip()
         )
+    hard_failures.extend(experiment_failures)
+    proof_gaps.update(experiment_gaps)
     return {
         "status": status,
         "observed_slice_health": str(
@@ -869,6 +972,70 @@ def _company_physics_section(
         "proof_gaps": sorted(proof_gaps),
         "artifact_refs": _json_list(state.get("artifact_refs")),
         "invariant_proof": proof_summary,
+        "experiments": experiments,
+    }
+
+
+def _corrective_memory_experiment_summary(
+    experiment: dict[str, Any] | None,
+) -> dict[str, Any]:
+    experiment = _json_obj(experiment)
+    if not experiment:
+        return {}
+    if experiment.get("valid") is not True:
+        gap = (
+            "Typed corrective-memory experiment evidence failed validation and "
+            "cannot credit scenario execution."
+        )
+        detail = str(experiment.get("detail") or "").strip()
+        return {
+            "available": False,
+            "status": "invalid",
+            "source_path": experiment.get("source_path"),
+            "error": experiment.get("error") or "experiment_artifact_invalid",
+            "detail": detail or None,
+            "scenario_ids": [],
+            "metrics": {},
+            "hard_safety_incident_count": 0,
+            "hard_failures": [],
+            "proof_gaps": [gap],
+        }
+    report = _json_obj(experiment.get("report"))
+    incidents = _json_list(report.get("incidents"))
+    incident_class_counts: dict[str, int] = {}
+    for incident in incidents:
+        if not isinstance(incident, dict):
+            continue
+        name = str(incident.get("incident_class") or "unknown")
+        incident_class_counts[name] = incident_class_counts.get(name, 0) + 1
+    hard_failures = (
+        [
+            "corrective-memory recurrence experiment recorded "
+            f"{len(incidents)} hard safety incident(s)"
+        ]
+        if incidents
+        else []
+    )
+    return {
+        "available": True,
+        "status": report.get("status"),
+        "source_path": experiment.get("source_path"),
+        "experiment_id": report.get("experiment_id"),
+        "run_id": report.get("run_id"),
+        "system_version": report.get("system_version"),
+        "scenario_ids": _json_list(report.get("scenario_ids")),
+        "report_digest": experiment.get("report_digest"),
+        "spec_digest": report.get("spec_digest"),
+        "case_manifest_digest": report.get("case_manifest_digest"),
+        "gold_digest": report.get("gold_digest"),
+        "arm_assignment_digest": report.get("arm_assignment_digest"),
+        "pair_results_digest": report.get("pair_results_digest"),
+        "metrics": _json_obj(report.get("metrics")),
+        "hard_safety_incident_count": len(incidents),
+        "incident_class_counts": dict(sorted(incident_class_counts.items())),
+        "hard_failures": hard_failures,
+        "proof_gaps": _json_list(report.get("proof_gaps")),
+        "artifact_refs": _json_list(report.get("artifact_refs")),
     }
 
 
@@ -930,6 +1097,31 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
                 ),
             ]
         )
+    experiment = _json_obj(
+        _json_obj(company_physics.get("experiments")).get(
+            "corrective_memory_recurrence"
+        )
+    )
+    if experiment:
+        experiment_metrics = _json_obj(experiment.get("metrics"))
+        lines.extend(
+            [
+                (
+                    "- Corrective-memory recurrence: "
+                    f"{experiment.get('status', 'invalid')}"
+                ),
+                (
+                    "- Adaptive vs frozen correctness: "
+                    f"{_fmt_score(experiment_metrics.get('adaptive_correctness_rate'))}"
+                    " vs "
+                    f"{_fmt_score(experiment_metrics.get('frozen_correctness_rate'))}"
+                ),
+                (
+                    "- Adaptive correctness lift: "
+                    f"{_fmt_score(experiment_metrics.get('adaptive_minus_frozen_correctness'))}"
+                ),
+            ]
+        )
     lines.append("")
 
     lines.extend(
@@ -956,7 +1148,7 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
 
 
 def _load_artifact_bundle(report_dir: Path) -> dict[str, Any]:
-    return {
+    bundle = {
         "report_dir": report_dir,
         "run_summary": _read_json(report_dir / "run_summary.json"),
         "benchmark_summary": _read_json(report_dir / "benchmark_summary.json"),
@@ -968,6 +1160,93 @@ def _load_artifact_bundle(report_dir: Path) -> dict[str, Any]:
         "models": _read_jsonl(report_dir / "models.jsonl"),
         "model_edges": _read_jsonl(report_dir / "model_edges.jsonl"),
     }
+    bundle["company_learning_experiment"] = (
+        _company_learning_experiment_for_report(
+            report_dir,
+            bundle=bundle,
+        )
+    )
+    return bundle
+
+
+def _company_learning_experiment_for_report(
+    report_dir: Path,
+    *,
+    bundle: dict[str, Any],
+) -> dict[str, Any]:
+    source_path = next(
+        (
+            path
+            for path in (
+                report_dir / "company_learning_scenario_evidence.json",
+                report_dir / "vitals" / "company_learning_scenario_evidence.json",
+            )
+            if path.exists()
+        ),
+        None,
+    )
+    if source_path is None:
+        return {}
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("experiment artifact root must be a JSON object")
+        spec = CorrectiveMemoryExperimentSpec.model_validate(payload.get("spec"))
+        saved_report = CorrectiveMemoryExperimentReport.model_validate(
+            payload.get("report")
+        )
+        supplied_report_digest = str(payload.get("report_digest") or "")
+        recomputed_report = evaluate_corrective_memory_experiment(
+            spec=spec,
+            pairs=saved_report.pairs,
+            artifact_refs=saved_report.artifact_refs,
+        )
+        if saved_report.model_dump(mode="json") != recomputed_report.model_dump(
+            mode="json"
+        ):
+            raise ValueError(
+                "saved corrective-memory report does not match recomputation"
+            )
+        if supplied_report_digest != recomputed_report.digest:
+            raise ValueError("corrective-memory report digest mismatch")
+        expected_run_id = _company_learning_run_id(
+            bundle,
+            report_path=report_dir,
+        )
+        if spec.run_id != expected_run_id or saved_report.run_id != expected_run_id:
+            raise ValueError(
+                "corrective-memory experiment run identity does not match report"
+            )
+        expected_system_version = _company_learning_system_version(bundle)
+        if (
+            spec.system_version != expected_system_version
+            or saved_report.system_version != expected_system_version
+        ):
+            raise ValueError(
+                "corrective-memory experiment system version does not match report"
+            )
+        canonical_payload = {
+            "spec": spec.model_dump(mode="json"),
+            "report": recomputed_report.model_dump(mode="json"),
+            "report_digest": recomputed_report.digest,
+        }
+        return {
+            "available": True,
+            "valid": True,
+            "source_path": str(source_path),
+            "spec": canonical_payload["spec"],
+            "report": canonical_payload["report"],
+            "report_digest": canonical_payload["report_digest"],
+            "canonical_payload": canonical_payload,
+        }
+    except Exception as exc:  # noqa: BLE001 - untrusted supporting artifact
+        return {
+            "available": True,
+            "valid": False,
+            "source_path": str(source_path),
+            "error": "experiment_artifact_invalid",
+            "detail": f"{type(exc).__name__}: {str(exc)[:500]}",
+        }
 
 
 def apply_db_trace_to_signal_rows(

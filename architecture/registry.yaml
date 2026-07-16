@@ -672,8 +672,8 @@ invariants:
       mutually_exclusive_fates: [resolved_existing, created_new, local_unresolved, rejected, expired, quarantined]
       mandatory_trace_facts: [mention_anchor, type_assessment_and_admission, candidate_request_and_set, resolution_assessment, registry_command_and_result, grounding_admission_versions]
       oracle_or_metamorphic_relation: ambiguous, novel and wrong-type entity ladder with stage-specific oracle labels
-      suite_and_scenario_ids: [ENTITY-STAGE-FATE, ENTITY-ORACLE-LADDER]
-      continuous_metric_ids: [inv.entity_stage_separation]
+      suite_and_scenario_ids: [ENTITY-STAGE-FATE, ENTITY-ORACLE-LADDER, ENTITY-CORRECTIVE-MEMORY-PAIR]
+      continuous_metric_ids: [inv.entity_stage_separation, inv.entity_corrective_memory_lift]
       incident_class: collapsed_or_untraceable_entity_stage
       known_blind_spots: [Gold ambiguity in implicit mentions.]
   - invariant_id: INV-06

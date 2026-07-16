@@ -6,8 +6,34 @@ from uuid import uuid4
 
 import pytest
 
+from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.company_learning_experiment import (
+    ArmLineageRefs,
+    CanonicalEntityRef,
+    ConsumerTerminalFate,
+    CorrectiveMemoryArm,
+    CorrectiveMemoryArmResult,
+    CorrectiveMemoryExperimentSpec,
+    PairedRecurrenceResult,
+    RecurrenceCaseKind,
+    SealedArmExpectation,
+    SealedRecurrenceCase,
+    evaluate_corrective_memory_experiment,
+)
+from lib.evaluation.proof import (
+    CANONICAL_COMPONENT_PARTITION_DIMENSION,
+    CANONICAL_COMPONENT_PARTITION_PROOF_REF,
+    EvidenceAggregationMode,
+    EvidenceTier,
+    FateDenominatorRecord,
+    InvariantEvidenceManifest,
+    InvariantRunEvidence,
+)
 from scripts.company_vitals import (
     _collect_company_learning_evaluation,
+    _company_learning_evidence_bundle,
+    _executed_scenario_ids,
+    _load_artifact_bundle,
     apply_db_trace_to_signal_rows,
     build_vitals_from_report_dir,
     write_vitals_artifacts,
@@ -144,6 +170,186 @@ def test_company_physics_incidents_are_noncompensatory_hard_failures(
     assert any(
         "unsafe_governed_alias_replay" in failure
         for failure in scorecard["hard_failures"]
+    )
+
+
+def test_valid_corrective_memory_experiment_is_non_scoring_and_credits_scenarios(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    _write_json(
+        report_dir / "run_config.json",
+        {
+            "system_version": "pytest-system-v1",
+            "executed_scenario_ids": ["FORGED-SCENARIO"],
+        },
+    )
+    baseline = build_vitals_from_report_dir(report_dir)
+    _write_corrective_memory_experiment(
+        report_dir,
+        system_version="pytest-system-v1",
+    )
+
+    scorecard = build_vitals_from_report_dir(report_dir)
+    experiment = scorecard["company_physics"]["experiments"][
+        "corrective_memory_recurrence"
+    ]
+
+    assert scorecard["overall_score"] == baseline["overall_score"]
+    assert scorecard["vitals"].keys() == baseline["vitals"].keys()
+    assert experiment["available"] is True
+    assert experiment["status"] == "observed"
+    assert experiment["metrics"]["adaptive_correctness_rate"] == 1.0
+    assert experiment["metrics"]["frozen_correctness_rate"] == 0.0
+    assert experiment["metrics"]["adaptive_minus_frozen_correctness"] == 1.0
+    assert experiment["hard_safety_incident_count"] == 0
+    bundle = _load_artifact_bundle(report_dir)
+    assert _executed_scenario_ids(bundle) == frozenset(
+        {"ENTITY-CORRECTIVE-MEMORY-PAIR"}
+    )
+    assert "FORGED-SCENARIO" not in _executed_scenario_ids(bundle)
+
+
+def test_corrective_memory_experiment_aggregates_into_canonical_proof(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    _write_json(
+        report_dir / "run_config.json",
+        {"system_version": "pytest-system-v1"},
+    )
+    _write_corrective_memory_experiment(
+        report_dir,
+        system_version="pytest-system-v1",
+    )
+    report_cutoff = "2026-07-16T00:00:00+00:00"
+    base_manifest = InvariantEvidenceManifest(
+        manifest_version="company-learning-evidence-v1",
+        run_id="synthetic-vitals",
+        architecture_digest="a" * 64,
+        system_version="pytest-system-v1",
+        created_at=report_cutoff,
+        experiment_manifest_ref="pytest://experiment-manifest",
+        evidence=(
+            InvariantRunEvidence(
+                invariant_id="INV-05",
+                applicable_exposures=1,
+                achieved_evidence_tier=EvidenceTier.E3,
+                denominator=FateDenominatorRecord(
+                    denominator_id="pytest:INV-05:entity-grounding",
+                    denominator_version="pytest-v1",
+                    population_definition_version="pytest-v1",
+                    query_or_manifest_hash=canonical_sha256(
+                        "entity-grounding-population"
+                    ),
+                    source_or_oracle_population=1,
+                    production_accepted=1,
+                    eligible=1,
+                    attempted_or_committed=1,
+                    terminal_fates={"resolved_existing": 1},
+                    report_cutoff=report_cutoff,
+                    population_partition_dimension=(
+                        CANONICAL_COMPONENT_PARTITION_DIMENSION
+                    ),
+                    population_partition_value="entity_grounding",
+                    population_partition_proof_ref=(
+                        CANONICAL_COMPONENT_PARTITION_PROOF_REF
+                    ),
+                ),
+                artifact_refs=("pytest://base-manifest",),
+            ),
+        ),
+        artifact_refs=("pytest://base-manifest",),
+    )
+
+    evidence_bundle = _company_learning_evidence_bundle(
+        base_manifest,
+        artifact_bundle=_load_artifact_bundle(report_dir),
+        report_cutoff=report_cutoff,
+    )
+
+    assert evidence_bundle is not None
+    assert len(evidence_bundle.evidence) == 1
+    evidence = evidence_bundle.evidence[0]
+    assert evidence.executed_scenario_ids == frozenset(
+        {"ENTITY-CORRECTIVE-MEMORY-PAIR"}
+    )
+    assert {
+        metric.metric_id for metric in evidence.metric_observations
+    } == {"inv.entity_corrective_memory_lift"}
+    assert evidence.applicable_exposures == 3
+    aggregation = evidence_bundle.aggregation[0]
+    assert (
+        aggregation.mode
+        is EvidenceAggregationMode.DECLARED_DISJOINT_PARTITION_UNION
+    )
+    assert set(aggregation.population_partition_values) == {
+        "entity_grounding",
+        "corrective_memory_pair_experiment",
+    }
+
+
+def test_tampered_corrective_memory_experiment_fails_closed(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    _write_json(
+        report_dir / "run_config.json",
+        {"system_version": "pytest-system-v1"},
+    )
+    artifact_path = _write_corrective_memory_experiment(
+        report_dir,
+        system_version="pytest-system-v1",
+    )
+    payload = json.loads(artifact_path.read_text())
+    payload["report"]["metrics"]["adaptive_correctness_rate"] = 0.0
+    _write_json(artifact_path, payload)
+
+    scorecard = build_vitals_from_report_dir(report_dir)
+    experiment = scorecard["company_physics"]["experiments"][
+        "corrective_memory_recurrence"
+    ]
+
+    assert experiment["available"] is False
+    assert experiment["status"] == "invalid"
+    assert experiment["scenario_ids"] == []
+    assert experiment["error"] == "experiment_artifact_invalid"
+    assert _executed_scenario_ids(_load_artifact_bundle(report_dir)) == frozenset()
+    assert any(
+        "failed validation" in gap
+        for gap in scorecard["company_physics"]["proof_gaps"]
+    )
+
+
+def test_corrective_memory_experiment_persists_for_artifact_only_rerender(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    _write_json(
+        report_dir / "run_config.json",
+        {"system_version": "pytest-system-v1"},
+    )
+    source = _write_corrective_memory_experiment(
+        report_dir,
+        system_version="pytest-system-v1",
+    )
+
+    first = write_vitals_artifacts(report_dir)
+    persisted = (
+        first.output_dir / "company_learning_scenario_evidence.json"
+    )
+    assert persisted.exists()
+    source.unlink()
+
+    rerender = write_vitals_artifacts(report_dir)
+    experiment = rerender.scorecard["company_physics"]["experiments"][
+        "corrective_memory_recurrence"
+    ]
+
+    assert experiment["available"] is True
+    assert experiment["metrics"]["adaptive_minus_frozen_correctness"] == 1.0
+    assert _executed_scenario_ids(_load_artifact_bundle(report_dir)) == frozenset(
+        {"ENTITY-CORRECTIVE-MEMORY-PAIR"}
     )
 
 
@@ -780,3 +986,128 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+def _write_corrective_memory_experiment(
+    report_dir: Path,
+    *,
+    system_version: str,
+) -> Path:
+    adaptive_tenant_id = uuid4()
+    frozen_tenant_id = uuid4()
+    answer_digest = canonical_sha256({"answer": "accept-candidate"})
+    adaptive_ref = CanonicalEntityRef(
+        type="customer",
+        id="nimbus-bank-adaptive",
+    )
+    frozen_ref = CanonicalEntityRef(
+        type="customer",
+        id="nimbus-bank-frozen",
+    )
+    case = SealedRecurrenceCase(
+        case_id="held-out-renewal",
+        case_version="v1",
+        kind=RecurrenceCaseKind.EXACT_ALIAS_POSITIVE,
+        alias_surface="NBI",
+        source_text_digest=canonical_sha256("NBI renewal is delayed"),
+        context_digest=canonical_sha256(
+            {"channel": "C-RENEWAL", "thread": "T-HELD-OUT"}
+        ),
+        adaptive_expectation=SealedArmExpectation(
+            tenant_id=adaptive_tenant_id,
+            allowed_consumer_fates=(
+                ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,
+            ),
+            expected_entity_ref=adaptive_ref,
+            expected_model_count=1,
+            autonomous_resolution_permitted=True,
+        ),
+        frozen_expectation=SealedArmExpectation(
+            tenant_id=frozen_tenant_id,
+            allowed_consumer_fates=(ConsumerTerminalFate.REVIEW,),
+            expected_entity_ref=frozen_ref,
+            expected_model_count=0,
+            autonomous_resolution_permitted=False,
+        ),
+        artifact_refs=("pytest://case/held-out-renewal",),
+    )
+    spec = CorrectiveMemoryExperimentSpec(
+        experiment_id="pytest-corrective-memory-pair",
+        run_id="synthetic-vitals",
+        system_version=system_version,
+        created_at="2026-07-16T00:00:00+00:00",
+        scenario_ids=("ENTITY-CORRECTIVE-MEMORY-PAIR",),
+        company_foundation_digest=canonical_sha256(
+            {"company": "pytest-foundation"}
+        ),
+        provider_behavior_digest=canonical_sha256(
+            {"provider": "pytest-scripted"}
+        ),
+        cases=(case,),
+        artifact_refs=("pytest://experiment-spec",),
+    )
+    adaptive_model_id = uuid4()
+    pair = PairedRecurrenceResult(
+        case_id=case.case_id,
+        adaptive=CorrectiveMemoryArmResult(
+            case_id=case.case_id,
+            arm=CorrectiveMemoryArm.ADAPTIVE,
+            tenant_id=adaptive_tenant_id,
+            consumer_fate=ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,
+            resolved_entity_ref=adaptive_ref,
+            decision_source="governed_exact_alias_replay",
+            llm_call_count=0,
+            latency_ms=5.0,
+            estimated_cost_usd=0.0,
+            source_semantic_admitted=True,
+            lineage=ArmLineageRefs(
+                training_observation_id=uuid4(),
+                recurrence_observation_id=uuid4(),
+                clarification_request_id=uuid4(),
+                clarification_answer_digest=answer_digest,
+                adjudicated_alias_id=uuid4(),
+                grounding_trace_id=uuid4(),
+                source_semantic_interpretation_id=uuid4(),
+                source_semantic_admission_id=uuid4(),
+                model_ids=(adaptive_model_id,),
+                artifact_refs=("pytest://adaptive-lineage",),
+            ),
+        ),
+        frozen=CorrectiveMemoryArmResult(
+            case_id=case.case_id,
+            arm=CorrectiveMemoryArm.FROZEN,
+            tenant_id=frozen_tenant_id,
+            consumer_fate=ConsumerTerminalFate.REVIEW,
+            resolved_entity_ref=None,
+            decision_source="llm",
+            llm_call_count=1,
+            latency_ms=20.0,
+            estimated_cost_usd=0.01,
+            source_semantic_admitted=False,
+            lineage=ArmLineageRefs(
+                training_observation_id=uuid4(),
+                recurrence_observation_id=uuid4(),
+                clarification_request_id=uuid4(),
+                clarification_answer_digest=answer_digest,
+                adjudicated_alias_id=uuid4(),
+                grounding_trace_id=uuid4(),
+                artifact_refs=("pytest://frozen-lineage",),
+            ),
+        ),
+        artifact_refs=("pytest://pair/held-out-renewal",),
+    )
+    report = evaluate_corrective_memory_experiment(
+        spec=spec,
+        pairs=(pair,),
+        artifact_refs=("pytest://corrective-memory-report",),
+    )
+    artifact_path = report_dir / "company_learning_scenario_evidence.json"
+    _write_json(
+        artifact_path,
+        {
+            "spec": spec.model_dump(mode="json"),
+            "report": report.model_dump(mode="json"),
+            "report_digest": report.digest,
+        },
+    )
+    return artifact_path
