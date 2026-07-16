@@ -20,7 +20,7 @@ pytestmark = pytest.mark.integration
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(180)
 async def test_company_learning_assurance_suite_cli_writes_one_summary(
     tmp_path: Path,
 ) -> None:
@@ -47,6 +47,7 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert "status=working" in result.stdout
     assert "positive_lift=1.0" in result.stdout
     assert "negative_incidents=0" in result.stdout
+    assert "variant=24/24" in result.stdout
     assert "slack_status=observed" in result.stdout
     assert "correction_status=working" in result.stdout
 
@@ -103,6 +104,40 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert summary.population.metrics["complete_population"] is True
     assert summary.population.unsupported_strata_counts["entity_type"] == {}
     assert summary.population.unsupported_reason_counts == {}
+    assert summary.variant_population.status == "observed"
+    assert summary.variant_population.evidence_tier.value == "E4"
+    assert summary.variant_population.registry_pair_count == 24
+    assert summary.variant_population.observed_pair_count == 24
+    assert summary.variant_population.unsupported_case_count == 0
+    assert summary.variant_population.runtime_support_rate == 1.0
+    assert (
+        summary.variant_population.adaptive_correctness.point_estimate
+        == 1.0
+    )
+    assert (
+        summary.variant_population.frozen_correctness.point_estimate
+        == 0.0
+    )
+    assert (
+        summary.variant_population
+        .adaptive_minus_frozen_correctness.point_estimate
+        == 1.0
+    )
+    assert (
+        summary.variant_population.mechanism_metrics
+        .candidate_memory_mediated_success_rate
+        == 1.0
+    )
+    assert (
+        summary.variant_population.mechanism_metrics
+        .frozen_target_candidate_exposure_rate
+        == 0.0
+    )
+    assert (
+        summary.variant_population.mechanism_metrics
+        .control_integrity_violation_count
+        == 0
+    )
     assert not any(
         "Slack reconstruction remains diagnostic and non-blocking"
         in gap
@@ -160,6 +195,11 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
             encoding="utf-8"
         )
     )
+    variant_population = json.loads(
+        Path(
+            summary.artifact_paths["variant_population_evidence"]
+        ).read_text(encoding="utf-8")
+    )
     assert (
         positive_pair["report"]["metrics"][
             "adaptive_minus_frozen_correctness"
@@ -173,6 +213,17 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert population["population_report"]["pair_count"] == 60
     assert population["population_report"]["observed_pair_count"] == 60
     assert population["population_report"]["unsupported_case_count"] == 0
+    assert variant_population["population_report"]["pair_count"] == 24
+    assert (
+        variant_population["population_report"]["observed_pair_count"]
+        == 24
+    )
+    assert (
+        variant_population["mechanism_metrics"][
+            "candidate_memory_mediated_success_rate"
+        ]
+        == 1.0
+    )
 
     persisted_summary_path = (
         output_dir
@@ -206,6 +257,14 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert assurance["correction"]["residual_unsafe_debt_count"] == 0
     assert assurance["population"]["registry_pair_count"] == 60
     assert assurance["population"]["observed_pair_count"] == 60
+    assert assurance["variant_population"]["registry_pair_count"] == 24
+    assert assurance["variant_population"]["observed_pair_count"] == 24
+    assert (
+        assurance["variant_population"]["mechanism_metrics"][
+            "candidate_memory_mediated_success_rate"
+        ]
+        == 1.0
+    )
 
 
 async def _run_cli(

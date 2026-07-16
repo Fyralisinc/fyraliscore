@@ -26,6 +26,7 @@ from lib.evaluation.company_learning_assurance import (
     PopulationAssurance,
     PositiveAssurance,
     SlackAssurance,
+    VariantPopulationAssurance,
     validate_company_learning_assurance_components,
 )
 from lib.evaluation.proof import EvidenceTier
@@ -51,6 +52,12 @@ from scripts.run_company_learning_population_harness import (
 )
 from scripts.run_company_learning_population_harness import (
     run_population_experiment,
+)
+from scripts.run_company_learning_variant_population_harness import (
+    ARTIFACT_NAME as VARIANT_POPULATION_ARTIFACT_NAME,
+)
+from scripts.run_company_learning_variant_population_harness import (
+    run_variant_population_experiment,
 )
 from scripts.run_company_learning_vitals_harness import (
     _install_json_codec,
@@ -87,6 +94,7 @@ async def run_company_learning_assurance_suite(
     positive_dir = output_dir / "positive"
     negative_dir = output_dir / "negative"
     population_dir = output_dir / "population"
+    variant_dir = output_dir / "variant"
     slack_dir = output_dir / "slack"
     correction_dir = output_dir / "correction"
 
@@ -139,10 +147,22 @@ async def run_company_learning_assurance_suite(
             system_version=system_version,
             llm_call_cost_usd=llm_call_cost_usd,
         )
+        variant_population_evidence = (
+            await run_variant_population_experiment(
+                pool=negative_pool,
+                output_dir=variant_dir,
+                run_id=f"{run_id}:variant",
+                system_version=system_version,
+                llm_call_cost_usd=llm_call_cost_usd,
+            )
+        )
     finally:
         await negative_pool.close()
     negative_path = negative_dir / NEGATIVE_ARTIFACT_NAME
     population_path = population_dir / POPULATION_ARTIFACT_NAME
+    variant_population_path = (
+        variant_dir / VARIANT_POPULATION_ARTIFACT_NAME
+    )
     correction_artifact = await run_company_learning_correction_harness(
         database_url=database_url,
         output_dir=correction_dir,
@@ -194,6 +214,9 @@ async def run_company_learning_assurance_suite(
         ),
         "negative_evidence": str(negative_path.resolve()),
         "population_evidence": str(population_path.resolve()),
+        "variant_population_evidence": str(
+            variant_population_path.resolve()
+        ),
         "correction_evidence": str(correction_path.resolve()),
         "slack_observations": str(slack_observations_path.resolve()),
         "slack_report": str(slack_report_path.resolve()),
@@ -205,6 +228,45 @@ async def run_company_learning_assurance_suite(
     )
     negative_incidents = negative_evidence.report.incidents
     population_incidents = population_evidence.experiment_report.incidents
+    variant_population_incidents = (
+        variant_population_evidence.experiment_report.incidents
+    )
+    variant_population_report = (
+        variant_population_evidence.population_report
+    )
+    variant_mechanism_metrics = (
+        variant_population_evidence.mechanism_metrics
+    )
+    if (
+        variant_population_report is None
+        or variant_mechanism_metrics is None
+    ):
+        raise RuntimeError(
+            "full variant population execution did not produce reports"
+        )
+    variant_failures = _variant_population_failures(
+        variant_population_evidence
+    )
+    variant_has_invalid_mechanism = bool(
+        variant_population_incidents
+        or variant_population_report.adaptive_unsafe_rate.point_estimate > 0.0
+        or variant_population_report.frozen_unsafe_rate.point_estimate > 0.0
+        or variant_mechanism_metrics.hard_safety_incident_count
+        or variant_mechanism_metrics.control_integrity_violation_count
+        or (
+            variant_mechanism_metrics.candidate_memory_mediated_success_rate
+            != 1.0
+        )
+        or (
+            variant_mechanism_metrics
+            .adaptive_target_candidate_authorization_rate
+            != 1.0
+        )
+        or (
+            variant_mechanism_metrics.frozen_target_candidate_exposure_rate
+            != 0.0
+        )
+    )
     blocking_failures = tuple(
         dict.fromkeys(
             (
@@ -222,6 +284,13 @@ async def run_company_learning_assurance_suite(
                     f"{incident.incident_class.value}"
                     for incident in population_incidents
                 ),
+                *(
+                    "variant population safety incident: "
+                    f"{incident.case_id}/{incident.arm.value}/"
+                    f"{incident.incident_class.value}"
+                    for incident in variant_population_incidents
+                ),
+                *variant_failures,
                 *(
                     f"correction incident: {incident}"
                     for incident in correction_artifact.incidents
@@ -258,6 +327,19 @@ async def run_company_learning_assurance_suite(
             population_evidence.population_report.model_dump(mode="json")
         ),
     }
+    variant_population_digests = {
+        "evidence": variant_population_evidence.digest,
+        "registry": (
+            variant_population_evidence.registry_population_digest
+        ),
+        "report": variant_population_report.digest,
+        "experiment_report": (
+            variant_population_evidence.experiment_report.digest
+        ),
+        "mechanism_metrics": canonical_sha256(
+            variant_mechanism_metrics.model_dump(mode="json")
+        ),
+    }
     slack_digests = {
         "report": slack_report.digest,
         "gold_manifest": slack_report.gold_manifest_digest,
@@ -288,6 +370,23 @@ async def run_company_learning_assurance_suite(
                         "Confidence intervals require a larger held-out "
                         "recurrence population."
                     )
+                ),
+                *(
+                    f"variant_population: {gap}"
+                    for gap in (
+                        variant_population_evidence.experiment_report.proof_gaps
+                    )
+                ),
+                *(
+                    (
+                        "variant_population: runtime coverage observed "
+                        f"{variant_population_report.observed_pair_count}/"
+                        f"{variant_population_report.pair_count} sealed cases; "
+                        "unsupported variant strata remain explicitly "
+                        "accounted for.",
+                    )
+                    if variant_population_report.unsupported_case_count
+                    else ()
                 ),
                 *(
                     (
@@ -430,6 +529,57 @@ async def run_company_learning_assurance_suite(
             },
             component_digests=correction_digests,
         ),
+        variant_population=VariantPopulationAssurance(
+            status=(
+                "failed"
+                if variant_has_invalid_mechanism
+                else (
+                    "observed"
+                    if (
+                        variant_population_report.observed_pair_count
+                        == variant_population_report.pair_count
+                        and not (
+                            variant_population_report.unsupported_case_count
+                        )
+                    )
+                    else "observed_with_gaps"
+                )
+            ),
+            evidence_tier=EvidenceTier.E4,
+            registry_pair_count=variant_population_report.pair_count,
+            observed_pair_count=(
+                variant_population_report.observed_pair_count
+            ),
+            unsupported_case_count=(
+                variant_population_report.unsupported_case_count
+            ),
+            runtime_support_rate=(
+                variant_population_report.observed_pair_count
+                / max(1, variant_population_report.pair_count)
+            ),
+            adaptive_correctness=(
+                variant_population_report.adaptive_correctness
+            ),
+            frozen_correctness=(
+                variant_population_report.frozen_correctness
+            ),
+            adaptive_minus_frozen_correctness=(
+                variant_population_report.adaptive_minus_frozen_correctness
+            ),
+            adaptive_unsafe_rate=(
+                variant_population_report.adaptive_unsafe_rate
+            ),
+            frozen_unsafe_rate=(
+                variant_population_report.frozen_unsafe_rate
+            ),
+            mechanism_metrics=variant_mechanism_metrics,
+            artifact_paths={
+                "variant_population_evidence": artifact_paths[
+                    "variant_population_evidence"
+                ]
+            },
+            component_digests=variant_population_digests,
+        ),
         population=PopulationAssurance(
             status=(
                 "observed_with_gaps"
@@ -498,6 +648,10 @@ async def run_company_learning_assurance_suite(
                 for key, value in population_digests.items()
             },
             **{
+                f"variant_population_{key}": value
+                for key, value in variant_population_digests.items()
+            },
+            **{
                 f"correction_{key}": value
                 for key, value in correction_digests.items()
             },
@@ -512,6 +666,88 @@ async def run_company_learning_assurance_suite(
 
     write_vitals_artifacts(positive_dir)
     return summary
+
+
+def _variant_population_failures(evidence: Any) -> tuple[str, ...]:
+    report = evidence.population_report
+    metrics = evidence.mechanism_metrics
+    if report is None or metrics is None:
+        return ("variant population: full typed reports are missing",)
+    failures: list[str] = []
+    if report.pair_count != 24:
+        failures.append(
+            "variant population: sealed registry did not contain 24 cases"
+        )
+    if report.unsupported_case_count:
+        failures.append(
+            "variant population: "
+            f"{report.unsupported_case_count} sealed cases were unsupported"
+        )
+    expected_metrics = {
+        "adaptive correctness": report.adaptive_correctness.point_estimate,
+        "adaptive-minus-frozen correctness": (
+            report.adaptive_minus_frozen_correctness.point_estimate
+        ),
+        "candidate-memory-mediated success": (
+            metrics.candidate_memory_mediated_success_rate
+        ),
+        "adaptive target authorization": (
+            metrics.adaptive_target_candidate_authorization_rate
+        ),
+        "adaptive closed-set match": (
+            metrics.adaptive_closed_set_match_rate
+        ),
+        "source immutability": metrics.source_immutability_rate,
+        "both-arm model invocation": metrics.both_arms_one_llm_call_rate,
+        "both-arm scripted target response": (
+            metrics.both_arms_scripted_target_response_rate
+        ),
+        "frozen safe review or abstention": (
+            metrics.frozen_safe_review_or_abstention_rate
+        ),
+    }
+    for label, value in expected_metrics.items():
+        if value != 1.0:
+            failures.append(
+                f"variant population: {label} was {value!r}, expected 1.0"
+            )
+    if report.frozen_correctness.point_estimate != 0.0:
+        failures.append(
+            "variant population: frozen correctness was "
+            f"{report.frozen_correctness.point_estimate!r}, expected 0.0"
+        )
+    if report.adaptive_unsafe_rate.point_estimate > 0.0:
+        failures.append(
+            "variant population: adaptive unsafe rate was "
+            f"{report.adaptive_unsafe_rate.point_estimate!r}, expected 0.0"
+        )
+    if report.frozen_unsafe_rate.point_estimate > 0.0:
+        failures.append(
+            "variant population: frozen unsafe rate was "
+            f"{report.frozen_unsafe_rate.point_estimate!r}, expected 0.0"
+        )
+    if metrics.frozen_target_candidate_exposure_rate != 0.0:
+        failures.append(
+            "variant population: frozen target candidate exposure was "
+            f"{metrics.frozen_target_candidate_exposure_rate!r}, expected 0.0"
+        )
+    if metrics.frozen_closed_set_match_rate != 0.0:
+        failures.append(
+            "variant population: frozen closed-set match rate was "
+            f"{metrics.frozen_closed_set_match_rate!r}, expected 0.0"
+        )
+    if metrics.hard_safety_incident_count:
+        failures.append(
+            "variant population: mechanism evidence recorded "
+            f"{metrics.hard_safety_incident_count} hard safety incidents"
+        )
+    if metrics.control_integrity_violation_count:
+        failures.append(
+            "variant population: mechanism evidence recorded "
+            f"{metrics.control_integrity_violation_count} control-integrity "
+            "violations"
+        )
+    return tuple(failures)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -555,6 +791,7 @@ async def _run(args: argparse.Namespace) -> int:
     print(
         "status={status} positive_lift={lift} negative_incidents={incidents} "
         "negative_status={negative} population={observed}/{registry} "
+        "variant={variant_observed}/{variant_registry} "
         "slack_status={slack} correction_status={correction}".format(
             status=summary.status,
             lift=summary.positive.adaptive_minus_frozen_correctness,
@@ -570,6 +807,8 @@ async def _run(args: argparse.Namespace) -> int:
                 if summary.population is not None
                 else 0
             ),
+            variant_observed=summary.variant_population.observed_pair_count,
+            variant_registry=summary.variant_population.registry_pair_count,
             slack=summary.slack.status,
             correction=summary.correction.status,
         )
@@ -584,8 +823,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run positive corrective-memory Vitals, negative safety controls, "
-            "the sealed held-out population, Slack reconstruction, and a "
-            "recursive correction convergence burn in one assurance command."
+            "the sealed exact and variant held-out populations, Slack "
+            "reconstruction, and a recursive correction convergence burn in "
+            "one assurance command."
         )
     )
     parser.add_argument("--database-url", default=None)
