@@ -154,6 +154,10 @@ def test_full_profile_is_continuous_and_supports_strong_claims() -> None:
         ]
         == 0.875
     )
+    hidden = report["dimensions"]["hidden_pattern_recovery"]["metrics"]
+    assert hidden["causal_thesis_miss_rate"] == 0.125
+    assert hidden["independent_thesis_weight"] == 0.60
+    assert hidden["proxy_structure_weight"] == 0.40
 
 
 def test_scale_shortfall_is_precise_instead_of_binary() -> None:

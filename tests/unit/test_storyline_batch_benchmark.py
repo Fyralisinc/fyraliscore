@@ -2710,7 +2710,70 @@ def test_storyline_calibration_report_bins_future_validation_samples() -> None:
     assert report["positive_outcomes"] == 1
     assert report["negative_outcomes"] == 1
     assert 0.0 <= report["expected_calibration_error"] <= 1.0
+    assert 0.0 <= report["brier_score"] <= 1.0
+    assert -1.0 <= report["signed_calibration_bias"] <= 1.0
+    assert 0.0 <= report["overconfident_sample_rate"] <= 1.0
+    assert 0.0 <= report["selective_coverage_at_0_7"] <= 1.0
     assert any(bucket["n"] for bucket in report["bins"])
+
+
+def test_storyline_calibration_report_exposes_batched_overconfidence() -> None:
+    first = _sample_storyline_score_with_calibration()
+    second = _sample_storyline_score_with_calibration()
+    first.calibration_samples = [
+        {"confidence": 0.9, "outcome": 0.0},
+        {"confidence": 0.8, "outcome": 0.0},
+    ]
+    second.calibration_samples = [
+        {"confidence": 0.7, "outcome": 1.0},
+        {"confidence": 0.4, "outcome": 1.0},
+    ]
+
+    report = _storyline_calibration_report([first, second])
+
+    assert report["n"] == 4
+    assert report["mean_confidence"] == 0.7
+    assert report["empirical_accuracy"] == 0.5
+    assert report["signed_calibration_bias"] == 0.2
+    assert report["brier_score"] == 0.475
+    assert report["overconfident_sample_rate"] == 0.5
+    assert report["mean_overconfidence_exposure"] == 0.425
+    assert report["high_confidence_error_rate"] == 0.6667
+    assert report["selective_accuracy_at_0_7"] == 0.3333
+    assert report["selective_coverage_at_0_7"] == 0.75
+
+
+def test_thesis_excerpt_budget_prioritizes_causal_models_over_batch_order() -> None:
+    incidental = [
+        {
+            "natural": f"Scoped status update {index}",
+            "proposition": {"kind": "belief", "claim_role": "fact"},
+            "supporting_event_ids": [f"obs-{index}"],
+            "confidence": 0.9,
+        }
+        for index in range(20)
+    ]
+    causal = {
+        "natural": (
+            "Renewal risk is driven by missing security evidence rather than "
+            "support volume; procurement approval would falsify the mechanism."
+        ),
+        "proposition": {
+            "kind": "belief",
+            "claim_role": "hypothesis",
+            "hypothesis_text": "Security evidence gates procurement renewal.",
+        },
+        "supporting_event_ids": ["obs-a", "obs-b", "obs-c"],
+        "confidence": 0.6,
+    }
+
+    excerpt = benchmark._thesis_recovery_prediction_text(
+        incidental + [causal],
+        max_models=4,
+    )
+
+    assert "Renewal risk is driven" in excerpt
+    assert "Scoped status update 19" not in excerpt
 
 
 def test_storyline_calibration_report_is_empty_without_future_validation_samples() -> (
@@ -2720,6 +2783,8 @@ def test_storyline_calibration_report_is_empty_without_future_validation_samples
 
     assert report["n"] == 0
     assert report["expected_calibration_error"] is None
+    assert report["brier_score"] is None
+    assert report["signed_calibration_bias"] is None
 
 
 def test_variance_report_summarizes_scores_and_judged_rate(tmp_path) -> None:

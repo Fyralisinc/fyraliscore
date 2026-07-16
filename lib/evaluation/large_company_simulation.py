@@ -204,13 +204,17 @@ def _hidden_pattern_dimension(
             min(1.0, judged / max(1, len(storylines))),
         ]
     )
+    # The independent judge is the only measure here that asks whether the
+    # recovered Models state the actual operating thesis. Lexical facets,
+    # topology and concrete-Model presence are supporting diagnostics, not
+    # substitutes for causal correctness.
     score = _weighted(
         [
-            (avg_latent, 0.30),
-            (best_coverage, 0.20),
-            (concrete, 0.20),
-            (thesis_score, 0.15),
-            (thesis_accuracy, 0.15),
+            (avg_latent, 0.15),
+            (best_coverage, 0.10),
+            (concrete, 0.15),
+            (thesis_score, 0.25),
+            (thesis_accuracy, 0.35),
         ]
     )
     weakest = sorted(
@@ -231,6 +235,11 @@ def _hidden_pattern_dimension(
             "thesis_judgement_count": judged,
             "thesis_average_score": thesis_score,
             "thesis_accuracy": thesis_accuracy,
+            "causal_thesis_miss_rate": (
+                round(1.0 - thesis_accuracy, 4) if judged else None
+            ),
+            "independent_thesis_weight": 0.60,
+            "proxy_structure_weight": 0.40,
             "weakest_storylines": [
                 {"storyline": name, "latent_pattern_score": score}
                 for name, score in weakest

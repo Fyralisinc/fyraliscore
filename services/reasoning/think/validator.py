@@ -351,6 +351,9 @@ _DEFAULT_ABSTRACTION_LEVEL_BY_CLAIM_ROLE: dict[str, str] = {
 
 _UNCERTAINTY_CONFIDENCE_CAP = 0.69
 _LOW_TRUST_CONFIDENCE_CAP = 0.55
+_UNSUPPORTED_CAUSAL_HYPOTHESIS_CAP = 0.60
+_THIN_CAUSAL_SITUATION_CAP = 0.68
+_PARTIAL_CAUSAL_SITUATION_CAP = 0.74
 _UNCERTAINTY_MARKERS = (
     "maybe",
     "probably",
@@ -449,6 +452,49 @@ def _confidence_cap_for_linguistic_uncertainty(
         return _LOW_TRUST_CONFIDENCE_CAP
     if any(marker in text for marker in _UNCERTAINTY_MARKERS):
         return _UNCERTAINTY_CONFIDENCE_CAP
+    return None
+
+
+def _confidence_cap_for_causal_evidence(entry: dict[str, Any]) -> float | None:
+    """Bound causal confidence until the claim cites discriminating evidence.
+
+    Cold-start calibration is actor/kind based and therefore cannot tell a
+    fluent causal explanation from a mechanism supported by independent
+    observations. Keep hypotheses conservative and let later confirmation or
+    empirical calibration raise them. Situations can earn a higher initial cap
+    when they cite multiple observation ids, but do not receive high confidence
+    merely for combining many scoped entities or member Models.
+    """
+    proposition = entry.get("proposition")
+    if not isinstance(proposition, dict):
+        return None
+    role = str(proposition.get("claim_role") or "")
+    if role == "hypothesis":
+        return _UNSUPPORTED_CAUSAL_HYPOTHESIS_CAP
+    if role != "situation":
+        return None
+    evidence_ids = {
+        str(value)
+        for value in [
+            *list(entry.get("supporting_event_ids", []) or []),
+            *list(proposition.get("evidence_event_ids", []) or []),
+        ]
+        if value
+    }
+    contextual_frame = proposition.get("contextual_frame")
+    source_channels = {
+        str(value).strip().casefold()
+        for value in (
+            contextual_frame.get("source_channels", [])
+            if isinstance(contextual_frame, dict)
+            else []
+        )
+        if str(value).strip()
+    }
+    if len(evidence_ids) < 2:
+        return _THIN_CAUSAL_SITUATION_CAP
+    if len(evidence_ids) < 3 or len(source_channels) < 2:
+        return _PARTIAL_CAUSAL_SITUATION_CAP
     return None
 
 
@@ -1389,6 +1435,9 @@ async def _validate_claim_op(
         )
         if uncertainty_cap is not None:
             conf = min(conf, uncertainty_cap)
+        causal_evidence_cap = _confidence_cap_for_causal_evidence(entry)
+        if causal_evidence_cap is not None:
+            conf = min(conf, causal_evidence_cap)
         # Falsifier check runs AFTER calibration (TK-2). If calibration
         # inflated conf past the threshold, the Model must still have
         # an adequate falsifier.

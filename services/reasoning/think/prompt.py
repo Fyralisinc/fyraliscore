@@ -266,6 +266,29 @@ Stance/grammar rubric:
 - Do not flatten every claim into plain fact; the grammar fields are part of
   retrieval quality and should preserve the signal's semantics.
 
+Causal thesis formation across a signal batch:
+- When multiple observations jointly reveal one operating mechanism, do not
+  leave the understanding distributed across several vocabulary-overlapping
+  fact Models. Emit one claim-local `situation` or `hypothesis` that states:
+  (1) the observed outcome or pressure, (2) the proposed mechanism, (3) the
+  strongest plausible alternative explanation, and (4) the future observation
+  that would discriminate between them.
+- A causal thesis must explain why the evidence belongs together. Mere
+  co-occurrence, a list of symptoms, or reuse of the signal vocabulary is not
+  causal recovery.
+- Preserve uncertainty explicitly. Use a hypothesis when the mechanism is not
+  independently supported; use a situation only when its member Models and
+  shared_mechanism are evidenced. Never promote an inferred mechanism into a
+  fact just because several messages repeat it.
+- Confidence must track evidence strength, not prose fluency: generally keep a
+  single-source causal hypothesis at or below 0.60, a multi-signal but
+  single-source-family thesis at or below 0.70, and exceed 0.75 only when
+  independent source families or later outcome evidence support the mechanism.
+- Prefer one complete, falsifiable causal thesis over several partial Models
+  that separately mention the outcome, mechanism, and risk. Keep the atomic
+  evidence Models and connect them to the thesis instead of copying the whole
+  batch into its scope.
+
 Recommendations:
 - Emit a recommendation Model only for concrete human-approved Act/Resource
   changes: create/update/archive/transition a Goal, Commitment, Decision, or

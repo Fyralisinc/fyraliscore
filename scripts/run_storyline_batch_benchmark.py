@@ -7120,13 +7120,60 @@ def _thesis_recovery_prediction_text(
     max_models: int = 16,
     max_chars_per_model: int = 1200,
 ) -> str:
+    # DB return order is not semantic. Rank complete, evidenced explanatory
+    # Models ahead of incidental scoped facts so the fixed excerpt budget
+    # measures whether a causal thesis exists, not insertion-order luck.
+    ranked = sorted(
+        relevant_models,
+        key=_thesis_model_priority,
+        reverse=True,
+    )
     excerpts: list[str] = []
-    for index, model in enumerate(relevant_models[:max_models], start=1):
+    for index, model in enumerate(ranked[:max_models], start=1):
         text = " ".join(_model_text(model).split())
         if not text:
             continue
         excerpts.append(f"[{index}] {text[:max_chars_per_model]}")
     return "\n".join(excerpts) or "No relevant models were recovered."
+
+
+def _thesis_model_priority(model: dict[str, Any]) -> tuple[float, int, float]:
+    proposition = _json_obj(model.get("proposition"))
+    role = str(proposition.get("claim_role") or "")
+    text = _model_text(model).lower()
+    role_score = {
+        "situation": 5.0,
+        "hypothesis": 4.5,
+        "pattern": 4.0,
+        "relation": 3.5,
+        "concern": 2.0,
+        "prediction": 1.5,
+        "fact": 1.0,
+    }.get(role, 0.5)
+    causal_markers = (
+        "because",
+        "caused by",
+        "due to",
+        "driven by",
+        "explains",
+        "mechanism",
+        "rather than",
+        "not ",
+        "but ",
+        "therefore",
+        "leading to",
+        "results in",
+        "shared_mechanism",
+        "falsif",
+    )
+    causal_score = min(
+        3.0,
+        0.5 * sum(marker in text for marker in causal_markers),
+    )
+    support_count = len(set(map(str, model.get("supporting_event_ids") or [])))
+    evidence_score = min(2.0, support_count / 2.0)
+    confidence = _coerce_confidence(model.get("confidence")) or 0.0
+    return role_score + causal_score + evidence_score, support_count, confidence
 
 
 def _scope_refs_for_story(
@@ -7364,6 +7411,15 @@ def _storyline_calibration_report(
             "n": 0,
             "bin_count": bin_count,
             "expected_calibration_error": None,
+            "brier_score": None,
+            "signed_calibration_bias": None,
+            "mean_confidence": None,
+            "empirical_accuracy": None,
+            "overconfident_sample_rate": None,
+            "mean_overconfidence_exposure": None,
+            "high_confidence_error_rate": None,
+            "selective_accuracy_at_0_7": None,
+            "selective_coverage_at_0_7": None,
             "bins": [],
             "note": (
                 "No future-validation-backed calibration samples were available "
@@ -7373,6 +7429,8 @@ def _storyline_calibration_report(
     bins: list[dict[str, Any]] = []
     total = len(samples)
     ece = 0.0
+    confidences = [float(sample["confidence"]) for sample in samples]
+    outcomes = [float(sample["outcome"]) for sample in samples]
     for bin_index in range(bin_count):
         low = bin_index / bin_count
         high = (bin_index + 1) / bin_count
@@ -7414,11 +7472,65 @@ def _storyline_calibration_report(
                 "gap": round(gap, 4),
             }
         )
+    mean_confidence = sum(confidences) / total
+    empirical_accuracy = sum(outcomes) / total
+    brier = sum(
+        (confidence - outcome) ** 2
+        for confidence, outcome in zip(confidences, outcomes, strict=True)
+    ) / total
+    positive_calibration_exposure = sum(
+        (bucket["n"] / total)
+        * max(0.0, bucket["avg_confidence"] - bucket["accuracy"])
+        for bucket in bins
+        if bucket["n"]
+    )
+    materially_overconfident_population = sum(
+        bucket["n"]
+        for bucket in bins
+        if bucket["n"]
+        and bucket["avg_confidence"] - bucket["accuracy"] >= 0.2
+    )
+    high_confidence = [
+        (confidence, outcome)
+        for confidence, outcome in zip(confidences, outcomes, strict=True)
+        if confidence >= 0.7
+    ]
     return {
         "source": "storyline_future_validation_proxy",
         "n": total,
         "bin_count": bin_count,
         "expected_calibration_error": round(ece, 4),
+        "brier_score": round(brier, 4),
+        "signed_calibration_bias": round(mean_confidence - empirical_accuracy, 4),
+        "mean_confidence": round(mean_confidence, 4),
+        "empirical_accuracy": round(empirical_accuracy, 4),
+        "overconfident_sample_rate": round(
+            materially_overconfident_population / total,
+            4,
+        ),
+        "mean_overconfidence_exposure": round(
+            positive_calibration_exposure,
+            4,
+        ),
+        "high_confidence_error_rate": (
+            round(
+                sum(1.0 - outcome for _, outcome in high_confidence)
+                / len(high_confidence),
+                4,
+            )
+            if high_confidence
+            else None
+        ),
+        "selective_accuracy_at_0_7": (
+            round(
+                sum(outcome for _, outcome in high_confidence)
+                / len(high_confidence),
+                4,
+            )
+            if high_confidence
+            else None
+        ),
+        "selective_coverage_at_0_7": round(len(high_confidence) / total, 4),
         "positive_outcomes": int(sum(float(sample["outcome"]) for sample in samples)),
         "negative_outcomes": int(
             total - sum(float(sample["outcome"]) for sample in samples)
@@ -7428,7 +7540,13 @@ def _storyline_calibration_report(
             "ECE is computed only over Models supported by pre-validation "
             "storyline evidence, then checked against the run's "
             "future-validation waves. It is a benchmark proxy, not a production "
-            "resolution-outcome audit."
+            "resolution-outcome audit. Signed bias distinguishes overconfidence "
+            "(positive) from underconfidence (negative); Brier score preserves "
+            "per-claim error magnitude. Overconfident sample rate counts claims "
+            "that fall in calibration bins whose positive gap is at least 0.20, "
+            "while mean overconfidence exposure is the population-weighted "
+            "positive bin gap. Selective metrics "
+            "expose whether high-confidence claims are actually safer to trust."
         ),
     }
 
