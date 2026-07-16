@@ -971,6 +971,6 @@ not claimed by this working version.
   score was `-0.1420` with no salience lift, while the repeated useful source
   scored `0.2911` and raised the relevant salience multiplier to `1.0466`.
 - Exact final committed assurance artifact:
-  `/tmp/fyralis-company-learning-assurance-v5-ac963125` with status `working`,
+  `/tmp/fyralis-company-learning-assurance-v5-19bf73e1` with status `working`,
   no blocking failures and summary digest
-  `3f67f9b5e5e488dabb9d9c279b5c9330094d62c7a4a6000abc2a2dd684fa6fa1`.
+  `6fd1b0b2ee246db512de292c4a1475913ce2a8b2d694bdb1e22936d8caa1fe31`.
