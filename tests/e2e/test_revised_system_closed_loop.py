@@ -23,6 +23,16 @@ from services.ingest.ingestion.core import ingest_from_draft
 from services.ingest.ingestion.handlers.slack import handle_slack_message
 from services.workers.agency_activation_worker import AgencyActivationWorker
 from services.workers.entity_resolver.worker import EntityResolverWorker
+from services.workers.external_effect_executor import (
+    ActionAdapterRequest,
+    ActionDispatchFate,
+    ActionDispatchResult,
+    ActionPreflightResult,
+    StaticActionAdapterRegistry,
+)
+from services.workers.external_effect_executor.worker import (
+    ExternalEffectExecutorWorker,
+)
 from services.workers.intervention_episode_coordinator import (
     InterventionEpisodeCoordinatorWorker,
     InterventionEpisodeCoordinatorWorkerStats,
@@ -74,6 +84,38 @@ class _ScriptedResolver(LLMProvider):
                     "NBI selects the independently adjudicated tenant entity"
                 ),
             }
+        )
+
+
+class _DeterministicActionAdapter:
+    adapter_name = "simulated-slack-message-delivery"
+    provider_name = "simulated-slack"
+
+    def __init__(self) -> None:
+        self.preflight_requests: list[ActionAdapterRequest] = []
+        self.dispatch_requests: list[ActionAdapterRequest] = []
+
+    async def preflight(
+        self,
+        request: ActionAdapterRequest,
+    ) -> ActionPreflightResult:
+        self.preflight_requests.append(request)
+        return ActionPreflightResult(
+            evidence_refs=("simulated-slack-channel:exists",),
+        )
+
+    async def dispatch(
+        self,
+        request: ActionAdapterRequest,
+    ) -> ActionDispatchResult:
+        self.dispatch_requests.append(request)
+        return ActionDispatchResult(
+            fate=ActionDispatchFate.SUCCEEDED,
+            reason="deterministic simulated provider persisted one exact message",
+            provider_observation_refs=("simulated-slack:ok",),
+            external_state_evidence_refs=(
+                "simulated-slack-message:C-CUSTOMER-SUCCESS:1717.001",
+            ),
         )
 
 
@@ -137,7 +179,7 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
         },
     )
 
-    occurred_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    occurred_at = datetime.now(timezone.utc) - timedelta(minutes=20)
     draft = await handle_slack_message(
         _slack_payload(occurred_at=occurred_at),
         {},
@@ -192,7 +234,7 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
     model_id = semantic_row["admitted_model_id"]
     assert model_id is not None
 
-    loop_started_at = datetime.now(timezone.utc)
+    loop_started_at = occurred_at + timedelta(minutes=1)
     activation_worker = AgencyActivationWorker(
         pool=fresh_db,
         worker_id=f"pytest:agency-activation:{tenant_id}",
@@ -200,6 +242,12 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
     work_scheduler = WorkSchedulerWorker(
         pool=fresh_db,
         worker_id=f"pytest:work-scheduler:{tenant_id}",
+    )
+    action_adapter = _DeterministicActionAdapter()
+    effect_executor = ExternalEffectExecutorWorker(
+        pool=fresh_db,
+        worker_id=f"pytest:effect-executor:{tenant_id}",
+        adapter_registry=StaticActionAdapterRegistry((action_adapter,)),
     )
     artifacts = await run_closed_loop_vertical(
         pool=fresh_db,
@@ -211,6 +259,7 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
         started_at=loop_started_at,
         activation_worker=activation_worker,
         work_scheduler=work_scheduler,
+        effect_executor=effect_executor,
         finalize_episode_manifest=False,
     )
     coordinator_stats = InterventionEpisodeCoordinatorWorkerStats()
@@ -344,6 +393,26 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
             """,
             tenant_id,
         )
+        effect_execution_work = await conn.fetchrow(
+            """
+            SELECT status, attempt_count, effect_attempt_id,
+                   applied_effect_version, execution_receipt_id,
+                   applied_effect_state
+            FROM leased_work_effect_execution_items
+            WHERE tenant_id=$1
+            """,
+            tenant_id,
+        )
+        effect_receipts = await conn.fetch(
+            """
+            SELECT receipt_id, effect_version, effect_state, receipt
+            FROM execution_receipts
+            WHERE tenant_id=$1 AND effect_attempt_id=$2
+            ORDER BY effect_version
+            """,
+            tenant_id,
+            artifacts.effect_attempt_id,
+        )
 
     assert state.episode_count == 1
     assert state.complete_episode_count == 1
@@ -363,11 +432,43 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
     assert state.scheduling_work_item_count == 1
     assert state.scheduling_work_leased_count == 1
     assert state.scheduling_work_completion_rate == 1.0
+    assert state.effect_execution_item_count == 1
+    assert state.effect_execution_successful_dispatch_count == 1
+    assert state.effect_execution_completion_rate == 1.0
     assert cardinalities is not None
     assert set(dict(cardinalities).values()) == {1}
     assert manifest_work_fates == {"applied": 10}
     assert activation_work_fates == {"activated": 1}
     assert scheduling_work_fates == {"leased": 1}
+    assert effect_execution_work is not None
+    assert effect_execution_work["status"] == "dispatched"
+    assert effect_execution_work["attempt_count"] == 1
+    assert effect_execution_work["effect_attempt_id"] == artifacts.effect_attempt_id
+    assert effect_execution_work["applied_effect_state"] == "succeeded"
+    assert effect_execution_work["execution_receipt_id"] == (
+        artifacts.execution_receipt_id
+    )
+    assert [row["effect_version"] for row in effect_receipts] == [2, 3, 4]
+    assert [row["effect_state"] for row in effect_receipts] == [
+        "dispatch_intent_recorded",
+        "acknowledged",
+        "succeeded",
+    ]
+    assert effect_receipts[-1]["receipt_id"] == artifacts.execution_receipt_id
+    assert effect_receipts[-1]["effect_version"] == (
+        effect_execution_work["applied_effect_version"]
+    )
+    assert effect_receipts[-1]["effect_state"] == "succeeded"
+    assert len(action_adapter.preflight_requests) == 1
+    assert len(action_adapter.dispatch_requests) == 1
+    dispatched_request = action_adapter.dispatch_requests[0]
+    assert dispatched_request.effect_attempt_id == artifacts.effect_attempt_id
+    assert dispatched_request.operation == "send_message"
+    assert dispatched_request.parameters == {
+        "channel_id": "C-CUSTOMER-SUCCESS",
+        "text": "Nimbus Bank is blocked; owner review is required.",
+    }
+    assert action_adapter.preflight_requests[0] == dispatched_request
     assert len(scheduling_commands) == 2
     assert all(row["command_id"].version == 5 for row in scheduling_commands)
     for row in scheduling_commands:
@@ -433,6 +534,7 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
     await semantic_worker.process_batch(limit=1000)
     assert await activation_worker.process_batch(limit=10) == 0
     assert await work_scheduler.process_batch(limit=10) == 0
+    assert await effect_executor.process_batch(limit=10) == 0
     assert await coordinator.process_batch(limit=100) == 0
     async with fresh_db.acquire() as conn:
         assert await conn.fetchval(
@@ -459,6 +561,25 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
             """,
             tenant_id,
         ) == 11
+        assert await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM leased_work_effect_execution_items
+            WHERE tenant_id=$1
+            """,
+            tenant_id,
+        ) == 1
+        assert await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM execution_receipts
+            WHERE tenant_id=$1 AND effect_attempt_id=$2
+            """,
+            tenant_id,
+            artifacts.effect_attempt_id,
+        ) == len(effect_receipts)
+    assert len(action_adapter.preflight_requests) == 1
+    assert len(action_adapter.dispatch_requests) == 1
 
     # An execution receipt cannot be relabeled as an independent Outcome.
     invalid_command = _json(outcome_command)

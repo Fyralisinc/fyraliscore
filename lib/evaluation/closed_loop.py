@@ -104,6 +104,19 @@ _SCHEDULING_WORK_TERMINAL_FATES = frozenset(
         "failed_terminal",
     }
 )
+_EFFECT_EXECUTION_NONTERMINAL_FATES = frozenset(
+    {"pending", "processing", "retry_scheduled"}
+)
+_EFFECT_EXECUTION_TERMINAL_FATES = frozenset(
+    {
+        "dispatched",
+        "provider_rejected",
+        "provider_failed",
+        "unknown",
+        "reconciliation_required",
+        "failed_terminal",
+    }
+)
 
 
 class _ClosedLoopModel(BaseModel):
@@ -179,6 +192,21 @@ class ClosedLoopEvaluationState(_ClosedLoopModel):
         le=1.0,
     )
     scheduling_work_fate_counts: dict[str, int]
+    effect_execution_item_count: int = Field(ge=0)
+    effect_execution_successful_dispatch_count: int = Field(ge=0)
+    effect_execution_incomplete_count: int = Field(ge=0)
+    effect_execution_backlog_count: int = Field(ge=0)
+    effect_execution_reconciliation_required_count: int = Field(ge=0)
+    effect_execution_unknown_count: int = Field(ge=0)
+    effect_execution_provider_rejected_count: int = Field(ge=0)
+    effect_execution_provider_failed_count: int = Field(ge=0)
+    effect_execution_terminal_failure_count: int = Field(ge=0)
+    effect_execution_completion_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    effect_execution_fate_counts: dict[str, int]
     stage_coverage_rates: dict[str, float | None]
     continuity_rates: dict[str, float | None]
     component_violation_counts: dict[str, int]
@@ -301,6 +329,36 @@ async def evaluate_closed_loop_state(
         scheduling_work_terminal_failures,
         scheduling_work_fates,
     ) = _summarize_scheduling_work_rows(scheduling_work_rows)
+    effect_execution_rows = await conn.fetch(
+        """
+        SELECT w.status
+        FROM leased_work_effect_execution_items w
+        JOIN agency_canonical_events e
+          ON e.id=w.source_event_id
+         AND e.tenant_id=w.tenant_id
+        WHERE w.tenant_id=$1
+          AND e.created_at < $3
+          AND (
+            e.created_at >= $2
+            OR w.status IN ('pending', 'processing', 'retry_scheduled')
+          )
+        ORDER BY e.created_at, w.id
+        """,
+        scope.tenant_id,
+        scope.start,
+        scope.end,
+    )
+    (
+        effect_execution_count,
+        effect_execution_dispatched,
+        effect_execution_incomplete,
+        effect_execution_reconciliation_required,
+        effect_execution_unknown,
+        effect_execution_provider_rejected,
+        effect_execution_provider_failed,
+        effect_execution_terminal_failures,
+        effect_execution_fates,
+    ) = _summarize_effect_execution_rows(effect_execution_rows)
     reports = tuple(
         [
             await _evaluate_episode(
@@ -374,6 +432,28 @@ async def evaluate_closed_loop_state(
         incident_counts["work_scheduling_failed_terminal"] += (
             scheduling_work_terminal_failures
         )
+    if effect_execution_incomplete:
+        incident_counts["effect_execution_incomplete"] += (
+            effect_execution_incomplete
+        )
+    if effect_execution_reconciliation_required:
+        incident_counts["effect_execution_reconciliation_required"] += (
+            effect_execution_reconciliation_required
+        )
+    if effect_execution_unknown:
+        incident_counts["effect_execution_unknown"] += effect_execution_unknown
+    if effect_execution_provider_rejected:
+        incident_counts["effect_execution_provider_rejected"] += (
+            effect_execution_provider_rejected
+        )
+    if effect_execution_provider_failed:
+        incident_counts["effect_execution_provider_failed"] += (
+            effect_execution_provider_failed
+        )
+    if effect_execution_terminal_failures:
+        incident_counts["effect_execution_failed_terminal"] += (
+            effect_execution_terminal_failures
+        )
     component_violation_counts = {
         name: state.violation_count
         for name, state in component_states.items()
@@ -420,6 +500,26 @@ async def evaluate_closed_loop_state(
             scheduling_work_count,
         ),
         scheduling_work_fate_counts=dict(sorted(scheduling_work_fates.items())),
+        effect_execution_item_count=effect_execution_count,
+        effect_execution_successful_dispatch_count=effect_execution_dispatched,
+        effect_execution_incomplete_count=effect_execution_incomplete,
+        effect_execution_backlog_count=effect_execution_incomplete,
+        effect_execution_reconciliation_required_count=(
+            effect_execution_reconciliation_required
+        ),
+        effect_execution_unknown_count=effect_execution_unknown,
+        effect_execution_provider_rejected_count=(
+            effect_execution_provider_rejected
+        ),
+        effect_execution_provider_failed_count=effect_execution_provider_failed,
+        effect_execution_terminal_failure_count=(
+            effect_execution_terminal_failures
+        ),
+        effect_execution_completion_rate=_rate(
+            effect_execution_dispatched,
+            effect_execution_count,
+        ),
+        effect_execution_fate_counts=dict(sorted(effect_execution_fates.items())),
         stage_coverage_rates=stage_coverage_rates,
         continuity_rates=continuity_rates,
         component_violation_counts=component_violation_counts,
@@ -433,6 +533,7 @@ async def evaluate_closed_loop_state(
             "Episode-manifest work is evaluated from current queue-head fates; pending, processing, and retry-scheduled items remain explicitly incomplete until applied.",
             "Agency activation completion includes terminal work exposed by canonical authorization events in the report window plus any still-nonterminal backlog before cutoff; authorization expiry is an explicit terminal non-success fate.",
             "Work scheduling completion includes terminal work exposed by registered WorkLedger events in the report window plus prior-window pending, processing, and retry-scheduled backlog.",
+            "Effect execution completion counts only verified dispatched provider outcomes; unknown and reconciliation-required fates remain explicit non-successful terminal evidence.",
         ),
         artifact_refs=artifact_refs,
     )
@@ -839,6 +940,24 @@ def _incident_summary(kind: str, count: int) -> str:
         "work_scheduling_failed_terminal": (
             f"Observed {count} terminal registered work scheduling failures."
         ),
+        "effect_execution_incomplete": (
+            f"Observed {count} incomplete leased-work effect execution items."
+        ),
+        "effect_execution_reconciliation_required": (
+            f"Observed {count} effect executions requiring reconciliation."
+        ),
+        "effect_execution_unknown": (
+            f"Observed {count} effect executions with unknown provider outcome."
+        ),
+        "effect_execution_provider_rejected": (
+            f"Observed {count} effect executions rejected by the provider."
+        ),
+        "effect_execution_provider_failed": (
+            f"Observed {count} effect executions failed by the provider."
+        ),
+        "effect_execution_failed_terminal": (
+            f"Observed {count} terminal leased-work effect execution failures."
+        ),
     }
     return summaries.get(
         kind,
@@ -936,6 +1055,51 @@ def render_closed_loop_markdown(state: ClosedLoopEvaluationState) -> str:
         lines.extend(
             f"| {fate} | {count} |"
             for fate, count in state.scheduling_work_fate_counts.items()
+        )
+    else:
+        lines.append("| no exposure | 0 |")
+    lines.extend(
+        [
+            "",
+            "## Leased Work Effect Execution Queue",
+            "",
+            f"- Work items: {state.effect_execution_item_count}",
+            (
+                "- Successful dispatches: "
+                f"{state.effect_execution_successful_dispatch_count}"
+            ),
+            f"- Incomplete: {state.effect_execution_incomplete_count}",
+            f"- Backlog: {state.effect_execution_backlog_count}",
+            (
+                "- Reconciliation required: "
+                f"{state.effect_execution_reconciliation_required_count}"
+            ),
+            f"- Unknown outcomes: {state.effect_execution_unknown_count}",
+            (
+                "- Provider rejected: "
+                f"{state.effect_execution_provider_rejected_count}"
+            ),
+            (
+                "- Provider failed: "
+                f"{state.effect_execution_provider_failed_count}"
+            ),
+            (
+                "- Terminal failures: "
+                f"{state.effect_execution_terminal_failure_count}"
+            ),
+            (
+                "- Completion rate: "
+                f"{_display_rate(state.effect_execution_completion_rate)}"
+            ),
+            "",
+            "| Fate | Count |",
+            "| --- | ---: |",
+        ]
+    )
+    if state.effect_execution_fate_counts:
+        lines.extend(
+            f"| {fate} | {count} |"
+            for fate, count in state.effect_execution_fate_counts.items()
         )
     else:
         lines.append("| no exposure | 0 |")
@@ -1134,6 +1298,41 @@ def _summarize_scheduling_work_rows(
         incomplete,
         work_expired,
         authorization_expired,
+        terminal_failures,
+        dict(sorted(fates.items())),
+    )
+
+
+def _summarize_effect_execution_rows(
+    rows: list[Mapping[str, Any]],
+) -> tuple[int, int, int, int, int, int, int, int, dict[str, int]]:
+    fates = Counter(str(row["status"]) for row in rows)
+    unknown_fates = set(fates) - (
+        _EFFECT_EXECUTION_NONTERMINAL_FATES
+        | _EFFECT_EXECUTION_TERMINAL_FATES
+    )
+    if unknown_fates:
+        raise ValueError(
+            "unknown leased-work effect execution fates: "
+            f"{sorted(unknown_fates)}"
+        )
+    dispatched = fates["dispatched"]
+    incomplete = sum(
+        fates[fate] for fate in _EFFECT_EXECUTION_NONTERMINAL_FATES
+    )
+    reconciliation_required = fates["reconciliation_required"]
+    unknown = fates["unknown"]
+    provider_rejected = fates["provider_rejected"]
+    provider_failed = fates["provider_failed"]
+    terminal_failures = fates["failed_terminal"]
+    return (
+        len(rows),
+        dispatched,
+        incomplete,
+        reconciliation_required,
+        unknown,
+        provider_rejected,
+        provider_failed,
         terminal_failures,
         dict(sorted(fates.items())),
     )

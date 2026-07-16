@@ -19,7 +19,7 @@
 #   app     : think_worker, post_commit_worker, anomaly_processor_worker,
 #             entity_resolver_worker, source_semantic_worker,
 #             intervention_episode_coordinator, agency_activation_worker,
-#             work_scheduler_worker
+#             work_scheduler_worker, external_effect_executor_worker
 #   (UI + TLS edge live in the demo overlay repo's docker-compose.demo.yml)
 #
 # Secrets (per-source creds, MASTER_KEK, OAuth/HMAC keys) live in
@@ -564,6 +564,19 @@ services:
       WORK_SCHEDULER_LEASE_S: "120"
       WORK_SCHEDULER_RETRY_S: "30"
       WORK_SCHEDULER_MAX_ATTEMPTS: "5"
+
+  external_effect_executor_worker:
+    <<: *worker
+    container_name: company_os_external_effect_executor_worker
+    command: python scripts/run_external_effect_executor_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      EXTERNAL_EFFECT_EXECUTOR_POLL_INTERVAL_S: "5"
+      EXTERNAL_EFFECT_EXECUTOR_BATCH_SIZE: "100"
+      EXTERNAL_EFFECT_EXECUTOR_LEASE_S: "120"
+      EXTERNAL_EFFECT_EXECUTOR_RETRY_S: "30"
+      EXTERNAL_EFFECT_EXECUTOR_MAX_ATTEMPTS: "5"
 
   # ---- retrieval/memory feature workers (ported from dev) -----------
   sage_structural_features_worker:

@@ -347,6 +347,7 @@ async def run_closed_loop_vertical(
     started_at: datetime,
     activation_worker: Any | None = None,
     work_scheduler: Any | None = None,
+    effect_executor: Any | None = None,
     finalize_episode_manifest: bool = True,
 ) -> ClosedLoopArtifacts:
     """Run one deterministic canonical loop over a simulated external world."""
@@ -1029,10 +1030,17 @@ async def run_closed_loop_vertical(
         workflow_at = workflow.created_at
         task_at = task.created_at
 
-    workflow_active_at = max(
-        workflow_at + timedelta(minutes=1),
-        authorization_at + timedelta(minutes=1),
-    )
+    if effect_executor is None:
+        workflow_active_at = max(
+            workflow_at + timedelta(minutes=1),
+            authorization_at + timedelta(minutes=1),
+        )
+    else:
+        workflow_active_at = max(
+            workflow_at,
+            authorization_at,
+            datetime.now(started_at.tzinfo),
+        )
     workflow = workflow.model_copy(
         update={
             "state": WorkflowRunState.ACTIVE,
@@ -1066,7 +1074,11 @@ async def run_closed_loop_vertical(
         (1, TaskState.READY, 0),
         (2, TaskState.IN_PROGRESS, 1),
     ):
-        at = task_transition_at + timedelta(minutes=offset)
+        at = (
+            task_transition_at + timedelta(minutes=offset)
+            if effect_executor is None
+            else max(task.updated_at, datetime.now(started_at.tzinfo))
+        )
         task = task.model_copy(
             update={
                 "state": state,
@@ -1093,7 +1105,11 @@ async def run_closed_loop_vertical(
             now=at,
         )
 
-    work_at = task_transition_at + timedelta(minutes=2)
+    work_at = (
+        task_transition_at + timedelta(minutes=2)
+        if effect_executor is None
+        else max(task.updated_at, datetime.now(started_at.tzinfo))
+    )
     obligation = WorkObligation(
         obligation_id=uuid7(),
         lineage_id=uuid7(),
@@ -1231,147 +1247,183 @@ async def run_closed_loop_vertical(
         lease = LeaseToken.model_validate(lease_payload)
         lease_at = lease.granted_at
 
-    effect_at = lease_at + timedelta(minutes=1)
-    attempt = ExternalEffectAttempt(
-        effect_attempt_id=uuid7(),
-        lineage_id=uuid7(),
-        tenant_id=tenant_id,
-        generation=1,
-        episode_id=episode_id,
-        task_id=task_id,
-        intervention_spec_digest=spec.spec_digest,
-        authorization_decision_id=authorization.decision_id,
-        capability_id=capabilities.capability_id,
-        capability_version=capabilities.capability_version,
-        capability_digest=capabilities.capability_digest,
-        operation=spec.operation,
-        canonical_request_hash=canonical_sha256(spec.parameters),
-        provider_idempotency_key=f"closed-loop:{episode_id}",
-        target_grounding_refs=task.target_grounding_refs,
-        live_precondition_refs=("simulated-slack-channel:exists",),
-        work_obligation_id=obligation.obligation_id,
-        work_obligation_generation=1,
-        lease_token_id=lease.lease_token_id,
-        lease_fence=1,
-        dispatch_deadline=effect_at + timedelta(minutes=5),
-        reconciliation_owner_ref="service:simulated-slack-reconciler",
-        compensation_policy_ref="compensation:correction-only",
-        reserved_at=effect_at,
-    )
-    await _apply(
-        pool,
-        execution,
-        "reserve",
-        command=EffectReservationCommand(
-            context=_context(
-                tenant_id=tenant_id,
-                owner="ExecutionLedgerApplier",
-                responsibility="external_effect",
-                operation="reserve_effect",
-                at=effect_at,
-                key="closed-loop:effect:reserve",
-            ),
-            attempt=attempt,
-        ),
-        now=effect_at,
-    )
-    effect_state = ExternalEffectState.RESERVED
-    effect_version = 1
-    succeeded_receipt_id: UUID | None = None
-    for offset, target, provider_refs, external_refs in (
-        (1, ExternalEffectState.DISPATCH_INTENT_RECORDED, (), ()),
-        (
-            2,
-            ExternalEffectState.ACKNOWLEDGED,
-            ("simulated-slack:accepted",),
-            (),
-        ),
-        (
-            3,
-            ExternalEffectState.SUCCEEDED,
-            ("simulated-slack:ok",),
-            ("simulated-slack-message:1717.001",),
-        ),
-    ):
-        observed_at = effect_at + timedelta(minutes=offset)
-        observation = EffectObservation(
-            receipt_id=uuid7(),
+    if effect_executor is None:
+        effect_at = lease_at + timedelta(minutes=1)
+        attempt = ExternalEffectAttempt(
+            effect_attempt_id=uuid7(),
+            lineage_id=uuid7(),
             tenant_id=tenant_id,
-            effect_attempt_id=attempt.effect_attempt_id,
-            from_state=effect_state,
-            to_state=target,
-            reason=f"simulated provider transition to {target.value}",
-            provider_observation_refs=provider_refs,
-            external_state_evidence_refs=external_refs,
-            observed_at=observed_at,
+            generation=1,
+            episode_id=episode_id,
+            task_id=task_id,
+            intervention_spec_digest=spec.spec_digest,
+            authorization_decision_id=authorization.decision_id,
+            capability_id=capabilities.capability_id,
+            capability_version=capabilities.capability_version,
+            capability_digest=capabilities.capability_digest,
+            operation=spec.operation,
+            canonical_request_hash=canonical_sha256(spec.parameters),
+            provider_idempotency_key=f"closed-loop:{episode_id}",
+            target_grounding_refs=task.target_grounding_refs,
+            live_precondition_refs=("simulated-slack-channel:exists",),
+            work_obligation_id=obligation.obligation_id,
+            work_obligation_generation=1,
+            lease_token_id=lease.lease_token_id,
+            lease_fence=1,
+            dispatch_deadline=effect_at + timedelta(minutes=5),
+            reconciliation_owner_ref="service:simulated-slack-reconciler",
+            compensation_policy_ref="compensation:correction-only",
+            reserved_at=effect_at,
         )
-        transition_command = EffectTransitionCommand(
-            context=_context(
-                tenant_id=tenant_id,
-                owner="ExecutionLedgerApplier",
-                responsibility="external_effect",
-                operation=f"effect_{target.value}",
-                at=observed_at,
-                key=f"closed-loop:effect:{target.value}",
-            ),
-            expected_version=effect_version,
-            observation=observation,
-        )
-        result = await _apply(
+        await _apply(
             pool,
             execution,
-            "transition",
-            command=transition_command,
-            now=observed_at,
+            "reserve",
+            command=EffectReservationCommand(
+                context=_context(
+                    tenant_id=tenant_id,
+                    owner="ExecutionLedgerApplier",
+                    responsibility="external_effect",
+                    operation="reserve_effect",
+                    at=effect_at,
+                    key="closed-loop:effect:reserve",
+                ),
+                attempt=attempt,
+            ),
+            now=effect_at,
         )
-        if target is ExternalEffectState.DISPATCH_INTENT_RECORDED:
-            duplicate = await _apply(
+        effect_state = ExternalEffectState.RESERVED
+        effect_version = 1
+        succeeded_receipt_id: UUID | None = None
+        for offset, target, provider_refs, external_refs in (
+            (1, ExternalEffectState.DISPATCH_INTENT_RECORDED, (), ()),
+            (
+                2,
+                ExternalEffectState.ACKNOWLEDGED,
+                ("simulated-slack:accepted",),
+                (),
+            ),
+            (
+                3,
+                ExternalEffectState.SUCCEEDED,
+                ("simulated-slack:ok",),
+                ("simulated-slack-message:1717.001",),
+            ),
+        ):
+            observed_at = effect_at + timedelta(minutes=offset)
+            observation = EffectObservation(
+                receipt_id=uuid7(),
+                tenant_id=tenant_id,
+                effect_attempt_id=attempt.effect_attempt_id,
+                from_state=effect_state,
+                to_state=target,
+                reason=f"simulated provider transition to {target.value}",
+                provider_observation_refs=provider_refs,
+                external_state_evidence_refs=external_refs,
+                observed_at=observed_at,
+            )
+            transition_command = EffectTransitionCommand(
+                context=_context(
+                    tenant_id=tenant_id,
+                    owner="ExecutionLedgerApplier",
+                    responsibility="external_effect",
+                    operation=f"effect_{target.value}",
+                    at=observed_at,
+                    key=f"closed-loop:effect:{target.value}",
+                ),
+                expected_version=effect_version,
+                observation=observation,
+            )
+            result = await _apply(
                 pool,
                 execution,
                 "transition",
                 command=transition_command,
                 now=observed_at,
             )
-            assert duplicate.duplicate
-            assert duplicate.object_version == result.object_version
-        if target is ExternalEffectState.SUCCEEDED:
-            succeeded_receipt_id = observation.receipt_id
-        effect_state = target
-        effect_version += 1
-    assert succeeded_receipt_id is not None
+            if target is ExternalEffectState.DISPATCH_INTENT_RECORDED:
+                duplicate = await _apply(
+                    pool,
+                    execution,
+                    "transition",
+                    command=transition_command,
+                    now=observed_at,
+                )
+                assert duplicate.duplicate
+                assert duplicate.object_version == result.object_version
+            if target is ExternalEffectState.SUCCEEDED:
+                succeeded_receipt_id = observation.receipt_id
+            effect_state = target
+            effect_version += 1
+        assert succeeded_receipt_id is not None
+    else:
+        assert await effect_executor.process_batch(limit=10) == 1
+        async with pool.acquire() as conn:
+            execution_work = await conn.fetchrow(
+                """
+                SELECT effect_attempt_id, status, applied_effect_version,
+                       execution_receipt_id, applied_effect_state, outcome_at
+                FROM leased_work_effect_execution_items
+                WHERE tenant_id=$1 AND obligation_id=$2
+                """,
+                tenant_id,
+                obligation.obligation_id,
+            )
+            assert execution_work is not None
+            attempt_payload = await conn.fetchval(
+                """
+                SELECT attempt_payload
+                FROM external_effect_attempt_versions
+                WHERE tenant_id=$1 AND effect_attempt_id=$2
+                  AND aggregate_version=1
+                """,
+                tenant_id,
+                execution_work["effect_attempt_id"],
+            )
+        assert execution_work["status"] == "dispatched"
+        assert execution_work["applied_effect_state"] == "succeeded"
+        assert execution_work["execution_receipt_id"] is not None
+        assert execution_work["applied_effect_version"] is not None
+        assert execution_work["outcome_at"] is not None
+        attempt = ExternalEffectAttempt.model_validate(attempt_payload)
+        effect_at = attempt.reserved_at
+        succeeded_receipt_id = execution_work["execution_receipt_id"]
 
-    work_complete_at = effect_at + timedelta(minutes=4)
-    await _apply(
-        pool,
-        work_ledger,
-        "resolve_lease",
-        command=LeaseResolutionCommand(
-            context=_context(
-                tenant_id=tenant_id,
-                owner="WorkLedgerApplier",
-                responsibility="work_obligation",
-                operation="complete_work",
-                at=work_complete_at,
-                key="closed-loop:work:complete",
+    if effect_executor is None:
+        work_complete_at = effect_at + timedelta(minutes=4)
+        await _apply(
+            pool,
+            work_ledger,
+            "resolve_lease",
+            command=LeaseResolutionCommand(
+                context=_context(
+                    tenant_id=tenant_id,
+                    owner="WorkLedgerApplier",
+                    responsibility="work_obligation",
+                    operation="complete_work",
+                    at=work_complete_at,
+                    key="closed-loop:work:complete",
+                ),
+                expected_obligation_version=3,
+                expected_lease_version=1,
+                resolution=LeaseResolution(
+                    lease_token_id=lease.lease_token_id,
+                    tenant_id=tenant_id,
+                    obligation_id=obligation.obligation_id,
+                    obligation_generation=1,
+                    fence=1,
+                    to_lease_state=LeaseState.COMPLETED,
+                    to_work_state=WorkObligationState.COMPLETED,
+                    effect_may_have_occurred=True,
+                    result_evidence_refs=(str(succeeded_receipt_id),),
+                    reason="the exact succeeded effect receipt is present",
+                    resolved_at=work_complete_at,
+                ),
             ),
-            expected_obligation_version=3,
-            expected_lease_version=1,
-            resolution=LeaseResolution(
-                lease_token_id=lease.lease_token_id,
-                tenant_id=tenant_id,
-                obligation_id=obligation.obligation_id,
-                obligation_generation=1,
-                fence=1,
-                to_lease_state=LeaseState.COMPLETED,
-                to_work_state=WorkObligationState.COMPLETED,
-                effect_may_have_occurred=True,
-                result_evidence_refs=(str(succeeded_receipt_id),),
-                reason="the exact succeeded effect receipt is present",
-                resolved_at=work_complete_at,
-            ),
-        ),
-        now=work_complete_at,
-    )
+            now=work_complete_at,
+        )
+    else:
+        work_complete_at = execution_work["outcome_at"]
     task_complete_at = work_complete_at + timedelta(minutes=1)
     task = task.model_copy(
         update={
