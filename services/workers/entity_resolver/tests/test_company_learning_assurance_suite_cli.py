@@ -53,6 +53,8 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert "active_identity=6/6" in result.stdout
     assert "active_salience=5/5" in result.stdout
     assert "retention=14/14" in result.stdout
+    assert "replacement=20/20" in result.stdout
+    assert "source_binding=12/12" in result.stdout
     assert "forgetting=0.0" in result.stdout
     assert "slack_status=observed" in result.stdout
     assert "correction_status=working" in result.stdout
@@ -184,6 +186,54 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert summary.retention.source_immutability_rate == 1.0
     assert summary.retention.hard_safety_incident_rate == 0.0
     assert summary.retention.full_scope_complete is True
+    assert summary.canonical_replacement.status == "observed"
+    assert summary.canonical_replacement.evidence_tier.value == "E4"
+    assert (
+        summary.canonical_replacement.report.observed_measurement_count
+        == summary.canonical_replacement.report.expected_measurement_count
+        == 20
+    )
+    assert (
+        summary.canonical_replacement.report.unsupported_measurement_count == 0
+    )
+    assert summary.canonical_replacement.report.violating_measurement_count == 0
+    assert (
+        summary.canonical_replacement.report.overall_satisfaction_rate.point_estimate
+        == 1.0
+    )
+    assert summary.canonical_replacement.full_scope_complete is True
+    assert summary.source_binding_lifecycle.status == "observed"
+    assert summary.source_binding_lifecycle.evidence_tier.value == "E4"
+    assert (
+        summary.source_binding_lifecycle.report.observed_measurement_count
+        == summary.source_binding_lifecycle.report.expected_measurement_count
+        == 12
+    )
+    assert (
+        summary.source_binding_lifecycle.report.unsupported_measurement_count == 0
+    )
+    assert (
+        summary.source_binding_lifecycle.report.violating_measurement_count == 0
+    )
+    assert (
+        summary.source_binding_lifecycle.report.overall_satisfaction_rate.point_estimate
+        == 1.0
+    )
+    assert summary.source_binding_lifecycle.full_scope_complete is True
+    assert not any(
+        "v6 has no typed, reopened" in gap
+        or "V6 does not validate or digest-bind" in gap
+        or "replacement and resurrection remain unproven" in gap
+        for gap in summary.proof_gaps
+    )
+    assert any(
+        gap.startswith("canonical_replacement: the sealed proof")
+        for gap in summary.proof_gaps
+    )
+    assert any(
+        gap.startswith("source_binding_lifecycle: the sealed proof")
+        for gap in summary.proof_gaps
+    )
     assert not any(
         "Slack reconstruction remains diagnostic and non-blocking" in gap
         for gap in summary.proof_gaps
@@ -248,6 +298,16 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
             encoding="utf-8"
         )
     )
+    canonical_replacement = json.loads(
+        Path(summary.artifact_paths["canonical_replacement_evidence"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    source_binding_lifecycle = json.loads(
+        Path(summary.artifact_paths["source_binding_lifecycle_evidence"]).read_text(
+            encoding="utf-8"
+        )
+    )
     assert (
         positive_pair["report"]["metrics"]["adaptive_minus_frozen_correctness"]
         == summary.positive.adaptive_minus_frozen_correctness
@@ -281,6 +341,14 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     ] == 5
     assert retention["report"]["observed_observation_count"] == 14
     assert retention["report"]["overall_forgetting_rate"] == 0.0
+    assert canonical_replacement["report"]["observed_measurement_count"] == 20
+    assert canonical_replacement["report"]["unsupported_measurement_count"] == 0
+    assert canonical_replacement["report"]["status"] == "observed"
+    assert source_binding_lifecycle["report"]["observed_measurement_count"] == 12
+    assert (
+        source_binding_lifecycle["report"]["unsupported_measurement_count"] == 0
+    )
+    assert source_binding_lifecycle["report"]["status"] == "observed"
 
     persisted_summary_path = output_dir / "positive" / "vitals" / SUMMARY_ARTIFACT_NAME
     persisted_payload = json.loads(persisted_summary_path.read_text(encoding="utf-8"))
@@ -326,6 +394,20 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     ] == 5
     assert assurance["retention"]["observed_observation_count"] == 14
     assert assurance["retention"]["overall_forgetting_rate"] == 0.0
+    assert (
+        assurance["canonical_replacement"]["report"][
+            "observed_measurement_count"
+        ]
+        == 20
+    )
+    assert assurance["canonical_replacement"]["status"] == "observed"
+    assert (
+        assurance["source_binding_lifecycle"]["report"][
+            "observed_measurement_count"
+        ]
+        == 12
+    )
+    assert assurance["source_binding_lifecycle"]["status"] == "observed"
 
 
 async def _run_cli(

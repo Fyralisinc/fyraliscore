@@ -21,6 +21,7 @@ from lib.architecture_registry import load_architecture_registry
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_assurance import (
     ActiveSurfacesAssurance,
+    CanonicalReplacementAssurance,
     CompanyLearningAssuranceSummary,
     CorrectionAssurance,
     CustomerLifecycleAssurance,
@@ -29,6 +30,7 @@ from lib.evaluation.company_learning_assurance import (
     PositiveAssurance,
     RetentionAssurance,
     SlackAssurance,
+    SourceBindingLifecycleAssurance,
     VariantCollisionAssurance,
     VariantPopulationAssurance,
     validate_company_learning_assurance_components,
@@ -90,6 +92,18 @@ from scripts.run_company_learning_customer_lifecycle_db import (
 from scripts.run_company_learning_variant_collisions_db import (
     run_variant_collision_experiment,
 )
+from scripts.run_canonical_resource_replacement_db import (
+    ARTIFACT_NAME as CANONICAL_REPLACEMENT_ARTIFACT_NAME,
+)
+from scripts.run_canonical_resource_replacement_db import (
+    run_canonical_resource_replacement_experiment,
+)
+from scripts.run_source_identity_binding_lifecycle_db import (
+    ARTIFACT_NAME as SOURCE_BINDING_LIFECYCLE_ARTIFACT_NAME,
+)
+from scripts.run_source_identity_binding_lifecycle_db import (
+    run_source_identity_binding_lifecycle_experiment,
+)
 from scripts.run_company_learning_vitals_harness import (
     _install_json_codec,
     _working_version_failures,
@@ -127,6 +141,8 @@ async def run_company_learning_assurance_suite(
     lifecycle_dir = output_dir / "customer-lifecycle"
     active_surfaces_dir = output_dir / "active-surfaces"
     retention_dir = output_dir / "retention"
+    canonical_replacement_dir = output_dir / "canonical-replacement"
+    source_binding_lifecycle_dir = output_dir / "source-binding-lifecycle"
     slack_dir = output_dir / "slack"
     correction_dir = output_dir / "correction"
 
@@ -207,6 +223,22 @@ async def run_company_learning_assurance_suite(
             system_version=system_version,
             llm_call_cost_usd=llm_call_cost_usd,
         )
+        canonical_replacement_evidence = (
+            await run_canonical_resource_replacement_experiment(
+                pool=negative_pool,
+                output_dir=canonical_replacement_dir,
+                run_id=f"{run_id}:canonical-replacement",
+                system_version=system_version,
+            )
+        )
+        source_binding_lifecycle_evidence = (
+            await run_source_identity_binding_lifecycle_experiment(
+                pool=negative_pool,
+                output_dir=source_binding_lifecycle_dir,
+                run_id=f"{run_id}:source-binding-lifecycle",
+                system_version=system_version,
+            )
+        )
     finally:
         await negative_pool.close()
     negative_path = negative_dir / NEGATIVE_ARTIFACT_NAME
@@ -216,6 +248,12 @@ async def run_company_learning_assurance_suite(
     customer_lifecycle_path = lifecycle_dir / CUSTOMER_LIFECYCLE_ARTIFACT_NAME
     active_surfaces_path = active_surfaces_dir / ACTIVE_SURFACES_ARTIFACT_NAME
     retention_path = retention_dir / RETENTION_ARTIFACT_NAME
+    canonical_replacement_path = (
+        canonical_replacement_dir / CANONICAL_REPLACEMENT_ARTIFACT_NAME
+    )
+    source_binding_lifecycle_path = (
+        source_binding_lifecycle_dir / SOURCE_BINDING_LIFECYCLE_ARTIFACT_NAME
+    )
     correction_artifact = await run_company_learning_correction_harness(
         database_url=database_url,
         output_dir=correction_dir,
@@ -267,6 +305,12 @@ async def run_company_learning_assurance_suite(
         "customer_lifecycle_evidence": str(customer_lifecycle_path.resolve()),
         "active_surfaces_evidence": str(active_surfaces_path.resolve()),
         "retention_evidence": str(retention_path.resolve()),
+        "canonical_replacement_evidence": str(
+            canonical_replacement_path.resolve()
+        ),
+        "source_binding_lifecycle_evidence": str(
+            source_binding_lifecycle_path.resolve()
+        ),
         "correction_evidence": str(correction_path.resolve()),
         "slack_observations": str(slack_observations_path.resolve()),
         "slack_report": str(slack_report_path.resolve()),
@@ -313,6 +357,14 @@ async def run_company_learning_assurance_suite(
         active_surfaces_report
     )
     retention_failures = _retention_failures(retention_report)
+    canonical_replacement_failures = _sealed_lifecycle_failures(
+        canonical_replacement_evidence.report,
+        label="canonical replacement",
+    )
+    source_binding_lifecycle_failures = _sealed_lifecycle_failures(
+        source_binding_lifecycle_evidence.report,
+        label="source binding lifecycle",
+    )
     blocking_failures = tuple(
         dict.fromkeys(
             (
@@ -341,6 +393,8 @@ async def run_company_learning_assurance_suite(
                 *customer_lifecycle_failures,
                 *active_surfaces_failures,
                 *retention_failures,
+                *canonical_replacement_failures,
+                *source_binding_lifecycle_failures,
                 *(
                     f"correction incident: {incident}"
                     for incident in correction_artifact.incidents
@@ -433,6 +487,20 @@ async def run_company_learning_assurance_suite(
         "report": retention_report.digest,
         "observations": retention_report.observation_digest,
     }
+    canonical_replacement_digests = {
+        "evidence": canonical_replacement_evidence.digest,
+        "report": canonical_replacement_evidence.report.digest,
+        "observation": canonical_sha256(
+            canonical_replacement_evidence.observation.model_dump(mode="json")
+        ),
+    }
+    source_binding_lifecycle_digests = {
+        "evidence": source_binding_lifecycle_evidence.digest,
+        "report": source_binding_lifecycle_evidence.report.digest,
+        "observation": canonical_sha256(
+            source_binding_lifecycle_evidence.observation.model_dump(mode="json")
+        ),
+    }
     slack_digests = {
         "report": slack_report.digest,
         "gold_manifest": slack_report.gold_manifest_digest,
@@ -481,26 +549,27 @@ async def run_company_learning_assurance_suite(
                 (
                     "customer_lifecycle: current proof is customer-only and "
                     "covers rename, archive and historical name reuse; merge, "
-                    "split, replacement and resurrection remain unproven."
+                    "split and resurrection remain unproven. Canonical resource "
+                    "replacement is measured separately."
                 ),
                 (
-                    "source_identity_lifecycle: focused tests cover storage-exact "
-                    "old attachments and operational stale fencing after "
-                    "rebind/revocation, but v6 has no typed, reopened, "
-                    "digest-bound lifecycle assurance component."
+                    "canonical_replacement: the sealed proof exercises one "
+                    "persisted resource replacement with representative aliases, "
+                    "source bindings, attachments, Models, projections, lineage "
+                    "and hard dependencies; replacement of other referent types "
+                    "and broader dependency families remains unproven."
                 ),
                 (
-                    "source_identity_lifecycle: focused tests cover the "
-                    "repository overlap guard only. V6 does not validate or "
-                    "digest-bind lifecycle behavior, direct SQL writers, "
-                    "database-native exclusion, or caller-owned transaction "
-                    "atomicity."
+                    "source_binding_lifecycle: the sealed proof exercises one "
+                    "persisted Jira resource binding lifecycle; equivalent "
+                    "behavior across every source system, canonical referent "
+                    "type and independent writer remains unproven."
                 ),
                 (
-                    "connectors: governed Jira, Linear, Google Drive and Gmail "
-                    "identity claims traverse production ingestion; meetings, "
-                    "remaining connectors, and full cross-source causal "
-                    "equivalence remain unproven."
+                    "source_scope: persisted normalized Jira, Linear, Google "
+                    "Drive and Gmail-attributed identity semantics are within "
+                    "the measured scope; connector and listener delivery are "
+                    "explicitly excluded from this assurance profile."
                 ),
                 (
                     "retention: worker restarts are object re-instantiation "
@@ -902,6 +971,32 @@ async def run_company_learning_assurance_suite(
             },
             component_digests=retention_digests,
         ),
+        canonical_replacement=CanonicalReplacementAssurance(
+            status=_sealed_lifecycle_status(
+                canonical_replacement_evidence.report
+            ),
+            evidence_tier=EvidenceTier.E4,
+            report=canonical_replacement_evidence.report,
+            artifact_paths={
+                "canonical_replacement_evidence": artifact_paths[
+                    "canonical_replacement_evidence"
+                ]
+            },
+            component_digests=canonical_replacement_digests,
+        ),
+        source_binding_lifecycle=SourceBindingLifecycleAssurance(
+            status=_sealed_lifecycle_status(
+                source_binding_lifecycle_evidence.report
+            ),
+            evidence_tier=EvidenceTier.E4,
+            report=source_binding_lifecycle_evidence.report,
+            artifact_paths={
+                "source_binding_lifecycle_evidence": artifact_paths[
+                    "source_binding_lifecycle_evidence"
+                ]
+            },
+            component_digests=source_binding_lifecycle_digests,
+        ),
         population=PopulationAssurance(
             status=(
                 "observed_with_gaps"
@@ -973,6 +1068,14 @@ async def run_company_learning_assurance_suite(
                 f"retention_{key}": value
                 for key, value in retention_digests.items()
             },
+            **{
+                f"canonical_replacement_{key}": value
+                for key, value in canonical_replacement_digests.items()
+            },
+            **{
+                f"source_binding_lifecycle_{key}": value
+                for key, value in source_binding_lifecycle_digests.items()
+            },
             **{f"correction_{key}": value for key, value in correction_digests.items()},
         },
         artifact_paths=artifact_paths,
@@ -985,6 +1088,61 @@ async def run_company_learning_assurance_suite(
 
     write_vitals_artifacts(positive_dir)
     return summary
+
+
+def _sealed_lifecycle_status(report: Any) -> str:
+    if (
+        report.violating_measurement_count
+        or report.safety_violation_count
+        or report.immutability_violation_count
+    ):
+        return "failed"
+    return "observed" if report.full_scope_complete else "observed_with_gaps"
+
+
+def _sealed_lifecycle_failures(
+    report: Any,
+    *,
+    label: str,
+) -> tuple[str, ...]:
+    failures: list[str] = []
+    if report.status != "observed":
+        failures.append(f"{label}: report status was {report.status!r}")
+    if report.expected_measurement_count <= 0:
+        failures.append(f"{label}: sealed measurement registry was empty")
+    if report.observed_measurement_count != report.expected_measurement_count:
+        failures.append(
+            f"{label}: observed {report.observed_measurement_count}/"
+            f"{report.expected_measurement_count} sealed measurements"
+        )
+    if report.unsupported_measurement_count:
+        failures.append(
+            f"{label}: {report.unsupported_measurement_count} measurements "
+            "were unsupported"
+        )
+    if report.violating_measurement_count:
+        failures.append(
+            f"{label}: {report.violating_measurement_count} measurements "
+            "violated the sealed lifecycle contract"
+        )
+    if report.safety_violation_count:
+        failures.append(
+            f"{label}: {report.safety_violation_count} safety violations "
+            "were observed"
+        )
+    if report.immutability_violation_count:
+        failures.append(
+            f"{label}: {report.immutability_violation_count} immutability "
+            "violations were observed"
+        )
+    if (
+        report.overall_satisfaction_rate is None
+        or report.overall_satisfaction_rate.point_estimate != 1.0
+    ):
+        failures.append(f"{label}: overall satisfaction was not exactly 1.0")
+    if not report.full_scope_complete:
+        failures.append(f"{label}: full sealed scope was incomplete")
+    return tuple(dict.fromkeys(failures))
 
 
 def _variant_population_failures(evidence: Any) -> tuple[str, ...]:
@@ -1378,6 +1536,8 @@ async def _run(args: argparse.Namespace) -> int:
         "active_identity={identity_observed}/{identity_registry} "
         "active_salience={salience_observed}/{salience_registry} "
         "retention={retention_observed}/{retention_expected} "
+        "replacement={replacement_observed}/{replacement_expected} "
+        "source_binding={binding_observed}/{binding_expected} "
         "forgetting={forgetting} "
         "slack_status={slack} correction_status={correction}".format(
             status=summary.status,
@@ -1410,6 +1570,18 @@ async def _run(args: argparse.Namespace) -> int:
             salience_registry=summary.active_surfaces.source_salience.case_count,
             retention_observed=summary.retention.observed_observation_count,
             retention_expected=summary.retention.expected_observation_count,
+            replacement_observed=(
+                summary.canonical_replacement.report.observed_measurement_count
+            ),
+            replacement_expected=(
+                summary.canonical_replacement.report.expected_measurement_count
+            ),
+            binding_observed=(
+                summary.source_binding_lifecycle.report.observed_measurement_count
+            ),
+            binding_expected=(
+                summary.source_binding_lifecycle.report.expected_measurement_count
+            ),
             forgetting=summary.retention.overall_forgetting_rate,
             slack=summary.slack.status,
             correction=summary.correction.status,
@@ -1428,8 +1600,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "the sealed exact, variant and collision populations, Slack "
             "reconstruction, customer identity lifecycle, active structured "
             "identity and salience surfaces, retention across learning and "
-            "restart horizons, and a recursive correction convergence burn "
-            "in one assurance command."
+            "restart horizons, canonical resource replacement, source binding "
+            "lifecycle, and a recursive correction convergence burn in one "
+            "assurance command."
         )
     )
     parser.add_argument("--database-url", default=None)
