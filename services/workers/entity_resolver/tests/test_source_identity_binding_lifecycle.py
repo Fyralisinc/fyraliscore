@@ -327,3 +327,69 @@ async def test_terminal_operations_are_idempotent_and_tenant_scoped(
                 "operation_ref": f"other-tenant-{operation_kind}",
             }
         )
+
+
+async def test_future_close_rejects_overlapping_rebind_but_allows_boundary_successor(
+    resolver_db: asyncpg.Pool,
+) -> None:
+    tenant_id, old_resource, new_resource = (
+        await _seed_tenant_and_resources(resolver_db)
+    )
+    repo = SourceIdentityBindingRepo(resolver_db)
+    identifier = "jira:project:scheduled-close"
+    original = await repo.bind(
+        tenant_id=tenant_id,
+        source_system="jira",
+        source_native_identifier=identifier,
+        source_identity_authority_ref="jira-project-contract-v1",
+        canonical_ref={"type": "resource", "id": str(old_resource)},
+        evidence_refs=("jira-project:scheduled-close:v1",),
+        valid_from=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    boundary = datetime(2026, 12, 1, tzinfo=timezone.utc)
+    await repo.close(
+        tenant_id=tenant_id,
+        binding_lineage_id=original.binding_lineage_id or "",
+        expected_binding_version=1,
+        effective_at=boundary,
+        operation_ref="scheduled-close-v1",
+        reason="source identity retires at year end",
+        evidence_refs=("admin-review:scheduled-close",),
+    )
+
+    with pytest.raises(ValueError, match="valid-time interval overlaps"):
+        await repo.bind(
+            tenant_id=tenant_id,
+            source_system="jira",
+            source_native_identifier=identifier,
+            source_identity_authority_ref="jira-project-contract-v2",
+            canonical_ref={"type": "resource", "id": str(new_resource)},
+            evidence_refs=("jira-project:scheduled-close:v2",),
+            valid_from=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        )
+
+    before_boundary = await repo.find_current_binding(
+        tenant_id=tenant_id,
+        source_system="jira",
+        source_native_identifier=identifier,
+        at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+    assert before_boundary is not None
+    assert before_boundary.canonical_referent_id == str(old_resource)
+
+    successor = await repo.bind(
+        tenant_id=tenant_id,
+        source_system="jira",
+        source_native_identifier=identifier,
+        source_identity_authority_ref="jira-project-contract-v2",
+        canonical_ref={"type": "resource", "id": str(new_resource)},
+        evidence_refs=("jira-project:scheduled-close:v2",),
+        valid_from=boundary,
+    )
+    after_boundary = await repo.find_current_binding(
+        tenant_id=tenant_id,
+        source_system="jira",
+        source_native_identifier=identifier,
+        at=datetime(2026, 12, 2, tzinfo=timezone.utc),
+    )
+    assert after_boundary == successor

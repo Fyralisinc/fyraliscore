@@ -66,6 +66,50 @@ class SourceIdentityBindingRepo:
         binding_id = uuid7()
 
         async def write(target: asyncpg.Connection) -> SourceIdentityBinding:
+            await target.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                (
+                    f"source-binding-key:{tenant_id}:{source_system}:"
+                    f"{source_native_identifier}"
+                ),
+            )
+            overlapping = await target.fetch(
+                """
+                SELECT *
+                FROM source_identity_bindings
+                WHERE tenant_id=$1
+                  AND source_system=$2
+                  AND source_native_identifier=$3
+                  AND transaction_to IS NULL
+                  AND (
+                    valid_to IS NULL
+                    OR $4::timestamptz < valid_to
+                  )
+                ORDER BY valid_from, binding_version
+                LIMIT 2
+                """,
+                tenant_id,
+                source_system,
+                source_native_identifier,
+                valid_from,
+            )
+            if overlapping:
+                existing = overlapping[0]
+                identical_current = (
+                    len(overlapping) == 1
+                    and existing["valid_to"] is None
+                    and dict(existing["canonical_referent"]) == normalized_ref
+                    and existing["source_identity_authority_ref"]
+                    == source_identity_authority_ref
+                    and tuple(existing["evidence_refs"]) == evidence_refs
+                    and existing["valid_from"] == valid_from
+                )
+                if identical_current:
+                    return _binding_from_row(existing)
+                raise ValueError(
+                    "source-native identifier already has a binding whose "
+                    "valid-time interval overlaps the requested binding"
+                )
             row = await target.fetchrow(
                 """
                 INSERT INTO source_identity_bindings (
