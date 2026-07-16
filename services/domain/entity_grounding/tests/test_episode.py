@@ -5,7 +5,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from lib.contracts.perception import EntityCandidateKind
+from lib.contracts.kernel import BitemporalInterval
+from lib.contracts.perception import EntityCandidateKind, SourceIdentityBinding
 from services.domain.entity_grounding.episode import (
     ContextObservationInput,
     GroundingCandidateInput,
@@ -345,6 +346,22 @@ def test_broad_lexical_candidate_does_not_create_an_exact_conflict() -> None:
 
 def test_unique_decisive_authority_can_resolve_an_exact_conflict() -> None:
     authority_ref = "source-binding:crm:customer-other"
+    binding = SourceIdentityBinding(
+        binding_id="binding:crm:customer-other",
+        binding_version=1,
+        tenant_id=TENANT,
+        source_system="crm",
+        source_native_identifier="customer-other",
+        source_identity_authority_ref=authority_ref,
+        canonical_referent_type=OTHER_CUSTOMER["type"],
+        canonical_referent_id=OTHER_CUSTOMER["id"],
+        canonical_referent_version=1,
+        temporal_scope=BitemporalInterval(
+            valid_from=NOW - timedelta(days=1),
+            transaction_from=NOW - timedelta(days=1),
+        ),
+        evidence_refs=("crm-object:customer-other",),
+    )
     episode = _conflict_episode(
         candidates=(
             GroundingCandidateInput(
@@ -361,6 +378,7 @@ def test_unique_decisive_authority_can_resolve_an_exact_conflict() -> None:
                 independent_identity_evidence_refs=(authority_ref,),
                 exact_mention_match=True,
                 decisive_authority_refs=(authority_ref,),
+                genuine_source_binding=binding,
             ),
         ),
         selected_ref=OTHER_CUSTOMER,
@@ -369,6 +387,7 @@ def test_unique_decisive_authority_can_resolve_an_exact_conflict() -> None:
     assert episode.current_fate == "resolved_for_consumer"
     assert episode.admitted_canonical_ref == {**OTHER_CUSTOMER, "version": 1}
     assert episode.assessment.decisive_evidence_refs == (authority_ref,)
+    assert episode.admission.genuine_source_binding == binding
 
 
 def test_model_cannot_override_unique_decisive_conflict_authority() -> None:

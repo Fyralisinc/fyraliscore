@@ -902,6 +902,7 @@ class SourceIdentityBinding(_PerceptionContract):
     source_system: str = Field(min_length=1)
     source_native_identifier: str = Field(min_length=1)
     source_identity_authority_ref: str = Field(min_length=1)
+    canonical_referent_type: str = Field(min_length=1)
     canonical_referent_id: str = Field(min_length=1)
     canonical_referent_version: int = Field(ge=1)
     temporal_scope: BitemporalInterval
@@ -1009,6 +1010,23 @@ class GroundingAdmissionDecision(_PerceptionContract):
                 != self.selected_referent.referent_version
             ):
                 raise ValueError("source binding and selected referent must match")
+            selected_types = {
+                item.candidate_type
+                for item in self.assessment.candidate_set.candidates
+                if (
+                    item.kind is EntityCandidateKind.CANONICAL_REFERENT
+                    and item.canonical_referent_id
+                    == self.selected_referent.referent_id
+                    and item.canonical_referent_version
+                    == self.selected_referent.referent_version
+                )
+            }
+            if selected_types != {
+                self.genuine_source_binding.canonical_referent_type
+            }:
+                raise ValueError(
+                    "source binding type and selected candidate must match"
+                )
         return self
 
 

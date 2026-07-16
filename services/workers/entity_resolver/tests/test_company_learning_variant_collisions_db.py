@@ -43,29 +43,35 @@ async def test_variant_collisions_safely_contain_supported_runtime_cases(
         for row in evidence.observations
         if row.execution_status == "unsupported"
     )
-    assert len(observed) == 14
-    assert len(unsupported) == 2
+    assert len(observed) == 16
+    assert len(unsupported) == 0
     cases = {
         case.case_id: case
         for case in evidence.registry_population.cases
     }
-    assert {
-        cases[row.case_id].collision_family for row in unsupported
-    } == {
-        VariantCollisionFamily.CONFLICTING_SOURCE_NATIVE_IDENTIFIER
-    }
-    assert {
-        row.unsupported_reason for row in unsupported
-    } == {
-        "runtime lacks authenticated SourceIdentityBinding evidence"
-    }
+    source_native = tuple(
+        row
+        for row in observed
+        if cases[row.case_id].collision_family
+        is VariantCollisionFamily.CONFLICTING_SOURCE_NATIVE_IDENTIFIER
+    )
+    assert len(source_native) == 2
+    assert all(
+        row.adaptive is not None
+        and row.frozen is not None
+        and row.adaptive.decisive_source_native_id
+        == cases[row.case_id].conflicting_source_native_id
+        and row.frozen.decisive_source_native_id
+        == cases[row.case_id].conflicting_source_native_id
+        for row in source_native
+    )
 
     report = evidence.report
     assert report.pair_count == 16
-    assert report.observed_pair_count == 14
-    assert report.unsupported_case_count == 2
-    assert report.runtime_support_rate.point_estimate == 14 / 16
-    assert report.status == "observed_with_gaps"
+    assert report.observed_pair_count == 16
+    assert report.unsupported_case_count == 0
+    assert report.runtime_support_rate.point_estimate == 1.0
+    assert report.status == "observed"
     assert report.safety_incident_count == 0
     assert report.adaptive_safe_containment_rate.point_estimate == 1.0
     assert report.adaptive_unsafe_rate.point_estimate == 0.0
@@ -102,7 +108,7 @@ async def test_variant_collisions_safely_contain_supported_runtime_cases(
             "SELECT count(*) FROM tenants WHERE id=ANY($1::uuid[])",
             tenant_ids,
         )
-    assert materialized_tenant_count == 28
+    assert materialized_tenant_count == 32
 
     artifact_path = tmp_path / ARTIFACT_NAME
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
@@ -110,7 +116,7 @@ async def test_variant_collisions_safely_contain_supported_runtime_cases(
     assert payload["report"]["observation_digest"] == (
         report.observation_digest
     )
-    assert payload["report"]["status"] == "observed_with_gaps"
+    assert payload["report"]["status"] == "observed"
     persisted = CompanyLearningVariantCollisionEvidence.model_validate(
         {
             key: value

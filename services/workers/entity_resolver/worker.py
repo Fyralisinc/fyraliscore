@@ -670,6 +670,17 @@ class EntityResolverWorker:
     @staticmethod
     def _candidate_inputs(ctx: ResolverContext) -> tuple[GroundingCandidateInput, ...]:
         candidates: list[GroundingCandidateInput] = []
+        source_binding = ctx.source_identity_binding
+        source_binding_candidate_id = (
+            candidate_id_for_ref(source_binding.canonical_ref)
+            if source_binding is not None
+            else None
+        )
+        source_binding_ref = (
+            f"source-identity-binding:{source_binding.binding.binding_id}"
+            if source_binding is not None
+            else None
+        )
         exact_aliases = [
             item
             for item in ctx.recent_aliases
@@ -683,6 +694,11 @@ class EntityResolverWorker:
         source_candidates_conflict = len(source_candidate_ids) > 1
         for ref in ctx.source_entities_mentioned:
             if isinstance(ref, dict):
+                is_bound_source_candidate = (
+                    source_binding_candidate_id is not None
+                    and candidate_id_for_ref(ref)
+                    == source_binding_candidate_id
+                )
                 candidates.append(
                     GroundingCandidateInput(
                         canonical_ref=ref,
@@ -696,10 +712,62 @@ class EntityResolverWorker:
                         # than one canonical ref. It is never decisive
                         # authority by itself.
                         exact_mention_match=(
-                            bool(exact_aliases) or source_candidates_conflict
+                            bool(exact_aliases)
+                            or source_candidates_conflict
+                            or is_bound_source_candidate
+                        ),
+                        independent_identity_evidence_refs=(
+                            (
+                                source_binding_ref,
+                                source_binding.attachment_authority_ref,
+                            )
+                            if is_bound_source_candidate
+                            and source_binding_ref is not None
+                            else ()
+                        ),
+                        decisive_authority_refs=(
+                            (
+                                source_binding.binding
+                                .source_identity_authority_ref,
+                                source_binding.attachment_authority_ref,
+                            )
+                            if is_bound_source_candidate
+                            and source_binding is not None
+                            else ()
+                        ),
+                        genuine_source_binding=(
+                            source_binding.binding
+                            if is_bound_source_candidate
+                            and source_binding is not None
+                            else None
                         ),
                     )
                 )
+        if (
+            source_binding is not None
+            and source_binding_candidate_id not in source_candidate_ids
+        ):
+            binding_ref = (
+                f"source-identity-binding:"
+                f"{source_binding.binding.binding_id}"
+            )
+            candidates.append(
+                GroundingCandidateInput(
+                    canonical_ref=source_binding.canonical_ref,
+                    candidate_source="authenticated_source_identity",
+                    positive_evidence_refs=(binding_ref,),
+                    independent_identity_evidence_refs=(
+                        binding_ref,
+                        source_binding.attachment_authority_ref,
+                    ),
+                    exact_mention_match=True,
+                    decisive_authority_refs=(
+                        source_binding.binding.source_identity_authority_ref,
+                        source_binding.attachment_authority_ref,
+                    ),
+                    genuine_source_binding=source_binding.binding,
+                )
+            )
         for item in exact_aliases:
             alias_ref = f"entity-alias:{item.alias_id}"
             candidates.append(

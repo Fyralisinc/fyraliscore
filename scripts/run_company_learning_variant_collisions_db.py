@@ -11,7 +11,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal, Self
 from uuid import UUID
@@ -63,6 +63,9 @@ from scripts.run_company_learning_pair_harness import (
 from scripts.run_company_learning_population_harness import _RUNTIME_TARGETS
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.domain.entity_aliases.repo import normalize_phrase
+from services.domain.source_identity_bindings import SourceIdentityBindingRepo
+from services.ingest.ingestion.core import ingest_from_draft
+from services.ingest.ingestion.handlers import ObservationDraft
 
 
 DEFAULT_COLLISION_POPULATION = (
@@ -73,9 +76,6 @@ DEFAULT_COLLISION_POPULATION = (
     / "held_out_variant_collision_population_v1.jsonl"
 )
 ARTIFACT_NAME = "company_learning_variant_collision_evidence.json"
-_SOURCE_ID_UNSUPPORTED = (
-    "runtime lacks authenticated SourceIdentityBinding evidence"
-)
 
 
 @dataclass(frozen=True)
@@ -134,9 +134,9 @@ class CompanyLearningVariantCollisionEvidence(_EvidenceModel):
             for row in self.observations
         )
         unsupported = len(self.observations) - observed
-        if observed != 14 or unsupported != 2:
+        if observed != 16 or unsupported != 0:
             raise ValueError(
-                "collision runtime must retain 14 observed and 2 unsupported"
+                "collision runtime must execute all 16 sealed cases"
             )
         if (
             self.report.population_digest
@@ -176,7 +176,7 @@ async def run_variant_collision_experiment(
     system_version: str,
     population_path: Path = DEFAULT_COLLISION_POPULATION,
 ) -> CompanyLearningVariantCollisionEvidence:
-    """Execute supported collisions and retain unsupported source-ID cases."""
+    """Execute every sealed collision, including authenticated source IDs."""
 
     registry = load_variant_collision_population(population_path)
     assignments = tuple(_assignment(case) for case in registry.cases)
@@ -189,18 +189,6 @@ async def run_variant_collision_experiment(
         assignments,
         strict=True,
     ):
-        if (
-            case.collision_family
-            is VariantCollisionFamily.CONFLICTING_SOURCE_NATIVE_IDENTIFIER
-        ):
-            observations.append(
-                VariantCollisionPairObservation(
-                    case_id=case.case_id,
-                    execution_status="unsupported",
-                    unsupported_reason=_SOURCE_ID_UNSUPPORTED,
-                )
-            )
-            continue
         definition = _runtime_definition(case)
         runtime_assignment = _runtime_assignment(assignment)
         adaptive_foundation = await _prepare_collision_arm(
@@ -322,7 +310,12 @@ def _runtime_definition(
         channel=case.collision_channel,
         resolution_scope="tenant_global_exact",
         inject_conflicting_source_hint=False,
-        recurrence_response="target_low",
+        recurrence_response=(
+            "conflicting_high"
+            if case.collision_family
+            is VariantCollisionFamily.CONFLICTING_SOURCE_NATIVE_IDENTIFIER
+            else "target_low"
+        ),
         expected_model_count=0,
     )
 
@@ -395,21 +388,34 @@ async def _run_collision_recurrence(
     foundation: _NegativeArmFoundation,
     occurred_at: datetime,
 ) -> _CollisionRuntimeArm:
-    observation_id = await _ingest_slack(
-        pool=pool,
-        tenant_id=foundation.tenant_id,
-        alias_repo=foundation.alias_repo,
-        text=case.recurrence_text,
-        channel=case.collision_channel,
-        occurred_at=occurred_at,
-        corrective_memory_reuse_enabled=(
-            foundation.arm is CorrectiveMemoryArm.ADAPTIVE
-        ),
-    )
     learned_ref, conflicting_ref = _collision_refs(
         case=case,
         foundation=foundation,
     )
+    if (
+        case.collision_family
+        is VariantCollisionFamily.CONFLICTING_SOURCE_NATIVE_IDENTIFIER
+    ):
+        observation_id = await _ingest_authenticated_source_object(
+            pool=pool,
+            case=case,
+            foundation=foundation,
+            occurred_at=occurred_at,
+            learned_ref=learned_ref,
+            conflicting_ref=conflicting_ref,
+        )
+    else:
+        observation_id = await _ingest_slack(
+            pool=pool,
+            tenant_id=foundation.tenant_id,
+            alias_repo=foundation.alias_repo,
+            text=case.recurrence_text,
+            channel=case.collision_channel,
+            occurred_at=occurred_at,
+            corrective_memory_reuse_enabled=(
+                foundation.arm is CorrectiveMemoryArm.ADAPTIVE
+            ),
+        )
     await _set_observation_grounding_inputs(
         pool=pool,
         tenant_id=foundation.tenant_id,
@@ -463,9 +469,26 @@ async def _run_collision_recurrence(
         learned_ref=learned_ref,
         conflicting_ref=conflicting_ref,
     )
+    admission = _json(trace["admission_decision"]) if trace else None
+    genuine_binding = (
+        admission.get("genuine_source_binding")
+        if isinstance(admission, dict)
+        else None
+    )
+    decisive_source_native_id = (
+        str(genuine_binding.get("source_native_identifier"))
+        if isinstance(genuine_binding, dict)
+        and genuine_binding.get("source_native_identifier")
+        else None
+    )
     decision_basis = (
         VariantCollisionDecisionBasis.UNRESOLVED_COLLISION
         if resolved is None
+        else (
+            VariantCollisionDecisionBasis
+            .AUTHENTICATED_SOURCE_NATIVE_IDENTIFIER
+        )
+        if decisive_source_native_id is not None
         else VariantCollisionDecisionBasis.LEARNED_AMBIGUOUS_VARIANT
         if resolved_role is VariantCollisionTargetRole.LEARNED
         else VariantCollisionDecisionBasis.OTHER_UNSEALED_EVIDENCE
@@ -488,6 +511,7 @@ async def _run_collision_recurrence(
         resolved_entity_ref=resolved,
         decision_basis=decision_basis,
         resolved_target_role=resolved_role,
+        decisive_source_native_id=decisive_source_native_id,
         learned_alias_promoted=promoted,
         candidate_set_digest=canonical_sha256(
             [ref.model_dump(mode="json") for ref in visible_refs]
@@ -518,6 +542,72 @@ async def _run_collision_recurrence(
         observation_id=observation_id,
         observation=observation,
     )
+
+
+async def _ingest_authenticated_source_object(
+    *,
+    pool: asyncpg.Pool,
+    case: HeldOutVariantCollisionCase,
+    foundation: _NegativeArmFoundation,
+    occurred_at: datetime,
+    learned_ref: CanonicalEntityRef,
+    conflicting_ref: CanonicalEntityRef,
+) -> UUID:
+    native_id = case.conflicting_source_native_id
+    if native_id is None:
+        raise ValueError("authenticated source collision lacks native identifier")
+    source_system = native_id.split(":", 1)[0]
+    source_channel = f"{source_system}:object"
+    draft = ObservationDraft(
+        source_channel=source_channel,
+        content_text=case.recurrence_text,
+        content={
+            "object_kind": native_id.split(":", 2)[1],
+            "source_object_revision": f"{case.case_id}:v1",
+        },
+        occurred_at=occurred_at,
+        trust_tier="authoritative",
+        external_id=f"{case.case_id}:source-event:v1",
+        entities_hint=[
+            learned_ref.model_dump(mode="json"),
+            conflicting_ref.model_dump(mode="json"),
+        ],
+        unresolved_phrases=[case.collision_surface],
+    )
+    result = await ingest_from_draft(
+        channel=source_channel,
+        draft=draft,
+        pool=pool,
+        tenant_id=foundation.tenant_id,
+        actor_repo=None,
+        alias_repo=None,
+        embedder=None,
+        enqueue_trigger=False,
+    )
+    repo = SourceIdentityBindingRepo(pool)
+    binding = await repo.bind(
+        tenant_id=foundation.tenant_id,
+        source_system=source_system,
+        source_native_identifier=native_id,
+        source_identity_authority_ref=(
+            f"{source_system}-source-object-identity-contract-v1"
+        ),
+        canonical_ref=conflicting_ref.model_dump(mode="json"),
+        evidence_refs=(
+            f"{source_system}-source-object:{native_id}",
+            f"observation:{result.observation.id}",
+        ),
+        valid_from=occurred_at - timedelta(microseconds=1),
+    )
+    await repo.attach_to_observation(
+        tenant_id=foundation.tenant_id,
+        observation_id=result.observation.id,
+        binding=binding,
+        attachment_authority_ref=(
+            f"{source_system}-ingestion-envelope-v1"
+        ),
+    )
+    return result.observation.id
 
 
 def _collision_refs(
@@ -598,11 +688,15 @@ async def _collision_recurrence_rows(
             SELECT trace.id AS grounding_trace_id,
                    trace.current_fate,
                    trace.selected_referent,
-                   candidate_set.candidates
+                   candidate_set.candidates,
+                   admission.decision AS admission_decision
             FROM grounding_traces trace
             LEFT JOIN entity_candidate_sets candidate_set
               ON candidate_set.tenant_id=trace.tenant_id
              AND candidate_set.id=trace.candidate_set_id
+            LEFT JOIN grounding_admission_decisions admission
+              ON admission.tenant_id=trace.tenant_id
+             AND admission.id=trace.grounding_admission_id
             WHERE trace.tenant_id=$1
               AND trace.source_observation_id=$2
               AND regexp_replace(lower(trace.phrase), '\\s+', ' ', 'g')=$3

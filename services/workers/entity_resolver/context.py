@@ -49,6 +49,10 @@ from services.domain.entity_grounding.episode import (
     prepare_context_selection,
 )
 from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
+from services.domain.source_identity_bindings import (
+    ResolvedSourceIdentityBinding,
+    SourceIdentityBindingRepo,
+)
 
 
 _DEFAULT_RECENT_OBS = 20
@@ -118,6 +122,7 @@ class ResolverContext:
     recent_aliases: list[RecentAlias] = field(default_factory=list)
     known_entity_candidates: list[KnownEntityCandidate] = field(default_factory=list)
     source_entities_mentioned: list[dict[str, Any]] = field(default_factory=list)
+    source_identity_binding: ResolvedSourceIdentityBinding | None = None
     source_channel: str = ""
     source_space: str = ""
     content_text: str = ""
@@ -202,6 +207,29 @@ class ResolverContext:
                 for ref in self.source_entities_mentioned[:10]
                 if isinstance(ref, dict) and ref.get("id") and ref.get("type")
             ],
+            "authenticated_source_identity": (
+                {
+                    "binding": (
+                        self.source_identity_binding.binding.model_dump(
+                            mode="json"
+                        )
+                    ),
+                    "candidate_id": candidate_id_for_ref(
+                        self.source_identity_binding.canonical_ref
+                    ),
+                    "entity_ref": self.source_identity_binding.canonical_ref,
+                    "attachment_authority_ref": (
+                        self.source_identity_binding
+                        .attachment_authority_ref
+                    ),
+                    "semantic_limit": (
+                        "ingestion-authenticated source-object identity; "
+                        "decisive only for this exact source observation"
+                    ),
+                }
+                if self.source_identity_binding is not None
+                else None
+            ),
             "recent_observations": [
                 {
                     "channel": o.source_channel,
@@ -316,6 +344,14 @@ async def build_context(
         )
         source_entities_mentioned = (
             _parse_jsonb(src["entities_mentioned"]) or []
+        )
+        source_identity_binding = (
+            await SourceIdentityBindingRepo(None).resolve_observation_source(
+                tenant_id=tenant_id,
+                observation_id=observation_id,
+                valid_at=occurred_at,
+                conn=conn,
+            )
         )
 
         del scoped_models_n  # prior Models cannot be identity corroboration
@@ -546,6 +582,7 @@ async def build_context(
                 for row in recent_observations
             ],
             source_entities_mentioned=source_entities_mentioned,
+            source_identity_binding=source_identity_binding,
             recent_observations=recent_observations,
             scoped_models=scoped_models,
             recent_aliases=recent_aliases,
@@ -584,7 +621,8 @@ async def build_context(
                 and alias.canonical_target_valid
                 and alias.resolution_scope == "tenant_global_exact"
                 for alias in recent_aliases
-            ),
+            )
+            or source_identity_binding is not None,
         )
         context.context_selection_command = selection_command
         context.context_selection_outcome = selection_outcome

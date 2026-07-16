@@ -687,6 +687,7 @@ def test_source_binding_is_optional_and_must_be_genuine_and_matching() -> None:
         source_system="slack",
         source_native_identifier="U-SAM",
         source_identity_authority_ref="slack-user-id-contract-v1",
+        canonical_referent_type="person",
         canonical_referent_id="referent:sam-k",
         canonical_referent_version=2,
         temporal_scope=BitemporalInterval(
@@ -724,6 +725,14 @@ def test_source_binding_is_optional_and_must_be_genuine_and_matching() -> None:
             genuine_source_binding=_updated(
                 binding,
                 canonical_referent_id="referent:other-sam",
+            ),
+        )
+    with pytest.raises(ValidationError, match="type"):
+        _updated(
+            decision,
+            genuine_source_binding=_updated(
+                binding,
+                canonical_referent_type="team",
             ),
         )
 

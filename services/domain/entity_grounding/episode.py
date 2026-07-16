@@ -64,6 +64,7 @@ from lib.contracts.perception import (
     ResolutionAssessment,
     SelectedContextItem,
     SelectionDependency,
+    SourceIdentityBinding,
     SufficiencyDisposition,
 )
 from lib.conversation_context_selection import select_context
@@ -102,6 +103,7 @@ class GroundingCandidateInput:
     independent_identity_evidence_refs: tuple[str, ...] = ()
     exact_mention_match: bool = False
     decisive_authority_refs: tuple[str, ...] = ()
+    genuine_source_binding: SourceIdentityBinding | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +284,10 @@ def build_grounding_episode(
             )
         ),
         conflict_requires_discriminator=conflict_requires_discriminator,
+        genuine_source_binding=_source_binding_for_candidate(
+            selected_candidate=selected_candidate,
+            candidate_inputs=candidates,
+        ),
         model_canonical_ref=model_canonical_ref,
         confidence=model_confidence,
         high_confidence=high_confidence,
@@ -415,6 +421,7 @@ def build_adjudicated_grounding_decision(
         selected_candidate=selected_candidate,
         has_independent_identity_evidence=True,
         conflict_requires_discriminator=False,
+        genuine_source_binding=None,
         model_canonical_ref=canonical_ref,
         confidence=1.0,
         high_confidence=0.8,
@@ -1325,6 +1332,7 @@ def _build_admission(
     selected_candidate: EntityCandidate | None,
     has_independent_identity_evidence: bool,
     conflict_requires_discriminator: bool,
+    genuine_source_binding: SourceIdentityBinding | None,
     model_canonical_ref: dict[str, Any] | None,
     confidence: float,
     high_confidence: float,
@@ -1429,7 +1437,11 @@ def _build_admission(
             disposition=disposition,
             selected_referent=selected,
             permitted_distribution={},
-            genuine_source_binding=None,
+            genuine_source_binding=(
+                genuine_source_binding
+                if selected is not None
+                else None
+            ),
             reason_codes=reasons,
             decided_at=now,
             expires_at=assessment.expires_at,
@@ -1458,6 +1470,27 @@ def _identity_evidence_for_candidate(
                 seen.add(ref)
                 refs.append(ref)
     return tuple(refs)
+
+
+def _source_binding_for_candidate(
+    *,
+    selected_candidate: EntityCandidate | None,
+    candidate_inputs: tuple[GroundingCandidateInput, ...],
+) -> SourceIdentityBinding | None:
+    if selected_candidate is None:
+        return None
+    bindings = {
+        item.genuine_source_binding
+        for item in candidate_inputs
+        if (
+            item.genuine_source_binding is not None
+            and candidate_id_for_ref(item.canonical_ref)
+            == selected_candidate.candidate_id
+        )
+    }
+    if len(bindings) > 1:
+        raise ValueError("selected candidate has conflicting source bindings")
+    return next(iter(bindings), None)
 
 
 __all__ = [

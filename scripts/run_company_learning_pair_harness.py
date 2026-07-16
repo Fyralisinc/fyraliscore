@@ -84,6 +84,8 @@ class _FrozenCorrectiveMemoryAliasRepo(EntityAliasRepo):
         self,
         phrases: list[str],
         tenant_id: UUID,
+        *,
+        as_of: datetime | None = None,
     ) -> dict[str, dict[str, Any]]:
         norms = tuple(
             dict.fromkeys(
@@ -103,6 +105,11 @@ class _FrozenCorrectiveMemoryAliasRepo(EntityAliasRepo):
             WHERE tenant_id=$1
               AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g')
                   = ANY($2::text[])
+              AND valid_from <= COALESCE($3::timestamptz, now())
+              AND (
+                valid_until IS NULL
+                OR valid_until > COALESCE($3::timestamptz, now())
+              )
               AND NOT (
                 COALESCE(
                   entity_metadata ->> 'identity_basis_class'
@@ -118,6 +125,7 @@ class _FrozenCorrectiveMemoryAliasRepo(EntityAliasRepo):
             """,
             tenant_id,
             list(norms),
+            as_of,
         )
         refs_by_norm: dict[str, dict[str, dict[str, Any]]] = {}
         for row in rows:
