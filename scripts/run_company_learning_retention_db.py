@@ -694,7 +694,7 @@ async def _advance_unrelated_learning(
         await foundation.alias_repo.insert_alias(
             phrase=phrase,
             resolved_entity_ref={"type": "resource", "id": str(entity_id)},
-            source="manual",
+            source="ingestion",
             confidence=0.99,
             tenant_id=foundation.tenant_id,
             extra_metadata={

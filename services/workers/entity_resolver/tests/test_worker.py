@@ -580,7 +580,7 @@ async def test_resolver_candidate_set_excludes_inactive_and_archived_targets(
         await EntityAliasRepo(resolver_db).insert_alias(
             phrase=phrase,
             resolved_entity_ref=ref,
-            source="manual",
+            source="ingestion",
             confidence=0.99,
             tenant_id=tenant_id,
             extra_metadata={

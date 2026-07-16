@@ -135,7 +135,7 @@ async def test_frozen_ingest_view_preserves_ordinary_manual_alias(
             "type": "customer",
             "id": str(learned_customer_id),
         },
-        source="manual",
+        source="ingestion",
         confidence=0.99,
         tenant_id=tenant_id,
         extra_metadata={
@@ -149,7 +149,7 @@ async def test_frozen_ingest_view_preserves_ordinary_manual_alias(
             "type": "resource",
             "id": str(ordinary_resource_id),
         },
-        source="manual",
+        source="ingestion",
         confidence=0.99,
         tenant_id=tenant_id,
     )

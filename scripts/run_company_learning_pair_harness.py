@@ -449,7 +449,7 @@ async def _prepare_arm(
     await alias_repo.insert_alias(
         phrase="NBI",
         resolved_entity_ref={"type": "customer", "id": str(customer_id)},
-        source="manual",
+        source="ingestion",
         confidence=0.99,
         tenant_id=tenant_id,
     )
@@ -459,7 +459,7 @@ async def _prepare_arm(
             "type": "resource",
             "id": str(ordinary_resource_id),
         },
-        source="manual",
+        source="ingestion",
         confidence=0.99,
         tenant_id=tenant_id,
     )

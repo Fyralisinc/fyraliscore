@@ -318,7 +318,7 @@ async def _prepare_negative_arm(
     await alias_repo.insert_alias(
         phrase=definition.training_phrase,
         resolved_entity_ref=runtime_target.canonical_ref(target_id),
-        source="manual",
+        source="ingestion",
         confidence=0.99,
         tenant_id=tenant_id,
         extra_metadata={
@@ -329,7 +329,7 @@ async def _prepare_negative_arm(
     await alias_repo.insert_alias(
         phrase=f"Conflicting {definition.candidate_alias}",
         resolved_entity_ref=conflicting_runtime_target.canonical_ref(conflicting_id),
-        source="manual",
+        source="ingestion",
         confidence=0.99,
         tenant_id=tenant_id,
         extra_metadata={
