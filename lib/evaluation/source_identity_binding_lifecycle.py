@@ -71,6 +71,7 @@ class SourceIdentityBindingLifecycleObservation(_LifecycleModel):
     source_native_identifier: str = Field(min_length=1)
     source_surface: str = Field(min_length=1)
     original_binding_version: int = Field(ge=1)
+    closure_binding_version: int = Field(ge=2)
     successor_binding_version: int = Field(ge=2)
     original_valid_from: datetime
     transition_effective_at: datetime
@@ -107,9 +108,13 @@ class SourceIdentityBindingLifecycleObservation(_LifecycleModel):
 
     @model_validator(mode="after")
     def sealed_lifecycle_scope(self) -> Self:
-        if self.successor_binding_version != self.original_binding_version + 1:
+        if self.closure_binding_version != self.original_binding_version + 1:
             raise ValueError(
-                "successor binding version must immediately follow original"
+                "closure binding version must immediately follow original"
+            )
+        if self.successor_binding_version != self.closure_binding_version + 1:
+            raise ValueError(
+                "successor binding version must immediately follow closure"
             )
         if self.transition_effective_at < self.original_valid_from:
             raise ValueError(

@@ -163,8 +163,12 @@ def test_unsupported_cells_reject_fabricated_evidence() -> None:
     ("updates", "message"),
     (
         (
+            {"closure_binding_version": 4},
+            "closure binding version must immediately follow original",
+        ),
+        (
             {"successor_binding_version": 4},
-            "must immediately follow original",
+            "successor binding version must immediately follow closure",
         ),
         (
             {
@@ -200,7 +204,8 @@ def _observation() -> SourceIdentityBindingLifecycleObservation:
         source_native_identifier="jira:acme:project:10000",
         source_surface="ENG",
         original_binding_version=1,
-        successor_binding_version=2,
+        closure_binding_version=2,
+        successor_binding_version=3,
         original_valid_from=ORIGINAL_FROM,
         transition_effective_at=EFFECTIVE_AT,
         transaction_at=TRANSACTION_AT,
