@@ -541,6 +541,79 @@ coherent diff.
   eligibility and lease under its own policy and authority. Preserve the
   activation worker as planned-agency-only.
 
+### DISC-013 — Registered Work can be scheduled durably, but execution ownership is still absent
+
+- **Date:** 2026-07-16
+- **Milestone:** Durable registered-Work scheduling and initial lease fencing
+- **Status:** `deferred`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** WorkObligation, WorkDecision, LeaseToken, Task,
+  AuthorizationDecision, scheduler runtime and joined evaluation
+- **Working core boundary:** A production-registered scheduler now consumes the
+  exact version-one canonical registration event for task-targeted Work. It
+  revalidates the event and CommandResult, immutable Work specification,
+  current Task and Workflow versions, episode, exact AuthorizationDecision and
+  InterventionSpec. Discovery freezes deterministic decision and lease
+  identities, the minimum permitted processing class, scheduling time, lease
+  owner, heartbeat, expiry and policy version. A leased queue claim is distinct
+  from the canonical Work lease. In one transaction the worker asks
+  `WorkLedgerApplier` to move Work from `registered` to `eligible`, issue Lease
+  version one with fence one and move Work to `leased`, then acknowledges only
+  after exact decision/lease/head verification. Work-deadline and authorization
+  expiry first transition canonical Work to `expired`; the queue fate cannot
+  claim expiry by itself.
+- **Implementation evidence:** The joined Slack-to-feedback E2E no longer
+  creates the WorkDecision or LeaseToken in the test harness. The scheduler
+  creates Work version two, Work version three and Lease version one/fence one,
+  after which the harness begins effect reservation. Replay discovers and
+  claims zero scheduling work. Repository tests cover deterministic planning,
+  exact Work-to-Task-to-Workflow-to-Authorization-to-spec continuity, lease
+  reclaim and stale-token rejection, retry, canonical Work expiry, canonical
+  authorization-expiry closure and terminal failure. Scheduler commands use
+  deterministic command IDs and authority restricted to the exact Work object.
+  The joined evaluator reports scheduling exposure, leased rate, backlog,
+  incomplete work, both expiry classes and terminal failure continuously.
+- **Deferred architecture gaps:**
+  - The scheduler consumes already-registered Work. The test harness still
+    creates the WorkObligation and supplies its provisional economic and
+    priority values; DISC-012's WorkflowSpec and governed economic-assessment
+    requirements remain unresolved.
+  - The first scheduling policy selects the Work obligation's declared minimum
+    processing class. It does not yet compare capacity, tenant budgets,
+    attention limits, opportunity cost, queue fairness, urgency or competing
+    Work. Those are scheduler policy inputs, not safe constants to infer here.
+  - The Lease names a fixed external-effect executor role, but that executor is
+    not yet a production process. Effect reservation, dispatch intent,
+    provider call, observation and reconciliation remain in the test harness.
+  - No runtime currently heartbeats, releases, resolves or safely takes over
+    the canonical Work lease. The repository proves initial queue-claim
+    takeover, which is distinct from proving effect-safe Work lease takeover.
+  - A frozen schedule whose first heartbeat deadline elapses before processing
+    is terminally surfaced as stale. A governed replan/redrive protocol is
+    needed rather than silently extending the original plan.
+  - The scheduler independently scans canonical events instead of consuming a
+    partitioned fan-out stream with ConsumerReceipts and high-water/gap
+    detection.
+  - Its narrow processing context and writer scope are still embedded rather
+    than broker-issued and registry-fenced.
+  - The current policy covers initial generation-one leasing. Deferred work,
+    suppression, useful-safe fates, owner terminalization, retry-wait,
+    reconciliation-required, redrive and later-generation scheduling still
+    need separate scenarios.
+  - A leased Work item is not proof of an external effect, an Outcome or useful
+    intervention value. Unknown effects must continue to block completion.
+- **Reason for deferral:** Registered Work already carries the minimum facts
+  required for one conservative initial scheduling decision, so removing this
+  manual handoff does not invent new company semantics. Provider execution and
+  effect reconciliation have materially different crash and duplicate-effect
+  hazards and must remain a separate implementation boundary.
+- **Return condition:** Implement a fenced external-effect executor that
+  revalidates the exact active Work lease, AuthorizationDecision,
+  InterventionSpec and adapter capability; commits dispatch intent before the
+  provider call; and records provider observations only through
+  `ExecutionLedgerApplier`. Add an independent reconciler for `unknown` and
+  ambiguous effects before automating retries or takeovers.
+
 ## Reconciliation Procedure
 
 At a reconciliation milestone:
