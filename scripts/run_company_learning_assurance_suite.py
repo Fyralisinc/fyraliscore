@@ -245,18 +245,26 @@ async def run_company_learning_assurance_suite(
                     f"population: {gap}"
                     for gap in population_evidence.experiment_report.proof_gaps
                 ),
-                (
-                    "population: runtime coverage observed "
-                    f"{population_evidence.population_report.observed_pair_count}/"
-                    f"{population_evidence.population_report.pair_count} "
-                    "sealed cases; unsupported entity strata remain explicitly "
-                    "accounted for."
+                *(
+                    (
+                        "population: runtime coverage observed "
+                        f"{population_evidence.population_report.observed_pair_count}/"
+                        f"{population_evidence.population_report.pair_count} "
+                        "sealed cases; unsupported entity strata remain "
+                        "explicitly accounted for.",
+                    )
+                    if population_evidence.population_report.unsupported_case_count
+                    else ()
                 ),
                 *(f"slack: {gap}" for gap in slack_report.proof_gaps),
-                (
-                    "suite: Slack reconstruction remains diagnostic and "
-                    "non-blocking until the current surface closes its "
-                    "explicit reconstruction gaps."
+                *(
+                    (
+                        "suite: Slack reconstruction remains diagnostic and "
+                        "non-blocking until the current surface closes its "
+                        "explicit reconstruction gaps.",
+                    )
+                    if slack_report.status != "observed"
+                    else ()
                 ),
                 (
                     "suite: correction propagation through Models, relations, "

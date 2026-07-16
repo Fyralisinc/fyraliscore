@@ -20,6 +20,7 @@ pytestmark = pytest.mark.integration
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
+@pytest.mark.timeout(120)
 async def test_company_learning_assurance_suite_cli_writes_one_summary(
     tmp_path: Path,
 ) -> None:
@@ -80,22 +81,18 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
         for gap in summary.proof_gaps
     )
     assert summary.population is not None
-    assert summary.population.status == "observed_with_gaps"
+    assert summary.population.status == "observed"
     assert summary.population.registry_pair_count == 60
-    assert summary.population.observed_pair_count == 15
-    assert summary.population.unsupported_case_count == 45
-    assert summary.population.runtime_support_rate == 0.25
+    assert summary.population.observed_pair_count == 60
+    assert summary.population.unsupported_case_count == 0
+    assert summary.population.runtime_support_rate == 1.0
     assert summary.population.metrics["pair_count"] == 60
-    assert summary.population.metrics["observed_pair_count"] == 15
-    assert summary.population.metrics["unsupported_case_count"] == 45
+    assert summary.population.metrics["observed_pair_count"] == 60
+    assert summary.population.metrics["unsupported_case_count"] == 0
     assert summary.population.metrics["complete_population"] is True
-    assert summary.population.unsupported_strata_counts["entity_type"] == {
-        "project": 15,
-        "system": 15,
-        "team": 15,
-    }
-    assert sum(summary.population.unsupported_reason_counts.values()) == 45
-    assert any(
+    assert summary.population.unsupported_strata_counts["entity_type"] == {}
+    assert summary.population.unsupported_reason_counts == {}
+    assert not any(
         "Slack reconstruction remains diagnostic and non-blocking"
         in gap
         for gap in summary.proof_gaps
@@ -105,8 +102,8 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
         in gap
         for gap in summary.proof_gaps
     )
-    assert any(
-        "population: runtime coverage observed 15/60 sealed cases"
+    assert not any(
+        "population: runtime coverage observed"
         in gap
         for gap in summary.proof_gaps
     )
@@ -151,8 +148,8 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     )
     assert slack["report"]["metrics"] == summary.slack.metrics
     assert population["population_report"]["pair_count"] == 60
-    assert population["population_report"]["observed_pair_count"] == 15
-    assert population["population_report"]["unsupported_case_count"] == 45
+    assert population["population_report"]["observed_pair_count"] == 60
+    assert population["population_report"]["unsupported_case_count"] == 0
 
     persisted_summary_path = (
         output_dir
@@ -183,7 +180,7 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert assurance["summary_digest"] == summary.digest
     assert assurance["slack"]["metrics"]["case_count"] == 9
     assert assurance["population"]["registry_pair_count"] == 60
-    assert assurance["population"]["observed_pair_count"] == 15
+    assert assurance["population"]["observed_pair_count"] == 60
 
 
 async def _run_cli(
