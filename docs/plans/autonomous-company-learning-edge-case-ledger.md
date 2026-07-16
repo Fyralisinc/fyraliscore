@@ -350,9 +350,8 @@ transport are excluded from this goal.
 
 ### EDGE-019 — Source-binding lifecycle and historical attachments
 
-- **Status:** `resolved` for repository-owned close, revoke and supersede;
-  evaluator execution, historical reconstruction and database enforcement
-  remain `bounded`
+- **Status:** `resolved` for the sealed E4 close, revoke and supersede contract;
+  broader referent/source coverage and historical continuity remain `bounded`
 - **Trigger:** A structured source object is renamed, invalidated, rebound or
   superseded while observations still refer to an earlier binding version.
 - **Risk:** Silent redirection can rewrite evidence history; overlapping
@@ -369,20 +368,21 @@ transport are excluded from this goal.
   successor. A delayed historical Observation may attach the visible closure
   version v2. This is safe stale fencing, not reconstruction of the old
   attachment.
-- **Enforcement boundary:** Interval overlap is guarded by
-  `SourceIdentityBindingRepo`, not a database exclusion constraint. Operations
-  made with a caller-owned connection depend on the caller providing the
-  surrounding transaction.
-- **Evaluator boundary:** `dced1ae0` seals a typed, continuous lifecycle proof
-  contract; `79317be8` corrects the expected closure-version semantics.
-  The database-backed runner is still in flight, so no standalone runtime
-  artifact or assurance-v7 join is claimed yet.
-- **Evidence:** Focused lifecycle real-Postgres tests pass, including the
-  scheduled-terminal overlap case.
-- **Return condition:** Complete the database-backed evaluator artifact and v7
-  join, prove operational historical reconstruction if required, add
-  database-level overlap exclusion and make transaction ownership explicit and
-  testable.
+- **Enforcement boundary:** Migration `0223` adds a database-native GiST
+  exclusion constraint for transaction-current valid-time overlap. The sealed
+  runner proves that a direct SQL writer bypassing the repository is rejected
+  with SQLSTATE `23P01`.
+- **Evaluator boundary:** The E4 runner uses two populated tenants with
+  colliding source-native identifiers, full persisted Observation and
+  attachment snapshots, cross-tenant mutation probes and a digest-bound
+  query/row/error manifest. Assurance v7 reopens and recomputes all `12/12`
+  lifecycle obligations.
+- **Evidence:** `53083717`, `f97f0ab2`, `5032b15c` and `84c6d199`; exact
+  Assurance v7 at `be401f25` reports `working` with zero blockers.
+- **Return condition:** Reopen for every-source/every-referent coverage,
+  independent writers beyond the sealed direct-SQL probe, or a requirement to
+  resolve a historically attached predecessor after its transaction interval
+  closes rather than failing closed.
 
 ### EDGE-020 — Retention metrics can overstate restart and learning durability
 
@@ -430,32 +430,25 @@ transport are excluded from this goal.
 
 ### EDGE-021 — Standalone learning evidence is not combined assurance
 
-- **Status:** `resolved` for v6 active surfaces/retention and standalone
-  replacement; source-binding lifecycle and final v7 execution remain `bounded`
+- **Status:** `resolved` for the current Assurance v7 component set
 - **Trigger:** A focused evaluator passes before its evidence is registered,
   reopened and recomputed by the combined assurance contract.
 - **Risk:** A standalone result can be reported as system-wide proof without
   digest binding, component-accounting checks or fail-closed combined status.
-- **Current behavior:** Assurance v6 emits, reopens, digest-checks, recomputes
-  and noncompensatorily gates the `6/6` identity, `5/5` salience and `14/14`
-  retention components. The final working artifact has zero blockers.
-  Assurance-v7 schema foundation now requires complete canonical replacement
-  evidence, and the standalone replacement artifact is `20/20` observed with
-  zero gaps or violations. Source-binding lifecycle has a typed contract but
-  no completed database artifact yet.
-- **Evidence:** The commit-labelled artifact is
-  `/tmp/fyralis-company-learning-assurance-v6-04b0f0bd-final/company_learning_assurance_summary.json`
-  with schema `company-learning-assurance-summary-v6`, run
-  `final-04b0f0bd`, system version `04b0f0bd`, file SHA-256
-  `6c82f10ec8c8a1b79c069bc14a195415f9d625697b346a6e72e4bac25f55931f`
-  and summary digest
-  `b4b039648f82b2156236853e36b3eb24a2ae118f932094beb2e9daabb424fbe3`.
-- **Safe boundary:** Continue citing v6 as the last fully executed combined
-  system artifact. Cite replacement as standalone production-shaped evidence,
-  not as a completed combined v7 run.
-- **Return condition:** Complete and join the database-backed source-lifecycle
-  component, then execute and reopen the final assurance-v7 artifact without
-  broadening historical-reconstruction or database-enforcement claims.
+- **Current behavior:** Assurance v7 emits, reopens, digest-checks, recomputes
+  and noncompensatorily gates identity, salience, retention, canonical
+  replacement and source-binding lifecycle evidence. It binds the exact Git
+  commit and clean/dirty worktree digest, rejects unsupported lifecycle evidence
+  tiers and reopens digest-bound raw database manifests.
+- **Evidence:** Exact `be401f25` artifact:
+  `/tmp/fyralis-company-learning-assurance-be401f25/company_learning_assurance_summary.json`;
+  status `working`, zero blockers, replacement `20/20`, source binding `12/12`,
+  repository state `clean`.
+- **Safe boundary:** This is E4 sealed simulation/mechanism evidence, not
+  certification, open-world accuracy or customer-value proof.
+- **Return condition:** Reopen when adding a mandatory component, changing the
+  active evidence tier, or seeking independently reconstructable certification
+  beyond the sealed database manifests.
 
 ### EDGE-022 — Assurance database encoding and Unicode verifier parity
 
@@ -497,6 +490,110 @@ transport are excluded from this goal.
 - **Return condition:** Reconsider only as a separately authorized connector
   reliability objective with its own delivery, replay, outage and backfill
   evaluation.
+
+### EDGE-024 — Mention candidates bypass the governed detection-fate protocol
+
+- **Status:** `active`, P0
+- **Trigger:** The 45-batch DB-backed Vitals run generated 10,325 phrase
+  opportunities across 1,125 observations but found zero detection heads,
+  detections, work items or grounding traces.
+- **Current behavior:** Broad bootstrap and unresolved-phrase heuristics expose
+  both real names and non-entity phrases, but none receive a governed terminal
+  detection or rejection fate in the large simulation.
+- **Risk:** Entity extraction is outside the authoritative audit trail; missed
+  and rejected candidates are indistinguishable; every downstream Model and
+  graph-quality claim is weakened.
+- **Safe boundary:** Treat this as zero protocol-fate coverage, not as 10,325
+  proven missed gold entities.
+- **Return condition:** Every eligible candidate receives one immutable
+  terminal disposition, and protocol coverage is reported separately from
+  labeled span/linking precision and recall.
+- **Evidence:** Authoritative cold-start postmortem; Vitals incident
+  `entity_grounding.mention_opportunity_without_detection_fate`.
+
+### EDGE-025 — Resolver writes opaque aliases into canonical identity
+
+- **Status:** `active`, P0
+- **Trigger:** The large run persisted 50 canonical aliases whose metadata
+  names `resolver_worker` as the source.
+- **Current behavior:** 46 of the 50 aliases are raw UUID strings; the rows
+  cover 11 customer, 19 system and 20 workstream references across 13 source
+  events. No authorized promotion trace is present.
+- **Risk:** Opaque identity pollution, likely duplicate canonicalization and
+  fragmentation, misleading product labels and a bypass of candidate/
+  adjudication authority.
+- **Observed non-failure:** These 50 rows do not directly prove a false merge:
+  each alias maps one-to-one to a distinct resolved ID.
+- **Safe boundary:** Resolver output may nominate candidates but must not be
+  treated as canonical identity truth.
+- **Return condition:** Canonical alias writes require an explicit promotion or
+  adjudication record and matching grounding trace; resolver-owned writes are
+  rejected.
+
+### EDGE-026 — Mature retrieval remains flat and mixed
+
+- **Status:** `active`, P0
+- **Trigger:** The requested cold-start behavior expected early observation use
+  to give way to mostly Model retrieval.
+- **Current behavior:** Early Model share was `0.4095`, middle `0.5000` and late
+  `0.4982`; the slope was only `+0.004182` per wave. Mature meaningful waves
+  usually selected 20 Models and 20 historical observations.
+- **Risk:** High prompt cost, raw-evidence dependence, weak compression value
+  and repeated selection of unused context.
+- **Use evidence:** Late normal waves referenced roughly 31.3% of selected
+  Models and 65.6% of selected observations. Fourteen late raw reopenings had no
+  recorded reason.
+- **Safe boundary:** Do not claim Model-first memory metabolism.
+- **Return condition:** Outcome-gated observation budgets, explicit reopening
+  reasons and stable late Model dominance with improved selected/use ratios.
+
+### EDGE-027 — Batch context contaminates canonical Model scope and text
+
+- **Status:** `active`, P0
+- **Trigger:** Final Models average 11.73 scoped entities; 84/86 Models have at
+  least ten. Canonical memory also contains benchmark-wrapper and inquiry-policy
+  language.
+- **Current behavior:** Batch/context entities appear to be copied into
+  claim scope, and non-company reasoning/control text can survive admission.
+- **Risk:** Cross-storyline relevance inflation, false graph overlap,
+  calibration contamination, projection amplification and untrustworthy
+  company propositions.
+- **Safe boundary:** High storyline and product proxy scores remain provisional
+  until scope and contamination are corrected.
+- **Return condition:** Claim-local mentioned/decisive scope, exclusion of
+  context-only entities and admission guards against prompt/wrapper/inquiry
+  language.
+
+### EDGE-028 — Asymmetric graph relations become reciprocal
+
+- **Status:** `active`, P0
+- **Trigger:** The final graph contains eight reciprocal
+  `early_warning_for` pairs, four reciprocal `blocks` pairs and one reciprocal
+  `contradicts` pair.
+- **Current behavior:** Direction-sensitive relation-frame projections can emit
+  both orientations, frequently with the same explanation.
+- **Risk:** Reversed causality and dependency semantics in the company graph.
+- **Safe boundary:** Mechanical no-self/no-orphan/no-duplicate checks do not
+  establish relation correctness.
+- **Return condition:** Per-kind source/target role contracts, reciprocal-edge
+  rejection unless independently justified, and repair/retirement of invalid
+  existing pairs.
+
+### EDGE-029 — Recovered Think failure is counted as terminal failure
+
+- **Status:** `bounded`
+- **Trigger:** Wave 19 exhausted three 180-second provider attempts, then the
+  same 25-signal trigger succeeded on its configured run-level retry.
+- **Current behavior:** All 45 batches ultimately succeeded and queues drained,
+  but Vitals hard-fails on the historical failed run count.
+- **Risk:** Reliability incidents are either understated as success or
+  overstated as lost company learning.
+- **Safe boundary:** Preserve the failed attempt and retry cost, but distinguish
+  it from an unrecovered trigger.
+- **Return condition:** Report attempt failures, recovered trigger failures,
+  terminal failures, recovery latency and retry cost separately; reserve the
+  noncompensatory failure gate for terminal/unrecovered work or an explicit SLA
+  breach.
 
 ## Entry Template
 

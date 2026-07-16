@@ -465,19 +465,45 @@ canonical alias promotion or entity lifecycle.
   experiment-report and mechanism-metric digests. Collision/homonym and
   entity-lifecycle cases remain deliberately outside this positive population.
 
+## Authoritative 45-Batch Reuse Findings
+
+The large cold-start run confirms that the correct path is to repair existing
+owners, not add parallel subsystems:
+
+- The mention-opportunity, detection and grounding protocols already exist, but
+  the large simulation bypassed them. Wire the existing protocol rather than
+  creating a second extractor.
+- The existing candidate/promotion boundary is correct. Remove resolver-owned
+  canonical alias writes rather than adding another identity registry.
+- Models remain the right canonical memory store. Tighten claim-local scope and
+  admission instead of introducing a second “working memory” graph.
+- Existing retrieval and SAGE already learn and reuse outcomes. Make their
+  observation/Model budgets outcome-adaptive rather than adding a new retrieval
+  controller.
+- Relation frames and Model edges remain the right graph owners. Preserve
+  participant roles and add directionality invariants rather than creating a
+  replacement graph.
+- Existing residuals, open questions and latent gaps are sufficient uncertainty
+  surfaces. Prove human closure and improve repair ROI rather than adding a new
+  gap system.
+- Company Vitals and the authoritative aggregate evaluator remain the sole
+  system report. Fix entity denominators, recovered-failure semantics and
+  normalization inside those owners.
+
 ## Next Consolidation Targets
 
-1. Keep the source-semantic worker active until its persisted normalized-signal
-   to Model vertical is preserved by an equivalent integrated path.
-2. Continue isolating shared command/event/outbox persistence from
-   task-autonomy service and database naming while retaining compatibility.
-3. Feed typed grounding outcomes into existing reflective/retrieval learning
-   before adding any new policy lifecycle.
-4. Add the declared collision/homonym matrix and minimum
-   rename/archive/name-reuse lifecycle proof before any broader variant
-   promotion.
-5. Expand correction closure from the first grounded-Model vertical to every
-   materially dependent accepted Model, graph relation and projection.
+1. Connect the existing mention candidate/detection/grounding protocol to every
+   persisted-signal batch and require total fate.
+2. Remove resolver writes to canonical aliases; route all new identity through
+   existing candidate and adjudication owners.
+3. Restrict existing Model scope writers to claim-local decisive entities and
+   add contamination rejection to the current admission path.
+4. Make existing retrieval/SAGE policies Model-first after memory forms, with
+   explicit raw-observation reopening reasons.
+5. Add directional role contracts to existing relation-frame and Model-edge
+   projection code.
+6. Coalesce current projection jobs and govern existing T4 repair lanes by
+   measured durable-outcome ROI.
 
 ## Proof Required Before Behavioral Expansion
 

@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `15020d6b`
+**Current checkpoint:** `be401f25`
 
 **Last updated:** 2026-07-17
 
@@ -286,8 +286,8 @@ flowchart LR
 | Company-learning evaluator | Context, grounding and source-semantic state compile into one active-slice evaluation | Complete for measured slice |
 | Paired causal evaluator | Correctness is derived from sealed arm-specific gold and terminal consumer fate; incidents are noncompensatory | Complete for current case family |
 | Canonical proof integration | Experiment scenario and lift metric are registered under INV-05 and aggregated through canonical proof models | Complete |
-| Company Vitals | Reopens the working v6 component set and now exposes replacement and source-binding lifecycle component surfaces required by the v7 schema | Complete for v6; v7 display/schema foundation complete |
-| Evaluator synchronization | V7 requires the sealed canonical resource-replacement component and preserves fail-closed component accounting; the final joined v7 artifact is not yet claimed | Schema/contract foundation complete |
+| Company Vitals | Reopens Assurance v7, DB-backed company-physics traces and the authoritative 45-batch simulation artifacts; noncompensatory entity and reliability incidents override high continuous scores | Complete for current v7 and large-simulation reporting |
+| Evaluator synchronization | V7 requires replacement and source-binding lifecycle evidence, reopens digest-bound raw DB manifests, binds repository provenance and rejects unsupported evidence-tier inflation | Complete for the current E4 assurance profile |
 | Negative/adversarial recurrence families | Contextual phrase, source conflict, homonym and unrelated controls run on real Postgres with zero incidents | Complete for four sealed controls |
 | Held-out recurrence population | The sealed 60-case registry executes exactly once with continuous intervals, all four entity types and no selective reruns | Complete: 60/60 observed |
 | Conversational reconstruction | All nine Slack-shaped semantic families are source-attributed, supported and correct with zero contamination from persisted normalized fixtures; provider transport is not part of the claim | Complete for sealed gold: 9/9 |
@@ -295,10 +295,10 @@ flowchart LR
 | Cross-source company physics | Persisted Jira-, Linear-, Google Drive- and Gmail-attributed fixtures preserve governed source identity through grounding; connector/listener transport and equivalent causal learning are outside or beyond the current proof | Complete for the persisted identity semantics measured |
 | SAGE feedback reuse | Grounding and source-semantic terminal outcomes alter future matching-source retrieval salience without truth or authority writes | Complete for first bounded source-salience bridge |
 | Active-surface evaluator | Six sealed identity surfaces across Jira, Linear, Google Drive and Gmail plus five source-salience cases are recomputed, reopened and gated noncompensatorily | Complete in assurance v6: identity 6/6, salience 5/5 |
-| Source-identity lifecycle | Bindings support idempotent close, revoke and supersede with valid-time history, immutable attachment versions and an overlap guard; a sealed typed evaluator exists | Runtime/repository and evaluator contract complete; DB evidence runner still in flight |
+| Source-identity lifecycle | Bindings support close, revoke and supersede with valid-time history, immutable attachment versions, a database exclusion constraint, populated colliding-tenant proof and a digest-bound query/row/error manifest | Complete for the sealed 12/12 E4 lifecycle proof |
 | Retention and forgetting evaluator | Exact and governed-variant behavior is measured at 0/4/16 alias-interference cycles and 0/1/2 worker-object restarts; correction, four negative controls and three collision families are checked noncompensatorily | Complete in assurance v6: 14/14, forgetting 0.0; not process-restart or long-duration proof |
 | Canonical resource replacement | One atomic orchestrator governs transition lineage, predecessor retirement, alias closure, exact source-binding supersession and projection invalidation while preserving Observations, attachments and Models; resource reads can resolve the lineage head at explicit valid/known cutoffs | Complete for the sealed resource vertical: 20/20 observed, zero gaps or violations |
-| Long-duration autonomous learning | True process/deployment restart, unrelated end-to-end learning, drift, rollback and regression behavior across long runs | Not proven |
+| Large cold-start company learning | One fresh tenant processed 1,125 signals in 45 genuine 25-signal batches from zero semantic memory; all work drained and later evidence changed memory | Executed; authoritative verdict `not_credible` because entity grounding and retrieval behavior failed required trust gates |
 
 ## Important Implementation Checkpoints
 
@@ -697,9 +697,9 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
-| Scoped company-learning working end state | 85–90% | Correction reuse, collision safety, bounded retention, feedback reuse, resource replacement and lineage-aware resource reads are green; final v7 joining, source-lifecycle runtime proof and process durability remain |
-| Customer-free objective substantiation | 80–85% | Assurance v6 is the last fully executed combined proof and replacement is independently 20/20; v7, open-world robustness, broader lifecycle and true restart proof remain |
-| Broader revised system excluding task autonomy | 70–78% | The core company-memory and correction loop is substantial, but merge/split/resurrection, second-correction, downstream lineage-read adoption, long-duration behavior and customer-value evidence remain incomplete |
+| Scoped company-learning runtime implementation | 90–93% | The batched cold-start metabolism, learning, correction, lifecycle, replacement, projection and drain paths execute end to end; the remaining work is concentrated in semantic trust rather than missing orchestration |
+| Customer-free objective substantiation | 68–75% | Assurance v7 is green and the 45-batch run has 96.7% evidence coverage, but the authoritative verdict is `not_credible` because mention fate coverage is zero, resolver identity writes are unauthorized and mature retrieval is not Model-first |
+| Broader revised system excluding task autonomy | 72–80% | The core company-memory substrate is substantial and large-run operational behavior is proven, but entity truth, claim-local scope, graph directionality, calibration, human gap closure and customer-value evidence remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
@@ -1036,24 +1036,24 @@ connection depend on the caller supplying the surrounding transaction.
 
 ## Next Execution Sequence
 
-1. Complete the database-backed source-binding lifecycle runner, then join its
-   exact artifact with the `20/20` replacement proof in a final assurance-v7
-   execution.
-2. Add a true second-correction replacement case and independent Model/
-   evidence-lineage validation.
-3. Replace object-only restart and direct alias interference with process
-   restart plus unrelated end-to-end learning cycles; execute the remaining
-   five collision families.
-4. Add merge/split/resurrection cases through the canonical identity writer
-   rather than alias mutation.
-5. Repeat the causal suite across simulated normalized Jira-, Linear-, Drive-,
-   Gmail- and meeting-attributed signal populations.
-6. Complete source-binding historical reconstruction and move interval overlap
-   enforcement into a database contract.
-7. Calibrate and stratify the existing SAGE source-salience bridge with
-   route-specific attribution, temporal decay and production-scale cost proof.
-8. Run frozen real-provider and long-duration restart/load suites.
-9. Reassess progress from the same combined Company Vitals assurance report.
+1. Wire every eligible mention candidate through a detection head and one
+   terminal detection/rejection fate.
+2. Prohibit resolver-owned writes to canonical identity aliases; require a
+   promotion/adjudication trace for every canonical alias mutation.
+3. Enforce claim-local Model scope and reject batch/context-only entities from
+   durable proposition scope.
+4. Add source/target role contracts and reciprocal-edge guards for asymmetric
+   relations such as `blocks` and `early_warning_for`.
+5. Reject benchmark, prompt, inquiry and wrapper language from canonical
+   Models.
+6. Make mature retrieval Model-first, require a reason for raw-observation
+   reopening and measure selected-versus-used context per wave.
+7. Make independent causal-thesis correctness the primary hidden-pattern
+   metric and add cross-storyline contamination penalties.
+8. Recalibrate confidence against later outcomes after entity and scope fixes.
+9. Coalesce projection refresh work and govern T4 repair by durable-outcome ROI.
+10. Run focused regression/evaluator suites for these defects. Do not run a
+    second large company simulation unless the user explicitly requests it.
 
 ## Progress Ledger
 
@@ -1430,3 +1430,29 @@ connection depend on the caller supplying the surrounding transaction.
 - Connector/listener ingestion transport is explicitly outside this goal.
   Active tests start from simulated normalized, source-attributed signals that
   are already persisted in PostgreSQL.
+
+### 2026-07-17 — Assurance v7 sealed and authoritative cold-start run completed
+
+- `53083717`, `7284bc4f` and `84c6d199` harden source-binding and canonical
+  replacement evidence with populated colliding tenants, digest-bound raw DB
+  manifests, descriptive checklist ratios and exact repository provenance.
+- `f97f0ab2` moves source-binding overlap enforcement into a PostgreSQL
+  exclusion constraint.
+- Exact Assurance v7 at `be401f25` reports `working`, zero blockers,
+  replacement `20/20`, source-binding lifecycle `12/12` and clean repository
+  provenance.
+- The authoritative cold-start run processed 1,125 signals as 45 genuine
+  25-member T1 batches with zero pre-wave Models, edges, pattern candidates or
+  hypotheses. All triggers, 242 post-commit actions and 65 topology items
+  drained.
+- The combined benchmark scored company intelligence `0.9354`, product proxy
+  value `0.9431` and independent hidden-thesis recovery `5/9`.
+- The authoritative aggregate report is `not_credible` at measured quality
+  `0.9159` and evidence coverage `0.9667`. Hard failures are zero mention-fate
+  protocol coverage, 50 unauthorized resolver-owned canonical identity writes
+  and one recovered but expensive Think attempt failure.
+- Mature retrieval remained flat/mixed rather than Model-first. The late phase
+  retrieved 278 Models and 280 observations, and late reasoning referenced
+  observations substantially more often than Models.
+- Durable analysis is recorded in
+  `docs/evaluation/autonomous-company-learning-cold-start-45-postmortem-20260717.md`.
