@@ -218,7 +218,7 @@ Everything else receives an explicit safe behavior and return condition here.
 
 ### EDGE-015 — Variant collision and homonym safety
 
-- **Status:** `active`
+- **Status:** `resolved` for the sealed 16-case E4 scope
 - **Trigger:** An acronym, short form, normalized spelling or typo can rank two
   permitted entities, including entities of different types or validity times.
 - **Risk:** Candidate-memory lift can become a high-confidence false merge or
@@ -233,22 +233,30 @@ Everything else receives an explicit safe behavior and return condition here.
   candidate visibility, none-of-the-above availability, unsafe versus
   authoritative resolution, wrong Models, alias promotion, source immutability
   and exact family/entity/lifecycle strata.
-- **Current runtime evidence:** The first real-Postgres run executed `14/16`
-  cases and explicitly marked both source-ID cases unsupported. Archived and
-  inactive targets are now fenced safely. The adaptive arm still made `10/14`
-  unsafe learned-target resolutions across active collisions, while the frozen
-  arm safely contained `14/14`; candidate visibility, none-of-the-above and
-  source immutability remained `1.0`, with zero wrong Models.
+- **Current runtime evidence:** The real-Postgres runner executes `16/16`
+  cases. Adaptive and frozen arms safely contain every ambiguous collision
+  with zero unsafe resolutions, zero incidents, zero wrong Models and zero
+  alias promotions. Candidate visibility, none-of-the-above availability and
+  source immutability are all `1.0`. Both authenticated source-native cases
+  resolve the authorized conflicting target in both arms with a two-case
+  authoritative-resolution rate of `1.0`. Archived and inactive targets are
+  fenced, and multiple live exact candidates without decisive authority force
+  review instead of allowing model confidence to select one.
+- **Assurance boundary:** Assurance v5 makes the complete collision artifact
+  mandatory and noncompensatory. `working` now requires all `16/16` cases,
+  both authenticated source-native cases and every safety metric to satisfy
+  the sealed contract.
 - **Return condition:** Execute the sealed registry on real PostgreSQL. Require
   zero learned-target or other unauthorized resolutions, zero wrong Models,
-  zero promotion and complete safe containment for every supported case.
+  zero promotion and complete safe containment for every sealed case.
   Authenticated source-native identifiers may resolve only their authorized
-  active conflicting target. Unsupported source-ID authority must remain
-  explicit until a genuine persisted source-identity binding exists.
+  active conflicting target. New source surfaces must not claim this coverage
+  until they transport and persist the same authenticated binding evidence.
 
 ### EDGE-016 — Rename and lifecycle changes cannot be aliases
 
-- **Status:** `open`
+- **Status:** `resolved` for customer rename/archive/name-reuse; broader
+  lifecycle remains `active`
 - **Trigger:** A company object is renamed, archived and re-created, merged,
   split, replaced or resurrected.
 - **Risk:** A timeless alias redirect can rewrite history, join distinct
@@ -257,9 +265,21 @@ Everything else receives an explicit safe behavior and return condition here.
   a canonical lifecycle owner establishes identity continuity, valid time,
   predecessor/successor lineage and dependent repair. An alias adjudication
   alone cannot merge or split referents.
+- **Current runtime evidence:** The sealed eight-case real-Postgres proof
+  preserves one customer UUID through rename and archive, resolves aliases by
+  valid time, rejects stale and archived names, safely reuses historical names,
+  leaves old Observation and Model references immutable, prevents interval
+  overlap, isolates tenants and makes rename/archive replay idempotent. All
+  continuous metrics are `1.0`, all `8/8` cases execute and no violations are
+  recorded.
+- **Assurance boundary:** Assurance v5 reopens and recomputes the lifecycle
+  artifact and blocks `working` on any unsupported case, metric below `1.0`,
+  overlap, mutation, tenant leak or replay divergence.
 - **Return condition:** Prove rename continuity, archive/name reuse and
-  stale-alias rejection first; then prove merge/split/replacement/resurrection
-  through a versioned `EntityIdentityApplier` path with correction closure.
+  stale-alias rejection first — complete for customers. Reopen for merge,
+  split, replacement, resurrection, non-customer identity lifecycle and
+  `SourceIdentityBinding` rebind/revocation through canonical lifecycle writers
+  with correction closure.
 
 ## Entry Template
 

@@ -418,10 +418,12 @@ It does not yet prove:
 - broad contextual references, descriptions or local nicknames beyond the
   sealed cases;
 - broad conflicting-evidence and homonym populations beyond one case each;
-- canonical entity lifecycle behavior for rename, archive/name reuse, merge,
-  split or resurrection;
+- canonical merge, split, replacement or resurrection behavior beyond the
+  customer rename/archive/name-reuse proof;
+- `SourceIdentityBinding` rebind and revocation lifecycle;
 - open-world Slack reconstruction across long time spans and channels;
 - real-provider/model robustness;
+- production connector transport of authenticated source-identity claims;
 - equivalent behavior across Jira, email, documents and meetings;
 - very large correction cascades beyond the bounded seeded proof;
 - long-term retention without catastrophic overgeneralization;
@@ -440,9 +442,9 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias Slack clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared |
-| Active autonomous company-learning runtime | 82–86% | Exact replay and unambiguous candidate-memory variants work across four entity types, all sealed Slack families and recursive correction convergence; collision safety, lifecycle and multi-source breadth remain |
-| Customer-free objective substantiation | 75–80% | The 60-case registry, nine-family Slack gold, negative controls, correction convergence and trusted combined report are green; open-world, retention and provider robustness remain |
-| Broader revised system excluding task autonomy | 72–77% | The core company-memory and autonomous correction loop is strong, but cross-source semantics, entity lifecycle, SAGE outcome adaptation and long-duration validation remain incomplete |
+| Active autonomous company-learning runtime | 90–92% | Exact replay, unambiguous candidate-memory variants, the full 16-case collision matrix and the 8-case customer lifecycle proof are green; production connector claim transport, broader lifecycle and multi-source breadth remain |
+| Customer-free objective substantiation | 84–87% | The 60-case registry, nine-family Slack gold, negative controls, correction convergence, 24-case positive variants, 16-case collision matrix and 8-case lifecycle proof are green; open-world, retention and provider robustness remain |
+| Broader revised system excluding task autonomy | 76–80% | The core company-memory and autonomous correction loop is strong, but cross-source production semantics, merge/split/resurrection lifecycle, SAGE outcome adaptation and long-duration validation remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
@@ -469,9 +471,11 @@ Task autonomy is excluded from all percentages.
      company modeling with autonomous task planning and execution excluded.
    - Keep Company Vitals and the existing invariant-proof spine as the sole
      system evaluator; do not create a parallel health or assurance framework.
-   - Current result: complete. The v2 combined assurance runs all five
-     components, validates current architecture and plan digests, excludes task
-     autonomy explicitly, and passed the real-Postgres CLI integration.
+   - Current result: complete for the active profile. Assurance v5 runs and
+     cross-validates positive, negative, exact population, variant population,
+     collision, customer lifecycle, Slack reconstruction and correction
+     evidence; validates architecture and plan digests; excludes task autonomy;
+     and passes the real-Postgres CLI integration.
 
 2. **Add non-resolution and ambiguity controls**
    - Contextual phrase negative.
@@ -538,11 +542,16 @@ Task autonomy is excluded from all percentages.
      redirect historical evidence.
    - Merge, split, replacement and resurrection must use canonical lifecycle
      writers and dependent repair rather than alias mutation.
-   - Current result: the architecture contracts distinguish resolution,
-     referent birth and merge/split, but the active actor/resource registries do
-     not yet implement or prove the complete versioned `EntityIdentityApplier`
-     lifecycle. The existing four negative controls include one homonym case,
-     not the variant-family collision matrix.
+   - Current result: the sealed collision matrix runs `16/16` cases on real
+     PostgreSQL with zero incidents, unsafe resolutions, wrong Models or alias
+     promotions. Both authenticated source-native cases resolve the authorized
+     conflicting target in both arms, while unauthenticated competing hints
+     preserve both candidates and force safe uncertainty. The separate
+     customer lifecycle proof runs `8/8`: UUID continuity, valid-time
+     resolution, stale/current alias safety, historical name reuse, old
+     Observation/Model immutability, archive rejection, interval non-overlap,
+     tenant isolation and replay idempotency are all `1.0`. Merge, split,
+     replacement, resurrection and non-customer identity lifecycle remain.
 
 ### P1 — Required for a strong multi-source product
 
@@ -550,8 +559,8 @@ Task autonomy is excluded from all percentages.
    one validation/apply contract.
 2. Extend the same entity-learning loop to Jira, email, documents, meetings and
    other structured sources.
-3. Extend the minimum P0 lifecycle proof to broad creation, transfer, merge,
-   split, archive and resurrection populations.
+3. Extend the customer lifecycle proof to creation/transfer plus merge, split,
+   replacement, resurrection and non-customer populations.
 4. Expand actor/customer/project/system same-surface ambiguity beyond the P0
    variant-collision matrix.
 5. Measure correction retention, forgetting and old-family regression.
@@ -641,10 +650,11 @@ A successful run:
 
 This working version proves a real-Postgres exact tenant-global learning slice,
 four matched negative controls, all 60 measured recurrence pairs, all nine
-Slack reconstruction families and a recursive real-Postgres correction cascade
-across Models, relations and projections. The
-joined E3/E4 evidence remains insufficient for broad invariant closure. It is
-not open-world or customer E5 evidence, does not prove equivalent multi-source
+Slack reconstruction families, all 24 positive variant cases, all 16 collision
+cases, all eight customer identity-lifecycle cases and a recursive correction
+cascade across Models, relations and projections. The joined E3/E4 evidence
+remains insufficient for broad invariant closure. It is not open-world or
+customer E5 evidence, does not prove equivalent multi-source production
 learning, and does not include autonomous task execution.
 
 The implementation assumes reuse of the existing SAGE learner, retrieval
@@ -663,7 +673,10 @@ not claimed by this working version.
 
 ### Explicitly deferred production hardening
 
-- variant collisions, larger homonym/conflict populations and entity lifecycle;
+- larger open-world homonym/conflict populations;
+- merge/split/replacement/resurrection and non-customer identity lifecycle;
+- `SourceIdentityBinding` rebind/revocation;
+- production connector claim transport beyond the current evaluated surfaces;
 - open-world simulation, real-provider runs and customer E5 validation;
 - very large recursive correction cascades and sustained refresh load;
 - cross-source equivalence;
@@ -673,18 +686,17 @@ not claimed by this working version.
 
 ## Next Execution Sequence
 
-1. Add a sealed collision matrix for acronym, short-form, normalization and
-   same-surface homonyms; require review/abstention and zero wrong Models.
-2. Implement the smallest canonical lifecycle proof: rename continuity,
-   archive/name reuse, stale-alias rejection and dependent repair.
-3. Add merge/split/replacement/resurrection cases through the canonical
+1. Add merge/split/replacement/resurrection cases through the canonical
    identity writer rather than alias mutation.
-4. Repeat the causal suite across Jira, email and document sources.
-5. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
+2. Complete production connector claim transport, then repeat the causal suite
+   across Jira, email and document sources.
+3. Add `SourceIdentityBinding` rebind/revocation lifecycle with stale-binding
+   fencing and historical resolution.
+4. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
    surfaces without giving SAGE canonical write authority.
-6. Add retention, forgetting and old-family regression evaluation.
-7. Run frozen real-provider and long-duration restart/load suites.
-8. Reassess progress from the same combined Company Vitals assurance report.
+5. Add retention, forgetting and old-family regression evaluation.
+6. Run frozen real-provider and long-duration restart/load suites.
+7. Reassess progress from the same combined Company Vitals assurance report.
 
 ## Progress Ledger
 
@@ -879,34 +891,44 @@ not claimed by this working version.
   availability, safe containment, unsafe and authoritative resolution, wrong
   Models, alias promotion, source immutability, support coverage and exact
   collision/entity/lifecycle strata.
-- The evaluator-only checkpoint has six focused passing tests. Its real
-  PostgreSQL runtime is the active next step; the two source-native-ID cases
-  must remain explicitly unsupported until genuine source-identity authority is
-  persisted.
+- At this evaluator-only checkpoint, the two source-native-ID cases remained
+  explicitly unsupported until genuine source-identity authority was
+  persisted. The later runtime checkpoint below closes that historical gap.
 - The working-version evaluator currently adds one file-over-threshold debt
   item. It is recorded for later module decomposition rather than delaying the
   first honest end-to-end collision result.
 
-### 2026-07-16 — First honest collision runtime exposed the safety boundary
+### 2026-07-16 — Full collision and customer lifecycle scope closed safely
 
 - Added a reusable real-Postgres collision runner using the existing paired
   tenant, clarification, alias, resolver, grounding and candidate-set seams
   rather than a second entity-resolution subsystem.
-- Executed 14 supported cases and retained both source-native-ID cases as
-  explicitly unsupported because the runtime has no genuine persisted
-  `SourceIdentityBinding`.
-- The first report is correctly `contradicted`: the adaptive arm safely
-  contained `4/14` cases and incorrectly resolved the learned target in `10/14`;
-  the frozen arm safely contained `14/14`.
+- The first pre-fix report exposed `10/14` unsafe adaptive learned-target
+  resolutions. The narrow ambiguity gate then changed the runtime law:
+  multiple live exact candidates without one decisive authority now force
+  review regardless of model confidence.
+- Persisted `SourceIdentityBinding` evidence and explicit source-surface
+  attachment then closed the two authenticated source-native cases. The
+  current report is `observed`: adaptive and frozen arms safely satisfy all
+  `16/16` cases with zero incidents, zero unsafe resolutions, zero wrong Models
+  and zero alias promotions.
 - Both arms retained complete colliding-candidate visibility,
   none-of-the-above availability and source immutability at `1.0`; no wrong
   downstream Models or alias promotions were observed.
 - The liveness fence removed archived and inactive UUID-backed actor/resource/
   customer targets from ingest fast paths and resolver candidate inputs. That
-  made all four stale-lifecycle cases safe while leaving the active ambiguity
-  failure visible.
-- Durable pre-fix artifact:
+  made all four stale-lifecycle collision cases safe.
+- Added the resource-backed customer lifecycle and an eight-case real-Postgres
+  proof. Rename continuity, valid-time lookup, stale/current alias safety,
+  historical name reuse, old Observation/Model immutability, archive
+  rejection, interval non-overlap, tenant isolation and rename/archive replay
+  idempotency all measure `1.0` with `8/8` cases observed and zero violations.
+- Assurance v5 makes both collision and customer lifecycle artifacts mandatory,
+  reopens and recomputes their typed evidence and blocks `working` on any
+  unsupported case, lifecycle metric below `1.0`, interval overlap, mutation,
+  tenant leak, replay divergence or collision-safety regression.
+- The full real-Postgres assurance CLI passed with status `working`, collision
+  `16/16`, customer lifecycle `8/8` and no blocking failures. Summary digest:
+  `40c8c30c8bbc40d08e2160176a156c9d54398a2535d2d38e56af3718aa201214`.
+- Historical diagnostic artifact:
   `/tmp/fyralis-variant-collisions-first-honest`.
-- The next core fix is narrow: multiple live exact candidates without one
-  decisive authority must force review/abstention; high model confidence cannot
-  select one side of the collision.
