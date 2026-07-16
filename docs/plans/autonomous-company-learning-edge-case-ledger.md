@@ -658,6 +658,88 @@ transport are excluded from this goal.
 - **Return condition:** Execute a newly frozen benchmark once with the repaired
   runtime and report it separately from the historical artifact.
 
+### EDGE-034 — Learned discovery has batch-atomic schema failure and systematic semantic tails
+
+- **Status:** `active`, P0
+- **Immutable evidence boundary:** The sealed v2 corpus has 80 unique signals,
+  eight genuine ten-signal batches, 40 hard negatives and 114 exact typed gold
+  spans (SHA-256
+  `8285d139f8346bbf0dce73bb65a5f0547d9a8c768a72c533602fc71592f81d51`).
+  The report in
+  `/tmp/learned_entity_discovery_quality_v2_report.json` is an exact recovery
+  of eight completed `gpt-5.4` structured turns after report rendering failed;
+  it is not a provider rerun. Operational latency and usage are unavailable.
+  These results must not be rescored under later code.
+- **Observed aggregate:** Production verification admitted 101 predictions:
+  81 exact spans, 98 overlap matches, 16 unmatched gold mentions, three
+  unmatched predictions and 18 type errors among the 98 matches. Exact span
+  precision/recall/F1 is `0.8020/0.7105/0.7535`; type accuracy is `0.8163` and
+  hard-negative cleanliness is `0.9500`. Canonical referents are all null, so
+  this supplies no canonical-link evidence.
+- **P0 — isolate invalid structured items instead of losing a batch:** Batch 7
+  returned one unsupported type, `service`. Strict `LearnedMentionBatch`
+  validation rejected the whole response; deterministic fallback emitted zero
+  candidates, losing all 15 gold mentions in that batch. This accounts for
+  15/16 omissions. Across the seven schema-valid learned batches, overlap
+  coverage was 98/99 and the only semantic omission was `Kýma contract`.
+  A single malformed mention must be rejected or normalized through an
+  explicit ontology boundary without discarding valid siblings. Fallback must
+  have independently measured recovery recall and must never be counted as
+  learned success.
+- **P0 — preserve role-bearing mention boundaries:** Seventeen overlap matches
+  were not exact: Jira seven, Slack six and email four. The dominant pattern is
+  removal of a type-bearing prefix or suffix, for example `Decision D-β12` to
+  `D-β12`, `Team Varde` to `Varde`, `Copper Finch rollout` to `Copper Finch`,
+  and `Serra CRM project` to `Serra CRM`. By gold type this affects workstream
+  4/5, decision 3/5, goal 3/5, project 3/11, team 2/13, and one each of
+  commitment and resource. Exact-span verification cannot repair a valid but
+  semantically truncated span; boundary policy needs explicit role-designator
+  training examples and a deterministic, evidence-preserving expansion rule.
+- **P0 — type classification needs company-ontology evidence:** Eighteen of 98
+  overlap matches had the wrong type: Jira eight, Slack six and email four.
+  The concentrated confusions are resource to `other` (3), product to customer
+  (3), team to customer (2), system to product (2), plus eight singleton
+  confusions. Gold-type error counts are resource 5/8 matched, product 5/9,
+  system 4/11, team 2/11, commitment 1/5 and project 1/9. Person, customer,
+  decision, goal and workstream matches were typed correctly. Discovery should
+  retain span evidence separately from type assessment, allow calibrated
+  `other`/review rather than forced precision, and use relation/context cues
+  plus existing company ontology without letting type uncertainty erase the
+  mention.
+- **P1 — reject syntax and transport artifacts with calibrated abstention:**
+  The three unmatched predictions were all typed `resource`: Jira environment
+  value `test-2` (`0.82`), Slack thread reference `#392` (`0.83`) and Jira path
+  `/api/search` (`0.75`). Two polluted hard-negative signals, so the problem is
+  not solved by the current confidence threshold. Candidate policy needs
+  negative examples for environment values, message/thread locators, paths,
+  trace IDs and other transport syntax, with source-aware abstention metrics.
+- **Context/source distribution:** Omissions were email 7, Slack 6 and Jira 3,
+  but 15/16 came from the batch-atomic failure. Boundary errors were
+  Jira/Slack/email `7/6/4`; type errors were `8/6/4`; false positives were
+  `2/1/0`. At the original Slack strata, the failed batch caused three
+  omissions each in temporal-sequence and cross-thread-reference signals.
+  Schema-valid Slack errors were otherwise cross-channel-temporal (three
+  boundaries, one type), cross-thread (one boundary, one type, one false
+  positive), temporal-sequence (one boundary, two types), and delayed threaded
+  replies (one boundary, two types). Standalone, ordinary threaded and channel
+  follow-up negatives stayed clean, but these small strata do not establish
+  general reliability.
+- **Separate development corpus:** Do not tune on sealed v2. Build an unsealed,
+  versioned development set with independently authored organizations and
+  surfaces, balanced by source, Slack context and all 11 entity types. Include
+  (1) valid responses containing one deliberately invalid enum or malformed
+  sibling, (2) role-bearing prefix/suffix boundary pairs, (3) ambiguous
+  product/customer/team/system/resource contexts, (4) multilingual and symbol
+  identifiers, and (5) source-specific syntax negatives. Track item-isolation
+  recovery, exact boundary F1, per-type confusion, negative cleanliness,
+  abstention/coverage and fallback-only recall separately. Freeze a new
+  organization/entity/time-split holdout only after policy, prompt, schema and
+  thresholds are fixed.
+- **Return condition:** A malformed candidate cannot erase valid siblings;
+  learned and fallback populations remain separately attributable; the
+  development suite closes the boundary/type/negative tails; and a newly
+  sealed untouched run demonstrates the improvement without post-hoc rescoring.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title
