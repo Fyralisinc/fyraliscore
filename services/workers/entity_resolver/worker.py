@@ -412,6 +412,7 @@ class EntityResolverWorker:
                 ctx=ctx,
                 resolution=resolution,
                 episode=episode,
+                grounding_trace_id=trace_id,
                 conn=conn,
             )
             self._log.info(
@@ -599,9 +600,33 @@ class EntityResolverWorker:
         ctx: ResolverContext,
         resolution: EntityResolution,
         episode: GroundingEpisode,
+        grounding_trace_id: UUID,
         conn: asyncpg.Connection | None,
     ) -> None:
         """Project a durable review admission into the human-work queue."""
+        detection = episode.mention_detection_command.detection
+        feedback_lineage = {
+            "grounding_trace_id": str(grounding_trace_id),
+            "context_snapshot_id": episode.context_snapshot.snapshot_id,
+            "context_snapshot_version": episode.context_snapshot.snapshot_version,
+            "entity_mention_detection_id": str(detection.detection_id),
+            "entity_mention_detection_version": detection.detection_version,
+            "entity_mention_id": (
+                detection.mention.mention_id if detection.mention is not None else None
+            ),
+            "entity_mention_version": (
+                detection.mention.mention_version
+                if detection.mention is not None
+                else None
+            ),
+            "candidate_set_id": episode.candidate_set.candidate_set_id,
+            "candidate_set_version": episode.candidate_set.candidate_set_version,
+            "resolution_assessment_id": episode.assessment.assessment_id,
+            "resolution_assessment_version": episode.assessment.assessment_version,
+            "grounding_admission_id": episode.admission.decision_id,
+            "grounding_admission_version": episode.admission.decision_version,
+            "grounding_disposition": episode.admission.disposition.value,
+        }
         candidates = [
             {
                 "candidate_id": episode.selected_candidate_id,
@@ -610,6 +635,9 @@ class EntityResolverWorker:
                 "reasoning": resolution.reasoning,
                 "assessment_id": episode.assessment.assessment_id,
                 "assessment_version": episode.assessment.assessment_version,
+                "grounding_trace_id": str(grounding_trace_id),
+                "grounding_admission_id": episode.admission.decision_id,
+                "grounding_admission_version": episode.admission.decision_version,
             }
         ]
         row_id = uuid7()
@@ -634,6 +662,7 @@ class EntityResolverWorker:
             canonical_ref=episode.assessed_canonical_ref,
             review_id=row_id,
             candidates=candidates,
+            feedback_lineage=feedback_lineage,
             conn=conn,
         )
 
@@ -644,6 +673,7 @@ class EntityResolverWorker:
         canonical_ref: dict[str, Any] | None,
         review_id: UUID,
         candidates: list[dict[str, Any]],
+        feedback_lineage: dict[str, Any],
         conn: asyncpg.Connection | None,
     ) -> None:
         ref = canonical_ref or {}
@@ -678,6 +708,7 @@ class EntityResolverWorker:
                     review_id=review_id,
                     candidates=candidates,
                     options=options,
+                    feedback_lineage=feedback_lineage,
                 )
             else:
                 async with self._pool.acquire() as owned:
@@ -688,6 +719,7 @@ class EntityResolverWorker:
                         review_id=review_id,
                         candidates=candidates,
                         options=options,
+                        feedback_lineage=feedback_lineage,
                     )
         except Exception:
             self._log.warning(
@@ -705,6 +737,7 @@ class EntityResolverWorker:
         review_id: UUID,
         candidates: list[dict[str, Any]],
         options: list[dict[str, Any]],
+        feedback_lineage: dict[str, Any],
     ) -> None:
         await open_clarification_request(
             conn,
@@ -728,6 +761,7 @@ class EntityResolverWorker:
                 "phrase": ctx.phrase,
                 "candidates": candidates,
                 "source": "entity_resolver",
+                "feedback_lineage": feedback_lineage,
             },
         )
 

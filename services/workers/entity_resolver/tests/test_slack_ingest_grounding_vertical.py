@@ -183,6 +183,7 @@ async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
         row = await conn.fetchrow(
             """
             SELECT
+              gt.id AS grounding_trace_id,
               gt.current_fate,
               gt.context_snapshot_id,
               gt.entity_mention_detection_id,
@@ -191,21 +192,24 @@ async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
               gt.candidate_set_id,
               gt.resolution_assessment_id,
               gt.grounding_admission_id,
+              ics.snapshot_version,
               ics.snapshot,
               emd.candidate_surface,
+              emd.detection_version AS mention_detection_version,
               emd.fate AS mention_fate,
               emd.mention,
               ecgr.context_snapshot_id AS request_context_snapshot_id,
               ecgr.entity_mention_detection_id AS request_detection_id,
               ecgr.entity_mention_id AS request_mention_id,
               ecs.request_id AS set_request_id,
+              ecs.candidate_set_version,
               ecs.candidates,
               ra.candidate_set_id AS assessment_candidate_set_id,
               ra.selected_candidate_id,
               ra.suggested_canonical_ref,
               ra.assessment_version,
               gad.assessment_id AS admission_assessment_id,
-              gad.decision_version AS admission_version,
+              gad.decision_version AS grounding_admission_version,
               gad.disposition AS admission_disposition,
               gad.reason_codes AS admission_reason_codes
             FROM grounding_traces gt
@@ -239,7 +243,7 @@ async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
         )
         clarification = await conn.fetchrow(
             """
-            SELECT object_id, source_observation_id
+            SELECT object_id, source_observation_id, payload
             FROM clarification_requests
             WHERE tenant_id = $1
               AND source_observation_id = $2
@@ -335,11 +339,31 @@ async def test_slack_thread_ingest_discovers_and_grounds_live_opportunity(
             "reasoning": "the threaded root names Project Northstar",
             "assessment_id": str(row["resolution_assessment_id"]),
             "assessment_version": row["assessment_version"],
+            "grounding_trace_id": str(row["grounding_trace_id"]),
+            "grounding_admission_id": str(row["grounding_admission_id"]),
+            "grounding_admission_version": row["grounding_admission_version"],
         }
     ]
     assert clarification is not None
     assert clarification["object_id"] == review["id"]
     assert clarification["source_observation_id"] == reply_id
+    feedback_lineage = _json(clarification["payload"])["feedback_lineage"]
+    assert feedback_lineage == {
+        "grounding_trace_id": str(row["grounding_trace_id"]),
+        "context_snapshot_id": str(row["context_snapshot_id"]),
+        "context_snapshot_version": row["snapshot_version"],
+        "entity_mention_detection_id": str(row["entity_mention_detection_id"]),
+        "entity_mention_detection_version": row["mention_detection_version"],
+        "entity_mention_id": str(row["entity_mention_id"]),
+        "entity_mention_version": mention["mention_version"],
+        "candidate_set_id": str(row["candidate_set_id"]),
+        "candidate_set_version": row["candidate_set_version"],
+        "resolution_assessment_id": str(row["resolution_assessment_id"]),
+        "resolution_assessment_version": row["assessment_version"],
+        "grounding_admission_id": str(row["grounding_admission_id"]),
+        "grounding_admission_version": row["grounding_admission_version"],
+        "grounding_disposition": row["admission_disposition"],
+    }
 
 
 async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(

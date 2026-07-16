@@ -111,6 +111,33 @@ Everything else receives an explicit safe behavior and return condition here.
 - **Preferred direction:** Extend the existing lifecycle one policy family at
   a time, beginning with contextual entity grounding.
 
+### EDGE-009 — Original grounding is not yet superseded after adjudication
+
+- **Status:** `active`
+- **Current behavior:** An accepted clarification records governed corrective
+  memory and improves later occurrences.
+- **Missing behavior:** The original review grounding, no-admission source
+  semantics and any dependent Model do not yet receive an N+1 successor,
+  retraction or repair fate.
+- **Safe boundary:** Do not claim correction closure; report the first result as
+  historically reviewed and the later improvement as future corrective memory.
+- **Return condition:** Implement grounding/source-semantic successor
+  generations and dependent Model repair before policy-learning promotion.
+
+### EDGE-010 — Clarification compatibility mutates observation annotations
+
+- **Status:** `open`
+- **Current behavior:** Legacy clarification finalization appends the chosen
+  entity to `observations.entities_mentioned` and emits an authoritative state
+  change.
+- **Risk:** A later consumer may confuse human adjudication with a source-native
+  mention, while the original grounding trace says the source observation was
+  not mutated.
+- **Safe boundary:** Treat `entities_mentioned` as a compatibility annotation,
+  never as independent source evidence. Grounding lineage remains authoritative.
+- **Return condition:** Replace the mutation with a versioned correction/
+  annotation projection when successor grounding is implemented.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title

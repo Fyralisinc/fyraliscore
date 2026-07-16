@@ -89,6 +89,183 @@ def _parse_jsonb_obj(raw: Any) -> dict[str, Any]:
     return raw
 
 
+async def insert_alias_with_connection(
+    conn: asyncpg.Connection,
+    *,
+    phrase: str,
+    resolved_entity_ref: dict[str, Any],
+    source: str,
+    confidence: float,
+    tenant_id: UUID,
+    actor_id: UUID | None = None,
+    source_event_id: UUID | None = None,
+    is_canonical: bool = False,
+    alias_embedding: list[float] | None = None,
+    extra_metadata: dict[str, Any] | None = None,
+    adjudicated: bool = False,
+) -> EntityAliasRow:
+    """Insert one alias on a caller-owned connection and transaction."""
+
+    if not phrase or not phrase.strip():
+        raise ValidationError("phrase must be non-empty", field="phrase")
+    if source not in _LEGAL_SOURCES:
+        raise ValidationError(
+            f"unknown alias source {source!r}; "
+            f"must be one of {sorted(_LEGAL_SOURCES)}",
+            field="source",
+            value=source,
+        )
+    if not (0.0 <= confidence <= 1.0):
+        raise ValidationError(
+            f"confidence must be in [0,1]; got {confidence}",
+            field="confidence",
+            value=confidence,
+        )
+    if not isinstance(resolved_entity_ref, dict) or not resolved_entity_ref:
+        raise ValidationError(
+            "resolved_entity_ref must be a non-empty JSON object",
+            field="resolved_entity_ref",
+        )
+
+    metadata: dict[str, Any] = dict(extra_metadata or {})
+    metadata["source"] = source
+    alias_id = uuid7()
+
+    if actor_id is None:
+        lock_key = _advisory_lock_key(tenant_id, phrase)
+        await conn.execute("SELECT pg_advisory_xact_lock($1)", lock_key)
+        existing = await conn.fetchrow(
+            """
+            SELECT id, tenant_id, alias_text, alias_embedding,
+                   actor_id, resolved_entity_ref, is_canonical,
+                   entity_metadata, confidence,
+                   confirmed_count, contested_count,
+                   first_seen_at, last_used_at, source_event_id
+            FROM entity_aliases
+            WHERE tenant_id = $1
+              AND alias_text = $2
+              AND actor_id IS NULL
+            """,
+            tenant_id,
+            phrase,
+        )
+        if existing is not None:
+            if adjudicated:
+                row = await conn.fetchrow(
+                    """
+                    UPDATE entity_aliases
+                    SET resolved_entity_ref = $2::jsonb,
+                        entity_metadata = COALESCE(entity_metadata, '{}'::jsonb)
+                                          || $3::jsonb,
+                        confidence = GREATEST(confidence, $4),
+                        confirmed_count = confirmed_count + 1,
+                        contested_count = contested_count + CASE
+                          WHEN resolved_entity_ref = $2::jsonb THEN 0 ELSE 1
+                        END,
+                        source_event_id = COALESCE($5, source_event_id),
+                        last_used_at = now()
+                    WHERE id = $1
+                    RETURNING id, tenant_id, alias_text, alias_embedding,
+                              actor_id, resolved_entity_ref, is_canonical,
+                              entity_metadata, confidence,
+                              confirmed_count, contested_count,
+                              first_seen_at, last_used_at, source_event_id
+                    """,
+                    existing["id"],
+                    json.dumps(resolved_entity_ref),
+                    json.dumps(metadata),
+                    confidence,
+                    source_event_id,
+                )
+                assert row is not None
+                return _hydrate_alias(row)
+            row = await conn.fetchrow(
+                """
+                UPDATE entity_aliases
+                SET last_used_at = now()
+                WHERE id = $1
+                RETURNING id, tenant_id, alias_text, alias_embedding,
+                          actor_id, resolved_entity_ref, is_canonical,
+                          entity_metadata, confidence,
+                          confirmed_count, contested_count,
+                          first_seen_at, last_used_at, source_event_id
+                """,
+                existing["id"],
+            )
+            assert row is not None
+            return _hydrate_alias(row)
+        row = await conn.fetchrow(
+            """
+            INSERT INTO entity_aliases (
+                id, tenant_id, alias_text, alias_embedding,
+                actor_id, resolved_entity_ref, is_canonical,
+                entity_metadata, confidence,
+                confirmed_count, contested_count,
+                first_seen_at, last_used_at, source_event_id
+            ) VALUES (
+                $1, $2, $3, $4,
+                NULL, $5::jsonb, $6,
+                $7::jsonb, $8,
+                0, 0,
+                now(), now(), $9
+            )
+            RETURNING id, tenant_id, alias_text, alias_embedding,
+                      actor_id, resolved_entity_ref, is_canonical,
+                      entity_metadata, confidence,
+                      confirmed_count, contested_count,
+                      first_seen_at, last_used_at, source_event_id
+            """,
+            alias_id,
+            tenant_id,
+            phrase,
+            alias_embedding,
+            json.dumps(resolved_entity_ref),
+            is_canonical,
+            json.dumps(metadata),
+            confidence,
+            source_event_id,
+        )
+        assert row is not None
+        return _hydrate_alias(row)
+
+    row = await conn.fetchrow(
+        """
+        INSERT INTO entity_aliases (
+            id, tenant_id, alias_text, alias_embedding,
+            actor_id, resolved_entity_ref, is_canonical,
+            entity_metadata, confidence,
+            confirmed_count, contested_count,
+            first_seen_at, last_used_at, source_event_id
+        ) VALUES (
+            $1, $2, $3, $4,
+            $5, $6::jsonb, $7,
+            $8::jsonb, $9,
+            0, 0,
+            now(), now(), $10
+        )
+        ON CONFLICT (tenant_id, alias_text, actor_id)
+        DO UPDATE SET last_used_at = now()
+        RETURNING id, tenant_id, alias_text, alias_embedding,
+                  actor_id, resolved_entity_ref, is_canonical,
+                  entity_metadata, confidence,
+                  confirmed_count, contested_count,
+                  first_seen_at, last_used_at, source_event_id
+        """,
+        alias_id,
+        tenant_id,
+        phrase,
+        alias_embedding,
+        actor_id,
+        json.dumps(resolved_entity_ref),
+        is_canonical,
+        json.dumps(metadata),
+        confidence,
+        source_event_id,
+    )
+    assert row is not None
+    return _hydrate_alias(row)
+
+
 class EntityAliasRepo:
     """Repository for entity_aliases."""
 
@@ -219,6 +396,7 @@ class EntityAliasRepo:
         is_canonical: bool = False,
         alias_embedding: list[float] | None = None,
         extra_metadata: dict[str, Any] | None = None,
+        adjudicated: bool = False,
     ) -> EntityAliasRow:
         """
         Insert an alias. Idempotent on (tenant_id, alias_text, actor_id)
@@ -233,159 +411,22 @@ class EntityAliasRepo:
         filter on source should use a GIN-friendly query such as
         `WHERE entity_metadata->>'source' = 'ingestion'`.
         """
-        if not phrase or not phrase.strip():
-            raise ValidationError("phrase must be non-empty", field="phrase")
-        if source not in _LEGAL_SOURCES:
-            raise ValidationError(
-                f"unknown alias source {source!r}; "
-                f"must be one of {sorted(_LEGAL_SOURCES)}",
-                field="source",
-                value=source,
-            )
-        if not (0.0 <= confidence <= 1.0):
-            raise ValidationError(
-                f"confidence must be in [0,1]; got {confidence}",
-                field="confidence",
-                value=confidence,
-            )
-        if not isinstance(resolved_entity_ref, dict) or not resolved_entity_ref:
-            raise ValidationError(
-                "resolved_entity_ref must be a non-empty JSON object",
-                field="resolved_entity_ref",
-            )
-
-        md: dict[str, Any] = dict(extra_metadata or {})
-        md["source"] = source
-
-        alias_id = uuid7()
-
-        # Postgres UNIQUE with a NULL column treats each NULL as
-        # distinct, so `ON CONFLICT (tenant_id, alias_text, actor_id)`
-        # will NOT fire when actor_id IS NULL. We resolve idempotency
-        # in two ways: (a) serialise concurrent writers to the same
-        # (tenant, phrase) key on a transaction-scoped advisory lock,
-        # and (b) use INSERT ... WHERE NOT EXISTS so that even if the
-        # lock attempt is bypassed (e.g. mocked), at most one row can
-        # be inserted per (tenant, phrase, NULL actor_id) tuple in a
-        # single statement — a second winner re-selects the first row.
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                if actor_id is None:
-                    # Serialise concurrent writers on (tenant, phrase)
-                    # via an advisory lock held for the transaction.
-                    # With READ COMMITTED isolation, each statement
-                    # takes a fresh snapshot AFTER the lock returns,
-                    # so the subsequent SELECT sees any previously
-                    # committed row by another writer.
-                    lock_key = _advisory_lock_key(tenant_id, phrase)
-                    await conn.execute(
-                        "SELECT pg_advisory_xact_lock($1)", lock_key
-                    )
-                    existing = await conn.fetchrow(
-                        """
-                        SELECT id, tenant_id, alias_text, alias_embedding,
-                               actor_id, resolved_entity_ref, is_canonical,
-                               entity_metadata, confidence,
-                               confirmed_count, contested_count,
-                               first_seen_at, last_used_at, source_event_id
-                        FROM entity_aliases
-                        WHERE tenant_id = $1
-                          AND alias_text = $2
-                          AND actor_id IS NULL
-                        """,
-                        tenant_id,
-                        phrase,
-                    )
-                    if existing is not None:
-                        # Bump last_used_at, return existing row.
-                        row = await conn.fetchrow(
-                            """
-                            UPDATE entity_aliases
-                            SET last_used_at = now()
-                            WHERE id = $1
-                            RETURNING id, tenant_id, alias_text, alias_embedding,
-                                      actor_id, resolved_entity_ref, is_canonical,
-                                      entity_metadata, confidence,
-                                      confirmed_count, contested_count,
-                                      first_seen_at, last_used_at, source_event_id
-                            """,
-                            existing["id"],
-                        )
-                        assert row is not None
-                        return _hydrate_alias(row)
-                    # No existing row; INSERT fresh.
-                    row = await conn.fetchrow(
-                        """
-                        INSERT INTO entity_aliases (
-                            id, tenant_id, alias_text, alias_embedding,
-                            actor_id, resolved_entity_ref, is_canonical,
-                            entity_metadata, confidence,
-                            confirmed_count, contested_count,
-                            first_seen_at, last_used_at, source_event_id
-                        ) VALUES (
-                            $1, $2, $3, $4,
-                            NULL, $5::jsonb, $6,
-                            $7::jsonb, $8,
-                            0, 0,
-                            now(), now(), $9
-                        )
-                        RETURNING id, tenant_id, alias_text, alias_embedding,
-                                  actor_id, resolved_entity_ref, is_canonical,
-                                  entity_metadata, confidence,
-                                  confirmed_count, contested_count,
-                                  first_seen_at, last_used_at, source_event_id
-                        """,
-                        alias_id,
-                        tenant_id,
-                        phrase,
-                        alias_embedding,
-                        json.dumps(resolved_entity_ref),
-                        is_canonical,
-                        json.dumps(md),
-                        confidence,
-                        source_event_id,
-                    )
-                    assert row is not None
-                    return _hydrate_alias(row)
-
-                # actor_id IS NOT NULL — UNIQUE constraint covers this
-                # case directly.
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO entity_aliases (
-                        id, tenant_id, alias_text, alias_embedding,
-                        actor_id, resolved_entity_ref, is_canonical,
-                        entity_metadata, confidence,
-                        confirmed_count, contested_count,
-                        first_seen_at, last_used_at, source_event_id
-                    ) VALUES (
-                        $1, $2, $3, $4,
-                        $5, $6::jsonb, $7,
-                        $8::jsonb, $9,
-                        0, 0,
-                        now(), now(), $10
-                    )
-                    ON CONFLICT (tenant_id, alias_text, actor_id)
-                    DO UPDATE SET last_used_at = now()
-                    RETURNING id, tenant_id, alias_text, alias_embedding,
-                              actor_id, resolved_entity_ref, is_canonical,
-                              entity_metadata, confidence,
-                              confirmed_count, contested_count,
-                              first_seen_at, last_used_at, source_event_id
-                    """,
-                    alias_id,
-                    tenant_id,
-                    phrase,
-                    alias_embedding,
-                    actor_id,
-                    json.dumps(resolved_entity_ref),
-                    is_canonical,
-                    json.dumps(md),
-                    confidence,
-                    source_event_id,
+                return await insert_alias_with_connection(
+                    conn,
+                    phrase=phrase,
+                    resolved_entity_ref=resolved_entity_ref,
+                    source=source,
+                    confidence=confidence,
+                    tenant_id=tenant_id,
+                    actor_id=actor_id,
+                    source_event_id=source_event_id,
+                    is_canonical=is_canonical,
+                    alias_embedding=alias_embedding,
+                    extra_metadata=extra_metadata,
+                    adjudicated=adjudicated,
                 )
-                assert row is not None
-                return _hydrate_alias(row)
 
     # -----------------------------------------------------------------
     # record_usage
@@ -585,4 +626,8 @@ def _hydrate_alias(row: asyncpg.Record) -> EntityAliasRow:
     return EntityAliasRow.model_validate(d)
 
 
-__all__ = ["EntityAliasRepo", "normalize_phrase"]
+__all__ = [
+    "EntityAliasRepo",
+    "insert_alias_with_connection",
+    "normalize_phrase",
+]

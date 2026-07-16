@@ -18,6 +18,7 @@ from services.domain.clarifications import (
     dismiss_clarification_request,
     list_clarification_requests,
 )
+from services.domain.entity_aliases.repo import insert_alias_with_connection
 from services.domain.acts import commitments as commitments_svc
 from services.domain.resources import repo as resources_repo
 from services.domain.substrate_candidates import get_substrate_candidate
@@ -331,6 +332,10 @@ async def _finalize_entity_resolution(
     confidence: float,
 ) -> None:
     observation_id = _coerce_uuid(row.source_observation_id)
+    payload = row.payload or {}
+    feedback_lineage = payload.get("feedback_lineage")
+    if not isinstance(feedback_lineage, dict):
+        feedback_lineage = {}
     await _insert_manual_entity_alias(
         conn,
         tenant_id=tenant_id,
@@ -338,6 +343,9 @@ async def _finalize_entity_resolution(
         canonical_ref=canonical_ref,
         confidence=confidence,
         source_event_id=observation_id,
+        clarification_request_id=_coerce_uuid(row.id),
+        answered_by=answered_by,
+        feedback_lineage=feedback_lineage,
     )
     await _mark_entity_review_resolved(
         conn,
@@ -600,32 +608,36 @@ async def _insert_manual_entity_alias(
     canonical_ref: dict[str, Any],
     confidence: float,
     source_event_id: UUID | None,
+    clarification_request_id: UUID | None,
+    answered_by: UUID | None,
+    feedback_lineage: dict[str, Any],
 ) -> None:
-    await conn.execute(
-        """
-        INSERT INTO entity_aliases (
-          id, tenant_id, alias_text, actor_id, resolved_entity_ref,
-          is_canonical, entity_metadata, confidence, confirmed_count,
-          contested_count, source_event_id
-        )
-        SELECT $1, $2, $3, NULL, $4::jsonb,
-               false, $5::jsonb, $6, 1, 0, $7
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM entity_aliases
-          WHERE tenant_id = $2
-            AND alias_text = $3
-            AND actor_id IS NULL
-            AND resolved_entity_ref = $4::jsonb
-        )
-        """,
-        uuid7(),
-        tenant_id,
-        phrase,
-        json.dumps(canonical_ref, sort_keys=True, default=str),
-        json.dumps({"source": "manual", "clarification_kind": "entity_resolution"}),
-        max(0.0, min(1.0, confidence)),
-        source_event_id,
+    clarification_ref = (
+        f"clarification-request:{clarification_request_id}"
+        if clarification_request_id is not None
+        else "clarification-request:unknown"
+    )
+    await insert_alias_with_connection(
+        conn,
+        phrase=phrase,
+        resolved_entity_ref=canonical_ref,
+        source="manual",
+        confidence=max(0.0, min(1.0, confidence)),
+        tenant_id=tenant_id,
+        source_event_id=source_event_id,
+        extra_metadata={
+            "clarification_kind": "entity_resolution",
+            "clarification_request_id": (
+                str(clarification_request_id)
+                if clarification_request_id is not None
+                else None
+            ),
+            "adjudicated_by": str(answered_by) if answered_by is not None else None,
+            "identity_basis_class": "independently_adjudicated",
+            "identity_basis_ref": clarification_ref,
+            "grounding_feedback_lineage": feedback_lineage,
+        },
+        adjudicated=True,
     )
 
 

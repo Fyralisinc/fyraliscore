@@ -22,6 +22,9 @@ from lib.evaluation.entity_grounding import (
     evaluate_entity_grounding_state,
 )
 from lib.shared.ids import uuid7
+from services.app.gateway.clarifications_router import (
+    _apply_entity_resolution_answer,
+)
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.worker import (
     EntityResolverWorker,
@@ -733,6 +736,127 @@ async def test_alias_without_governed_identity_basis_cannot_auto_admit(
     assert traces[0]["current_fate"] == "review"
     assert traces[0]["selected_referent"] is None
     assert await _count_trigger_rows(resolver_db, tenant_id) == 0
+
+
+async def test_clarification_adjudication_changes_future_grounding_fate(
+    resolver_db: asyncpg.Pool,
+    tenant_id: UUID,
+) -> None:
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="NBI",
+        entity_type="customer",
+        entity_id="customer-nimbus",
+        source="manual",
+        independently_governed=False,
+    )
+    first_observation_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI renewal is blocked",
+        unresolved_phrases=["NBI"],
+    )
+    provider = ScriptedProvider(
+        [
+            _resolution_json(
+                type="customer",
+                id="customer-nimbus",
+                confidence=0.99,
+            ),
+            _resolution_json(
+                type="customer",
+                id="customer-nimbus",
+                confidence=0.99,
+            ),
+        ]
+    )
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    assert await worker.process_observation(first_observation_id, tenant_id) == [
+        ("NBI", "review")
+    ]
+    clarification = (await _fetch_clarification_rows(resolver_db, tenant_id))[0]
+    payload = clarification["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    candidate = payload["candidates"][0]["canonical_ref"]
+
+    async with resolver_db.acquire() as conn, conn.transaction():
+        await _apply_entity_resolution_answer(
+            conn,
+            row=type(
+                "ClarificationRow",
+                (),
+                {
+                    "id": clarification["id"],
+                    "payload": payload,
+                    "source_observation_id": clarification[
+                        "source_observation_id"
+                    ],
+                    "object_id": clarification["object_id"],
+                },
+            )(),
+            answer={
+                "action": "accept_candidate",
+                "canonical_ref": candidate,
+                "confidence": 0.99,
+            },
+            tenant_id=tenant_id,
+            answered_by=None,
+        )
+
+    second_observation_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI is blocked again",
+        unresolved_phrases=["NBI"],
+    )
+    assert await worker.process_observation(second_observation_id, tenant_id) == [
+        ("NBI", "resolved")
+    ]
+
+    async with resolver_db.acquire() as conn:
+        alias = await conn.fetchrow(
+            """
+            SELECT resolved_entity_ref, entity_metadata, confirmed_count,
+                   contested_count
+            FROM entity_aliases
+            WHERE tenant_id = $1 AND alias_text = 'NBI'
+            """,
+            tenant_id,
+        )
+        trace = await conn.fetchrow(
+            """
+            SELECT current_fate, selected_referent
+            FROM grounding_traces
+            WHERE tenant_id = $1 AND source_observation_id = $2
+            """,
+            tenant_id,
+            second_observation_id,
+        )
+
+    assert alias is not None
+    metadata = alias["entity_metadata"]
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    assert metadata["identity_basis_class"] == "independently_adjudicated"
+    assert metadata["identity_basis_ref"] == (
+        f"clarification-request:{clarification['id']}"
+    )
+    assert metadata["grounding_feedback_lineage"]["grounding_trace_id"]
+    assert alias["confirmed_count"] == 1
+    assert alias["contested_count"] == 1
+    assert trace is not None
+    assert trace["current_fate"] == "resolved_for_consumer"
+    selected = trace["selected_referent"]
+    if isinstance(selected, str):
+        selected = json.loads(selected)
+    assert selected["id"] == "customer-nimbus"
 
 
 # =====================================================================

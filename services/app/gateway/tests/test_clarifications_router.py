@@ -250,6 +250,7 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
     observation_id = uuid4()
     conn = _Conn()
     canonical_ref = {"type": "customer", "id": str(uuid4())}
+    alias_calls: list[dict] = []
 
     async def fake_answer(acquired_conn, *, tenant_id, request_id, answer, answered_by):
         return _Row(
@@ -262,6 +263,10 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
                 "source_observation_id": str(observation_id),
                 "payload": {
                     "phrase": "Alpen",
+                    "feedback_lineage": {
+                        "grounding_trace_id": str(uuid4()),
+                        "resolution_assessment_id": str(uuid4()),
+                    },
                     "candidates": [
                         {
                             "canonical_ref": canonical_ref,
@@ -273,9 +278,17 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
             }
         )
 
+    async def fake_insert_alias(acquired_conn, **kwargs):
+        alias_calls.append({"conn": acquired_conn, **kwargs})
+        return SimpleNamespace(id=uuid4())
+
     monkeypatch.setattr(
         "services.app.gateway.clarifications_router.answer_clarification_request",
         fake_answer,
+    )
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.insert_alias_with_connection",
+        fake_insert_alias,
     )
     client = _client(tenant_id=tenant_id, actor_id=actor_id, conn=conn)
 
@@ -285,7 +298,15 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
     )
 
     assert response.status_code == 200
-    assert any("INSERT INTO entity_aliases" in query for query, _args in conn.executed)
+    assert len(alias_calls) == 1
+    metadata = alias_calls[0]["extra_metadata"]
+    assert alias_calls[0]["conn"] is conn
+    assert alias_calls[0]["adjudicated"] is True
+    assert metadata["identity_basis_class"] == "independently_adjudicated"
+    assert metadata["identity_basis_ref"] == f"clarification-request:{request_id}"
+    assert metadata["clarification_request_id"] == str(request_id)
+    assert metadata["adjudicated_by"] == str(actor_id)
+    assert metadata["grounding_feedback_lineage"]["grounding_trace_id"]
     assert any("UPDATE entity_review_queue" in query for query, _args in conn.executed)
     assert any("UPDATE observations" in query for query, _args in conn.executed)
     assert any("INSERT INTO observations" in query for query, _args in conn.executed)
@@ -300,6 +321,7 @@ def test_clarification_answer_creates_new_customer_entity(monkeypatch) -> None:
     resource_id = uuid4()
     conn = _Conn()
     created_calls: list[dict] = []
+    alias_calls: list[dict] = []
 
     async def fake_answer(acquired_conn, *, tenant_id, request_id, answer, answered_by):
         return _Row(
@@ -319,6 +341,10 @@ def test_clarification_answer_creates_new_customer_entity(monkeypatch) -> None:
         created_calls.append(kwargs)
         return SimpleNamespace(id=resource_id)
 
+    async def fake_insert_alias(acquired_conn, **kwargs):
+        alias_calls.append({"conn": acquired_conn, **kwargs})
+        return SimpleNamespace(id=uuid4())
+
     monkeypatch.setattr(
         "services.app.gateway.clarifications_router.answer_clarification_request",
         fake_answer,
@@ -326,6 +352,10 @@ def test_clarification_answer_creates_new_customer_entity(monkeypatch) -> None:
     monkeypatch.setattr(
         "services.app.gateway.clarifications_router.resources_repo.create",
         fake_create,
+    )
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.insert_alias_with_connection",
+        fake_insert_alias,
     )
     client = _client(tenant_id=tenant_id, actor_id=actor_id, conn=conn)
 
@@ -345,11 +375,12 @@ def test_clarification_answer_creates_new_customer_entity(monkeypatch) -> None:
     assert created_calls[0]["kind"] == "relational"
     assert created_calls[0]["identity"] == "Beta Corp"
     assert created_calls[0]["created_by_event_id"] == observation_id
-    alias_args = next(
-        args for query, args in conn.executed if "INSERT INTO entity_aliases" in query
+    assert alias_calls[0]["resolved_entity_ref"]["type"] == "customer"
+    assert alias_calls[0]["resolved_entity_ref"]["id"] == str(resource_id)
+    assert alias_calls[0]["resolved_entity_ref"]["resource_id"] == str(resource_id)
+    assert alias_calls[0]["extra_metadata"]["identity_basis_class"] == (
+        "independently_adjudicated"
     )
-    assert '"type": "customer"' in alias_args[3]
-    assert str(resource_id) in alias_args[3]
     assert any("UPDATE entity_review_queue" in query for query, _args in conn.executed)
 
 

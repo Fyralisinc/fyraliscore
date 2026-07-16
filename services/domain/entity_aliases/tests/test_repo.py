@@ -27,7 +27,11 @@ from hypothesis import strategies as st
 
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
-from services.domain.entity_aliases.repo import EntityAliasRepo, normalize_phrase
+from services.domain.entity_aliases.repo import (
+    EntityAliasRepo,
+    insert_alias_with_connection,
+    normalize_phrase,
+)
 
 
 pytestmark = [pytest.mark.integration]
@@ -168,6 +172,49 @@ async def test_insert_alias_on_conflict_preserves_first_row(
     # original resolved_entity_ref (first_seen row wins).
     assert first.id == second.id
     assert second.resolved_entity_ref == ref1
+
+
+async def test_adjudicated_alias_replaces_guess_and_records_identity_basis(
+    fresh_db: asyncpg.Pool,
+    repo: EntityAliasRepo,
+    tenant: uuid.UUID,
+) -> None:
+    guessed_ref = {"type": "customer", "id": "customer-wrong"}
+    adjudicated_ref = {"type": "customer", "id": "customer-nimbus"}
+    original = await repo.insert_alias(
+        phrase="NBI",
+        resolved_entity_ref=guessed_ref,
+        source="resolver_worker",
+        confidence=0.55,
+        tenant_id=tenant,
+    )
+
+    async with fresh_db.acquire() as conn, conn.transaction():
+        corrected = await insert_alias_with_connection(
+            conn,
+            phrase="NBI",
+            resolved_entity_ref=adjudicated_ref,
+            source="manual",
+            confidence=0.99,
+            tenant_id=tenant,
+            extra_metadata={
+                "identity_basis_class": "independently_adjudicated",
+                "identity_basis_ref": "clarification-request:test",
+            },
+            adjudicated=True,
+        )
+
+    assert corrected.id == original.id
+    assert corrected.resolved_entity_ref == adjudicated_ref
+    assert corrected.entity_metadata["source"] == "manual"
+    assert corrected.entity_metadata["identity_basis_class"] == (
+        "independently_adjudicated"
+    )
+    assert corrected.entity_metadata["identity_basis_ref"] == (
+        "clarification-request:test"
+    )
+    assert corrected.confirmed_count == 1
+    assert corrected.contested_count == 1
 
 
 # ---------------------------------------------------------------------
