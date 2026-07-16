@@ -46,7 +46,7 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert "status=working" in result.stdout
     assert "positive_lift=1.0" in result.stdout
     assert "negative_incidents=0" in result.stdout
-    assert "slack_status=observed" in result.stdout
+    assert "slack_status=observed_with_gaps" in result.stdout
 
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     summary_digest = payload.pop("summary_digest")
@@ -65,28 +65,50 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert summary.negative.safety_incident_count == 0
     assert summary.negative.adaptive_unsafe_count == 0
     assert summary.negative.frozen_unsafe_count == 0
-    assert summary.slack.status == "observed"
+    assert summary.slack.status == "observed_with_gaps"
     assert summary.slack.diagnostic_only is True
-    assert summary.slack.metrics["case_count"] == 4
-    assert summary.slack.metrics["correct_case_rate"] == 0.75
-    assert summary.slack.metrics["mean_sufficient_set_recall"] == 1.0
-    assert summary.slack.metrics["contamination_rate"] == pytest.approx(1 / 9)
-    assert any(
+    assert summary.slack.metrics["case_count"] == 9
+    assert summary.slack.metrics["correct_case_rate"] == pytest.approx(2 / 3)
+    assert summary.slack.metrics["supported_case_rate"] == pytest.approx(2 / 3)
+    assert summary.slack.metrics[
+        "mean_sufficient_set_recall"
+    ] == pytest.approx(5 / 6)
+    assert summary.slack.metrics["selected_context_precision"] == 1.0
+    assert summary.slack.metrics["contamination_rate"] == 0.0
+    assert summary.slack.metrics["mean_topology_recall"] == 1.0
+    assert summary.slack.metrics["budget_adherence_rate"] == 1.0
+    assert not any(
         gap.startswith("slack: Gold family not yet sealed:")
         for gap in summary.proof_gaps
     )
+    assert summary.population is not None
+    assert summary.population.status == "observed_with_gaps"
+    assert summary.population.registry_pair_count == 60
+    assert summary.population.observed_pair_count == 15
+    assert summary.population.unsupported_case_count == 45
+    assert summary.population.runtime_support_rate == 0.25
+    assert summary.population.metrics["pair_count"] == 60
+    assert summary.population.metrics["observed_pair_count"] == 15
+    assert summary.population.metrics["unsupported_case_count"] == 45
+    assert summary.population.metrics["complete_population"] is True
+    assert summary.population.unsupported_strata_counts["entity_type"] == {
+        "project": 15,
+        "system": 15,
+        "team": 15,
+    }
+    assert sum(summary.population.unsupported_reason_counts.values()) == 45
     assert any(
         "Slack reconstruction remains diagnostic and non-blocking"
         in gap
         for gap in summary.proof_gaps
     )
     assert any(
-        "does not execute relation/projection repair or async convergence"
+        "does not execute the integrated correction convergence burn"
         in gap
         for gap in summary.proof_gaps
     )
     assert any(
-        "60-case held-out population has not yet been runtime-executed"
+        "population: runtime coverage observed 15/60 sealed cases"
         in gap
         for gap in summary.proof_gaps
     )
@@ -115,6 +137,11 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
             encoding="utf-8"
         )
     )
+    population = json.loads(
+        Path(summary.artifact_paths["population_evidence"]).read_text(
+            encoding="utf-8"
+        )
+    )
     assert (
         positive_pair["report"]["metrics"][
             "adaptive_minus_frozen_correctness"
@@ -125,6 +152,40 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
         summary.negative.safety_incident_count
     )
     assert slack["report"]["metrics"] == summary.slack.metrics
+    assert population["population_report"]["pair_count"] == 60
+    assert population["population_report"]["observed_pair_count"] == 15
+    assert population["population_report"]["unsupported_case_count"] == 45
+
+    persisted_summary_path = (
+        output_dir
+        / "positive"
+        / "vitals"
+        / SUMMARY_ARTIFACT_NAME
+    )
+    persisted_payload = json.loads(
+        persisted_summary_path.read_text(encoding="utf-8")
+    )
+    persisted_digest = persisted_payload.pop("summary_digest")
+    persisted_summary = CompanyLearningAssuranceSummary.model_validate(
+        persisted_payload
+    )
+    assert persisted_summary == summary
+    assert persisted_digest == summary.digest
+
+    vitals_scorecard = json.loads(
+        (
+            output_dir
+            / "positive"
+            / "vitals"
+            / "vitals_scorecard.json"
+        ).read_text(encoding="utf-8")
+    )
+    assurance = vitals_scorecard["company_physics"]["assurance_suite"]
+    assert assurance["status"] == "working"
+    assert assurance["summary_digest"] == summary.digest
+    assert assurance["slack"]["metrics"]["case_count"] == 9
+    assert assurance["population"]["registry_pair_count"] == 60
+    assert assurance["population"]["observed_pair_count"] == 15
 
 
 async def _run_cli(
