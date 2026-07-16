@@ -37,7 +37,7 @@ BEGIN
       'AuthorizationApplier', 'OutcomeRecorder', 'SettlementApplier',
       'AttributionApplier', 'PolicyRegistryApplier', 'AgencyStateApplier',
       'WorkLedgerApplier', 'ExecutionLedgerApplier', 'RepairLedgerApplier',
-      'WriterEpochApplier'
+      'WriterEpochApplier', 'GroundingAnnotationAppender'
     ));
 END $$;
 

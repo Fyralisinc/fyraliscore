@@ -17,6 +17,9 @@ def test_execution_migration_separates_three_semantic_ledgers() -> None:
         "AgencyStateApplier",
         "WorkLedgerApplier",
         "ExecutionLedgerApplier",
+        "RepairLedgerApplier",
+        "WriterEpochApplier",
+        "GroundingAnnotationAppender",
     ):
         assert f"'{writer}'" in sql
     for table in (

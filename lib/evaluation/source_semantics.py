@@ -125,6 +125,10 @@ class SourceSemanticEvaluationState(_EvaluationModel):
     model_dependency_closure_rate: float | None = None
     non_admitted_no_model_safety_rate: float | None = None
 
+    @property
+    def violation_count(self) -> int:
+        return sum(self.incident_counts.values())
+
 
 def _supported_report_expected(row: Mapping[str, Any]) -> bool:
     if row.get("current_fate") != "resolved_for_consumer":

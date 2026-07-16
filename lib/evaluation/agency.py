@@ -48,6 +48,18 @@ from lib.evaluation.proof import (
 )
 
 
+_AGENCY_COMMAND_KINDS = (
+    "register_consequential_proposal",
+    "review_consequential_proposal",
+    "update_intervention_episode",
+    "register_prediction",
+    "apply_authorization_decision",
+    "record_independent_outcome",
+    "settle_prediction",
+    "apply_attribution",
+)
+
+
 class _AgencyEvaluationModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
@@ -247,11 +259,13 @@ async def evaluate_agency_state(
                  WHERE e.command_result_id = r.id) AS outbox_count
         FROM agency_command_results r
         WHERE r.tenant_id = $1 AND r.created_at >= $2 AND r.created_at < $3
+          AND r.command_kind = ANY($4::text[])
         ORDER BY r.created_at, r.id
         """,
         scope.tenant_id,
         scope.start,
         scope.end,
+        _AGENCY_COMMAND_KINDS,
     )
     guarded_tables = await conn.fetch(
         """
