@@ -13,6 +13,11 @@ attribution, prevent correction, or block the active end-to-end path.
 
 Everything else receives an explicit safe behavior and return condition here.
 
+The active evaluation boundary starts after transport: tests consume simulated,
+normalized, source-attributed signals already persisted in PostgreSQL.
+Connector polling, listeners, webhooks, provider backfill and ingestion
+transport are excluded from this goal.
+
 ## Status Vocabulary
 
 | Status | Meaning |
@@ -89,9 +94,9 @@ Everything else receives an explicit safe behavior and return condition here.
 - **Remaining boundary:** Open-ended channel discovery, arbitrary recurrence
   distance, very large histories, cross-workspace Slack and equivalent
   conversational reconstruction across Jira, email, documents and meetings
-  remain unproven. Jira, Linear, Google Drive and Gmail structured identity
-  transport is now proven, but that is narrower than conversational
-  reconstruction.
+  remain unproven. Persisted Jira-, Linear-, Google Drive- and Gmail-attributed
+  structured identity semantics are proven, but connector transport is excluded
+  and those semantics are narrower than conversational reconstruction.
 - **Return condition:** Reopen during multi-source and production-scale
   recurrence evaluation.
 
@@ -254,12 +259,13 @@ Everything else receives an explicit safe behavior and return condition here.
   zero promotion and complete safe containment for every sealed case.
   Authenticated source-native identifiers may resolve only their authorized
   active conflicting target. New source surfaces must not claim this coverage
-  until they transport and persist the same authenticated binding evidence.
+  until their simulated normalized, source-attributed fixtures persist the same
+  authenticated binding evidence.
 
 ### EDGE-016 — Rename and lifecycle changes cannot be aliases
 
-- **Status:** `resolved` for customer rename/archive/name-reuse; broader
-  lifecycle remains `active`
+- **Status:** `resolved` for customer rename/archive/name-reuse and the sealed
+  canonical resource-replacement vertical; broader lifecycle remains `active`
 - **Trigger:** A company object is renamed, archived and re-created, merged,
   split, replaced or resurrected.
 - **Risk:** A timeless alias redirect can rewrite history, join distinct
@@ -275,26 +281,27 @@ Everything else receives an explicit safe behavior and return condition here.
   overlap, isolates tenants and makes rename/archive replay idempotent. All
   continuous metrics are `1.0`, all `8/8` cases execute and no violations are
   recorded.
-- **Assurance boundary:** Assurance v5, inherited by v6, reopens and recomputes
-  the lifecycle artifact and blocks `working` on any unsupported case, metric
-  below `1.0`, overlap, mutation, tenant leak or replay divergence.
-- **Replacement foundation:** Commits `5149df1b` and `43d86dd5` add typed
-  canonical replacement transitions, a migration-backed operation registry,
-  stale-version and idempotency guards, and a domain service. They establish
-  governed transition intent and history but do not yet mutate or repair the
-  resource, aliases, source bindings, projections or retrieval views.
+- **Assurance boundary:** Customer lifecycle remains a v5/v6 component.
+  Assurance-v7 schema foundation makes the separate canonical resource
+  replacement component mandatory and noncompensatory.
+- **Replacement runtime evidence:** Commits `7ad02256`, `3c7dff0c` and
+  `8ce4b555` materialize resource retirement, alias closure, exact
+  source-binding supersession, projection invalidation and lineage verification
+  in one transaction while preserving Observations, old attachments and Models.
+  The UTF8 PostgreSQL runner in `eb1f9a84` observes all `20/20` sealed
+  obligations with zero unsupported cells or violations. `3a03981d` adds
+  tenant-scoped, bitemporal lineage-aware resource reads.
 - **Return condition:** Prove rename continuity, archive/name reuse and
-  stale-alias rejection first — complete for customers. Reopen for merge,
-  split, resurrection and non-customer identity lifecycle through canonical
-  lifecycle writers with correction closure. Complete replacement
-  materialization and dependent repair from the new registry. Source-binding
-  close, revoke and supersede have a separate bounded contract in EDGE-019.
+  stale-alias rejection first — complete for customers. Canonical resource
+  replacement is complete for its sealed exact vertical. Reopen for merge,
+  split, resurrection, other referent types and downstream consumers that have
+  not adopted the lineage-aware read seam. Source-binding close, revoke and
+  supersede have a separate bounded contract in EDGE-019.
 
 ### EDGE-017 — Structured source claims cannot create identity authority
 
-- **Status:** `resolved` for Jira project, Linear project/team, Google Drive
-  file and Gmail thread identity surfaces; broader connector coverage remains
-  `active`
+- **Status:** `resolved` for the persisted Jira-, Linear-, Google Drive- and
+  Gmail-attributed identity surfaces; connector coverage is excluded
 - **Trigger:** An authenticated structured source contains a stable object ID
   and a human-readable key/name that may refer to a canonical company entity.
 - **Risk:** Treating handler JSON or matching text as authority can fabricate
@@ -304,23 +311,23 @@ Everything else receives an explicit safe behavior and return condition here.
   Ingestion may attach it only to one pre-existing governed binding, one exact
   normalized source surface and a matching source system. Missing or ambiguous
   bindings fail closed; free text never creates authority.
-- **Current evidence:** Jira project and Linear project/team claims survive
-  inline and Kafka normalization and attach atomically to the durable
-  Observation. Google Drive file identity remains exact across file, comment
-  and revision records; Gmail attaches thread identity only to the exact
-  subject surface. Focused real-Postgres tests prove exact resolver
-  consumption, event-time liveness, forged-text rejection, missing
-  ID/name/subject and missing-binding inertness, source isolation and tenant
-  isolation.
+- **Current evidence:** Simulated normalized, source-attributed fixtures already
+  persisted in PostgreSQL carry Jira project, Linear project/team, Google Drive
+  file/comment/revision and Gmail thread identity semantics. Focused
+  real-Postgres tests prove exact resolver consumption, event-time liveness,
+  forged-text rejection, missing-field and missing-binding inertness, source
+  isolation and tenant isolation. They do not prove listener or connector
+  transport.
 - **Evaluator boundary:** Assurance v6 now seals and reopens six identity
   surfaces: Jira project, one Linear issue bundle covering project/team claims,
   Google Drive file/comment/revision and Gmail thread. All `6/6` are observed
   with zero violations, alongside `5/5` source-salience cases. Exact expected
   and observed source systems, native IDs, surfaces and authority references
   are digest-bound, and foreign-tenant consumption is probed directly.
-- **Return condition:** Extend the same contract to meetings and remaining
-  connectors; add mention-specific multi-object populations and causal learning
-  proofs per source. Do not infer causal equivalence from transport tests.
+- **Return condition:** Extend the same contract to simulated normalized
+  meeting and remaining source-attributed populations; add mention-specific
+  multi-object populations and causal learning proofs per source. Connector
+  transport requires a separate future objective.
 
 ### EDGE-018 — Company-learning feedback cannot become self-authorizing truth
 
@@ -344,7 +351,8 @@ Everything else receives an explicit safe behavior and return condition here.
 ### EDGE-019 — Source-binding lifecycle and historical attachments
 
 - **Status:** `resolved` for repository-owned close, revoke and supersede;
-  historical reconstruction and database enforcement remain `bounded`
+  evaluator execution, historical reconstruction and database enforcement
+  remain `bounded`
 - **Trigger:** A structured source object is renamed, invalidated, rebound or
   superseded while observations still refer to an earlier binding version.
 - **Risk:** Silent redirection can rewrite evidence history; overlapping
@@ -365,12 +373,16 @@ Everything else receives an explicit safe behavior and return condition here.
   `SourceIdentityBindingRepo`, not a database exclusion constraint. Operations
   made with a caller-owned connection depend on the caller providing the
   surrounding transaction.
-- **Evidence:** Focused Jira, Linear and lifecycle real-Postgres tests pass,
-  including the scheduled-terminal overlap case. There is not yet a standalone
-  typed lifecycle evidence artifact.
-- **Return condition:** Add a typed evaluator artifact, prove operational
-  historical reconstruction if required, add database-level overlap exclusion
-  and make transaction ownership explicit and testable.
+- **Evaluator boundary:** `dced1ae0` seals a typed, continuous lifecycle proof
+  contract; `79317be8` corrects the expected closure-version semantics.
+  The database-backed runner is still in flight, so no standalone runtime
+  artifact or assurance-v7 join is claimed yet.
+- **Evidence:** Focused lifecycle real-Postgres tests pass, including the
+  scheduled-terminal overlap case.
+- **Return condition:** Complete the database-backed evaluator artifact and v7
+  join, prove operational historical reconstruction if required, add
+  database-level overlap exclusion and make transaction ownership explicit and
+  testable.
 
 ### EDGE-020 — Retention metrics can overstate restart and learning durability
 
@@ -418,8 +430,8 @@ Everything else receives an explicit safe behavior and return condition here.
 
 ### EDGE-021 — Standalone learning evidence is not combined assurance
 
-- **Status:** `resolved` for active surfaces and retention; source-binding
-  lifecycle remains `bounded`
+- **Status:** `resolved` for v6 active surfaces/retention and standalone
+  replacement; source-binding lifecycle and final v7 execution remain `bounded`
 - **Trigger:** A focused evaluator passes before its evidence is registered,
   reopened and recomputed by the combined assurance contract.
 - **Risk:** A standalone result can be reported as system-wide proof without
@@ -427,8 +439,10 @@ Everything else receives an explicit safe behavior and return condition here.
 - **Current behavior:** Assurance v6 emits, reopens, digest-checks, recomputes
   and noncompensatorily gates the `6/6` identity, `5/5` salience and `14/14`
   retention components. The final working artifact has zero blockers.
-  Source-binding lifecycle remains focused-test-backed with no typed assurance
-  component.
+  Assurance-v7 schema foundation now requires complete canonical replacement
+  evidence, and the standalone replacement artifact is `20/20` observed with
+  zero gaps or violations. Source-binding lifecycle has a typed contract but
+  no completed database artifact yet.
 - **Evidence:** The commit-labelled artifact is
   `/tmp/fyralis-company-learning-assurance-v6-04b0f0bd-final/company_learning_assurance_summary.json`
   with schema `company-learning-assurance-summary-v6`, run
@@ -436,11 +450,12 @@ Everything else receives an explicit safe behavior and return condition here.
   `6c82f10ec8c8a1b79c069bc14a195415f9d625697b346a6e72e4bac25f55931f`
   and summary digest
   `b4b039648f82b2156236853e36b3eb24a2ae118f932094beb2e9daabb424fbe3`.
-- **Safe boundary:** Claim combined proof only for the active-surface and
-  retention scopes actually represented by v6. Do not infer that source-binding
-  lifecycle is digest-bound.
-- **Return condition:** Add a typed source-lifecycle component without
-  broadening its historical-reconstruction or database-enforcement boundary.
+- **Safe boundary:** Continue citing v6 as the last fully executed combined
+  system artifact. Cite replacement as standalone production-shaped evidence,
+  not as a completed combined v7 run.
+- **Return condition:** Complete and join the database-backed source-lifecycle
+  component, then execute and reopen the final assurance-v7 artifact without
+  broadening historical-reconstruction or database-enforcement claims.
 
 ### EDGE-022 — Assurance database encoding and Unicode verifier parity
 
@@ -465,6 +480,23 @@ Everything else receives an explicit safe behavior and return condition here.
 - **Return condition:** Reopen if a new database locale/encoding or Unicode
   normalization family causes harness and production lookup semantics to
   diverge.
+
+### EDGE-023 — Connector and listener transport is outside the active goal
+
+- **Status:** `rejected` for this objective
+- **Trigger:** A proposed milestone requires implementing or validating Slack,
+  Jira, email, document or meeting polling, listeners, webhooks, backfills or
+  provider delivery.
+- **Reason:** The active goal is company understanding, learning, correction
+  and lifecycle behavior after a signal has been normalized and persisted.
+  Transport work would widen the objective without improving the epistemic
+  proof currently being completed.
+- **Safe boundary:** Every active test starts from a simulated normalized,
+  source-attributed signal already stored in PostgreSQL. Source identity and
+  authority must still be explicit; fabricated provenance is not allowed.
+- **Return condition:** Reconsider only as a separately authorized connector
+  reliability objective with its own delivery, replay, outage and backfill
+  evaluation.
 
 ## Entry Template
 

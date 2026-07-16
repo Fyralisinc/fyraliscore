@@ -14,6 +14,12 @@ The active objective is autonomous improvement of evidence-grounded company
 understanding. Autonomous Workflow, Task, Work scheduling, external effects,
 and company-operation execution are outside the current scope.
 
+Connector/listener ingestion transport is also outside the active objective.
+Evaluation begins from simulated normalized, source-attributed signals already
+persisted in PostgreSQL. Existing connectors remain their own owners, but this
+work neither extends nor evaluates their polling, webhook, backfill or delivery
+behavior.
+
 ## Preserved Baseline
 
 - Preserved commit: `c4b476a1`
@@ -84,7 +90,7 @@ decisions will be added after the parallel audit lanes complete.
 
 | Responsibility | Existing Fyralis anchor | Revised component | Initial decision | Reason |
 | --- | --- | --- | --- | --- |
-| Slack source ingestion | Existing Slack handler and ingestion core | Slack metadata and opportunity handoff changes | `extend` | The existing source adapter remains authoritative. |
+| Source transport | Existing provider handlers, listeners and ingestion core | No active transport change | `defer` | Connector delivery is outside this objective; tests begin from normalized source-attributed signals already persisted in PostgreSQL. |
 | Observation evidence | Observation repository and writer | Grounding references to observations | `reuse` | No second evidence store is needed. |
 | Conversational context | Entity resolver context builder and retrieval seams | Context-selection contracts, snapshots, and repository | `keep-new` plus `consolidate` | Exact as-known selected context is a real missing annotation, but retrieval mechanics should reuse existing seams. |
 | Mention detection | Existing unresolved-phrase opportunity heuristics | Exact detected/rejected mention fate and source coordinates | `keep-new` | An opportunity is not a reconstructable mention; the missing semantic boundary is real. |
@@ -461,8 +467,8 @@ canonical alias promotion or entity lifecycle.
 
 ## Next Consolidation Targets
 
-1. Keep the source-semantic worker active until its Slack-to-Model vertical is
-   preserved by an equivalent integrated path.
+1. Keep the source-semantic worker active until its persisted normalized-signal
+   to Model vertical is preserved by an equivalent integrated path.
 2. Continue isolating shared command/event/outbox persistence from
    task-autonomy service and database naming while retaining compatibility.
 3. Feed typed grounding outcomes into existing reflective/retrieval learning
@@ -476,7 +482,8 @@ canonical alias promotion or entity lifecycle.
 ## Proof Required Before Behavioral Expansion
 
 - Clean targeted baseline remains green after each consolidation.
-- One production-shaped Slack signal reaches one canonical grounded Model.
+- One simulated normalized, source-attributed signal already persisted in
+  PostgreSQL reaches one canonical grounded Model.
 - Questions, unsupported mentions, ambiguity, and insufficient context do not
   create false beliefs.
 - Duplicate delivery is idempotent.
@@ -485,7 +492,7 @@ canonical alias promotion or entity lifecycle.
   difference is whether clarification-learned corrective memory may be
   consumed before outcome.
 - Every upstream consumer that could use corrective memory is frozen in the
-  control arm, including ingestion alias resolution as well as resolver replay.
+  control arm, including persisted-signal alias resolution and resolver replay.
 - Every active worker is named in the current product scope.
 - No task-autonomy domain or worker is imported by the active epistemic path.
 - The report represents zero exposure as unknown, not success.

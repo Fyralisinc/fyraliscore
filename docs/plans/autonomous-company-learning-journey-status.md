@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `04b0f0bd`
+**Current checkpoint:** `15020d6b`
 
 **Last updated:** 2026-07-17
 
@@ -74,11 +74,18 @@ The system is not currently being optimized to autonomously plan and execute
 company work. Existing task-autonomy/agency code may remain for compatibility,
 but it must not define or contaminate the active company-learning architecture.
 
+Connector, listener and source-ingestion transport is also outside the active
+implementation and evaluation goal. The current tests begin from simulated,
+normalized, source-attributed signals that are already durably persisted in
+PostgreSQL. Source semantics, identity authority, company-memory learning,
+correction and lifecycle repair remain in scope; proving how Slack, Jira,
+email or another provider delivers those normalized rows does not.
+
 ## Core Mental Model
 
 ```mermaid
 flowchart LR
-    S["Company signals<br/>Slack, Jira, email, etc."] --> C["Authorized context reconstruction"]
+    S["Normalized source-attributed signals<br/>already persisted in Postgres"] --> C["Authorized context reconstruction"]
     C --> G["Entity detection and grounding"]
     G -->|sufficient| M["Source-semantic admission"]
     G -->|uncertain| Q["Clarification"]
@@ -215,7 +222,7 @@ Correction:
     agents may inspect and edit disjoint files concurrently, but they must not
     share mutable test tenants, queues or migration state.
 14. Reuse production seams directly. A new evaluator may measure an existing
-    writer, resolver, connector or SAGE consumer, but it must not introduce a
+    writer, resolver or SAGE consumer, but it must not introduce a
     second authority, truth store, learner or health-report spine.
 15. Keep the critical path explicit: source identity and entity grounding,
     feedback reuse, correction safety and Company Vitals evidence take
@@ -241,7 +248,7 @@ preserves their proof gaps.
 
 ```mermaid
 flowchart LR
-    A["Slack message with ambiguous NBI"] --> B["Grounding opportunity"]
+    A["Simulated normalized signal in Postgres<br/>with ambiguous NBI"] --> B["Grounding opportunity"]
     B --> C["Resolver review"]
     C --> D["Canonical clarification request"]
     D --> E["Authorized human adjudication"]
@@ -265,31 +272,32 @@ flowchart LR
 | --- | --- | --- |
 | Isolated development scope | Dedicated worktree and branch protect the main tree and enable narrow commits | Complete |
 | Task-autonomy boundary | Active learning path is statically prevented from importing task-autonomy/legacy agency surfaces | Complete for active slice |
-| Slack epistemic ownership | Unresolved grounding-owned Slack no longer competes with generic T1 Think ownership | Complete for current Slack path |
+| Signal-input boundary | Evaluation begins from simulated, normalized, source-attributed signals already persisted in PostgreSQL; connector/listener transport is not exercised | Complete and explicit for the active scope |
+| Conversational-signal epistemic ownership | Unresolved grounding-owned conversational signals no longer compete with generic T1 Think ownership | Complete for the current persisted-signal path |
 | Canonical entity review | New review obligations live in `clarification_requests`; legacy review queue remains compatibility-only | Complete |
 | Clarification adjudication | Public domain operation owns authorization, alias persistence, successor grounding and feedback lineage; gateway delegates | Complete |
 | Corrective-memory persistence | Authorized entity answers become lineage-valid adjudicated aliases without mutating source evidence | Complete for exact tenant-global aliases |
 | Governed corrective replay | Later exact aliases can resolve autonomously from the adjudicated correction | Complete for exact tenant-global aliases |
 | Frozen control seam | Clarification-learned memory can be hidden at ingest and resolver while ordinary manual aliases remain visible | Complete for experiment |
-| Source semantics | Grounded Slack reaches interpretation and an explicit `belief_applied` or `no_admission` fate | Complete for current vertical |
+| Source semantics | A grounded persisted signal reaches interpretation and an explicit `belief_applied` or `no_admission` fate | Complete for current vertical |
 | Canonical Model write | Renewal creates one Model; duplicate/unsupported support and risk signals correctly create none | Complete for sealed cases |
 | Source immutability | Paired harness snapshots the recurrence Observation and reports mutation as a hard incident | Complete in paired harness |
 | Tenant isolation | Paired harness asserts recurrence observations, grounding, Models and aliases do not cross arm tenants | Complete in paired harness |
 | Company-learning evaluator | Context, grounding and source-semantic state compile into one active-slice evaluation | Complete for measured slice |
 | Paired causal evaluator | Correctness is derived from sealed arm-specific gold and terminal consumer fate; incidents are noncompensatory | Complete for current case family |
 | Canonical proof integration | Experiment scenario and lift metric are registered under INV-05 and aggregated through canonical proof models | Complete |
-| Company Vitals | Reopens and validates positive, negative, population, Slack, correction, active-surface and retention artifacts; verifies architecture and implementation-plan identity; enforces noncompensatory safety; displays the combined assurance without score inflation | Complete for assurance v6 |
-| Evaluator synchronization | V6 assurance binds architecture/plan identity, explicit Slack proof scope, active company-learning scope, correction convergence, structured-source/salience evidence and bounded retention | Complete |
+| Company Vitals | Reopens the working v6 component set and now exposes replacement and source-binding lifecycle component surfaces required by the v7 schema | Complete for v6; v7 display/schema foundation complete |
+| Evaluator synchronization | V7 requires the sealed canonical resource-replacement component and preserves fail-closed component accounting; the final joined v7 artifact is not yet claimed | Schema/contract foundation complete |
 | Negative/adversarial recurrence families | Contextual phrase, source conflict, homonym and unrelated controls run on real Postgres with zero incidents | Complete for four sealed controls |
 | Held-out recurrence population | The sealed 60-case registry executes exactly once with continuous intervals, all four entity types and no selective reruns | Complete: 60/60 observed |
-| Slack conversational reconstruction | All nine target families are source-native, supported and correct with zero contamination | Complete for sealed gold: 9/9 |
+| Conversational reconstruction | All nine Slack-shaped semantic families are source-attributed, supported and correct with zero contamination from persisted normalized fixtures; provider transport is not part of the claim | Complete for sealed gold: 9/9 |
 | Broad correction propagation | Wrong Models, recursive dependents, relations and projections are fenced or rebuilt; queued refresh work is consumed through the existing projector runtime | Complete for the seeded recursive cascade |
-| Cross-source company physics | Governed structured identity transport works through Jira, Linear, Google Drive and Gmail using the shared ingestion/grounding path; equivalent causal learning across these sources and meeting systems is unproven | Partial: Jira/Linear/Drive/Gmail identity path proven |
+| Cross-source company physics | Persisted Jira-, Linear-, Google Drive- and Gmail-attributed fixtures preserve governed source identity through grounding; connector/listener transport and equivalent causal learning are outside or beyond the current proof | Complete for the persisted identity semantics measured |
 | SAGE feedback reuse | Grounding and source-semantic terminal outcomes alter future matching-source retrieval salience without truth or authority writes | Complete for first bounded source-salience bridge |
 | Active-surface evaluator | Six sealed identity surfaces across Jira, Linear, Google Drive and Gmail plus five source-salience cases are recomputed, reopened and gated noncompensatorily | Complete in assurance v6: identity 6/6, salience 5/5 |
-| Source-identity lifecycle | Bindings support idempotent close, revoke and supersede with valid-time history, immutable attachment versions and an overlap guard | Complete for repository path; historical attachment reconstruction and DB-level exclusion remain bounded |
+| Source-identity lifecycle | Bindings support idempotent close, revoke and supersede with valid-time history, immutable attachment versions and an overlap guard; a sealed typed evaluator exists | Runtime/repository and evaluator contract complete; DB evidence runner still in flight |
 | Retention and forgetting evaluator | Exact and governed-variant behavior is measured at 0/4/16 alias-interference cycles and 0/1/2 worker-object restarts; correction, four negative controls and three collision families are checked noncompensatorily | Complete in assurance v6: 14/14, forgetting 0.0; not process-restart or long-duration proof |
-| Canonical referent replacement | Typed transition schema, lifecycle invariants, idempotent operation registry and domain service establish a governed replacement foundation | Partial: foundation/registry complete; resource, alias, binding, projection and retrieval repair remain |
+| Canonical resource replacement | One atomic orchestrator governs transition lineage, predecessor retirement, alias closure, exact source-binding supersession and projection invalidation while preserving Observations, attachments and Models; resource reads can resolve the lineage head at explicit valid/known cutoffs | Complete for the sealed resource vertical: 20/20 observed, zero gaps or violations |
 | Long-duration autonomous learning | True process/deployment restart, unrelated end-to-end learning, drift, rollback and regression behavior across long runs | Not proven |
 
 ## Important Implementation Checkpoints
@@ -336,6 +344,16 @@ flowchart LR
 | `04b0f0bd` | Aligned the full CLI integration with the sealed six-surface identity scope |
 | `5149df1b` | Added canonical referent-transition schema and typed replacement invariants |
 | `43d86dd5` | Added the idempotent replacement transition registry and domain service |
+| `dced1ae0` | Sealed the typed source-identity binding lifecycle evaluation contract |
+| `79317be8` | Corrected the source-binding lifecycle evaluator's expected closure-version semantics |
+| `7ad02256` | Added resource retirement and exact source-binding lookup adapters for replacement |
+| `3c7dff0c` | Added predecessor-scoped projection invalidation and replacement refresh metadata |
+| `8ce4b555` | Materialized atomic canonical resource replacement across lifecycle surfaces |
+| `7f839521` | Exposed replacement and source-binding lifecycle assurance state in Company Vitals |
+| `860915b4` | Established the assurance v7 schema and made replacement evidence mandatory |
+| `eb1f9a84` | Added the self-authenticating real-Postgres replacement proof runner with 20/20 obligations observed |
+| `3a03981d` | Added tenant-scoped, bitemporal lineage-aware canonical resource reads |
+| `15020d6b` | Updated the Company Vitals fixture to exercise the assurance-v7 lifecycle surface |
 
 ## Current Validation Evidence
 
@@ -547,20 +565,60 @@ four negative controls, three representative collision families and exact
 horizon distribution. A smaller or substituted population cannot satisfy the
 combined `working` contract.
 
-### Canonical referent replacement foundation
+### Canonical resource replacement proof
 
-Commits `5149df1b` and `43d86dd5` add:
+The replacement vertical now composes the transition registry with production
+resource, alias, source-binding and projection seams in one transaction:
 
-- typed replacement transition kinds and lifecycle states;
-- a migration-backed transition and operation registry;
-- tenant isolation, idempotent operation references and request fingerprints;
-- stale expected-version rejection;
-- valid-time and transaction-time transition history;
-- a domain service that creates governed replacement transitions.
+- `7ad02256` adds explicit non-customer resource retirement and exact
+  source-binding lookup;
+- `3c7dff0c` discovers active predecessor-scoped Models from normalized
+  sidecars, invalidates their disposable projections and reuses the existing
+  refresh queue with replacement metadata;
+- `8ce4b555` applies transition registration, endpoint validation, predecessor
+  retirement, alias closure, binding supersession, projection invalidation and
+  lineage verification atomically while preserving canonical Models and source
+  evidence;
+- `eb1f9a84` executes and reopens a self-authenticating UTF8 PostgreSQL artifact.
+- `3a03981d` resolves a requested resource referent to the lineage head visible
+  at explicit valid-time and knowledge-time cutoffs while preserving historical
+  reads and tenant isolation.
 
-This is a control-plane and lineage foundation, not completed replacement
-behavior. It does not yet repair or redirect canonical resources, aliases,
-source-identity bindings, Models/projections or retrieval results.
+The standalone database proof reports:
+
+- schema: `canonical-resource-replacement-evidence-v1`;
+- status: `observed`;
+- expected and observed obligations: `20/20`;
+- unsupported obligations: `0`;
+- violating obligations: `0`;
+- safety and immutability violations: `0`;
+- exact operation replay, operation-conflict rejection, stale-head rejection
+  and tenant isolation;
+- predecessor retirement, successor liveness, current and as-of alias safety;
+- source-binding boundary safety, delayed-event stale fencing and immutable old
+  attachment identity;
+- immutable source Observation and Model scope;
+- projection snapshot/dependency invalidation and one deduplicated pending
+  refresh;
+- reason/time-correct lineage;
+- missing-successor rejection with rollback and a separate forced downstream
+  failure proving transaction atomicity.
+
+Latest standalone CLI artifact:
+
+`/tmp/fyralis-replacement-artifact.R2Pkks/canonical_resource_replacement_evidence.json`
+
+- run identity: `cli-canonical-replacement-final`;
+- declared system version: `3c7dff0c`;
+- evidence digest:
+  `7cea7a1f9548582c3255ff0862ff2c3b77cd6ebc029d1b1f13e511823a671a64`.
+
+Commits `860915b4` and `7f839521` establish the assurance-v7 schema and Vitals
+surface that require this replacement component without averaging gaps away.
+`15020d6b` keeps the Vitals fixture aligned with this v7 lifecycle surface.
+This is a v7 contract foundation, not yet a claim that the full combined v7
+command has run successfully. The database-backed source-binding lifecycle
+runner is still in flight.
 
 ### Known validation caveat
 
@@ -590,21 +648,28 @@ It also proves:
   invariant proof.
 - direct correction can converge through Models, relations and projections
   without mutating source truth or another tenant.
-- Jira, Linear, Google Drive and Gmail can transport authenticated,
-  mention-scoped structured identity through the same governed binding path.
+- persisted Jira-, Linear-, Google Drive- and Gmail-attributed fixtures preserve
+  authenticated, mention-scoped structured identity through the same governed
+  binding path.
 - source bindings can be closed, revoked and superseded with visible valid-time
   history and idempotent repository operations.
 - exact and one governed-variant family survive bounded unrelated alias growth
   and fresh worker-object construction without regressing the measured negative
   and representative collision controls.
+- canonical resource replacement safely materializes across transition,
+  resource, alias, source-binding and projection surfaces while preserving
+  historical evidence and Models.
 
 ## What the Current Evidence Does Not Prove
 
 It does not yet prove:
 
-- canonical merge, split, replacement or resurrection behavior beyond the
-  customer rename/archive/name-reuse proof; the replacement transition
-  registry exists, but materialization and dependent repair remain;
+- canonical merge, split or resurrection behavior, or replacement beyond the
+  sealed exact resource vertical;
+- adoption of the lineage-aware read seam by every resource consumer and
+  historical-reference pathway;
+- a completed database-backed source-binding lifecycle artifact or a final
+  joined assurance-v7 system artifact;
 - open-world Slack reconstruction across long time spans and channels;
 - real-provider/model robustness;
 - equivalent causal learning across Jira, Linear, Drive, Gmail and meetings;
@@ -631,10 +696,10 @@ mere presence in the repository is not counted as completed company learning.
 
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
-| Exact-alias Slack clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared |
-| Active autonomous company-learning runtime | 95–97% | Exact/variant reuse, collision safety, customer/source-binding lifecycle, four-source identity transport, bounded retention and the first SAGE feedback bridge are green and joined in v6; broader causal source equivalence and process durability remain |
-| Customer-free objective substantiation | 91–94% | Assurance v6 is working with zero blockers and digest-bound active-surface plus retention evidence; open-world robustness, complete replacement repair and true restart proof remain |
-| Broader revised system excluding task autonomy | 84–87% | The company-memory, correction, structured-source and bounded policy-learning loop is strong, and replacement now has a governed registry foundation; meeting equivalence, merge/split/resurrection, replacement propagation, second-correction and long-duration validation remain incomplete |
+| Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
+| Scoped company-learning working end state | 85–90% | Correction reuse, collision safety, bounded retention, feedback reuse, resource replacement and lineage-aware resource reads are green; final v7 joining, source-lifecycle runtime proof and process durability remain |
+| Customer-free objective substantiation | 80–85% | Assurance v6 is the last fully executed combined proof and replacement is independently 20/20; v7, open-world robustness, broader lifecycle and true restart proof remain |
+| Broader revised system excluding task autonomy | 70–78% | The core company-memory and correction loop is substantial, but merge/split/resurrection, second-correction, downstream lineage-read adoption, long-duration behavior and customer-value evidence remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
@@ -742,43 +807,43 @@ Task autonomy is excluded from all percentages.
      resolution, stale/current alias safety, historical name reuse, old
      Observation/Model immutability, archive rejection, interval non-overlap,
      tenant isolation and replay idempotency are all `1.0`. Merge, split,
-     resurrection and non-customer identity lifecycle remain. Replacement has
-     a governed transition foundation, but materialization and dependent repair
-     remain.
+     resurrection and non-resource identity lifecycle remain. Canonical
+     resource replacement now has a `20/20` observed database proof with zero
+     gaps or violations.
 
 8. **Keep active-surface and retention evidence joined without weakening its
    boundaries**
    - Emit, reopen and digest-check the active structured-identity/
      source-salience component.
    - Emit, reopen and digest-check the retention component.
-   - Keep the currently test-backed source-binding lifecycle evidence outside
-     combined assurance until it has a typed artifact/component.
+   - Keep source-binding lifecycle evidence outside combined assurance until
+     its sealed typed contract has a database-backed artifact.
    - Preserve their noncompensatory gates and explicit proof limitations.
    - Current result: complete for active surfaces and retention in assurance
      v6. Their raw evidence, exact registries, component digests, run/system
      identity and noncompensatory status are reopened and recomputed by the
-     combined command. Source-binding lifecycle remains focused-test proven
-     without a standalone typed artifact and is explicitly outside v6's
-     digest-bound component set.
+     combined command. Source-binding lifecycle now has a sealed typed evaluator
+     contract, but its database runner and final v7 join remain in flight.
 
 ### P1 — Required for a strong multi-source product
 
 1. Converge source-semantic direct application and normal Think application on
    one validation/apply contract.
-2. Extend the same entity-learning loop to Jira, email, documents, meetings and
-   other structured sources.
-   - Current result: Jira project, Linear project/team, Google Drive file and
-     Gmail thread identities now use one typed `StructuredSourceIdentityClaim`
-     path through normalization, observation persistence, governed binding
-     lookup and mention-scoped resolution. Handlers cannot create authority,
-     missing bindings are inert, forged text is ignored and cross-source/
-     cross-tenant bindings fail closed. Equivalent full causal-loop behavior
-     and meeting-source support remain.
+2. Extend the same entity-learning semantics across simulated normalized,
+   source-attributed Jira, email, document and meeting signal populations.
+   Connector/listener transport is excluded from this objective.
+   - Current result: persisted Jira-, Linear-, Google Drive- and Gmail-attributed
+     fixtures exercise one typed source-identity contract through observation,
+     governed binding lookup and mention-scoped resolution. Missing bindings
+     are inert, forged text is ignored and cross-source/cross-tenant bindings
+     fail closed. Equivalent full causal-loop behavior remains.
 3. Extend the customer lifecycle proof to creation/transfer plus merge, split,
    replacement, resurrection and non-customer populations.
-   - Current result: replacement now has typed transitions, a migration-backed
-     registry and a domain service. Resource/alias/binding mutation, projection
-     repair, retrieval redirection and end-to-end evaluation remain.
+   - Current result: canonical resource replacement now materializes transition,
+     resource, alias, exact source-binding and projection repair, passes all
+     `20/20` sealed obligations and has a tenant-scoped bitemporal resource-read
+     seam. Merge, split, resurrection, other referent types and adoption across
+     every downstream consumer remain.
 4. Expand actor/customer/project/system same-surface ambiguity beyond the P0
    variant-collision matrix.
 5. Expand correction retention, forgetting and old-family regression.
@@ -814,6 +879,12 @@ the six-case structured-identity surface, five-case source-salience surface and
 summary, reopens every component, checks the current architecture and
 implementation-plan digests and embeds the validated result into Company
 Vitals without adding a score.
+
+Assurance v6 remains the last fully executed combined working artifact.
+Assurance v7 has a sealed schema foundation that makes canonical resource
+replacement mandatory and exposes replacement/source-lifecycle state in
+Company Vitals. A final combined v7 run is not yet claimed because the
+database-backed source-binding lifecycle runner is still in flight.
 
 ### Prerequisite and command
 
@@ -880,7 +951,11 @@ A successful run:
 
 ### Proof boundary
 
-This working version proves a real-Postgres exact tenant-global learning slice,
+All active experiments begin from simulated normalized, source-attributed
+signals already persisted in PostgreSQL. They do not prove connector polling,
+webhook receipt, listener reliability, provider backfill or ingestion
+transport. Within that boundary, this working version proves a real-Postgres
+exact tenant-global learning slice,
 four matched negative controls, all 60 measured recurrence pairs, all nine
 Slack reconstruction families, all 24 positive variant cases, all 16 collision
 cases, all eight customer identity-lifecycle cases and a recursive correction
@@ -948,13 +1023,10 @@ connection depend on the caller supplying the surrounding transaction.
 ### Explicitly deferred production hardening
 
 - larger open-world homonym/conflict populations;
-- merge/split/resurrection and non-customer identity lifecycle, plus
-  replacement materialization and dependent repair from the completed
-  transition registry foundation;
+- merge/split/resurrection, non-resource replacement and broader identity
+  lifecycle;
 - source-binding historical attachment reconstruction, DB-level interval
   exclusion and caller-transaction enforcement;
-- production connector claim transport beyond the proven
-  Jira/Linear/Google Drive/Gmail identity surfaces;
 - open-world simulation, real-provider runs and customer E5 validation;
 - very large recursive correction cascades and sustained refresh load;
 - cross-source equivalence;
@@ -964,9 +1036,9 @@ connection depend on the caller supplying the surrounding transaction.
 
 ## Next Execution Sequence
 
-1. Complete canonical replacement propagation from the new transition registry
-   through resources, aliases, source bindings, Models/projections and
-   retrieval, then add an end-to-end repair evaluator.
+1. Complete the database-backed source-binding lifecycle runner, then join its
+   exact artifact with the `20/20` replacement proof in a final assurance-v7
+   execution.
 2. Add a true second-correction replacement case and independent Model/
    evidence-lineage validation.
 3. Replace object-only restart and direct alias interference with process
@@ -974,8 +1046,8 @@ connection depend on the caller supplying the surrounding transaction.
    five collision families.
 4. Add merge/split/resurrection cases through the canonical identity writer
    rather than alias mutation.
-5. Repeat the causal suite across Jira, Linear, Drive and Gmail, then add
-   meeting sources.
+5. Repeat the causal suite across simulated normalized Jira-, Linear-, Drive-,
+   Gmail- and meeting-attributed signal populations.
 6. Complete source-binding historical reconstruction and move interval overlap
    enforcement into a database contract.
 7. Calibrate and stratify the existing SAGE source-salience bridge with
@@ -1266,7 +1338,9 @@ connection depend on the caller supplying the surrounding transaction.
   rejection of overlapping current-knowledge binding intervals, including the
   scheduled-terminal overlap case found during adversarial review.
 - Focused lifecycle and structured-source tests pass, but there is no standalone
-  typed lifecycle evidence artifact yet.
+  typed lifecycle evidence artifact yet at this historical checkpoint. The
+  later `dced1ae0` checkpoint seals the typed contract; its database runner is
+  still in flight.
 - Old attachments remain storage-exact and stale-fenced: once v1's transaction
   interval closes, operational resolution returns no result; a delayed
   historical Observation may attach v2. The repository overlap guard is not a
@@ -1319,6 +1393,40 @@ connection depend on the caller supplying the surrounding transaction.
   transition/operation tables in `5149df1b`.
 - Added a tenant-isolated, idempotent transition registry and domain service in
   `43d86dd5`, including stale-version and request-fingerprint protection.
-- This checkpoint records replacement intent and lifecycle history only.
-  Resource state, aliases, source bindings, projections, retrieval redirection
-  and end-to-end replacement repair remain to be implemented and evaluated.
+- At this historical checkpoint, replacement recorded intent and lifecycle
+  history only. The later materialization and proof checkpoint below closes the
+  resource, alias, exact source-binding and projection-repair gap for one sealed
+  resource vertical.
+
+### 2026-07-17 — Canonical resource replacement materialized and proven
+
+- Added production resource retirement and exact source-binding discovery in
+  `7ad02256`, predecessor-scoped projection invalidation in `3c7dff0c`, and the
+  atomic cross-surface replacement orchestrator in `8ce4b555`.
+- The runtime preserves source Observations, old attachment identity and
+  canonical Models while retiring the predecessor, closing its current alias,
+  superseding exact source bindings, invalidating derived projections and
+  exposing bitemporal lineage.
+- The self-authenticating UTF8 PostgreSQL runner in `eb1f9a84` observes all
+  `20/20` sealed obligations with zero unsupported cells, zero violations and
+  zero safety or immutability failures.
+- Missing-successor rejection proves required physical dependency failure and
+  rollback. A separate forced downstream projection failure proves the entire
+  transition/resource/alias/state-change transaction rolls back atomically.
+
+### 2026-07-17 — Assurance v7 foundation and active input boundary
+
+- `dced1ae0` seals the typed source-binding lifecycle contract, and
+  `79317be8` corrects its closure-version expectation.
+- `860915b4` establishes assurance schema v7 and requires complete replacement
+  evidence; `7f839521` exposes replacement and source-lifecycle state through
+  Company Vitals, and `15020d6b` aligns the Vitals v7 fixture.
+- `3a03981d` adds tenant-scoped, bitemporal lineage-aware resource reads that
+  preserve the requested historical cutoff and resolve the visible lineage
+  head.
+- Assurance v6 remains the last fully executed combined system artifact.
+  The source-binding lifecycle database runner is still in flight, so no final
+  combined v7 result is claimed.
+- Connector/listener ingestion transport is explicitly outside this goal.
+  Active tests start from simulated normalized, source-attributed signals that
+  are already persisted in PostgreSQL.
