@@ -13,7 +13,10 @@ from lib.evaluation.entity_pipeline_gold import (
     canonical_ref_key,
     evaluate_persisted_entity_pipeline,
 )
-from scripts.evaluate_entity_pipeline_gold import load_gold_manifest
+from scripts.evaluate_entity_pipeline_gold import (
+    load_gold_manifest,
+    load_gold_manifest_bundle,
+)
 
 
 def _canonical(candidate_id: str, entity_type: str, referent_id: str):
@@ -421,6 +424,42 @@ def test_gold_manifest_loader_seals_cases_and_canonical_labels(tmp_path) -> None
     assert cases[0].source_observation_id == observation_id
     assert cases[0].acceptable_terminal_fates == ("resolved_for_consumer",)
     assert labels == {"customer:customer:nimbus:v1": "gold:nimbus"}
+
+
+def test_v2_gold_manifest_loads_versioned_topology_labels(tmp_path) -> None:
+    observation_id, source_model_id, target_model_id = uuid4(), uuid4(), uuid4()
+    manifest = tmp_path / "entity-pipeline-topology-gold.json"
+    manifest.write_text(json.dumps({
+        "schema_version": "gold-entity-pipeline-corpus-v2",
+        "topology_population_version": "sealed-topology-population-v1",
+        "cases": [{
+            "case_id": "source", "batch_id": "batch-1",
+            "source_observation_id": str(observation_id), "surface": "Promise P-1",
+            "gold_entity_type": "commitment",
+            "expected_relations": [{
+                "expectation_id": "promise-to-customer",
+                "expected_admission": True,
+                "source_model_gold_label": "gold:promise-model",
+                "target_model_gold_label": "gold:customer-model",
+                "relation_type": "committed_to",
+                "source_mention_case_ids": ["source"],
+            }],
+        }],
+        "canonical_gold_labels": {},
+        "topology_model_gold_labels": {
+            str(source_model_id): "gold:promise-model",
+            str(target_model_id): "gold:customer-model",
+        },
+    }), encoding="utf-8")
+
+    cases, labels, topology = load_gold_manifest_bundle(manifest)
+
+    assert cases[0].expected_relations[0].relation_type == "committed_to"
+    assert labels == {}
+    assert topology == {
+        str(source_model_id): "gold:promise-model",
+        str(target_model_id): "gold:customer-model",
+    }
 
 
 @pytest.mark.asyncio
