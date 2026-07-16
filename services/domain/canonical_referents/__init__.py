@@ -4,6 +4,10 @@ from services.domain.canonical_referents.repo import (
     CanonicalReferentLineage,
     CanonicalReferentTransitionRepo,
 )
+from services.domain.canonical_referents.replacement import (
+    CanonicalResourceReplacementOrchestrator,
+    CanonicalResourceReplacementReport,
+)
 from services.domain.canonical_referents.service import (
     CanonicalReferentRegistryService,
 )
@@ -20,4 +24,6 @@ __all__ = [
     "CanonicalReferentReplacementResult",
     "CanonicalReferentTransitionRepo",
     "CanonicalReferentVersionRef",
+    "CanonicalResourceReplacementOrchestrator",
+    "CanonicalResourceReplacementReport",
 ]
