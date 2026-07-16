@@ -122,29 +122,208 @@ async def _load_source_reliability_stats(
     *,
     limit: int,
 ) -> list[dict[str, Any]]:
-    if not await _table_exists(conn, "sage_reader_decision_attributions"):
-        return []
-    rows = await conn.fetch(
-        """
-        SELECT source_key,
-               COUNT(*) AS attempts,
-               COUNT(*) FILTER (WHERE writer_used) AS successes,
-               COALESCE(SUM(writer_credit_score), 0.0) AS total_credit,
-               COALESCE(AVG(activation_score), 0.0) AS avg_activation,
-               'sage_reader_decision_attributions' AS provenance_source
-        FROM sage_reader_decision_attributions,
-             LATERAL jsonb_object_keys(source_breakdown) AS source_keys(source_key)
-        WHERE tenant_id = $1
-          AND source_breakdown <> '{}'::jsonb
-        GROUP BY source_key
-        HAVING COUNT(*) >= 2
-        ORDER BY successes DESC, attempts DESC, source_key ASC
-        LIMIT $2
-        """,
-        tenant_id,
-        limit,
+    rows: list[dict[str, Any]] = []
+    if await _table_exists(conn, "sage_reader_decision_attributions"):
+        reader_rows = await conn.fetch(
+            """
+            SELECT source_key,
+                   COUNT(*) AS attempts,
+                   COUNT(*) FILTER (WHERE writer_used) AS successes,
+                   COALESCE(SUM(writer_credit_score), 0.0) AS total_credit,
+                   COALESCE(AVG(activation_score), 0.0) AS avg_activation,
+                   'sage_reader_decision_attributions' AS provenance_source
+            FROM sage_reader_decision_attributions,
+                 LATERAL jsonb_object_keys(source_breakdown)
+                   AS source_keys(source_key)
+            WHERE tenant_id = $1
+              AND source_breakdown <> '{}'::jsonb
+            GROUP BY source_key
+            ORDER BY successes DESC, attempts DESC, source_key ASC
+            LIMIT $2
+            """,
+            tenant_id,
+            max(limit * 2, limit),
+        )
+        rows.extend(dict(row) for row in reader_rows)
+
+    grounding_tables = (
+        "grounding_traces",
+        "interpretation_context_snapshots",
+        "resolution_assessments",
+        "source_semantic_interpretations",
+        "source_semantic_admission_decisions",
+        "models",
     )
-    return [dict(row) for row in rows]
+    grounding_tables_exist = True
+    for table in grounding_tables:
+        if not await _table_exists(conn, table):
+            grounding_tables_exist = False
+            break
+    if grounding_tables_exist:
+        grounding_rows = await conn.fetch(
+            """
+            WITH recent_traces AS (
+              SELECT trace.*
+              FROM grounding_traces trace
+              WHERE trace.tenant_id = $1
+              ORDER BY trace.created_at DESC, trace.id DESC
+              LIMIT $3
+            ),
+            corrected_predecessors AS (
+              SELECT DISTINCT predecessor.id AS grounding_trace_id
+              FROM recent_traces predecessor
+              JOIN grounding_traces successor
+                ON successor.tenant_id = predecessor.tenant_id
+               AND successor.trace
+                   ->> 'supersedes_grounding_trace_id' = predecessor.id::text
+            ),
+            measured AS (
+              SELECT
+                snapshot.source_channel AS source_key,
+                1 AS learning_attempt,
+                CASE
+                  WHEN (
+                    model.archive_reason = 'superseded'
+                    OR correction.grounding_trace_id IS NOT NULL
+                  ) THEN 0
+                  WHEN trace.trace ? 'supersedes_grounding_trace_id' THEN 0
+                  WHEN admission.disposition = 'belief_applied' THEN 1
+                  ELSE 0
+                END AS useful_terminal,
+                CASE
+                  WHEN (
+                    model.archive_reason = 'superseded'
+                    OR correction.grounding_trace_id IS NOT NULL
+                  ) THEN -1.0
+                  WHEN trace.trace ? 'supersedes_grounding_trace_id' THEN 0.05
+                  WHEN admission.disposition = 'belief_applied' THEN 0.70
+                  WHEN admission.disposition = 'no_admission' THEN 0.08
+                  WHEN trace.current_fate IN (
+                    'review', 'unresolved', 'abstained'
+                  ) THEN 0.03
+                  ELSE 0.0
+                END AS operational_credit,
+                0.0::double precision AS activation
+              FROM recent_traces trace
+              JOIN interpretation_context_snapshots snapshot
+                ON snapshot.tenant_id = trace.tenant_id
+               AND snapshot.id = trace.context_snapshot_id
+              JOIN resolution_assessments assessment
+                ON assessment.tenant_id = trace.tenant_id
+               AND assessment.id = trace.resolution_assessment_id
+              LEFT JOIN source_semantic_interpretations interpretation
+                ON interpretation.tenant_id = trace.tenant_id
+               AND interpretation.grounding_trace_id = trace.id
+              LEFT JOIN source_semantic_admission_decisions admission
+                ON admission.tenant_id = interpretation.tenant_id
+               AND admission.interpretation_id = interpretation.id
+              LEFT JOIN models model
+                ON model.tenant_id = admission.tenant_id
+               AND model.id = admission.admitted_model_id
+              LEFT JOIN corrected_predecessors correction
+                ON correction.grounding_trace_id = trace.id
+              WHERE snapshot.source_channel IS NOT NULL
+                AND snapshot.source_channel <> ''
+                AND (
+                  admission.disposition IS NOT NULL
+                  OR trace.current_fate IN (
+                    'review', 'unresolved', 'abstained'
+                  )
+                )
+            )
+            SELECT
+              source_key,
+              COALESCE(SUM(learning_attempt), 0) AS attempts,
+              COALESCE(SUM(useful_terminal), 0) AS successes,
+              COALESCE(SUM(operational_credit), 0.0) AS total_credit,
+              COALESCE(AVG(activation), 0.0) AS avg_activation,
+              'grounding_context_source_semantic_outcomes'
+                AS provenance_source
+            FROM measured
+            GROUP BY source_key
+            ORDER BY successes DESC, attempts DESC, source_key ASC
+            LIMIT $2
+            """,
+            tenant_id,
+            max(limit * 2, limit),
+            max(limit * 32, 128),
+        )
+        rows.extend(dict(row) for row in grounding_rows)
+
+    return _merge_source_reliability_stats(rows, limit=limit)
+
+
+def _merge_source_reliability_stats(
+    rows: Iterable[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Merge reader credit with grounded source operational yield.
+
+    Grounding admission and candidate scores are not factual correctness
+    labels. The aggregate only records whether a source repeatedly reached a
+    useful terminal processing fate; later correction lineage can negate that
+    operational credit before it affects retrieval salience. Abstention,
+    review, and no-admission fates remain neutral rather than failures.
+    """
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        source_key = str(row.get("source_key") or "").strip()
+        if not source_key:
+            continue
+        attempts = max(0, int(row.get("attempts") or 0))
+        if attempts <= 0:
+            continue
+        bucket = grouped.setdefault(
+            source_key,
+            {
+                "source_key": source_key,
+                "attempts": 0,
+                "successes": 0,
+                "total_credit": 0.0,
+                "activation_total": 0.0,
+                "provenance_sources": set(),
+            },
+        )
+        bucket["attempts"] += attempts
+        bucket["successes"] += max(0, int(row.get("successes") or 0))
+        bucket["total_credit"] += float(row.get("total_credit") or 0.0)
+        bucket["activation_total"] += (
+            float(row.get("avg_activation") or 0.0) * attempts
+        )
+        provenance = str(row.get("provenance_source") or "").strip()
+        if provenance:
+            bucket["provenance_sources"].add(provenance)
+
+    merged: list[dict[str, Any]] = []
+    for bucket in grouped.values():
+        attempts = int(bucket["attempts"])
+        if attempts < 2:
+            continue
+        merged.append(
+            {
+                "source_key": bucket["source_key"],
+                "attempts": attempts,
+                "successes": int(bucket["successes"]),
+                "total_credit": round(float(bucket["total_credit"]), 6),
+                "avg_activation": round(
+                    float(bucket["activation_total"]) / attempts,
+                    6,
+                ),
+                "provenance_source": "+".join(
+                    sorted(bucket["provenance_sources"])
+                ),
+            }
+        )
+    merged.sort(
+        key=lambda row: (
+            -int(row["attempts"]),
+            -float(row["total_credit"]),
+            str(row["source_key"]),
+        )
+    )
+    return merged[: max(1, int(limit))]
 
 
 async def _load_actor_reliability_stats(

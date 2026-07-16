@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import asyncpg
 import pytest
 
+from lib.contracts.kernel import canonical_sha256
 from services.reasoning.sage.company_profile import (
     build_latent_pattern_profile_input,
     build_company_learning_profile,
@@ -18,7 +21,12 @@ from services.reasoning.sage.patterns import (
     pattern_model_repair_proposals_from_profile,
     scout_global_patterns,
 )
-from services.reasoning.sage.retrieval_policy import SageRouteUtility
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.sage.retrieval_policy import (
+    SageRouteUtility,
+    plan_primary_retrieval,
+)
+from tests.unit.sage._seed import seed_model, seed_observation
 
 
 def test_company_learning_profile_compacts_existing_sage_surfaces() -> None:
@@ -324,6 +332,246 @@ async def test_load_company_learning_profile_reads_existing_utility_surfaces() -
 
 
 @pytest.mark.asyncio
+async def test_source_reliability_merges_reader_and_grounding_operational_yield() -> None:
+    tenant_id = uuid4()
+    conn = _FakeProfileConn(
+        existing_tables={
+            "sage_reader_decision_attributions",
+            "grounding_traces",
+            "interpretation_context_snapshots",
+            "resolution_assessments",
+            "source_semantic_interpretations",
+            "source_semantic_admission_decisions",
+            "models",
+        }
+    )
+
+    profile = await load_company_learning_profile(
+        conn,  # type: ignore[arg-type]
+        tenant_id=tenant_id,
+    )
+
+    prior = profile.best_prior(kind="source_reliability", key="shortcut")
+    assert prior is not None
+    assert prior.sample_count == 7
+    assert prior.metadata["source"] == (
+        "grounding_context_source_semantic_outcomes"
+        "+sage_reader_decision_attributions"
+    )
+    assert prior.metadata["salience_only"] is True
+    assert prior.metadata["canonical_write"] is False
+    grounding_queries = [
+        query for query, _args in conn.fetch_calls if "WITH recent_traces AS" in query
+    ]
+    assert len(grounding_queries) == 1
+    assert "candidate_distribution" not in grounding_queries[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_grounding_outcomes_reuse_source_salience_without_truth_writes(
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+) -> None:
+    corrected_source = "slack:corrected"
+    useful_source = "slack:useful"
+    neutral_source = "slack:no-admission"
+    pending_source = "slack:pending-source-semantics"
+    foreign_source = "slack:foreign"
+
+    async with gateway_pool.acquire() as conn:
+        async with conn.transaction():
+            wrong_trace_id, wrong_model_id = await _seed_grounding_source_outcome(
+                gateway_pool,
+                conn=conn,
+                tenant_id=tenant_id,
+                source_channel=corrected_source,
+            )
+            assert wrong_model_id is not None
+            await conn.execute(
+                """
+                UPDATE models
+                SET status = 'archived',
+                    archived_at = now(),
+                    archive_reason = 'superseded'
+                WHERE tenant_id = $1 AND id = $2
+                """,
+                tenant_id,
+                wrong_model_id,
+            )
+            await _seed_grounding_source_outcome(
+                gateway_pool,
+                conn=conn,
+                tenant_id=tenant_id,
+                source_channel=corrected_source,
+                supersedes_trace_id=wrong_trace_id,
+            )
+            for _ in range(3):
+                await _seed_grounding_source_outcome(
+                    gateway_pool,
+                    conn=conn,
+                    tenant_id=tenant_id,
+                    source_channel=useful_source,
+                )
+            for _ in range(2):
+                await _seed_grounding_source_outcome(
+                    gateway_pool,
+                    conn=conn,
+                    tenant_id=tenant_id,
+                    source_channel=neutral_source,
+                    source_semantic_disposition="no_admission",
+                )
+            for _ in range(2):
+                await _seed_grounding_source_outcome(
+                    gateway_pool,
+                    conn=conn,
+                    tenant_id=tenant_id,
+                    source_channel=pending_source,
+                    source_semantic_disposition=None,
+                )
+
+            foreign_tenant_id = uuid4()
+            for _ in range(3):
+                await _seed_grounding_source_outcome(
+                    gateway_pool,
+                    conn=conn,
+                    tenant_id=foreign_tenant_id,
+                    source_channel=foreign_source,
+                )
+
+            model_truth_before = [
+                dict(row)
+                for row in await conn.fetch(
+                    """
+                    SELECT id, proposition, status, archived_at, archive_reason
+                    FROM models
+                    WHERE tenant_id = $1
+                    ORDER BY id
+                    """,
+                    tenant_id,
+                )
+            ]
+            grounding_truth_before = [
+                dict(row)
+                for row in await conn.fetch(
+                    """
+                    SELECT id, current_fate, identity_registry_mutated,
+                           source_observation_mutated, trace
+                    FROM grounding_traces
+                    WHERE tenant_id = $1
+                    ORDER BY id
+                    """,
+                    tenant_id,
+                )
+            ]
+
+            profile = await load_company_learning_profile(
+                conn,
+                tenant_id=tenant_id,
+            )
+
+            model_truth_after = [
+                dict(row)
+                for row in await conn.fetch(
+                    """
+                    SELECT id, proposition, status, archived_at, archive_reason
+                    FROM models
+                    WHERE tenant_id = $1
+                    ORDER BY id
+                    """,
+                    tenant_id,
+                )
+            ]
+            grounding_truth_after = [
+                dict(row)
+                for row in await conn.fetch(
+                    """
+                    SELECT id, current_fate, identity_registry_mutated,
+                           source_observation_mutated, trace
+                    FROM grounding_traces
+                    WHERE tenant_id = $1
+                    ORDER BY id
+                    """,
+                    tenant_id,
+                )
+            ]
+
+    corrected_prior = profile.best_prior(
+        kind="source_reliability",
+        key=corrected_source,
+    )
+    useful_prior = profile.best_prior(
+        kind="source_reliability",
+        key=useful_source,
+    )
+    neutral_prior = profile.best_prior(
+        kind="source_reliability",
+        key=neutral_source,
+    )
+    assert corrected_prior is not None
+    assert useful_prior is not None
+    assert neutral_prior is not None
+    assert corrected_prior.sample_count == 2
+    assert corrected_prior.effective_score <= 0.0
+    assert useful_prior.sample_count == 3
+    assert useful_prior.effective_score > 0.22
+    assert neutral_prior.sample_count == 2
+    assert -0.10 < neutral_prior.effective_score <= 0.0
+    assert profile.best_prior(kind="source_reliability", key=pending_source) is None
+    assert profile.best_prior(kind="source_reliability", key=foreign_source) is None
+
+    weights = {"A": 0.30, "B": 0.26, "L": 0.12, "C": 0.16, "G": 0.16}
+    corrected_trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        seed_natural_text="Corrected customer launch dependency",
+        seed_signature={"source_channel": corrected_source},
+    )
+    useful_trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        seed_natural_text="Useful customer launch dependency",
+        seed_signature={"source_channel": useful_source},
+    )
+    baseline_corrected = _plan_source_policy(corrected_trigger, weights=weights)
+    learned_corrected = _plan_source_policy(
+        corrected_trigger,
+        weights=weights,
+        profile=profile,
+    )
+    baseline_useful = _plan_source_policy(useful_trigger, weights=weights)
+    learned_useful = _plan_source_policy(
+        useful_trigger,
+        weights=weights,
+        profile=profile,
+    )
+
+    assert learned_corrected.decision_for("L") is not None
+    assert baseline_corrected.decision_for("L") is not None
+    assert (
+        learned_corrected.decision_for("L").weight_multiplier
+        <= baseline_corrected.decision_for("L").weight_multiplier
+    )
+    assert "source_actor_reliability_raised_salience" not in learned_corrected.reasons
+    assert learned_useful.decision_for("L") is not None
+    assert baseline_useful.decision_for("L") is not None
+    assert (
+        learned_useful.decision_for("L").weight_multiplier
+        > baseline_useful.decision_for("L").weight_multiplier
+    )
+    assert "source_actor_reliability_raised_salience" in learned_useful.reasons
+
+    useful_effects = learned_useful.notes()["profile_effects"]
+    assert useful_effects
+    assert all(effect["canonical_write"] is False for effect in useful_effects)
+    assert all(effect["salience_only"] is True for effect in useful_effects)
+    assert all(effect["authority_effect"] == "none" for effect in useful_effects)
+    assert profile.to_policy_notes()["canonical_write"] is False
+    assert model_truth_after == model_truth_before
+    assert grounding_truth_after == grounding_truth_before
+
+
+@pytest.mark.asyncio
 async def test_load_company_learning_profile_accepts_offline_latent_pattern_inputs() -> None:
     tenant_id = uuid4()
     signatures = [
@@ -433,6 +681,19 @@ class _FakeProfileConn:
                     "provenance_source": "sage_reader_decision_attributions",
                 }
             ]
+        if "WITH recent_traces AS" in query:
+            return [
+                {
+                    "source_key": "shortcut",
+                    "attempts": 2,
+                    "successes": 2,
+                    "total_credit": 1.4,
+                    "avg_activation": 0.0,
+                    "provenance_source": (
+                        "grounding_context_source_semantic_outcomes"
+                    ),
+                }
+            ]
         if "FROM calibration_stats" in query:
             return [
                 {
@@ -488,3 +749,267 @@ def _profile(*priors: LearningPrior) -> CompanyLearningProfile:
         sample_count=sum(prior.sample_count for prior in priors),
         confidence=0.8,
     )
+
+
+def _plan_source_policy(
+    trigger: TriggerContext,
+    *,
+    weights: dict[str, float],
+    profile: CompanyLearningProfile | None = None,
+):
+    return plan_primary_retrieval(
+        trigger=trigger,
+        weights=weights,
+        effective_seed_entities=[],
+        effective_scope_actors=[],
+        projection_enabled=True,
+        semantic_terms_enabled=True,
+        semantic_k=20,
+        exploration_rate=0.0,
+        company_profile=profile,
+    )
+
+
+async def _seed_grounding_source_outcome(
+    pool: asyncpg.Pool,
+    *,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    source_channel: str,
+    supersedes_trace_id: UUID | None = None,
+    source_semantic_disposition: str | None = "belief_applied",
+) -> tuple[UUID, UUID | None]:
+    observation_id = await seed_observation(
+        pool,
+        conn=conn,
+        tenant_id=tenant_id,
+        source_channel=source_channel,
+        content_text=f"{source_channel} reports a launch dependency",
+    )
+    context_snapshot_id = uuid4()
+    candidate_request_id = uuid4()
+    candidate_set_id = uuid4()
+    resolution_assessment_id = uuid4()
+    grounding_admission_id = uuid4()
+    grounding_trace_id = uuid4()
+    interpretation_id = uuid4()
+    source_semantic_admission_id = uuid4()
+    entity_mention_id = uuid4()
+    candidate_id = f"candidate:{uuid4()}"
+    selected_referent = {
+        "type": "customer",
+        "id": str(uuid4()),
+        "version": 1,
+    }
+    request_digest = canonical_sha256(
+        {"tenant_id": tenant_id, "request_id": candidate_request_id}
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO interpretation_context_snapshots (
+          id, tenant_id, focal_observation_id, phrase, source_channel,
+          source_space, evidence_cutoff, processing_authority_fingerprint,
+          snapshot_content_hash, snapshot
+        ) VALUES (
+          $1, $2, $3, 'the customer', $4, 'pytest',
+          now(), $5, $6, '{}'::jsonb
+        )
+        """,
+        context_snapshot_id,
+        tenant_id,
+        observation_id,
+        source_channel,
+        canonical_sha256({"authority": str(context_snapshot_id)}),
+        canonical_sha256({"snapshot": str(context_snapshot_id)}),
+    )
+    await conn.execute(
+        """
+        INSERT INTO entity_candidate_generation_requests (
+          id, tenant_id, context_snapshot_id, source_observation_id,
+          phrase, mention_ref, request_digest,
+          processing_authority_fingerprint, required_lanes, request
+        ) VALUES (
+          $1, $2, $3, $4, 'the customer', $5, $6, $7,
+          ARRAY['exact_alias'], '{}'::jsonb
+        )
+        """,
+        candidate_request_id,
+        tenant_id,
+        context_snapshot_id,
+        observation_id,
+        f"observation:{observation_id}:the customer",
+        request_digest,
+        canonical_sha256({"authority": str(candidate_request_id)}),
+    )
+    await conn.execute(
+        """
+        INSERT INTO entity_candidate_sets (
+          id, tenant_id, request_id, request_digest, lane_fates,
+          candidates, candidate_set_hash, candidate_set,
+          registry_version, expires_at
+        ) VALUES (
+          $1, $2, $3, $4, '[]'::jsonb, '[]'::jsonb,
+          $5, '{}'::jsonb, 'pytest-v1', now() + interval '1 day'
+        )
+        """,
+        candidate_set_id,
+        tenant_id,
+        candidate_request_id,
+        request_digest,
+        canonical_sha256({"candidate_set": str(candidate_set_id)}),
+    )
+    await conn.execute(
+        """
+        INSERT INTO resolution_assessments (
+          id, tenant_id, candidate_set_id, candidate_distribution,
+          selected_candidate_id, suggested_canonical_ref,
+          model_output, assessment, scorer_and_calibration_version,
+          assessed_at, expires_at
+        ) VALUES (
+          $1, $2, $3, $4::jsonb, $5, $6::jsonb,
+          '{}'::jsonb, '{}'::jsonb, 'pytest-v1',
+          now(), now() + interval '1 day'
+        )
+        """,
+        resolution_assessment_id,
+        tenant_id,
+        candidate_set_id,
+        json.dumps({candidate_id: 0.99}),
+        candidate_id,
+        json.dumps(selected_referent),
+    )
+    await conn.execute(
+        """
+        INSERT INTO grounding_admission_decisions (
+          id, tenant_id, assessment_id, consumer, purpose, operation,
+          risk_tier, disposition, selected_referent, reason_codes,
+          consumption_authority_fingerprint, decision, decided_at, expires_at
+        ) VALUES (
+          $1, $2, $3, 'source_semantics', 'pytest', 'read',
+          'low', 'single_referent', $4::jsonb, ARRAY['pytest_seed'],
+          $5, '{}'::jsonb, now(), now() + interval '1 day'
+        )
+        """,
+        grounding_admission_id,
+        tenant_id,
+        resolution_assessment_id,
+        json.dumps(selected_referent),
+        canonical_sha256({"authority": str(grounding_admission_id)}),
+    )
+    trace_payload = (
+        {"supersedes_grounding_trace_id": str(supersedes_trace_id)}
+        if supersedes_trace_id is not None
+        else {}
+    )
+    await conn.execute(
+        """
+        INSERT INTO grounding_traces (
+          id, tenant_id, source_observation_id, phrase,
+          context_snapshot_id, candidate_request_id, candidate_set_id,
+          resolution_assessment_id, grounding_admission_id,
+          current_fate, selected_referent, identity_registry_mutated,
+          source_observation_mutated, trace
+        ) VALUES (
+          $1, $2, $3, 'the customer',
+          $4, $5, $6, $7, $8,
+          'resolved_for_consumer', $9::jsonb, FALSE, FALSE, $10::jsonb
+        )
+        """,
+        grounding_trace_id,
+        tenant_id,
+        observation_id,
+        context_snapshot_id,
+        candidate_request_id,
+        candidate_set_id,
+        resolution_assessment_id,
+        grounding_admission_id,
+        json.dumps(selected_referent),
+        json.dumps(trace_payload),
+    )
+    if source_semantic_disposition is None:
+        return grounding_trace_id, None
+
+    admitted_model_id: UUID | None = None
+    if source_semantic_disposition == "belief_applied":
+        admitted_model_id = await seed_model(
+            pool,
+            conn=conn,
+            tenant_id=tenant_id,
+            born_from_event_id=observation_id,
+            natural=f"{source_channel} launch dependency",
+            proposition={
+                "kind": "belief",
+                "subject": f"{source_channel} launch dependency",
+                "source_channel": source_channel,
+            },
+            confidence=0.90,
+        )
+    await conn.execute(
+        """
+        INSERT INTO source_semantic_interpretations (
+          id, tenant_id, grounding_trace_id, source_observation_id,
+          context_snapshot_id, entity_mention_id, resolution_assessment_id,
+          grounding_admission_id, source_content_hash, source_assertion,
+          semantic_frame, speech_act, grounding_continuity, bundle_digest,
+          extractor_version, recorded_at
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8,
+          $9, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+          $10, 'pytest-v1', now()
+        )
+        """,
+        interpretation_id,
+        tenant_id,
+        grounding_trace_id,
+        observation_id,
+        context_snapshot_id,
+        entity_mention_id,
+        resolution_assessment_id,
+        grounding_admission_id,
+        canonical_sha256({"source": str(observation_id)}),
+        canonical_sha256({"bundle": str(interpretation_id)}),
+    )
+    if source_semantic_disposition == "belief_applied":
+        await conn.execute(
+            """
+            INSERT INTO source_semantic_admission_decisions (
+              id, tenant_id, interpretation_id, disposition, reason_codes,
+              proposed_belief_assertion, admitted_model_id,
+              decision_digest, decided_at
+            ) VALUES (
+              $1, $2, $3, 'belief_applied', ARRAY['pytest_seed'],
+              $4::jsonb, $5, $6, now()
+            )
+            """,
+            source_semantic_admission_id,
+            tenant_id,
+            interpretation_id,
+            json.dumps(
+                {
+                    "kind": "asserted_state",
+                    "source_channel": source_channel,
+                }
+            ),
+            admitted_model_id,
+            canonical_sha256({"decision": str(source_semantic_admission_id)}),
+        )
+    else:
+        assert source_semantic_disposition == "no_admission"
+        await conn.execute(
+            """
+            INSERT INTO source_semantic_admission_decisions (
+              id, tenant_id, interpretation_id, disposition, reason_codes,
+              proposed_belief_assertion, admitted_model_id,
+              decision_digest, decided_at
+            ) VALUES (
+              $1, $2, $3, 'no_admission', ARRAY['pytest_neutral'],
+              NULL, NULL, $4, now()
+            )
+            """,
+            source_semantic_admission_id,
+            tenant_id,
+            interpretation_id,
+            canonical_sha256({"decision": str(source_semantic_admission_id)}),
+        )
+    return grounding_trace_id, admitted_model_id
