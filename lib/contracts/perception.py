@@ -898,6 +898,7 @@ class CanonicalReferent(_PerceptionContract):
 class SourceIdentityBinding(_PerceptionContract):
     binding_id: str = Field(min_length=1)
     binding_version: int = Field(ge=1)
+    binding_lineage_id: str | None = Field(default=None, min_length=1)
     tenant_id: UUID
     source_system: str = Field(min_length=1)
     source_native_identifier: str = Field(min_length=1)
