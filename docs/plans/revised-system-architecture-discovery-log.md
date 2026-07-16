@@ -614,6 +614,55 @@ coherent diff.
   `ExecutionLedgerApplier`. Add an independent reconciler for `unknown` and
   ambiguous effects before automating retries or takeovers.
 
+### DISC-014 — Current autonomy belongs in company learning, not task execution
+
+- **Date:** 2026-07-16
+- **Milestone:** Product-boundary correction after the first agency-runtime
+  slices
+- **Status:** `accepted`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** entity grounding, conversational context, source
+  semantics, company models, retrieval, adaptive inquiry, feedback, Workflow,
+  Task and Work runtimes
+- **Observation:** The current product objective is not autonomous company
+  operation. Fyralis should autonomously improve its evidence-grounded,
+  temporal model of the company while consequential company work remains under
+  human control. The implemented agency activation and Work scheduling
+  protocols are useful future scaffolding, but launching them as production
+  workers makes the present runtime optimize the wrong form of autonomy.
+- **Working core boundary:** The contracts, repositories, launch scripts and
+  tests for planned agency activation and registered-Work scheduling remain in
+  the repository as dormant, directly invocable scaffolding. They are removed
+  from the production process manifest and Compose topology. The active
+  production path continues through signal capture, conversational/entity
+  grounding, source semantics and company-model learning; it does not
+  automatically instantiate or lease consequential tasks.
+- **Implementation evidence:** Commit `65b407dd` preserves a fully tested
+  future external-effect executor and commit `c21358c9` removes it from the
+  active tree. This milestone additionally removes `agency_activation_worker`
+  and `work_scheduler_worker` from production runtime registration while
+  retaining their isolated implementations and tests.
+- **Immediate implementation consequence:** The next vertical must close a
+  real epistemic loop: a correction, adjudication or later evidence item must
+  alter future context selection, entity resolution, source-semantic admission
+  or company-model construction through governed learned state, and evaluation
+  must measure the resulting model-quality change against an unchanged
+  baseline.
+- **Deferred architecture gaps:** Existing feedback tables and traces often
+  prove that feedback was recorded, not that future company understanding
+  improved. Slack context selection still uses deterministic heuristics,
+  selected episode hypotheses are snapshot-local, general discourse
+  preconditions remain incomplete, and downstream correction closure across
+  grounding, source semantics and canonical models is not yet proven.
+- **Reason for correction:** Automating Work can make the system more active
+  without making its company model more accurate. Until the epistemic feedback
+  loops are autonomous and objectively beneficial, task execution would
+  amplify model errors rather than solve the central product problem.
+- **Return condition:** Reconsider production agency workers only after
+  learning-loop evaluation proves stable company-model improvement, bounded
+  regressions, correction propagation, temporal/authority integrity and
+  explicit human control over consequential actions.
+
 ## Reconciliation Procedure
 
 At a reconciliation milestone:
