@@ -45,6 +45,7 @@ class ConversationContextEvaluationScope(_ContextEvaluationModel):
     start: datetime
     end: datetime
     run_id: str = Field(min_length=1)
+    observation_ids: tuple[UUID, ...] = ()
 
     @field_validator("start", "end")
     @classmethod
@@ -383,27 +384,62 @@ async def evaluate_conversation_context_state(
     artifact_refs: tuple[str, ...],
 ) -> ConversationContextEvaluationState:
     heads = await conn.fetch(
-        "SELECT * FROM interpretation_context_heads WHERE tenant_id=$1",
+        """
+        SELECT head.*
+        FROM interpretation_context_heads head
+        JOIN interpretation_context_snapshots snapshot
+          ON snapshot.tenant_id=head.tenant_id
+         AND snapshot.id=head.current_snapshot_id
+        WHERE head.tenant_id=$1
+          AND (
+            cardinality($2::uuid[]) = 0
+            OR snapshot.focal_observation_id = ANY($2::uuid[])
+          )
+        """,
         scope.tenant_id,
+        list(scope.observation_ids),
     )
     snapshots = await conn.fetch(
         """
         SELECT * FROM interpretation_context_snapshots
         WHERE tenant_id=$1
           AND contract_version='conversation-context-selection-v1'
+          AND (
+            cardinality($2::uuid[]) = 0
+            OR focal_observation_id = ANY($2::uuid[])
+          )
         """,
         scope.tenant_id,
+        list(scope.observation_ids),
     )
-    commands = await conn.fetch(
-        """
-        SELECT * FROM agency_command_results
-        WHERE tenant_id=$1 AND writer_id='GroundingAnnotationAppender'
-          AND created_at >= $2 AND created_at < $3
-        ORDER BY created_at, id
-        """,
-        scope.tenant_id,
-        scope.start,
-        scope.end,
+    snapshot_command_ids = [
+        row["command_result_id"]
+        for row in snapshots
+        if row["command_result_id"] is not None
+    ]
+    commands = (
+        await conn.fetch(
+            """
+            SELECT * FROM agency_command_results
+            WHERE tenant_id=$1 AND writer_id='GroundingAnnotationAppender'
+              AND id=ANY($2::uuid[])
+            ORDER BY created_at, id
+            """,
+            scope.tenant_id,
+            snapshot_command_ids,
+        )
+        if scope.observation_ids
+        else await conn.fetch(
+            """
+            SELECT * FROM agency_command_results
+            WHERE tenant_id=$1 AND writer_id='GroundingAnnotationAppender'
+              AND created_at >= $2 AND created_at < $3
+            ORDER BY created_at, id
+            """,
+            scope.tenant_id,
+            scope.start,
+            scope.end,
+        )
     )
     result_ids = [row["id"] for row in commands]
     if result_ids:

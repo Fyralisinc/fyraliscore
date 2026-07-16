@@ -248,19 +248,54 @@ decisions will be added after the parallel audit lanes complete.
 - The evaluator reports exposure, resolution rate, model calls avoided,
   unsafe replay and contextual replay continuously; zero exposure is unknown.
 
-## First Consolidation Targets
+### Slice 5 — Annotation-only correction and original-Model repair
+
+- Clarification acceptance no longer mutates `observations.entities_mentioned`
+  or emits an authoritative `internal:state_change` Observation for the
+  resolver's own conclusion.
+- The correction remains an independently adjudicated alias plus an immutable
+  successor grounding generation, source-semantic interpretation and canonical
+  Model outcome.
+- This preserves the evidence/annotation boundary while still repairing the
+  originally reviewed signal and improving later exact-alias occurrences.
+- A real-Postgres test proves the original and future Observations remain
+  unchanged, no self-authoritative resolution Observation is created, the
+  corrected successor closes safely, and the later replay reaches one Model.
+
+### Slice 6 — One company-learning proof path through Company Vitals
+
+- Conversational-context, entity-grounding and source-semantic evaluators now
+  accept exact manifest Observation IDs instead of relying only on tenant/time
+  windows.
+- `lib/evaluation/company_learning.py` owns one active-slice state vector and
+  one evidence manifest assembled from the existing registered invariant
+  evidence builders.
+- Runtime health and proof-backed substantiation are separate. A clean E3
+  runtime slice is reported as healthy but insufficient until registered
+  scenarios, trace facts and evidence tiers satisfy the architecture proof
+  compiler.
+- Company Vitals remains the sole operator-facing report. Company physics is a
+  noncompensatory section, confirmed incidents are hard failures, and its
+  metrics never enter the existing overall-score average.
+- `company_learning_evaluation.json` and
+  `company_learning_evidence_manifest.json` are supporting evidence artifacts,
+  not competing readiness reports. Artifact-only rerenders preserve a saved
+  DB-backed evaluation instead of replacing it with `not_observed`.
+
+## Next Consolidation Targets
 
 1. Keep the source-semantic worker active until its Slack-to-Model vertical is
    preserved by an equivalent integrated path.
-2. Add successor grounding/source-semantic generations so a correction can
-   repair the original interpretation and canonical Model.
-3. Consolidate `entity_review_queue` behind `clarification_requests`.
-4. Continue isolating shared command/event/outbox persistence from
+2. Consolidate `entity_review_queue` behind `clarification_requests`.
+3. Continue isolating shared command/event/outbox persistence from
    task-autonomy service and database naming while retaining compatibility.
-5. Fold revised metric output into the existing benchmark/company-vitals
-   artifact contract.
-6. Feed typed grounding outcomes into existing reflective/retrieval learning
+4. Feed typed grounding outcomes into existing reflective/retrieval learning
    before adding any new policy lifecycle.
+5. Add paired adaptive-versus-frozen and held-out entity-recurrence simulations
+   so learned replay is measured for net quality lift, not only closure and
+   model-call avoidance.
+6. Expand correction closure from the first grounded-Model vertical to every
+   materially dependent accepted Model, graph relation and projection.
 
 ## Proof Required Before Behavioral Expansion
 

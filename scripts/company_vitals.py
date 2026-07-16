@@ -9,11 +9,29 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from lib.architecture_registry import load_architecture_registry
+from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.company_learning import (
+    ACTIVE_COMPANY_LEARNING_INVARIANT_IDS,
+    CompanyLearningEvaluationScope,
+    CompanyLearningEvaluationState,
+    build_company_learning_evidence_manifest,
+    company_learning_assurance_status,
+    evaluate_company_learning_state,
+)
+from lib.evaluation.proof import (
+    InvariantEvidenceManifest,
+    compile_invariant_proof_matrix,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ARCHITECTURE_REGISTRY = ROOT / "architecture" / "registry.yaml"
 
 USEFUL_CONTEXT_GRADES = {
     "graph_context_used",
@@ -130,6 +148,7 @@ def _build_vitals_scorecard(
     signal_rows: list[dict[str, Any]],
     *,
     db_trace: dict[str, Any] | None = None,
+    company_learning_evaluation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     benchmark = bundle["benchmark_summary"] or bundle["storyline_scores"]
     run_summary = bundle["run_summary"]
@@ -143,6 +162,13 @@ def _build_vitals_scorecard(
     source_scorecard = _json_obj(benchmark.get("company_intelligence_scorecard"))
     source_product_value = _json_obj(source_scorecard.get("product_value_evals"))
     generated_at = datetime.now(timezone.utc).isoformat()
+    if company_learning_evaluation is None:
+        company_learning_evaluation = _company_learning_evaluation_for_report(
+            report_path,
+            bundle=bundle,
+            db_trace=db_trace,
+        )
+    company_physics = _company_physics_section(company_learning_evaluation)
 
     vitals: dict[str, Any] = {
         "metabolism_yield": _metabolism_vital(signal_rows, bundle),
@@ -213,10 +239,23 @@ def _build_vitals_scorecard(
     }
 
     hard_failures = _hard_failures(vitals, benchmark)
+    hard_failures.extend(
+        str(item)
+        for item in _json_list(company_physics.get("hard_failures"))
+    )
     scored = [v["score"] for v in vitals.values() if isinstance(v.get("score"), (int, float))]
     overall_score = round(sum(scored) / len(scored), 4) if scored else None
     status = "fail" if hard_failures else _status_from_score(overall_score)
     proof_gaps = _proof_gaps(vitals, source_scorecard, source_product_value)
+    proof_gaps = sorted(
+        {
+            *proof_gaps,
+            *(
+                str(item)
+                for item in _json_list(company_physics.get("proof_gaps"))
+            ),
+        }
+    )
     ranked_findings = _ranked_findings(vitals, hard_failures)
 
     return {
@@ -234,6 +273,7 @@ def _build_vitals_scorecard(
         "ranked_findings": ranked_findings,
         "proof_gaps": proof_gaps,
         "vitals": vitals,
+        "company_physics": company_physics,
         "source_company_intelligence": {
             "overall_score": source_scorecard.get("overall_score"),
             "interpretation": source_scorecard.get("interpretation"),
@@ -259,11 +299,18 @@ def write_vitals_artifacts(
     signal_rows = _build_signal_metabolism_rows(bundle)
     if db_trace is not None:
         signal_rows = apply_db_trace_to_signal_rows(signal_rows, db_trace)
+    company_learning_evaluation = _company_learning_evaluation_for_report(
+        report_path,
+        bundle=bundle,
+        db_trace=db_trace,
+        persisted_path=out / "company_learning_evaluation.json",
+    )
     scorecard = _build_vitals_scorecard(
         report_path,
         bundle,
         signal_rows,
         db_trace=db_trace,
+        company_learning_evaluation=company_learning_evaluation,
     )
     graph_coherence = _graph_coherence_payload(bundle, scorecard)
     db_summary = _trace_summary(db_trace)
@@ -274,6 +321,29 @@ def write_vitals_artifacts(
 
     _write_json(out / "vitals_run.json", _vitals_run_payload(bundle, scorecard))
     _write_json(out / "vitals_scorecard.json", scorecard)
+    if not company_learning_evaluation:
+        company_learning_evaluation = {
+            "available": False,
+            "status": "not_observed",
+            "proof_gaps": _json_list(
+                _json_obj(scorecard.get("company_physics")).get("proof_gaps")
+            ),
+        }
+    _write_json(
+        out / "company_learning_evaluation.json",
+        company_learning_evaluation,
+    )
+    evidence_manifest_path = out / "company_learning_evidence_manifest.json"
+    evidence_manifest = _json_obj(
+        company_learning_evaluation.get("evidence_manifest")
+    )
+    if evidence_manifest:
+        _write_json(
+            evidence_manifest_path,
+            evidence_manifest,
+        )
+    else:
+        evidence_manifest_path.unlink(missing_ok=True)
     _write_json(out / "db_trace_summary.json", db_summary)
     _write_json(out / "graph_coherence.json", graph_coherence)
     _write_json(out / "proof_gaps.json", {"proof_gaps": scorecard["proof_gaps"]})
@@ -368,14 +438,439 @@ async def collect_db_trace_for_report_dir(
 
     conn = await asyncpg.connect(database_url)
     try:
-        trace = await _collect_db_trace(
-            conn,
-            tenant_id=str(selected_tenant_id),
-            observation_ids=observation_ids,
-        )
+        async with conn.transaction(isolation="repeatable_read", readonly=True):
+            trace = await _collect_db_trace(
+                conn,
+                tenant_id=str(selected_tenant_id),
+                observation_ids=observation_ids,
+            )
+            trace["company_learning_evaluation"] = (
+                await _collect_company_learning_evaluation(
+                    conn,
+                    report_path=report_path,
+                    bundle=bundle,
+                    tenant_id=UUID(str(selected_tenant_id)),
+                    observation_ids=tuple(UUID(value) for value in observation_ids),
+                )
+            )
     finally:
         await conn.close()
     return trace
+
+
+async def _collect_company_learning_evaluation(
+    conn: Any,
+    *,
+    report_path: Path,
+    bundle: dict[str, Any],
+    tenant_id: UUID,
+    observation_ids: tuple[UUID, ...],
+) -> dict[str, Any]:
+    required_tables = (
+        "observations",
+        "interpretation_context_heads",
+        "interpretation_context_snapshots",
+        "conversation_context_candidate_records",
+        "entity_mention_detection_heads",
+        "entity_mention_detections",
+        "entity_grounding_work_items",
+        "grounding_traces",
+        "entity_candidate_generation_requests",
+        "entity_candidate_sets",
+        "resolution_assessments",
+        "grounding_admission_decisions",
+        "source_semantic_interpretations",
+        "source_semantic_admission_decisions",
+        "models",
+        "agency_command_results",
+        "agency_canonical_events",
+        "agency_outbox_records",
+        "clarification_requests",
+        "entity_aliases",
+        "entity_review_queue",
+    )
+    missing = [
+        table for table in required_tables if not await _table_exists(conn, table)
+    ]
+    if missing:
+        return {
+            "available": False,
+            "status": "unavailable",
+            "error": "required_tables_missing",
+            "missing_tables": missing,
+            "proof_gaps": [
+                "Company-physics evaluators were unavailable because required "
+                "tables are missing: " + ", ".join(missing)
+            ],
+        }
+    bounds = await conn.fetchrow(
+        """
+        SELECT count(*) AS matched_count,
+               min(occurred_at) AS start_at,
+               max(occurred_at) AS end_at
+        FROM observations
+        WHERE tenant_id=$1 AND id=ANY($2::uuid[])
+        """,
+        tenant_id,
+        list(observation_ids),
+    )
+    if (
+        bounds is None
+        or int(bounds["matched_count"] or 0) != len(observation_ids)
+        or bounds["start_at"] is None
+        or bounds["end_at"] is None
+    ):
+        return {
+            "available": False,
+            "status": "unavailable",
+            "error": "observation_population_incomplete",
+            "proof_gaps": [
+                "The selected tenant does not contain the complete manifest "
+                "observation population."
+            ],
+        }
+    run_id = _company_learning_run_id(bundle, report_path=report_path)
+    snapshot_started_at = await conn.fetchval("SELECT transaction_timestamp()")
+    evaluation_cutoff = max(
+        snapshot_started_at,
+        bounds["end_at"] + timedelta(microseconds=1),
+    )
+    try:
+        state = await evaluate_company_learning_state(
+            conn,
+            scope=CompanyLearningEvaluationScope(
+                tenant_id=tenant_id,
+                observation_ids=observation_ids,
+                start=bounds["start_at"] - timedelta(microseconds=1),
+                end=evaluation_cutoff,
+                run_id=run_id,
+            ),
+            artifact_refs=(f"report-directory:{report_path}",),
+        )
+        registry = load_architecture_registry(DEFAULT_ARCHITECTURE_REGISTRY)
+        manifest = build_company_learning_evidence_manifest(
+            state,
+            registry=registry,
+            system_version=_company_learning_system_version(bundle),
+            experiment_manifest_ref=_company_learning_experiment_manifest_ref(
+                bundle,
+                run_id=run_id,
+            ),
+            executed_scenario_ids=_executed_scenario_ids(bundle),
+        )
+        proof = compile_invariant_proof_matrix(
+            registry,
+            run_id=run_id,
+            evidence=manifest.evidence,
+        )
+        assurance_status = company_learning_assurance_status(state, proof)
+    except Exception as exc:  # noqa: BLE001 - best-effort old-report rerender
+        return {
+            "available": False,
+            "status": "unavailable",
+            "error": type(exc).__name__,
+            "detail": str(exc)[:1000],
+            "proof_gaps": [
+                "Company-physics evaluation failed without invalidating the "
+                "artifact-only vitals rerender."
+            ],
+        }
+    return {
+        "available": True,
+        "status": assurance_status,
+        "observed_slice_health": state.observed_slice_health,
+        "evaluation_cutoff": evaluation_cutoff.isoformat(),
+        "state": state.model_dump(mode="json"),
+        "evidence_manifest": manifest.model_dump(mode="json"),
+        "invariant_proof": proof.model_dump(mode="json"),
+    }
+
+
+def _company_learning_evaluation_for_report(
+    report_path: Path,
+    *,
+    bundle: dict[str, Any],
+    db_trace: dict[str, Any] | None,
+    persisted_path: Path | None = None,
+) -> dict[str, Any]:
+    live = _json_obj(
+        _json_obj(db_trace).get("company_learning_evaluation")
+    )
+    if live:
+        return live
+    persisted = _read_json(
+        persisted_path
+        or report_path / "vitals" / "company_learning_evaluation.json"
+    )
+    if not persisted or persisted.get("available") is not True:
+        return persisted
+    try:
+        registry = load_architecture_registry(DEFAULT_ARCHITECTURE_REGISTRY)
+        state = CompanyLearningEvaluationState.model_validate(
+            persisted.get("state")
+        )
+        manifest = InvariantEvidenceManifest.model_validate(
+            persisted.get("evidence_manifest")
+        )
+        expected_run_id = _company_learning_run_id(
+            bundle,
+            report_path=report_path,
+        )
+        if state.scope.run_id != expected_run_id or manifest.run_id != expected_run_id:
+            raise ValueError("persisted company-learning run identity mismatch")
+        if manifest.architecture_digest != registry.digest:
+            raise ValueError("persisted architecture digest is stale")
+        if manifest.system_version != _company_learning_system_version(bundle):
+            raise ValueError("persisted system version does not match report")
+        expected_experiment = _company_learning_experiment_manifest_ref(
+            bundle,
+            run_id=expected_run_id,
+        )
+        if manifest.experiment_manifest_ref != expected_experiment:
+            raise ValueError("persisted experiment manifest does not match report")
+        evidence_ids = {row.invariant_id for row in manifest.evidence}
+        if evidence_ids != ACTIVE_COMPANY_LEARNING_INVARIANT_IDS:
+            raise ValueError("persisted active invariant population is incomplete")
+        report_observation_ids = _company_learning_manifest_observation_ids(bundle)
+        if set(state.scope.observation_ids) != report_observation_ids:
+            raise ValueError("persisted observation population does not match report")
+        expected_tenant = _coerce_uuid(
+            _json_obj(bundle.get("run_summary")).get("tenant_id")
+            or _json_obj(bundle.get("benchmark_summary")).get("tenant_id")
+            or _json_obj(bundle.get("storyline_scores")).get("tenant_id")
+        )
+        if expected_tenant is None or state.scope.tenant_id != expected_tenant:
+            raise ValueError("persisted tenant identity does not match report")
+        cutoff = datetime.fromisoformat(
+            str(persisted.get("evaluation_cutoff")).replace("Z", "+00:00")
+        )
+        if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+            raise ValueError("persisted evaluation cutoff is not timezone-aware")
+        proof = compile_invariant_proof_matrix(
+            registry,
+            run_id=expected_run_id,
+            evidence=manifest.evidence,
+        )
+        return {
+            **persisted,
+            "status": company_learning_assurance_status(state, proof),
+            "observed_slice_health": state.observed_slice_health,
+            "state": state.model_dump(mode="json"),
+            "evidence_manifest": manifest.model_dump(mode="json"),
+            "invariant_proof": proof.model_dump(mode="json"),
+        }
+    except Exception as exc:  # noqa: BLE001 - fail closed on persisted proof
+        return {
+            "available": False,
+            "status": "unavailable",
+            "error": "persisted_evaluation_invalid",
+            "detail": f"{type(exc).__name__}: {str(exc)[:500]}",
+            "proof_gaps": [
+                "Saved company-learning evidence failed identity, schema or "
+                "architecture-proof validation and was not reused."
+            ],
+        }
+
+
+def _company_learning_run_id(
+    bundle: dict[str, Any],
+    *,
+    report_path: Path,
+) -> str:
+    benchmark = _json_obj(bundle.get("benchmark_summary")) or _json_obj(
+        bundle.get("storyline_scores")
+    )
+    run_summary = _json_obj(bundle.get("run_summary"))
+    return str(
+        run_summary.get("run_id")
+        or benchmark.get("run_id")
+        or report_path.name
+    )
+
+
+def _company_learning_manifest_observation_ids(
+    bundle: dict[str, Any],
+) -> set[UUID]:
+    return {
+        value
+        for row in _json_list(bundle.get("signal_manifest"))
+        if isinstance(row, dict)
+        and (value := _coerce_uuid(row.get("observation_id"))) is not None
+    }
+
+
+def _company_learning_system_version(bundle: dict[str, Any]) -> str:
+    for source in (
+        _json_obj(bundle.get("run_config")),
+        _json_obj(bundle.get("run_summary")),
+        _json_obj(bundle.get("benchmark_summary")),
+        _json_obj(bundle.get("storyline_scores")),
+    ):
+        for key in (
+            "system_version",
+            "git_commit",
+            "commit_sha",
+            "revision",
+            "image_digest",
+        ):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return "unreported-system-version"
+
+
+def _company_learning_experiment_manifest_ref(
+    bundle: dict[str, Any],
+    *,
+    run_id: str,
+) -> str:
+    digest = canonical_sha256(
+        {
+            "run_id": run_id,
+            "run_config": _json_obj(bundle.get("run_config")),
+            "planned_signals": _json_list(bundle.get("planned_signals")),
+            "signal_manifest": _json_list(bundle.get("signal_manifest")),
+        }
+    )
+    return f"company-learning-experiment:sha256:{digest}"
+
+
+def _executed_scenario_ids(bundle: dict[str, Any]) -> frozenset[str]:
+    scenario_ids: set[str] = set()
+    for source in (
+        _json_obj(bundle.get("run_config")),
+        _json_obj(bundle.get("run_summary")),
+        _json_obj(bundle.get("benchmark_summary")),
+        _json_obj(bundle.get("storyline_scores")),
+    ):
+        for key in ("executed_scenario_ids", "scenario_ids"):
+            scenario_ids.update(
+                str(item)
+                for item in _json_list(source.get(key))
+                if str(item).strip()
+            )
+    return frozenset(scenario_ids)
+
+
+def _active_company_learning_proof_summary(
+    proof: dict[str, Any],
+) -> dict[str, Any]:
+    records = [
+        row
+        for row in _json_list(proof.get("records"))
+        if isinstance(row, dict)
+        and str(row.get("invariant_id")) in ACTIVE_COMPANY_LEARNING_INVARIANT_IDS
+    ]
+    return {
+        "architecture_digest": proof.get("architecture_digest"),
+        "active_invariant_count": len(records),
+        "state_counts": dict(
+            sorted(
+                {
+                    state: sum(
+                        str(row.get("substantiation_state")) == state
+                        for row in records
+                    )
+                    for state in {
+                        str(row.get("substantiation_state"))
+                        for row in records
+                    }
+                }.items()
+            )
+        ),
+        "confirmed_incident_count": sum(
+            _as_int(row.get("confirmed_incident_count"))
+            for row in records
+        ),
+        "violation_count": sum(
+            _as_int(row.get("violation_count"))
+            for row in records
+        ),
+        "records": records,
+    }
+
+
+def _company_physics_section(
+    evaluation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    evaluation = _json_obj(evaluation)
+    state = _json_obj(evaluation.get("state"))
+    if evaluation.get("available") is not True or not state:
+        gaps = _json_list(evaluation.get("proof_gaps"))
+        if not gaps:
+            gaps = [
+                "DB-backed company-physics evaluation was not collected; "
+                "context, grounding and source-semantic state are unknown."
+            ]
+        return {
+            "status": str(evaluation.get("status") or "not_observed"),
+            "noncompensatory": True,
+            "learning_loop": {},
+            "components": {},
+            "incident_counts": {},
+            "hard_failures": [],
+            "proof_gaps": gaps,
+            "error": evaluation.get("error"),
+        }
+    incidents = _json_obj(state.get("incident_counts"))
+    status = str(evaluation.get("status") or "insufficient")
+    proof_summary = _active_company_learning_proof_summary(
+        _json_obj(evaluation.get("invariant_proof"))
+    )
+    hard_failures = [
+        f"company-physics incident {name}: count={count}"
+        for name, count in incidents.items()
+        if _as_int(count) > 0
+    ]
+    if (
+        status == "contradicted"
+        and not hard_failures
+        and (
+            _as_int(proof_summary.get("confirmed_incident_count")) > 0
+            or _as_int(proof_summary.get("violation_count")) > 0
+        )
+    ):
+        hard_failures.append(
+            "company-physics registered invariant proof is contradicted"
+        )
+    proof_gaps = {
+        str(item)
+        for item in _json_list(state.get("proof_gaps"))
+        if str(item).strip()
+    }
+    for row in _json_list(proof_summary.get("records")):
+        if not isinstance(row, dict):
+            continue
+        invariant_id = str(row.get("invariant_id") or "unknown")
+        proof_gaps.update(
+            f"{invariant_id}: {gap}"
+            for gap in _json_list(row.get("proof_gaps"))
+            if str(gap).strip()
+        )
+    return {
+        "status": status,
+        "observed_slice_health": str(
+            evaluation.get("observed_slice_health")
+            or state.get("observed_slice_health")
+            or "unknown"
+        ),
+        "noncompensatory": True,
+        "evaluation_cutoff": evaluation.get("evaluation_cutoff"),
+        "scope": _json_obj(state.get("scope")),
+        "learning_loop": _json_obj(state.get("learning_loop")),
+        "components": {
+            "conversation_context": _json_obj(
+                state.get("conversation_context")
+            ),
+            "entity_grounding": _json_obj(state.get("entity_grounding")),
+            "source_semantics": _json_obj(state.get("source_semantics")),
+        },
+        "incident_counts": incidents,
+        "hard_failures": hard_failures,
+        "proof_gaps": sorted(proof_gaps),
+        "artifact_refs": _json_list(state.get("artifact_refs")),
+        "invariant_proof": proof_summary,
+    }
 
 
 def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
@@ -408,6 +903,35 @@ def render_vitals_markdown(scorecard: dict[str, Any]) -> str:
                     f"{item.get('vital', 'run')}: {item.get('finding')}"
                 )
         lines.append("")
+
+    company_physics = _json_obj(scorecard.get("company_physics"))
+    lines.extend(
+        [
+            "## Company Physics",
+            "",
+            f"- Status: **{company_physics.get('status', 'not_observed')}**",
+        ]
+    )
+    metrics = _json_obj(company_physics.get("learning_loop"))
+    if metrics:
+        lines.extend(
+            [
+                (
+                    "- Governed alias replay: "
+                    f"{metrics.get('governed_alias_replays_resolved')}/"
+                    f"{metrics.get('governed_alias_replay_exposures')}"
+                ),
+                (
+                    "- Grounding to interpretation: "
+                    f"{_fmt_score(metrics.get('grounding_to_interpretation_coverage'))}"
+                ),
+                (
+                    "- Exactly-one-Model rate: "
+                    f"{_fmt_score(metrics.get('one_model_cardinality_rate'))}"
+                ),
+            ]
+        )
+    lines.append("")
 
     lines.extend(
         [
@@ -3665,6 +4189,7 @@ def _trace_summary(db_trace: dict[str, Any] | None) -> dict[str, Any]:
     if not db_trace:
         return {"available": False}
     summary = _json_obj(db_trace.get("summary"))
+    company_learning = _json_obj(db_trace.get("company_learning_evaluation"))
     return {
         "available": bool(db_trace.get("available")),
         "tenant_id": db_trace.get("tenant_id"),
@@ -3672,6 +4197,8 @@ def _trace_summary(db_trace: dict[str, Any] | None) -> dict[str, Any]:
         "summary": summary,
         "table_presence": _json_obj(db_trace.get("table_presence")),
         "error": db_trace.get("error"),
+        "company_physics_status": company_learning.get("status"),
+        "company_physics_available": company_learning.get("available") is True,
     }
 
 

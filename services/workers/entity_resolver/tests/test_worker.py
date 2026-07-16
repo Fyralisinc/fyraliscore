@@ -11,16 +11,25 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import UUID
 
 import asyncpg
 import pytest
 
+from lib.architecture_registry import load_architecture_registry
 from lib.llm.provider import LLMConfig, LLMProvider
 from lib.evaluation.entity_grounding import (
     GroundingEvaluationScope,
     evaluate_entity_grounding_state,
 )
+from lib.evaluation.company_learning import (
+    CompanyLearningEvaluationScope,
+    build_company_learning_evidence_manifest,
+    company_learning_assurance_status,
+    evaluate_company_learning_state,
+)
+from lib.evaluation.proof import compile_invariant_proof_matrix
 from lib.embeddings.ollama import EMBEDDING_DIM
 from lib.shared.ids import uuid7
 from services.app.gateway.clarifications_router import (
@@ -874,11 +883,11 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
             """
             UPDATE observations
             SET embedding=$1::vector, embedding_pending=FALSE
-            WHERE tenant_id=$2 AND id=$3
+            WHERE tenant_id=$2 AND id=ANY($3::uuid[])
             """,
             json.dumps([0.01] * EMBEDDING_DIM),
             tenant_id,
-            second_observation_id,
+            [first_observation_id, second_observation_id],
         )
     replay_context = await build_context(
         pool=resolver_db,
@@ -900,7 +909,42 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
         pool=resolver_db,
         worker_id=f"pytest:governed-alias-replay:{tenant_id}",
     )
-    assert await semantic_worker.process_batch(limit=100) == 1
+    assert await semantic_worker.process_batch(limit=100) == 3
+    unrelated_observation_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="UNRELATED is noisy",
+        unresolved_phrases=["UNRELATED"],
+    )
+    await EntityAliasRepo(resolver_db).insert_alias(
+        phrase="UNRELATED",
+        resolved_entity_ref={"type": "customer", "id": str(customer_id)},
+        source="resolver_worker",
+        confidence=0.51,
+        tenant_id=tenant_id,
+        source_event_id=unrelated_observation_id,
+    )
+    async with resolver_db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO observations (
+                id, tenant_id, occurred_at, kind, source_channel,
+                content, content_text, trust_tier, cause_id
+            ) VALUES (
+                $1, $2, now(), 'state_change', 'internal:state_change',
+                $3::jsonb, 'unrelated resolver state', 'authoritative', $4
+            )
+            """,
+            uuid7(),
+            tenant_id,
+            json.dumps(
+                {
+                    "_state_change_kind": "entity_late_resolution",
+                    "source_observation_id": str(unrelated_observation_id),
+                }
+            ),
+            unrelated_observation_id,
+        )
 
     async with resolver_db.acquire() as conn:
         alias = await conn.fetchrow(
@@ -961,6 +1005,49 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
             ),
             artifact_refs=("pytest://clarification-corrective-memory",),
         )
+        company_learning = await evaluate_company_learning_state(
+            conn,
+            scope=CompanyLearningEvaluationScope(
+                tenant_id=tenant_id,
+                observation_ids=(
+                    first_observation_id,
+                    second_observation_id,
+                ),
+                start=scope_start,
+                end=datetime.now(timezone.utc) + timedelta(seconds=1),
+                run_id="governed-alias-replay-company-learning",
+            ),
+            artifact_refs=(
+                "pytest://governed-alias-replay-company-learning",
+            ),
+        )
+        self_authoritative_observation_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM observations
+            WHERE tenant_id=$1
+              AND source_channel='internal:state_change'
+              AND content ->> '_state_change_kind'='entity_late_resolution'
+              AND content ->> 'source_observation_id'=ANY($2::text[])
+            """,
+            tenant_id,
+            [str(first_observation_id), str(second_observation_id)],
+        )
+
+    registry = load_architecture_registry(
+        Path(__file__).resolve().parents[4] / "architecture" / "registry.yaml"
+    )
+    evidence_manifest = build_company_learning_evidence_manifest(
+        company_learning,
+        registry=registry,
+        system_version="pytest-governed-alias-replay",
+        experiment_manifest_ref="pytest://governed-alias-replay",
+    )
+    invariant_proof = compile_invariant_proof_matrix(
+        registry,
+        run_id=company_learning.scope.run_id,
+        evidence=evidence_manifest.evidence,
+    )
 
     assert alias is not None
     metadata = alias["entity_metadata"]
@@ -994,7 +1081,9 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     if isinstance(trace_payload, str):
         trace_payload = json.loads(trace_payload)
     assert trace_payload["model_output_is_evidence"] is False
+    assert await _fetch_obs_entities(resolver_db, first_observation_id) == []
     assert await _fetch_obs_entities(resolver_db, second_observation_id) == []
+    assert self_authoritative_observation_count == 0
     assert replay_model is not None
     assert replay_model["born_from_event_id"] == second_observation_id
     assert replay_model["semantic_work_status"] == "belief_applied"
@@ -1015,6 +1104,27 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     assert evaluation.alias_replay_llm_avoided_count == 1
     assert evaluation.unsafe_alias_replay_count == 0
     assert evaluation.contextual_alias_replay_count == 0
+    assert company_learning.status == "insufficient"
+    assert company_learning.observed_slice_health == "healthy"
+    assert company_learning.violation_count == 0
+    assert company_learning.entity_grounding.resolver_created_alias_count == 0
+    assert (
+        company_learning.entity_grounding.self_authoritative_observation_count
+        == 0
+    )
+    assert evidence_manifest.run_id == company_learning.scope.run_id
+    assert len(evidence_manifest.evidence) == 9
+    assert (
+        company_learning_assurance_status(company_learning, invariant_proof)
+        == "insufficient"
+    )
+    assert company_learning.learning_loop[
+        "governed_alias_replay_resolution_rate"
+    ] == 1.0
+    assert company_learning.learning_loop[
+        "grounding_to_interpretation_coverage"
+    ] == 1.0
+    assert company_learning.learning_loop["one_model_cardinality_rate"] == 1.0
 
     # A contradictory source-native hint defeats deterministic alias replay.
     # The adjudicated alias remains an authorized candidate, but the resolver

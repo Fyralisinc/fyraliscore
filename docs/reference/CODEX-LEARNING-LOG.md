@@ -51,6 +51,29 @@ claims that were not checked against code or artifacts.
 
 ## Durable Lessons
 
+### 2026-07-16 - Correction and evaluation must preserve their truth boundaries
+
+- Context: Closing the clarification-to-replay company-learning loop and folding
+  its proof into Company Vitals.
+- Symptom: A clean replay test was contradicted because clarification acceptance
+  still rewrote the original Observation and emitted an authoritative
+  resolver-authored Observation. Separately, a recorded evaluator cutoff did
+  not initially bind all component queries to one database snapshot.
+- Cause: Legacy convenience writes blurred source evidence with downstream
+  annotation, while independently executed read-committed queries blurred a
+  report timestamp with an actual reproducible evaluation state.
+- Lesson: Human or model correction must advance immutable annotation and
+  canonical-belief generations without rewriting source evidence or re-entering
+  perception as authority. Multi-component proof collection must use one
+  repeatable-read snapshot, and persisted proof must be schema-, identity-,
+  population- and architecture-digest-validated before rerender reuse.
+- Evidence: `services/app/gateway/clarifications_router.py`;
+  `lib/evaluation/company_learning.py`; `scripts/company_vitals.py`;
+  `services/workers/entity_resolver/tests/test_worker.py`;
+  `tests/unit/test_company_vitals.py`.
+- Status: Landed in the autonomous-company-learning branch; general
+  bitemporal as-of reconstruction remains follow-up work.
+
 ### 2026-07-01 - Make agent learning explicit
 
 - Context: Future Codex runs need repo-local memory of failed runs and hard-won

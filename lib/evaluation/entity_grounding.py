@@ -48,6 +48,7 @@ class GroundingEvaluationScope(_GroundingEvaluationModel):
     observation_start: datetime
     observation_end: datetime
     run_id: str = Field(min_length=1)
+    observation_ids: tuple[UUID, ...] = ()
 
     @field_validator("observation_start", "observation_end")
     @classmethod
@@ -305,11 +306,16 @@ async def evaluate_entity_grounding_state(
         WHERE tenant_id = $1
           AND occurred_at >= $2
           AND occurred_at < $3
+          AND (
+            cardinality($4::uuid[]) = 0
+            OR id = ANY($4::uuid[])
+          )
         ORDER BY occurred_at, id
         """,
         scope.tenant_id,
         scope.observation_start,
         scope.observation_end,
+        list(scope.observation_ids),
     )
     observation_ids = [row["id"] for row in observations]
     if observation_ids:
@@ -451,10 +457,15 @@ async def evaluate_entity_grounding_state(
         WHERE tenant_id = $1
           AND first_seen_at >= $2 AND first_seen_at < $3
           AND entity_metadata ->> 'source' = 'resolver_worker'
+          AND (
+            cardinality($4::uuid[]) = 0
+            OR source_event_id = ANY($4::uuid[])
+          )
         """,
         scope.tenant_id,
         scope.observation_start,
         scope.observation_end,
+        list(scope.observation_ids),
     ) or 0
     self_observations = await conn.fetchval(
         """
@@ -463,10 +474,16 @@ async def evaluate_entity_grounding_state(
           AND occurred_at >= $2 AND occurred_at < $3
           AND source_channel = 'internal:state_change'
           AND content ->> '_state_change_kind' = 'entity_late_resolution'
+          AND (
+            cardinality($4::uuid[]) = 0
+            OR content ->> 'source_observation_id' = ANY($5::text[])
+          )
         """,
         scope.tenant_id,
         scope.observation_start,
         scope.observation_end,
+        list(scope.observation_ids),
+        [str(value) for value in scope.observation_ids],
     ) or 0
     corrective_memory = await conn.fetchrow(
         """
@@ -477,6 +494,10 @@ async def evaluate_entity_grounding_state(
             AND kind = 'entity_resolution'
             AND status = 'answered'
             AND answered_at >= $2 AND answered_at < $3
+            AND (
+              cardinality($4::uuid[]) = 0
+              OR source_observation_id = ANY($4::uuid[])
+            )
         ),
         adjudicated_aliases AS (
           SELECT a.*, answered.id AS clarification_request_id,
@@ -522,6 +543,10 @@ async def evaluate_entity_grounding_state(
                 AND trace.phrase = alias.alias_text
                 AND trace.created_at > alias.answered_at
                 AND trace.source_observation_id <> alias.clarified_observation_id
+                AND (
+                  cardinality($4::uuid[]) = 0
+                  OR trace.source_observation_id = ANY($4::uuid[])
+                )
                 AND COALESCE(trace.trace ->> 'adjudication_ref', '')
                     <> 'clarification-request:' || alias.clarification_request_id::text
                 AND trace.current_fate = 'resolved_for_consumer'
@@ -535,6 +560,7 @@ async def evaluate_entity_grounding_state(
         scope.tenant_id,
         scope.observation_start,
         scope.observation_end,
+        list(scope.observation_ids),
     )
     return analyze_entity_grounding_rows(
         scope=scope,

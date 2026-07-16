@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
+
+import pytest
 
 from scripts.company_vitals import (
+    _collect_company_learning_evaluation,
     apply_db_trace_to_signal_rows,
     build_vitals_from_report_dir,
     write_vitals_artifacts,
@@ -25,6 +29,7 @@ def test_company_vitals_writes_artifacts_from_e2e_report(tmp_path: Path) -> None
     assert (result.output_dir / "retrieval_outcome_learning.jsonl").exists()
     assert (result.output_dir / "latent_gap_candidates.jsonl").exists()
     assert (result.output_dir / "graph_coherence.json").exists()
+    assert (result.output_dir / "company_learning_evaluation.json").exists()
 
     scorecard = json.loads((result.output_dir / "vitals_scorecard.json").read_text())
     assert scorecard["status"] == "ok"
@@ -32,6 +37,8 @@ def test_company_vitals_writes_artifacts_from_e2e_report(tmp_path: Path) -> None
     assert scorecard["vitals"]["control_plane_health"]["score"] == 1.0
     assert scorecard["vitals"]["retrieval_roi"]["metrics"]["useful_context_ratio"] == 0.75
     assert scorecard["vitals"]["authority_safety"]["status"] == "not_observed"
+    assert scorecard["company_physics"]["status"] == "not_observed"
+    assert scorecard["company_physics"]["noncompensatory"] is True
 
     signal_rows = [
         json.loads(line)
@@ -50,6 +57,224 @@ def test_company_vitals_reports_hard_gate_failure(tmp_path: Path) -> None:
     assert scorecard["status"] == "fail"
     assert any("trigger queue did not drain" in item for item in scorecard["hard_failures"])
     assert scorecard["vitals"]["control_plane_health"]["status"] == "watch"
+
+
+def test_company_physics_is_precise_and_does_not_change_overall_score(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    baseline = build_vitals_from_report_dir(report_dir)
+    db_trace = {
+        "available": True,
+        "tenant_id": "tenant-1",
+        "observation_count": 2,
+        "by_observation": {},
+        "company_learning_evaluation": {
+            "available": True,
+            "status": "substantiated",
+            "state": {
+                "status": "substantiated",
+                "scope": {
+                    "run_id": "synthetic-vitals",
+                    "tenant_id": "tenant-1",
+                },
+                "learning_loop": {
+                    "governed_alias_replay_exposures": 2,
+                    "governed_alias_replays_resolved": 2,
+                    "governed_alias_replay_resolution_rate": 1.0,
+                    "grounding_to_interpretation_coverage": 1.0,
+                    "one_model_cardinality_rate": 1.0,
+                },
+                "conversation_context": {"selection_count": 2},
+                "entity_grounding": {"alias_replay_exposure_count": 2},
+                "source_semantics": {"eligible_grounding_count": 2},
+                "incident_counts": {},
+                "proof_gaps": [],
+                "artifact_refs": ["pytest://company-physics"],
+            },
+        },
+    }
+
+    scorecard = build_vitals_from_report_dir(report_dir, db_trace=db_trace)
+
+    assert scorecard["vitals"].keys() == baseline["vitals"].keys()
+    assert scorecard["overall_score"] == baseline["overall_score"]
+    assert scorecard["scored_vitals"] == baseline["scored_vitals"]
+    assert scorecard["total_vitals"] == baseline["total_vitals"]
+    assert scorecard["score_coverage"] == baseline["score_coverage"]
+    assert "company_physics" not in scorecard["vitals"]
+    assert scorecard["company_physics"]["status"] == "substantiated"
+    assert scorecard["company_physics"]["learning_loop"][
+        "governed_alias_replay_resolution_rate"
+    ] == 1.0
+    assert scorecard["company_physics"]["components"]["entity_grounding"][
+        "alias_replay_exposure_count"
+    ] == 2
+
+
+def test_company_physics_incidents_are_noncompensatory_hard_failures(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    db_trace = {
+        "available": True,
+        "by_observation": {},
+        "company_learning_evaluation": {
+            "available": True,
+            "status": "contradicted",
+            "state": {
+                "status": "contradicted",
+                "scope": {"run_id": "synthetic-vitals"},
+                "learning_loop": {},
+                "conversation_context": {},
+                "entity_grounding": {},
+                "source_semantics": {},
+                "incident_counts": {
+                    "entity_grounding.unsafe_governed_alias_replay": 1
+                },
+                "proof_gaps": [],
+                "artifact_refs": ["pytest://company-physics-incident"],
+            },
+        },
+    }
+
+    scorecard = build_vitals_from_report_dir(report_dir, db_trace=db_trace)
+
+    assert scorecard["status"] == "fail"
+    assert any(
+        "unsafe_governed_alias_replay" in failure
+        for failure in scorecard["hard_failures"]
+    )
+
+
+def test_artifact_only_rerender_rejects_invalid_saved_company_learning_evidence(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    db_trace = {
+        "available": True,
+        "by_observation": {},
+        "company_learning_evaluation": {
+            "available": True,
+            "status": "insufficient",
+            "observed_slice_health": "healthy",
+            "evaluation_cutoff": "2026-07-16T01:00:00+00:00",
+            "state": {
+                "status": "insufficient",
+                "observed_slice_health": "healthy",
+                "scope": {"run_id": "synthetic-vitals"},
+                "learning_loop": {
+                    "governed_alias_replay_exposures": 1,
+                    "governed_alias_replays_resolved": 1,
+                },
+                "conversation_context": {"selection_count": 1},
+                "entity_grounding": {"alias_replay_exposure_count": 1},
+                "source_semantics": {"eligible_grounding_count": 1},
+                "incident_counts": {},
+                "proof_gaps": ["E4 scenarios remain unexecuted."],
+                "artifact_refs": ["pytest://frozen-company-learning"],
+            },
+            "evidence_manifest": {
+                "manifest_version": "company-learning-evidence-v1",
+                "run_id": "synthetic-vitals",
+            },
+            "invariant_proof": {"records": []},
+        },
+    }
+
+    first = write_vitals_artifacts(report_dir, db_trace=db_trace)
+    assert (
+        first.output_dir / "company_learning_evidence_manifest.json"
+    ).exists()
+    second = write_vitals_artifacts(report_dir)
+    rerendered = json.loads(
+        (second.output_dir / "company_learning_evaluation.json").read_text()
+    )
+
+    assert rerendered["available"] is False
+    assert rerendered["status"] == "unavailable"
+    assert rerendered["error"] == "persisted_evaluation_invalid"
+    assert second.scorecard["company_physics"]["status"] == "unavailable"
+    assert not (
+        second.output_dir / "company_learning_evidence_manifest.json"
+    ).exists()
+
+
+def test_custom_output_dir_is_the_persisted_evaluation_source(
+    tmp_path: Path,
+) -> None:
+    report_dir = _write_report_dir(tmp_path)
+    output_dir = tmp_path / "custom-vitals"
+    unavailable = {
+        "available": False,
+        "status": "unavailable",
+        "error": "sealed-test-unavailable",
+        "proof_gaps": ["custom output marker"],
+    }
+
+    write_vitals_artifacts(
+        report_dir,
+        output_dir=output_dir,
+        db_trace={
+            "available": True,
+            "by_observation": {},
+            "company_learning_evaluation": unavailable,
+        },
+    )
+    rerender = write_vitals_artifacts(
+        report_dir,
+        output_dir=output_dir,
+    )
+
+    persisted = json.loads(
+        (output_dir / "company_learning_evaluation.json").read_text()
+    )
+    assert persisted == unavailable
+    assert rerender.scorecard["company_physics"]["error"] == (
+        "sealed-test-unavailable"
+    )
+    assert "custom output marker" in rerender.scorecard["proof_gaps"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing_table",
+    (
+        "entity_review_queue",
+        "agency_command_results",
+        "agency_canonical_events",
+        "agency_outbox_records",
+        "entity_aliases",
+        "clarification_requests",
+    ),
+)
+async def test_company_learning_preflight_reports_each_required_table(
+    tmp_path: Path,
+    monkeypatch,
+    missing_table: str,
+) -> None:
+    async def table_exists(_conn, table: str) -> bool:
+        return table != missing_table
+
+    monkeypatch.setattr("scripts.company_vitals._table_exists", table_exists)
+
+    result = await _collect_company_learning_evaluation(
+        object(),
+        report_path=tmp_path,
+        bundle={
+            "benchmark_summary": {},
+            "storyline_scores": {},
+            "run_summary": {"run_id": "preflight-run"},
+            "run_config": {},
+        },
+        tenant_id=uuid4(),
+        observation_ids=(uuid4(),),
+    )
+
+    assert result["available"] is False
+    assert result["status"] == "unavailable"
+    assert result["error"] == "required_tables_missing"
+    assert result["missing_tables"] == [missing_table]
 
 
 def test_company_vitals_projection_metabolism_flags_missing_entity_surfaces(

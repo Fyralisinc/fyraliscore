@@ -71,6 +71,7 @@ class SourceSemanticEvaluationScope(_EvaluationModel):
     start: datetime
     end: datetime
     run_id: str = Field(min_length=1)
+    observation_ids: tuple[UUID, ...] = ()
 
     @model_validator(mode="after")
     def valid_window(self) -> Self:
@@ -513,11 +514,16 @@ async def evaluate_source_semantic_state(
           ON m.tenant_id=ssad.tenant_id AND m.id=ssad.admitted_model_id
         WHERE gt.tenant_id=$1
           AND o.occurred_at >= $2 AND o.occurred_at < $3
+          AND (
+            cardinality($4::uuid[]) = 0
+            OR gt.source_observation_id = ANY($4::uuid[])
+          )
         ORDER BY o.occurred_at, gt.id
         """,
         scope.tenant_id,
         scope.start,
         scope.end,
+        list(scope.observation_ids),
     )
     return analyze_source_semantic_rows(
         scope=scope,

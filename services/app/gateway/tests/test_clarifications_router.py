@@ -351,8 +351,8 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
     assert semantic_work_calls[0]["tenant_id"] == tenant_id
     assert semantic_work_calls[0]["grounding_trace_id"] == successor_trace_id
     assert any("UPDATE entity_review_queue" in query for query, _args in conn.executed)
-    assert any("UPDATE observations" in query for query, _args in conn.executed)
-    assert any("INSERT INTO observations" in query for query, _args in conn.executed)
+    assert not any("UPDATE observations" in query for query, _args in conn.executed)
+    assert not any("INSERT INTO observations" in query for query, _args in conn.executed)
 
 
 def test_entity_resolution_cannot_accept_an_unreviewed_canonical_ref() -> None:

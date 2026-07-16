@@ -123,6 +123,12 @@ async def resolver_db() -> AsyncGenerator[asyncpg.Pool, None]:
             pool.terminate()
 
 
-@pytest.fixture
-def tenant_id() -> UUID:
-    return uuid7()
+@pytest_asyncio.fixture
+async def tenant_id(resolver_db: asyncpg.Pool) -> UUID:
+    tenant_id = uuid7()
+    async with resolver_db.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO tenants (id) VALUES ($1) ON CONFLICT DO NOTHING",
+            tenant_id,
+        )
+    return tenant_id

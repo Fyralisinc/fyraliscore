@@ -481,20 +481,6 @@ async def _finalize_entity_resolution(
         chosen_ref=canonical_ref,
     )
     if observation_id is not None:
-        await _append_entity_to_observation(
-            conn,
-            tenant_id=tenant_id,
-            observation_id=observation_id,
-            entity_ref=canonical_ref,
-        )
-        await _emit_entity_resolution_state_change(
-            conn,
-            tenant_id=tenant_id,
-            observation_id=observation_id,
-            phrase=phrase,
-            entity_ref=canonical_ref,
-            confidence=confidence,
-        )
         await _maybe_enqueue_entity_resolution_trigger(
             conn,
             tenant_id=tenant_id,
@@ -830,69 +816,6 @@ async def _mark_entity_review_dismissed(
         tenant_id,
         answered_by,
         reason,
-    )
-
-
-async def _append_entity_to_observation(
-    conn: Any,
-    *,
-    tenant_id: UUID,
-    observation_id: UUID,
-    entity_ref: dict[str, Any],
-) -> None:
-    await conn.execute(
-        """
-        UPDATE observations
-        SET entities_mentioned = (
-            CASE
-              WHEN entities_mentioned @> $3::jsonb THEN entities_mentioned
-              ELSE COALESCE(entities_mentioned, '[]'::jsonb) || $3::jsonb
-            END
-        )
-        WHERE id = $1 AND tenant_id = $2
-        """,
-        observation_id,
-        tenant_id,
-        json.dumps([entity_ref], sort_keys=True, default=str),
-    )
-
-
-async def _emit_entity_resolution_state_change(
-    conn: Any,
-    *,
-    tenant_id: UUID,
-    observation_id: UUID,
-    phrase: str,
-    entity_ref: dict[str, Any],
-    confidence: float,
-) -> None:
-    content = {
-        "_state_change_kind": "entity_late_resolution",
-        "phrase": phrase,
-        "entity_ref": entity_ref,
-        "confidence": confidence,
-        "source_observation_id": str(observation_id),
-        "source": "clarification_answer",
-    }
-    content_text = (
-        f"phrase {phrase!r} resolved to type={entity_ref.get('type')} "
-        f"id={entity_ref.get('id')} (conf={confidence:.2f})"
-    )
-    await conn.execute(
-        """
-        INSERT INTO observations (
-          id, tenant_id, occurred_at, kind, source_channel,
-          content, content_text, trust_tier, cause_id
-        ) VALUES (
-          $1, $2, now(), 'state_change', 'internal:state_change',
-          $3::jsonb, $4, 'authoritative', $5
-        )
-        """,
-        uuid7(),
-        tenant_id,
-        json.dumps(content, sort_keys=True, default=str),
-        content_text,
-        observation_id,
     )
 
 

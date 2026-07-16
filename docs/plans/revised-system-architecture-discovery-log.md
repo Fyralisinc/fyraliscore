@@ -663,6 +663,87 @@ coherent diff.
   regressions, correction propagation, temporal/authority integrity and
   explicit human control over consequential actions.
 
+### DISC-015 — Human correction is an annotation successor, not new source truth
+
+- **Date:** 2026-07-16
+- **Milestone:** Corrective-memory constitutional boundary
+- **Status:** `accepted`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** Observation, clarification answer path, entity alias,
+  grounding generations, source semantics, Model and correction evaluator
+- **Observation:** The legacy clarification path appended the accepted entity
+  to the original Observation and emitted an authoritative
+  `internal:state_change` Observation describing the resolver's own
+  conclusion. That made a downstream interpretation rewrite source evidence
+  and then re-enter perception as authority.
+- **Working core boundary:** Source Observations remain immutable evidence.
+  Human adjudication records an independently governed alias and creates a new
+  immutable grounding successor linked to the rejected/reviewed predecessor.
+  Source semantics consumes that successor and may write a canonical Model
+  through the normal epistemic admission path. Later signals may reuse the
+  governed alias, but neither the original signal nor a synthetic resolver
+  assertion becomes source truth.
+- **Implementation evidence:** The clarification router no longer updates or
+  inserts Observations for an accepted entity resolution. The real-Postgres
+  correction/replay vertical asserts both source Observations remain unchanged,
+  no `entity_late_resolution` Observation exists, successor semantics closes,
+  and the replayed signal still creates exactly one grounded Model.
+- **Deferred architecture gaps:** The first vertical proves repair of the
+  reviewed source's grounding and semantic consequence. It does not yet prove
+  complete invalidation and repair of every pre-existing Model, graph relation,
+  projection or retrieval artifact that may depend on an incorrect grounding.
+- **Return condition:** Add an evaluator-oracle dependency population and prove
+  generation-aware repair closure for every materially affected canonical and
+  derived dependent without altering historical as-known source evidence.
+
+### DISC-016 — Runtime health and system substantiation are different claims
+
+- **Date:** 2026-07-16
+- **Milestone:** Canonical company-learning evaluation integration
+- **Status:** `accepted`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** conversational-context evaluator, entity-grounding
+  evaluator, source-semantic evaluator, architecture proof compiler, Company
+  Vitals and company-intelligence loop
+- **Observation:** Filtering out unknown component rates allowed a partially
+  exposed run to appear `substantiated`. Separately, component CLIs could each
+  print a mostly empty full invariant matrix, producing several competing
+  readiness views.
+- **Working core boundary:** Exact report Observation IDs define the active
+  evaluation population. The three component evaluators feed one
+  `CompanyLearningEvaluationState` and one
+  `InvariantEvidenceManifest`. Operational closure may be `healthy`,
+  `incomplete`, `contradicted` or `not_observed`; the stronger
+  `substantiated` claim is available only when the registered invariant proof
+  compiler confirms every active company-learning invariant. Company Vitals is
+  the single operator-facing report and company physics remains
+  noncompensatory.
+- **Implementation evidence:** Company Vitals records an explicit evaluation
+  cutoff from one read-only repeatable-read database snapshot, verifies the
+  complete manifest Observation population, preflights every table used by the
+  active evaluators, persists the combined state and evidence manifest, and
+  reports proof gaps without converting missing exposure into success. An
+  artifact-only rerender revalidates the saved state, manifest, report
+  population, tenant, system version, experiment digest and current
+  architecture digest before recomputing assurance.
+- **Deferred architecture gaps:**
+  - Current live DB evaluation is E3 protocol evidence. The registered E4
+    scenario suites and held-out adaptive-versus-frozen comparisons remain to
+    be executed and attached.
+  - Persisted artifacts freeze the report once written, but an explicit DB
+    refresh observes current heads and latest generations. General bitemporal
+    as-of reconstruction for every mutable evaluator input remains future work.
+  - Older benchmark artifacts may not declare an exact system version or
+    executed scenario IDs; the manifest reports these as unreported/empty and
+    therefore cannot support a stronger proof claim.
+  - Focused component CLIs remain useful diagnostics. They are outside the
+    canonical operator path but have not yet been reduced to state-plus-manifest
+    output.
+- **Return condition:** Run sealed E4 simulation suites with registered scenario
+  IDs, frozen system/version manifests and paired adaptive baselines; then use
+  the existing proof compiler to determine whether the active learning
+  invariants become substantiated.
+
 ## Reconciliation Procedure
 
 At a reconciliation milestone:
