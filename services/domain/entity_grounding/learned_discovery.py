@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from lib.observability.metrics import counter, gauge
@@ -82,6 +82,21 @@ class LearnedMention(_Strict):
     entity_type: CompanyEntityType
     confidence: float = Field(ge=0.0, le=1.0)
     abstain: bool
+
+    @field_validator("entity_type", mode="before")
+    @classmethod
+    def normalize_closed_ontology_synonyms(cls, value: Any) -> Any:
+        """Keep one vocabulary miss from invalidating an entire batch.
+
+        ``service`` is a common surface synonym for the canonical company
+        ontology's ``system`` type. Identity remains unresolved and the exact
+        source span is still verified independently; this only normalizes the
+        type vocabulary at the structured boundary.
+        """
+
+        if isinstance(value, str) and value.strip().casefold() == "service":
+            return "system"
+        return value
 
     @model_validator(mode="after")
     def ordered_span(self) -> "LearnedMention":

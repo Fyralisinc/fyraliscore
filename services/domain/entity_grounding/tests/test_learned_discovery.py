@@ -165,6 +165,34 @@ async def test_repeated_surface_with_bad_offsets_remains_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_type_synonym_does_not_discard_otherwise_valid_batch() -> None:
+    signal_id = uuid4()
+    provider = ScriptedProvider(
+        {"mentions": [{
+            "signal_id": str(signal_id),
+            "surface": "Mercury API",
+            "span_start": 0,
+            "span_end": 11,
+            "entity_type": "service",
+            "confidence": 0.96,
+            "abstain": False,
+        }]}
+    )
+
+    result = await discover_batch_mentions(
+        provider=provider,
+        signals=(PersistedSignalText(
+            signal_id, "jira:issue", "Mercury API is degraded."
+        ),),
+    )
+
+    assert result.mode == "learned"
+    assert result.provider_error is None
+    assert result.candidates[0].entity_type == "system"
+    assert result.candidates[0].fate is EntityMentionDetectionFate.DETECTED
+
+
+@pytest.mark.asyncio
 async def test_preflight_marks_structured_provider_ready() -> None:
     await preflight_structured_discovery(PreflightProvider({"ready": True}))
 
