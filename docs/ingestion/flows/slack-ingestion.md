@@ -404,12 +404,16 @@ unwraps the `event` envelope and extracts:
 Two mutation subtypes get special handling
 ([handlers/slack.py:176‑214](../../../services/ingestion/handlers/slack.py#L176-L214)):
 
-- **`message_deleted`** → rejected cleanly (no content to ingest; deletion
-  tracking is out of scope).
+- **`message_deleted`** → an immutable `state_change` tombstone keyed on the
+  deletion event timestamp and linked to the original via
+  `content.original_ts`; the deleted body is not copied into `content_text`.
 - **`message_changed`** → the real text lives in the nested `message` object.
   Since dedup is insert‑only, reusing the original `ts` would silently drop the
   edit, so the edit is keyed on its **own edit timestamp** (`edited_ts`) and
   linked back via `content.original_ts`.
+- **`reaction_added` / `reaction_removed`** → immutable `state_change`
+  evidence keyed on the reaction event timestamp and linked to the target via
+  `content.reaction_item_ts`.
 
 Other system events (channel joins, bot adds, etc.) carry no `text` and are
 rejected with a 400.

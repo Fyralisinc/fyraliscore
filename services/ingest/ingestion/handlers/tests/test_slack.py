@@ -4,8 +4,8 @@ subtype handling.
 DMs and channel messages share the one `slack:message` handler and the
 `external_id="{channel}:{ts}"` dedup key. These tests pin the DM-specific
 behaviour added for per-user-OAuth DM ingestion: channel_type passthrough,
-message_changed captured as a distinct edit signal, and message_deleted
-rejected.
+message_changed captured as a distinct edit signal, and mutation events
+preserved as linked state changes.
 """
 from __future__ import annotations
 
@@ -75,13 +75,44 @@ async def test_message_changed_is_distinct_edit_signal_on_edit_ts():
     assert draft.content["original_ts"] == "1780184162.000102"
 
 
-async def test_message_deleted_is_rejected():
-    with pytest.raises(ValidationError):
-        await handle_slack_message(_cb({
-            "type": "message", "subtype": "message_deleted",
-            "channel": "D9A1E26A14F2", "channel_type": "im",
-            "deleted_ts": "1780184162.000102", "ts": "1780245425.000010",
-        }), {})
+async def test_message_deleted_is_an_immutable_linked_tombstone():
+    draft = await handle_slack_message(_cb({
+        "type": "message", "subtype": "message_deleted",
+        "channel": "D9A1E26A14F2", "channel_type": "im",
+        "deleted_ts": "1780184162.000102",
+        "event_ts": "1780245425.000010",
+        "previous_message": {
+            "user": "U_FRIEND",
+            "text": "deleted source body",
+            "ts": "1780184162.000102",
+        },
+    }), {})
+
+    assert draft.kind == "state_change"
+    assert draft.content_text == "[Slack message deleted]"
+    assert "deleted source body" not in draft.content_text
+    assert draft.external_id == "D9A1E26A14F2:1780245425.000010"
+    assert draft.content["original_ts"] == "1780184162.000102"
+    assert draft.content["tombstone"] is True
+
+
+async def test_reaction_is_source_linked_state_change_evidence():
+    draft = await handle_slack_message(_cb({
+        "type": "reaction_added",
+        "event_ts": "1780245425.000020",
+        "user": "U_REACTOR",
+        "reaction": "white_check_mark",
+        "item": {
+            "type": "message",
+            "channel": "C0GENERAL01",
+            "ts": "1780184162.000300",
+        },
+    }), {})
+
+    assert draft.kind == "state_change"
+    assert draft.external_id == "C0GENERAL01:1780245425.000020"
+    assert draft.content["reaction_action"] == "added"
+    assert draft.content["reaction_item_ts"] == "1780184162.000300"
 
 
 async def test_channel_message_still_works():

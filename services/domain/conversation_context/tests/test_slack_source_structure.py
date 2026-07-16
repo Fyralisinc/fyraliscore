@@ -102,3 +102,70 @@ def test_edit_projection_keeps_observations_immutable_and_advances_head() -> Non
     assert structure.topology_edges[0].kind is (
         ConversationTopologyKind.EDIT_OF
     )
+
+
+def test_deletion_projects_tombstone_without_retaining_deleted_payload() -> None:
+    original = _source(
+        "observation:original:v1",
+        "1760000200.100001",
+        "Vega launch is blocked.",
+    )
+    deletion = _source(
+        "observation:deletion:v1",
+        "1760000200.200001",
+        "[Slack message deleted]",
+        original_ts="1760000200.100001",
+    )
+    deletion.content.update(
+        {
+            "subtype": "message_deleted",
+            "tombstone": True,
+            "retention_reason": "slack_message_deleted",
+        }
+    )
+
+    structure = project_slack_source_structure((original, deletion))
+
+    tombstone = structure.revisions[1]
+    assert tombstone.kind.value == "deletion"
+    assert tombstone.content_hash is None
+    assert tombstone.raw_evidence_ref is None
+    assert tombstone.supersedes_revision_id == original.event_revision_id
+    assert structure.fate_for(original.event_revision_id) is (
+        SlackSourceRevisionFate.SUPERSEDED
+    )
+    assert structure.fate_for(deletion.event_revision_id) is (
+        SlackSourceRevisionFate.TOMBSTONE
+    )
+
+
+def test_reaction_projects_linked_evidence_without_superseding_message() -> None:
+    message = _source(
+        "observation:message:v1",
+        "1760000300.100001",
+        "Nova launch is ready.",
+    )
+    reaction = _source(
+        "observation:reaction:v1",
+        "1760000300.200001",
+        "Slack reaction added",
+    )
+    reaction.content.update(
+        {
+            "event_type": "reaction_added",
+            "reaction_item_ts": "1760000300.100001",
+        }
+    )
+
+    structure = project_slack_source_structure((message, reaction))
+
+    assert structure.fate_for(message.event_revision_id) is (
+        SlackSourceRevisionFate.CURRENT
+    )
+    assert structure.fate_for(reaction.event_revision_id) is (
+        SlackSourceRevisionFate.REACTION_EVIDENCE
+    )
+    assert tuple(edge.edge_id for edge in structure.topology_edges) == (
+        "slack-reaction:1760000300.100001->1760000300.200001",
+    )
+    assert structure.topology_edges[0].kind is ConversationTopologyKind.LINKS

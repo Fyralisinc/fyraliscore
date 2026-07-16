@@ -33,6 +33,8 @@ from services.domain.conversation_context.slack_source_structure import (
     SlackSourceRevisionFate,
     SlackSourceStructure,
     project_slack_source_structure,
+    slack_context_anchor_terms,
+    slack_text_matches_context_anchor,
 )
 from services.ingest.ingestion.handlers import ObservationDraft
 from services.ingest.ingestion.handlers.slack import handle_slack_message
@@ -109,8 +111,39 @@ async def _observe_case(
         fate = source_structure.fate_for(event_id)
         if fate is SlackSourceRevisionFate.SUPERSEDED:
             revision_fates[event_id] = SlackRevisionFate.SUPERSEDED
+        elif fate is SlackSourceRevisionFate.TOMBSTONE:
+            revision_fates[event_id] = SlackRevisionFate.TOMBSTONE
+        elif fate is SlackSourceRevisionFate.REACTION_EVIDENCE:
+            revision_fates[event_id] = SlackRevisionFate.REACTION_EVIDENCE
         elif fate is SlackSourceRevisionFate.CURRENT:
             revision_fates[event_id] = SlackRevisionFate.CURRENT
+
+    focal_fate = source_structure.fate_for(case.focal_event_revision_id)
+    if focal_fate in {
+        SlackSourceRevisionFate.TOMBSTONE,
+        SlackSourceRevisionFate.REACTION_EVIDENCE,
+    }:
+        selected = (case.focal_event_revision_id,)
+        return SlackReconstructionObservation(
+            case_id=case.case_id,
+            candidate_event_revision_ids=tuple(drafts),
+            selected_event_revision_ids=selected,
+            selected_topology_edge_ids=(
+                source_structure.incident_edge_ids(
+                    case.focal_event_revision_id
+                )
+            ),
+            revision_fates=revision_fates,
+            disposition=SufficiencyDisposition.NON_IDENTIFIABLE,
+            selected_token_count=sum(
+                case.token_counts.get(event_id, 0)
+                for event_id in selected
+            ),
+            unsupported_reasons=(),
+            artifact_refs=(
+                f"existing-surface://slack-source-structure/{case.case_id}",
+            ),
+        )
 
     structural, temporal = _current_context_inputs(
         case=case,
@@ -207,6 +240,7 @@ def _current_context_inputs(
 ) -> tuple[tuple[ContextObservationInput, ...], tuple[ContextObservationInput, ...]]:
     focal = drafts[case.focal_event_revision_id]
     focal_channel = str(focal.content.get("channel") or "")
+    anchor_terms = slack_context_anchor_terms(case.phrase)
     structural_ids = set(
         source_structure.connected_revision_ids(
             case.focal_event_revision_id,
@@ -215,15 +249,19 @@ def _current_context_inputs(
     )
     structural: list[ContextObservationInput] = []
     temporal: list[ContextObservationInput] = []
-    ordered = sorted(
+    all_prior = sorted(
         (
             (event_id, draft)
             for event_id, draft in drafts.items()
             if event_id != case.focal_event_revision_id
             and draft.occurred_at <= focal.occurred_at
-            and str(draft.content.get("channel") or "") == focal_channel
         ),
         key=lambda item: (item[1].occurred_at, item[0]),
+    )
+    ordered = tuple(
+        (event_id, draft)
+        for event_id, draft in all_prior
+        if str(draft.content.get("channel") or "") == focal_channel
     )
     for event_id, draft in ordered:
         if event_id not in structural_ids:
@@ -246,6 +284,26 @@ def _current_context_inputs(
                 draft=draft,
                 inclusion_layer="temporal_candidate",
                 reasons=("same exact source space", "as-known cutoff"),
+                topology_edge_ids=(),
+            )
+        )
+    for event_id, draft in reversed(all_prior):
+        if str(draft.content.get("channel") or "") == focal_channel:
+            continue
+        if not slack_text_matches_context_anchor(
+            draft.content_text,
+            anchor_terms,
+        ):
+            continue
+        temporal.append(
+            _context_input(
+                event_id=event_id,
+                draft=draft,
+                inclusion_layer="temporal_candidate",
+                reasons=(
+                    "cross-channel deictic phrase anchor",
+                    "as-known cutoff",
+                ),
                 topology_edge_ids=(),
             )
         )

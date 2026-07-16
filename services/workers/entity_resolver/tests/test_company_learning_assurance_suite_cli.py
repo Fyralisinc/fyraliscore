@@ -46,7 +46,7 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert "status=working" in result.stdout
     assert "positive_lift=1.0" in result.stdout
     assert "negative_incidents=0" in result.stdout
-    assert "slack_status=observed_with_gaps" in result.stdout
+    assert "slack_status=observed" in result.stdout
 
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     summary_digest = payload.pop("summary_digest")
@@ -65,14 +65,12 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
     assert summary.negative.safety_incident_count == 0
     assert summary.negative.adaptive_unsafe_count == 0
     assert summary.negative.frozen_unsafe_count == 0
-    assert summary.slack.status == "observed_with_gaps"
+    assert summary.slack.status == "observed"
     assert summary.slack.diagnostic_only is True
     assert summary.slack.metrics["case_count"] == 9
-    assert summary.slack.metrics["correct_case_rate"] == pytest.approx(2 / 3)
-    assert summary.slack.metrics["supported_case_rate"] == pytest.approx(2 / 3)
-    assert summary.slack.metrics[
-        "mean_sufficient_set_recall"
-    ] == pytest.approx(5 / 6)
+    assert summary.slack.metrics["correct_case_rate"] == 1.0
+    assert summary.slack.metrics["supported_case_rate"] == 1.0
+    assert summary.slack.metrics["mean_sufficient_set_recall"] == 1.0
     assert summary.slack.metrics["selected_context_precision"] == 1.0
     assert summary.slack.metrics["contamination_rate"] == 0.0
     assert summary.slack.metrics["mean_topology_recall"] == 1.0

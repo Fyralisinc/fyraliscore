@@ -40,20 +40,20 @@ async def test_existing_surface_produces_honest_slack_gold_measurement() -> None
 
     by_case = {observation.case_id: observation for observation in observations}
     assert len(observations) == 9
-    assert report.status == "observed_with_gaps"
-    assert report.metrics.correct_case_rate == pytest.approx(2 / 3)
-    assert report.metrics.mean_sufficient_set_recall == pytest.approx(5 / 6)
-    assert report.metrics.complete_sufficient_set_rate == pytest.approx(5 / 6)
-    assert report.metrics.reconstructability_rate == pytest.approx(2 / 3)
+    assert report.status == "observed"
+    assert report.metrics.correct_case_rate == 1.0
+    assert report.metrics.mean_sufficient_set_recall == 1.0
+    assert report.metrics.complete_sufficient_set_rate == 1.0
+    assert report.metrics.reconstructability_rate == 1.0
     assert report.metrics.contamination_rate == 0.0
     assert report.metrics.selected_context_precision == 1.0
     assert report.metrics.mean_topology_recall == 1.0
-    assert report.metrics.edit_delete_correctness_rate == 0.5
+    assert report.metrics.edit_delete_correctness_rate == 1.0
     assert report.metrics.long_range_recall == 1.0
-    assert report.metrics.cross_channel_recall == 0.0
+    assert report.metrics.cross_channel_recall == 1.0
     assert report.metrics.budget_adherence_rate == 1.0
     assert report.metrics.abstention_under_insufficiency_rate == 1.0
-    assert report.metrics.supported_case_rate == pytest.approx(2 / 3)
+    assert report.metrics.supported_case_rate == 1.0
 
     thread = by_case["slack-thread-dependency-v1"]
     assert len(thread.candidate_event_revision_ids) == 4
@@ -102,23 +102,31 @@ async def test_existing_surface_produces_honest_slack_gold_measurement() -> None
 
     deletion = by_case["slack-deletion-tombstone-v1"]
     assert deletion.disposition.value == "non_identifiable"
-    assert deletion.unsupported_reasons == (
-        "deletion_tombstone:handler:validation_error",
-        "focal_event_not_supported_by_slack_handler",
-    )
+    assert deletion.revision_fates[
+        "observation:77777777-7777-4777-8777-777777777701:v1"
+    ].value == "superseded"
+    assert deletion.revision_fates[
+        "observation:77777777-7777-4777-8777-777777777702:v1"
+    ].value == "tombstone"
+    assert deletion.unsupported_reasons == ()
 
     reaction = by_case["slack-reaction-evidence-v1"]
     assert reaction.disposition.value == "non_identifiable"
-    assert reaction.unsupported_reasons == (
-        "reaction_evidence:handler:validation_error",
-        "focal_event_not_supported_by_slack_handler",
-    )
+    assert reaction.revision_fates[
+        "observation:88888888-8888-4888-8888-888888888801:v1"
+    ].value == "current"
+    assert reaction.revision_fates[
+        "observation:88888888-8888-4888-8888-888888888802:v1"
+    ].value == "reaction_evidence"
+    assert reaction.unsupported_reasons == ()
 
     cross_channel = by_case["slack-cross-channel-dependency-v1"]
-    assert cross_channel.disposition.value == "needs_expansion"
-    assert cross_channel.unsupported_reasons == (
-        "required_context_outside_current_same_channel_candidate_lane",
+    assert cross_channel.disposition.value == "operationally_sufficient"
+    assert cross_channel.selected_event_revision_ids == (
+        "observation:99999999-9999-4999-8999-999999999902:v1",
+        "observation:99999999-9999-4999-8999-999999999901:v1",
     )
+    assert cross_channel.unsupported_reasons == ()
 
 
 def test_existing_surface_observer_cli_writes_replayable_artifacts(
@@ -151,13 +159,9 @@ def test_existing_surface_observer_cli_writes_replayable_artifacts(
     assert report_path.is_file()
     assert len(observations_path.read_text(encoding="utf-8").splitlines()) == 9
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["report"]["status"] == "observed_with_gaps"
-    assert payload["report"]["metrics"]["correct_case_rate"] == pytest.approx(
-        2 / 3
-    )
-    assert payload["report"]["metrics"][
-        "mean_sufficient_set_recall"
-    ] == pytest.approx(5 / 6)
+    assert payload["report"]["status"] == "observed"
+    assert payload["report"]["metrics"]["correct_case_rate"] == 1.0
+    assert payload["report"]["metrics"]["mean_sufficient_set_recall"] == 1.0
     assert len(payload["report_digest"]) == 64
     output = capsys.readouterr().out
     assert f"observations={observations_path}" in output

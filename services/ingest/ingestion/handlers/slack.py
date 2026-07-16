@@ -175,6 +175,50 @@ async def handle_slack_message(
 
     event = _extract_event(payload)
     subtype = event.get("subtype")
+    event_type = event.get("type")
+
+    if event_type in {"reaction_added", "reaction_removed"}:
+        item = event.get("item")
+        item = item if isinstance(item, dict) else {}
+        channel_id = event.get("channel") or item.get("channel")
+        target_ts = item.get("ts")
+        ts = event.get("event_ts") or event.get("ts")
+        reaction = event.get("reaction")
+        if not all(
+            isinstance(value, str) and value
+            for value in (channel_id, target_ts, ts, reaction)
+        ):
+            raise ValidationError(
+                "Slack reaction event is missing source linkage",
+                channel="slack:message",
+                event_type=event_type,
+            )
+        action = "added" if event_type == "reaction_added" else "removed"
+        user_id = event.get("user") or event.get("user_id")
+        content_text = (
+            f"Slack reaction :{reaction}: {action} on message {target_ts}"
+        )
+        return ObservationDraft(
+            source_channel="slack:message",
+            content_text=content_text,
+            content={
+                "channel": channel_id,
+                "ts": ts,
+                "user": user_id,
+                "event_type": event_type,
+                "subtype": None,
+                "reaction": reaction,
+                "reaction_action": action,
+                "reaction_item_type": item.get("type"),
+                "reaction_item_ts": target_ts,
+            },
+            occurred_at=parse_slack_ts(ts),
+            trust_tier=CHANNEL_TRUST_MAP["slack:message"],  # type: ignore[arg-type]
+            kind="state_change",
+            source_actor_ref=f"slack:{user_id}" if user_id else None,
+            external_id=idempotency.slack_message(channel_id, ts),
+            raw_payload=payload,
+        )
 
     # DM (`message.im`) and group-DM (`message.mpim`) events arrive on the
     # SAME `slack:message` channel as public/private channel messages — they
@@ -182,8 +226,8 @@ async def handle_slack_message(
     # otherwise identical and flow through this handler unchanged. The two
     # mutation subtypes need special handling:
     #
-    #   * message_deleted — carries no content; reject cleanly (deletion
-    #     tracking is out of scope for this layer).
+    #   * message_deleted — preserve an immutable tombstone state change linked
+    #     to the original source event without retaining the deleted body.
     #   * message_changed — the real content lives in the nested `message`
     #     object. Dedup here is insert-only (UNIQUE … DO NOTHING), so reusing
     #     the ORIGINAL ts would silently drop the edited text; instead we key
@@ -192,10 +236,47 @@ async def handle_slack_message(
     #     content.original_ts.
     original_ts: str | None = None
     if subtype == "message_deleted":
-        raise ValidationError(
-            "slack message_deleted has no content to ingest",
-            channel="slack:message",
-            subtype=subtype,
+        previous = event.get("previous_message")
+        previous = previous if isinstance(previous, dict) else {}
+        channel_id = event.get("channel") or event.get("channel_id")
+        deleted_ts = event.get("deleted_ts") or previous.get("ts")
+        ts = event.get("event_ts") or event.get("ts")
+        if not all(
+            isinstance(value, str) and value
+            for value in (channel_id, deleted_ts, ts)
+        ):
+            raise ValidationError(
+                "Slack deletion event is missing source linkage",
+                channel="slack:message",
+                subtype=subtype,
+            )
+        user_id = (
+            event.get("user")
+            or previous.get("user")
+            or previous.get("user_id")
+        )
+        return ObservationDraft(
+            source_channel="slack:message",
+            content_text="[Slack message deleted]",
+            content={
+                "channel": channel_id,
+                "channel_type": event.get("channel_type"),
+                "ts": ts,
+                "user": user_id,
+                "event_type": event_type,
+                "subtype": subtype,
+                "original_ts": deleted_ts,
+                "deleted_ts": deleted_ts,
+                "thread_ts": previous.get("thread_ts"),
+                "tombstone": True,
+                "retention_reason": "slack_message_deleted",
+            },
+            occurred_at=parse_slack_ts(ts),
+            trust_tier=CHANNEL_TRUST_MAP["slack:message"],  # type: ignore[arg-type]
+            kind="state_change",
+            source_actor_ref=f"slack:{user_id}" if user_id else None,
+            external_id=idempotency.slack_message(channel_id, ts),
+            raw_payload=payload,
         )
     if subtype == "message_changed" and isinstance(event.get("message"), dict):
         inner = event["message"]

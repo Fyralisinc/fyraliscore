@@ -40,6 +40,7 @@ from services.domain.conversation_context.slack_source_structure import (
     SlackSourceObservation,
     SlackSourceStructure,
     project_slack_source_structure,
+    slack_context_anchor_terms,
 )
 from services.domain.entity_grounding.episode import (
     ContextObservationInput,
@@ -325,6 +326,7 @@ async def build_context(
             source_channel=source_channel,
             source_space=source_space,
             source_content=source_content,
+            phrase=phrase,
             occurred_at=occurred_at,
             limit=recent_n,
         )
@@ -610,6 +612,7 @@ async def _load_context_candidates(
     source_channel: str,
     source_space: str,
     source_content: dict[str, Any],
+    phrase: str,
     occurred_at: Any,
     limit: int,
 ) -> tuple[list[tuple[Any, str, list[str]]], list[tuple[Any, str, list[str]]]]:
@@ -641,6 +644,40 @@ async def _load_context_candidates(
         (row, "temporal_candidate", ["same exact source space", "as-known cutoff"])
         for row in temporal
     ]
+    if source_channel == "slack:message":
+        anchor_terms = slack_context_anchor_terms(phrase)
+        if anchor_terms:
+            cross_channel = await conn.fetch(
+                common
+                + """
+                  AND COALESCE(content ->> 'channel', '') <> $5
+                  AND EXISTS (
+                    SELECT 1
+                    FROM unnest($6::text[]) AS anchor(term)
+                    WHERE lower(content_text) LIKE '%' || anchor.term || '%'
+                  )
+                  ORDER BY occurred_at DESC, id DESC
+                  LIMIT $7
+                """,
+                tenant_id,
+                source_channel,
+                occurred_at,
+                observation_id,
+                source_space,
+                list(anchor_terms),
+                max(limit * 3, limit),
+            )
+            temporal_rows.extend(
+                (
+                    row,
+                    "temporal_candidate",
+                    [
+                        "cross-channel deictic phrase anchor",
+                        "as-known cutoff",
+                    ],
+                )
+                for row in cross_channel
+            )
 
     structural_rows: list[tuple[Any, str, list[str]]] = []
     if source_channel == "slack:message":

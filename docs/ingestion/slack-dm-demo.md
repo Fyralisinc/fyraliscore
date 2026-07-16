@@ -86,8 +86,11 @@ overlap.
 - `message_changed` is captured as a **distinct edit observation** keyed on the
   edit timestamp (dedup is insert-only, so reusing the original ts would drop
   the edited text); the original ts is preserved in `content.original_ts`.
-- `message_deleted` carries no content and is **rejected** (deletion tracking
-  is out of scope for this layer).
+- `message_deleted` becomes an immutable tombstone `state_change` linked by
+  `content.original_ts`; the deleted message body is not retained in
+  `content_text`.
+- `reaction_added` / `reaction_removed` become immutable reaction-evidence
+  `state_change` observations linked by `content.reaction_item_ts`.
 
 ## Rebuilding after code changes
 

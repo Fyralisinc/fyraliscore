@@ -31,6 +31,7 @@ async def test_slack_context_is_scoped_to_actual_channel_and_cutoff() -> None:
         source_channel="slack:message",
         source_space="C-finance",
         source_content={"channel": "C-finance", "ts": "100.1", "thread_ts": "99.1"},
+        phrase="it",
         occurred_at=cutoff,
         limit=20,
     )
@@ -61,6 +62,7 @@ async def test_self_contained_source_does_not_receive_slack_channel_filter() -> 
         source_channel="jira:issue",
         source_space="PROJECT-X",
         source_content={"project_id": "PROJECT-X"},
+        phrase="the launch",
         occurred_at=datetime(2026, 7, 16, 10, 0, tzinfo=timezone.utc),
         limit=20,
     )
@@ -69,3 +71,25 @@ async def test_self_contained_source_does_not_receive_slack_channel_filter() -> 
     sql, args = conn.calls[0]
     assert "content ->> 'channel'" not in sql
     assert len(args) == 5
+
+
+@pytest.mark.asyncio
+async def test_deictic_slack_phrase_gets_bounded_cross_channel_anchor_lane() -> None:
+    conn = _CapturingConnection()
+    await _load_context_candidates(
+        conn=conn,  # type: ignore[arg-type]
+        tenant_id=uuid4(),
+        observation_id=uuid4(),
+        source_channel="slack:message",
+        source_space="C-focal",
+        source_content={"channel": "C-focal", "ts": "100.1"},
+        phrase="that launch",
+        occurred_at=datetime(2026, 7, 16, 10, 0, tzinfo=timezone.utc),
+        limit=20,
+    )
+
+    assert len(conn.calls) == 3
+    cross_channel_sql, cross_channel_args = conn.calls[1]
+    assert "COALESCE(content ->> 'channel', '') <> $5" in cross_channel_sql
+    assert "unnest($6::text[])" in cross_channel_sql
+    assert cross_channel_args[4:6] == ("C-focal", ["launch"])
