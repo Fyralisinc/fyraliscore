@@ -6,7 +6,11 @@ import ast
 from collections import Counter
 from pathlib import Path
 
-from scripts.run_learned_entity_discovery_quality_v2 import validate_frozen_corpus
+from scripts.run_learned_entity_discovery_quality_v2 import (
+    _gold_objects,
+    validate_frozen_corpus,
+)
+from scripts.recover_learned_entity_discovery_quality_v2 import _decode_output
 from tests.evaluation.learned_entity_discovery_quality_corpus_v2 import (
     FROZEN_CORPUS_V2,
     FROZEN_SHA256_V2,
@@ -78,3 +82,24 @@ def test_v2_runner_pins_one_production_call_per_batch_without_execution() -> Non
         "provider = build_provider()"
     )
     assert "pre_verification" in source and "post_verification" in source
+
+
+def test_v2_gold_materializes_before_any_provider_call() -> None:
+    signals, mentions, text_by_id = _gold_objects()
+    assert len(signals) == 80
+    assert len(mentions) == 114
+    assert len(text_by_id) == 80
+
+
+def test_v2_recovery_decodes_exact_rust_logged_structured_output() -> None:
+    body = (
+        'prefix OutputText { text: "{\\"mentions\\":[{'
+        '\\"signal_id\\":\\"00000000-0000-0000-0000-000000000001\\",'
+        '\\"surface\\":\\"Cafe\\u{301}\\",\\"span_start\\":0,'
+        '\\"span_end\\":5,\\"entity_type\\":\\"product\\",'
+        '\\"confidence\\":0.9,\\"abstain\\":false}]}" }], phase: suffix'
+    )
+
+    payload = _decode_output(body)
+
+    assert payload["mentions"][0]["surface"] == "Cafe\N{COMBINING ACUTE ACCENT}"

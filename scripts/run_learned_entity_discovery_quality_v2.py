@@ -135,12 +135,22 @@ def validate_frozen_corpus() -> dict[str, Any]:
 
 
 def _gold_objects() -> tuple[list[GoldSignal], list[GoldMention], dict[str, str]]:
+    slack_context_map = {
+        "standalone": "standalone",
+        "thread_reply": "threaded",
+        "thread_reply_delayed": "threaded",
+        "cross_thread_reference": "cross_thread",
+        "temporal_sequence": "temporally_distributed",
+        "channel_followup": "temporally_distributed",
+        "cross_channel_temporal": "temporally_distributed",
+        "not_slack": "not_slack",
+    }
     signals = [GoldSignal(
         signal_id=row["signal_id"],
         batch_id=row["batch_id"],
         source_type=row["source_type"],
         text=row["text"],
-        slack_context=row["slack_context"],
+        slack_context=slack_context_map[row["slack_context"]],
     ) for row in FROZEN_CORPUS_V2]
     mentions = [GoldMention(
         mention_id=mention["mention_id"],
@@ -205,6 +215,10 @@ def _raw_predictions(
 async def main() -> None:
     # This occurs before environment/provider setup by design and is reportable.
     integrity = validate_frozen_corpus()
+    # Validate the evaluator contract before making an irreversible holdout
+    # provider call. Rich corpus strata are mapped onto the evaluator's stable
+    # coarse taxonomy while remaining intact in the report metadata.
+    _gold_objects()
 
     os.environ["LLM_PROVIDER"] = "codex"
     os.environ["CODEX_TRANSPORT"] = "app-server"
