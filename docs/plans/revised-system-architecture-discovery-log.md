@@ -278,9 +278,19 @@ coherent diff.
 - **Recorded edge cases:**
   - Lease heartbeats are deferred because the current deterministic processor
     performs no provider call; unusually slow future extractors will need them.
+  - A batch receives one lease timestamp and is processed sequentially. If
+    future per-item processing becomes slow enough for later items to approach
+    lease expiry before they start, the worker must claim per item, process with
+    bounded concurrency or renew the affected leases.
   - Failure handling retries all exceptions up to a fixed cap. A durable
     transient-versus-poison error taxonomy is still required before broad
     production traffic.
+  - A grounding admission can expire while work waits a long time for an
+    embedding. That condition needs a governed reassessment or explicit
+    no-admission fate rather than generic infrastructure retry exhaustion.
+  - Terminal embedding failure currently lands in the ingestion DLQ without
+    terminalizing the corresponding semantic work item. Operator replay can
+    recover it, but permanent failure needs an explicit cross-plane fate.
   - There is no reconciliation sweep yet for historical grounding traces that
     predate the work queue or for an impossible missing work row.
   - The source-semantic evaluator exposes the resulting interpretation and
@@ -290,6 +300,10 @@ coherent diff.
     optimization may allow deterministic no-admission outcomes to terminalize
     without an embedding, while preserving the invariant that Model admission
     always requires one.
+  - Focused tests prove sequential claim, retry, lease recovery and the two
+    embedding/grounding orderings. Two-worker contention, mid-processing lease
+    loss, authority expiry, embedding-DLQ linkage and historical reconciliation
+    remain explicit proof gaps.
   - Sources without a stable native actor reference still carry an explicit
     unresolved-author marker; they need later adjudication rather than a
     fabricated channel identity.
