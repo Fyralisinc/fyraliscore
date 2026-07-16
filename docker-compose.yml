@@ -18,7 +18,8 @@
 #             embedding_worker
 #   app     : think_worker, post_commit_worker, anomaly_processor_worker,
 #             entity_resolver_worker, source_semantic_worker,
-#             intervention_episode_coordinator, agency_activation_worker
+#             intervention_episode_coordinator, agency_activation_worker,
+#             work_scheduler_worker
 #   (UI + TLS edge live in the demo overlay repo's docker-compose.demo.yml)
 #
 # Secrets (per-source creds, MASTER_KEK, OAuth/HMAC keys) live in
@@ -550,6 +551,19 @@ services:
       AGENCY_ACTIVATION_LEASE_S: "120"
       AGENCY_ACTIVATION_RETRY_S: "30"
       AGENCY_ACTIVATION_MAX_ATTEMPTS: "5"
+
+  work_scheduler_worker:
+    <<: *worker
+    container_name: company_os_work_scheduler_worker
+    command: python scripts/run_work_scheduler_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      WORK_SCHEDULER_POLL_INTERVAL_S: "5"
+      WORK_SCHEDULER_BATCH_SIZE: "100"
+      WORK_SCHEDULER_LEASE_S: "120"
+      WORK_SCHEDULER_RETRY_S: "30"
+      WORK_SCHEDULER_MAX_ATTEMPTS: "5"
 
   # ---- retrieval/memory feature workers (ported from dev) -----------
   sage_structural_features_worker:

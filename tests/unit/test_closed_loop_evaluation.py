@@ -11,6 +11,7 @@ from lib.evaluation.closed_loop import (
     ClosedLoopEvaluationState,
     _summarize_activation_work_rows,
     _summarize_manifest_work_rows,
+    _summarize_scheduling_work_rows,
     build_closed_loop_invariant_evidence,
     render_closed_loop_markdown,
 )
@@ -53,6 +54,15 @@ def _state(
         activation_work_terminal_failure_count=0,
         activation_work_completion_rate=None,
         activation_work_fate_counts={},
+        scheduling_work_item_count=0,
+        scheduling_work_leased_count=0,
+        scheduling_work_incomplete_count=0,
+        scheduling_work_backlog_count=0,
+        scheduling_work_work_expired_count=0,
+        scheduling_work_authorization_expired_count=0,
+        scheduling_work_terminal_failure_count=0,
+        scheduling_work_completion_rate=None,
+        scheduling_work_fate_counts={},
         stage_coverage_rates={},
         continuity_rates={},
         component_violation_counts=component_violations or {},
@@ -270,3 +280,122 @@ def test_markdown_reports_activation_queue_exposure_and_continuous_fates() -> No
     assert "- Authorization expired: 1" in markdown
     assert "- Completion rate: 50.0%" in markdown
     assert "| authorization_expired | 1 |" in markdown
+
+
+def test_scheduling_queue_fates_are_continuous_and_unknown_fates_are_rejected() -> None:
+    summary = _summarize_scheduling_work_rows(
+        [
+            {"status": "pending"},
+            {"status": "processing"},
+            {"status": "retry_scheduled"},
+            {"status": "leased"},
+            {"status": "leased"},
+            {"status": "work_expired"},
+            {"status": "authorization_expired"},
+            {"status": "failed_terminal"},
+        ]
+    )
+
+    assert summary == (
+        8,
+        2,
+        3,
+        1,
+        1,
+        1,
+        {
+            "authorization_expired": 1,
+            "failed_terminal": 1,
+            "leased": 2,
+            "pending": 1,
+            "processing": 1,
+            "retry_scheduled": 1,
+            "work_expired": 1,
+        },
+    )
+
+    with pytest.raises(ValueError, match="unknown registered work scheduling"):
+        _summarize_scheduling_work_rows([{"status": "silently_dropped"}])
+
+
+def test_scheduling_queue_incidents_remain_visible_without_downgrading_e3() -> None:
+    state = _state(episode_count=1, complete_episode_count=1).model_copy(
+        update={
+            "scheduling_work_item_count": 7,
+            "scheduling_work_leased_count": 2,
+            "scheduling_work_incomplete_count": 2,
+            "scheduling_work_backlog_count": 2,
+            "scheduling_work_work_expired_count": 1,
+            "scheduling_work_authorization_expired_count": 1,
+            "scheduling_work_terminal_failure_count": 1,
+            "scheduling_work_completion_rate": 2 / 7,
+            "scheduling_work_fate_counts": {
+                "authorization_expired": 1,
+                "failed_terminal": 1,
+                "leased": 2,
+                "pending": 1,
+                "retry_scheduled": 1,
+                "work_expired": 1,
+            },
+            "incident_counts": {
+                "work_scheduling_authorization_expired": 1,
+                "work_scheduling_failed_terminal": 1,
+                "work_scheduling_incomplete": 2,
+                "work_scheduling_work_expired": 1,
+            },
+        }
+    )
+
+    evidence = build_closed_loop_invariant_evidence(
+        state,
+        registry=load_architecture_registry(REGISTRY),
+        executed_scenario_ids=frozenset(),
+    )[0]
+
+    assert evidence.achieved_evidence_tier is EvidenceTier.E3
+    assert evidence.metric_observations[0].violation_count == 5
+    by_class = {incident.incident_class: incident for incident in evidence.incidents}
+    assert set(by_class) == {
+        "work_scheduling_authorization_expired",
+        "work_scheduling_failed_terminal",
+        "work_scheduling_incomplete",
+        "work_scheduling_work_expired",
+    }
+    assert (
+        by_class["work_scheduling_work_expired"].summary
+        == "Observed 1 registered work items that expired before leasing."
+    )
+    assert by_class["work_scheduling_failed_terminal"].severity == 5
+
+
+def test_markdown_reports_scheduling_backlog_and_continuous_fates() -> None:
+    state = _state(episode_count=1, complete_episode_count=1).model_copy(
+        update={
+            "scheduling_work_item_count": 5,
+            "scheduling_work_leased_count": 2,
+            "scheduling_work_incomplete_count": 1,
+            "scheduling_work_backlog_count": 1,
+            "scheduling_work_work_expired_count": 1,
+            "scheduling_work_authorization_expired_count": 1,
+            "scheduling_work_terminal_failure_count": 0,
+            "scheduling_work_completion_rate": 0.4,
+            "scheduling_work_fate_counts": {
+                "authorization_expired": 1,
+                "leased": 2,
+                "processing": 1,
+                "work_expired": 1,
+            },
+        }
+    )
+
+    markdown = render_closed_loop_markdown(state)
+
+    assert "## Registered Work Scheduling Queue" in markdown
+    assert "- Work items: 5" in markdown
+    assert "- Leased: 2" in markdown
+    assert "- Incomplete: 1" in markdown
+    assert "- Backlog: 1" in markdown
+    assert "- Work expired: 1" in markdown
+    assert "- Authorization expired: 1" in markdown
+    assert "- Completion rate: 40.0%" in markdown
+    assert "| work_expired | 1 |" in markdown

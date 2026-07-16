@@ -182,6 +182,15 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         has_healthcheck=True,
     ),
     _proc(
+        "work_scheduler_worker",
+        "reasoning",
+        ("python", "scripts/run_work_scheduler_worker.py"),
+        ("production",),
+        "Durable planned-work-to-leased-work scheduling worker.",
+        compose_service="work_scheduler_worker",
+        has_healthcheck=True,
+    ),
+    _proc(
         "topology_sweeper",
         "reasoning",
         ("python", "scripts/run_topology_sweeper.py"),

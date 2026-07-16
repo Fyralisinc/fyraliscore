@@ -28,6 +28,7 @@ from services.workers.intervention_episode_coordinator import (
     InterventionEpisodeCoordinatorWorkerStats,
 )
 from services.workers.source_semantic_worker import SourceSemanticWorker
+from services.workers.work_scheduler_worker import WorkSchedulerWorker
 from tests.e2e.revised_closed_loop_harness import run_closed_loop_vertical
 
 
@@ -196,6 +197,10 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
         pool=fresh_db,
         worker_id=f"pytest:agency-activation:{tenant_id}",
     )
+    work_scheduler = WorkSchedulerWorker(
+        pool=fresh_db,
+        worker_id=f"pytest:work-scheduler:{tenant_id}",
+    )
     artifacts = await run_closed_loop_vertical(
         pool=fresh_db,
         tenant_id=tenant_id,
@@ -205,6 +210,7 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
         semantic_frame_ref=frame["frame_id"],
         started_at=loop_started_at,
         activation_worker=activation_worker,
+        work_scheduler=work_scheduler,
         finalize_episode_manifest=False,
     )
     coordinator_stats = InterventionEpisodeCoordinatorWorkerStats()
@@ -316,6 +322,28 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
             """,
             tenant_id,
         )
+        scheduling_work_fates = dict(
+            await conn.fetch(
+                """
+                SELECT status, count(*)::integer AS count
+                FROM registered_work_scheduling_items
+                WHERE tenant_id=$1
+                GROUP BY status
+                """,
+                tenant_id,
+            )
+        )
+        scheduling_commands = await conn.fetch(
+            """
+            SELECT command_id, command_kind, command
+            FROM agency_command_results
+            WHERE tenant_id=$1
+              AND writer_id='WorkLedgerApplier'
+              AND semantic_idempotency_key LIKE 'work-scheduling:%'
+            ORDER BY command_kind
+            """,
+            tenant_id,
+        )
 
     assert state.episode_count == 1
     assert state.complete_episode_count == 1
@@ -332,10 +360,27 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
     assert state.activation_work_item_count == 1
     assert state.activation_work_activated_count == 1
     assert state.activation_work_completion_rate == 1.0
+    assert state.scheduling_work_item_count == 1
+    assert state.scheduling_work_leased_count == 1
+    assert state.scheduling_work_completion_rate == 1.0
     assert cardinalities is not None
     assert set(dict(cardinalities).values()) == {1}
     assert manifest_work_fates == {"applied": 10}
     assert activation_work_fates == {"activated": 1}
+    assert scheduling_work_fates == {"leased": 1}
+    assert len(scheduling_commands) == 2
+    assert all(row["command_id"].version == 5 for row in scheduling_commands)
+    for row in scheduling_commands:
+        command = _json(row["command"])
+        authority = command["context"]["processing_authority"]
+        assert authority["principal_or_service_id"] == (
+            "service:work-scheduler-worker"
+        )
+        assert authority["purpose"] == "registered_work_scheduling"
+        assert authority["object_types"] == {
+            "universe": False,
+            "values": ["work_obligation"],
+        }
     assert len(activation_commands) == 2
     assert {row["object_type"] for row in activation_commands} == {
         "workflow_run",
@@ -387,6 +432,7 @@ async def test_real_slack_signal_closes_one_intervention_feedback_loop(
     # The exact replays embedded in the harness must not create second heads.
     await semantic_worker.process_batch(limit=1000)
     assert await activation_worker.process_batch(limit=10) == 0
+    assert await work_scheduler.process_batch(limit=10) == 0
     assert await coordinator.process_batch(limit=100) == 0
     async with fresh_db.acquire() as conn:
         assert await conn.fetchval(

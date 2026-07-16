@@ -346,6 +346,7 @@ async def run_closed_loop_vertical(
     semantic_frame_ref: str,
     started_at: datetime,
     activation_worker: Any | None = None,
+    work_scheduler: Any | None = None,
     finalize_episode_manifest: bool = True,
 ) -> ClosedLoopArtifacts:
     """Run one deterministic canonical loop over a simulated external world."""
@@ -1139,70 +1140,96 @@ async def run_closed_loop_vertical(
         ),
         now=work_at,
     )
-    decision_at = work_at + timedelta(minutes=1)
-    work_decision = WorkDecision(
-        decision_id=uuid7(),
-        tenant_id=tenant_id,
-        obligation_id=obligation.obligation_id,
-        obligation_generation=1,
-        from_state=WorkObligationState.REGISTERED,
-        to_state=WorkObligationState.ELIGIBLE,
-        selected_processing_class=ProcessingClass.R5_EXTERNAL_AGENCY,
-        policy_version_ref="work-policy:closed-loop-v1",
-        why_no_cheaper_class_is_safe="the task may send an external message",
-        reason="the accepted and authorized intervention is due",
-        decided_at=decision_at,
-    )
-    await _apply(
-        pool,
-        work_ledger,
-        "decide",
-        command=WorkDecisionCommand(
-            context=_context(
-                tenant_id=tenant_id,
-                owner="WorkLedgerApplier",
-                responsibility="work_obligation",
-                operation="decide_work",
-                at=decision_at,
-                key="closed-loop:work:eligible",
+    if work_scheduler is None:
+        decision_at = work_at + timedelta(minutes=1)
+        work_decision = WorkDecision(
+            decision_id=uuid7(),
+            tenant_id=tenant_id,
+            obligation_id=obligation.obligation_id,
+            obligation_generation=1,
+            from_state=WorkObligationState.REGISTERED,
+            to_state=WorkObligationState.ELIGIBLE,
+            selected_processing_class=ProcessingClass.R5_EXTERNAL_AGENCY,
+            policy_version_ref="work-policy:closed-loop-v1",
+            why_no_cheaper_class_is_safe="the task may send an external message",
+            reason="the accepted and authorized intervention is due",
+            decided_at=decision_at,
+        )
+        await _apply(
+            pool,
+            work_ledger,
+            "decide",
+            command=WorkDecisionCommand(
+                context=_context(
+                    tenant_id=tenant_id,
+                    owner="WorkLedgerApplier",
+                    responsibility="work_obligation",
+                    operation="decide_work",
+                    at=decision_at,
+                    key="closed-loop:work:eligible",
+                ),
+                expected_version=1,
+                decision=work_decision,
             ),
-            expected_version=1,
-            decision=work_decision,
-        ),
-        now=decision_at,
-    )
-    lease_at = decision_at + timedelta(minutes=1)
-    lease = LeaseToken(
-        lease_token_id=uuid7(),
-        tenant_id=tenant_id,
-        obligation_id=obligation.obligation_id,
-        obligation_generation=1,
-        fence=1,
-        attempt=1,
-        owner_ref="worker:closed-loop-simulator",
-        heartbeat_deadline=lease_at + timedelta(minutes=10),
-        expires_at=lease_at + timedelta(minutes=30),
-        effect_possible=True,
-        granted_at=lease_at,
-    )
-    await _apply(
-        pool,
-        work_ledger,
-        "grant_lease",
-        command=LeaseGrantCommand(
-            context=_context(
-                tenant_id=tenant_id,
-                owner="WorkLedgerApplier",
-                responsibility="work_obligation",
-                operation="grant_lease",
-                at=lease_at,
-                key="closed-loop:work:lease",
+            now=decision_at,
+        )
+        lease_at = decision_at + timedelta(minutes=1)
+        lease = LeaseToken(
+            lease_token_id=uuid7(),
+            tenant_id=tenant_id,
+            obligation_id=obligation.obligation_id,
+            obligation_generation=1,
+            fence=1,
+            attempt=1,
+            owner_ref="worker:closed-loop-simulator",
+            heartbeat_deadline=lease_at + timedelta(minutes=10),
+            expires_at=lease_at + timedelta(minutes=30),
+            effect_possible=True,
+            granted_at=lease_at,
+        )
+        await _apply(
+            pool,
+            work_ledger,
+            "grant_lease",
+            command=LeaseGrantCommand(
+                context=_context(
+                    tenant_id=tenant_id,
+                    owner="WorkLedgerApplier",
+                    responsibility="work_obligation",
+                    operation="grant_lease",
+                    at=lease_at,
+                    key="closed-loop:work:lease",
+                ),
+                expected_obligation_version=2,
+                lease=lease,
             ),
-            expected_obligation_version=2,
-            lease=lease,
-        ),
-        now=lease_at,
-    )
+            now=lease_at,
+        )
+    else:
+        assert await work_scheduler.process_batch(limit=10) == 1
+        async with pool.acquire() as conn:
+            scheduling = await conn.fetchrow(
+                """
+                SELECT decision_id, lease_token_id
+                FROM registered_work_scheduling_items
+                WHERE tenant_id=$1 AND obligation_id=$2 AND status='leased'
+                """,
+                tenant_id,
+                obligation.obligation_id,
+            )
+            assert scheduling is not None
+            lease_payload = await conn.fetchval(
+                """
+                SELECT lease_payload
+                FROM work_lease_token_versions
+                WHERE tenant_id=$1 AND lease_token_id=$2
+                  AND aggregate_version=1
+                """,
+                tenant_id,
+                scheduling["lease_token_id"],
+            )
+        lease = LeaseToken.model_validate(lease_payload)
+        lease_at = lease.granted_at
 
     effect_at = lease_at + timedelta(minutes=1)
     attempt = ExternalEffectAttempt(

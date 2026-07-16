@@ -93,6 +93,17 @@ _ACTIVATION_WORK_NONTERMINAL_FATES = frozenset(
 _ACTIVATION_WORK_TERMINAL_FATES = frozenset(
     {"activated", "authorization_expired", "failed_terminal"}
 )
+_SCHEDULING_WORK_NONTERMINAL_FATES = frozenset(
+    {"pending", "processing", "retry_scheduled"}
+)
+_SCHEDULING_WORK_TERMINAL_FATES = frozenset(
+    {
+        "leased",
+        "work_expired",
+        "authorization_expired",
+        "failed_terminal",
+    }
+)
 
 
 class _ClosedLoopModel(BaseModel):
@@ -155,6 +166,19 @@ class ClosedLoopEvaluationState(_ClosedLoopModel):
         le=1.0,
     )
     activation_work_fate_counts: dict[str, int]
+    scheduling_work_item_count: int = Field(ge=0)
+    scheduling_work_leased_count: int = Field(ge=0)
+    scheduling_work_incomplete_count: int = Field(ge=0)
+    scheduling_work_backlog_count: int = Field(ge=0)
+    scheduling_work_work_expired_count: int = Field(ge=0)
+    scheduling_work_authorization_expired_count: int = Field(ge=0)
+    scheduling_work_terminal_failure_count: int = Field(ge=0)
+    scheduling_work_completion_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+    scheduling_work_fate_counts: dict[str, int]
     stage_coverage_rates: dict[str, float | None]
     continuity_rates: dict[str, float | None]
     component_violation_counts: dict[str, int]
@@ -249,6 +273,34 @@ async def evaluate_closed_loop_state(
         activation_work_terminal_failures,
         activation_work_fates,
     ) = _summarize_activation_work_rows(activation_work_rows)
+    scheduling_work_rows = await conn.fetch(
+        """
+        SELECT w.status
+        FROM registered_work_scheduling_items w
+        JOIN agency_canonical_events e
+          ON e.id=w.source_event_id
+         AND e.tenant_id=w.tenant_id
+        WHERE w.tenant_id=$1
+          AND e.created_at < $3
+          AND (
+            e.created_at >= $2
+            OR w.status IN ('pending', 'processing', 'retry_scheduled')
+          )
+        ORDER BY e.created_at, w.id
+        """,
+        scope.tenant_id,
+        scope.start,
+        scope.end,
+    )
+    (
+        scheduling_work_count,
+        scheduling_work_leased,
+        scheduling_work_incomplete,
+        scheduling_work_expired,
+        scheduling_work_authorization_expired,
+        scheduling_work_terminal_failures,
+        scheduling_work_fates,
+    ) = _summarize_scheduling_work_rows(scheduling_work_rows)
     reports = tuple(
         [
             await _evaluate_episode(
@@ -308,6 +360,20 @@ async def evaluate_closed_loop_state(
         incident_counts["agency_activation_work_failed_terminal"] += (
             activation_work_terminal_failures
         )
+    if scheduling_work_incomplete:
+        incident_counts["work_scheduling_incomplete"] += (
+            scheduling_work_incomplete
+        )
+    if scheduling_work_expired:
+        incident_counts["work_scheduling_work_expired"] += scheduling_work_expired
+    if scheduling_work_authorization_expired:
+        incident_counts["work_scheduling_authorization_expired"] += (
+            scheduling_work_authorization_expired
+        )
+    if scheduling_work_terminal_failures:
+        incident_counts["work_scheduling_failed_terminal"] += (
+            scheduling_work_terminal_failures
+        )
     component_violation_counts = {
         name: state.violation_count
         for name, state in component_states.items()
@@ -340,6 +406,20 @@ async def evaluate_closed_loop_state(
             activation_work_count,
         ),
         activation_work_fate_counts=dict(sorted(activation_work_fates.items())),
+        scheduling_work_item_count=scheduling_work_count,
+        scheduling_work_leased_count=scheduling_work_leased,
+        scheduling_work_incomplete_count=scheduling_work_incomplete,
+        scheduling_work_backlog_count=scheduling_work_incomplete,
+        scheduling_work_work_expired_count=scheduling_work_expired,
+        scheduling_work_authorization_expired_count=(
+            scheduling_work_authorization_expired
+        ),
+        scheduling_work_terminal_failure_count=scheduling_work_terminal_failures,
+        scheduling_work_completion_rate=_rate(
+            scheduling_work_leased,
+            scheduling_work_count,
+        ),
+        scheduling_work_fate_counts=dict(sorted(scheduling_work_fates.items())),
         stage_coverage_rates=stage_coverage_rates,
         continuity_rates=continuity_rates,
         component_violation_counts=component_violation_counts,
@@ -352,6 +432,7 @@ async def evaluate_closed_loop_state(
             "An explicit withheld-credit attribution is a feedback fate, not evidence that an adaptive policy improved behavior.",
             "Episode-manifest work is evaluated from current queue-head fates; pending, processing, and retry-scheduled items remain explicitly incomplete until applied.",
             "Agency activation completion includes terminal work exposed by canonical authorization events in the report window plus any still-nonterminal backlog before cutoff; authorization expiry is an explicit terminal non-success fate.",
+            "Work scheduling completion includes terminal work exposed by registered WorkLedger events in the report window plus prior-window pending, processing, and retry-scheduled backlog.",
         ),
         artifact_refs=artifact_refs,
     )
@@ -627,37 +708,8 @@ def build_closed_loop_invariant_evidence(
             incident_id=f"{state.scope.run_id}:INV-22:{kind}",
             incident_class=kind,
             status=IncidentStatus.CONFIRMED,
-            severity=(
-                5
-                if (
-                    "effect" in kind
-                    or "authorization" in kind
-                    or kind == "episode_manifest_work_failed_terminal"
-                    or kind == "agency_activation_work_failed_terminal"
-                )
-                else 4
-            ),
-            summary=(
-                f"Observed {count} terminal episode-manifest work failures."
-                if kind == "episode_manifest_work_failed_terminal"
-                else (
-                    f"Observed {count} incomplete episode-manifest work items."
-                    if kind == "episode_manifest_work_incomplete"
-                    else (
-                        f"Observed {count} incomplete authorized activation work items."
-                        if kind == "agency_activation_work_incomplete"
-                        else (
-                            f"Observed {count} authorized activations that expired before activation."
-                            if kind == "agency_activation_authorization_expired"
-                            else (
-                                f"Observed {count} terminal authorized activation work failures."
-                                if kind == "agency_activation_work_failed_terminal"
-                                else f"Observed {count} closed-loop continuity violations."
-                            )
-                        )
-                    )
-                )
-            ),
+            severity=_incident_severity(kind),
+            summary=_incident_summary(kind, count),
             artifact_refs=state.artifact_refs,
         )
         for kind, count in state.incident_counts.items()
@@ -743,6 +795,57 @@ def build_closed_loop_invariant_evidence(
     )
 
 
+def _incident_severity(kind: str) -> int:
+    if (
+        "effect" in kind
+        or "authorization" in kind
+        or kind
+        in {
+            "episode_manifest_work_failed_terminal",
+            "agency_activation_work_failed_terminal",
+            "work_scheduling_failed_terminal",
+        }
+    ):
+        return 5
+    return 4
+
+
+def _incident_summary(kind: str, count: int) -> str:
+    summaries = {
+        "episode_manifest_work_failed_terminal": (
+            f"Observed {count} terminal episode-manifest work failures."
+        ),
+        "episode_manifest_work_incomplete": (
+            f"Observed {count} incomplete episode-manifest work items."
+        ),
+        "agency_activation_work_incomplete": (
+            f"Observed {count} incomplete authorized activation work items."
+        ),
+        "agency_activation_authorization_expired": (
+            f"Observed {count} authorized activations that expired before activation."
+        ),
+        "agency_activation_work_failed_terminal": (
+            f"Observed {count} terminal authorized activation work failures."
+        ),
+        "work_scheduling_incomplete": (
+            f"Observed {count} incomplete registered work scheduling items."
+        ),
+        "work_scheduling_work_expired": (
+            f"Observed {count} registered work items that expired before leasing."
+        ),
+        "work_scheduling_authorization_expired": (
+            f"Observed {count} registered work items whose authorization expired before leasing."
+        ),
+        "work_scheduling_failed_terminal": (
+            f"Observed {count} terminal registered work scheduling failures."
+        ),
+    }
+    return summaries.get(
+        kind,
+        f"Observed {count} closed-loop continuity violations.",
+    )
+
+
 def render_closed_loop_markdown(state: ClosedLoopEvaluationState) -> str:
     lines = [
         "# Closed Intervention And Feedback Loop",
@@ -799,6 +902,40 @@ def render_closed_loop_markdown(state: ClosedLoopEvaluationState) -> str:
         lines.extend(
             f"| {fate} | {count} |"
             for fate, count in state.activation_work_fate_counts.items()
+        )
+    else:
+        lines.append("| no exposure | 0 |")
+    lines.extend(
+        [
+            "",
+            "## Registered Work Scheduling Queue",
+            "",
+            f"- Work items: {state.scheduling_work_item_count}",
+            f"- Leased: {state.scheduling_work_leased_count}",
+            f"- Incomplete: {state.scheduling_work_incomplete_count}",
+            f"- Backlog: {state.scheduling_work_backlog_count}",
+            f"- Work expired: {state.scheduling_work_work_expired_count}",
+            (
+                "- Authorization expired: "
+                f"{state.scheduling_work_authorization_expired_count}"
+            ),
+            (
+                "- Terminal failures: "
+                f"{state.scheduling_work_terminal_failure_count}"
+            ),
+            (
+                "- Completion rate: "
+                f"{_display_rate(state.scheduling_work_completion_rate)}"
+            ),
+            "",
+            "| Fate | Count |",
+            "| --- | ---: |",
+        ]
+    )
+    if state.scheduling_work_fate_counts:
+        lines.extend(
+            f"| {fate} | {count} |"
+            for fate, count in state.scheduling_work_fate_counts.items()
         )
     else:
         lines.append("| no exposure | 0 |")
@@ -966,6 +1103,36 @@ def _summarize_activation_work_rows(
         len(rows),
         activated,
         incomplete,
+        authorization_expired,
+        terminal_failures,
+        dict(sorted(fates.items())),
+    )
+
+
+def _summarize_scheduling_work_rows(
+    rows: list[Mapping[str, Any]],
+) -> tuple[int, int, int, int, int, int, dict[str, int]]:
+    fates = Counter(str(row["status"]) for row in rows)
+    unknown_fates = set(fates) - (
+        _SCHEDULING_WORK_NONTERMINAL_FATES | _SCHEDULING_WORK_TERMINAL_FATES
+    )
+    if unknown_fates:
+        raise ValueError(
+            "unknown registered work scheduling fates: "
+            f"{sorted(unknown_fates)}"
+        )
+    leased = fates["leased"]
+    incomplete = sum(
+        fates[fate] for fate in _SCHEDULING_WORK_NONTERMINAL_FATES
+    )
+    work_expired = fates["work_expired"]
+    authorization_expired = fates["authorization_expired"]
+    terminal_failures = fates["failed_terminal"]
+    return (
+        len(rows),
+        leased,
+        incomplete,
+        work_expired,
         authorization_expired,
         terminal_failures,
         dict(sorted(fates.items())),
