@@ -250,6 +250,15 @@ def _build_vitals_scorecard(
         "authority_safety": _authority_safety_vital(bundle),
         "efficiency": _efficiency_vital(run_summary, source_scorecard),
     }
+    measurement_profile = str(
+        run_summary.get("vitals_measurement_profile") or "full"
+    )
+    if measurement_profile not in {"full", "company_learning_only"}:
+        raise ValueError(
+            f"unknown Vitals measurement profile: {measurement_profile}"
+        )
+    if measurement_profile == "company_learning_only":
+        vitals = _company_learning_only_vitals(vitals)
 
     hard_failures = _hard_failures(vitals, benchmark)
     hard_failures.extend(
@@ -282,6 +291,7 @@ def _build_vitals_scorecard(
         "scored_vitals": len(scored),
         "total_vitals": len(vitals),
         "score_coverage": round(len(scored) / max(1, len(vitals)), 4),
+        "vitals_measurement_profile": measurement_profile,
         "hard_failures": hard_failures,
         "ranked_findings": ranked_findings,
         "proof_gaps": proof_gaps,
@@ -357,6 +367,14 @@ def write_vitals_artifacts(
         )
     else:
         evidence_manifest_path.unlink(missing_ok=True)
+    evidence_bundle_path = out / "company_learning_evidence_bundle.json"
+    evidence_bundle = _json_obj(
+        company_learning_evaluation.get("evidence_bundle")
+    )
+    if evidence_bundle:
+        _write_json(evidence_bundle_path, evidence_bundle)
+    else:
+        evidence_bundle_path.unlink(missing_ok=True)
     experiment = _json_obj(bundle.get("company_learning_experiment"))
     experiment_payload = _json_obj(experiment.get("canonical_payload"))
     if experiment.get("valid") is True and experiment_payload:
@@ -686,9 +704,14 @@ def _company_learning_evaluation_for_report(
             report_cutoff=cutoff.isoformat(),
         )
         saved_bundle = _json_obj(persisted.get("evidence_bundle"))
-        if saved_bundle and (
+        saved_evidence_bundle = (
+            InvariantEvidenceBundle.model_validate(saved_bundle)
+            if saved_bundle
+            else None
+        )
+        if saved_evidence_bundle is not None and (
             evidence_bundle is None
-            or saved_bundle != evidence_bundle.model_dump(mode="json")
+            or saved_evidence_bundle != evidence_bundle
         ):
             raise ValueError(
                 "persisted company-learning evidence aggregation is stale"
@@ -709,7 +732,9 @@ def _company_learning_evaluation_for_report(
             "state": state.model_dump(mode="json"),
             "evidence_manifest": manifest.model_dump(mode="json"),
             "evidence_bundle": (
-                evidence_bundle.model_dump(mode="json")
+                saved_bundle
+                if saved_evidence_bundle is not None
+                else evidence_bundle.model_dump(mode="json")
                 if evidence_bundle is not None
                 else None
             ),
@@ -3919,6 +3944,32 @@ def _hard_failures(
     ):
         failures.append("retrieval selected context but no useful context was used")
     return failures
+
+
+def _company_learning_only_vitals(
+    vitals: dict[str, Any],
+) -> dict[str, Any]:
+    """Leave general product vitals unscored in a focused learning report."""
+
+    proof_gap = (
+        "This focused report measures the company-learning loop only; the "
+        "general product vital was not measured."
+    )
+    return {
+        name: _vital(
+            score=None,
+            metrics={
+                "measurement_profile": "company_learning_only",
+                "measurement_status": "not_measured",
+            },
+            findings=[
+                "See the Company Physics section for the focused learning-loop "
+                "evidence collected by this report."
+            ],
+            proof_gaps=[proof_gap],
+        )
+        for name in vitals
+    }
 
 
 def _proof_gaps(

@@ -358,6 +358,12 @@ It does not yet prove:
 
 These are planning estimates, not evaluator metrics.
 
+The estimate assumes reuse of the existing SAGE learner, retrieval machinery,
+Model/event writers, projection runtime, grounding protocols and proof
+framework. Existing code is credited only where the active learning loop
+actually consumes it or a focused test proves the intended integration. SAGE's
+mere presence in the repository is not counted as completed company learning.
+
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias Slack clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared |
@@ -371,40 +377,34 @@ Task autonomy is excluded from all percentages.
 
 ### P0 — Required before believing the company-learning system broadly works
 
-1. **Run one joined full Company Vitals report**
-   - Include the normal E3 company-learning manifest and the paired E4 artifact
-     in one production-shaped report directory.
-   - Verify declared-partition evidence aggregation and artifact-only rerender
-     from real saved artifacts, not only unit fixtures.
-
-2. **Add non-resolution and ambiguity controls**
+1. **Add non-resolution and ambiguity controls**
    - Contextual phrase negative.
    - Unrelated alias negative.
    - Homonym/local-association case.
    - Conflicting source hint.
    - Assert zero unsafe global alias creation and zero wrong Models.
 
-3. **Expand beyond exact surface replay**
+2. **Expand beyond exact surface replay**
    - Unseen spelling and abbreviation variants.
    - Pronouns, descriptions and local nicknames.
    - Context-dependent references whose meaning changes by channel/thread/time.
    - Explicitly measure when retrieval/context helps and when it contaminates.
 
-4. **Prove Slack conversational reconstruction**
+3. **Prove Slack conversational reconstruction**
    - Source-native edit/delete/reaction behavior.
    - Cross-thread and cross-channel dependencies.
    - Long-range temporal context.
    - Sufficient-context and contamination gold.
    - Boundaryless episode reconstruction rather than fixed windows.
 
-5. **Complete correction propagation**
+4. **Complete correction propagation**
    - Identify every accepted Model, relation, edge and projection that depended
      on the wrong grounding.
    - Fence unsafe reads immediately.
    - Recompute or supersede all affected derived state.
    - Measure convergence time and residual correction debt.
 
-6. **Scale the held-out population**
+5. **Scale the held-out population**
    - Generate enough independent matched pairs for uncertainty intervals.
    - Stratify by source, ambiguity, entity type, context length and consequence.
    - Preserve every pair and prevent selective rerun reporting.
@@ -434,16 +434,104 @@ Task autonomy is excluded from all percentages.
 6. Open-world simulation with hidden company truth.
 7. E5 customer-value evaluation after synthetic assurance is strong enough.
 
+## Working Version Runbook
+
+The current runnable working version executes the real-Postgres
+clarification-to-corrective-memory-to-reuse slice, runs its sealed
+adaptive-versus-frozen recurrence experiment, and renders both into one Company
+Vitals report.
+
+### Prerequisite and command
+
+`DATABASE_URL` must point to a reachable PostgreSQL database. The harness applies
+the repository migrations before running. The same value can instead be passed
+with `--database-url`.
+
+```bash
+DATABASE_URL=postgresql://... \
+  python scripts/run_company_learning_vitals_harness.py \
+    --report-dir reports/company-learning-proof \
+    --run-id company-learning-proof \
+    --system-version <git-sha-or-version>
+```
+
+`--llm-call-cost-usd` is optional and defaults to `0.001`.
+
+### Generated artifacts
+
+The report directory contains the saved experiment and standard report inputs.
+The main proof and reader-facing outputs are:
+
+- `company_learning_scenario_evidence.json`;
+- `vitals/company_learning_evaluation.json`;
+- `vitals/company_learning_evidence_manifest.json`;
+- `vitals/company_learning_evidence_bundle.json`;
+- `vitals/vitals_scorecard.json`;
+- `vitals/vitals_summary.md`.
+
+### Successful-run behavior
+
+A successful run:
+
+- exits with status `0`;
+- prints the report and Vitals directories, scorecard and evidence-bundle paths,
+  the focused working-version status, the unscored general-product result and
+  adaptive lift;
+- validates and independently recomputes the typed recurrence experiment;
+- joins real-database E3 runtime evidence with the paired E4 recurrence evidence
+  only through their declared disjoint INV-05 partitions;
+- preserves all detected hard-safety incidents rather than averaging them away;
+- leaves all 30 general product vitals explicitly unmeasured, with
+  `overall_score=null`, because this command does not collect the evidence
+  required to score them;
+- returns a non-zero status when the typed experiment, database-backed Company
+  Physics evaluation, required saved artifacts or zero-incident condition is
+  missing.
+
+### Proof boundary
+
+This working version proves a real-Postgres runtime slice for the current exact,
+tenant-global Slack alias path and a controlled synthetic causal comparison of
+adaptive reuse against a frozen system. The joined E3 and E4 evidence remains
+insufficient for broad invariant closure. It is not open-world or customer E5
+evidence, does not prove generalized Slack reconstruction or multi-source
+learning, and does not include autonomous task execution.
+
+The implementation assumes reuse of the existing SAGE learner, retrieval
+machinery, Model/event writers, projection runtime, grounding protocols and
+proof framework. This command does not prove generalized SAGE-mediated policy
+adaptation merely because SAGE exists in the repository. Future learning should
+feed outcome and utility evidence into those existing learning surfaces rather
+than create a second learner. SAGE may adapt retrieval and reasoning policy, but
+must not directly write canonical Models, graph truth, relations or source
+evidence.
+
+The typed experiment is bound to the report's run and system version and carries
+its own sealed digests. It is not yet cryptographically bound to the exact
+database tenant and observation manifest, so copied-artifact swap resistance is
+not claimed by this working version.
+
+### Explicitly deferred production hardening
+
+- larger and more varied held-out case populations;
+- confidence intervals and stratified statistical analysis;
+- negative controls, homonyms, conflicts and unseen surface forms;
+- open-world simulation, real-provider runs and customer E5 validation;
+- complete downstream correction propagation;
+- general Slack episode reconstruction and cross-source equivalence;
+- load, restart, outage, durability and evidence-attestation testing;
+- cryptographic binding between the experiment artifact and the exact
+  database-backed tenant/observation manifest.
+
 ## Next Execution Sequence
 
-1. Commit this living status document and the updated audit/discovery records.
-2. Produce a joined real-artifact Company Vitals run.
-3. Add contextual/conflict/homonym/unrelated negative cases in parallel lanes.
-4. Add larger held-out exact and variant-alias populations.
-5. Implement dependent-state correction propagation.
-6. Add Slack reconstruction gold and context ablations.
-7. Repeat the causal suite across structured sources.
-8. Reassess progress and reprioritize from the combined report.
+1. Commit the runnable joined Company Vitals working-version checkpoint.
+2. Add contextual/conflict/homonym/unrelated negative cases in parallel lanes.
+3. Add larger held-out exact and variant-alias populations.
+4. Implement dependent-state correction propagation.
+5. Add Slack reconstruction gold and context ablations.
+6. Repeat the causal suite across structured sources.
+7. Reassess progress and reprioritize from the combined report.
 
 ## Progress Ledger
 
@@ -473,3 +561,14 @@ Task autonomy is excluded from all percentages.
 - Preserved the lower E3 tier during evidence aggregation.
 - Moved entity-resolution adjudication from a private gateway helper into a
   public domain operation.
+
+### 2026-07-16 — Runnable joined Company Vitals working version
+
+- Added the exact command and database prerequisite for the joined
+  company-learning harness.
+- Documented its saved experiment, evaluation, manifest, evidence-bundle,
+  scorecard and summary artifacts.
+- Defined successful execution without inflating E3 plus synthetic E4 evidence
+  into open-world or customer proof.
+- Kept generalized SAGE adaptation, broader recurrence populations, confidence
+  intervals and production hardening explicitly outside the proven slice.
