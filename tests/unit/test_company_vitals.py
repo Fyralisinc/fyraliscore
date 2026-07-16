@@ -80,6 +80,9 @@ from lib.evaluation.proof import (
     InvariantEvidenceManifest,
     InvariantRunEvidence,
 )
+from lib.evaluation.repository_provenance import (
+    capture_repository_provenance,
+)
 from lib.evaluation.slack_reconstruction_gold import SlackGoldFamily
 from scripts.company_vitals import (
     _collect_company_learning_evaluation,
@@ -2042,6 +2045,7 @@ def _write_company_learning_assurance(
     summary = CompanyLearningAssuranceSummary(
         run_id="synthetic-vitals",
         system_version=system_version,
+        repository_provenance=capture_repository_provenance(repo_root),
         architecture_digest=architecture_digest,
         implementation_plan_digest=implementation_plan_digest,
         created_at="2026-07-16T00:00:00+00:00",

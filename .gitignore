@@ -55,6 +55,7 @@ docker-compose.override.yml
 
 # ---- Simulation run artifacts ----
 test-results/
+/reports/company-learning-assurance-*
 
 # ---- External tools / large local dirs ----
 lsob/

@@ -36,6 +36,10 @@ from lib.evaluation.company_learning_assurance import (
     validate_company_learning_assurance_components,
 )
 from lib.evaluation.proof import EvidenceTier
+from lib.evaluation.repository_provenance import (
+    capture_repository_provenance,
+    require_provenance_safe_output_path,
+)
 from lib.evaluation.company_learning_variant_collisions import (
     VariantCollisionFamily,
 )
@@ -132,6 +136,7 @@ async def run_company_learning_assurance_suite(
 ) -> CompanyLearningAssuranceSummary:
     """Run the complete active company-learning assurance profile."""
 
+    require_provenance_safe_output_path(output_dir, ROOT)
     output_dir.mkdir(parents=True, exist_ok=True)
     positive_dir = output_dir / "positive"
     negative_dir = output_dir / "negative"
@@ -654,6 +659,7 @@ async def run_company_learning_assurance_suite(
     summary = CompanyLearningAssuranceSummary(
         run_id=run_id,
         system_version=system_version,
+        repository_provenance=capture_repository_provenance(ROOT),
         architecture_digest=architecture_digest,
         implementation_plan_digest=implementation_plan_digest,
         created_at=datetime.now(timezone.utc).isoformat(),

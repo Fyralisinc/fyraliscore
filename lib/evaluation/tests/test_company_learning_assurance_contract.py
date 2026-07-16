@@ -40,6 +40,7 @@ from lib.evaluation.company_learning_assurance import (
     validate_variant_population_assurance_component,
 )
 from lib.evaluation.canonical_referent_replacement import (
+    CanonicalReplacementDatabaseEvidence,
     CanonicalResourceReplacementEvidence,
     ReplacementProofCell,
     evaluate_canonical_resource_replacement,
@@ -93,6 +94,9 @@ from lib.evaluation.correction_propagation import (
     CorrectionPropagationScope,
 )
 from lib.evaluation.proof import EvidenceTier
+from lib.evaluation.repository_provenance import (
+    capture_repository_provenance,
+)
 from lib.evaluation.tests.test_company_learning_variant_population import (
     FIXTURE as VARIANT_FIXTURE,
 )
@@ -1161,6 +1165,14 @@ def _canonical_replacement_evidence(
         system_version=system_version,
         created_at="2026-07-17T00:00:00+00:00",
         observation=observation,
+        database_evidence=CanonicalReplacementDatabaseEvidence(
+            query_manifest={"pytest_snapshot": "SELECT 1"},
+            snapshots={"pytest_snapshot": {"observed": True}},
+            measurement_evidence={
+                name: ("pytest_snapshot",)
+                for name in observation.measurements
+            },
+        ),
         report=evaluate_canonical_resource_replacement(observation),
         artifact_refs=("pytest:canonical-replacement",),
     )
@@ -1388,6 +1400,9 @@ def _summary(
     return CompanyLearningAssuranceSummary(
         run_id="pytest-assurance",
         system_version="pytest-system",
+        repository_provenance=capture_repository_provenance(
+            Path(__file__).resolve().parents[2]
+        ),
         architecture_digest=architecture_digest,
         implementation_plan_digest=implementation_plan_digest,
         excluded_capabilities=excluded_capabilities,
@@ -1434,6 +1449,53 @@ def test_summary_v7_binds_reviewed_identity_and_active_scope() -> None:
         _summary(implementation_plan_digest="not-a-digest")
     with pytest.raises(ValidationError, match="explicitly exclude"):
         _summary(excluded_capabilities=("autonomous_task_planning",))
+
+
+def test_summary_v7_rejects_resealed_repository_provenance_mismatch() -> None:
+    summary = _summary()
+    payload = summary.artifact_payload()
+    payload["repository_provenance"]["worktree_digest"] = "0" * 64
+    payload["summary_digest"] = canonical_sha256(
+        {
+            key: value
+            for key, value in payload.items()
+            if key != "summary_digest"
+        }
+    )
+
+    with pytest.raises(ValueError, match="worktree digest"):
+        validate_company_learning_assurance_artifact(payload)
+
+
+@pytest.mark.parametrize(
+    ("assurance_factory", "component"),
+    (
+        (_canonical_replacement_assurance, "canonical replacement"),
+        (_source_binding_lifecycle_assurance, "source binding lifecycle"),
+    ),
+)
+def test_lifecycle_assurance_rejects_tiers_above_recognized_contract(
+    assurance_factory,
+    component: str,
+) -> None:
+    assurance = assurance_factory()
+    payload = assurance.model_dump(mode="json")
+    payload["evidence_tier"] = EvidenceTier.E5.value
+
+    with pytest.raises(ValidationError, match=f"{component} evidence contract"):
+        type(assurance).model_validate(payload)
+
+
+def test_lifecycle_assurance_rejects_unknown_stronger_contract() -> None:
+    assurance = _canonical_replacement_assurance()
+    payload = assurance.model_dump(mode="json")
+    payload["evidence_tier"] = EvidenceTier.E5.value
+    payload["evidence_contract"] = (
+        "canonical-resource-replacement-evidence-v2"
+    )
+
+    with pytest.raises(ValidationError, match="unrecognized evidence contract"):
+        CanonicalReplacementAssurance.model_validate(payload)
 
 
 def test_replacement_unsupported_and_unsafe_evidence_block_working() -> None:

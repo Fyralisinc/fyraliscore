@@ -10,10 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lib.contracts.kernel import canonical_sha256
-from lib.evaluation.company_learning_population import (
-    IntervalEstimate,
-    _wilson_estimate,
-)
+from lib.evaluation.checklist_ratio import ChecklistRatio
 
 
 class _LifecycleModel(BaseModel):
@@ -184,14 +181,14 @@ class SourceIdentityBindingLifecycleReport(_LifecycleModel):
     violating_measurement_count: int = Field(ge=0)
     safety_violation_count: int = Field(ge=0)
     immutability_violation_count: int = Field(ge=0)
-    runtime_support_rate: IntervalEstimate
-    overall_satisfaction_rate: IntervalEstimate | None
-    resolution_temporal_rate: IntervalEstimate | None
-    exact_attachment_rate: IntervalEstimate | None
-    lifecycle_transition_rate: IntervalEstimate | None
-    overlap_stale_replay_rate: IntervalEstimate | None
-    isolation_immutability_atomicity_rate: IntervalEstimate | None
-    measurement_rates: dict[str, IntervalEstimate | None]
+    runtime_support_rate: ChecklistRatio
+    overall_satisfaction_rate: ChecklistRatio | None
+    resolution_temporal_rate: ChecklistRatio | None
+    exact_attachment_rate: ChecklistRatio | None
+    lifecycle_transition_rate: ChecklistRatio | None
+    overlap_stale_replay_rate: ChecklistRatio | None
+    isolation_immutability_atomicity_rate: ChecklistRatio | None
+    measurement_rates: dict[str, ChecklistRatio | None]
     unsupported_reason_counts: dict[str, int]
     observation_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -282,11 +279,9 @@ def evaluate_source_identity_binding_lifecycle(
         violating_measurement_count=len(violating),
         safety_violation_count=len(safety_violations),
         immutability_violation_count=immutability_violations,
-        runtime_support_rate=_wilson_estimate(
-            [
-                float(cell.status == "observed")
-                for cell in measurements.values()
-            ]
+        runtime_support_rate=ChecklistRatio.from_flags(
+            cell.status == "observed"
+            for cell in measurements.values()
         ),
         overall_satisfaction_rate=_rate(observed),
         resolution_temporal_rate=_category_rate(
@@ -311,7 +306,7 @@ def evaluate_source_identity_binding_lifecycle(
         ),
         measurement_rates={
             name: (
-                _wilson_estimate([float(bool(cell.satisfied))])
+                ChecklistRatio.from_flags([bool(cell.satisfied)])
                 if cell.status == "observed"
                 else None
             )
@@ -345,21 +340,21 @@ def validate_source_identity_binding_lifecycle_artifact(
 
 def _rate(
     observed: dict[str, BindingLifecycleProofCell],
-) -> IntervalEstimate | None:
-    values = [float(bool(cell.satisfied)) for cell in observed.values()]
-    return _wilson_estimate(values) if values else None
+) -> ChecklistRatio | None:
+    values = [bool(cell.satisfied) for cell in observed.values()]
+    return ChecklistRatio.from_flags(values) if values else None
 
 
 def _category_rate(
     observed: dict[str, BindingLifecycleProofCell],
     names: tuple[str, ...],
-) -> IntervalEstimate | None:
+) -> ChecklistRatio | None:
     values = [
-        float(bool(observed[name].satisfied))
+        bool(observed[name].satisfied)
         for name in names
         if name in observed
     ]
-    return _wilson_estimate(values) if values else None
+    return ChecklistRatio.from_flags(values) if values else None
 
 
 __all__ = [

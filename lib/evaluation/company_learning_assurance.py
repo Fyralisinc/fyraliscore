@@ -63,6 +63,10 @@ from lib.evaluation.correction_assurance import (
     validate_correction_assurance_artifact as _validate_correction_artifact,
 )
 from lib.evaluation.proof import EvidenceTier
+from lib.evaluation.repository_provenance import (
+    RepositoryProvenance,
+    verify_repository_provenance,
+)
 from lib.evaluation.slack_reconstruction_gold import (
     SlackGoldFamily,
     SlackReconstructionReport,
@@ -83,6 +87,38 @@ _SEALED_VARIANT_COLLISION_DIGEST = (
 _SEALED_CUSTOMER_LIFECYCLE_DIGEST = (
     "184606eca260c0bbc1150425108c43b0431ccc6cc5373191a7bbc98d4cd62a8a"
 )
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_RECOGNIZED_LIFECYCLE_EVIDENCE_TIERS = {
+    "canonical-resource-replacement-evidence-v1": frozenset(
+        {EvidenceTier.E4}
+    ),
+    "source-identity-binding-lifecycle-evidence-v1": frozenset(
+        {EvidenceTier.E4}
+    ),
+}
+
+
+def _validate_recognized_lifecycle_tier(
+    *,
+    component: str,
+    evidence_contract: str,
+    evidence_tier: EvidenceTier,
+) -> None:
+    recognized_tiers = _RECOGNIZED_LIFECYCLE_EVIDENCE_TIERS.get(
+        evidence_contract
+    )
+    if recognized_tiers is None:
+        raise ValueError(
+            f"{component} assurance uses an unrecognized evidence contract"
+        )
+    if evidence_tier not in recognized_tiers:
+        recognized = ", ".join(
+            sorted(tier.value for tier in recognized_tiers)
+        )
+        raise ValueError(
+            f"{component} evidence contract {evidence_contract} recognizes "
+            f"only tier(s) {recognized}, not {evidence_tier.value}"
+        )
 
 
 class _SummaryModel(BaseModel):
@@ -962,6 +998,10 @@ class RetentionAssurance(_SummaryModel):
 class CanonicalReplacementAssurance(_SummaryModel):
     status: Literal["observed", "observed_with_gaps", "failed"]
     evidence_tier: EvidenceTier
+    evidence_contract: str = Field(
+        default="canonical-resource-replacement-evidence-v1",
+        min_length=1,
+    )
     report: CanonicalResourceReplacementReport
     artifact_paths: dict[str, str]
     component_digests: dict[str, str]
@@ -992,10 +1032,11 @@ class CanonicalReplacementAssurance(_SummaryModel):
             raise ValueError(
                 "canonical replacement status does not match sealed evidence"
             )
-        if self.status == "observed" and self.evidence_tier.rank < 4:
-            raise ValueError(
-                "canonical replacement assurance requires at least E4 evidence"
-            )
+        _validate_recognized_lifecycle_tier(
+            component="canonical replacement",
+            evidence_contract=self.evidence_contract,
+            evidence_tier=self.evidence_tier,
+        )
         return self
 
     @property
@@ -1018,6 +1059,10 @@ class CanonicalReplacementAssurance(_SummaryModel):
 class SourceBindingLifecycleAssurance(_SummaryModel):
     status: Literal["observed", "observed_with_gaps", "failed"]
     evidence_tier: EvidenceTier
+    evidence_contract: str = Field(
+        default="source-identity-binding-lifecycle-evidence-v1",
+        min_length=1,
+    )
     report: SourceIdentityBindingLifecycleReport
     artifact_paths: dict[str, str]
     component_digests: dict[str, str]
@@ -1048,10 +1093,11 @@ class SourceBindingLifecycleAssurance(_SummaryModel):
             raise ValueError(
                 "source binding lifecycle status does not match sealed evidence"
             )
-        if self.status == "observed" and self.evidence_tier.rank < 4:
-            raise ValueError(
-                "source binding lifecycle assurance requires at least E4 evidence"
-            )
+        _validate_recognized_lifecycle_tier(
+            component="source binding lifecycle",
+            evidence_contract=self.evidence_contract,
+            evidence_tier=self.evidence_tier,
+        )
         return self
 
     @property
@@ -1077,6 +1123,7 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
     )
     run_id: str = Field(min_length=1)
     system_version: str = Field(min_length=1)
+    repository_provenance: RepositoryProvenance
     architecture_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     implementation_plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     evaluation_profile: Literal["autonomous-company-learning-v1"] = (
@@ -1255,8 +1302,10 @@ class CompanyLearningAssuranceSummary(_SummaryModel):
 
 def validate_company_learning_assurance_artifact(
     payload: dict[str, Any],
+    *,
+    repository_root: Path | None = None,
 ) -> CompanyLearningAssuranceSummary:
-    """Validate the typed payload and its self-authenticating digest."""
+    """Validate the typed payload, digest and actual Git repository identity."""
 
     supplied_digest = str(payload.get("summary_digest") or "")
     summary = CompanyLearningAssuranceSummary.model_validate(
@@ -1264,6 +1313,10 @@ def validate_company_learning_assurance_artifact(
     )
     if supplied_digest != summary.digest:
         raise ValueError("company-learning assurance summary digest mismatch")
+    verify_repository_provenance(
+        summary.repository_provenance,
+        repository_root or _REPOSITORY_ROOT,
+    )
     return summary
 
 
@@ -1751,6 +1804,10 @@ def validate_canonical_replacement_assurance_component(
         assurance.artifact_paths["canonical_replacement_evidence"]
     )
     evidence = validate_canonical_resource_replacement_artifact(payload)
+    if evidence.schema_version != assurance.evidence_contract:
+        raise ValueError(
+            "canonical replacement evidence contract mismatch"
+        )
     if evidence.run_id != run_id:
         raise ValueError("canonical replacement run identity mismatch")
     if evidence.system_version != system_version:
@@ -1794,6 +1851,10 @@ def validate_source_binding_lifecycle_assurance_component(
         assurance.artifact_paths["source_binding_lifecycle_evidence"]
     )
     evidence = validate_source_identity_binding_lifecycle_artifact(payload)
+    if evidence.schema_version != assurance.evidence_contract:
+        raise ValueError(
+            "source binding lifecycle evidence contract mismatch"
+        )
     if evidence.run_id != run_id:
         raise ValueError("source binding lifecycle run identity mismatch")
     if evidence.system_version != system_version:
@@ -1949,6 +2010,10 @@ def validate_company_learning_assurance_components(
 ) -> None:
     """Reopen every evidence component and verify identity and digests."""
 
+    verify_repository_provenance(
+        summary.repository_provenance,
+        _REPOSITORY_ROOT,
+    )
     expected_paths = {
         "positive_pair",
         "positive_company_learning_evaluation",

@@ -45,7 +45,15 @@ def test_full_lifecycle_observation_is_continuous_and_complete() -> None:
     assert report.safety_violation_count == 0
     assert report.immutability_violation_count == 0
     assert report.runtime_support_rate.point_estimate == 1.0
+    assert report.runtime_support_rate.numerator == 12
+    assert report.runtime_support_rate.denominator == 12
+    assert (
+        report.runtime_support_rate.method
+        == "descriptive_checklist_ratio"
+    )
     assert report.overall_satisfaction_rate.point_estimate == 1.0
+    assert report.overall_satisfaction_rate.numerator == 12
+    assert report.overall_satisfaction_rate.denominator == 12
     assert report.resolution_temporal_rate.point_estimate == 1.0
     assert report.exact_attachment_rate.point_estimate == 1.0
     assert report.lifecycle_transition_rate.point_estimate == 1.0
@@ -70,6 +78,8 @@ def test_each_lifecycle_failure_is_noncompensatory(
     assert report.violating_measurement_count == 1
     assert report.safety_violation_count == 1
     assert report.measurement_rates[measurement].point_estimate == 0.0
+    assert report.measurement_rates[measurement].numerator == 0
+    assert report.measurement_rates[measurement].denominator == 1
     assert report.full_scope_complete is False
     assert report.immutability_violation_count == int(
         measurement == "source_immutable"
@@ -100,6 +110,8 @@ def test_unsupported_runtime_surfaces_are_precise_gaps() -> None:
     assert report.observed_measurement_count == 4
     assert report.unsupported_measurement_count == 8
     assert report.runtime_support_rate.point_estimate == pytest.approx(1 / 3)
+    assert report.runtime_support_rate.numerator == 4
+    assert report.runtime_support_rate.denominator == 12
     assert report.violating_measurement_count == 0
     assert report.lifecycle_transition_rate is None
     assert report.unsupported_reason_counts == {
