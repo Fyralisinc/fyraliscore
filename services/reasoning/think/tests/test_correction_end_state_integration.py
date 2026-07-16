@@ -1,3 +1,5 @@
+"""Integrated correction propagation through deterministic T4 convergence."""
+
 from __future__ import annotations
 
 import json
