@@ -89,8 +89,9 @@ Everything else receives an explicit safe behavior and return condition here.
 - **Remaining boundary:** Open-ended channel discovery, arbitrary recurrence
   distance, very large histories, cross-workspace Slack and equivalent
   conversational reconstruction across Jira, email, documents and meetings
-  remain unproven. Jira and Linear structured identity transport is now proven,
-  but that is narrower than conversational reconstruction.
+  remain unproven. Jira, Linear, Google Drive and Gmail structured identity
+  transport is now proven, but that is narrower than conversational
+  reconstruction.
 - **Return condition:** Reopen during multi-source and production-scale
   recurrence evaluation.
 
@@ -279,14 +280,15 @@ Everything else receives an explicit safe behavior and return condition here.
   overlap, mutation, tenant leak or replay divergence.
 - **Return condition:** Prove rename continuity, archive/name reuse and
   stale-alias rejection first — complete for customers. Reopen for merge,
-  split, replacement, resurrection, non-customer identity lifecycle and
-  `SourceIdentityBinding` rebind/revocation through canonical lifecycle writers
-  with correction closure.
+  split, replacement, resurrection and non-customer identity lifecycle through
+  canonical lifecycle writers with correction closure. Source-binding close,
+  revoke and supersede now have a separate bounded contract in EDGE-019.
 
 ### EDGE-017 — Structured source claims cannot create identity authority
 
-- **Status:** `resolved` for Jira project and Linear project/team identity
-  surfaces; broader connector coverage remains `active`
+- **Status:** `resolved` for Jira project, Linear project/team, Google Drive
+  file and Gmail thread identity surfaces; broader connector coverage remains
+  `active`
 - **Trigger:** An authenticated structured source contains a stable object ID
   and a human-readable key/name that may refer to a canonical company entity.
 - **Risk:** Treating handler JSON or matching text as authority can fabricate
@@ -298,12 +300,19 @@ Everything else receives an explicit safe behavior and return condition here.
   bindings fail closed; free text never creates authority.
 - **Current evidence:** Jira project and Linear project/team claims survive
   inline and Kafka normalization and attach atomically to the durable
-  Observation. Real-Postgres tests prove exact resolver consumption, event-time
-  liveness, forged-text rejection, missing-binding inertness and cross-source
+  Observation. Google Drive file identity remains exact across file, comment
+  and revision records; Gmail attaches thread identity only to the exact
+  subject surface. Focused real-Postgres tests prove exact resolver
+  consumption, event-time liveness, forged-text rejection, missing
+  ID/name/subject and missing-binding inertness, source isolation and tenant
   isolation.
-- **Return condition:** Extend the same contract to email, documents, meetings
-  and remaining connectors; add mention-specific multi-object populations and
-  causal learning proofs per source.
+- **Evaluator boundary:** The standalone active-surface artifact at checkpoint
+  `41ae2771` covers exactly Jira and Linear (`2/2`) plus five source-salience
+  cases. Drive and Gmail are focused-test proven but are not represented in
+  that historical artifact. Assurance v6 integration is still pending.
+- **Return condition:** Extend the same contract to meetings and remaining
+  connectors; add mention-specific multi-object populations and causal learning
+  proofs per source. Do not infer causal equivalence from transport tests.
 
 ### EDGE-018 — Company-learning feedback cannot become self-authorizing truth
 
@@ -321,8 +330,96 @@ Everything else receives an explicit safe behavior and return condition here.
   retrieval salience, a corrected source does not, foreign-tenant outcomes are
   excluded and before/after snapshots show no Model or grounding truth changes.
 - **Return condition:** Add empirical weight calibration, temporal decay,
-  route-specific causal attribution, retention/regression evaluation and
-  production-scale read-cost proof.
+  route-specific causal attribution and production-scale read-cost proof.
+  Bounded retention is now measured separately in EDGE-020.
+
+### EDGE-019 — Source-binding lifecycle and historical attachments
+
+- **Status:** `resolved` for repository-owned close, revoke and supersede;
+  historical reconstruction and database enforcement remain `bounded`
+- **Trigger:** A structured source object is renamed, invalidated, rebound or
+  superseded while observations still refer to an earlier binding version.
+- **Risk:** Silent redirection can rewrite evidence history; overlapping
+  intervals can make source authority ambiguous; partial lifecycle writes can
+  leave inconsistent current state.
+- **Current behavior:** `SourceIdentityBinding` repository operations preserve
+  valid-time history, append transaction-time versions, record replayable
+  operation references, reject stale expected versions, isolate tenants and
+  permit a successor exactly at the predecessor boundary. New bindings whose
+  current-knowledge intervals overlap an existing binding are rejected.
+- **Attachment boundary:** Existing attachments remain storage-exact and pinned
+  to v1. After v1's transaction interval closes, operational
+  `resolve_observation_source` returns no result rather than redirecting to a
+  successor. A delayed historical Observation may attach the visible closure
+  version v2. This is safe stale fencing, not reconstruction of the old
+  attachment.
+- **Enforcement boundary:** Interval overlap is guarded by
+  `SourceIdentityBindingRepo`, not a database exclusion constraint. Operations
+  made with a caller-owned connection depend on the caller providing the
+  surrounding transaction.
+- **Evidence:** Focused Jira, Linear and lifecycle real-Postgres tests pass,
+  including the scheduled-terminal overlap case. There is not yet a standalone
+  typed lifecycle evidence artifact.
+- **Return condition:** Add a typed evaluator artifact, prove operational
+  historical reconstruction if required, add database-level overlap exclusion
+  and make transaction ownership explicit and testable.
+
+### EDGE-020 — Retention metrics can overstate restart and learning durability
+
+- **Status:** `resolved` for the bounded standalone population; long-duration
+  durability remains `active`
+- **Trigger:** Learned exact, variant or corrected behavior is reevaluated after
+  intervening system activity or a nominal restart.
+- **Risk:** A perfect retention score can be mistaken for proof of process,
+  queue, database or deployment durability, or for resistance to unrelated
+  end-to-end learning interference.
+- **Current evidence:** A sealed standalone real-Postgres run observes `14/14`
+  cases. Exact, governed-variant and corrected retention, restart survival,
+  correction authority, source immutability, Model consistency and
+  evidence-lineage consistency are `1.0`; forgetting, unsafe globalization and
+  hard-safety incidents are `0.0`; all four existing negative controls and
+  three representative collision families remain safe; retention-horizon AUC
+  is `1.0`. Safety regressions are noncompensatory.
+- **Restart boundary:** The restart metric constructs fresh
+  `EntityResolverWorker` and `SourceSemanticWorker` objects in the same process
+  against the same connection pool and database. It does not terminate the
+  process, recover queues, reconnect, restart the database or redeploy.
+- **Interference boundary:** The 0/4/16 intervening cycles are direct governed
+  `EntityAliasRepo` writes over newly seeded resources. They represent
+  alias-registry growth, not unrelated clarification, worker or complete
+  company-learning cycles.
+- **Consistency boundary:** Model consistency is a cardinality/ID round trip
+  against IDs read from the same recurrence rows. Evidence-lineage consistency
+  proves the Observation, answered clarification and adjudicated alias rows
+  exist. Neither independently proves proposition semantics, canonical
+  referents, lifecycle/projection validity, complete relational linkage,
+  digests or correction propagation.
+- **Correction and population boundary:** Corrected retention reuses the final
+  exact result and original clarification replay authority; it does not apply a
+  second correction that replaces a learned wrong target. One governed variant
+  and three of eight collision families are covered. Tenant isolation is not
+  independently measured in this adaptive-only runner.
+- **Return condition:** Add true process/queue/database/deployment restart,
+  unrelated end-to-end learning interference, a second correction, independent
+  semantic/lineage validation, all five remaining collision families and
+  long-duration horizons.
+
+### EDGE-021 — Standalone learning evidence is not combined assurance
+
+- **Status:** `active`
+- **Trigger:** A focused evaluator passes before its evidence is registered,
+  reopened and recomputed by the combined assurance contract.
+- **Risk:** A standalone result can be reported as system-wide proof without
+  digest binding, component-accounting checks or fail-closed combined status.
+- **Current behavior:** The active-surface artifact covers the historical
+  Jira/Linear `2/2` and source-salience `5/5` population. The retention artifact
+  covers its bounded `14/14` population. Both are standalone. Source-binding
+  lifecycle is test-backed and has no typed artifact.
+- **Safe boundary:** Do not claim these components are integrated in assurance
+  v5 or v6 until the combined command emits, reopens, digest-checks, recomputes
+  and noncompensatorily gates them.
+- **Return condition:** Complete assurance v6 integration and add a typed
+  source-lifecycle component without broadening any proof boundary.
 
 ## Entry Template
 

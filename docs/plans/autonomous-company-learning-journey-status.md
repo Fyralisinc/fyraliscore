@@ -6,9 +6,9 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `86c1d44b`
+**Current checkpoint:** `9d9db9e5`
 
-**Last updated:** 2026-07-16
+**Last updated:** 2026-07-17
 
 ## Purpose
 
@@ -284,9 +284,12 @@ flowchart LR
 | Held-out recurrence population | The sealed 60-case registry executes exactly once with continuous intervals, all four entity types and no selective reruns | Complete: 60/60 observed |
 | Slack conversational reconstruction | All nine target families are source-native, supported and correct with zero contamination | Complete for sealed gold: 9/9 |
 | Broad correction propagation | Wrong Models, recursive dependents, relations and projections are fenced or rebuilt; queued refresh work is consumed through the existing projector runtime | Complete for the seeded recursive cascade |
-| Cross-source company physics | Governed structured identity transport works through Jira and Linear using the shared ingestion/grounding path; equivalent causal learning across email, documents, meetings and remaining sources is unproven | Partial: Jira/Linear identity path proven |
+| Cross-source company physics | Governed structured identity transport works through Jira, Linear, Google Drive and Gmail using the shared ingestion/grounding path; equivalent causal learning across these sources and meeting systems is unproven | Partial: Jira/Linear/Drive/Gmail identity path proven |
 | SAGE feedback reuse | Grounding and source-semantic terminal outcomes alter future matching-source retrieval salience without truth or authority writes | Complete for first bounded source-salience bridge |
-| Long-duration autonomous learning | Drift, retention, rollback and regression behavior across many learning cycles | Not proven |
+| Active-surface evaluator | A standalone real-Postgres artifact measures Jira/Linear structured identity and five source-salience cases with noncompensatory status | Complete standalone; pending assurance v6 join |
+| Source-identity lifecycle | Bindings support idempotent close, revoke and supersede with valid-time history, immutable attachment versions and an overlap guard | Complete for repository path; historical attachment reconstruction and DB-level exclusion remain bounded |
+| Retention and forgetting evaluator | Exact and governed-variant behavior is measured at 0/4/16 alias-interference cycles and 0/1/2 worker-object restarts; correction, four negative controls and three collision families are checked noncompensatorily | Complete for bounded standalone proof; not process-restart or long-duration proof |
+| Long-duration autonomous learning | True process/deployment restart, unrelated end-to-end learning, drift, rollback and regression behavior across long runs | Not proven |
 
 ## Important Implementation Checkpoints
 
@@ -317,6 +320,15 @@ flowchart LR
 | `6902b149` | Added source-native Slack deletion, reaction and cross-channel reconstruction |
 | `8140b942` | Sealed the 60-case and nine-family combined assurance gate |
 | `d6908b39` | Removed proof gaps already closed by the complete sealed run |
+| `ac963125` | Reused grounding/source-semantic outcomes as bounded SAGE source-salience memory |
+| `4b6ef3c8` | Added governed Linear project/team structured identity transport |
+| `e450eec4` | Added Google Drive file and Gmail thread structured identity nominations |
+| `d47eb391` | Proved Drive/Gmail exact attachment, forged-text rejection and tenant/source isolation |
+| `c11ff6ba` / `042ad293` / `41ae2771` | Defined, sealed and ran the standalone active structured-identity/source-salience proof |
+| `a4ca188f` | Added versioned source-identity close, revoke and supersede lifecycle |
+| `c64585fb` | Rejected overlapping source bindings after scheduled terminal transitions |
+| `33a50ac2` / `e9ca7057` | Defined and ran the bounded retention/forgetting regression proof |
+| `9d9db9e5` | Made correction-authority and negative/collision retention regressions noncompensatory |
 
 ## Current Validation Evidence
 
@@ -412,6 +424,87 @@ The real-Postgres correction proof now verifies that:
 - replay is idempotent;
 - source observations and another tenant remain unchanged.
 
+### Structured identity and active learning surfaces
+
+Focused production-path evidence now covers four structured sources:
+
+- Jira project identity;
+- Linear project and team identity;
+- Google Drive file identity across file, comment and revision records;
+- Gmail thread identity attached to the exact message subject surface.
+
+All four use the same rule: handlers nominate typed, source-namespaced claims;
+ingestion may attach only a pre-existing governed binding for the same tenant,
+source system and exact normalized surface. Missing IDs, names, subjects or
+bindings remain inert. Free text, a foreign source and a foreign tenant cannot
+create or consume authority.
+
+The standalone active-surface artifact currently runs two structured-identity
+cases, Jira and Linear, plus five source-salience cases. It reports:
+
+- overall status: `observed`;
+- structured identity: `2/2` observed, `0` violations;
+- source salience: `5/5` observed, `0` violations;
+- salience direction rate: `1.0`;
+- noncompensatory structured-identity and source-salience status.
+
+Drive and Gmail are proven by their focused handler, normalization, ingestion
+and real-Postgres workspace-transport tests. They are not yet represented in
+the standalone active-surface artifact. That artifact itself has not yet been
+joined into the combined assurance contract; assurance v6 integration remains
+pending.
+
+### Source-identity lifecycle
+
+The repository path now supports versioned `SourceIdentityBinding` close,
+revoke and supersede operations:
+
+- valid-time closure and successor intervals;
+- transaction-time versions and replayable operation records;
+- idempotent operation references with request fingerprints;
+- stale expected-version rejection;
+- tenant-scoped reads and writes;
+- exact observation attachments pinned to one binding row/version;
+- application-level rejection of a new binding whose interval overlaps an
+  existing current-knowledge interval;
+- a replacement may begin exactly at the prior interval boundary.
+
+The adversarial overlap case was reproduced and fixed in `c64585fb`. The
+focused Jira, Linear and lifecycle suite passed `13` tests after the fix.
+
+The attachment behavior is deliberately fail-closed. An old attachment remains
+storage-exact and continues to reference binding v1; it never silently redirects
+to a later version. Once v1's transaction interval closes,
+`resolve_observation_source` returns no result for that attachment. A delayed
+historical Observation can attach the visible closure version v2. This is a safe
+stale fence, not proof that an already-attached historical Observation can be
+operationally reconstructed after correction.
+
+### Retention and old-family regression
+
+The standalone real-Postgres retention run contains `14/14` sealed
+observations:
+
+- exact-alias retention: `1.0`;
+- governed-variant retention: `1.0`;
+- corrected retention: `1.0`;
+- overall forgetting rate: `0.0`;
+- restart survival rate: `1.0`;
+- correction-authority rate: `1.0`;
+- unsafe-globalization rate: `0.0`;
+- all four existing negative-control kinds safe: `1.0`;
+- three representative collision families safe: `1.0`;
+- source immutability, Model consistency and evidence-lineage consistency:
+  `1.0`;
+- hard-safety incident rate: `0.0`;
+- retention-horizon AUC: `1.0`.
+
+The explicit horizons are 0, 4 and 16 unrelated alias-registry additions with
+0, 1 and 2 fresh worker-object constructions. Correction-authority,
+negative-control and collision failures are noncompensatory after `9d9db9e5`;
+ordinary exact/variant forgetting remains continuously measurable rather than
+being collapsed into pass/fail.
+
 ### Known validation caveat
 
 The repository-wide technical-debt budget currently fails on pre-existing
@@ -440,25 +533,32 @@ It also proves:
   invariant proof.
 - direct correction can converge through Models, relations and projections
   without mutating source truth or another tenant.
+- Jira, Linear, Google Drive and Gmail can transport authenticated,
+  mention-scoped structured identity through the same governed binding path.
+- source bindings can be closed, revoked and superseded with visible valid-time
+  history and idempotent repository operations.
+- exact and one governed-variant family survive bounded unrelated alias growth
+  and fresh worker-object construction without regressing the measured negative
+  and representative collision controls.
 
 ## What the Current Evidence Does Not Prove
 
 It does not yet prove:
 
-- safety and calibration when unseen spellings, acronyms or short forms collide
-  with another permitted entity;
-- broad contextual references, descriptions or local nicknames beyond the
-  sealed cases;
-- broad conflicting-evidence and homonym populations beyond one case each;
 - canonical merge, split, replacement or resurrection behavior beyond the
   customer rename/archive/name-reuse proof;
-- `SourceIdentityBinding` rebind and revocation lifecycle;
 - open-world Slack reconstruction across long time spans and channels;
 - real-provider/model robustness;
-- production connector transport of authenticated source-identity claims;
-- equivalent behavior across Jira, email, documents and meetings;
+- equivalent causal learning across Jira, Linear, Drive, Gmail and meetings;
 - very large correction cascades beyond the bounded seeded proof;
+- true process, deployment, queue or database restart survival;
 - long-term retention without catastrophic overgeneralization;
+- a second correction replacing a previously learned wrong target;
+- complete retention coverage for all eight collision families;
+- operational reconstruction of an old v1 source attachment after its
+  transaction interval closes;
+- database-level exclusion of source-binding interval overlap outside the
+  repository writer;
 - customer value or E5 production benefit.
 
 ## Progress Estimate
@@ -474,9 +574,9 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias Slack clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared |
-| Active autonomous company-learning runtime | 92–94% | Exact replay, candidate-memory variants, collision safety, customer lifecycle, governed Jira/Linear identity transport and the first SAGE source-feedback bridge are green; broader lifecycle and multi-source causal breadth remain |
-| Customer-free objective substantiation | 85–88% | The complete v5 synthetic assurance population is green and the production-shaped Jira/Linear plus SAGE seams are focused-test proven; open-world, retention and provider robustness remain |
-| Broader revised system excluding task autonomy | 79–82% | The company-memory, correction and bounded policy-learning loop is strong, but email/document/meeting equivalence, merge/split/resurrection lifecycle and long-duration validation remain incomplete |
+| Active autonomous company-learning runtime | 94–96% | Exact/variant reuse, collision safety, customer and source-binding lifecycle, Jira/Linear/Drive/Gmail identity transport, bounded retention and the first SAGE feedback bridge are green; broader causal source equivalence and process durability remain |
+| Customer-free objective substantiation | 88–91% | The complete v5 assurance is green and standalone active-surface plus retention artifacts add focused production-path evidence; v6 joining, open-world robustness and true restart proof remain |
+| Broader revised system excluding task autonomy | 82–85% | The company-memory, correction, structured-source and bounded policy-learning loop is strong, but meeting equivalence, merge/split/resurrection, second-correction and long-duration validation remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
@@ -585,24 +685,42 @@ Task autonomy is excluded from all percentages.
      tenant isolation and replay idempotency are all `1.0`. Merge, split,
      replacement, resurrection and non-customer identity lifecycle remain.
 
+8. **Join newly active standalone evidence without weakening its boundaries**
+   - Reopen and digest-check the standalone active structured-identity/
+     source-salience artifact.
+   - Reopen and digest-check the standalone retention artifact.
+   - Convert the currently test-backed source-binding lifecycle evidence into
+     a typed artifact/component before joining it.
+   - Preserve their noncompensatory gates and explicit proof limitations.
+   - Current result: the active-surface and retention artifacts run
+     independently and pass their focused real-Postgres tests. Source-binding
+     lifecycle is focused-test proven but has no standalone typed artifact.
+     None are yet part of the combined assurance contract. Assurance v6
+     integration is pending and must not be inferred from these results.
+
 ### P1 — Required for a strong multi-source product
 
 1. Converge source-semantic direct application and normal Think application on
    one validation/apply contract.
 2. Extend the same entity-learning loop to Jira, email, documents, meetings and
    other structured sources.
-   - Current result: Jira project identities and Linear project/team identities
-     now use one typed `StructuredSourceIdentityClaim` path through inline and
-     Kafka normalization, observation persistence, governed binding lookup and
-     mention-scoped resolution. The handler cannot create authority, missing
-     bindings are inert, forged text is ignored and cross-source bindings fail
-     closed. Equivalent email, document, meeting and full causal-loop behavior
-     remains.
+   - Current result: Jira project, Linear project/team, Google Drive file and
+     Gmail thread identities now use one typed `StructuredSourceIdentityClaim`
+     path through normalization, observation persistence, governed binding
+     lookup and mention-scoped resolution. Handlers cannot create authority,
+     missing bindings are inert, forged text is ignored and cross-source/
+     cross-tenant bindings fail closed. Equivalent full causal-loop behavior
+     and meeting-source support remain.
 3. Extend the customer lifecycle proof to creation/transfer plus merge, split,
    replacement, resurrection and non-customer populations.
 4. Expand actor/customer/project/system same-surface ambiguity beyond the P0
    variant-collision matrix.
-5. Measure correction retention, forgetting and old-family regression.
+5. Expand correction retention, forgetting and old-family regression.
+   - Current result: a bounded standalone run measures exact and one variant
+     family at 0/4/16 alias-interference cycles, all four negative controls and
+     three representative collision families. It does not yet prove process
+     restart, unrelated end-to-end learning, a second correction or the
+     remaining five collision families.
 6. Add cross-tenant adversarial suites beyond the current paired assertions.
 7. Neutralize remaining active command-kernel `agency_*` naming without
    reactivating task autonomy.
@@ -627,7 +745,9 @@ customer lifecycle population, nine-family Slack reconstruction gold and the
 seeded recursive correction burn through one command. It writes one
 digest-sealed v5 assurance summary, reopens every component, checks the current
 architecture and implementation-plan digests and embeds the validated result
-into Company Vitals without adding a score.
+into Company Vitals without adding a score. The newer active-surface and
+retention artifacts remain standalone and are not yet emitted or validated by
+this v5 command.
 
 ### Prerequisite and command
 
@@ -665,6 +785,11 @@ The output directory contains:
 - `correction/correction_assurance.json`;
 - `correction/correction_assurance.md`.
 
+Additional standalone artifacts, pending assurance v6 integration, are:
+
+- `company_learning_active_surfaces_evidence.json`;
+- `company_learning_retention_evidence.json`.
+
 ### Successful-run behavior
 
 A successful run:
@@ -696,11 +821,11 @@ four matched negative controls, all 60 measured recurrence pairs, all nine
 Slack reconstruction families, all 24 positive variant cases, all 16 collision
 cases, all eight customer identity-lifecycle cases and a recursive correction
 cascade across Models, relations and projections. Separate production-shaped
-tests prove the same governed structured-identity transport for Jira and Linear.
-The joined E3/E4 evidence remains insufficient for broad invariant closure. It
-is not open-world or customer E5 evidence, does not yet prove equivalent causal
-learning across email/documents/meetings, and does not include autonomous task
-execution.
+tests prove the same governed structured-identity transport for Jira, Linear,
+Google Drive and Gmail. The joined E3/E4 evidence remains insufficient for
+broad invariant closure. It is not open-world or customer E5 evidence, does not
+yet prove equivalent causal learning across those sources or meetings, and
+does not include autonomous task execution.
 
 The implementation reuses the existing SAGE learner, retrieval machinery,
 Model/event writers, projection runtime, grounding protocols and proof
@@ -718,13 +843,51 @@ its own sealed digests. It is not yet cryptographically bound to the exact
 database tenant and observation manifest, so copied-artifact swap resistance is
 not claimed by this working version.
 
+The standalone retention artifact has a narrower boundary than its metric
+names may suggest:
+
+- `restart_survival_rate` proves fresh `EntityResolverWorker` and
+  `SourceSemanticWorker` object construction against the same live process,
+  connection pool and database. It does not prove process termination, queue
+  recovery, connection re-establishment, database restart or deployment
+  restart survival.
+- Intervening learning cycles are direct governed `EntityAliasRepo` writes over
+  newly seeded resources. They prove resistance to unrelated alias-registry
+  growth, not retention through unrelated clarification, worker or complete
+  company-learning cycles.
+- Model consistency is a cardinality/ID round-trip check against IDs previously
+  read from the same recurrence rows. It does not independently validate Model
+  proposition semantics, lifecycle status, canonical referent or downstream
+  projections.
+- Evidence-lineage consistency proves that the Observation, answered
+  clarification and adjudicated alias rows still exist. It does not yet prove
+  their complete relational linkage, digest continuity or correction
+  propagation.
+- Corrected retention reuses the final exact-alias recurrence and validates the
+  original clarification-learned replay authority. It does not execute a second
+  correction that replaces a previously learned wrong target.
+- The proof covers one governed variant case, all four existing negative
+  controls and three representative collision families; five collision
+  families remain deferred. Tenant noninterference is inherited from underlying
+  paths but is not independently measured by this adaptive-only runner.
+
+The source-binding lifecycle also has an explicit reconstruction boundary.
+Old attachments are storage-exact: they remain pinned to v1 and never redirect.
+After v1's transaction interval closes, operational resolution returns no
+result; delayed historical events may attach the visible closure version v2.
+This is safe stale fencing, not operational reconstruction of the old
+attachment. The overlap guard is enforced by `SourceIdentityBindingRepo`, not a
+database exclusion constraint, and lifecycle calls made with a caller-owned
+connection depend on the caller supplying the surrounding transaction.
+
 ### Explicitly deferred production hardening
 
 - larger open-world homonym/conflict populations;
 - merge/split/replacement/resurrection and non-customer identity lifecycle;
-- `SourceIdentityBinding` rebind/revocation;
-- production connector claim transport beyond the proven Jira/Linear identity
-  surfaces;
+- source-binding historical attachment reconstruction, DB-level interval
+  exclusion and caller-transaction enforcement;
+- production connector claim transport beyond the proven
+  Jira/Linear/Google Drive/Gmail identity surfaces;
 - open-world simulation, real-provider runs and customer E5 validation;
 - very large recursive correction cascades and sustained refresh load;
 - cross-source equivalence;
@@ -734,17 +897,24 @@ not claimed by this working version.
 
 ## Next Execution Sequence
 
-1. Add merge/split/replacement/resurrection cases through the canonical
+1. Join the standalone active-surface and retention evidence into assurance v6
+   without broadening their claims; first give the test-backed source-lifecycle
+   evidence a typed artifact/component.
+2. Add a true second-correction replacement case and independent Model/
+   evidence-lineage validation.
+3. Replace object-only restart and direct alias interference with process
+   restart plus unrelated end-to-end learning cycles; execute the remaining
+   five collision families.
+4. Add merge/split/replacement/resurrection cases through the canonical
    identity writer rather than alias mutation.
-2. Extend the governed claim transport beyond Jira/Linear and repeat the causal
-   suite across Jira, email and document sources.
-3. Add `SourceIdentityBinding` rebind/revocation lifecycle with stale-binding
-   fencing and historical resolution.
-4. Calibrate and stratify the existing SAGE source-salience bridge with
+5. Repeat the causal suite across Jira, Linear, Drive and Gmail, then add
+   meeting sources.
+6. Complete source-binding historical reconstruction and move interval overlap
+   enforcement into a database contract.
+7. Calibrate and stratify the existing SAGE source-salience bridge with
    route-specific attribution, temporal decay and production-scale cost proof.
-5. Add retention, forgetting and old-family regression evaluation.
-6. Run frozen real-provider and long-duration restart/load suites.
-7. Reassess progress from the same combined Company Vitals assurance report.
+8. Run frozen real-provider and long-duration restart/load suites.
+9. Reassess progress from the same combined Company Vitals assurance report.
 
 ## Progress Ledger
 
@@ -1005,3 +1175,48 @@ not claimed by this working version.
   `/tmp/fyralis-company-learning-assurance-v5-19bf73e1` with status `working`,
   no blocking failures and summary digest
   `6fd1b0b2ee246db512de292c4a1475913ce2a8b2d694bdb1e22936d8caa1fe31`.
+
+### 2026-07-17 — Drive/Gmail identity and active-surface proof
+
+- Extended governed structured identity to Google Drive file identity across
+  file, comment and revision records and to Gmail thread identity on the exact
+  message subject surface.
+- Focused tests require exact source and tenant bindings, preserve inert
+  behavior for missing IDs/names/subjects and reject forged free text.
+- The historical standalone active-surface checkpoint `41ae2771` remains a
+  `2/2` Jira/Linear structured-identity result plus `5/5` source-salience cases
+  with zero violations and salience direction `1.0`.
+- Drive/Gmail are focused-path proven but are not part of that checkpoint's
+  artifact. Assurance v6 integration remains in progress and is not claimed by
+  this record.
+
+### 2026-07-17 — Versioned source-binding lifecycle
+
+- Added idempotent close, revoke and supersede operations with valid-time and
+  transaction-time history, stale-version rejection and tenant isolation.
+- Preserved immutable attachment version identity and added repository-level
+  rejection of overlapping current-knowledge binding intervals, including the
+  scheduled-terminal overlap case found during adversarial review.
+- Focused lifecycle and structured-source tests pass, but there is no standalone
+  typed lifecycle evidence artifact yet.
+- Old attachments remain storage-exact and stale-fenced: once v1's transaction
+  interval closes, operational resolution returns no result; a delayed
+  historical Observation may attach v2. The repository overlap guard is not a
+  database exclusion constraint, and caller-owned connections rely on the
+  surrounding caller transaction.
+
+### 2026-07-17 — Bounded retention proof and fail-closed safety
+
+- Added a `14/14` standalone real-Postgres retention run covering exact,
+  governed-variant and corrected recurrence at 0/4/16 unrelated alias-registry
+  additions and 0/1/2 fresh worker-object constructions.
+- Measured retention and authority rates at `1.0`, forgetting and unsafe
+  globalization at `0.0`, all four negative controls and three representative
+  collision families safe, hard-safety incidents `0.0` and retention-horizon
+  AUC `1.0`.
+- Made correction-authority and negative/collision regressions
+  noncompensatory in `9d9db9e5`.
+- The proof does not cover process/deployment/database restart, unrelated
+  end-to-end learning cycles, a second correction, the remaining five collision
+  families or independent semantic validation of Models and complete evidence
+  lineage.
