@@ -238,10 +238,12 @@ coherent diff.
   discourse, quotation, recommendations, promises, corrections, quantities or
   temporal operators. The epistemic admission currently uses a fixed service
   policy rather than the full command/result/event/outbox and writer-cutover
-  protocol. The live resolver now invokes this narrow lane in the same database
-  transaction after a single-referent grounding fate and before its downstream
-  trigger, but the legacy Models repository remains the transitional physical
-  writer.
+  protocol. The live resolver atomically enqueues one durable source-semantic
+  work head after each terminal grounding fate. A dedicated leased worker waits
+  until the source Observation has a durable embedding, then commits the
+  interpretation, admission fate and optional Model with the work
+  terminalization in one transaction. The legacy Models repository remains the
+  transitional physical writer.
 - **Return condition:** Add each deferred capability only after the direct
   Slack -> mention -> grounding -> deterministic source semantics -> one
   admitted belief path is green, then require matched semantic fixtures and
@@ -255,20 +257,39 @@ coherent diff.
 - **Affected documents:** implementation and evaluation
 - **Affected components:** embedding recovery, source semantics, tenant
   constraints, idempotency and source identity
-- **Working core boundary:** A Slack message with an inline embedding, one
+- **Working core boundary:** A Slack message with either an inline embedding or
+  an embedding completed after grounding, one
   source-anchored entity mention, independently supported single-referent
   grounding and the supported asserted/report grammar reaches one canonical
-  belief Model without a manual semantic handoff. The grounding trace,
-  interpretation, consumer-specific admission and Model commit atomically.
+  belief Model without a manual semantic handoff. Grounding atomically creates
+  a unique semantic work head. The interpretation, consumer-specific admission,
+  Model and terminal work fate then commit atomically under a leased fencing
+  token.
   The exact source-native Slack author is retained in the SourceAssertion and
   Model proposition. The legacy late-Think trigger is suppressed because the
   resolver's sidecar admission cannot authorize Think or a second belief write.
+- **Implemented recovery:** Every terminal grounding trace idempotently creates
+  one `(tenant_id, grounding_trace_id)` work item. Pending embeddings remain in
+  `awaiting_embedding`; a bounded poller claims them only after the observation
+  proves embedding readiness. Per-claim UUID fencing tokens, expiring leases,
+  retry schedules and terminal fates prevent concurrent or crashed workers from
+  producing a second semantic result. Runtime manifest and Compose wiring make
+  this an owned production process.
 - **Recorded edge cases:**
-  - An admitted grounding whose Observation embedding is null or still pending
-    logs a deferred fate but has no durable source-semantic retry item yet.
-  - Sequential replay is idempotent, while simultaneous processors for the same
-    grounding trace still rely on uniqueness failure rather than an explicit
-    per-trace claim/lock protocol.
+  - Lease heartbeats are deferred because the current deterministic processor
+    performs no provider call; unusually slow future extractors will need them.
+  - Failure handling retries all exceptions up to a fixed cap. A durable
+    transient-versus-poison error taxonomy is still required before broad
+    production traffic.
+  - There is no reconciliation sweep yet for historical grounding traces that
+    predate the work queue or for an impossible missing work row.
+  - The source-semantic evaluator exposes the resulting interpretation and
+    admission coverage gap, but does not yet break incomplete work down by queue
+    status, embedding wait age, retry age or terminal failure class.
+  - The thin worker waits for an embedding before every semantic fate. Future
+    optimization may allow deterministic no-admission outcomes to terminalize
+    without an embedding, while preserving the invariant that Model admission
+    always requires one.
   - Sources without a stable native actor reference still carry an explicit
     unresolved-author marker; they need later adjudication rather than a
     fabricated channel identity.
@@ -281,9 +302,10 @@ coherent diff.
   primary path from running end to end. Solving them before that proof would
   expand the slice into recovery infrastructure and general language
   understanding.
-- **Return condition:** Revisit embedding retry first after the green vertical,
-  then add concurrency claims and source-native revision identity before
-  production cutover. Any future Think handoff must mint a separate live
+- **Return condition:** Add failure classification, reconciliation and lease
+  heartbeats when processor behavior requires them, then add source-native
+  revision identity before production cutover. Any future Think handoff must
+  mint a separate live
   Think-consumer admission and prove it cannot duplicate the source-semantic
   belief. Add grammar classes only with matched positive and negative semantic
   fixtures.

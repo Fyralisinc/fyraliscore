@@ -155,6 +155,15 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         has_healthcheck=True,
     ),
     _proc(
+        "source_semantic_worker",
+        "reasoning",
+        ("python", "scripts/run_source_semantic_worker.py"),
+        ("production",),
+        "Durable grounding-to-source-semantics admission worker.",
+        compose_service="source_semantic_worker",
+        has_healthcheck=True,
+    ),
+    _proc(
         "topology_sweeper",
         "reasoning",
         ("python", "scripts/run_topology_sweeper.py"),

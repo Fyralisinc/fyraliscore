@@ -15,9 +15,14 @@ from lib.evaluation.source_semantics import (
     evaluate_source_semantic_state,
 )
 from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.ingest.ingestion.embedding.models import EmbeddingEnvelope
 from services.ingest.ingestion.core import ingest_from_draft
 from services.ingest.ingestion.handlers.slack import handle_slack_message
+from services.ingest.ingestion.writers.embedding_worker.embedding_worker import (
+    embed_and_update,
+)
 from services.workers.entity_resolver.worker import EntityResolverWorker
+from services.workers.source_semantic_worker import SourceSemanticWorker
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -31,6 +36,11 @@ class _DeterministicEmbedder:
 
     async def embed(self, _text: str) -> list[float]:
         return [0.01] * self.config.expected_dim
+
+
+class _UnusedDlqProducer:
+    async def produce(self, **_kwargs: Any) -> None:
+        raise AssertionError("the successful embedding path must not publish a DLQ item")
 
 
 class _ScriptedResolver(LLMProvider):
@@ -387,6 +397,30 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
     ) == [("NBI", "resolved")]
 
     async with resolver_db.acquire() as conn:
+        before_semantics = await conn.fetchrow(
+            """
+            SELECT work.status,
+                   (SELECT count(*) FROM models WHERE tenant_id=$1) AS model_count
+            FROM source_semantic_work_items work
+            JOIN grounding_traces trace
+              ON trace.tenant_id=work.tenant_id
+             AND trace.id=work.grounding_trace_id
+            WHERE work.tenant_id=$1 AND trace.source_observation_id=$2
+            """,
+            tenant_id,
+            result.observation.id,
+        )
+    assert before_semantics is not None
+    assert before_semantics["status"] == "pending"
+    assert before_semantics["model_count"] == 0
+
+    semantic_worker = SourceSemanticWorker(
+        pool=resolver_db,
+        worker_id=f"pytest:ready:{tenant_id}",
+    )
+    await semantic_worker.process_batch(limit=1000)
+
+    async with resolver_db.acquire() as conn:
         row = await conn.fetchrow(
             """
             SELECT gt.current_fate,
@@ -395,10 +429,14 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
                    ssi.grounding_continuity,
                    ssad.disposition,
                    ssad.admitted_model_id,
+                   work.status AS work_status,
                    m.born_from_event_id,
                    m.proposition,
                    m.scope_entities
             FROM grounding_traces gt
+            JOIN source_semantic_work_items work
+              ON work.tenant_id=gt.tenant_id
+             AND work.grounding_trace_id=gt.id
             JOIN source_semantic_interpretations ssi
               ON ssi.tenant_id=gt.tenant_id
              AND ssi.grounding_trace_id=gt.id
@@ -430,6 +468,7 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
 
     assert row is not None
     assert row["current_fate"] == "resolved_for_consumer"
+    assert row["work_status"] == "belief_applied"
     assert row["disposition"] == "belief_applied"
     assert row["admitted_model_id"] is not None
     assert row["born_from_event_id"] == result.observation.id
@@ -474,3 +513,168 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
     assert evaluation.epistemic_consumer_admission_continuity_rate == 1.0
     assert evaluation.model_dependency_closure_rate == 1.0
     assert evaluation.incident_counts == {}
+
+    await semantic_worker.process_batch(limit=1000)
+    async with resolver_db.acquire() as conn:
+        assert await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM models
+            WHERE tenant_id=$1 AND born_from_event_id=$2
+            """,
+            tenant_id,
+            result.observation.id,
+        ) == 1
+
+
+async def test_pending_slack_embedding_recovers_to_one_grounded_belief(
+    resolver_db: asyncpg.Pool,
+    tenant_id,
+) -> None:
+    """Grounding-first and embedding-later still reaches one terminal belief."""
+
+    alias_repo = EntityAliasRepo(resolver_db)
+    await alias_repo.insert_alias(
+        phrase="Nimbus Bank",
+        resolved_entity_ref={"type": "customer", "id": "customer-nimbus"},
+        source="manual",
+        confidence=0.99,
+        tenant_id=tenant_id,
+        extra_metadata={
+            "identity_basis_class": "independently_adjudicated",
+            "identity_basis_ref": "test-adjudication:customer:nimbus",
+        },
+    )
+    payload = _slack_message(
+        text="NBI is blocked",
+        ts=f"{(datetime.now(timezone.utc) - timedelta(seconds=5)).timestamp():.6f}",
+    )
+    draft = await handle_slack_message(payload, {})
+    result = await ingest_from_draft(
+        channel="slack:message",
+        draft=draft,
+        pool=resolver_db,
+        tenant_id=tenant_id,
+        actor_repo=None,
+        alias_repo=alias_repo,
+        embedder=None,
+    )
+    assert result.observation.embedding_pending is True
+
+    resolver = EntityResolverWorker(
+        pool=resolver_db,
+        llm=_ScriptedResolver(
+            {
+                "canonical_ref": {
+                    "type": "customer",
+                    "id": "customer-nimbus",
+                },
+                "confidence": 0.97,
+                "reasoning": "NBI selects the independently adjudicated tenant entity",
+            }
+        ),
+        alias_repo=alias_repo,
+    )
+    assert await resolver.process_observation(
+        result.observation.id,
+        tenant_id,
+    ) == [("NBI", "resolved")]
+
+    async with resolver_db.acquire() as conn:
+        awaiting = await conn.fetchrow(
+            """
+            SELECT work.status, work.attempt_count,
+                   (SELECT count(*) FROM models WHERE tenant_id=$1) AS model_count
+            FROM source_semantic_work_items work
+            JOIN grounding_traces trace
+              ON trace.tenant_id=work.tenant_id
+             AND trace.id=work.grounding_trace_id
+            WHERE work.tenant_id=$1 AND trace.source_observation_id=$2
+            """,
+            tenant_id,
+            result.observation.id,
+        )
+    assert awaiting is not None
+    assert awaiting["status"] == "awaiting_embedding"
+    assert awaiting["attempt_count"] == 0
+    assert awaiting["model_count"] == 0
+
+    embedding_status = await embed_and_update(
+        env=EmbeddingEnvelope(
+            tenant_id=tenant_id,
+            source="slack",
+            observation_id=result.observation.id,
+            enqueued_at=datetime.now(timezone.utc),
+        ),
+        pool=resolver_db,
+        embedder=_DeterministicEmbedder(),
+        dlq_producer=_UnusedDlqProducer(),
+    )
+    assert embedding_status == "embedded"
+
+    semantic_worker = SourceSemanticWorker(
+        pool=resolver_db,
+        worker_id=f"pytest:embedding-recovery:{tenant_id}",
+    )
+    await semantic_worker.process_batch(limit=1000)
+
+    async with resolver_db.acquire() as conn:
+        recovered = await conn.fetchrow(
+            """
+            SELECT work.status, work.attempt_count,
+                   work.interpretation_id, work.admission_decision_id,
+                   work.admitted_model_id, model.proposition,
+                   model.scope_entities,
+                   (SELECT count(*)
+                    FROM source_semantic_interpretations
+                    WHERE tenant_id=$1) AS interpretation_count,
+                   (SELECT count(*)
+                    FROM source_semantic_admission_decisions
+                    WHERE tenant_id=$1) AS admission_count,
+                   (SELECT count(*) FROM models WHERE tenant_id=$1) AS model_count
+            FROM source_semantic_work_items work
+            JOIN grounding_traces trace
+              ON trace.tenant_id=work.tenant_id
+             AND trace.id=work.grounding_trace_id
+            JOIN models model
+              ON model.tenant_id=work.tenant_id
+             AND model.id=work.admitted_model_id
+            WHERE work.tenant_id=$1 AND trace.source_observation_id=$2
+            """,
+            tenant_id,
+            result.observation.id,
+        )
+    assert recovered is not None
+    assert recovered["status"] == "belief_applied"
+    assert recovered["attempt_count"] == 1
+    assert recovered["interpretation_id"] is not None
+    assert recovered["admission_decision_id"] is not None
+    assert recovered["admitted_model_id"] is not None
+    assert recovered["interpretation_count"] == 1
+    assert recovered["admission_count"] == 1
+    assert recovered["model_count"] == 1
+    proposition = _json(recovered["proposition"])
+    assert proposition["source_author_ref"] == "slack:U-NORTHSTAR"
+    assert _json(recovered["scope_entities"]) == [
+        {"type": "customer", "id": "customer-nimbus", "version": 1}
+    ]
+
+    await semantic_worker.process_batch(limit=1000)
+    async with resolver_db.acquire() as conn:
+        counts = await conn.fetchrow(
+            """
+            SELECT
+              (SELECT count(*) FROM source_semantic_interpretations
+               WHERE tenant_id=$1) AS interpretation_count,
+              (SELECT count(*) FROM source_semantic_admission_decisions
+               WHERE tenant_id=$1) AS admission_count,
+              (SELECT count(*) FROM models WHERE tenant_id=$1) AS model_count
+            """,
+            tenant_id,
+        )
+    assert counts is not None
+    assert dict(counts) == {
+        "interpretation_count": 1,
+        "admission_count": 1,
+        "model_count": 1,
+    }

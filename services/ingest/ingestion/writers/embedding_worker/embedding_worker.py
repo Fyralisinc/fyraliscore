@@ -137,7 +137,7 @@ def _bump(key: str, by: float = 1.0) -> None:
 # clear DB error instead of silent truncation.
 _UPDATE_SQL = """
 UPDATE observations
-   SET embedding = $1::vector,
+   SET embedding = $1::text::vector,
        embedding_pending = FALSE
  WHERE id = $2
    AND embedding_pending = TRUE
@@ -255,9 +255,11 @@ async def embed_and_update(
                 "SELECT set_config('app.current_tenant', $1::text, true)",
                 str(env.tenant_id),
             )
-            # pgvector accepts the string form "[f1,f2,...]" for vector
-            # literals; encoding here keeps the call site agnostic of
-            # whether pgvector's Python adapter is registered.
+            # Force the bind parameter to text before Postgres casts it to
+            # vector. This remains compatible when a pool has pgvector's
+            # binary codec registered; binding the string directly as
+            # `$1::vector` would make that codec try to parse the whole literal
+            # as one float.
             vec_str = "[" + ",".join(repr(float(x)) for x in vec) + "]"
             result = await conn.execute(
                 _UPDATE_SQL, vec_str, env.observation_id,

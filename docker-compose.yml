@@ -17,7 +17,7 @@
 #             summarization_worker, summarization_batch_worker,
 #             embedding_worker
 #   app     : think_worker, post_commit_worker, anomaly_processor_worker,
-#             entity_resolver_worker
+#             entity_resolver_worker, source_semantic_worker
 #   (UI + TLS edge live in the demo overlay repo's docker-compose.demo.yml)
 #
 # Secrets (per-source creds, MASTER_KEK, OAuth/HMAC keys) live in
@@ -510,6 +510,19 @@ services:
       ENTITY_RESOLVER_POLL_INTERVAL_S: "30"
       ENTITY_RESOLVER_BATCH_SIZE: "25"
       ENTITY_RESOLVER_LLM_BUDGET_PER_MIN: "30"
+
+  source_semantic_worker:
+    <<: *worker
+    container_name: company_os_source_semantic_worker
+    command: python scripts/run_source_semantic_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      SOURCE_SEMANTIC_POLL_INTERVAL_S: "5"
+      SOURCE_SEMANTIC_BATCH_SIZE: "25"
+      SOURCE_SEMANTIC_LEASE_S: "120"
+      SOURCE_SEMANTIC_RETRY_S: "30"
+      SOURCE_SEMANTIC_MAX_ATTEMPTS: "5"
 
   # ---- retrieval/memory feature workers (ported from dev) -----------
   sage_structural_features_worker:
