@@ -165,6 +165,7 @@ async def test_slack_thread_review_adjudication_reaches_original_grounded_belief
     assert reply_result.observation.content["_unresolved_phrases"] == [
         "the project"
     ]
+    assert reply_result.trigger_queue_id is None
 
     provider = _ScriptedResolver(
         {
@@ -254,7 +255,7 @@ async def test_slack_thread_review_adjudication_reaches_original_grounded_belief
             WHERE tenant_id = $1
               AND observation_id = $2
               AND trigger_kind = 'T1'
-              AND trigger_subkind = 'entity_resolved_late'
+              AND trigger_subkind IN ('event_arrival', 'entity_resolved_late')
             ORDER BY enqueued_at, id
             """,
             tenant_id,
@@ -680,6 +681,7 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
         embedder=_DeterministicEmbedder(),
     )
     assert result.observation.content["_unresolved_phrases"] == ["NBI"]
+    assert result.trigger_queue_id is None
 
     provider = _ScriptedResolver(
         {
@@ -761,11 +763,11 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
             "SELECT count(*) FROM models WHERE tenant_id=$1",
             tenant_id,
         )
-        legacy_think_trigger_count = await conn.fetchval(
+        competing_think_trigger_count = await conn.fetchval(
             """
             SELECT count(*) FROM think_trigger_queue
             WHERE tenant_id=$1 AND observation_id=$2
-              AND trigger_subkind='entity_resolved_late'
+              AND trigger_subkind IN ('event_arrival', 'entity_resolved_late')
             """,
             tenant_id,
             result.observation.id,
@@ -778,7 +780,7 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
     assert row["admitted_model_id"] is not None
     assert row["born_from_event_id"] == result.observation.id
     assert model_count == 1
-    assert legacy_think_trigger_count == 0
+    assert competing_think_trigger_count == 0
     assertion = _json(row["source_assertion"])
     assert assertion["current_speaker_or_author"] == "slack:U-NORTHSTAR"
     coordinate = assertion["coordinates"][0]
@@ -864,6 +866,8 @@ async def test_pending_slack_embedding_recovers_to_one_grounded_belief(
         alias_repo=alias_repo,
         embedder=None,
     )
+    assert result.observation.content["_unresolved_phrases"] == ["NBI"]
+    assert result.trigger_queue_id is None
     assert result.observation.embedding_pending is True
 
     resolver = EntityResolverWorker(

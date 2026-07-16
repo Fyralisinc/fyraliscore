@@ -368,7 +368,11 @@ async def ingest_from_draft(
         draft=draft,
         obs_create=preparation.obs_create,
         embedding=preparation.embedding,
-        enqueue_trigger=enqueue_trigger and not preparation.summary_pending,
+        enqueue_trigger=(
+            enqueue_trigger
+            and not preparation.summary_pending
+            and not _requires_entity_grounding(preparation.obs_create)
+        ),
         obs_id=preparation.obs_id,
         tenant_id=tenant_id,
     )
@@ -387,6 +391,16 @@ async def ingest_from_draft(
         deduped=result.deduped,
     )
     return result
+
+
+def _requires_entity_grounding(observation: ObservationCreate) -> bool:
+    if not str(observation.source_channel).startswith("slack:"):
+        return False
+    content = observation.content
+    if not isinstance(content, dict):
+        return False
+    unresolved = content.get("_unresolved_phrases")
+    return isinstance(unresolved, list) and bool(unresolved)
 
 
 async def _prepare_observation_for_ingest(

@@ -28,7 +28,6 @@ from services.domain.acts import commitments as commitments_svc
 from services.domain.resources import repo as resources_repo
 from services.domain.substrate_candidates import get_substrate_candidate
 from services.domain.substrate_promotion import apply_candidate_resolution_answer
-from services.domain.triggers import enqueue_trigger
 
 
 class ClarificationAnswerBody(BaseModel):
@@ -485,13 +484,6 @@ async def _finalize_entity_resolution(
             answered_by=answered_by,
             chosen_ref=canonical_ref,
         )
-    if observation_id is not None:
-        await _maybe_enqueue_entity_resolution_trigger(
-            conn,
-            tenant_id=tenant_id,
-            observation_id=observation_id,
-            entity_ref=canonical_ref,
-        )
 
 
 async def _create_new_entity_from_answer(
@@ -821,38 +813,6 @@ async def _mark_entity_review_dismissed(
         tenant_id,
         answered_by,
         reason,
-    )
-
-
-async def _maybe_enqueue_entity_resolution_trigger(
-    conn: Any,
-    *,
-    tenant_id: UUID,
-    observation_id: UUID,
-    entity_ref: dict[str, Any],
-) -> None:
-    if entity_ref.get("type") not in {"customer", "commitment", "goal"}:
-        return
-    exists = await conn.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public'
-              AND c.relname = 'think_trigger_queue'
-              AND c.relkind IN ('r', 'p')
-        )
-        """
-    )
-    if not exists:
-        return
-    await enqueue_trigger(
-        conn,
-        tenant_id=tenant_id,
-        trigger_kind="T1",
-        trigger_subkind="entity_resolved_late",
-        observation_id=observation_id,
-        payload={"entity_ref": entity_ref},
     )
 
 

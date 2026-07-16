@@ -296,6 +296,21 @@ decisions will be added after the parallel audit lanes complete.
 - The grounding evaluator now proves review-obligation coverage from the
   canonical clarification lineage rather than the retired compatibility table.
 
+### Slice 8 — One first epistemic owner for unresolved Slack signals
+
+- Slack Observations with unresolved entity phrases no longer enqueue the
+  generic `T1:event_arrival` path at ingest time. Their durable grounding work
+  is the exclusive first epistemic obligation.
+- Resolved grounding continues through source-semantic admission to one
+  canonical Model; questions, ambiguity and unsupported expressions retain
+  explicit no-admission/review fates without a competing generic Think write.
+- Clarification acceptance no longer emits the legacy
+  `entity_resolved_late` T1. Its adjudicated grounding successor is consumed by
+  the same source-semantic lane.
+- The gate is intentionally Slack-specific. Structured/self-contained sources
+  continue through the existing Think path until they have an equivalent
+  grounded-semantic ownership contract.
+
 ## Next Consolidation Targets
 
 1. Keep the source-semantic worker active until its Slack-to-Model vertical is

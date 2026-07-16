@@ -771,6 +771,40 @@ coherent diff.
   consumer, add a forward compatibility projection or archival migration and
   remove the legacy answer branch.
 
+### DISC-018 — Unresolved Slack has one first epistemic owner
+
+- **Date:** 2026-07-16
+- **Milestone:** Deployed-topology belief-writer exclusivity
+- **Status:** `accepted`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** Slack ingest, Think trigger queue, entity resolver,
+  source semantics, clarification correction and canonical Models
+- **Observation:** Slack ingest could enqueue a generic `T1:event_arrival` for
+  the same unresolved signal that the entity resolver and source-semantic
+  worker processed. The thin vertical proved one Model only because it did not
+  drain the original T1, so deployed topology still had two possible belief
+  writers.
+- **Working core boundary:** A Slack Observation carrying unresolved entity
+  phrases creates grounding work but no generic event-arrival Think trigger.
+  Grounding and source semantics own its first belief/no-admission fate.
+  Adjudication advances the grounding generation and does not emit a late
+  generic T1. Slack signals without a grounding obligation and non-Slack source
+  types retain their existing Think behavior.
+- **Implementation evidence:** Ingest tests prove unresolved Slack has no
+  event-arrival trigger while ordinary and structured-source observations still
+  do. Production-shaped Slack verticals prove the grounding/source-semantic
+  lane creates exactly one Model and no competing `event_arrival` or
+  `entity_resolved_late` trigger.
+- **Deferred architecture gaps:** The source-semantic processor still applies
+  Models through a narrow adapter rather than the complete normal Think
+  validation/synthesis path. Mixed messages containing both a grounded
+  assertion and unrelated facts need a later typed decomposition contract so
+  grounding ownership does not suppress valuable non-entity semantics.
+- **Return condition:** Introduce one typed grounded-epistemic input accepted by
+  the normal synthesis boundary, then prove both known-at-ingest and
+  deferred-grounding signals converge on the same validation/apply semantics
+  without duplicate Models.
+
 ## Reconciliation Procedure
 
 At a reconciliation milestone:

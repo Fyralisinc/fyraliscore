@@ -538,6 +538,17 @@ async def test_unresolved_entity_phrase_queued_in_content(
     )
     unresolved = r.observation.content.get("_unresolved_phrases", [])
     assert unresolved == ["Frobozz-Widget"]
+    assert r.trigger_queue_id is None
+    assert await gateway_pool.fetchval(
+        """
+        SELECT count(*)
+        FROM think_trigger_queue
+        WHERE tenant_id=$1 AND observation_id=$2
+          AND trigger_subkind='event_arrival'
+        """,
+        tenant_id,
+        r.observation.id,
+    ) == 0
 
 
 @pytest.mark.asyncio
