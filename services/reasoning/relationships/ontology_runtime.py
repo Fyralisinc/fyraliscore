@@ -130,6 +130,7 @@ def _spec_from_proposal(kind: str, proposal: dict[str, Any]) -> EdgeKindSpec:
         on_target_archive=None,
         mutually_exclusive_with=base.mutually_exclusive_with,
         enabled_for_writes=True,
+        allows_reciprocal=base.allows_reciprocal if is_directed else True,
     )
 
 
@@ -138,4 +139,3 @@ __all__ = [
     "resolve_edge_kind_spec",
     "validate_weight_for_spec",
 ]
-

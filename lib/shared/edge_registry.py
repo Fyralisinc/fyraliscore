@@ -129,6 +129,15 @@ class EdgeKindSpec:
     # is trusted to write it.
     enabled_for_writes: bool = True
 
+    # Some directed predicates bind distinct semantic roles that cannot
+    # truthfully be exchanged for the same pair at the same time.  For
+    # example, if A blocks B, a second active claim that B blocks A is not
+    # another view of the same relation: it assigns both Models the
+    # mutually-incompatible roles of blocker and blocked work.  Keep this
+    # opt-in rather than applying a blanket rule to every directed kind;
+    # relations such as `weakens` can legitimately hold in both directions.
+    allows_reciprocal: bool = True
+
 
 # ---------------------------------------------------------------------
 # Cascade-callback implementations
@@ -421,6 +430,7 @@ EDGE_REGISTRY: dict[str, EdgeKindSpec] = {
         on_source_archive=None,
         on_target_archive=None,
         mutually_exclusive_with=frozenset({"enables", "supports"}),
+        allows_reciprocal=False,
     ),
     "enables": EdgeKindSpec(
         name="enables",
@@ -476,6 +486,7 @@ EDGE_REGISTRY: dict[str, EdgeKindSpec] = {
         weight_allowed=True,
         on_source_archive=None,
         on_target_archive=None,
+        allows_reciprocal=False,
     ),
 }
 

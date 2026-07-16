@@ -3072,6 +3072,8 @@ def _classify_apply_edge_drop_reason(exc: Exception) -> str:
     msg = str(getattr(exc, "message", exc)).lower()
     if "cycle" in msg:
         return "cycle_prevention"
+    if "role-stable direction" in msg:
+        return "reciprocal_direction_conflict"
     if "mutually exclusive" in msg:
         return "mutually_exclusive_edge"
     if "self-edge" in msg:

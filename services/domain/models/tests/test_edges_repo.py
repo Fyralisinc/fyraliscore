@@ -175,6 +175,84 @@ async def test_link_contradicts_writes_symmetric_weighted_edges(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_link_batch_rejects_role_reversed_directional_pairs_but_keeps_symmetric(
+    tx_conn, tenant, make_model,
+):
+    """One batch cannot assign both endpoint roles for asymmetric predicates."""
+    # Modern model sidecars have immediate tenant FKs, unlike the original
+    # deferred model fixtures in this module.
+    await tx_conn.execute(
+        "INSERT INTO tenants (id, name) VALUES ($1, 'edge-role-test')",
+        tenant,
+    )
+    repo = EdgesRepo()
+    pairs = [
+        ("blocks", await make_model("Approval gate"), await make_model("Launch")),
+        (
+            "early_warning_for",
+            await make_model("Freshness regression"),
+            await make_model("Renewal risk"),
+        ),
+    ]
+
+    for kind, source, target in pairs:
+        await repo.link(
+            tx_conn,
+            source=source,
+            target=target,
+            kind=kind,
+            tenant_id=tenant,
+            detected_by="think_edge_op",
+            confidence=0.9,
+            explanation=f"{source} has the {kind} source role for {target}",
+        )
+        with pytest.raises(EdgeRegistryError, match="role-stable direction"):
+            await repo.link(
+                tx_conn,
+                source=target,
+                target=source,
+                kind=kind,
+                tenant_id=tenant,
+                detected_by="think_edge_op",
+                confidence=0.8,
+                explanation=f"Spurious reversed {kind} role assignment",
+            )
+
+    symmetric_left = await make_model("Forecast says renewal will close")
+    symmetric_right = await make_model("CRM says renewal was lost")
+    symmetric_ids = await repo.link(
+        tx_conn,
+        source=symmetric_left,
+        target=symmetric_right,
+        kind="contradicts",
+        tenant_id=tenant,
+        detected_by="think_edge_op",
+        weight=0.8,
+        confidence=0.9,
+        explanation="The two outcome claims cannot both be true",
+    )
+
+    assert len(symmetric_ids) == 2
+    for kind, source, target in pairs:
+        active_pairs = await tx_conn.fetch(
+            """
+            SELECT source_model_id, target_model_id
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND edge_kind = $2
+              AND status = 'active'
+            """,
+            tenant,
+            kind,
+        )
+        assert [
+            (row["source_model_id"], row["target_model_id"])
+            for row in active_pairs
+        ] == [(source, target)]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_link_reconfirms_existing_edge_with_evidence(
     tx_conn, tenant, make_model,
 ):

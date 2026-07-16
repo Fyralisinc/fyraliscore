@@ -67,6 +67,7 @@ async def test_resolve_edge_kind_spec_derives_accepted_dynamic_kind() -> None:
     assert spec.name == "gated_by_decision"
     assert spec.is_directed is True
     assert spec.weight_allowed is True
+    assert spec.allows_reciprocal is False
     assert "enables" in spec.mutually_exclusive_with
     validate_weight_for_spec(spec, 0.5)
 
@@ -86,4 +87,3 @@ async def test_unaccepted_dynamic_kind_is_not_writable() -> None:
             tenant_id=tenant_id,
             kind="gated_by_decision",
         )
-

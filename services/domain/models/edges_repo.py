@@ -235,6 +235,19 @@ class EdgesRepo:
                 kind=kind,
             )
 
+        # Serialize writers for role-stable directed pairs before inspecting
+        # the reverse direction. Without the transaction-scoped lock, two
+        # concurrent transactions could both observe no reciprocal row and
+        # then insert opposite active edges.
+        if spec.is_directed and not spec.allows_reciprocal:
+            await self._check_no_reciprocal(
+                conn,
+                kind=kind,
+                source=source,
+                target=target,
+                tenant_id=tenant_id,
+            )
+
         # Mutually-exclusive-with: reject if any forbidden kind exists
         # between this pair already.
         await self._check_mutual_exclusion(
@@ -324,6 +337,45 @@ class EdgesRepo:
             hop_depth=0,
         )
         return ids
+
+    async def _check_no_reciprocal(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        kind: str,
+        source: UUID,
+        target: UUID,
+        tenant_id: UUID,
+    ) -> None:
+        """Reject reverse active edges for role-stable directed predicates."""
+        left, right = sorted((source, target), key=str)
+        lock_key = f"model-edge-role-pair:{tenant_id}:{kind}:{left}:{right}"
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            lock_key,
+        )
+        reciprocal_id = await conn.fetchval(
+            """
+            SELECT id
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = $4
+              AND status = 'active'
+              AND review_status != 'rejected'
+            LIMIT 1
+            """,
+            tenant_id,
+            target,
+            source,
+            kind,
+        )
+        if reciprocal_id is not None:
+            raise EdgeRegistryError(
+                f"edge_kind {kind!r} has role-stable direction and cannot be "
+                f"active in both directions between {source} and {target}"
+            )
 
     async def _check_mutual_exclusion(
         self,
