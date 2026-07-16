@@ -517,6 +517,96 @@ async def test_resolver_prompt_includes_source_entities_and_known_candidates(
     assert "customer-nimbus" in prompt
 
 
+async def test_resolver_candidate_set_excludes_inactive_and_archived_targets(
+    resolver_db: asyncpg.Pool,
+    tenant_id: UUID,
+) -> None:
+    inactive_actor_id = uuid7()
+    archived_resource_id = uuid7()
+    active_resource_id = uuid7()
+    async with resolver_db.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO tenants (id) VALUES ($1) ON CONFLICT DO NOTHING",
+            tenant_id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO actors (
+                id, tenant_id, type, display_name, status
+            ) VALUES ($1, $2, 'human_internal', 'Former Gateway Owner', 'inactive')
+            """,
+            inactive_actor_id,
+            tenant_id,
+        )
+        await conn.executemany(
+            """
+            INSERT INTO resources (
+                id, tenant_id, kind, identity, current_value,
+                metadata, archived_at
+            ) VALUES (
+                $1, $2, 'infrastructure', $3,
+                '{}'::jsonb, '{"semantic_kind":"system"}'::jsonb, $4
+            )
+            """,
+            (
+                (
+                    archived_resource_id,
+                    tenant_id,
+                    "Archived Gateway",
+                    datetime.now(timezone.utc),
+                ),
+                (active_resource_id, tenant_id, "Active Gateway", None),
+            ),
+        )
+    aliases = (
+        (
+            "Former Gateway Owner",
+            {"type": "actor", "id": str(inactive_actor_id)},
+        ),
+        (
+            "Archived Gateway",
+            {"type": "resource", "id": str(archived_resource_id)},
+        ),
+        (
+            "Active Gateway",
+            {"type": "resource", "id": str(active_resource_id)},
+        ),
+    )
+    for phrase, ref in aliases:
+        await EntityAliasRepo(resolver_db).insert_alias(
+            phrase=phrase,
+            resolved_entity_ref=ref,
+            source="manual",
+            confidence=0.99,
+            tenant_id=tenant_id,
+            extra_metadata={
+                "identity_basis_class": "source_authoritative",
+                "identity_basis_ref": f"test-source:{ref['id']}",
+            },
+        )
+    observation_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="Gateway ownership is changing",
+        unresolved_phrases=["Gateway"],
+    )
+
+    ctx = await build_context(
+        pool=resolver_db,
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Gateway",
+    )
+    refs = {
+        (item.canonical_ref["type"], item.canonical_ref["id"])
+        for item in EntityResolverWorker._candidate_inputs(ctx)
+    }
+
+    assert ("resource", str(active_resource_id)) in refs
+    assert ("resource", str(archived_resource_id)) not in refs
+    assert ("actor", str(inactive_actor_id)) not in refs
+
+
 async def test_slack_prompt_never_mixes_channels_or_future_messages(
     resolver_db: asyncpg.Pool, tenant_id: UUID
 ):

@@ -80,6 +80,24 @@ _log = structlog.get_logger(__name__)
 HIGH_CONFIDENCE = 0.8
 REVIEW_MIN = 0.5
 
+
+def _canonical_target_is_authorized(candidate: Any) -> bool:
+    """Fence UUID-backed canonical targets without hiding legacy refs."""
+
+    ref = candidate.resolved_entity_ref
+    if not isinstance(ref, dict):
+        return False
+    if ref.get("type") not in {"actor", "resource", "customer"}:
+        return True
+    try:
+        UUID(str(ref.get("id") or ""))
+    except ValueError:
+        # Source-native and legacy IDs are not governed by the UUID-backed
+        # actor/resource lifecycle tables.
+        return True
+    return bool(candidate.canonical_target_valid)
+
+
 # =====================================================================
 # LLM schema (Pydantic) — what the resolver prompt returns.
 # =====================================================================
@@ -664,6 +682,8 @@ class EntityResolverWorker:
                     )
                 )
         for item in ctx.recent_aliases:
+            if not _canonical_target_is_authorized(item):
+                continue
             alias_ref = f"entity-alias:{item.alias_id}"
             candidates.append(
                 GroundingCandidateInput(
@@ -696,6 +716,8 @@ class EntityResolverWorker:
                 )
             )
         for item in ctx.known_entity_candidates:
+            if not _canonical_target_is_authorized(item):
+                continue
             alias_ref = f"entity-alias:{item.alias_id}"
             candidates.append(
                 GroundingCandidateInput(

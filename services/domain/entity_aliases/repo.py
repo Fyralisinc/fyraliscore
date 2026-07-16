@@ -65,6 +65,47 @@ _LEGAL_SOURCES: frozenset[str] = frozenset(
 
 _WHITESPACE_RE = re.compile(r"\s+", flags=re.UNICODE)
 
+# Actors and resources are the canonical entity classes whose lifecycle is
+# represented in the current schema. Other ref types are source-native or
+# legacy references and remain eligible for the generic alias fast path.
+_ACTIVE_CANONICAL_TARGET_SQL = r"""
+(
+  COALESCE(resolved_entity_ref ->> 'type', '')
+    NOT IN ('actor', 'resource', 'customer')
+  OR COALESCE(resolved_entity_ref ->> 'id', '')
+    !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  OR (
+    COALESCE(resolved_entity_ref ->> 'version', '1') = '1'
+    AND (
+      (
+        resolved_entity_ref ->> 'type' = 'actor'
+        AND EXISTS (
+          SELECT 1
+          FROM actors target
+          WHERE target.tenant_id = entity_aliases.tenant_id
+            AND target.id::text = resolved_entity_ref ->> 'id'
+            AND target.status = 'active'
+        )
+      )
+      OR (
+        resolved_entity_ref ->> 'type' IN ('resource', 'customer')
+        AND EXISTS (
+          SELECT 1
+          FROM resources target
+          WHERE target.tenant_id = entity_aliases.tenant_id
+            AND target.id::text = resolved_entity_ref ->> 'id'
+            AND target.archived_at IS NULL
+            AND (
+              resolved_entity_ref ->> 'type' <> 'customer'
+              OR target.metadata ->> 'semantic_kind' = 'customer'
+            )
+        )
+      )
+    )
+  )
+)
+"""
+
 
 def normalize_phrase(phrase: str) -> str:
     """
@@ -518,14 +559,17 @@ class EntityAliasRepo:
         # distinct refs avoids sorting every duplicate alias row on the
         # hot ingestion path.
         rows = await self._pool.fetch(
-            """
+            f"""
             SELECT DISTINCT resolved_entity_ref
             FROM entity_aliases
             WHERE tenant_id = $1
               AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g') = $2
               AND NOT (
-                entity_metadata ->> 'identity_basis_class'
-                  = 'independently_adjudicated'
+                COALESCE(
+                  entity_metadata ->> 'identity_basis_class'
+                    = 'independently_adjudicated',
+                  FALSE
+                )
                 AND (
                   entity_metadata ->> 'resolution_scope'
                     = 'source_context_only'
@@ -539,6 +583,7 @@ class EntityAliasRepo:
                   )
                 )
               )
+              AND {_ACTIVE_CANONICAL_TARGET_SQL}
             LIMIT 2
             """,
             tenant_id,
@@ -587,7 +632,7 @@ class EntityAliasRepo:
             return {}
 
         rows = await self._pool.fetch(
-            """
+            f"""
             SELECT
                 regexp_replace(lower(alias_text), '\\s+', ' ', 'g') AS normalized,
                 resolved_entity_ref
@@ -595,8 +640,11 @@ class EntityAliasRepo:
             WHERE tenant_id = $1
               AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g') = ANY($2::text[])
               AND NOT (
-                entity_metadata ->> 'identity_basis_class'
-                  = 'independently_adjudicated'
+                COALESCE(
+                  entity_metadata ->> 'identity_basis_class'
+                    = 'independently_adjudicated',
+                  FALSE
+                )
                 AND (
                   entity_metadata ->> 'resolution_scope'
                     = 'source_context_only'
@@ -610,6 +658,7 @@ class EntityAliasRepo:
                   )
                 )
               )
+              AND {_ACTIVE_CANONICAL_TARGET_SQL}
             """,
             tenant_id,
             norms,

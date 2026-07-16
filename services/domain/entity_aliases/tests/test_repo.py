@@ -19,6 +19,7 @@ import asyncio
 import json
 import time
 import uuid
+from datetime import datetime, timezone
 
 import asyncpg
 import pytest
@@ -443,6 +444,144 @@ async def test_fast_path_resolve_many_returns_unambiguous_refs(
     assert resolved == {
         "search v2": product_ref,
         "acme corp": customer_ref,
+    }
+
+
+async def test_fast_path_excludes_inactive_actor_and_keeps_active_collision_target(
+    repo: EntityAliasRepo,
+    tenant: uuid.UUID,
+    fresh_db: asyncpg.Pool,
+) -> None:
+    from services.domain.actors.repo import ActorRepo
+
+    actors = ActorRepo(fresh_db)
+    retired = await actors.create_actor(
+        email="retired.owner@example.com",
+        display_name="Retired Owner",
+        type="human_internal",
+        tenant_id=tenant,
+    )
+    active = await actors.create_actor(
+        email="active.owner@example.com",
+        display_name="Active Owner",
+        type="human_internal",
+        tenant_id=tenant,
+    )
+    await repo.insert_alias(
+        phrase="Owner",
+        resolved_entity_ref={"type": "actor", "id": str(retired.id)},
+        source="manual",
+        confidence=0.99,
+        actor_id=retired.id,
+        tenant_id=tenant,
+    )
+    await repo.insert_alias(
+        phrase="Owner",
+        resolved_entity_ref={"type": "actor", "id": str(active.id)},
+        source="manual",
+        confidence=0.90,
+        actor_id=active.id,
+        tenant_id=tenant,
+    )
+    await fresh_db.execute(
+        "UPDATE actors SET status='inactive' WHERE tenant_id=$1 AND id=$2",
+        tenant,
+        retired.id,
+    )
+
+    expected = {"type": "actor", "id": str(active.id)}
+    assert await repo.fast_path_resolve("Owner", tenant) == expected
+    assert await repo.fast_path_resolve_many(["Owner"], tenant) == {
+        "owner": expected,
+    }
+
+
+async def test_fast_path_excludes_archived_resource_and_customer(
+    repo: EntityAliasRepo,
+    tenant: uuid.UUID,
+    fresh_db: asyncpg.Pool,
+) -> None:
+    active_resource_id = uuid7()
+    archived_resource_id = uuid7()
+    active_customer_id = uuid7()
+    archived_customer_id = uuid7()
+    await fresh_db.execute(
+        "INSERT INTO tenants (id) VALUES ($1) ON CONFLICT DO NOTHING",
+        tenant,
+    )
+    await fresh_db.executemany(
+        """
+        INSERT INTO resources (
+            id, tenant_id, kind, identity, current_value, metadata, archived_at
+        ) VALUES ($1, $2, $3, $4, '{}'::jsonb, $5::jsonb, $6)
+        """,
+        (
+            (
+                active_resource_id,
+                tenant,
+                "infrastructure",
+                "Active System",
+                json.dumps({"semantic_kind": "system"}),
+                None,
+            ),
+            (
+                archived_resource_id,
+                tenant,
+                "infrastructure",
+                "Archived System",
+                json.dumps({"semantic_kind": "system"}),
+                datetime.now(timezone.utc),
+            ),
+            (
+                active_customer_id,
+                tenant,
+                "relational",
+                "Active Customer",
+                json.dumps({"semantic_kind": "customer"}),
+                None,
+            ),
+            (
+                archived_customer_id,
+                tenant,
+                "relational",
+                "Archived Customer",
+                json.dumps({"semantic_kind": "customer"}),
+                datetime.now(timezone.utc),
+            ),
+        ),
+    )
+    refs = {
+        "active system": {"type": "resource", "id": str(active_resource_id)},
+        "archived system": {
+            "type": "resource",
+            "id": str(archived_resource_id),
+        },
+        "active customer": {"type": "customer", "id": str(active_customer_id)},
+        "archived customer": {
+            "type": "customer",
+            "id": str(archived_customer_id),
+        },
+    }
+    for phrase, ref in refs.items():
+        await repo.insert_alias(
+            phrase=phrase,
+            resolved_entity_ref=ref,
+            source="manual",
+            confidence=0.99,
+            tenant_id=tenant,
+        )
+
+    assert await repo.fast_path_resolve("archived system", tenant) is None
+    assert await repo.fast_path_resolve("archived customer", tenant) is None
+    assert await repo.fast_path_resolve("active system", tenant) == refs[
+        "active system"
+    ]
+    assert await repo.fast_path_resolve("active customer", tenant) == refs[
+        "active customer"
+    ]
+    assert await repo.fast_path_resolve_many(list(refs), tenant) == {
+        "active system": refs["active system"],
+        "active customer": refs["active customer"],
     }
 
 
