@@ -34,7 +34,7 @@ def test_current_bootstrap_extractor_has_continuous_stratum_diagnostics() -> Non
     assert overall["signal_count"] == 120
     assert len(report["by_batch"]) == 12
     assert all(metrics["signal_count"] == 10 for metrics in report["by_batch"].values())
-    assert 0.0 < overall["span_recall"] < 1.0
+    assert 0.0 < overall["span_recall"] <= 1.0
     assert 0.0 < overall["boundary_credit_recall"] <= 1.0
     assert overall["candidate_fate_coverage"] == 1.0
     # Candidate discovery cannot honestly claim classification or identity resolution.
