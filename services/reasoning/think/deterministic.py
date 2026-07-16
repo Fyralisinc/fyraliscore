@@ -421,6 +421,18 @@ async def _handle_t4_background(
             if isinstance(ck, str):
                 cause_kind = ck
         if dependent_model_id is not None:
+            if cause_kind == "grounding_corrected":
+                claim_ops.extend(
+                    await _grounding_correction_revalidation_ops(
+                        conn,
+                        tenant_id=trigger.tenant_id,
+                        dependent_model_id=dependent_model_id,
+                        cause_model_id=_safe_uuid(
+                            (trigger.seed_signature or {}).get("cause_model_id")
+                        ),
+                    )
+                )
+                cause_kind = ""
             # Nudge confidence downward per cause_kind.
             #
             # Pre-S1 five-value taxonomy (preserved exactly):
@@ -459,20 +471,21 @@ async def _handle_t4_background(
                 "instance_archived": -0.02,
                 "counterevidence_archived": 0.05,
             }
-            nudge = nudge_map.get(cause_kind, -0.05)
-            row = await conn.fetchrow(
-                "SELECT confidence FROM models WHERE id = $1",
-                dependent_model_id,
-            )
-            if row is not None:
-                new_conf = _clip(float(row["confidence"]) + nudge)
-                claim_ops.append(
-                    ClaimOp(
-                        op="update",
-                        model_id=dependent_model_id,
-                        changes={"confidence": new_conf},
-                    )
+            if cause_kind:
+                nudge = nudge_map.get(cause_kind, -0.05)
+                row = await conn.fetchrow(
+                    "SELECT confidence FROM models WHERE id = $1",
+                    dependent_model_id,
                 )
+                if row is not None:
+                    new_conf = _clip(float(row["confidence"]) + nudge)
+                    claim_ops.append(
+                        ClaimOp(
+                            op="update",
+                            model_id=dependent_model_id,
+                            changes={"confidence": new_conf},
+                        )
+                    )
 
     if trigger.subkind == "background_maintenance":
         sig = trigger.seed_signature or {}
@@ -514,6 +527,118 @@ async def _handle_t4_background(
             or f"T4 deterministic handler; subkind={trigger.subkind}"
         ),
     )
+
+
+async def _grounding_correction_revalidation_ops(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    dependent_model_id: UUID,
+    cause_model_id: UUID | None,
+) -> list[ClaimOp]:
+    """Resolve a correction fence; never substitute a confidence nudge."""
+
+    row = await conn.fetchrow(
+        """
+        SELECT status, visible_to_subjects, supporting_model_ids
+        FROM models
+        WHERE tenant_id=$1 AND id=$2
+        """,
+        tenant_id,
+        dependent_model_id,
+    )
+    if row is None or str(row["status"]) != "active":
+        return []
+    if cause_model_id is None:
+        return [
+            ClaimOp(
+                op="archive",
+                model_id=dependent_model_id,
+                reason="superseded",
+            )
+        ]
+
+    legacy_support_ids = tuple(row["supporting_model_ids"] or ())
+    surviving_legacy_rows = await conn.fetch(
+        """
+        SELECT id
+        FROM models
+        WHERE tenant_id=$1
+          AND id=ANY($2::uuid[])
+          AND id<>$3
+          AND status='active'
+        ORDER BY id
+        """,
+        tenant_id,
+        list(legacy_support_ids),
+        cause_model_id,
+    )
+    surviving_legacy_ids = tuple(item["id"] for item in surviving_legacy_rows)
+    positive_dependency = cause_model_id in legacy_support_ids or bool(
+        await conn.fetchval(
+            """
+            SELECT EXISTS (
+              SELECT 1
+              FROM model_edges
+              WHERE tenant_id=$1
+                AND source_model_id=$2
+                AND target_model_id=$3
+                AND edge_kind IN ('supports', 'contributes_to_resolution')
+                AND status IN ('active', 'inert')
+            )
+            """,
+            tenant_id,
+            cause_model_id,
+            dependent_model_id,
+        )
+    )
+    surviving_typed_support = bool(
+        await conn.fetchval(
+            """
+            SELECT EXISTS (
+              SELECT 1
+              FROM model_edges edge
+              JOIN models supporter
+                ON supporter.tenant_id=edge.tenant_id
+               AND supporter.id=edge.source_model_id
+               AND supporter.status='active'
+              WHERE edge.tenant_id=$1
+                AND edge.target_model_id=$2
+                AND edge.source_model_id<>$3
+                AND edge.edge_kind IN ('supports', 'contributes_to_resolution')
+                AND edge.status='active'
+            )
+            """,
+            tenant_id,
+            dependent_model_id,
+            cause_model_id,
+        )
+    )
+    if positive_dependency and not (
+        surviving_legacy_ids or surviving_typed_support
+    ):
+        return [
+            ClaimOp(
+                op="archive",
+                model_id=dependent_model_id,
+                reason="superseded",
+            )
+        ]
+
+    changes: dict[str, Any] = {}
+    if not bool(row["visible_to_subjects"]):
+        changes["visible_to_subjects"] = True
+    if surviving_legacy_ids != legacy_support_ids:
+        changes["supporting_model_ids"] = list(surviving_legacy_ids)
+    if not changes:
+        return []
+    return [
+        ClaimOp(
+            op="update",
+            model_id=dependent_model_id,
+            changes=changes,
+        )
+    ]
 
 
 async def _pattern_review_requires_semantic_review(

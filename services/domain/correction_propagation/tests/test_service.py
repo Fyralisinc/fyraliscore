@@ -6,6 +6,12 @@ import pytest
 
 from lib.shared.ids import uuid7
 from services.domain.correction_propagation import service as service_module
+from services.domain.correction_propagation.projections import (
+    ProjectionCorrectionFenceReport,
+)
+from services.domain.correction_propagation.relations import (
+    RelationCorrectionFenceReport,
+)
 from services.domain.correction_propagation.service import (
     CorrectionPropagationService,
 )
@@ -67,6 +73,24 @@ class _Models:
         return SimpleNamespace(id=model_id)
 
 
+class _Relations:
+    async def fence_for_models(self, _conn, **_kwargs):
+        return RelationCorrectionFenceReport()
+
+
+class _Projections:
+    async def invalidate_for_models(self, _conn, **_kwargs):
+        return ProjectionCorrectionFenceReport()
+
+
+def _service(models: _Models) -> CorrectionPropagationService:
+    return CorrectionPropagationService(
+        models_repo=models,  # type: ignore[arg-type]
+        relation_adapter=_Relations(),  # type: ignore[arg-type]
+        projection_adapter=_Projections(),  # type: ignore[arg-type]
+    )
+
+
 async def test_active_predecessor_models_are_fenced_queued_then_archived(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -95,7 +119,7 @@ async def test_active_predecessor_models_are_fenced_queued_then_archived(
         return uuid7()
 
     monkeypatch.setattr(service_module, "enqueue_model_reeval", _enqueue)
-    service = CorrectionPropagationService(models_repo=models)  # type: ignore[arg-type]
+    service = _service(models)
 
     report = await service.propagate_direct_correction(
         conn,  # type: ignore[arg-type]
@@ -149,7 +173,7 @@ async def test_replay_of_completed_fence_does_not_create_new_repair_work(
         return uuid7()
 
     monkeypatch.setattr(service_module, "enqueue_model_reeval", _enqueue)
-    service = CorrectionPropagationService(models_repo=models)  # type: ignore[arg-type]
+    service = _service(models)
 
     report = await service.propagate_direct_correction(
         conn,  # type: ignore[arg-type]
@@ -171,7 +195,7 @@ async def test_replay_of_completed_fence_does_not_create_new_repair_work(
 async def test_non_correction_trace_is_a_noop() -> None:
     conn = _Connection(old_rows=[], dependency_rows=[])
     models = _Models()
-    service = CorrectionPropagationService(models_repo=models)  # type: ignore[arg-type]
+    service = _service(models)
 
     report = await service.propagate_direct_correction(
         conn,  # type: ignore[arg-type]

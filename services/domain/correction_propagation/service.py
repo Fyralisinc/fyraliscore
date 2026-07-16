@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
 
 import asyncpg
 
 from lib.shared.edge_registry import EDGE_REGISTRY
+from services.domain.correction_propagation.projections import (
+    ProjectionCorrectionAdapter,
+    ProjectionCorrectionFenceReport,
+)
+from services.domain.correction_propagation.relations import (
+    RelationCorrectionAdapter,
+    RelationCorrectionFenceReport,
+)
 from services.domain.models.repo import ModelsRepo
 from services.domain.triggers import enqueue_model_reeval
 
@@ -34,6 +42,12 @@ class DirectCorrectionFenceReport:
     dependent_model_ids: tuple[UUID, ...] = ()
     newly_fenced_model_ids: tuple[UUID, ...] = ()
     reeval_pairs: tuple[tuple[UUID, UUID], ...] = ()
+    relation_fence: RelationCorrectionFenceReport = field(
+        default_factory=RelationCorrectionFenceReport
+    )
+    projection_fence: ProjectionCorrectionFenceReport = field(
+        default_factory=ProjectionCorrectionFenceReport
+    )
 
     @property
     def correction_found(self) -> bool:
@@ -43,12 +57,20 @@ class DirectCorrectionFenceReport:
 class CorrectionPropagationService:
     """Fence the directly contaminated Model layer in the caller transaction."""
 
-    def __init__(self, *, models_repo: ModelsRepo | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        models_repo: ModelsRepo | None = None,
+        relation_adapter: RelationCorrectionAdapter | None = None,
+        projection_adapter: ProjectionCorrectionAdapter | None = None,
+    ) -> None:
         self._models = models_repo or ModelsRepo(
             pool=None,  # type: ignore[arg-type]
             embedder=None,
             run_topology_on_insert=False,
         )
+        self._relations = relation_adapter or RelationCorrectionAdapter()
+        self._projections = projection_adapter or ProjectionCorrectionAdapter()
 
     async def propagate_direct_correction(
         self,
@@ -187,6 +209,19 @@ class CorrectionPropagationService:
             )
             reeval_pairs.append((dependent_model_id, cause_model_id))
 
+        relation_fence = await self._relations.fence_for_models(
+            conn,
+            tenant_id=tenant_id,
+            contaminated_model_ids=old_model_ids,
+            cause_event_id=cause_event_id,
+        )
+        projection_fence = await self._projections.invalidate_for_models(
+            conn,
+            tenant_id=tenant_id,
+            contaminated_model_ids=old_model_ids,
+            cause_event_id=cause_event_id,
+        )
+
         archived_model_ids: list[UUID] = []
         for old_model_id in old_model_ids:
             if old_model_id not in active_old_model_ids:
@@ -206,6 +241,8 @@ class CorrectionPropagationService:
             dependent_model_ids=tuple(sorted(first_cause_by_dependent)),
             newly_fenced_model_ids=tuple(sorted(newly_fenced)),
             reeval_pairs=tuple(reeval_pairs),
+            relation_fence=relation_fence,
+            projection_fence=projection_fence,
         )
 
 

@@ -3134,6 +3134,7 @@ _ALLOWED_MODEL_UPDATE_COLUMNS = {
     "contributing_models",
     "supporting_event_ids",
     "supporting_model_ids",
+    "visible_to_subjects",
 }
 
 
