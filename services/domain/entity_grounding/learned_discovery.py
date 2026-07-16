@@ -23,27 +23,55 @@ CompanyEntityType = Literal[
 _DISCOVERY_SYSTEM_PROMPT = """\
 Extract every explicit named company-entity mention from this persisted signal batch.
 
-Work signal by signal, while using the other messages only as context. Return a
-mention only when its characters occur literally in that focal signal. Offsets
-are zero-based Python character offsets into the exact content_text; span_end is
-exclusive. Copy the smallest complete identifying name as surface. Keep titles
-that are part of a person's written name, but exclude surrounding punctuation
-and generic words such as "team" when the proper name alone identifies the
-entity.
+Work focal signal by focal signal. Other signals may disambiguate a literal name,
+but never copy a name into a focal signal where its characters do not occur.
+Complete one signal before advancing: scan its people, organizations, named work,
+technical objects, and typed identifiers, then make a final left-to-right pass for
+omissions. A signal can contain many mentions; return every distinct occurrence.
 
-Company entities include named people, teams, customers, projects, products,
-systems, workstreams, goals, commitments, decisions, and resources. Explicit
-ticket, project, commitment, risk, tenant, document, dataset, and similar object
-identifiers are mentions too. Names can contain multiple words, Unicode text,
-codes, or mixed case. A mention can appear at the start of a message, and one
-signal can contain several mentions. Return each distinct literal occurrence.
+BOUNDARIES
+Offsets are zero-based Python character offsets into exact content_text and
+span_end is exclusive. The surface must equal that exact slice. Return the
+smallest *complete written designation*, not merely the shortest unique token:
+- include a directly attached semantic designator when it states what the named
+  object is (for example a written Project/Initiative, Goal/Objective,
+  Decision, Commitment, Contract, Gate, Dataset, or Resource designation);
+- include a person's written title when it is attached to their name;
+- exclude surrounding punctuation, quoting syntax, verbs, articles, and merely
+  descriptive trailing nouns such as "the X project" or "the Y workstream";
+- preserve every character inside names and identifiers, including Unicode,
+  whitespace, hyphens, slashes, #, @, colons, and code punctuation.
+Do not strip a type-bearing prefix from a code, but do not invent one when only
+the code occurs.
 
-Do not extract ordinary language, unnamed roles, pronouns, dates, generic
-activities, or speculative names without a named referent. Set abstain for a
-literal candidate that is visible but too uncertain to admit. Never resolve
-identity, infer a registry ID, or invent text that is absent from the source.
-Before returning, recheck every signal for omitted explicit names and verify
-that surface == content_text[span_start:span_end].
+TYPES -- choose by the referent's role in this signal, not by capitalization:
+- person: a named human;
+- team: an internal organizational group, squad, guild, or operating unit;
+- customer: an explicitly external client, account, buyer, or partner company;
+- project: a bounded named project, initiative, or program;
+- product: a named customer-facing product or offering;
+- system: a technical service, application, API, component, queue, gateway, or
+  deployable runtime; service-style identifiers such as svc-* are systems;
+- workstream: a named continuing stream of work, rollout, migration, launch, or
+  transition, when it is not explicitly presented as a project;
+- goal: a named goal or objective;
+- commitment: a named promise, obligation, delivery commitment, or milestone;
+- decision: a named or coded decision;
+- resource: a named ticket, incident, risk, document, dataset, contract, gate,
+  tenant, case, or other referenced business artifact/record;
+- other: only an explicit named business referent that truly fits none above.
+Prefer the stated relationship and explicit designator over name morphology. If
+an organization's internal/external role or a product-like name's referent is not
+actually established, use other or abstain rather than guessing confidently.
+
+Do not treat conversational or transport coordinates (channel names, thread
+numbers, timestamps, message IDs), ordinary language, unnamed roles, pronouns,
+dates, generic activities, schema fields, or code snippets as company entities.
+A business identifier mentioned inside such context is still an entity. Set
+abstain for a visible literal candidate whose entity status or type remains too
+uncertain. Never resolve identity, infer a registry ID, or invent absent text.
+Before returning, verify every surface against its exact slice and repeat the
+per-signal completeness pass.
 """
 
 DISCOVERY_BATCHES = counter(
@@ -76,10 +104,19 @@ class _Strict(BaseModel):
 
 class LearnedMention(_Strict):
     signal_id: UUID
-    surface: str = Field(min_length=1, max_length=240)
+    surface: str = Field(
+        min_length=1,
+        max_length=240,
+        description="Exact smallest complete written designation from content_text.",
+    )
     span_start: int = Field(ge=0)
     span_end: int = Field(gt=0)
-    entity_type: CompanyEntityType
+    entity_type: CompanyEntityType = Field(
+        description=(
+            "Closed company ontology type chosen from the referent's stated role; "
+            "other is a last resort, not a substitute for resource or system."
+        )
+    )
     confidence: float = Field(ge=0.0, le=1.0)
     abstain: bool
 
