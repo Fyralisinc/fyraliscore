@@ -528,7 +528,9 @@ def test_pre_first_wave_snapshot_separates_memory_from_scaffolding() -> None:
     }
 
     class _Conn:
-        async def fetchval(self, sql, *_args):
+        async def fetchval(self, sql, *args):
+            if "to_regclass" in sql:
+                return str(args[0]) != "customers"
             for table, count in counts.items():
                 if f"FROM {table} " in sql:
                     return count
@@ -549,6 +551,7 @@ def test_pre_first_wave_snapshot_separates_memory_from_scaffolding() -> None:
     }
     assert scaffolding["tenant"] == 1
     assert scaffolding["actors"] == 12
+    assert scaffolding["customers"] == 0
     assert scaffolding["entity_aliases"] == 20
     assert scaffolding["observations"] == 0
 

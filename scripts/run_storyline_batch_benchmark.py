@@ -1995,14 +1995,23 @@ async def _pre_first_wave_memory_snapshot(
         "observations": "observations",
     }
     async with pool.acquire() as conn:
-        semantic = {
-            name: int(
+        async def _tenant_count(table: str) -> int:
+            exists = await conn.fetchval(
+                "SELECT to_regclass('public.' || $1) IS NOT NULL",
+                table,
+            )
+            if not exists:
+                return 0
+            return int(
                 await conn.fetchval(
                     f"SELECT count(*)::bigint FROM {table} WHERE tenant_id = $1",
                     tenant_id,
                 )
                 or 0
             )
+
+        semantic = {
+            name: await _tenant_count(table)
             for name, table in semantic_tables.items()
         }
         scaffolding = {
@@ -2014,13 +2023,7 @@ async def _pre_first_wave_memory_snapshot(
                 or 0
             ),
             **{
-                name: int(
-                    await conn.fetchval(
-                        f"SELECT count(*)::bigint FROM {table} WHERE tenant_id = $1",
-                        tenant_id,
-                    )
-                    or 0
-                )
+                name: await _tenant_count(table)
                 for name, table in scaffolding_tables.items()
             },
         }
