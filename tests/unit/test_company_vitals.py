@@ -60,10 +60,14 @@ from lib.evaluation.company_learning_retention import (
     evaluate_company_learning_retention,
 )
 from lib.evaluation.tests.test_company_learning_assurance_contract import (
+    _canonical_replacement_assurance,
+    _canonical_replacement_evidence,
     _collision_assurance_from_evidence,
     _collision_evidence,
     _lifecycle_assurance_from_evidence,
     _lifecycle_evidence,
+    _source_binding_lifecycle_assurance,
+    _source_binding_lifecycle_evidence,
     _variant_assurance_from_evidence,
     _variant_evidence,
 )
@@ -1904,6 +1908,23 @@ def _write_company_learning_assurance(
     )
     retention_path = report_dir / "pytest-retention.json"
     _write_json(retention_path, retention_payload)
+    replacement_evidence = _canonical_replacement_evidence(
+        run_id="synthetic-vitals:canonical-replacement",
+        system_version=system_version,
+    )
+    replacement_path = report_dir / "pytest-canonical-replacement.json"
+    _write_json(replacement_path, replacement_evidence.artifact_payload())
+    binding_lifecycle_evidence = _source_binding_lifecycle_evidence(
+        run_id="synthetic-vitals:source-binding-lifecycle",
+        system_version=system_version,
+    )
+    binding_lifecycle_path = (
+        report_dir / "pytest-source-binding-lifecycle.json"
+    )
+    _write_json(
+        binding_lifecycle_path,
+        binding_lifecycle_evidence.artifact_payload(),
+    )
     artifact_paths = {
         "positive_pair": str(positive_path),
         "positive_company_learning_evaluation": str(positive_evaluation_path),
@@ -1916,6 +1937,10 @@ def _write_company_learning_assurance(
         "customer_lifecycle_evidence": str(lifecycle_path),
         "active_surfaces_evidence": str(active_surfaces_path),
         "retention_evidence": str(retention_path),
+        "canonical_replacement_evidence": str(replacement_path),
+        "source_binding_lifecycle_evidence": str(
+            binding_lifecycle_path
+        ),
         "slack_observations": str(slack_observations_path),
         "slack_report": str(slack_report_path),
     }
@@ -1930,6 +1955,14 @@ def _write_company_learning_assurance(
     lifecycle_assurance = _lifecycle_assurance_from_evidence(
         lifecycle_evidence,
         path=artifact_paths["customer_lifecycle_evidence"],
+    )
+    replacement_assurance = _canonical_replacement_assurance(
+        path=artifact_paths["canonical_replacement_evidence"],
+        evidence=replacement_evidence,
+    )
+    binding_lifecycle_assurance = _source_binding_lifecycle_assurance(
+        path=artifact_paths["source_binding_lifecycle_evidence"],
+        evidence=binding_lifecycle_evidence,
     )
     active_surface_component_digests = {
         "evidence": active_surfaces_evidence.digest,
@@ -2107,6 +2140,8 @@ def _write_company_learning_assurance(
         customer_lifecycle=lifecycle_assurance,
         active_surfaces=active_surfaces_assurance,
         retention=retention_assurance,
+        canonical_replacement=replacement_assurance,
+        source_binding_lifecycle=binding_lifecycle_assurance,
         population=PopulationAssurance(
             status="observed_with_gaps",
             registry_pair_count=60,
@@ -2174,6 +2209,16 @@ def _write_company_learning_assurance(
             **{
                 f"retention_{key}": value
                 for key, value in retention_assurance.component_digests.items()
+            },
+            **{
+                f"canonical_replacement_{key}": value
+                for key, value in replacement_assurance.component_digests.items()
+            },
+            **{
+                f"source_binding_lifecycle_{key}": value
+                for key, value in (
+                    binding_lifecycle_assurance.component_digests.items()
+                )
             },
             "population_evidence": population_payload["evidence_digest"],
             "population_registry": population_payload["registry_population_digest"],
