@@ -35,6 +35,9 @@ from services.ingest.ingestion.handlers import (
     ObservationDraft,
     register,
 )
+from services.ingest.ingestion.source_identity import (
+    StructuredSourceIdentityClaim,
+)
 
 
 _CHANNEL = "linear:webhook"
@@ -126,9 +129,32 @@ def _shape_issue(payload: dict[str, Any]) -> ObservationDraft:
     title = (data.get("title") or "").strip() or "(untitled)"
     issue_id = data.get("id")
     team = data.get("team") or {}
-    team_id = team.get("id") if isinstance(team, dict) else None
+    team_id = (
+        str(team.get("id")).strip()
+        if isinstance(team, dict) and team.get("id")
+        else None
+    )
+    team_key = (
+        str(team.get("key")).strip()
+        if isinstance(team, dict) and team.get("key")
+        else None
+    )
+    team_name = (
+        str(team.get("name")).strip()
+        if isinstance(team, dict) and team.get("name")
+        else None
+    )
     project = data.get("project") or {}
-    project_id = project.get("id") if isinstance(project, dict) else None
+    project_id = (
+        str(project.get("id")).strip()
+        if isinstance(project, dict) and project.get("id")
+        else None
+    )
+    project_name = (
+        str(project.get("name")).strip()
+        if isinstance(project, dict) and project.get("name")
+        else None
+    )
     actor_name, actor_ref = _actor_of(data)
 
     updated_from = payload.get("updatedFrom") or {}
@@ -193,6 +219,44 @@ def _shape_issue(payload: dict[str, Any]) -> ObservationDraft:
     if team_id:
         entities_hint.append({"type": "linear_team", "id": team_id})
 
+    source_identity_claims: list[StructuredSourceIdentityClaim] = []
+    if project_id and project_name:
+        source_identity_claims.append(
+            StructuredSourceIdentityClaim(
+                source_system="linear",
+                source_native_identifier=f"linear:project:{project_id}",
+                source_surface=project_name,
+                claim_authority_ref=(
+                    "linear-handler:structured-project-name-field-v1"
+                ),
+            )
+        )
+    if team_id:
+        team_surfaces = (
+            (
+                team_key,
+                "linear-handler:structured-team-key-field-v1",
+            ),
+            (
+                team_name,
+                "linear-handler:structured-team-name-field-v1",
+            ),
+        )
+        seen_team_surfaces: set[str] = set()
+        for surface, authority_ref in team_surfaces:
+            normalized_surface = " ".join((surface or "").casefold().split())
+            if not normalized_surface or normalized_surface in seen_team_surfaces:
+                continue
+            seen_team_surfaces.add(normalized_surface)
+            source_identity_claims.append(
+                StructuredSourceIdentityClaim(
+                    source_system="linear",
+                    source_native_identifier=f"linear:team:{team_id}",
+                    source_surface=surface or "",
+                    claim_authority_ref=authority_ref,
+                )
+            )
+
     return ObservationDraft(
         source_channel=_CHANNEL,
         content_text=content_text,
@@ -202,7 +266,10 @@ def _shape_issue(payload: dict[str, Any]) -> ObservationDraft:
             "identifier": identifier,
             "issue_id": issue_id,
             "team_id": team_id,
+            "team_key": team_key,
+            "team_name": team_name,
             "project_id": project_id,
+            "project_name": project_name,
             "title": title,
             "updatedFrom": updated_from,
         },
@@ -214,6 +281,7 @@ def _shape_issue(payload: dict[str, Any]) -> ObservationDraft:
         source_actor_ref=actor_ref,
         external_id=issue_id,
         entities_hint=entities_hint,
+        source_identity_claims=source_identity_claims,
         raw_payload=payload,
     )
 

@@ -59,8 +59,15 @@ async def test_linear_issue_state_change_sentence():
             "identifier": "ENG-123",
             "title": "Fix billing webhook",
             "state": {"name": "In Review"},
-            "team": {"id": "team-uuid"},
-            "project": {"id": "project-uuid"},
+            "team": {
+                "id": "team-uuid",
+                "key": "ENG",
+                "name": "Engineering",
+            },
+            "project": {
+                "id": "project-uuid",
+                "name": "Billing Reliability",
+            },
             "assignee": {"name": "Alice", "id": "user-alice"},
             "updatedBy": {"id": "user-alice", "name": "Alice"},
             "updatedAt": "2026-04-21T10:00:00Z",
@@ -77,6 +84,30 @@ async def test_linear_issue_state_change_sentence():
     types = {e["type"] for e in draft.entities_hint}
     assert {"linear_issue", "linear_project", "linear_team"} <= types
     assert draft.source_actor_ref == "linear:user-alice"
+    assert [
+        (
+            claim.source_native_identifier,
+            claim.source_surface,
+            claim.claim_authority_ref,
+        )
+        for claim in draft.source_identity_claims
+    ] == [
+        (
+            "linear:project:project-uuid",
+            "Billing Reliability",
+            "linear-handler:structured-project-name-field-v1",
+        ),
+        (
+            "linear:team:team-uuid",
+            "ENG",
+            "linear-handler:structured-team-key-field-v1",
+        ),
+        (
+            "linear:team:team-uuid",
+            "Engineering",
+            "linear-handler:structured-team-name-field-v1",
+        ),
+    ]
 
 
 async def test_linear_issue_create_is_authoritative_signal():
@@ -96,6 +127,42 @@ async def test_linear_issue_create_is_authoritative_signal():
     assert draft.trust_tier == "authoritative"
     assert draft.kind == "signal"
     assert "created ENG-1" in draft.content_text
+    assert draft.source_identity_claims == []
+
+
+@pytest.mark.parametrize(
+    ("team", "project"),
+    [
+        (
+            {"key": "ENG", "name": "Engineering"},
+            {"name": "Billing Reliability"},
+        ),
+        (
+            {"id": "team-uuid"},
+            {"id": "project-uuid"},
+        ),
+    ],
+)
+async def test_linear_issue_omits_claims_without_ids_or_surfaces(
+    team,
+    project,
+):
+    payload = {
+        "action": "create",
+        "type": "Issue",
+        "data": {
+            "id": "i1",
+            "identifier": "ENG-1",
+            "title": "new issue",
+            "team": team,
+            "project": project,
+            "createdAt": "2026-04-21T10:00:00Z",
+        },
+    }
+
+    draft = await handle_linear_webhook(payload, {})
+
+    assert draft.source_identity_claims == []
 
 
 async def test_linear_comment_is_inferential():
