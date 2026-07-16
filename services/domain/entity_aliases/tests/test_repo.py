@@ -275,6 +275,57 @@ async def test_fast_path_unknown_returns_none(
     assert await repo.fast_path_resolve("never seen", tenant) is None
 
 
+async def test_fast_path_excludes_source_context_only_adjudication(
+    repo: EntityAliasRepo,
+    tenant: uuid.UUID,
+) -> None:
+    ref = {"type": "goal", "id": "project-northstar"}
+    await repo.insert_alias(
+        phrase="the project",
+        resolved_entity_ref=ref,
+        source="manual",
+        confidence=0.99,
+        tenant_id=tenant,
+        extra_metadata={
+            "identity_basis_class": "independently_adjudicated",
+            "identity_basis_ref": "clarification-request:context-local",
+            "resolution_scope": "source_context_only",
+            "autonomous_replay_eligible": False,
+        },
+    )
+
+    assert await repo.fast_path_resolve("the project", tenant) is None
+    assert (
+        await repo.fast_path_resolve_many(["the project"], tenant)
+        == {}
+    )
+
+
+async def test_fast_path_preserves_tenant_global_exact_adjudication(
+    repo: EntityAliasRepo,
+    tenant: uuid.UUID,
+) -> None:
+    ref = {"type": "customer", "id": "customer-nimbus"}
+    await repo.insert_alias(
+        phrase="NBI",
+        resolved_entity_ref=ref,
+        source="manual",
+        confidence=0.99,
+        tenant_id=tenant,
+        extra_metadata={
+            "identity_basis_class": "independently_adjudicated",
+            "identity_basis_ref": "clarification-request:tenant-global",
+            "resolution_scope": "tenant_global_exact",
+            "autonomous_replay_eligible": True,
+        },
+    )
+
+    assert await repo.fast_path_resolve("nbi", tenant) == ref
+    assert await repo.fast_path_resolve_many(["NBI"], tenant) == {
+        "nbi": ref
+    }
+
+
 async def test_fast_path_tenant_isolation(
     repo: EntityAliasRepo, tenant: uuid.UUID, other_tenant: uuid.UUID
 ) -> None:

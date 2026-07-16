@@ -497,8 +497,9 @@ class EntityAliasRepo:
 
         Resolution rules:
         - Normalize the incoming phrase.
-        - Fetch every row in `tenant_id` whose normalized alias_text
-          matches exactly.
+        - Fetch every ingest-eligible row in `tenant_id` whose normalized
+          alias_text matches exactly. Context-local adjudications remain
+          resolver context and never become source-native entity hints.
         - If zero rows: return None.
         - If every row points at the same `resolved_entity_ref`:
           return that ref (the highest-confidence copy wins for ties).
@@ -522,6 +523,22 @@ class EntityAliasRepo:
             FROM entity_aliases
             WHERE tenant_id = $1
               AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g') = $2
+              AND NOT (
+                entity_metadata ->> 'identity_basis_class'
+                  = 'independently_adjudicated'
+                AND (
+                  entity_metadata ->> 'resolution_scope'
+                    = 'source_context_only'
+                  OR (
+                    entity_metadata ? 'autonomous_replay_eligible'
+                    AND COALESCE(
+                      (entity_metadata
+                        ->> 'autonomous_replay_eligible')::boolean,
+                      FALSE
+                    ) = FALSE
+                  )
+                )
+              )
             LIMIT 2
             """,
             tenant_id,
@@ -577,6 +594,22 @@ class EntityAliasRepo:
             FROM entity_aliases
             WHERE tenant_id = $1
               AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g') = ANY($2::text[])
+              AND NOT (
+                entity_metadata ->> 'identity_basis_class'
+                  = 'independently_adjudicated'
+                AND (
+                  entity_metadata ->> 'resolution_scope'
+                    = 'source_context_only'
+                  OR (
+                    entity_metadata ? 'autonomous_replay_eligible'
+                    AND COALESCE(
+                      (entity_metadata
+                        ->> 'autonomous_replay_eligible')::boolean,
+                      FALSE
+                    ) = FALSE
+                  )
+                )
+              )
             """,
             tenant_id,
             norms,

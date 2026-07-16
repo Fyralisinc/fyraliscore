@@ -494,6 +494,41 @@ async def test_entity_alias_fast_path_resolves(
 
 
 @pytest.mark.asyncio
+async def test_source_context_alias_stays_out_of_ingest_entity_hints(
+    gateway_pool,
+    tenant_id,
+    _DeterministicEmbedder,
+):
+    repo = EntityAliasRepo(gateway_pool)
+    await repo.insert_alias(
+        phrase="the project",
+        resolved_entity_ref={"type": "goal", "id": "project-northstar"},
+        source="manual",
+        confidence=0.99,
+        tenant_id=tenant_id,
+        extra_metadata={
+            "identity_basis_class": "independently_adjudicated",
+            "identity_basis_ref": "clarification-request:context-local",
+            "resolution_scope": "source_context_only",
+            "autonomous_replay_eligible": False,
+        },
+    )
+
+    result = await _ingest_slack(
+        gateway_pool,
+        tenant_id,
+        text="the project is delayed",
+        embedder=_DeterministicEmbedder(),
+        alias_repo=repo,
+    )
+
+    assert result.observation.entities_mentioned == []
+    assert result.observation.content["_unresolved_phrases"] == [
+        "the project"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_slack_definite_reference_creates_live_mention_opportunity(
     gateway_pool, tenant_id, _DeterministicEmbedder
 ):

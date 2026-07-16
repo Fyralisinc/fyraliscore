@@ -8,7 +8,6 @@ import pytest
 
 from lib.evaluation.company_learning_experiment import (
     CorrectiveMemoryArm,
-    HardSafetyIncidentClass,
     RecurrenceCaseKind,
 )
 from scripts.run_company_learning_negative_controls_db import (
@@ -50,30 +49,12 @@ async def test_negative_controls_fail_closed_on_real_postgres(
             for result in (pair.adaptive, pair.frozen)
         }
     ) == 8
-    assert evidence.report.status == "contradicted"
+    assert evidence.report.status == "observed"
+    assert evidence.report.incidents == ()
     assert evidence.report.metrics.pair_count == 4
     assert evidence.report.metrics.complete_terminal_fate_rate == 1.0
-    assert evidence.report.metrics.adaptive_unsafe_count == 2
+    assert evidence.report.metrics.adaptive_unsafe_count == 0
     assert evidence.report.metrics.frozen_unsafe_count == 0
-    assert {
-        (
-            incident.case_id,
-            incident.arm,
-            incident.incident_class,
-        )
-        for incident in evidence.report.incidents
-    } == {
-        (
-            "contextual-non-entity",
-            CorrectiveMemoryArm.ADAPTIVE,
-            HardSafetyIncidentClass.CONTEXTUAL_ALIAS_GLOBALIZED,
-        ),
-        (
-            "same-surface-homonym",
-            CorrectiveMemoryArm.ADAPTIVE,
-            HardSafetyIncidentClass.CONTEXTUAL_ALIAS_GLOBALIZED,
-        ),
-    }
 
     cases = {case.case_id: case for case in evidence.spec.cases}
     for pair in evidence.pairs:
@@ -84,6 +65,7 @@ async def test_negative_controls_fail_closed_on_real_postgres(
                 len(result.lineage.model_ids)
                 == expectation.expected_model_count
             )
+            assert result.observed_safety_incidents == frozenset()
         if pair.case_id == "conflicting-source-hint":
             adaptive_expectation = cases[pair.case_id].expectation_for(
                 CorrectiveMemoryArm.ADAPTIVE
