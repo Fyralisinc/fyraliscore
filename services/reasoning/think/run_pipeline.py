@@ -158,6 +158,36 @@ _BATCH_WRAPPER_CLAIM_RE = re.compile(
     r"|[,;:]\s*(?:but\s+|and\s+|while\s+)?(?:the\s+batch|this\s+batch)\b",
     re.IGNORECASE,
 )
+_CONTROL_PLANE_MODEL_TAGS = frozenset(
+    {
+        "capability_probe",
+        "question_policy",
+        "retrieval_policy",
+    }
+)
+
+
+def _is_control_plane_model(entry: dict[str, Any], prop: dict[str, Any]) -> bool:
+    """Keep runtime self-observation out of canonical company memory."""
+    tags = {
+        str(tag).strip().casefold()
+        for tag in [
+            *list(entry.get("domain_tags") or []),
+            *list(prop.get("domain_tags") or []),
+            *list(prop.get("retrieval_tags") or []),
+        ]
+        if str(tag).strip()
+    }
+    if tags & _CONTROL_PLANE_MODEL_TAGS:
+        return True
+    natural = str(entry.get("natural") or "").strip().casefold()
+    return natural.startswith(
+        (
+            "question-policy learning:",
+            "retrieval-policy learning:",
+            "capability probe:",
+        )
+    )
 
 
 def _drop_event_batch_wrapper_claims(raw_diff: Any, trigger: TriggerContext) -> Any:
@@ -185,6 +215,11 @@ def _drop_event_batch_wrapper_claims(raw_diff: Any, trigger: TriggerContext) -> 
         ]
         if getattr(op, "op", None) == "insert" and any(
             _BATCH_WRAPPER_CLAIM_RE.search(text) for text in candidates if text
+        ):
+            dropped += 1
+            continue
+        if getattr(op, "op", None) == "insert" and _is_control_plane_model(
+            entry, prop
         ):
             dropped += 1
             continue

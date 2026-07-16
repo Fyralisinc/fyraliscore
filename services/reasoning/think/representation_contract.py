@@ -148,7 +148,7 @@ def _enrich_claim_insert(
         substrate_candidates or [],
         observations=observations,
         evidence_event_ids=evidence_event_ids,
-        frame=frame,
+        claim_text=_claim_binding_text(entry, prop),
     )
     if candidate_scope_entities:
         entry["scope_entities"] = _merge_scope_entities(
@@ -787,7 +787,7 @@ def _claim_candidate_scope_entities(
     *,
     observations: list[Any],
     evidence_event_ids: list[UUID],
-    frame: dict[str, Any],
+    claim_text: str,
 ) -> list[dict[str, str]]:
     if not candidates:
         return []
@@ -810,11 +810,79 @@ def _claim_candidate_scope_entities(
         }
         if not candidate_evidence or not (candidate_evidence & evidence_keys):
             continue
+        if not _candidate_is_named_by_claim(candidate, claim_text):
+            continue
         scope_ref = _candidate_scope_ref(candidate)
         if scope_ref is not None:
             refs.append(scope_ref)
 
     return _merge_scope_entities(refs)
+
+
+_CLAIM_BINDING_STOPWORDS = frozenset(
+    {
+        "actor",
+        "account",
+        "commitment",
+        "company",
+        "customer",
+        "decision",
+        "goal",
+        "project",
+        "release",
+        "system",
+        "team",
+        "vendor",
+        "work",
+        "workstream",
+    }
+)
+
+
+def _claim_binding_text(entry: dict[str, Any], prop: dict[str, Any]) -> str:
+    values: list[str] = [str(entry.get("natural") or "")]
+    for key in (
+        "assertion",
+        "assessment",
+        "hypothesis_text",
+        "situation",
+        "subject",
+        "summary",
+    ):
+        values.append(str(prop.get(key) or ""))
+    belief_address = prop.get("belief_address")
+    if isinstance(belief_address, dict):
+        values.extend(str(value or "") for value in belief_address.values())
+    return _WS_RE.sub(" ", " ".join(values)).casefold()
+
+
+def _candidate_is_named_by_claim(candidate: dict[str, Any], claim_text: str) -> bool:
+    """Require claim-local semantic evidence before inferring candidate scope."""
+    if not claim_text:
+        return False
+    surfaces: list[Any] = [candidate.get("label")]
+    for alias in candidate.get("aliases") or []:
+        if isinstance(alias, dict):
+            surfaces.extend(
+                alias.get(key) for key in ("alias", "label", "name", "value")
+            )
+        elif isinstance(alias, str):
+            surfaces.append(alias)
+    claim_tokens = set(re.findall(r"[a-z0-9][a-z0-9_.#-]{1,}", claim_text))
+    for surface in surfaces:
+        normalized = _WS_RE.sub(" ", str(surface or "").strip()).casefold()
+        if not normalized:
+            continue
+        if len(normalized) >= 3 and normalized in claim_text:
+            return True
+        tokens = {
+            token
+            for token in re.findall(r"[a-z0-9][a-z0-9_.#-]{1,}", normalized)
+            if len(token) >= 3 and token not in _CLAIM_BINDING_STOPWORDS
+        }
+        if tokens & claim_tokens:
+            return True
+    return False
 
 
 def _strong_claim_binding_candidate(candidate: dict[str, Any]) -> bool:
@@ -1614,14 +1682,19 @@ def _observations_for_entry(
     trigger: TriggerContext,
     observation_index: dict[UUID, Any],
 ) -> list[Any]:
+    # An event batch is a delivery envelope, not the semantic scope of each
+    # claim. Prefer claim-declared evidence and only fall back to the batch when
+    # the claim has no source binding of its own.
     ids = _dedupe_uuid_values(
         [
             entry.get("born_from_event_id"),
             *list(entry.get("supporting_event_ids") or []),
-            *list(trigger.observation_ids or []),
-            trigger.observation_id,
         ]
     )
+    if not ids:
+        ids = _dedupe_uuid_values(
+            [*list(trigger.observation_ids or []), trigger.observation_id]
+        )
     return [observation_index[uid] for uid in ids if uid in observation_index]
 
 

@@ -867,6 +867,78 @@ def test_living_claim_contract_attaches_evidence_watch_and_substrate() -> None:
     assert "evidence_bound" in entry["domain_tags"]
 
 
+def test_batched_claim_scope_does_not_fan_out_to_unrelated_candidates() -> None:
+    tenant_id = uuid4()
+    atlas_id = uuid4()
+    borealis_id = uuid4()
+    atlas_obs = _obs(text="Atlas renewal review is blocked by legal.")
+    borealis_obs = _obs(text="Borealis migration completed its data copy.")
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=atlas_obs.id,
+        observation_ids=[atlas_obs.id, borealis_obs.id],
+    )
+    raw = RawDiff(
+        trigger_ref=uuid4(),
+        tenant_id=tenant_id,
+        claim_ops=[
+            ClaimOp(
+                op="insert",
+                entry={
+                    "born_from_event_id": atlas_obs.id,
+                    "supporting_event_ids": [atlas_obs.id],
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "fact",
+                        "assertion": "Atlas renewal review is blocked by legal.",
+                    },
+                    "natural": "Atlas renewal review is blocked by legal.",
+                    "confidence": 0.72,
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                },
+            )
+        ],
+    )
+    candidates = [
+        {
+            "id": str(atlas_id),
+            "kind": "customer",
+            "label": "Atlas",
+            "confidence": 0.91,
+            "status": "promoted",
+            "promotion_ref": {"type": "customer", "id": str(atlas_id)},
+            "evidence_observation_ids": [str(atlas_obs.id)],
+        },
+        {
+            "id": str(borealis_id),
+            "kind": "workstream",
+            "label": "Borealis migration",
+            "confidence": 0.91,
+            "status": "promoted",
+            "promotion_ref": {"type": "workstream", "id": str(borealis_id)},
+            "evidence_observation_ids": [str(borealis_obs.id)],
+        },
+    ]
+
+    enrich_raw_diff_representation(
+        raw,
+        trigger,
+        SimpleNamespace(
+            observations=[atlas_obs, borealis_obs],
+            notes={"substrate_candidates": candidates},
+        ),
+    )
+
+    scope = raw.claim_ops[0].entry["scope_entities"]
+    assert {"type": "customer", "id": str(atlas_id)} in scope
+    assert {"type": "workstream", "id": str(borealis_id)} not in scope
+    assert raw.claim_ops[0].entry["supporting_event_ids"] == [atlas_obs.id]
+
+
 def test_prediction_claim_contract_derives_explicit_evaluate_at() -> None:
     tenant_id = uuid4()
     obs = _obs(

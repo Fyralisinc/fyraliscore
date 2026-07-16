@@ -303,3 +303,61 @@ def test_drop_event_batch_wrapper_claims_drops_mid_sentence_batch_wrapper():
 
     assert out.claim_ops == []
     assert out.reasoning_trace == "dropped 1 T1:event_batch wrapper claim(s)"
+
+
+def test_drop_event_batch_wrapper_claims_keeps_control_plane_out_of_models():
+    tenant_id = uuid7()
+    obs_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=obs_id,
+        member_trigger_ids=[uuid7()],
+    )
+    diff = RawDiff(
+        trigger_ref=obs_id,
+        tenant_id=tenant_id,
+        claim_ops=[
+            ClaimOp(
+                op="insert",
+                entry={
+                    "born_from_event_id": str(obs_id),
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "capability",
+                        "assessment": "Clarification could improve write precision.",
+                    },
+                    "natural": (
+                        "Question-policy learning: clarification could improve "
+                        "write precision."
+                    ),
+                    "domain_tags": [
+                        "question_policy",
+                        "lifecycle_obligation",
+                    ],
+                    "confidence": 0.6,
+                },
+            ),
+            ClaimOp(
+                op="insert",
+                entry={
+                    "born_from_event_id": str(obs_id),
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "fact",
+                        "assertion": "Atlas renewal is blocked by legal.",
+                    },
+                    "natural": "Atlas renewal is blocked by legal.",
+                    "domain_tags": ["customer_risk"],
+                    "confidence": 0.72,
+                },
+            ),
+        ],
+    )
+
+    out = _drop_event_batch_wrapper_claims(diff, trigger)
+
+    assert [op.entry["natural"] for op in out.claim_ops] == [
+        "Atlas renewal is blocked by legal."
+    ]
