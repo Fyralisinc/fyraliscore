@@ -152,6 +152,80 @@ decisions will be added after the parallel audit lanes complete.
 - The intended role layering is: measured route utility -> candidate procedural
   motif -> replay-tested promoted reflective rule.
 
+### Governed Alias Families And Entity Lifecycle
+
+The next entity-learning slice must extend the existing resolver rather than
+create a second alias or entity subsystem.
+
+| Responsibility | Reused owner | Required extension |
+| --- | --- | --- |
+| Candidate recall and ranking | Resolver context, existing alias registry and lexical/acronym scorer | Add versioned variant-family features and collision reasons; ranking remains nonauthoritative. |
+| Reusable alias authority | Clarification adjudication, `EntityAliasRepo` and governed replay transaction fence | Promote only an independently adjudicated, uniquely scoped mapping with revocable lineage. |
+| Human ambiguity resolution | `clarification_requests` and adjudicated grounding successors | Present every colliding target plus none-of-the-above; preserve the candidate-set digest and scope in the answer lineage. |
+| Canonical entity state | Existing actor/resource/entity repositories and their archive/create/update paths | Rename, merge, split, replacement and name reuse must be explicit lifecycle operations, not alias side effects. |
+| Adaptive policy | SAGE retrieval policy, route utility, shadow and exploration controls | Tune candidate ordering, lane budgets and clarification thresholds without alias-promotion or canonical-write authority. |
+
+The safe semantic boundary is:
+
+1. **Orthographic variant:** case, whitespace, Unicode normalization, or a
+   declared separator/punctuation transformation of an already adjudicated
+   surface. It may join that alias family only under a versioned normalizer,
+   after tenant-wide collision checks. The current case/whitespace exact replay
+   remains the only implemented automatic equivalence.
+2. **Abbreviation, acronym, nickname or shortened name:** a useful candidate
+   feature, not an orthographic equivalence. Repetition, confidence or lexical
+   score must never promote it. It becomes reusable only through the same
+   governed adjudication and transaction-time uniqueness fence as an exact
+   alias.
+3. **True rename with identity continuity:** a canonical lifecycle decision.
+   The entity ID may remain stable only when the entity owner establishes
+   continuity; the prior name becomes a time-scoped historical alias. The
+   timeless `tenant_global_exact` scope must not represent a rename until alias
+   validity intervals and lifecycle lineage exist.
+4. **Merger, split, acquisition, replacement, re-created team or reused name:**
+   potentially different referents. These require canonical create/archive/
+   supersession decisions and dependent repair. An alias write cannot merge
+   identities or redirect history.
+
+Before any non-exact variant can be promoted, one atomic promotion contract
+must prove all of the following:
+
+- an active governed anchor alias and active tenant-local canonical target;
+- the variant rule and normalizer version, candidate-set digest, source/time
+  scope, entity type and adjudication lineage;
+- exactly one eligible target across active aliases and canonical names, plus
+  no conflicting historical-name reuse in the applicable validity interval;
+- explicit privileged confirmation for tenant-global reuse, with
+  transaction-time revalidation and a revocation/rollback path;
+- no contextual or source-local phrase globalization; and
+- success on the collision suite below. Usage counts may tune ranking but are
+  never identity evidence or promotion authority.
+
+Promotion must abstain or open clarification for:
+
+- one acronym expanding to multiple entities, including collisions across
+  customer, workstream, team, system and actor types;
+- the same full surface naming two active entities or a former name being
+  reused by a new entity;
+- legal rename versus acquisition, merger, split, spin-out or replacement;
+- Slack-local nicknames, channel-specific shorthand, pronouns, deictic phrases,
+  common nouns and substring-only matches;
+- Unicode confusables, punctuation-sensitive names and transliterations that
+  collapse under the proposed normalizer;
+- a source-native ID contradicting the learned human-readable alias;
+- archived, inactive, superseded, cross-tenant or unsupported targets; and
+- evidence created after the as-known cutoff, unauthorized feedback, revoked
+  adjudication or a candidate set that omitted none-of-the-above.
+
+SAGE may consume governed candidate features and adjudication outcomes to tune
+lane weights, ordering, budgets, confidence calibration and when to ask a
+clarification. Its output must remain a versioned, auditable policy decision
+over an already authorized candidate set. It may not introduce hidden
+candidates, widen tenant/source/time scope, suppress collision checks, promote
+an alias, select a canonical referent, mutate entity lifecycle, or write a
+Model. Safety fences and canonical writers remain deterministic owners outside
+the learned policy.
+
 ### Runtime And Dormant Autonomy
 
 - Applied migrations are historical facts and remain untouched.
@@ -366,9 +440,10 @@ decisions will be added after the parallel audit lanes complete.
    task-autonomy service and database naming while retaining compatibility.
 3. Feed typed grounding outcomes into existing reflective/retrieval learning
    before adding any new policy lifecycle.
-4. Expand the attached adaptive-versus-frozen recurrence experiment from
-   exact-alias positives to contextual, conflict, homonym and unrelated
-   negative controls with enough held-out pairs for uncertainty estimates.
+4. Expand the attached adaptive-versus-frozen recurrence experiment from exact
+   aliases to versioned orthographic and abbreviation families. Require the
+   declared collision/homonym/lifecycle suite above, unseen held-out variants
+   and enough matched pairs for uncertainty estimates before promotion.
 5. Expand correction closure from the first grounded-Model vertical to every
    materially dependent accepted Model, graph relation and projection.
 
