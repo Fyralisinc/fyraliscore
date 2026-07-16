@@ -10,6 +10,10 @@ import asyncpg
 import pytest
 
 from lib.llm.provider import LLMConfig, LLMProvider
+from lib.evaluation.source_semantics import (
+    SourceSemanticEvaluationScope,
+    evaluate_source_semantic_state,
+)
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.core import ingest_from_draft
 from services.ingest.ingestion.handlers.slack import handle_slack_message
@@ -448,3 +452,25 @@ async def test_slack_signal_reaches_one_grounded_belief_without_manual_handoff(
     assert _json(row["scope_entities"]) == [
         {"type": "customer", "id": "customer-nimbus", "version": 1}
     ]
+
+    async with resolver_db.acquire() as conn:
+        evaluation = await evaluate_source_semantic_state(
+            conn,
+            scope=SourceSemanticEvaluationScope(
+                tenant_id=tenant_id,
+                start=result.observation.occurred_at - timedelta(seconds=1),
+                end=result.observation.occurred_at + timedelta(seconds=1),
+                run_id="pytest-live-slack-grounded-belief",
+            ),
+            artifact_refs=("pytest://live-slack-grounded-belief",),
+        )
+    assert evaluation.eligible_grounding_interpretation_coverage == 1.0
+    assert evaluation.source_coordinate_reconstructability_rate == 1.0
+    assert evaluation.interpretation_structural_closure_rate == 1.0
+    assert evaluation.grounding_continuity_exactness_rate == 1.0
+    assert evaluation.explicit_admission_fate_coverage == 1.0
+    assert evaluation.supported_report_admission_precision == 1.0
+    assert evaluation.supported_report_admission_recall == 1.0
+    assert evaluation.epistemic_consumer_admission_continuity_rate == 1.0
+    assert evaluation.model_dependency_closure_rate == 1.0
+    assert evaluation.incident_counts == {}
