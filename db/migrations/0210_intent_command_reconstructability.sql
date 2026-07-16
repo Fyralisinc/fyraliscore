@@ -1,3 +1,5 @@
+-- 0210_intent_command_reconstructability.sql
+--
 -- Complete authority and command capture for consequential reconstruction.
 -- Rows written before this amendment remain explicitly legacy-missing rather
 -- than receiving fabricated fingerprints.

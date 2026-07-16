@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_attention_governance_concern_migration_has_atomic_protocol() -> None:
     sql = (
-        ROOT / "db/migrations/0193_attention_governance_concerns.sql"
+        ROOT / "db/migrations/0211_attention_governance_concerns.sql"
     ).read_text()
     for table in (
         "attention_governance_bindings",

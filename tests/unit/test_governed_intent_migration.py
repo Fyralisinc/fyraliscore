@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_governed_intent_migration_has_exact_acceptance_and_atomic_protocol() -> None:
-    sql = (ROOT / "db/migrations/0190_governed_intent_protocol.sql").read_text()
+    sql = (ROOT / "db/migrations/0208_governed_intent_protocol.sql").read_text()
     for table in (
         "intent_proposals",
         "intent_proposal_fate_events",
@@ -33,7 +33,7 @@ def test_governed_intent_migration_has_exact_acceptance_and_atomic_protocol() ->
 
 def test_intent_legacy_cutover_never_invents_historical_authority() -> None:
     sql = (
-        ROOT / "db/migrations/0191_intent_legacy_cutover_baselines.sql"
+        ROOT / "db/migrations/0209_intent_legacy_cutover_baselines.sql"
     ).read_text()
     assert "CREATE TABLE IF NOT EXISTS intent_legacy_baselines" in sql
     assert "legacy_unknown_review_required" in sql
@@ -44,7 +44,7 @@ def test_intent_legacy_cutover_never_invents_historical_authority() -> None:
 
 def test_intent_command_reconstructability_is_explicit_for_legacy_rows() -> None:
     sql = (
-        ROOT / "db/migrations/0192_intent_command_reconstructability.sql"
+        ROOT / "db/migrations/0210_intent_command_reconstructability.sql"
     ).read_text()
     assert "ADD COLUMN IF NOT EXISTS command JSONB" in sql
     assert "processing_authority_fingerprint" in sql

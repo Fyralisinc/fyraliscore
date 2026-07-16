@@ -1,5 +1,5 @@
 -- =====================================================================
--- 0190_governed_intent_protocol.sql
+-- 0208_governed_intent_protocol.sql
 --
 -- Durable proposal -> exact acceptance -> constitutive command spine.
 -- Interpreted or model-produced direction is never written directly into

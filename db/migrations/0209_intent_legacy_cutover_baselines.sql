@@ -1,3 +1,5 @@
+-- 0209_intent_legacy_cutover_baselines.sql
+--
 -- Honest compatibility baseline for Acts created before the governed intent
 -- protocol. This does not invent historical authority; it marks it unknown and
 -- review-required, while allowing new exact commands to version forward.
