@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from lib.shared.ids import uuid7
 from services.domain.models import repo as repo_module
 from services.domain.models.repo import ModelsRepo
-from services.reasoning.think import audit as audit_module
 
 
 pytestmark = pytest.mark.asyncio
@@ -57,7 +57,14 @@ async def test_fence_for_correction_is_tenant_scoped_audited_and_evented(
     monkeypatch.setattr(repo_module, "_hydrate_row", lambda _row: hydrated)
     monkeypatch.setattr(repo_module, "emit_state_change", _record_state)
     monkeypatch.setattr(repo_module, "emit_model_event", _record_event)
-    monkeypatch.setattr(audit_module, "emit_audit_event", _record_audit)
+    audit_module = ModuleType("services.reasoning.think.audit")
+    audit_module.CAUSE_FIELD_UPDATE = "field_update"  # type: ignore[attr-defined]
+    audit_module.emit_audit_event = _record_audit  # type: ignore[attr-defined]
+    monkeypatch.setitem(
+        sys.modules,
+        "services.reasoning.think.audit",
+        audit_module,
+    )
 
     changed = await ModelsRepo(
         pool=None,  # type: ignore[arg-type]
