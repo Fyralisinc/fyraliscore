@@ -259,10 +259,10 @@ async def run_company_learning_assurance_suite(
                     "explicit reconstruction gaps."
                 ),
                 (
-                    "suite: direct correction fencing is separately "
-                    "Postgres-proven and relation/projection repair is "
-                    "unit-proven, but this command does not execute the "
-                    "integrated correction convergence burn."
+                    "suite: correction propagation through Models, relations, "
+                    "projections and T4 convergence is separately "
+                    "Postgres-proven, but this command does not execute that "
+                    "convergence burn."
                 ),
             )
         )

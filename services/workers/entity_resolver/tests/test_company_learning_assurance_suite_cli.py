@@ -103,7 +103,7 @@ async def test_company_learning_assurance_suite_cli_writes_one_summary(
         for gap in summary.proof_gaps
     )
     assert any(
-        "does not execute the integrated correction convergence burn"
+        "does not execute that convergence burn"
         in gap
         for gap in summary.proof_gaps
     )
