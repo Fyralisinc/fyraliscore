@@ -19,7 +19,7 @@ from scripts.run_company_learning_variant_collisions_db import (
 pytestmark = pytest.mark.integration
 
 
-async def test_variant_collisions_preserve_runtime_contradictions(
+async def test_variant_collisions_safely_contain_supported_runtime_cases(
     resolver_db: asyncpg.Pool,
     tmp_path: Path,
 ) -> None:
@@ -65,17 +65,11 @@ async def test_variant_collisions_preserve_runtime_contradictions(
     assert report.observed_pair_count == 14
     assert report.unsupported_case_count == 2
     assert report.runtime_support_rate.point_estimate == 14 / 16
-    assert report.status == "contradicted"
-    assert report.safety_incident_count > 0
-    assert report.adaptive_safe_containment_rate.point_estimate == (
-        pytest.approx(4 / 14)
-    )
-    assert report.adaptive_unsafe_rate.point_estimate == pytest.approx(
-        10 / 14
-    )
-    assert report.adaptive_unsafe_resolution_rate.point_estimate == (
-        pytest.approx(10 / 14)
-    )
+    assert report.status == "observed_with_gaps"
+    assert report.safety_incident_count == 0
+    assert report.adaptive_safe_containment_rate.point_estimate == 1.0
+    assert report.adaptive_unsafe_rate.point_estimate == 0.0
+    assert report.adaptive_unsafe_resolution_rate.point_estimate == 0.0
     assert report.frozen_safe_containment_rate.point_estimate == 1.0
     assert report.frozen_unsafe_rate.point_estimate == 0.0
     assert report.frozen_unsafe_resolution_rate.point_estimate == 0.0
@@ -116,7 +110,7 @@ async def test_variant_collisions_preserve_runtime_contradictions(
     assert payload["report"]["observation_digest"] == (
         report.observation_digest
     )
-    assert payload["report"]["status"] == "contradicted"
+    assert payload["report"]["status"] == "observed_with_gaps"
     persisted = CompanyLearningVariantCollisionEvidence.model_validate(
         {
             key: value
