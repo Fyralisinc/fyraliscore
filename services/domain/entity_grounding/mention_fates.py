@@ -24,6 +24,12 @@ from services.domain.entity_grounding.episode import (
     prepare_context_selection,
 )
 from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
+from services.domain.entity_grounding.learned_discovery import (
+    PersistedSignalText,
+    StructuredDiscoveryProvider,
+    VerifiedMentionCandidate,
+    discover_batch_mentions,
+)
 
 
 _MAX_DERIVED_OPPORTUNITIES = 50
@@ -32,6 +38,11 @@ _SLACK_CONTEXT_SURFACE_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _SLACK_TEMPORAL_CONTEXT_WINDOW = timedelta(minutes=30)
+_STRONG_STRUCTURED_ANCHOR_RE = re.compile(
+    r"<(?:(?:@|#)[A-Z0-9]+|!subteam\^[A-Z0-9]+)(?:\|[^>\r\n]+)?>"
+    r"|(?<![\w-])(?:[A-Z][A-Z0-9]{0,15}-\d{1,12}|"
+    r"[A-Z]{2,12}_\d{1,12})(?![\w-])"
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +50,9 @@ class MentionFateCoverage:
     eligible_opportunities: int
     committed_fates: int
     existing_fates: int
+    discovery_mode: str = "deterministic_fallback"
+    learned_candidates: int = 0
+    provider_error: str | None = None
 
     @property
     def covered_opportunities(self) -> int:
@@ -84,6 +98,7 @@ async def ensure_observation_mention_fates(
     content: dict[str, Any],
     content_text: str,
     phrases: Iterable[str],
+    discovery_candidates: tuple[VerifiedMentionCandidate, ...] = (),
     context_observations: tuple[ContextObservationInput, ...] = (),
     boundary_hypotheses: tuple[dict[str, Any], ...] = (),
     topology_incomplete: bool = False,
@@ -91,7 +106,9 @@ async def ensure_observation_mention_fates(
 ) -> MentionFateCoverage:
     """Ensure one immutable current detection fate per ingestion opportunity."""
 
-    opportunities = _unique_phrases(phrases)
+    opportunities = _unique_phrases(
+        (*phrases, *(candidate.surface for candidate in discovery_candidates))
+    )
     if not opportunities:
         return MentionFateCoverage(0, 0, 0)
 
@@ -100,6 +117,10 @@ async def ensure_observation_mention_fates(
     committed = 0
     existing = 0
     source_space = _source_space(source_channel, content)
+    learned_by_surface = {
+        normalize_phrase(candidate.surface): candidate
+        for candidate in discovery_candidates
+    }
 
     for phrase in opportunities:
         context_command, context_outcome = prepare_context_selection(
@@ -119,6 +140,7 @@ async def ensure_observation_mention_fates(
             now=prepared_at,
             focal_content_text=content_text,
         )
+        learned = learned_by_surface.get(normalize_phrase(phrase))
         detection_command = prepare_entity_mention_detection(
             tenant_id=tenant_id,
             observation_id=observation_id,
@@ -128,6 +150,16 @@ async def ensure_observation_mention_fates(
             context_command=context_command,
             context_outcome=context_outcome,
             now=prepared_at,
+            verified_span=(learned.span_start, learned.span_end) if learned else None,
+            discovery_fate=learned.fate if learned else None,
+            discovery_confidence=learned.confidence if learned else None,
+            extractor_version=(
+                learned.extractor_version
+                if learned
+                else "legacy-phrase-opportunity-exact-anchor-v1"
+            ),
+            discovery_reason_codes=learned.reason_codes if learned else (),
+            discovered_entity_type=learned.entity_type if learned else None,
         )
         if await conn.fetchval(
             """
@@ -167,6 +199,7 @@ async def ensure_persisted_observation_mention_fates(
     tenant_id: UUID,
     observation_ids: Iterable[UUID],
     now: datetime | None = None,
+    discovery_provider: StructuredDiscoveryProvider | None = None,
 ) -> MentionFateCoverage:
     """Close mention fates for an already-persisted observation batch."""
 
@@ -184,6 +217,20 @@ async def ensure_persisted_observation_mention_fates(
         list(ids),
     )
     prepared_rows = [_prepare_persisted_row(row) for row in rows]
+    discovery = await discover_batch_mentions(
+        provider=discovery_provider,
+        signals=tuple(
+            PersistedSignalText(
+                signal_id=row["id"],
+                source_channel=row["source_channel"],
+                content_text=row["content_text"],
+            )
+            for row in prepared_rows
+        ),
+    )
+    learned_by_observation: dict[UUID, list[VerifiedMentionCandidate]] = {}
+    for candidate in discovery.candidates:
+        learned_by_observation.setdefault(candidate.signal_id, []).append(candidate)
     slack_context = _slack_batch_context(prepared_rows, tenant_id=tenant_id)
     eligible = 0
     committed = 0
@@ -194,6 +241,7 @@ async def ensure_persisted_observation_mention_fates(
             content_text=row["content_text"],
             source_channel=row["source_channel"],
             has_structural_context=bool(slack_context.get(row["id"])),
+            discovery_mode=discovery.mode,
         )
         context_observations = slack_context.get(row["id"], ())
         coverage = await ensure_observation_mention_fates(
@@ -205,6 +253,7 @@ async def ensure_persisted_observation_mention_fates(
             content=row["content"],
             content_text=row["content_text"],
             phrases=phrases,
+            discovery_candidates=tuple(learned_by_observation.get(row["id"], ())),
             context_observations=context_observations,
             boundary_hypotheses=(
                 ({"kind": "slack_batch_boundary", "status": "provisional"},)
@@ -223,7 +272,14 @@ async def ensure_persisted_observation_mention_fates(
         eligible += coverage.eligible_opportunities
         committed += coverage.committed_fates
         existing += coverage.existing_fates
-    return MentionFateCoverage(eligible, committed, existing)
+    return MentionFateCoverage(
+        eligible,
+        committed,
+        existing,
+        discovery_mode=discovery.mode,
+        learned_candidates=len(discovery.candidates),
+        provider_error=discovery.provider_error,
+    )
 
 
 def _prepare_persisted_row(row: Any) -> dict[str, Any]:
@@ -248,6 +304,7 @@ def _persisted_mention_opportunities(
     content_text: str,
     source_channel: str,
     has_structural_context: bool,
+    discovery_mode: str = "deterministic_fallback",
 ) -> tuple[str, ...]:
     """Recover exact candidate surfaces without mutating persisted evidence.
 
@@ -259,9 +316,20 @@ def _persisted_mention_opportunities(
 
     phrases = content.get("_unresolved_phrases")
     opportunities: list[str] = list(phrases) if isinstance(phrases, list) else []
-    derived = extract_bootstrap_mention_opportunities(
-        content_text,
-        max_opportunities=_MAX_DERIVED_OPPORTUNITIES,
+    # A successful learned pass must be able to suppress broad title-case and
+    # definite-noun guesses. Persisted connector hints remain authoritative,
+    # and syntax-bound source references remain safe anchors. The broad
+    # bootstrap locator is only the availability fallback.
+    derived = (
+        tuple(
+            match.group(0)
+            for match in _STRONG_STRUCTURED_ANCHOR_RE.finditer(content_text)
+        )
+        if discovery_mode == "learned"
+        else extract_bootstrap_mention_opportunities(
+            content_text,
+            max_opportunities=_MAX_DERIVED_OPPORTUNITIES,
+        )
     )
     opportunities.extend(
         phrase
@@ -270,7 +338,11 @@ def _persisted_mention_opportunities(
         or has_structural_context
         or not phrase_requires_context(phrase)
     )
-    if source_channel == "slack:message" and has_structural_context:
+    if (
+        discovery_mode != "learned"
+        and source_channel == "slack:message"
+        and has_structural_context
+    ):
         opportunities.extend(
             match.group(0) for match in _SLACK_CONTEXT_SURFACE_RE.finditer(content_text)
         )

@@ -899,6 +899,9 @@ async def test_t1_batch_closes_fates_for_persisted_signal_opportunities(
         "quality_boundary": (
             "protocol_fate_coverage_not_gold_entity_extraction_quality"
         ),
+        "discovery_mode": "deterministic_fallback",
+        "learned_candidates": 0,
+        "provider_error": None,
     }
     assert {
         (row["source_observation_id"], row["candidate_surface"]) for row in rows

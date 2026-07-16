@@ -55,6 +55,7 @@ from lib.contracts.perception import (
     EntityCandidateKind,
     EntityCandidateSet,
     EntityMention,
+    EntityTypeAssessment,
     GroundingAdmissionDecision,
     GroundingAdmissionDisposition,
     InterpretationContextRequest,
@@ -220,6 +221,9 @@ def build_grounding_episode(
         snapshot=snapshot,
         processing_authority_fingerprint=authority.fingerprint,
         candidates=candidates,
+        entity_type_assessment=(
+            prepared_mention_detection_command.detection.entity_type_assessment
+        ),
         now=now,
     )
     selected_candidate = _select_candidate(
@@ -1060,6 +1064,7 @@ def _build_candidate_set(
     snapshot: InterpretationContextSnapshot,
     processing_authority_fingerprint: str,
     candidates: tuple[GroundingCandidateInput, ...],
+    entity_type_assessment: EntityTypeAssessment | None = None,
     redrive_of_request_digest: str | None = None,
     now: datetime,
 ) -> EntityCandidateSet:
@@ -1080,7 +1085,11 @@ def _build_candidate_set(
         tenant_id=tenant_id,
         mention_ref=f"mention:{mention_id}:v{mention_version}",
         mention_version=mention_version,
-        entity_type_assessment_refs=(),
+        entity_type_assessment_refs=(
+            (entity_type_assessment.assessment_id,)
+            if entity_type_assessment is not None
+            else ()
+        ),
         local_role_binding_refs=(),
         context_snapshot_ref=snapshot.snapshot_id,
         registry_as_of_cutoff=now,

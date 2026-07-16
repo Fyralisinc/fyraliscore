@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from lib.contracts.semantic_commands import SemanticWriteContext
 from lib.contracts.kernel import canonical_sha256
-from lib.contracts.perception import EntityMention
+from lib.contracts.perception import EntityMention, EntityTypeAssessment
 
 
 class _MentionContract(BaseModel):
@@ -55,6 +55,7 @@ class EntityMentionDetection(_MentionContract):
     source_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     fate: EntityMentionDetectionFate
     mention: EntityMention | None = None
+    entity_type_assessment: EntityTypeAssessment | None = None
     reason_codes: tuple[str, ...] = Field(min_length=1)
     extractor_version: str = Field(min_length=1)
     detected_at: datetime
@@ -70,6 +71,8 @@ class EntityMentionDetection(_MentionContract):
         if detected != (self.mention is not None):
             raise ValueError("detected fate requires one mention and rejects require none")
         if self.mention is None:
+            if self.entity_type_assessment is not None:
+                raise ValueError("rejected opportunity cannot carry a type assessment")
             return self
         if self.mention.mention_id != str(self.detection_id):
             raise ValueError("current mention ID must equal its detection ID")
@@ -77,6 +80,11 @@ class EntityMentionDetection(_MentionContract):
             raise ValueError("mention and detection versions must match")
         if self.mention.context_snapshot_id != str(self.context_snapshot_id):
             raise ValueError("mention must bind the exact context snapshot")
+        if self.entity_type_assessment is not None and (
+            self.entity_type_assessment.mention_or_referent_ref
+            != f"mention:{self.mention.mention_id}:v{self.mention.mention_version}"
+        ):
+            raise ValueError("type assessment must bind the exact detected mention")
         anchors = (self.mention.primary_anchor, *self.mention.alternate_anchors)
         coordinates = []
         for anchor in anchors:

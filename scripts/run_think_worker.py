@@ -37,12 +37,17 @@ async def _main() -> None:
     register_pool("think_worker", pool)
     llm = build_provider()
     try:
-        worker = ThinkWorker(pool, llm_provider=llm)
+        worker = ThinkWorker(
+            pool,
+            llm_provider=llm,
+            mention_discovery_provider=llm,
+        )
         worker.install_signal_handlers()
         log.info(
             "think_worker.starting",
             llm_provider=llm.config.provider,
             llm_model=llm.config.model,
+            learned_entity_discovery="enabled_at_persisted_t1_batch_boundary",
             lanes=lane_names(worker.config.allowed_lanes),
         )
         await worker.run()

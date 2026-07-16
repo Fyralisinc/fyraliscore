@@ -860,6 +860,42 @@ class EntityResolverWorker:
                     ),
                 )
             )
+        detection = (
+            ctx.mention_detection_command.detection
+            if ctx.mention_detection_command is not None
+            else None
+        )
+        type_assessment = (
+            detection.entity_type_assessment if detection is not None else None
+        )
+        if type_assessment is not None:
+            ranked = sorted(
+                (
+                    (entity_type, confidence)
+                    for entity_type, confidence
+                    in type_assessment.type_distribution.items()
+                    if entity_type != "unknown"
+                ),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            if ranked and ranked[0][1] >= 0.80:
+                learned_type = ranked[0][0]
+                compatible = {
+                    "person": {"person", "actor", "employee"},
+                    "team": {"team", "group"},
+                    "system": {"system", "service", "product"},
+                    "project": {"project", "workstream", "initiative"},
+                }.get(learned_type, {learned_type})
+                narrowed = [
+                    candidate for candidate in candidates
+                    if str(candidate.canonical_ref.get("type", "")).casefold()
+                    in compatible
+                ]
+                # Open-world safety: type evidence may not match registry
+                # ontology. It can narrow, but never erase every identity path.
+                if narrowed:
+                    candidates = narrowed
         return tuple(candidates)
 
     @staticmethod

@@ -12,8 +12,14 @@ from lib.contracts.entity_mentions import (
     EntityMentionDetectionFate,
     EntityMentionHeadExpectation,
 )
-from lib.contracts.kernel import WriterCutoverState, WriterScopeEpoch, canonical_sha256
+from lib.contracts.kernel import (
+    BitemporalInterval,
+    WriterCutoverState,
+    WriterScopeEpoch,
+    canonical_sha256,
+)
 from lib.contracts.perception import (
+    EntityTypeAssessment,
     EntityMention,
     EvidenceCoordinate,
     MentionAnchor,
@@ -40,14 +46,29 @@ def prepare_entity_mention_detection(
     context_command: CommitInterpretationContextCommand,
     context_outcome: ContextSelectionOutcome,
     now: datetime,
+    verified_span: tuple[int, int] | None = None,
+    discovery_fate: EntityMentionDetectionFate | None = None,
+    discovery_confidence: float | None = None,
+    extractor_version: str = _EXTRACTOR_VERSION,
+    discovery_reason_codes: tuple[str, ...] = (),
+    discovered_entity_type: str | None = None,
 ) -> CommitEntityMentionDetectionCommand:
     """Create one total-fate detection over the exact pre-model context."""
 
     source_revision_id = context_command.request.focal_event_revision_ids[0]
-    spans = locate_explicit_surface_spans(content_text, phrase)
+    spans = (
+        (verified_span,)
+        if verified_span is not None
+        and 0 <= verified_span[0] < verified_span[1] <= len(content_text)
+        and content_text[verified_span[0] : verified_span[1]] == phrase
+        else locate_explicit_surface_spans(content_text, phrase)
+    )
     detection_id = uuid7()
     mention: EntityMention | None = None
-    if spans:
+    admitted = spans and (
+        discovery_fate is None or discovery_fate is EntityMentionDetectionFate.DETECTED
+    )
+    if admitted:
         anchors = tuple(
             MentionAnchor(
                 anchor_id=f"anchor:{detection_id}:{index}",
@@ -74,15 +95,35 @@ def prepare_entity_mention_detection(
             source_assertion_and_frame_refs=(
                 f"observation:{observation_id}:source-text",
             ),
-            detection_confidence=0.6,
-            extractor_version=_EXTRACTOR_VERSION,
+            detection_confidence=discovery_confidence or 0.6,
+            extractor_version=extractor_version,
         )
         fate = EntityMentionDetectionFate.DETECTED
-        reasons = ("candidate_surface_exactly_anchored_in_source",)
+        reasons = discovery_reason_codes or (
+            "candidate_surface_exactly_anchored_in_source",
+        )
     else:
-        fate = EntityMentionDetectionFate.REJECTED_NOT_ANCHORED
-        reasons = ("candidate_surface_absent_from_focal_source",)
+        fate = discovery_fate or EntityMentionDetectionFate.REJECTED_NOT_ANCHORED
+        reasons = discovery_reason_codes or (
+            "candidate_surface_absent_from_focal_source",
+        )
 
+    type_assessment = None
+    if mention is not None and discovered_entity_type is not None:
+        unknown = max(0.01, 1.0 - (discovery_confidence or 0.6))
+        typed = 1.0 - unknown
+        type_assessment = EntityTypeAssessment(
+            assessment_id=f"type-assessment:{detection_id}:v1",
+            assessment_version=1,
+            mention_or_referent_ref=f"mention:{detection_id}:v1",
+            type_distribution={discovered_entity_type: typed, "unknown": unknown},
+            evidence_basis_refs=(f"observation:{observation_id}:content_text",),
+            temporal_scope=BitemporalInterval(
+                valid_from=now,
+                transaction_from=now,
+            ),
+            model_and_calibration_version=extractor_version,
+        )
     detection = EntityMentionDetection(
         detection_id=detection_id,
         detection_version=1,
@@ -95,8 +136,9 @@ def prepare_entity_mention_detection(
         source_content_hash=canonical_sha256(content_text),
         fate=fate,
         mention=mention,
+        entity_type_assessment=type_assessment,
         reason_codes=reasons,
-        extractor_version=_EXTRACTOR_VERSION,
+        extractor_version=extractor_version,
         detected_at=now,
     )
     authority = context_command.context.processing_authority

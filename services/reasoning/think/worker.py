@@ -685,11 +685,16 @@ class ThinkWorker:
         *,
         config: WorkerConfig | None = None,
         llm_provider: LLMProvider | None = None,
+        mention_discovery_provider: LLMProvider | None = None,
         embedder: Any | None = None,
     ) -> None:
         self.pool = pool
         self.config = config or WorkerConfig.from_env()
         self.llm_provider = llm_provider
+        # Deliberately distinct so legacy scripted Think providers never lose a
+        # reasoning response. Production launchers pass the same real provider
+        # explicitly; tests can isolate discovery or exercise fallback.
+        self.mention_discovery_provider = mention_discovery_provider
         # Embedder wire-through — enables pathway B (semantic retrieval)
         # and pathway C (temporal) in primary_retrieve. Lazy-constructed
         # default so tests that don't want Ollama can pass None.
@@ -1936,6 +1941,7 @@ class ThinkWorker:
             conn=conn,
             tenant_id=tenant_id,
             observation_ids=observation_ids,
+            discovery_provider=self.mention_discovery_provider,
         )
         if (
             fate_coverage.eligible_opportunities
@@ -1961,6 +1967,9 @@ class ThinkWorker:
             "quality_boundary": (
                 "protocol_fate_coverage_not_gold_entity_extraction_quality"
             ),
+            "discovery_mode": fate_coverage.discovery_mode,
+            "learned_candidates": fate_coverage.learned_candidates,
+            "provider_error": fate_coverage.provider_error,
         }
         primary_observation_id = observation_ids[0] if observation_ids else None
         await enqueue_trigger(

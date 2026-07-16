@@ -38,6 +38,33 @@ def test_persisted_batch_preserves_hints_and_fills_incomplete_discovery() -> Non
     assert opportunities == ("NBI", "Atlas Service")
 
 
+def test_learned_success_suppresses_broad_noise_but_keeps_authoritative_anchors() -> None:
+    opportunities = _persisted_mention_opportunities(
+        content={"_unresolved_phrases": ["NBI"]},
+        content_text=(
+            "Routine Update says Northstar Migration is waiting; "
+            "NBI tracks ENG-241 and <@U123>."
+        ),
+        source_channel="slack:message",
+        has_structural_context=True,
+        discovery_mode="learned",
+    )
+
+    assert opportunities == ("NBI", "ENG-241", "<@U123>")
+
+
+def test_provider_failure_mode_retains_broad_bootstrap_coverage() -> None:
+    opportunities = _persisted_mention_opportunities(
+        content={},
+        content_text="Northstar Migration depends on Atlas Service.",
+        source_channel="email:message",
+        has_structural_context=False,
+        discovery_mode="deterministic_fallback",
+    )
+
+    assert opportunities == ("Northstar Migration", "Atlas Service")
+
+
 def test_slack_batch_uses_projected_thread_context_before_admitting_pronoun() -> None:
     tenant_id = uuid4()
     root_id = uuid4()

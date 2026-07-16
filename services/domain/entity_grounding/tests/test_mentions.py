@@ -81,6 +81,50 @@ def test_exact_explicit_mentions_retain_every_source_coordinate() -> None:
     )
 
 
+def test_learned_type_is_bound_to_exact_detected_mention() -> None:
+    tenant_id = uuid4()
+    observation_id = uuid4()
+    context_command, context_outcome = prepare_context_selection(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Atlas Migration",
+        occurred_at=NOW,
+        source_channel="jira:issue",
+        source_space="jira:ENG",
+        topology_incomplete=False,
+        boundary_hypotheses=(),
+        context_observations=(),
+        selection_dependency_refs=(),
+        now=NOW + timedelta(minutes=1),
+    )
+
+    command = prepare_entity_mention_detection(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Atlas Migration",
+        content_text="Atlas Migration is blocked.",
+        source_channel="jira:issue",
+        context_command=context_command,
+        context_outcome=context_outcome,
+        now=NOW + timedelta(minutes=1),
+        verified_span=(0, 15),
+        discovery_fate=EntityMentionDetectionFate.DETECTED,
+        discovery_confidence=0.9,
+        discovered_entity_type="project",
+        extractor_version="learned-test-v1",
+    )
+
+    assessment = command.detection.entity_type_assessment
+    assert assessment is not None
+    assert assessment.mention_or_referent_ref == (
+        f"mention:{command.detection.detection_id}:v1"
+    )
+    assert assessment.type_distribution["project"] == 0.9
+    assert round(assessment.type_distribution["unknown"], 6) == 0.1
+    assert command.detection.mention is not None
+    assert command.detection.mention.extractor_version == "learned-test-v1"
+
+
 def test_candidate_surface_absent_from_source_has_a_rejected_fate() -> None:
     tenant_id = uuid4()
     observation_id = uuid4()
