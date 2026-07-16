@@ -598,6 +598,7 @@ class EntityResolverWorker:
                 inclusion_reasons=tuple(item.inclusion_reasons),
                 content_text=item.content_text,
                 token_count=len(item.content_text.split()),
+                topology_edge_ids=item.topology_edge_ids,
             )
             for item in ctx.recent_observations
         )

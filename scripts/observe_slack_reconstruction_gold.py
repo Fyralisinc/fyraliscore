@@ -28,6 +28,12 @@ from services.domain.entity_grounding.episode import (
     estimate_context_tokens,
     prepare_context_selection,
 )
+from services.domain.conversation_context.slack_source_structure import (
+    SlackSourceObservation,
+    SlackSourceRevisionFate,
+    SlackSourceStructure,
+    project_slack_source_structure,
+)
 from services.ingest.ingestion.handlers import ObservationDraft
 from services.ingest.ingestion.handlers.slack import handle_slack_message
 
@@ -87,9 +93,29 @@ async def _observe_case(
             ),
         )
 
+    source_structure = project_slack_source_structure(
+        tuple(
+            SlackSourceObservation(
+                tenant_id=_TENANT_ID,
+                event_revision_id=event_id,
+                occurred_at=draft.occurred_at,
+                content_text=draft.content_text,
+                content=draft.content,
+            )
+            for event_id, draft in drafts.items()
+        )
+    )
+    for event_id in drafts:
+        fate = source_structure.fate_for(event_id)
+        if fate is SlackSourceRevisionFate.SUPERSEDED:
+            revision_fates[event_id] = SlackRevisionFate.SUPERSEDED
+        elif fate is SlackSourceRevisionFate.CURRENT:
+            revision_fates[event_id] = SlackRevisionFate.CURRENT
+
     structural, temporal = _current_context_inputs(
         case=case,
         drafts=drafts,
+        source_structure=source_structure,
     )
     context_inputs = (*structural, *temporal)
     boundary_hypotheses = []
@@ -177,19 +203,18 @@ def _current_context_inputs(
     *,
     case: SlackReconstructionGoldCase,
     drafts: dict[str, ObservationDraft],
+    source_structure: SlackSourceStructure,
 ) -> tuple[tuple[ContextObservationInput, ...], tuple[ContextObservationInput, ...]]:
     focal = drafts[case.focal_event_revision_id]
     focal_channel = str(focal.content.get("channel") or "")
-    focal_root = str(
-        focal.content.get("thread_ts")
-        or focal.content.get("original_ts")
-        or focal.content.get("ts")
-        or ""
+    structural_ids = set(
+        source_structure.connected_revision_ids(
+            case.focal_event_revision_id,
+            max_hops=2,
+        )
     )
-    focal_ts = str(focal.content.get("ts") or "")
     structural: list[ContextObservationInput] = []
     temporal: list[ContextObservationInput] = []
-    structural_ids = set()
     ordered = sorted(
         (
             (event_id, draft)
@@ -201,28 +226,15 @@ def _current_context_inputs(
         key=lambda item: (item[1].occurred_at, item[0]),
     )
     for event_id, draft in ordered:
-        content = draft.content
-        candidate_ts = str(content.get("ts") or "")
-        candidate_thread = str(content.get("thread_ts") or "")
-        candidate_original = str(content.get("original_ts") or "")
-        topological = bool(
-            focal_root
-            and (
-                candidate_ts == focal_root
-                or candidate_thread == focal_root
-                or candidate_original == focal_root
-                or (focal_ts and candidate_original == focal_ts)
-            )
-        )
-        if not topological:
+        if event_id not in structural_ids:
             continue
-        structural_ids.add(event_id)
         structural.append(
             _context_input(
                 event_id=event_id,
                 draft=draft,
                 inclusion_layer="source_topology",
                 reasons=("same Slack channel", "thread/reply/edit lineage"),
+                topology_edge_ids=source_structure.incident_edge_ids(event_id),
             )
         )
     for event_id, draft in reversed(ordered):
@@ -234,6 +246,7 @@ def _current_context_inputs(
                 draft=draft,
                 inclusion_layer="temporal_candidate",
                 reasons=("same exact source space", "as-known cutoff"),
+                topology_edge_ids=(),
             )
         )
     return tuple(structural), tuple(temporal)
@@ -245,6 +258,7 @@ def _context_input(
     draft: ObservationDraft,
     inclusion_layer: str,
     reasons: tuple[str, ...],
+    topology_edge_ids: tuple[str, ...],
 ) -> ContextObservationInput:
     return ContextObservationInput(
         observation_id=_observation_id(event_id),
@@ -255,6 +269,7 @@ def _context_input(
         inclusion_reasons=reasons,
         content_text=draft.content_text,
         token_count=estimate_context_tokens(draft.content_text),
+        topology_edge_ids=topology_edge_ids,
     )
 
 

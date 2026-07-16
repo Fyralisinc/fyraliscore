@@ -40,36 +40,38 @@ async def test_existing_surface_produces_honest_slack_gold_measurement() -> None
 
     by_case = {observation.case_id: observation for observation in observations}
     assert len(observations) == 4
-    assert report.status == "observed_with_gaps"
-    assert report.metrics.correct_case_rate == 0.25
+    assert report.status == "observed"
+    assert report.metrics.correct_case_rate == 0.75
     assert report.metrics.mean_sufficient_set_recall == 1.0
     assert report.metrics.complete_sufficient_set_rate == 1.0
     assert report.metrics.reconstructability_rate == 1.0
     assert report.metrics.contamination_rate == pytest.approx(1 / 9)
     assert report.metrics.selected_context_precision == pytest.approx(8 / 9)
-    assert report.metrics.mean_topology_recall == 0.0
-    assert report.metrics.edit_delete_correctness_rate == 0.5
+    assert report.metrics.mean_topology_recall == 1.0
+    assert report.metrics.edit_delete_correctness_rate == 1.0
     assert report.metrics.long_range_recall == 1.0
     assert report.metrics.budget_adherence_rate == 0.75
     assert report.metrics.abstention_under_insufficiency_rate == 1.0
-    assert report.metrics.supported_case_rate == 0.5
+    assert report.metrics.supported_case_rate == 1.0
 
     thread = by_case["slack-thread-dependency-v1"]
     assert len(thread.candidate_event_revision_ids) == 4
     assert len(thread.selected_event_revision_ids) == 3
     assert thread.disposition.value == "operationally_sufficient"
-    assert thread.unsupported_reasons == (
-        "selected_topology_edges_not_materialized",
+    assert thread.selected_topology_edge_ids == (
+        "slack-thread:1760000000.100001->1760000000.200001",
+        "slack-thread:1760000000.200001->1760000000.300001",
     )
+    assert thread.unsupported_reasons == ()
 
     edit = by_case["slack-edit-succession-v1"]
     assert edit.revision_fates[
         "observation:22222222-2222-4222-8222-222222222201:v1"
-    ].value == "current"
-    assert edit.unsupported_reasons == (
-        "selected_topology_edges_not_materialized",
-        "edit_supersession_fate_not_materialized",
+    ].value == "superseded"
+    assert edit.selected_topology_edge_ids == (
+        "slack-edit:1760000100.100001->1760000100.200001",
     )
+    assert edit.unsupported_reasons == ()
 
     contamination = by_case["slack-contamination-abstention-v1"]
     assert contamination.selected_event_revision_ids == (
@@ -108,8 +110,8 @@ def test_existing_surface_observer_cli_writes_replayable_artifacts(
     assert report_path.is_file()
     assert len(observations_path.read_text(encoding="utf-8").splitlines()) == 4
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["report"]["status"] == "observed_with_gaps"
-    assert payload["report"]["metrics"]["correct_case_rate"] == 0.25
+    assert payload["report"]["status"] == "observed"
+    assert payload["report"]["metrics"]["correct_case_rate"] == 0.75
     assert payload["report"]["metrics"]["mean_sufficient_set_recall"] == 1.0
     assert len(payload["report_digest"]) == 64
     output = capsys.readouterr().out

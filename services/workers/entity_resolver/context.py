@@ -36,6 +36,11 @@ from lib.contracts.conversation_context import (
     ContextSelectionOutcome,
 )
 from lib.contracts.entity_mentions import CommitEntityMentionDetectionCommand
+from services.domain.conversation_context.slack_source_structure import (
+    SlackSourceObservation,
+    SlackSourceStructure,
+    project_slack_source_structure,
+)
 from services.domain.entity_grounding.episode import (
     ContextObservationInput,
     candidate_id_for_ref,
@@ -58,6 +63,8 @@ class RecentObservation:
     entities_mentioned: list[dict[str, Any]]
     inclusion_layer: str
     inclusion_reasons: list[str]
+    source_content: dict[str, Any] = field(default_factory=dict)
+    topology_edge_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -321,6 +328,17 @@ async def build_context(
             occurred_at=occurred_at,
             limit=recent_n,
         )
+        source_structure = _project_slack_context_structure(
+            tenant_id=tenant_id,
+            source_channel=source_channel,
+            observation_id=observation_id,
+            occurred_at=occurred_at,
+            content_text=content_text,
+            source_content=source_content,
+            context_rows=tuple(
+                row for row, _, _ in (*structural_rows, *temporal_rows)
+            ),
+        )
         selected: list[RecentObservation] = []
         seen_observations: set[UUID] = set()
         for row, layer, reasons in (*structural_rows, *temporal_rows):
@@ -336,6 +354,14 @@ async def build_context(
                     entities_mentioned=_parse_jsonb(row["entities_mentioned"]) or [],
                     inclusion_layer=layer,
                     inclusion_reasons=reasons,
+                    source_content=_parse_jsonb(row["content"]) or {},
+                    topology_edge_ids=(
+                        source_structure.incident_edge_ids(
+                            f"observation:{row['id']}:v1"
+                        )
+                        if layer == "source_topology"
+                        else ()
+                    ),
                 )
             )
         recent_observations = selected
@@ -543,6 +569,7 @@ async def build_context(
                     inclusion_reasons=tuple(item.inclusion_reasons),
                     content_text=item.content_text,
                     token_count=estimate_context_tokens(item.content_text),
+                    topology_edge_ids=item.topology_edge_ids,
                 )
                 for item in recent_observations
             ),
@@ -651,6 +678,47 @@ async def _load_context_candidates(
                 for row in structural
             ]
     return structural_rows, temporal_rows
+
+
+def _project_slack_context_structure(
+    *,
+    tenant_id: UUID,
+    source_channel: str,
+    observation_id: UUID,
+    occurred_at: datetime,
+    content_text: str,
+    source_content: dict[str, Any],
+    context_rows: tuple[Any, ...],
+) -> SlackSourceStructure:
+    if (
+        source_channel != "slack:message"
+        or not isinstance(source_content.get("channel"), str)
+    ):
+        return SlackSourceStructure((), (), ())
+    sources = [
+        SlackSourceObservation(
+            tenant_id=tenant_id,
+            event_revision_id=f"observation:{observation_id}:v1",
+            occurred_at=occurred_at,
+            content_text=content_text,
+            content=source_content,
+        )
+    ]
+    seen = {observation_id}
+    for row in context_rows:
+        if row["id"] in seen:
+            continue
+        seen.add(row["id"])
+        sources.append(
+            SlackSourceObservation(
+                tenant_id=tenant_id,
+                event_revision_id=f"observation:{row['id']}:v1",
+                occurred_at=row["occurred_at"],
+                content_text=str(row["content_text"] or ""),
+                content=_parse_jsonb(row["content"]) or {},
+            )
+        )
+    return project_slack_source_structure(tuple(sources))
 
 
 def _boundary_hypotheses(
