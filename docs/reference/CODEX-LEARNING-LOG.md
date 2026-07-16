@@ -51,6 +51,24 @@ claims that were not checked against code or artifacts.
 
 ## Durable Lessons
 
+### 2026-07-17 - Company-learning Postgres harnesses require UTF8
+
+- Context: Running active-surface and combined company-learning assurance in a
+  disposable PostgreSQL cluster.
+- Symptom: Dedicated active-surface tests passed, but the combined run stopped
+  before summary creation on the sealed Unicode collision case with
+  `UntranslatableCharacterError`.
+- Cause: The disposable cluster used `SQL_ASCII`, so PostgreSQL could not store
+  the required Unicode fixture.
+- Lesson: Initialize disposable assurance clusters as UTF8 and rerun from a
+  fresh cluster. Classify database-encoding failures as environment bootstrap
+  failures, separately from evaluator or system assertion failures.
+- Evidence: `scripts/run_company_learning_assurance_suite.py`;
+  `services/ingest/ingestion/tests/test_company_learning_active_surfaces_db.py`;
+  `services/workers/entity_resolver/tests/test_company_learning_assurance_suite_cli.py`.
+- Status: Active-surface database tests are green; the combined assurance run
+  must be repeated on a fresh UTF8 cluster.
+
 ### 2026-07-16 - Reusable database harnesses must normalize JSONB boundaries
 
 - Context: Extracting the correction-convergence integration test into a
