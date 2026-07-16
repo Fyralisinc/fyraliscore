@@ -378,7 +378,7 @@ async def test_repo_rejects_a_snapshot_that_differs_from_pre_llm_selection() -> 
             tenant_id=tenant_id,
             observation_id=observation_id,
             phrase=phrase,
-            content_text=f"Discussion of {phrase}",
+            content_text=f"{phrase} is ready",
             now=now,
         )
 
@@ -388,7 +388,7 @@ async def test_repo_rejects_a_snapshot_that_differs_from_pre_llm_selection() -> 
         context_snapshot=episode_for("Nimbus").context_snapshot,
     )
     conn = _Connection(
-        content_text="Discussion of NBI",
+        content_text="NBI is ready",
         context_snapshot_hash=original.context_snapshot.snapshot_content_hash,
     )
     repo = EntityGroundingRepo(pool=object())  # type: ignore[arg-type]

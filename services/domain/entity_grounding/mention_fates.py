@@ -153,6 +153,9 @@ async def ensure_observation_mention_fates(
             verified_span=(learned.span_start, learned.span_end) if learned else None,
             discovery_fate=learned.fate if learned else None,
             discovery_confidence=learned.confidence if learned else None,
+            discovery_type_confidence=(
+                learned.type_confidence if learned else None
+            ),
             extractor_version=(
                 learned.extractor_version
                 if learned

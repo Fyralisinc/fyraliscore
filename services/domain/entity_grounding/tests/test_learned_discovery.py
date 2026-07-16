@@ -6,6 +6,7 @@ import pytest
 
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from services.domain.entity_grounding.learned_discovery import (
+    AMBIGUOUS_IDENTIFIER_TYPE_CONFIDENCE_CAP,
     DISCOVERY_BATCHES,
     DISCOVERY_READINESS,
     DiscoveryProviderPreflightError,
@@ -89,6 +90,41 @@ async def test_one_call_discovers_batch_and_verifies_every_source_span() -> None
     assert "work signal by signal" in prompt
     assert "return each distinct literal occurrence" in prompt
     assert "never resolve" in prompt and "registry id" in prompt
+
+
+@pytest.mark.asyncio
+async def test_type_confidence_caps_only_ambiguous_bare_identifiers() -> None:
+    bare_id, typed_id, named = uuid4(), uuid4(), uuid4()
+    signals = (
+        PersistedSignalText(bare_id, "jira:issue", "RUNE-310 blocked delivery."),
+        PersistedSignalText(typed_id, "jira:issue", "Goal ORBIT-52 blocked delivery."),
+        PersistedSignalText(named, "email:message", "Selkie Maritime renewed."),
+    )
+    provider = ScriptedProvider({"mentions": [
+        {"signal_id": str(bare_id), "surface": "RUNE-310", "span_start": 0,
+         "span_end": 8, "entity_type": "goal", "confidence": .92, "abstain": False},
+        {"signal_id": str(typed_id), "surface": "ORBIT-52", "span_start": 5,
+         "span_end": 13, "entity_type": "goal", "confidence": .93, "abstain": False},
+        {"signal_id": str(named), "surface": "Selkie Maritime", "span_start": 0,
+         "span_end": 15, "entity_type": "customer", "confidence": .94, "abstain": False},
+    ]})
+
+    result = await discover_batch_mentions(provider=provider, signals=signals)
+    by_surface = {item.surface: item for item in result.candidates}
+
+    assert by_surface["RUNE-310"].detection_confidence == .92
+    assert by_surface["RUNE-310"].type_confidence == (
+        AMBIGUOUS_IDENTIFIER_TYPE_CONFIDENCE_CAP
+    )
+    assert "learned_type_hypothesis:goal" in by_surface["RUNE-310"].reason_codes
+    assert "learned_type_confidence_capped_ambiguous_identifier" in (
+        by_surface["RUNE-310"].reason_codes
+    )
+    assert by_surface["ORBIT-52"].type_confidence == .93
+    assert "learned_type_supported_by_nearby_role_cue" in (
+        by_surface["ORBIT-52"].reason_codes
+    )
+    assert by_surface["Selkie Maritime"].type_confidence == .94
 
 
 @pytest.mark.asyncio

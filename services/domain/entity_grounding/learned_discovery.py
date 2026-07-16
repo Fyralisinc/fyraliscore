@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -15,10 +16,29 @@ DISCOVERY_VERSION = "learned-persisted-batch-entity-discovery-v2"
 # Below this point the candidate remains a governed non-entity fate. Identity
 # resolution still has its own stricter authority/selection gates.
 MIN_ACCEPTED_CONFIDENCE = 0.75
+AMBIGUOUS_IDENTIFIER_TYPE_CONFIDENCE_CAP = 0.79
 CompanyEntityType = Literal[
     "person", "team", "customer", "project", "product", "system",
     "workstream", "goal", "commitment", "decision", "resource", "other",
 ]
+
+_IDENTIFIER_CODE_RE = re.compile(
+    r"^(?=.{2,80}$)(?=.*\d)(?=.*(?:[-_/#:.]|[A-Z].*[A-Z]))[\w./#:@+\-]+$",
+    re.UNICODE,
+)
+_TYPE_CUES: dict[str, tuple[str, ...]] = {
+    "person": ("person", "engineer", "owner", "manager", "director", "dr", "prof"),
+    "team": ("team", "squad", "guild", "group", "unit"),
+    "customer": ("customer", "client", "account", "buyer", "partner"),
+    "project": ("project", "initiative", "program"),
+    "product": ("product", "offering", "platform"),
+    "system": ("system", "service", "api", "component", "queue", "gateway"),
+    "workstream": ("workstream", "rollout", "migration", "launch", "transition"),
+    "goal": ("goal", "objective"),
+    "commitment": ("commitment", "promise", "obligation", "milestone"),
+    "decision": ("decision",),
+    "resource": ("resource", "ticket", "incident", "risk", "document", "dataset", "contract", "gate", "case"),
+}
 
 _DISCOVERY_SYSTEM_PROMPT = """\
 Extract every explicit named company-entity mention from this persisted signal batch.
@@ -168,7 +188,32 @@ class VerifiedMentionCandidate:
     confidence: float
     fate: EntityMentionDetectionFate
     reason_codes: tuple[str, ...]
+    type_confidence: float | None = None
     extractor_version: str = DISCOVERY_VERSION
+
+    @property
+    def detection_confidence(self) -> float:
+        return self.confidence
+
+
+def _type_confidence_for_candidate(
+    *, signal_text: str, surface: str, span_start: int, span_end: int,
+    learned_type: str, learned_confidence: float,
+) -> tuple[float, str]:
+    """Keep detection certainty separate from unsupported ontology certainty."""
+
+    if not _IDENTIFIER_CODE_RE.fullmatch(surface.strip()):
+        return learned_confidence, "learned_type_confidence_inherited_named_surface"
+    window_start = max(0, span_start - 40)
+    window_end = min(len(signal_text), span_end + 40)
+    nearby = signal_text[window_start:window_end].casefold()
+    cues = _TYPE_CUES.get(learned_type, ())
+    if any(re.search(rf"(?<!\w){re.escape(cue)}(?!\w)", nearby) for cue in cues):
+        return learned_confidence, "learned_type_supported_by_nearby_role_cue"
+    return (
+        min(learned_confidence, AMBIGUOUS_IDENTIFIER_TYPE_CONFIDENCE_CAP),
+        "learned_type_confidence_capped_ambiguous_identifier",
+    )
 
 
 @dataclass(frozen=True)
@@ -336,6 +381,14 @@ def _verify_candidates(
             )
         else:
             fate = EntityMentionDetectionFate.DETECTED
+            type_confidence, type_reason = _type_confidence_for_candidate(
+                signal_text=signal.content_text,
+                surface=item.surface,
+                span_start=span_start,
+                span_end=span_end,
+                learned_type=item.entity_type,
+                learned_confidence=item.confidence,
+            )
             reasons = (
                 (
                     "learned_span_repaired_unique_exact_surface"
@@ -343,7 +396,11 @@ def _verify_candidates(
                     else "learned_high_confidence_exact_source_span"
                 ),
                 f"learned_type:{item.entity_type}",
+                f"learned_type_hypothesis:{item.entity_type}",
+                type_reason,
             )
+        if fate is not EntityMentionDetectionFate.DETECTED:
+            type_confidence = item.confidence
         key = (item.signal_id, span_start, span_end, item.surface.casefold())
         if key in seen:
             continue
@@ -357,6 +414,7 @@ def _verify_candidates(
             confidence=item.confidence,
             fate=fate,
             reason_codes=reasons,
+            type_confidence=type_confidence,
         ))
     # Prefer the largest accepted span for nested duplicates; retain rejected fates.
     accepted = [c for c in candidates if c.fate is EntityMentionDetectionFate.DETECTED]

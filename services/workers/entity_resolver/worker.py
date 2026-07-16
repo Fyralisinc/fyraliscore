@@ -99,6 +99,40 @@ def _canonical_target_is_authorized(candidate: Any) -> bool:
     return bool(candidate.canonical_target_valid)
 
 
+def _narrow_candidates_by_type_assessment(
+    candidates: list[GroundingCandidateInput],
+    type_assessment: Any | None,
+) -> list[GroundingCandidateInput]:
+    """Narrow only on independently persisted type confidence at or above 0.80."""
+
+    if type_assessment is None:
+        return candidates
+    ranked = sorted(
+        (
+            (entity_type, confidence)
+            for entity_type, confidence in type_assessment.type_distribution.items()
+            if entity_type != "unknown"
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    if not ranked or ranked[0][1] < 0.80:
+        return candidates
+    learned_type = ranked[0][0]
+    compatible = {
+        "person": {"person", "actor", "employee"},
+        "team": {"team", "group"},
+        "system": {"system", "service", "product"},
+        "project": {"project", "workstream", "initiative"},
+    }.get(learned_type, {learned_type})
+    narrowed = [
+        candidate for candidate in candidates
+        if str(candidate.canonical_ref.get("type", "")).casefold() in compatible
+    ]
+    # Open-world safety: type evidence can narrow, but never erase all paths.
+    return narrowed or candidates
+
+
 # =====================================================================
 # LLM schema (Pydantic) — what the resolver prompt returns.
 # =====================================================================
@@ -923,34 +957,9 @@ class EntityResolverWorker:
         type_assessment = (
             detection.entity_type_assessment if detection is not None else None
         )
-        if type_assessment is not None:
-            ranked = sorted(
-                (
-                    (entity_type, confidence)
-                    for entity_type, confidence
-                    in type_assessment.type_distribution.items()
-                    if entity_type != "unknown"
-                ),
-                key=lambda item: item[1],
-                reverse=True,
-            )
-            if ranked and ranked[0][1] >= 0.80:
-                learned_type = ranked[0][0]
-                compatible = {
-                    "person": {"person", "actor", "employee"},
-                    "team": {"team", "group"},
-                    "system": {"system", "service", "product"},
-                    "project": {"project", "workstream", "initiative"},
-                }.get(learned_type, {learned_type})
-                narrowed = [
-                    candidate for candidate in candidates
-                    if str(candidate.canonical_ref.get("type", "")).casefold()
-                    in compatible
-                ]
-                # Open-world safety: type evidence may not match registry
-                # ontology. It can narrow, but never erase every identity path.
-                if narrowed:
-                    candidates = narrowed
+        candidates = _narrow_candidates_by_type_assessment(
+            candidates, type_assessment
+        )
         return tuple(candidates)
 
     @staticmethod

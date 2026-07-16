@@ -49,6 +49,7 @@ def prepare_entity_mention_detection(
     verified_span: tuple[int, int] | None = None,
     discovery_fate: EntityMentionDetectionFate | None = None,
     discovery_confidence: float | None = None,
+    discovery_type_confidence: float | None = None,
     extractor_version: str = _EXTRACTOR_VERSION,
     discovery_reason_codes: tuple[str, ...] = (),
     discovered_entity_type: str | None = None,
@@ -110,14 +111,22 @@ def prepare_entity_mention_detection(
 
     type_assessment = None
     if mention is not None and discovered_entity_type is not None:
-        unknown = max(0.01, 1.0 - (discovery_confidence or 0.6))
+        type_confidence = (
+            discovery_type_confidence
+            if discovery_type_confidence is not None
+            else discovery_confidence or 0.6
+        )
+        unknown = max(0.01, 1.0 - type_confidence)
         typed = 1.0 - unknown
         type_assessment = EntityTypeAssessment(
             assessment_id=f"type-assessment:{detection_id}:v1",
             assessment_version=1,
             mention_or_referent_ref=f"mention:{detection_id}:v1",
             type_distribution={discovered_entity_type: typed, "unknown": unknown},
-            evidence_basis_refs=(f"observation:{observation_id}:content_text",),
+            evidence_basis_refs=(
+                f"observation:{observation_id}:content_text",
+                f"learned-type-hypothesis:{discovered_entity_type}",
+            ),
             temporal_scope=BitemporalInterval(
                 valid_from=now,
                 transaction_from=now,
