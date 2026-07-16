@@ -250,6 +250,24 @@ async def handle_slack_message(
         "team": event.get("team") or payload.get("team_id"),
         "event_type": event.get("type"),
         "subtype": subtype,
+        "thread_ts": (
+            (event.get("message") or {}).get("thread_ts")
+            if subtype == "message_changed" and isinstance(event.get("message"), dict)
+            else event.get("thread_ts")
+        ),
+        "parent_user_id": (
+            (event.get("message") or {}).get("parent_user_id")
+            if subtype == "message_changed" and isinstance(event.get("message"), dict)
+            else event.get("parent_user_id")
+        ),
+        "client_msg_id": (
+            (event.get("message") or {}).get("client_msg_id")
+            if subtype == "message_changed" and isinstance(event.get("message"), dict)
+            else event.get("client_msg_id")
+        ),
+        "reply_count": event.get("reply_count"),
+        "reply_users": event.get("reply_users"),
+        "latest_reply": event.get("latest_reply"),
     }
     if original_ts is not None:
         content["original_ts"] = original_ts

@@ -88,9 +88,14 @@ async def test_channel_message_still_works():
     draft = await handle_slack_message(_cb({
         "type": "message", "channel": "C0GENERAL01", "channel_type": "channel",
         "user": "U_BOB", "text": "deploy is green", "ts": "1780184162.000300",
+        "thread_ts": "1780184000.000001", "parent_user_id": "U_ALICE",
+        "reply_count": 3, "reply_users": ["U_ALICE", "U_BOB"],
     }), {})
     assert draft.external_id == "C0GENERAL01:1780184162.000300"
     assert draft.content["channel_type"] == "channel"
+    assert draft.content["thread_ts"] == "1780184000.000001"
+    assert draft.content["parent_user_id"] == "U_ALICE"
+    assert draft.content["reply_count"] == 3
 
 
 async def test_system_event_without_text_still_rejected():
