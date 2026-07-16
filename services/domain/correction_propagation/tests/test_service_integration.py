@@ -16,6 +16,11 @@ from services.domain.source_semantics.tests.test_grounded_belief_vertical import
     CUSTOMER_REF,
     _commit_grounding,
 )
+from services.reasoning.retrieval.assembler import ContextBundle
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.deterministic import deterministic_handler
+from services.reasoning.think.diff_schema import ValidatedDiff
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -143,6 +148,122 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
             ),
             conn=conn,
         )
+        relation_id = uuid7()
+        relation_projection_id = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO relation_instances (
+              id, tenant_id, relation_kind, status,
+              participant_binding_status, write_policy, confidence,
+              evidence_model_ids
+            ) VALUES (
+              $1, $2, 'supports_delivery_risk', 'accepted',
+              'bound', 'project_edges', 0.8, ARRAY[$3]::uuid[]
+            )
+            """,
+            relation_id,
+            tenant_id,
+            old_model_id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO relation_participants (
+              id, relation_id, tenant_id, model_id, role, binding_confidence
+            ) VALUES ($1, $2, $3, $4, 'support', 0.9)
+            """,
+            uuid7(),
+            relation_id,
+            tenant_id,
+            old_model_id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO relation_edge_projections (
+              id, relation_id, tenant_id, edge_id, projection_rule,
+              source_role, target_role, source_model_id, target_model_id,
+              edge_kind, status
+            ) VALUES (
+              $1, $2, $3, $4, 'pytest:correction',
+              'support', 'dependent', $5, $6, 'supports', 'active'
+            )
+            """,
+            relation_projection_id,
+            relation_id,
+            tenant_id,
+            uuid7(),
+            old_model_id,
+            dependent.id,
+        )
+        projection_subject = "customer:nimbus"
+        await conn.execute(
+            """
+            INSERT INTO projection_snapshots (
+              tenant_id, projection_name, projection_version, subject_key,
+              payload, confidence, source_model_ids, source_event_ids
+            ) VALUES (
+              $1, 'customers', 'v1', $2,
+              '{"status":"contaminated"}'::jsonb, 0.8,
+              ARRAY[$3]::uuid[], '{}'::uuid[]
+            )
+            """,
+            tenant_id,
+            projection_subject,
+            old_model_id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO projection_dependencies (
+              tenant_id, projection_name, projection_version, subject_key,
+              ref_kind, ref_value, reason
+            ) VALUES ($1, 'customers', 'v1', $2, 'model', $3, 'source_model')
+            """,
+            tenant_id,
+            projection_subject,
+            str(old_model_id),
+        )
+        other_relation_id = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO relation_instances (
+              id, tenant_id, relation_kind, status,
+              participant_binding_status, write_policy, confidence,
+              evidence_model_ids
+            ) VALUES (
+              $1, $2, 'other_tenant_relation', 'accepted',
+              'bound', 'candidate', 0.7, ARRAY[$3]::uuid[]
+            )
+            """,
+            other_relation_id,
+            other_tenant_id,
+            other_model.id,
+        )
+        other_projection_subject = "other-tenant-subject"
+        await conn.execute(
+            """
+            INSERT INTO projection_snapshots (
+              tenant_id, projection_name, projection_version, subject_key,
+              payload, confidence, source_model_ids, source_event_ids
+            ) VALUES (
+              $1, 'customers', 'v1', $2,
+              '{"status":"untouched"}'::jsonb, 0.7,
+              ARRAY[$3]::uuid[], '{}'::uuid[]
+            )
+            """,
+            other_tenant_id,
+            other_projection_subject,
+            other_model.id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO projection_dependencies (
+              tenant_id, projection_name, projection_version, subject_key,
+              ref_kind, ref_value, reason
+            ) VALUES ($1, 'customers', 'v1', $2, 'model', $3, 'source_model')
+            """,
+            other_tenant_id,
+            other_projection_subject,
+            str(other_model.id),
+        )
 
         source_before = await conn.fetchrow(
             """
@@ -207,6 +328,102 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
             other_tenant_id,
             other_model.id,
         )
+        relation_after = await conn.fetchval(
+            "SELECT status FROM relation_instances WHERE tenant_id=$1 AND id=$2",
+            tenant_id,
+            relation_id,
+        )
+        relation_projection_after = await conn.fetchval(
+            """
+            SELECT status
+            FROM relation_edge_projections
+            WHERE tenant_id=$1 AND id=$2
+            """,
+            tenant_id,
+            relation_projection_id,
+        )
+        projection_after = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM projection_snapshots
+            WHERE tenant_id=$1 AND projection_name='customers'
+              AND projection_version='v1' AND subject_key=$2
+            """,
+            tenant_id,
+            projection_subject,
+        )
+        dependency_after = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM projection_dependencies
+            WHERE tenant_id=$1 AND projection_name='customers'
+              AND projection_version='v1' AND subject_key=$2
+            """,
+            tenant_id,
+            projection_subject,
+        )
+        refresh_jobs = await conn.fetch(
+            """
+            SELECT status, reason, payload
+            FROM projection_refresh_jobs
+            WHERE tenant_id=$1 AND projection_name='customers'
+              AND projection_version='v1' AND subject_key=$2
+            """,
+            tenant_id,
+            projection_subject,
+        )
+        reeval_trigger = TriggerContext(
+            kind="T4",
+            tenant_id=tenant_id,
+            subkind="model_reeval",
+            model_id=dependent.id,
+            seed_signature={
+                "trigger_id": str(uuid7()),
+                "cause_model_id": str(old_model_id),
+                "cause_kind": "grounding_corrected",
+            },
+        )
+        raw_diff = await deterministic_handler(
+            reeval_trigger,
+            ContextBundle(),
+            conn,
+        )
+        assert len(raw_diff.claim_ops) == 1
+        assert raw_diff.claim_ops[0].op == "archive"
+        validated_diff = ValidatedDiff.model_validate(
+            raw_diff.model_dump(mode="python")
+        )
+        async with conn.transaction():
+            await apply_diff(
+                validated_diff,
+                conn,
+                trigger_kind="T4",
+                trigger_cause_event_id=predecessor_observation_id,
+                models_repo=models_repo,
+            )
+        dependent_after_revalidation = await conn.fetchrow(
+            """
+            SELECT status, archive_reason, visible_to_subjects
+            FROM models WHERE tenant_id=$1 AND id=$2
+            """,
+            tenant_id,
+            dependent.id,
+        )
+        reeval_replay = await deterministic_handler(
+            TriggerContext(
+                kind="T4",
+                tenant_id=tenant_id,
+                subkind="model_reeval",
+                model_id=dependent.id,
+                seed_signature={
+                    "trigger_id": str(uuid7()),
+                    "cause_model_id": str(old_model_id),
+                    "cause_kind": "grounding_corrected",
+                },
+            ),
+            ContextBundle(),
+            conn,
+        )
 
         async with conn.transaction():
             replay = await service.propagate_direct_correction(
@@ -228,6 +445,32 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
             dependent.id,
             old_model_id,
         )
+        replay_refresh_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM projection_refresh_jobs
+            WHERE tenant_id=$1 AND projection_name='customers'
+              AND projection_version='v1' AND subject_key=$2
+              AND status='pending'
+            """,
+            tenant_id,
+            projection_subject,
+        )
+        other_relation_after = await conn.fetchval(
+            "SELECT status FROM relation_instances WHERE tenant_id=$1 AND id=$2",
+            other_tenant_id,
+            other_relation_id,
+        )
+        other_projection_after = await conn.fetchval(
+            """
+            SELECT payload->>'status'
+            FROM projection_snapshots
+            WHERE tenant_id=$1 AND projection_name='customers'
+              AND projection_version='v1' AND subject_key=$2
+            """,
+            other_tenant_id,
+            other_projection_subject,
+        )
 
     assert first.archived_model_ids == (old_model_id,)
     assert first.newly_fenced_model_ids == (dependent.id,)
@@ -242,7 +485,24 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
     assert source_after == source_before
     assert other_after["status"] == "active"
     assert other_after["visible_to_subjects"] is True
+    assert relation_after == "retired"
+    assert relation_projection_after == "retired"
+    assert projection_after == 0
+    assert dependency_after == 0
+    assert len(refresh_jobs) == 1
+    assert refresh_jobs[0]["status"] == "pending"
+    assert refresh_jobs[0]["reason"] == "dependency_delta"
+    refresh_payload = refresh_jobs[0]["payload"]
+    if isinstance(refresh_payload, str):
+        refresh_payload = json.loads(refresh_payload)
+    assert refresh_payload["correction_kind"] == "grounding_corrected"
+    assert dependent_after_revalidation["status"] == "archived"
+    assert dependent_after_revalidation["archive_reason"] == "superseded"
+    assert reeval_replay.claim_ops == []
     assert replay.archived_model_ids == ()
     assert replay.newly_fenced_model_ids == ()
     assert replay.reeval_pairs == ()
     assert replay_queue_count == 1
+    assert replay_refresh_count == 1
+    assert other_relation_after == "accepted"
+    assert other_projection_after == "untouched"
