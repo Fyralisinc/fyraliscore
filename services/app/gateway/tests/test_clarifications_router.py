@@ -252,7 +252,6 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
     tenant_id = uuid4()
     actor_id = uuid4()
     request_id = uuid4()
-    review_id = uuid4()
     observation_id = uuid4()
     grounding_trace_id = uuid4()
     successor_trace_id = uuid4()
@@ -268,8 +267,8 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
                 "id": str(request_id),
                 "kind": "entity_resolution",
                 "status": "answered",
-                "object_kind": "entity_review",
-                "object_id": str(review_id),
+                "object_kind": "grounding_trace",
+                "object_id": str(grounding_trace_id),
                 "source_observation_id": str(observation_id),
                 "payload": {
                     "phrase": "Alpen",
@@ -350,7 +349,9 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
     assert semantic_work_calls[0]["conn"] is conn
     assert semantic_work_calls[0]["tenant_id"] == tenant_id
     assert semantic_work_calls[0]["grounding_trace_id"] == successor_trace_id
-    assert any("UPDATE entity_review_queue" in query for query, _args in conn.executed)
+    assert not any(
+        "UPDATE entity_review_queue" in query for query, _args in conn.executed
+    )
     assert not any("UPDATE observations" in query for query, _args in conn.executed)
     assert not any("INSERT INTO observations" in query for query, _args in conn.executed)
 

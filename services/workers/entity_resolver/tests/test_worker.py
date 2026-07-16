@@ -158,7 +158,11 @@ async def _count_review_rows(
 ) -> int:
     async with pool.acquire() as conn:
         return await conn.fetchval(
-            "SELECT COUNT(*) FROM entity_review_queue WHERE tenant_id = $1",
+            """
+            SELECT COUNT(*)
+            FROM clarification_requests
+            WHERE tenant_id = $1 AND kind = 'entity_resolution'
+            """,
             tenant_id,
         ) or 0
 
@@ -692,13 +696,14 @@ async def test_ambiguous_confidence_goes_to_review_queue(
     decisions = await worker.process_observation(obs_id, tenant_id)
     assert decisions == [("the project", "review")]
 
-    # No alias written; review row exists.
+    # No alias written; one canonical clarification exists.
     assert await _count_review_rows(resolver_db, tenant_id) == 1
     clarifications = await _fetch_clarification_rows(resolver_db, tenant_id)
     assert len(clarifications) == 1
     clarification = clarifications[0]
     assert clarification["kind"] == "entity_resolution"
-    assert clarification["object_kind"] == "entity_review"
+    assert clarification["object_kind"] == "grounding_trace"
+    assert clarification["object_id"] is not None
     assert clarification["source_observation_id"] == obs_id
     assert "the project" in clarification["question"]
     options = clarification["options"]

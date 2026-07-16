@@ -210,7 +210,10 @@ async def _apply_clarification_answer_side_effects(
             )
         return
 
-    if row.kind == "entity_resolution" and row.object_kind == "entity_review":
+    if row.kind == "entity_resolution" and row.object_kind in {
+        "entity_review",
+        "grounding_trace",
+    }:
         await _apply_entity_resolution_answer(
             conn,
             row=row,
@@ -267,13 +270,14 @@ async def _apply_entity_resolution_answer(
         )
         return
     if action in {"reject_candidate", "not_same_entity"}:
-        await _mark_entity_review_dismissed(
-            conn,
-            review_id=row.object_id,
-            tenant_id=tenant_id,
-            answered_by=answered_by,
-            reason=action,
-        )
+        if row.object_kind == "entity_review" and row.object_id is not None:
+            await _mark_entity_review_dismissed(
+                conn,
+                review_id=row.object_id,
+                tenant_id=tenant_id,
+                answered_by=answered_by,
+                reason=action,
+            )
         return
     if action == "create_new_entity":
         payload = row.payload or {}
@@ -473,13 +477,14 @@ async def _finalize_entity_resolution(
             grounding_trace_id=successor_trace_id,
             now=datetime.now(timezone.utc),
         )
-    await _mark_entity_review_resolved(
-        conn,
-        review_id=row.object_id,
-        tenant_id=tenant_id,
-        answered_by=answered_by,
-        chosen_ref=canonical_ref,
-    )
+    if row.object_kind == "entity_review" and row.object_id is not None:
+        await _mark_entity_review_resolved(
+            conn,
+            review_id=row.object_id,
+            tenant_id=tenant_id,
+            answered_by=answered_by,
+            chosen_ref=canonical_ref,
+        )
     if observation_id is not None:
         await _maybe_enqueue_entity_resolution_trigger(
             conn,

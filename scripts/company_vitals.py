@@ -487,7 +487,6 @@ async def _collect_company_learning_evaluation(
         "agency_outbox_records",
         "clarification_requests",
         "entity_aliases",
-        "entity_review_queue",
     )
     missing = [
         table for table in required_tables if not await _table_exists(conn, table)

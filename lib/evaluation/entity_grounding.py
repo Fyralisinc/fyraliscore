@@ -346,10 +346,15 @@ async def evaluate_entity_grounding_state(
               ecgr.entity_mention_detection_id AS candidate_mention_detection_id,
               ecgr.entity_mention_id AS candidate_mention_id,
               EXISTS (
-                SELECT 1 FROM entity_review_queue erq
-                WHERE erq.tenant_id = gt.tenant_id
-                  AND erq.source_observation_id = gt.source_observation_id
-                  AND erq.phrase = gt.phrase
+                SELECT 1 FROM clarification_requests clarification
+                WHERE clarification.tenant_id = gt.tenant_id
+                  AND clarification.kind = 'entity_resolution'
+                  AND clarification.source_observation_id =
+                      gt.source_observation_id
+                  AND clarification.payload ->> 'phrase' = gt.phrase
+                  AND clarification.payload
+                      -> 'feedback_lineage'
+                      ->> 'grounding_trace_id' = gt.id::text
               ) AS has_review_obligation
             FROM grounding_traces gt
             LEFT JOIN interpretation_context_snapshots ics

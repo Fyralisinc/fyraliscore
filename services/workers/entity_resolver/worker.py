@@ -50,7 +50,6 @@ from lib.llm.provider import (
     LLMRateLimitError,
     LLMTimeoutError,
 )
-from lib.shared.ids import uuid7
 from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import (
     EntityAliasRepo,
@@ -831,7 +830,7 @@ class EntityResolverWorker:
         grounding_trace_id: UUID,
         conn: asyncpg.Connection | None,
     ) -> None:
-        """Project a durable review admission into the human-work queue."""
+        """Open one canonical clarification for a durable review admission."""
         detection = episode.mention_detection_command.detection
         feedback_lineage = {
             "grounding_trace_id": str(grounding_trace_id),
@@ -868,27 +867,10 @@ class EntityResolverWorker:
                 "grounding_admission_version": episode.admission.decision_version,
             }
         ]
-        row_id = uuid7()
-        await self._execute(
-            conn,
-            """
-            INSERT INTO entity_review_queue (
-                id, tenant_id, phrase, source_observation_id,
-                candidates, created_at
-            ) VALUES (
-                $1, $2, $3, $4, $5::jsonb, now()
-            )
-            """,
-            row_id,
-            ctx.tenant_id,
-            ctx.phrase,
-            ctx.observation_id,
-            json.dumps(candidates),
-        )
         await self._open_entity_resolution_clarification(
             ctx=ctx,
             canonical_ref=episode.assessed_canonical_ref,
-            review_id=row_id,
+            grounding_trace_id=grounding_trace_id,
             candidates=candidates,
             feedback_lineage=feedback_lineage,
             conn=conn,
@@ -899,7 +881,7 @@ class EntityResolverWorker:
         *,
         ctx: ResolverContext,
         canonical_ref: dict[str, Any] | None,
-        review_id: UUID,
+        grounding_trace_id: UUID,
         candidates: list[dict[str, Any]],
         feedback_lineage: dict[str, Any],
         conn: asyncpg.Connection | None,
@@ -927,24 +909,25 @@ class EntityResolverWorker:
                 "requires": ["entity_type"],
             },
         ]
+        if conn is not None:
+            await self._write_entity_resolution_clarification(
+                conn,
+                ctx=ctx,
+                ref=ref,
+                grounding_trace_id=grounding_trace_id,
+                candidates=candidates,
+                options=options,
+                feedback_lineage=feedback_lineage,
+            )
+            return
         try:
-            if conn is not None:
-                await self._write_entity_resolution_clarification(
-                    conn,
-                    ctx=ctx,
-                    ref=ref,
-                    review_id=review_id,
-                    candidates=candidates,
-                    options=options,
-                    feedback_lineage=feedback_lineage,
-                )
-            else:
-                async with self._pool.acquire() as owned:
+            async with self._pool.acquire() as owned:
+                async with owned.transaction():
                     await self._write_entity_resolution_clarification(
                         owned,
                         ctx=ctx,
                         ref=ref,
-                        review_id=review_id,
+                        grounding_trace_id=grounding_trace_id,
                         candidates=candidates,
                         options=options,
                         feedback_lineage=feedback_lineage,
@@ -962,7 +945,7 @@ class EntityResolverWorker:
         *,
         ctx: ResolverContext,
         ref: dict[str, Any],
-        review_id: UUID,
+        grounding_trace_id: UUID,
         candidates: list[dict[str, Any]],
         options: list[dict[str, Any]],
         feedback_lineage: dict[str, Any],
@@ -981,8 +964,8 @@ class EntityResolverWorker:
                 "The resolver found a plausible match but not enough evidence "
                 "to safely write a canonical alias without user judgment."
             ),
-            object_kind="entity_review",
-            object_id=review_id,
+            object_kind="grounding_trace",
+            object_id=grounding_trace_id,
             source_observation_id=ctx.observation_id,
             options=options,
             payload={

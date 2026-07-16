@@ -240,7 +240,6 @@ def test_custom_output_dir_is_the_persisted_evaluation_source(
 @pytest.mark.parametrize(
     "missing_table",
     (
-        "entity_review_queue",
         "agency_command_results",
         "agency_canonical_events",
         "agency_outbox_records",

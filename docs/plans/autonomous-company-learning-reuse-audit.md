@@ -282,19 +282,32 @@ decisions will be added after the parallel audit lanes complete.
   not competing readiness reports. Artifact-only rerenders preserve a saved
   DB-backed evaluation instead of replacing it with `not_observed`.
 
+### Slice 7 — One canonical human-review object
+
+- New entity-review work is represented only by `clarification_requests`.
+  Its object identity is the exact grounding trace under review, and its payload
+  carries the candidate set and full grounding feedback lineage.
+- The resolver no longer writes a parallel `entity_review_queue` row. Review
+  admission and clarification creation share the grounding transaction, so a
+  terminal review fate cannot commit without its human obligation.
+- The answer path still recognizes historical `entity_review` clarification
+  objects and resolves/dismisses their legacy queue rows for compatibility.
+  Applied migration history and old data remain intact.
+- The grounding evaluator now proves review-obligation coverage from the
+  canonical clarification lineage rather than the retired compatibility table.
+
 ## Next Consolidation Targets
 
 1. Keep the source-semantic worker active until its Slack-to-Model vertical is
    preserved by an equivalent integrated path.
-2. Consolidate `entity_review_queue` behind `clarification_requests`.
-3. Continue isolating shared command/event/outbox persistence from
+2. Continue isolating shared command/event/outbox persistence from
    task-autonomy service and database naming while retaining compatibility.
-4. Feed typed grounding outcomes into existing reflective/retrieval learning
+3. Feed typed grounding outcomes into existing reflective/retrieval learning
    before adding any new policy lifecycle.
-5. Add paired adaptive-versus-frozen and held-out entity-recurrence simulations
+4. Add paired adaptive-versus-frozen and held-out entity-recurrence simulations
    so learned replay is measured for net quality lift, not only closure and
    model-call avoidance.
-6. Expand correction closure from the first grounded-Model vertical to every
+5. Expand correction closure from the first grounded-Model vertical to every
    materially dependent accepted Model, graph relation and projection.
 
 ## Proof Required Before Behavioral Expansion

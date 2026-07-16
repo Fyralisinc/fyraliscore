@@ -744,6 +744,33 @@ coherent diff.
   the existing proof compiler to determine whether the active learning
   invariants become substantiated.
 
+### DISC-017 — Clarification is the human-work record; review queue is compatibility
+
+- **Date:** 2026-07-16
+- **Milestone:** Entity-review ownership consolidation
+- **Status:** `accepted`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** entity resolver, clarification requests, grounding
+  traces, clarification answer path and entity-grounding evaluator
+- **Observation:** `entity_review_queue` and `clarification_requests` described
+  the same unresolved human judgment with separate IDs and lifecycle fields.
+  No independent production consumer required the older queue.
+- **Working core boundary:** A new entity review opens one
+  `clarification_requests` row whose object is the exact grounding trace. The
+  candidate set and stage lineage remain in its payload. Review admission and
+  clarification creation are atomic with grounding. The applied queue schema
+  remains historical compatibility only.
+- **Implementation evidence:** The resolver no longer inserts queue rows; the
+  evaluator derives review-obligation coverage from exact clarification
+  lineage; the answer path handles new `grounding_trace` objects directly and
+  updates queue rows only for historical `entity_review` objects.
+- **Deferred architecture gaps:** Existing legacy queue rows are not backfilled
+  into a formal projection or deleted. Schema-drift tooling still describes the
+  applied table, as it must until a forward retirement migration is justified.
+- **Return condition:** After production data confirms no active non-clarification
+  consumer, add a forward compatibility projection or archival migration and
+  remove the legacy answer branch.
+
 ## Reconciliation Procedure
 
 At a reconciliation milestone:

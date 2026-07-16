@@ -236,18 +236,9 @@ async def test_slack_thread_review_adjudication_reaches_original_grounded_belief
             tenant_id,
             reply_id,
         )
-        review = await conn.fetchrow(
-            """
-            SELECT id, candidates
-            FROM entity_review_queue
-            WHERE tenant_id = $1 AND source_observation_id = $2
-            """,
-            tenant_id,
-            reply_id,
-        )
         clarification = await conn.fetchrow(
             """
-            SELECT id, object_id, source_observation_id, payload
+            SELECT id, object_kind, object_id, source_observation_id, payload
             FROM clarification_requests
             WHERE tenant_id = $1
               AND source_observation_id = $2
@@ -329,8 +320,9 @@ async def test_slack_thread_review_adjudication_reaches_original_grounded_belief
         "context_not_operationally_sufficient:needs_expansion"
     ]
     assert downstream == []
-    assert review is not None
-    review_candidates = _json(review["candidates"])
+    assert clarification is not None
+    clarification_payload = _json(clarification["payload"])
+    review_candidates = clarification_payload["candidates"]
     assert review_candidates == [
         {
             "candidate_id": northstar["candidate_id"],
@@ -348,10 +340,10 @@ async def test_slack_thread_review_adjudication_reaches_original_grounded_belief
             "grounding_admission_version": row["grounding_admission_version"],
         }
     ]
-    assert clarification is not None
-    assert clarification["object_id"] == review["id"]
+    assert clarification["object_kind"] == "grounding_trace"
+    assert clarification["object_id"] == row["grounding_trace_id"]
     assert clarification["source_observation_id"] == reply_id
-    feedback_lineage = _json(clarification["payload"])["feedback_lineage"]
+    feedback_lineage = clarification_payload["feedback_lineage"]
     assert feedback_lineage == {
         "grounding_trace_id": str(row["grounding_trace_id"]),
         "context_snapshot_id": str(row["context_snapshot_id"]),
