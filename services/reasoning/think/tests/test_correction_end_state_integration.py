@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import asyncpg
 import pytest
 
+from lib.contracts.kernel import canonical_sha256
 from lib.embeddings.ollama import EMBEDDING_DIM
+from lib.evaluation.correction_assurance import CorrectionRuntimeEvidence
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
 from services.domain.correction_propagation import CorrectionPropagationService
@@ -24,6 +27,7 @@ from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.applier import apply_diff
 from services.reasoning.think.deterministic import deterministic_handler
 from services.reasoning.think.diff_schema import ValidatedDiff
+from scripts.run_correction_assurance import run_correction_assurance
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -58,6 +62,7 @@ async def _insert_observation(
 
 async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
     fresh_db: asyncpg.Pool,
+    tmp_path: Path,
 ) -> None:
     tenant_id = uuid7()
     other_tenant_id = uuid7()
@@ -558,6 +563,135 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
             other_projection_subject,
         )
 
+    projection_ref = f"projection:customers:v1:{projection_subject}"
+    relation_refs = (
+        f"relation-instance:{relation_id}",
+        f"relation-edge-projection:{relation_projection_id}",
+    )
+    runtime_evidence = CorrectionRuntimeEvidence(
+        expected_dependency_refs=(
+            f"model:{old_model_id}",
+            f"model:{dependent.id}",
+            f"model:{second_hop.id}",
+            *relation_refs,
+            projection_ref,
+        ),
+        discovered_dependency_refs=(
+            f"model:{old_model_id}",
+            f"model:{dependent.id}",
+            f"model:{second_hop.id}",
+            *relation_refs,
+            projection_ref,
+        ),
+        expected_immediate_fence_refs=(
+            f"model:{dependent.id}",
+            f"model:{second_hop.id}",
+        ),
+        immediate_fence_refs=tuple(
+            f"model:{model_id}" for model_id in first.newly_fenced_model_ids
+        ),
+        expected_direct_repair_refs=(f"model:{old_model_id}",),
+        direct_repair_refs=tuple(
+            f"model:{model_id}" for model_id in first.archived_model_ids
+        ),
+        expected_recursive_repair_refs=(
+            f"model:{dependent.id}",
+            f"model:{second_hop.id}",
+        ),
+        recursive_repair_refs=tuple(
+            ref
+            for ref, row in (
+                (f"model:{dependent.id}", dependent_after_revalidation),
+                (f"model:{second_hop.id}", second_hop_after_revalidation),
+            )
+            if row["status"] == "archived"
+        ),
+        expected_relation_retirement_refs=relation_refs,
+        relation_retirement_refs=tuple(
+            ref
+            for ref, status in (
+                (relation_refs[0], relation_after),
+                (relation_refs[1], relation_projection_after),
+            )
+            if status == "retired"
+        ),
+        expected_projection_invalidation_refs=(projection_ref,),
+        projection_invalidation_refs=(
+            (projection_ref,)
+            if first.projection_fence.invalidated_subjects
+            else ()
+        ),
+        expected_projection_rebuild_refs=(projection_ref,),
+        projection_rebuild_refs=(
+            (projection_ref,)
+            if refresh_report.processed_jobs == 1 and projection_after is not None
+            else ()
+        ),
+        residual_unsafe_refs=tuple(
+            ref
+            for ref, unsafe in (
+                (
+                    f"model:{dependent.id}",
+                    dependent_after_revalidation["status"] == "active"
+                    and dependent_after_revalidation["visible_to_subjects"],
+                ),
+                (
+                    f"model:{second_hop.id}",
+                    second_hop_after_revalidation["status"] == "active"
+                    and second_hop_after_revalidation["visible_to_subjects"],
+                ),
+            )
+            if unsafe
+        ),
+        replay_new_work_refs=tuple(
+            (
+                *(f"model:{item}" for item in replay.archived_model_ids),
+                *(f"model:{item}" for item in replay.newly_fenced_model_ids),
+                *(
+                    f"reeval:{model_id}:{cause_model_id}"
+                    for model_id, cause_model_id in replay.reeval_pairs
+                ),
+                *(
+                    f"claim-op:{index}"
+                    for index, _ in enumerate(reeval_replay.claim_ops)
+                ),
+                *(
+                    ("projection-refresh:pending",)
+                    if replay_refresh_count
+                    else ()
+                ),
+            )
+        ),
+        source_before_digest=canonical_sha256(dict(source_before)),
+        source_after_digest=canonical_sha256(dict(source_after)),
+        cross_tenant_change_refs=tuple(
+            ref
+            for ref, changed in (
+                (
+                    f"model:{other_model.id}",
+                    other_after["status"] != "active"
+                    or other_after["visible_to_subjects"] is not True,
+                ),
+                (
+                    f"relation-instance:{other_relation_id}",
+                    other_relation_after != "accepted",
+                ),
+                (
+                    f"projection:customers:v1:{other_projection_subject}",
+                    other_projection_after != "untouched",
+                ),
+            )
+            if changed
+        ),
+        artifact_refs=("pytest:correction-end-state-integration",),
+    )
+    assurance = run_correction_assurance(
+        output_dir=tmp_path / "correction-assurance",
+        run_id="pytest-correction-end-state",
+        system_version="pytest",
+        runtime_evidence=runtime_evidence,
+    )
+
     assert first.archived_model_ids == (old_model_id,)
     assert set(first.newly_fenced_model_ids) == {
         dependent.id,
@@ -616,3 +750,17 @@ async def test_direct_correction_fence_is_atomic_isolated_and_idempotent(
     assert replay_refresh_count == 0
     assert other_relation_after == "accepted"
     assert other_projection_after == "untouched"
+    assert assurance.status == "working"
+    assert assurance.metrics.expected_dependency_count == 6
+    assert assurance.metrics.dependency_discovery_rate == 1.0
+    assert assurance.metrics.immediate_fence_rate == 1.0
+    assert assurance.metrics.direct_repair_rate == 1.0
+    assert assurance.metrics.recursive_repair_rate == 1.0
+    assert assurance.metrics.relation_retirement_rate == 1.0
+    assert assurance.metrics.projection_invalidation_rate == 1.0
+    assert assurance.metrics.projection_rebuild_rate == 1.0
+    assert assurance.metrics.residual_unsafe_debt_count == 0
+    assert assurance.metrics.replay_idempotent is True
+    assert assurance.metrics.source_immutable is True
+    assert assurance.metrics.tenant_isolated is True
+    assert assurance.metrics.converged is True
