@@ -267,6 +267,65 @@ def _select_diverse_observation_floor(
     return selected
 
 
+def _batch_semantic_memory_state(
+    *,
+    selected_model_count: int,
+    trigger_candidate_count: int,
+    configured_floor: int,
+    total_cap: int,
+) -> dict[str, Any]:
+    """Describe how far an event batch can lean on established Models.
+
+    A single retrieved Model is not sufficient evidence that semantic memory
+    covers a batch.  Use a continuous sufficiency score against a bounded
+    coverage target so cold-start batches retain broad raw evidence while a
+    mature model layer keeps only a small verification sample.
+    """
+    trigger_count = max(0, int(trigger_candidate_count))
+    model_count = max(0, int(selected_model_count))
+    target_models = max(4, min(12, (trigger_count + 1) // 2))
+    sufficiency = min(1.0, model_count / target_models)
+    if sufficiency <= 0.0:
+        maturity = "cold_start"
+    elif sufficiency < 0.75:
+        maturity = "developing"
+    else:
+        maturity = "mature"
+
+    configured = min(
+        max(0, int(configured_floor)),
+        max(0, int(total_cap)),
+        trigger_count,
+    )
+    verification_floor = min(2, configured)
+    effective = verification_floor + round(
+        (configured - verification_floor) * (1.0 - sufficiency)
+    )
+    return {
+        "maturity": maturity,
+        "semantic_memory_sufficiency": round(sufficiency, 4),
+        "semantic_memory_target_models": target_models,
+        "configured_raw_floor": configured,
+        "effective_raw_floor": max(0, min(configured, effective)),
+    }
+
+
+def _raw_evidence_reopening(
+    *,
+    selected: list[ObservationRow],
+    reason_codes: list[str],
+    memory_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    note: dict[str, Any] = {
+        "opened": bool(selected),
+        "reason_codes": list(reason_codes) if selected else [],
+        "selected_observation_ids": [str(row.id) for row in selected],
+    }
+    if memory_state is not None:
+        note.update(memory_state)
+    return note
+
+
 def _select_observations(
     retrieval_result: RetrievalResult,
     observations: list[ObservationRow],
@@ -294,6 +353,10 @@ def _select_observations(
             "selected_model_count": int(selected_model_count),
             "model_context_sufficient": False,
             "suppressed_reason": None,
+            "raw_evidence_reopening": _raw_evidence_reopening(
+                selected=selected,
+                reason_codes=["legacy_observation_context_mode"],
+            ),
         }
 
     trigger_ids = _trigger_observation_ids(retrieval_result)
@@ -317,16 +380,31 @@ def _select_observations(
         suppressed_reason = "model_context_sufficient"
     if suppressed_reason is not None:
         floor_selected: list[ObservationRow] = []
+        memory_state: dict[str, Any] | None = None
         if suppressed_reason == "model_context_sufficient" and _is_explicit_t1_event_batch(
             retrieval_result
         ):
+            memory_state = _batch_semantic_memory_state(
+                selected_model_count=selected_model_count,
+                trigger_candidate_count=len(trigger_observations),
+                configured_floor=int(
+                    getattr(cfg, "t1_event_batch_raw_observation_floor", 0)
+                ),
+                total_cap=budget_observations,
+            )
             floor_selected = _select_diverse_observation_floor(
                 trigger_observations,
-                floor=int(getattr(cfg, "t1_event_batch_raw_observation_floor", 0)),
+                floor=int(memory_state["effective_raw_floor"]),
                 source_floor=int(getattr(cfg, "t1_event_batch_raw_source_floor", 0)),
                 total_cap=budget_observations,
             )
         if floor_selected:
+            reason = (
+                "fresh_trigger_verification_sample"
+                if memory_state
+                and memory_state["semantic_memory_sufficiency"] >= 0.75
+                else "semantic_memory_partial_batch_coverage"
+            )
             return floor_selected, {
                 "model_first_context_enabled": True,
                 "retrieved_count": len(observations),
@@ -353,6 +431,11 @@ def _select_observations(
                 "source_floor": int(
                     getattr(cfg, "t1_event_batch_raw_source_floor", 0)
                 ),
+                "raw_evidence_reopening": _raw_evidence_reopening(
+                    selected=floor_selected,
+                    reason_codes=[reason],
+                    memory_state=memory_state,
+                ),
             }
         return [], {
             "model_first_context_enabled": True,
@@ -371,21 +454,26 @@ def _select_observations(
             "selected_model_count": int(selected_model_count),
             "model_context_sufficient": bool(model_context_sufficient),
             "suppressed_reason": suppressed_reason,
+            "raw_evidence_reopening": _raw_evidence_reopening(
+                selected=[],
+                reason_codes=[],
+                memory_state=memory_state,
+            ),
         }
 
-    trigger_cap = max(0, int(cfg.trigger_observation_cap))
-    if explicit_budget:
-        trigger_cap = min(trigger_cap, max(0, int(budget_observations)))
+    trigger_cap = min(
+        max(0, int(cfg.trigger_observation_cap)),
+        max(0, int(budget_observations)),
+    )
     historical_cap = min(
         max(0, int(cfg.historical_observation_cap)),
         max(0, int(budget_observations)),
     )
     selected_trigger = trigger_observations[:trigger_cap]
-    if explicit_budget:
-        historical_cap = min(
-            historical_cap,
-            max(0, int(budget_observations) - len(selected_trigger)),
-        )
+    historical_cap = min(
+        historical_cap,
+        max(0, int(budget_observations) - len(selected_trigger)),
+    )
     selected_historical = historical_observations[:historical_cap]
     selected = [*selected_trigger, *selected_historical]
     return selected, {
@@ -408,6 +496,14 @@ def _select_observations(
         ),
         "dropped_historical_count": max(
             0, len(historical_observations) - len(selected_historical)
+        ),
+        "raw_evidence_reopening": _raw_evidence_reopening(
+            selected=selected,
+            reason_codes=(
+                ["semantic_memory_gap"]
+                if mode == "model_gap"
+                else ["observation_context_always"]
+            ),
         ),
     }
 

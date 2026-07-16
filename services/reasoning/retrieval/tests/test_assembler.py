@@ -123,7 +123,7 @@ def test_select_observations_explicit_budget_is_hard_total_cap():
     assert notes["selected_historical_count"] == 0
 
 
-def test_select_observations_event_batch_keeps_diverse_raw_floor_with_models():
+def test_select_observations_mature_event_batch_reopens_small_diverse_raw_sample():
     tenant = uuid.uuid4()
     rows = []
     for i in range(18):
@@ -159,13 +159,92 @@ def test_select_observations_event_batch_keeps_diverse_raw_floor_with_models():
         selected_model_count=16,
     )
 
-    assert len(selected) == 8
+    assert len(selected) == 2
     assert notes["floor_reason"] == "explicit_t1_event_batch_raw_evidence_floor"
-    assert notes["selected_trigger_count"] == 8
+    assert notes["selected_trigger_count"] == 2
+    reopening = notes["raw_evidence_reopening"]
+    assert reopening["opened"] is True
+    assert reopening["reason_codes"] == ["fresh_trigger_verification_sample"]
+    assert reopening["maturity"] == "mature"
+    assert reopening["semantic_memory_sufficiency"] == 1.0
+    assert reopening["configured_raw_floor"] == 8
+    assert reopening["effective_raw_floor"] == 2
     sources = {row.source_channel for row in selected}
     assert sources == {"slack:message", "github:webhook"}
-    assert sum(row.source_channel == "slack:message" for row in selected) <= 4
-    assert sum(row.source_channel == "github:webhook" for row in selected) <= 4
+
+
+def test_select_observations_event_batch_continuously_matures_from_raw_to_models():
+    tenant = uuid.uuid4()
+    rows = [_obs_row(tenant, i) for i in range(25)]
+    for index, row in enumerate(rows):
+        row.source_channel = (
+            "slack:message" if index % 2 == 0 else "jira:issue"
+        )
+        row.content_text = f"Batch signal {index} about Atlas launch readiness"
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant,
+        observation_id=rows[0].id,
+        observation_ids=[row.id for row in rows],
+    )
+    result = RetrievalResult(trigger=trigger, observations=list(rows))
+    cfg = RetrievalConfig(
+        observation_context_mode="model_gap",
+        t1_event_batch_raw_observation_floor=20,
+        t1_event_batch_raw_source_floor=4,
+    )
+
+    early, early_notes = _select_observations(
+        result,
+        list(result.observations),
+        cfg=cfg,
+        budget_observations=20,
+        explicit_budget=False,
+        selected_model_count=0,
+    )
+    developing, developing_notes = _select_observations(
+        result,
+        list(result.observations),
+        cfg=cfg,
+        budget_observations=20,
+        explicit_budget=False,
+        selected_model_count=6,
+    )
+    mature, mature_notes = _select_observations(
+        result,
+        list(result.observations),
+        cfg=cfg,
+        budget_observations=20,
+        explicit_budget=False,
+        selected_model_count=24,
+    )
+
+    assert len(early) == 20
+    assert early_notes["raw_evidence_reopening"]["reason_codes"] == [
+        "semantic_memory_gap"
+    ]
+    assert len(developing) == 11
+    assert developing_notes["raw_evidence_reopening"] == {
+        "opened": True,
+        "reason_codes": ["semantic_memory_partial_batch_coverage"],
+        "selected_observation_ids": [
+            str(row.id) for row in developing
+        ],
+        "maturity": "developing",
+        "semantic_memory_sufficiency": 0.5,
+        "semantic_memory_target_models": 12,
+        "configured_raw_floor": 20,
+        "effective_raw_floor": 11,
+    }
+    assert len(mature) == 2
+    assert mature_notes["raw_evidence_reopening"]["reason_codes"] == [
+        "fresh_trigger_verification_sample"
+    ]
+    assert mature_notes["raw_evidence_reopening"]["maturity"] == "mature"
+    assert mature_notes["raw_evidence_reopening"][
+        "semantic_memory_sufficiency"
+    ] == 1.0
 
 
 def test_select_observations_non_event_batch_still_suppresses_with_models():
