@@ -51,6 +51,23 @@ claims that were not checked against code or artifacts.
 
 ## Durable Lessons
 
+### 2026-07-16 - Reusable database harnesses must normalize JSONB boundaries
+
+- Context: Extracting the correction-convergence integration test into a
+  callable harness used by both the combined assurance CLI and pytest.
+- Symptom: The combined CLI passed with its own asyncpg pool, while the same
+  harness failed through the shared `fresh_db` fixture because a JSONB field was
+  returned as a string rather than a mapping.
+- Cause: The harness installed JSON codecs only when it created the pool
+  itself; caller-provided pools legitimately had different codec setup.
+- Lesson: Reusable database harnesses must normalize JSON/JSONB values at their
+  public boundary and must be tested through both self-created and
+  caller-provided pools. A passing CLI does not prove the injected-pool path.
+- Evidence: `scripts/run_company_learning_correction_harness.py`;
+  `services/reasoning/think/tests/test_correction_end_state_integration.py`;
+  `services/workers/entity_resolver/tests/test_company_learning_assurance_suite_cli.py`.
+- Status: Landed; both real-Postgres paths now pass.
+
 ### 2026-07-16 - Freeze experiments at the earliest memory consumer
 
 - Context: Building a paired adaptive-versus-frozen experiment for governed

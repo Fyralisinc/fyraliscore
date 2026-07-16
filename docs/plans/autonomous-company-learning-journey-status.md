@@ -6,7 +6,7 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `abaadd10`
+**Current checkpoint:** `24f345a8`
 
 **Last updated:** 2026-07-16
 
@@ -247,7 +247,8 @@ flowchart LR
 | Company-learning evaluator | Context, grounding and source-semantic state compile into one active-slice evaluation | Complete for measured slice |
 | Paired causal evaluator | Correctness is derived from sealed arm-specific gold and terminal consumer fate; incidents are noncompensatory | Complete for current case family |
 | Canonical proof integration | Experiment scenario and lift metric are registered under INV-05 and aggregated through canonical proof models | Complete |
-| Company Vitals | Reopens and validates positive, negative, population and Slack artifacts; enforces noncompensatory safety; displays the combined assurance without score inflation | Complete for current assurance surfaces |
+| Company Vitals | Reopens and validates positive, negative, population, Slack and correction artifacts; verifies architecture and implementation-plan identity; enforces noncompensatory safety; displays the combined assurance without score inflation | Complete for current assurance surfaces |
+| Evaluator synchronization | V2 assurance binds architecture/plan identity, explicit Slack proof scope, active company-learning scope and first-class correction convergence | Complete |
 | Negative/adversarial recurrence families | Contextual phrase, source conflict, homonym and unrelated controls run on real Postgres with zero incidents | Complete for four sealed controls |
 | Held-out recurrence population | The sealed 60-case registry executes exactly once with continuous intervals, all four entity types and no selective reruns | Complete: 60/60 observed |
 | Slack conversational reconstruction | All nine target families are source-native, supported and correct with zero contamination | Complete for sealed gold: 9/9 |
@@ -465,6 +466,9 @@ Task autonomy is excluded from all percentages.
      company modeling with autonomous task planning and execution excluded.
    - Keep Company Vitals and the existing invariant-proof spine as the sole
      system evaluator; do not create a parallel health or assurance framework.
+   - Current result: complete. The v2 combined assurance runs all five
+     components, validates current architecture and plan digests, excludes task
+     autonomy explicitly, and passed the real-Postgres CLI integration.
 
 2. **Add non-resolution and ambiguity controls**
    - Contextual phrase negative.
@@ -542,9 +546,11 @@ Task autonomy is excluded from all percentages.
 
 The primary runnable working version now executes the positive adaptive/frozen
 learning loop, real-Postgres negative controls, the sealed 60-case population
-and the nine-family Slack reconstruction gold through one command. It writes
-one digest-sealed assurance summary, reopens every component and embeds the
-validated result into Company Vitals without adding a score.
+the nine-family Slack reconstruction gold and the seeded recursive correction
+burn through one command. It writes one digest-sealed v2 assurance summary,
+reopens every component, checks the current architecture and implementation-plan
+digests and embeds the validated result into Company Vitals without adding a
+score.
 
 ### Prerequisite and command
 
@@ -575,7 +581,9 @@ The output directory contains:
 - `negative/company_learning_negative_controls_evidence.json`;
 - `population/company_learning_population_evidence.json`;
 - `slack/slack_reconstruction_observations.jsonl`;
-- `slack/slack_reconstruction_existing_surface_report.json`.
+- `slack/slack_reconstruction_existing_surface_report.json`;
+- `correction/correction_assurance.json`;
+- `correction/correction_assurance.md`.
 
 ### Successful-run behavior
 
@@ -583,18 +591,21 @@ A successful run:
 
 - exits with status `0`;
 - prints the summary path, working status, positive adaptive lift, negative
-  incident count, held-out coverage and Slack status;
+  incident count, held-out coverage, Slack status and correction status;
 - validates and independently recomputes the positive, negative and held-out
   population results;
+- executes and validates recursive correction convergence rather than relying
+  on a separately cited test;
 - joins real-database E3 runtime evidence with the paired E4 recurrence evidence
   in the positive Company Vitals component;
 - preserves all detected hard-safety incidents rather than averaging them away;
 - rejects recomputed outer summaries whose safety state, component digests,
-  run identity or population accounting contradict the underlying artifacts;
+  run identity, architecture/plan identity or population accounting contradict
+  the underlying artifacts;
 - fails on a positive hard failure, a missing required artifact or any negative
-  safety incident;
-- keeps incomplete Slack breadth diagnostic and non-blocking while exposing all
-  metrics and proof gaps;
+  safety/correction incident;
+- treats incomplete sealed Slack scope as active-slice blocking while retaining
+  explicit E4 and open-world-incomplete labels;
 - leaves all 30 general product vitals explicitly unmeasured in the focused
   positive Vitals component.
 
@@ -634,17 +645,14 @@ not claimed by this working version.
 
 ## Next Execution Sequence
 
-1. Synchronize the normative evaluator and combined assurance contract with the
-   implemented company-learning system, including first-class correction
-   convergence and architecture-digest binding.
-2. Add unseen spelling, abbreviation, rename and variant-alias populations.
-3. Add entity lifecycle cases: creation, merge, split, archive and resurrection.
-4. Repeat the causal suite across Jira, email and document sources.
-5. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
+1. Add unseen spelling, abbreviation, rename and variant-alias populations.
+2. Add entity lifecycle cases: creation, merge, split, archive and resurrection.
+3. Repeat the causal suite across Jira, email and document sources.
+4. Feed measured retrieval/reasoning outcomes into the existing SAGE adaptation
    surfaces without giving SAGE canonical write authority.
-6. Add retention, forgetting and old-family regression evaluation.
-7. Run frozen real-provider and long-duration restart/load suites.
-8. Reassess progress from the same combined Company Vitals assurance report.
+5. Add retention, forgetting and old-family regression evaluation.
+6. Run frozen real-provider and long-duration restart/load suites.
+7. Reassess progress from the same combined Company Vitals assurance report.
 
 ## Progress Ledger
 
@@ -767,3 +775,24 @@ not claimed by this working version.
 - Made evaluator synchronization, architecture identity binding, first-class
   correction convergence and explicit task-autonomy exclusion the first P0
   before further capability expansion.
+
+### 2026-07-16 — Evaluator synchronization P0 completed
+
+- Added the v2 combined assurance contract with current architecture-registry
+  and implementation-plan digests and a machine-readable active profile that
+  excludes autonomous task planning and execution.
+- Replaced Slack's permanent diagnostic flag with explicit E4 evidence tier,
+  sealed-scope completeness, open-world incompleteness and active-slice blocking
+  semantics.
+- Added a reusable correction assurance artifact and executable real-Postgres
+  burn covering dependency discovery, immediate fences, direct and recursive
+  repair, relation retirement, projection invalidation/rebuild, source
+  immutability, replay idempotency and tenant isolation.
+- Integrated correction into the same combined command and trusted Company
+  Vitals envelope instead of citing a separate test.
+- Real-Postgres CLI integration passed in `54.53s`.
+- Durable combined artifact:
+  `/tmp/fyralis-company-learning-assurance-p0-24f345a8`.
+- Final status: `working`, no blocking failures, positive lift `1.0`, negative
+  incidents `0`, population `60/60`, Slack scope complete at `9/9`, correction
+  converged with every measured rate `1.0` and residual unsafe debt `0`.

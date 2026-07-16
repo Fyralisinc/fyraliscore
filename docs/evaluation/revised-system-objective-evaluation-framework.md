@@ -375,22 +375,22 @@ The focused autonomous company-learning checkpoint currently establishes:
   selected-context precision `1.0`, contamination `0.0`, topology and
   sufficient-set recall `1.0`, and explicit insufficient-evidence behavior;
 - four matched negative controls with zero detected safety incidents;
-- a separately executed real-Postgres seeded correction proof in which the
-  wrong admitted Model is superseded, direct and second-hop dependents are
+- a first-class real-Postgres seeded correction burn in which the wrong
+  admitted Model is superseded, direct and second-hop dependents are
   immediately fenced and then terminalized, affected relations are retired,
   contaminated projection state is removed, and the existing projector runtime
   consumes the queued refresh into a fresh uncontaminated projection; and
 - a digest-sealed combined assurance summary that Company Vitals accepts only
   after reopening every included artifact, checking run/component identity,
   recomputing component and outer digests, recomputing raw population and safety
-  facts, and applying noncompensatory incident handling.
+  facts, matching the current architecture-registry and implementation-plan
+  digests, and applying noncompensatory incident handling.
 
 The current combined command includes positive adaptive/frozen evidence, the
-four negative controls, the 60-pair population and the nine-family Slack gold.
-It does **not** yet invoke or embed the seeded correction integration proof.
-Correction convergence is therefore current live evidence from a separate
-serialized test, while inclusion of a correction artifact in the combined
-command and trusted Vitals envelope remains a compatibility target.
+four negative controls, the 60-pair population, the nine-family Slack gold and
+the seeded recursive correction burn. Correction is emitted as a self-verifying
+artifact, reopened and cross-bound by the v2 assurance contract, and displayed
+inside the trusted Company Vitals envelope.
 
 Within the broader evaluation catalog, current component evaluators cover:
 
@@ -403,9 +403,9 @@ Within the broader evaluation catalog, current component evaluators cover:
 | Attention governance and Concern | Binding validity, plural-contributor reducer, CAS, identity correction and command closure | Live CriteriaProjector/source coverage and organization-level attention value remain unproven |
 | Consequential agency | Proposal/InterventionSpec atomicity, prediction preregistration, exact authorization, independent Outcome, settlement/residual, conservative attribution and episode continuity | Population calibration, correction closure and causal-world value remain unproven |
 | Workflow, work, failure and external effects | Workflow/task/work/lease/failure/effect legal histories, work/failure lineage and processing envelope, exact cross-owner terminalization result for AgencyStateApplier Task and ProposalAppender proposal fates with aggregate and per-writer closure rates, heartbeat exposure, pure-computation and effect-capable missed-heartbeat takeover safety with exact no-attempt, reserved-version or terminal-receipt ledger evidence, atomically coordinated identity-preserving Work/Failure redrive authorization and closure, repair-child success and reverse-terminal owner-result closure, spec/authorization/capability/task/work/fence continuity, dispatch-before-observation, known-no-effect retry safety, separately governed compensation integrity and closure through unknown/reconciling to success, failure or terminal partial state, exact rejected/expired proposal fates and rejection of non-reversible nesting, receipt-backed completion, immutable guards and command/event/outbox closure | Real provider calls, crash/restart/reorder around handshakes, semantic-owner types beyond the two covered classes, positively authorized nested compensation and live cutover remain unproven |
-| Correction invalidation and repair | Exact source-result binding, DependencyEdge integrity, episode/obligation reducer and lineage integrity, atomic child Work binding, exact dependent-writer result, receipt-backed child success closure, exact reverse child-exhaustion closure, authorized identity-preserving successor/redrive lineage, successor-commit transactional rollback, known/oracle denominators, WatermarkVector convergence, immutable guards and command/event/outbox closure; plus a seeded company-learning cascade across the wrong Model, bounded cycle-safe recursive dependents, relations and projection refresh consumption | General repair-ledger mechanics and one seeded second-hop company-learning cascade are covered separately. Hidden production dependencies, very large/deep cascades, sustained refresh load, process kill/restart and reorder, partition rebalance, distinct revocation/deletion, historical as-known proof, policy/reward/intent closure and correction inclusion in the combined assurance command remain unproven |
+| Correction invalidation and repair | Exact source-result binding, DependencyEdge integrity, episode/obligation reducer and lineage integrity, atomic child Work binding, exact dependent-writer result, receipt-backed child success closure, exact reverse child-exhaustion closure, authorized identity-preserving successor/redrive lineage, successor-commit transactional rollback, known/oracle denominators, WatermarkVector convergence, immutable guards and command/event/outbox closure; plus a combined-gate seeded company-learning cascade across the wrong Model, bounded cycle-safe recursive dependents, relations and projection refresh consumption | General repair-ledger mechanics and one seeded second-hop company-learning cascade are covered. Hidden production dependencies, very large/deep cascades, sustained refresh load, process kill/restart and reorder, partition rebalance, distinct revocation/deletion, historical as-known proof and policy/reward/intent closure remain unproven |
 | Governed control policy | Bootstrap/manifest coverage, experiment preregistration, pre-exposure assignment, independent measurement reconstruction, eligibility, principal-separated promotion, artifact/policy lifecycle, family CAS/fallback, immutable history and command closure | Live policy consumers, confidence-interval recomputation, cross-tenant empirical isolation, policy/reward correction propagation and long-horizon causal lift remain unproven |
-| Cross-component evidence compiler and trusted Vitals | Compatible evidence identity, source-manifest digests, explicit denominator partitioning, fail-closed aggregation and one continuous matrix row per invariant; the focused combined assurance is reopened, digest-recomputed, raw-fact-recomputed and cross-bound before Company Vitals accepts it | Current trust covers the included positive, negative, population and Slack artifacts only. Correction is still separate, declared partitions are not raw membership-overlap proofs, and system-wide populations, intervals, history, exact database-manifest binding and freeze evidence remain incomplete |
+| Cross-component evidence compiler and trusted Vitals | Compatible evidence identity, source-manifest digests, explicit denominator partitioning, fail-closed aggregation and one continuous matrix row per invariant; the focused positive, negative, population, Slack and correction artifacts are reopened, digest-recomputed, raw-fact-recomputed and cross-bound before Company Vitals accepts them; the outer summary is bound to the current architecture-registry and implementation-plan digests | Declared partitions are not raw membership-overlap proofs, and system-wide populations, intervals, history, exact database tenant/observation-manifest binding, cryptographic attestation and freeze evidence remain incomplete |
 
 Every rate in these evaluators is population-aware. A zero denominator is
 rendered `unknown/not exposed`; it is never converted to 100%. Component tests
