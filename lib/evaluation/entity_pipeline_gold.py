@@ -33,6 +33,7 @@ class GoldEntityPipelineCase(_Record):
     acceptable_terminal_fates: tuple[
         Literal["resolved_for_consumer", "review", "unresolved", "abstained"], ...
     ] = ()
+    expected_semantic_disposition: Literal["belief_applied", "no_admission"] | None = None
 
 
 class EntityPipelineMetrics(_Record):
@@ -67,10 +68,22 @@ class EntityPipelineMetrics(_Record):
     unknown_canonical_ref_count: int = Field(ge=0)
     invalid_type_assessment_count: int = Field(ge=0)
     type_assessment_lineage_integrity: float | None = Field(default=None, ge=0, le=1)
+    semantic_expected_case_count: int = Field(ge=0)
+    semantic_interpretation_count: int = Field(ge=0)
+    semantic_decision_count: int = Field(ge=0)
+    belief_applied_count: int = Field(ge=0)
+    semantic_interpretation_coverage: float | None = Field(default=None, ge=0, le=1)
+    semantic_decision_coverage: float | None = Field(default=None, ge=0, le=1)
+    semantic_disposition_accuracy: float | None = Field(default=None, ge=0, le=1)
+    semantic_lineage_integrity: float | None = Field(default=None, ge=0, le=1)
+    belief_model_materialization_rate: float | None = Field(default=None, ge=0, le=1)
+    belief_model_lineage_integrity: float | None = Field(default=None, ge=0, le=1)
+    no_admission_no_model_safety_rate: float | None = Field(default=None, ge=0, le=1)
+    harmful_semantic_propagation_rate: float | None = Field(default=None, ge=0, le=1)
 
 
 class GoldEntityPipelineReport(_Record):
-    schema_version: str = "gold-entity-pipeline-v2"
+    schema_version: str = "gold-entity-pipeline-v3"
     overall: EntityPipelineMetrics
     by_batch: dict[str, EntityPipelineMetrics]
     uncertainties: tuple[str, ...] = ()
@@ -156,6 +169,11 @@ def analyze_entity_pipeline_rows(
         known_link_total = linked = link_correct = 0
         abstained = reviewed = lineage_ok = rejected_with_candidates = unknown_refs = 0
         invalid_type_assessments = 0
+        semantic_expected = semantic_interpreted = semantic_decided = 0
+        semantic_disposition_correct = semantic_lineage_ok = 0
+        belief_applied = belief_materialized = belief_model_lineage_ok = 0
+        semantic_propagated = 0
+        no_admission = safe_no_admission = harmful_semantic_propagations = 0
         recall_hits = {k: 0 for k in ks}
         type_hits = {k: 0 for k in ks}
         recall_denominator = type_denominator = 0
@@ -165,6 +183,7 @@ def analyze_entity_pipeline_rows(
             if row is None:
                 detection_expected += int(case.expected_detection_fate is not None)
                 terminal_expected += int(bool(case.acceptable_terminal_fates))
+                semantic_expected += int(case.expected_semantic_disposition is not None)
                 continue
             governed += 1
             fate = str(row.get("detection_fate") or "")
@@ -175,6 +194,7 @@ def analyze_entity_pipeline_rows(
                 detection_correct += int(
                     is_detected == (case.expected_detection_fate == "detected")
                 )
+            semantic_expected += int(case.expected_semantic_disposition is not None)
             raw_candidates = _json(row.get("candidates")) or []
             candidates = [item for item in raw_candidates if isinstance(item, dict)]
             if not is_detected:
@@ -316,6 +336,70 @@ def analyze_entity_pipeline_rows(
                 and all(str(actual) == str(expected) for actual, expected in zip(ids, trace_ids))
             )
 
+            if case.expected_semantic_disposition is not None:
+                interpretation_id = row.get("semantic_interpretation_id")
+                semantic_admission_id = row.get("semantic_admission_id")
+                semantic_disposition = str(row.get("semantic_disposition") or "")
+                has_interpretation = interpretation_id is not None
+                has_semantic_decision = semantic_admission_id is not None
+                semantic_interpreted += int(has_interpretation)
+                semantic_decided += int(has_semantic_decision)
+                semantic_disposition_correct += int(
+                    has_semantic_decision
+                    and semantic_disposition == case.expected_semantic_disposition
+                )
+                semantic_lineage_ok += int(
+                    has_interpretation
+                    and str(row.get("semantic_grounding_trace_id"))
+                    == str(row.get("trace_id"))
+                    and str(row.get("semantic_source_observation_id"))
+                    == str(case.source_observation_id)
+                    and str(row.get("semantic_context_snapshot_id"))
+                    == str(row.get("context_snapshot_id"))
+                    and str(row.get("semantic_entity_mention_id"))
+                    == str(row.get("entity_mention_id"))
+                    and str(row.get("semantic_resolution_assessment_id"))
+                    == str(row.get("assessment_id"))
+                    and str(row.get("semantic_grounding_admission_id"))
+                    == str(row.get("admission_id"))
+                )
+                is_belief_applied = semantic_disposition == "belief_applied"
+                is_no_admission = semantic_disposition == "no_admission"
+                model_id = row.get("downstream_model_id")
+                admitted_model_id = row.get("semantic_admitted_model_id")
+                model_materialized = model_id is not None
+                interpretation_model_count = int(
+                    row.get("semantic_interpretation_model_count") or 0
+                )
+                semantic_propagated += int(interpretation_model_count > 0)
+                belief_applied += int(is_belief_applied)
+                belief_materialized += int(is_belief_applied and model_materialized)
+                proposition = _json(row.get("downstream_model_proposition")) or {}
+                belief_model_lineage_ok += int(
+                    is_belief_applied
+                    and model_materialized
+                    and str(model_id) == str(admitted_model_id)
+                    and isinstance(proposition, dict)
+                    and str(proposition.get("source_semantic_interpretation_id"))
+                    == str(interpretation_id)
+                )
+                no_admission += int(is_no_admission)
+                safe_no_admission += int(
+                    is_no_admission
+                    and admitted_model_id is None
+                    and model_id is None
+                    and interpretation_model_count == 0
+                )
+                harmful_semantic_propagations += int(
+                    interpretation_model_count > 0
+                    and (
+                        case.gold_canonical_label is None
+                        or not admitted_ref
+                        or canonical_gold_labels.get(canonical_ref_key(admitted_ref))
+                        != case.gold_canonical_label
+                    )
+                )
+
         return EntityPipelineMetrics(
             gold_case_count=len(cases), detected_case_count=detected,
             candidate_population_count=candidate_population, assessed_case_count=assessed,
@@ -347,6 +431,27 @@ def analyze_entity_pipeline_rows(
             unknown_canonical_ref_count=unknown_refs,
             invalid_type_assessment_count=invalid_type_assessments,
             type_assessment_lineage_integrity=_rate(type_lineage_ok, type_assessed),
+            semantic_expected_case_count=semantic_expected,
+            semantic_interpretation_count=semantic_interpreted,
+            semantic_decision_count=semantic_decided,
+            belief_applied_count=belief_applied,
+            semantic_interpretation_coverage=_rate(semantic_interpreted, semantic_expected),
+            semantic_decision_coverage=_rate(semantic_decided, semantic_expected),
+            semantic_disposition_accuracy=_rate(
+                semantic_disposition_correct, semantic_expected
+            ),
+            semantic_lineage_integrity=_rate(semantic_lineage_ok, semantic_interpreted),
+            belief_model_materialization_rate=_rate(
+                belief_materialized, belief_applied
+            ),
+            belief_model_lineage_integrity=_rate(
+                belief_model_lineage_ok, belief_applied
+            ),
+            no_admission_no_model_safety_rate=_rate(safe_no_admission, no_admission),
+            harmful_semantic_propagation_rate=_rate(
+                harmful_semantic_propagations,
+                semantic_propagated,
+            ),
         )
 
     overall = metrics(gold_cases)
@@ -362,7 +467,9 @@ def analyze_entity_pipeline_rows(
         uncertainties.append("terminal_fate_accuracy_excludes_unlabeled_cases")
     if overall.type_assessed_case_count < overall.detected_case_count:
         uncertainties.append("detected_cases_without_valid_type_assessment")
-    uncertainties.append("downstream_relation_and_model_impact_not_evaluated")
+    if any(case.expected_semantic_disposition is None for case in gold_cases):
+        uncertainties.append("semantic_impact_metrics_exclude_unlabeled_cases")
+    uncertainties.append("downstream_relation_topology_quality_not_evaluated")
     return GoldEntityPipelineReport(
         overall=overall,
         by_batch={
@@ -388,12 +495,32 @@ async def evaluate_persisted_entity_pipeline(
         """
         SELECT d.source_observation_id, d.candidate_surface,
                d.id AS detection_id, d.fate AS detection_fate,
+               d.mention_id AS entity_mention_id,
                d.context_snapshot_id, acr.command AS detection_command,
                req.id AS candidate_request_id, cs.id AS candidate_set_id,
                req.request AS candidate_request, cs.candidates, ra.id AS assessment_id,
                ra.candidate_distribution, ra.selected_candidate_id,
                gad.id AS admission_id, gt.id AS trace_id, gt.current_fate,
-               gt.selected_referent, gt.trace
+               gt.selected_referent, gt.trace,
+               ssi.id AS semantic_interpretation_id,
+               ssi.grounding_trace_id AS semantic_grounding_trace_id,
+               ssi.source_observation_id AS semantic_source_observation_id,
+               ssi.context_snapshot_id AS semantic_context_snapshot_id,
+               ssi.entity_mention_id AS semantic_entity_mention_id,
+               ssi.resolution_assessment_id AS semantic_resolution_assessment_id,
+               ssi.grounding_admission_id AS semantic_grounding_admission_id,
+               ssad.id AS semantic_admission_id,
+               ssad.disposition AS semantic_disposition,
+               ssad.admitted_model_id AS semantic_admitted_model_id,
+               downstream_model.id AS downstream_model_id,
+               downstream_model.proposition AS downstream_model_proposition,
+               COALESCE((
+                 SELECT count(*)
+                 FROM models semantic_model
+                 WHERE semantic_model.tenant_id=ssi.tenant_id
+                   AND semantic_model.proposition->>'source_semantic_interpretation_id'
+                       = ssi.id::text
+               ), 0) AS semantic_interpretation_model_count
         FROM entity_mention_detection_heads h
         JOIN entity_mention_detections d
           ON d.tenant_id=h.tenant_id AND d.id=h.current_detection_id
@@ -413,6 +540,13 @@ async def evaluate_persisted_entity_pipeline(
          AND gt.resolution_assessment_id=ra.id
         LEFT JOIN grounding_admission_decisions gad
           ON gad.tenant_id=gt.tenant_id AND gad.id=gt.grounding_admission_id
+        LEFT JOIN source_semantic_interpretations ssi
+          ON ssi.tenant_id=gt.tenant_id AND ssi.grounding_trace_id=gt.id
+        LEFT JOIN source_semantic_admission_decisions ssad
+          ON ssad.tenant_id=ssi.tenant_id AND ssad.interpretation_id=ssi.id
+        LEFT JOIN models downstream_model
+          ON downstream_model.tenant_id=ssad.tenant_id
+         AND downstream_model.id=ssad.admitted_model_id
         WHERE d.tenant_id=$1 AND d.source_observation_id = ANY($2::uuid[])
         ORDER BY d.source_observation_id, d.candidate_surface,
                  ra.assessment_version DESC NULLS LAST, gt.created_at DESC NULLS LAST

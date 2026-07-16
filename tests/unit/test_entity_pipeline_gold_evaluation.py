@@ -43,12 +43,16 @@ def _special(candidate_id: str, kind: str):
 def _pipeline_row(
     *, observation_id, surface, candidates, selected_id=None, selected_ref=None,
     current_fate="resolved_for_consumer", type_distribution=None,
+    semantic_disposition=None, break_semantic_model_lineage=False,
 ):
     (
         context_id, detection_id, type_assessment_id, request_id,
         set_id, assessment_id, admission_id, trace_id,
     ) = (uuid4(), uuid4(), uuid4(), uuid4(), uuid4(), uuid4(), uuid4(), uuid4())
     type_distribution = type_distribution or {"unknown": 1.0}
+    semantic_interpretation_id = uuid4() if semantic_disposition else None
+    semantic_admission_id = uuid4() if semantic_disposition else None
+    semantic_model_id = uuid4() if semantic_disposition == "belief_applied" else None
     distribution = {
         item["candidate_id"]: max(0.01, 0.9 - index * 0.2)
         for index, item in enumerate(candidates)
@@ -59,6 +63,7 @@ def _pipeline_row(
         "source_observation_id": observation_id,
         "candidate_surface": surface,
         "detection_id": detection_id,
+        "entity_mention_id": detection_id,
         "detection_fate": "detected",
         "context_snapshot_id": context_id,
         "detection_command": {
@@ -88,6 +93,24 @@ def _pipeline_row(
             "assessment": {"id": str(assessment_id)},
             "admission": {"id": str(admission_id)},
         },
+        "semantic_interpretation_id": semantic_interpretation_id,
+        "semantic_grounding_trace_id": trace_id if semantic_disposition else None,
+        "semantic_source_observation_id": observation_id if semantic_disposition else None,
+        "semantic_context_snapshot_id": context_id if semantic_disposition else None,
+        "semantic_entity_mention_id": detection_id if semantic_disposition else None,
+        "semantic_resolution_assessment_id": assessment_id if semantic_disposition else None,
+        "semantic_grounding_admission_id": admission_id if semantic_disposition else None,
+        "semantic_admission_id": semantic_admission_id,
+        "semantic_disposition": semantic_disposition,
+        "semantic_admitted_model_id": semantic_model_id,
+        "downstream_model_id": semantic_model_id,
+        "semantic_interpretation_model_count": int(semantic_model_id is not None),
+        "downstream_model_proposition": (
+            {"source_semantic_interpretation_id": str(
+                uuid4() if break_semantic_model_lineage else semantic_interpretation_id
+            )}
+            if semantic_model_id else None
+        ),
     }
 
 
@@ -122,6 +145,7 @@ async def test_db_backed_entity_pipeline_scores_one_batched_population() -> None
             candidates=[_canonical("nimbus", "customer", "customer:nimbus"), *common_specials],
             selected_id="nimbus", selected_ref=nimbus_ref,
             type_distribution={"customer": 0.9, "unknown": 0.1},
+            semantic_disposition="belief_applied",
         ),
         # Structured Jira source field provides a candidate without an alias.
         _pipeline_row(
@@ -129,6 +153,7 @@ async def test_db_backed_entity_pipeline_scores_one_batched_population() -> None
             candidates=[_canonical("jira", "workstream", "workstream:PAY-42"), *common_specials],
             selected_id="jira", selected_ref=jira_ref,
             type_distribution={"workstream": 0.8, "unknown": 0.2},
+            semantic_disposition="no_admission",
         ),
         # Open-world phrase safely abstains; no link accuracy is manufactured.
         _pipeline_row(
@@ -170,6 +195,10 @@ async def test_db_backed_entity_pipeline_scores_one_batched_population() -> None
                 ("review",) if surface == "Alex"
                 else (("abstained", "unresolved") if surface == "Project Zephyr" else ())
             ),
+            expected_semantic_disposition=(
+                "belief_applied" if surface == "NBI"
+                else ("no_admission" if surface == "PAY-42" else None)
+            ),
         )
         for index, (surface, entity_type, label) in enumerate(
             [
@@ -197,6 +226,9 @@ async def test_db_backed_entity_pipeline_scores_one_batched_population() -> None
     assert len(db.calls) == 1
     assert "entity_mention_detection_heads" in db.calls[0][0]
     assert "agency_command_results" in db.calls[0][0]
+    assert "source_semantic_interpretations" in db.calls[0][0]
+    assert "source_semantic_admission_decisions" in db.calls[0][0]
+    assert "semantic_interpretation_model_count" in db.calls[0][0]
     assert set(db.calls[0][1][1]) == set(observation_ids)
     metrics = report.overall
     assert metrics.gold_case_count == 5
@@ -232,11 +264,24 @@ async def test_db_backed_entity_pipeline_scores_one_batched_population() -> None
     assert metrics.unknown_canonical_ref_count == 0
     assert metrics.invalid_type_assessment_count == 0
     assert metrics.type_assessment_lineage_integrity == 1.0
+    assert metrics.semantic_expected_case_count == 2
+    assert metrics.semantic_interpretation_count == 2
+    assert metrics.semantic_decision_count == 2
+    assert metrics.belief_applied_count == 1
+    assert metrics.semantic_interpretation_coverage == 1.0
+    assert metrics.semantic_decision_coverage == 1.0
+    assert metrics.semantic_disposition_accuracy == 1.0
+    assert metrics.semantic_lineage_integrity == 1.0
+    assert metrics.belief_model_materialization_rate == 1.0
+    assert metrics.belief_model_lineage_integrity == 1.0
+    assert metrics.no_admission_no_model_safety_rate == 1.0
+    assert metrics.harmful_semantic_propagation_rate == 0.0
     assert report.by_batch["batch-25-signals"] == metrics
     assert report.uncertainties == (
         "canonical_metrics_exclude_open_world_gold_cases",
         "terminal_fate_accuracy_excludes_unlabeled_cases",
-        "downstream_relation_and_model_impact_not_evaluated",
+        "semantic_impact_metrics_exclude_unlabeled_cases",
+        "downstream_relation_topology_quality_not_evaluated",
     )
 
 
@@ -279,6 +324,8 @@ async def test_pipeline_exposes_missing_stage_wrong_link_and_broken_lineage() ->
         selected_id="wrong",
         selected_ref=wrong_ref,
         type_distribution={"person": 0.8, "customer": 0.1, "unknown": 0.1},
+        semantic_disposition="belief_applied",
+        break_semantic_model_lineage=True,
     )
     row["candidate_request"] = {"entity_type_assessment_refs": [str(uuid4())]}
     cases = [
@@ -288,12 +335,14 @@ async def test_pipeline_exposes_missing_stage_wrong_link_and_broken_lineage() ->
             gold_entity_type="customer", gold_canonical_label="gold:nimbus",
             expected_detection_fate="detected",
             acceptable_terminal_fates=("review", "unresolved", "abstained"),
+            expected_semantic_disposition="no_admission",
         ),
         GoldEntityPipelineCase(
             case_id="missing-fate", batch_id="batch-b",
             source_observation_id=observation_ids[1], surface="Zephyr",
             gold_entity_type="workstream", expected_detection_fate="detected",
             acceptable_terminal_fates=("review", "unresolved", "abstained"),
+            expected_semantic_disposition="no_admission",
         ),
     ]
     report = await evaluate_persisted_entity_pipeline(
@@ -312,6 +361,12 @@ async def test_pipeline_exposes_missing_stage_wrong_link_and_broken_lineage() ->
     assert metrics.harmful_false_link_rate == 1.0
     assert metrics.terminal_fate_accuracy == 0.0
     assert metrics.type_assessment_lineage_integrity == 0.0
+    assert metrics.semantic_interpretation_coverage == 0.5
+    assert metrics.semantic_decision_coverage == 0.5
+    assert metrics.semantic_disposition_accuracy == 0.0
+    assert metrics.belief_model_materialization_rate == 1.0
+    assert metrics.belief_model_lineage_integrity == 0.0
+    assert metrics.harmful_semantic_propagation_rate == 1.0
     assert report.by_batch["batch-b"].governed_fate_coverage == 0.0
 
 
@@ -362,3 +417,30 @@ def test_gold_manifest_loader_seals_cases_and_canonical_labels(tmp_path) -> None
     assert cases[0].source_observation_id == observation_id
     assert cases[0].acceptable_terminal_fates == ("resolved_for_consumer",)
     assert labels == {"customer:customer:nimbus:v1": "gold:nimbus"}
+
+
+@pytest.mark.asyncio
+async def test_no_admission_with_stray_model_fails_downstream_safety() -> None:
+    observation_id = uuid4()
+    row = _pipeline_row(
+        observation_id=observation_id, surface="NBI",
+        candidates=[_special("unknown", "unknown")],
+        selected_id="unknown", selected_ref=None, current_fate="abstained",
+        type_distribution={"customer": 0.7, "unknown": 0.3},
+        semantic_disposition="no_admission",
+    )
+    row["semantic_interpretation_model_count"] = 1
+    report = await evaluate_persisted_entity_pipeline(
+        _FakeDb([row]), tenant_id=uuid4(),
+        gold_cases=[GoldEntityPipelineCase(
+            case_id="unsafe-no-admission", batch_id="batch",
+            source_observation_id=observation_id, surface="NBI",
+            gold_entity_type="customer", expected_detection_fate="detected",
+            expected_semantic_disposition="no_admission",
+        )],
+        canonical_gold_labels={},
+    )
+
+    assert report.overall.semantic_disposition_accuracy == 1.0
+    assert report.overall.no_admission_no_model_safety_rate == 0.0
+    assert report.overall.harmful_semantic_propagation_rate == 1.0
