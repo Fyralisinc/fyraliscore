@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from lib.evaluation.large_company_simulation import (
+    evaluate_large_company_simulation,
+)
+from scripts.evaluate_large_company_simulation import main
+
+
+def _artifacts(*, batches: int = 45, signals: int = 1125) -> tuple[dict, ...]:
+    storyline_scores = [
+        {
+            "storyline_id": f"story-{index}",
+            "latent_pattern_score": 0.9,
+        }
+        for index in range(8)
+    ]
+    benchmark = {
+        "run_id": "large-sim-test",
+        "status": "passed",
+        "signals": signals,
+        "storyline_count": 8,
+        "storyline_scores": storyline_scores,
+        "required_run_failures": [],
+        "latent_pattern_fitness": {
+            "average_latent_pattern_score": 0.9,
+            "average_best_pattern_coverage": 0.85,
+            "storylines_with_concrete_latent_model": 8,
+        },
+        "thesis_recovery_judge": {
+            "n": 8,
+            "average_score": 0.9,
+            "correct_count": 7,
+        },
+        "waves": [
+            {
+                "wave": index + 1,
+                "t1_batch": {
+                    "member_count": 25,
+                    "observation_count": 25,
+                    "run": {
+                        "status": "success",
+                        "retrieval_model_count": index + 1,
+                        "retrieval_observation_count": max(1, 25 - index),
+                    },
+                },
+            }
+            for index in range(batches)
+        ],
+        "run_health": {
+            "pending_triggers": 0,
+            "pending_post_commit_actions": 0,
+            "dead_lettered_post_commit_actions": 0,
+            "think_runs_success": batches,
+            "think_runs_failed": 0,
+        },
+        "run_amplification": {"validation_error_count": 0},
+        "company_intelligence_scorecard": {
+            "proof_gaps": [],
+            "dimensions": {
+                "memory_truth": {"score": 0.9},
+                "compression": {"score": 0.9},
+                "edge_intelligence": {"score": 0.85},
+                "temporal_improvement": {
+                    "score": 0.9,
+                    "metrics": {
+                        "future_validation_events": 12,
+                        "future_validation_memory_touch_ops": 10,
+                        "future_validation_model_or_graph_context_use_score": 0.9,
+                    },
+                },
+            },
+            "product_value_evals": {"proof_gaps": []},
+        },
+    }
+    run_summary = {
+        "run_id": "large-sim-test",
+        "signal_count": signals,
+        "pending_triggers": 0,
+        "think_runs_success": batches,
+        "think_runs_failed": 0,
+        "semantic_memory_before_first_wave": {
+            "models": 0,
+            "model_edges": 0,
+            "pattern_candidates": 0,
+            "hypotheses": 0,
+        },
+        "pre_first_wave_scaffolding": {
+            "tenant": 1,
+            "sources": 4,
+            "actors": 12,
+        },
+    }
+    vitals = {
+        "status": "ok",
+        "hard_failures": [],
+        "proof_gaps": [],
+        "vitals": {
+            "model_coherence": {"score": 0.9},
+            "metabolism_yield": {"score": 0.9},
+            "self_improvement": {"score": 0.9},
+            "human_loop_closure": {"score": 0.9},
+            "control_plane_health": {"score": 1.0},
+        },
+        "company_physics": {
+            "assurance_suite": {"active_surfaces": {"status": "observed"}}
+        },
+    }
+    assurance = {
+        "schema_version": "company-learning-assurance-summary-v7",
+        "run_id": "large-sim-test",
+        "status": "working",
+        "blocking_failures": [],
+        "positive": {
+            "status": "working",
+            "adaptive_minus_frozen_correctness": 0.9,
+        },
+        "correction": {"status": "working"},
+        "retention": {"status": "observed"},
+        "negative": {"status": "observed"},
+    }
+    run_config = {
+        "mode": "run",
+        "target_t1_batches": 45,
+        "seed_models": 0,
+        "t1_batch_min_size": 2,
+        "t1_batch_window_s": 1.0,
+    }
+    return benchmark, run_summary, vitals, assurance, run_config
+
+
+def test_full_profile_is_continuous_and_supports_strong_claims() -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark,
+        run_summary=run_summary,
+        vitals=vitals,
+        assurance=assurance,
+        run_config=run_config,
+        profile_name="authoritative-45",
+    )
+
+    assert report["status"] == "strong"
+    assert report["overall_score"] > 0.85
+    assert report["evidence_coverage"] == 1.0
+    assert report["hard_failures"] == []
+    assert "recovers planted hidden patterns" in report["claims_supported"]
+    assert (
+        report["dimensions"]["hidden_pattern_recovery"]["metrics"][
+            "thesis_accuracy"
+        ]
+        == 0.875
+    )
+
+
+def test_scale_shortfall_is_precise_instead_of_binary() -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts(
+        batches=1,
+        signals=50,
+    )
+
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark,
+        run_summary=run_summary,
+        vitals=vitals,
+        assurance=assurance,
+        run_config=run_config,
+        profile_name="authoritative-45",
+    )
+
+    assert report["status"] == "not_credible"
+    scale = report["scale"]
+    assert scale["signals"] == {
+        "observed": 50,
+        "required": 1125,
+        "coverage": 0.0444,
+    }
+    assert scale["successful_t1_batches"]["coverage"] == 0.0222
+    assert any("scale is short" in gap for gap in report["proof_gaps"])
+
+
+def test_safety_and_drain_failures_are_noncompensatory() -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+    benchmark["required_run_failures"] = ["trigger queue did not drain"]
+    assurance["blocking_failures"] = ["cross-tenant collision"]
+
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark,
+        run_summary=run_summary,
+        vitals=vitals,
+        assurance=assurance,
+        run_config=run_config,
+        profile_name="authoritative-45",
+    )
+
+    assert report["status"] == "not_credible"
+    assert report["overall_score"] > 0.8
+    assert report["claims_supported"] == []
+    assert len(report["hard_failures"]) == 2
+
+
+def test_authoritative_contract_rejects_seeded_or_fake_batches() -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+    run_config["seed_models"] = 5
+    benchmark["waves"][3]["t1_batch"]["member_count"] = 1
+    run_summary["semantic_memory_before_first_wave"]["models"] = 5
+
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark,
+        run_summary=run_summary,
+        vitals=vitals,
+        assurance=assurance,
+        run_config=run_config,
+        profile_name="authoritative-45",
+    )
+
+    assert report["status"] == "not_credible"
+    checks = report["run_contract"]["checks"]
+    assert checks["zero_seeded_models_configured"] is False
+    assert checks["every_t1_run_genuinely_batched"] is False
+    assert checks["pre_first_wave_semantic_memory_zero"] is False
+    assert report["run_contract"]["pre_first_wave_scaffolding"]["tenant"] == 1
+
+
+def test_cli_writes_json_and_markdown(tmp_path: Path) -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts(
+        batches=1,
+        signals=50,
+    )
+    report_dir = tmp_path / "report"
+    vitals_dir = report_dir / "vitals"
+    vitals_dir.mkdir(parents=True)
+    for path, payload in (
+        (report_dir / "benchmark_summary.json", benchmark),
+        (report_dir / "run_summary.json", run_summary),
+        (report_dir / "run_config.json", run_config),
+        (vitals_dir / "vitals_scorecard.json", vitals),
+        (report_dir / "company_learning_assurance_summary.json", assurance),
+    ):
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert main(["--report-dir", str(report_dir)]) == 0
+
+    output = report_dir / "large_simulation_gate"
+    payload = json.loads(
+        (output / "large_company_simulation_evaluation.json").read_text()
+    )
+    markdown = (
+        output / "large_company_simulation_evaluation.md"
+    ).read_text()
+    assert payload["profile"] == "authoritative-45"
+    assert payload["artifact_inputs"]["vitals"].endswith(
+        "vitals/vitals_scorecard.json"
+    )
+    assert "## Hidden Pattern Recovery" in markdown
+    assert "## Claims This Run Does Not Support" in markdown
