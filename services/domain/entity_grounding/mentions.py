@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from lib.contracts.agency import AgencyWriteContext
+from lib.contracts.semantic_commands import SemanticWriteContext
 from lib.contracts.entity_mentions import (
     CommitEntityMentionDetectionCommand,
     EntityMentionDetection,
@@ -100,7 +100,7 @@ def prepare_entity_mention_detection(
         detected_at=now,
     )
     authority = context_command.context.processing_authority
-    context = AgencyWriteContext(
+    context = SemanticWriteContext(
         command_id=uuid7(),
         tenant_id=tenant_id,
         processing_authority=authority,

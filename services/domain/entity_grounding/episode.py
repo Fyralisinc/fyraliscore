@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-from lib.contracts.agency import AgencyWriteContext
+from lib.contracts.semantic_commands import SemanticWriteContext
 from lib.contracts.conversation_context import (
     CommitInterpretationContextCommand,
     ContextCandidateCost,
@@ -463,7 +463,7 @@ def prepare_context_selection(
 
     snapshot_id = uuid7()
     dependency_id = uuid7()
-    context = AgencyWriteContext(
+    context = SemanticWriteContext(
         command_id=uuid7(),
         tenant_id=tenant_id,
         processing_authority=authority,

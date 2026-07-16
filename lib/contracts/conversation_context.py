@@ -21,7 +21,7 @@ from pydantic import (
     model_validator,
 )
 
-from lib.contracts.agency import AgencyWriteContext
+from lib.contracts.semantic_commands import SemanticWriteContext
 from lib.contracts.kernel import canonical_sha256
 from lib.contracts.perception import (
     CandidateContextLayer,
@@ -179,7 +179,7 @@ class InterpretationContextHeadExpectation(_ConversationContextContract):
 
 
 class CommitInterpretationContextCommand(_ConversationContextContract):
-    context: AgencyWriteContext
+    context: SemanticWriteContext
     proposed_snapshot_id: UUID
     proposed_dependency_id: UUID
     selection_subject: str = Field(min_length=1)

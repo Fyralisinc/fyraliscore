@@ -31,11 +31,11 @@ from uuid import UUID
 
 import asyncpg
 
-from lib.contracts import (
-    CommitEntityMentionDetectionCommand,
+from lib.contracts.conversation_context import (
     CommitInterpretationContextCommand,
     ContextSelectionOutcome,
 )
+from lib.contracts.entity_mentions import CommitEntityMentionDetectionCommand
 from services.domain.entity_grounding.episode import (
     ContextObservationInput,
     candidate_id_for_ref,

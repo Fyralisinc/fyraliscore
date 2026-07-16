@@ -41,7 +41,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from lib.contracts import EntityMentionDetectionFate
+from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from lib.llm.provider import (
     LLMError,
     LLMParseError,

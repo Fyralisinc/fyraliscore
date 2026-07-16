@@ -27,6 +27,7 @@ from .kernel import (
     canonical_sha256,
 )
 from .perception import CanonicalReferent
+from .semantic_commands import SemanticWriteContext
 
 
 class _AgencyContract(BaseModel):
@@ -1411,43 +1412,7 @@ class InterventionEpisode(_AgencyContract):
         return canonical_sha256(self.model_dump(mode="json"))
 
 
-class AgencyWriteContext(_AgencyContract):
-    """Shared exact command context for consequential semantic writers."""
-
-    command_id: UUID
-    tenant_id: UUID
-    processing_authority: ProcessingAuthorityContext
-    writer_scope_epoch: WriterScopeEpoch
-    idempotency_key: str = Field(min_length=1)
-    issued_at: datetime
-    expires_at: datetime
-
-    @field_validator("issued_at", "expires_at")
-    @classmethod
-    def command_times_are_aware(cls, value: datetime, info) -> datetime:
-        return _aware(value, field_name=info.field_name)
-
-    @model_validator(mode="after")
-    def command_context_is_live_and_tenant_scoped(self) -> Self:
-        if self.expires_at <= self.issued_at:
-            raise ValueError("agency command expiry must follow issuance")
-        if self.processing_authority.tenant_id != self.tenant_id:
-            raise ValueError("agency command processing authority tenant mismatch")
-        if not self.processing_authority.is_live(self.issued_at):
-            raise ValueError("agency command processing authority was not live")
-        if self.writer_scope_epoch.tenant_id != self.tenant_id:
-            raise ValueError("agency command writer scope tenant mismatch")
-        return self
-
-    def require_writer(self, *, owner: str, responsibility: str) -> None:
-        if not self.writer_scope_epoch.permits(
-            writer_owner=owner,
-            epoch=self.writer_scope_epoch.epoch,
-            tenant_id=self.tenant_id,
-            semantic_responsibility=responsibility,
-            source_partition=str(self.tenant_id),
-        ):
-            raise ValueError(f"writer scope does not permit {owner}")
+AgencyWriteContext = SemanticWriteContext
 
 
 class ConsequentialProposalRegistrationCommand(_AgencyContract):

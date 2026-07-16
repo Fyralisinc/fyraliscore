@@ -16,8 +16,8 @@ from uuid import UUID
 import asyncpg
 from pydantic import BaseModel
 
-from lib.contracts.agency import AgencyWriteContext
 from lib.contracts.kernel import WriterCutoverState, canonical_sha256
+from lib.contracts.semantic_commands import SemanticWriteContext
 from lib.shared.errors import InvariantViolation
 from lib.shared.ids import uuid7
 
@@ -87,7 +87,7 @@ async def insert_protocol_result(
     *,
     conn: asyncpg.Connection,
     ids: AgencyProtocolIds,
-    context: AgencyWriteContext,
+    context: SemanticWriteContext,
     writer_id: str,
     command_kind: str,
     command: BaseModel,
@@ -138,7 +138,7 @@ async def insert_protocol_result(
 async def validate_registered_protocol_writer_scope(
     *,
     conn: asyncpg.Connection,
-    context: AgencyWriteContext,
+    context: SemanticWriteContext,
     writer_id: str,
 ) -> bool:
     """Enforce a canonical claim when this responsibility/partition is cut over.
@@ -228,7 +228,7 @@ async def insert_protocol_event_and_outbox(
     *,
     conn: asyncpg.Connection,
     ids: AgencyProtocolIds,
-    context: AgencyWriteContext,
+    context: SemanticWriteContext,
     writer_id: str,
     object_type: str,
     object_id: UUID,
@@ -292,7 +292,7 @@ async def insert_protocol_event_and_outbox(
     )
 
 
-def ensure_live_context(context: AgencyWriteContext, *, now: datetime) -> None:
+def ensure_live_context(context: SemanticWriteContext, *, now: datetime) -> None:
     if now < context.issued_at:
         raise InvariantViolation(
             "AGENCY_COMMAND_TIME",

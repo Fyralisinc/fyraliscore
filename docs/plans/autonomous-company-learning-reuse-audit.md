@@ -157,7 +157,9 @@ decisions will be added after the parallel audit lanes complete.
 - Applied migrations are historical facts and remain untouched.
 - `agency_command_results`, `agency_canonical_events`, outbox records and the
   shared command write context are used by active context/grounding code.
-  They must first be renamed or isolated as a neutral semantic-command kernel.
+  The active contract is now `SemanticWriteContext`; `AgencyWriteContext`
+  remains a compatibility alias for dormant code. Database and service-module
+  naming remains to be neutralized without rewriting migration history.
 - Intent, Concern, external execution, activation, scheduling and intervention
   episode repositories are dormant future scaffolding. They are not all safe to
   delete yet because repair/control work and the active command kernel retain
@@ -209,6 +211,19 @@ decisions will be added after the parallel audit lanes complete.
 - This is corrective memory, not yet statistical policy learning or repair of
   the original dependent Model.
 
+### Slice 3 — Neutral semantic command context
+
+- Extracted the generic authority/idempotency/write-scope context from the
+  consequential-agency contract module into `SemanticWriteContext`.
+- Kept `AgencyWriteContext` as a compatibility alias, so dormant intent,
+  execution and repair contracts remain source-compatible.
+- Changed active context, mention, grounding and shared protocol code to import
+  the neutral contract directly.
+- Replaced active resolver imports from the eager `lib.contracts` facade with
+  direct context/mention modules.
+- This removes one large accidental dependency from the company-physics path
+  without renaming applied database objects.
+
 ## First Consolidation Targets
 
 1. Keep the source-semantic worker active until its Slack-to-Model vertical is
@@ -216,8 +231,8 @@ decisions will be added after the parallel audit lanes complete.
 2. Add successor grounding/source-semantic generations so a correction can
    repair the original interpretation and canonical Model.
 3. Consolidate `entity_review_queue` behind `clarification_requests`.
-4. Isolate the shared command/event/outbox kernel from task-autonomy naming and
-   eager imports.
+4. Continue isolating shared command/event/outbox persistence from
+   task-autonomy service and database naming while retaining compatibility.
 5. Fold revised metric output into the existing benchmark/company-vitals
    artifact contract.
 6. Feed typed grounding outcomes into existing reflective/retrieval learning

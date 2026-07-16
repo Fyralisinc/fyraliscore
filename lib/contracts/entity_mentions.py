@@ -16,7 +16,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from lib.contracts.agency import AgencyWriteContext
+from lib.contracts.semantic_commands import SemanticWriteContext
 from lib.contracts.kernel import canonical_sha256
 from lib.contracts.perception import EntityMention
 
@@ -121,7 +121,7 @@ class EntityMentionHeadExpectation(_MentionContract):
 
 
 class CommitEntityMentionDetectionCommand(_MentionContract):
-    context: AgencyWriteContext
+    context: SemanticWriteContext
     detection: EntityMentionDetection
     expected: EntityMentionHeadExpectation
     invalidation_keys: tuple[str, ...] = Field(min_length=1)

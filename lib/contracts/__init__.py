@@ -282,6 +282,7 @@ from .runtime import (
     UsefulSafeFateKind,
     select_processing_class,
 )
+from .semantic_commands import SemanticWriteContext
 from .conversation_context import (
     CommitInterpretationContextCommand,
     ContextCandidateCost,
@@ -312,6 +313,7 @@ __all__ = [
     "ActivateWriterTransferCommand",
     "AdapterCapabilityRegistrationCommand",
     "AgencyWriteContext",
+    "SemanticWriteContext",
     "AdaptiveLoopState",
     "AggregateVersionRef",
     "AttentionGovernanceBinding",
