@@ -84,7 +84,11 @@ async def test_one_call_discovers_batch_and_verifies_every_source_span() -> None
     assert by_surface["Ada Lovelace"].fate is EntityMentionDetectionFate.DETECTED
     assert by_surface["Routine update"].fate is EntityMentionDetectionFate.REJECTED_NOT_ENTITY
     assert by_surface["Imaginary Corp"].fate is EntityMentionDetectionFate.REJECTED_NOT_ANCHORED
-    assert "canonical" not in provider.calls[0]["system"].casefold()
+    prompt = provider.calls[0]["system"].casefold()
+    assert "every explicit named company-entity" in prompt
+    assert "work signal by signal" in prompt
+    assert "return each distinct literal occurrence" in prompt
+    assert "never resolve" in prompt and "registry id" in prompt
 
 
 @pytest.mark.asyncio

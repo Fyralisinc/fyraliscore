@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from lib.observability.metrics import counter, gauge
-DISCOVERY_VERSION = "learned-persisted-batch-entity-discovery-v1"
+DISCOVERY_VERSION = "learned-persisted-batch-entity-discovery-v2"
 # Below this point the candidate remains a governed non-entity fate. Identity
 # resolution still has its own stricter authority/selection gates.
 MIN_ACCEPTED_CONFIDENCE = 0.75
@@ -19,6 +19,32 @@ CompanyEntityType = Literal[
     "person", "team", "customer", "project", "product", "system",
     "workstream", "goal", "commitment", "decision", "resource", "other",
 ]
+
+_DISCOVERY_SYSTEM_PROMPT = """\
+Extract every explicit named company-entity mention from this persisted signal batch.
+
+Work signal by signal, while using the other messages only as context. Return a
+mention only when its characters occur literally in that focal signal. Offsets
+are zero-based Python character offsets into the exact content_text; span_end is
+exclusive. Copy the smallest complete identifying name as surface. Keep titles
+that are part of a person's written name, but exclude surrounding punctuation
+and generic words such as "team" when the proper name alone identifies the
+entity.
+
+Company entities include named people, teams, customers, projects, products,
+systems, workstreams, goals, commitments, decisions, and resources. Explicit
+ticket, project, commitment, risk, tenant, document, dataset, and similar object
+identifiers are mentions too. Names can contain multiple words, Unicode text,
+codes, or mixed case. A mention can appear at the start of a message, and one
+signal can contain several mentions. Return each distinct literal occurrence.
+
+Do not extract ordinary language, unnamed roles, pronouns, dates, generic
+activities, or speculative names without a named referent. Set abstain for a
+literal candidate that is visible but too uncertain to admit. Never resolve
+identity, infer a registry ID, or invent text that is absent from the source.
+Before returning, recheck every signal for omitted explicit names and verify
+that surface == content_text[span_start:span_end].
+"""
 
 DISCOVERY_BATCHES = counter(
     "entity_discovery_batches_total",
@@ -190,14 +216,7 @@ async def discover_batch_mentions(
     ]
     try:
         learned = await provider.structured(
-            system=(
-                "Extract explicit company-entity mentions from this persisted "
-                "signal batch. Offsets are zero-based Python character offsets "
-                "into the exact content_text. Use context across Slack messages, "
-                "but return only literal spans from each focal signal. Abstain "
-                "on ordinary language, roles without a named referent, "
-                "and uncertainty. Never resolve identity or invent registry IDs."
-            ),
+            system=_DISCOVERY_SYSTEM_PROMPT,
             user=json.dumps({"signals": payload}, ensure_ascii=False),
             schema=LearnedMentionBatch,
             temperature=0.0,
