@@ -100,6 +100,8 @@ class GroundingCandidateInput:
     positive_evidence_refs: tuple[str, ...]
     negative_evidence_refs: tuple[str, ...] = ()
     independent_identity_evidence_refs: tuple[str, ...] = ()
+    exact_mention_match: bool = False
+    decisive_authority_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -223,6 +225,29 @@ def build_grounding_episode(
         model_candidate_id=model_candidate_id,
         model_canonical_ref=model_canonical_ref,
     )
+    exact_candidate_ids = {
+        candidate_id_for_ref(item.canonical_ref)
+        for item in candidates
+        if item.exact_mention_match
+    }
+    decisive_candidate_ids = {
+        candidate_id_for_ref(item.canonical_ref)
+        for item in candidates
+        if item.exact_mention_match and item.decisive_authority_refs
+    }
+    unique_decisive_candidate_id = (
+        next(iter(decisive_candidate_ids))
+        if len(decisive_candidate_ids) == 1
+        else None
+    )
+    conflict_requires_discriminator = (
+        len(exact_candidate_ids) > 1
+        and (
+            unique_decisive_candidate_id is None
+            or selected_candidate is None
+            or selected_candidate.candidate_id != unique_decisive_candidate_id
+        )
+    )
     model_output = {
         "candidate_id": model_candidate_id,
         "canonical_ref": model_canonical_ref,
@@ -238,6 +263,7 @@ def build_grounding_episode(
         candidate_inputs=candidates,
         model_canonical_ref=model_canonical_ref,
         model_confidence=model_confidence,
+        conflict_requires_discriminator=conflict_requires_discriminator,
         calibration_cohort=assessment_calibration_cohort,
         scorer_and_calibration_version=assessment_scorer_version,
         now=now,
@@ -250,11 +276,12 @@ def build_grounding_episode(
         context_disposition=snapshot.sufficiency_verdict.disposition,
         selected_candidate=selected_candidate,
         has_independent_identity_evidence=bool(
-            _independent_evidence_for_candidate(
+            _identity_evidence_for_candidate(
                 selected_candidate=selected_candidate,
                 candidate_inputs=candidates,
             )
         ),
+        conflict_requires_discriminator=conflict_requires_discriminator,
         model_canonical_ref=model_canonical_ref,
         confidence=model_confidence,
         high_confidence=high_confidence,
@@ -373,6 +400,7 @@ def build_adjudicated_grounding_decision(
         candidate_inputs=candidate_inputs,
         model_canonical_ref=canonical_ref,
         model_confidence=1.0,
+        conflict_requires_discriminator=False,
         calibration_cohort="human-entity-clarification-adjudication",
         scorer_and_calibration_version="human-adjudication-v1",
         correction_predecessor_ref=correction_predecessor_ref,
@@ -386,6 +414,7 @@ def build_adjudicated_grounding_decision(
         context_disposition=snapshot.sufficiency_verdict.disposition,
         selected_candidate=selected_candidate,
         has_independent_identity_evidence=True,
+        conflict_requires_discriminator=False,
         model_canonical_ref=canonical_ref,
         confidence=1.0,
         high_confidence=0.8,
@@ -1218,6 +1247,7 @@ def _build_assessment(
     candidate_inputs: tuple[GroundingCandidateInput, ...],
     model_canonical_ref: dict[str, Any] | None,
     model_confidence: float,
+    conflict_requires_discriminator: bool,
     calibration_cohort: str = "legacy-unstructured-phrase-resolution",
     scorer_and_calibration_version: str = _SCORER_VERSION,
     correction_predecessor_ref: str | None = None,
@@ -1241,7 +1271,7 @@ def _build_assessment(
         share = residual / len(others)
         for candidate_id in others:
             distribution[candidate_id] = share
-    evidence_refs = _independent_evidence_for_candidate(
+    evidence_refs = _identity_evidence_for_candidate(
         selected_candidate=selected_candidate,
         candidate_inputs=candidate_inputs,
     )
@@ -1255,16 +1285,26 @@ def _build_assessment(
             ref: "independently_governed_identity_basis" for ref in evidence_refs
         },
         decisive_evidence_refs=(
-            evidence_refs if selected_candidate is not None and model_confidence >= 0.8 else ()
-        ),
-        missing_discriminators=(
-            ()
+            evidence_refs
             if (
                 selected_candidate is not None
                 and model_confidence >= 0.8
-                and evidence_refs
+                and not conflict_requires_discriminator
             )
-            else ("independent identity discriminator",)
+            else ()
+        ),
+        missing_discriminators=(
+            ("authorized exact-candidate conflict",)
+            if conflict_requires_discriminator
+            else (
+                ()
+                if (
+                    selected_candidate is not None
+                    and model_confidence >= 0.8
+                    and evidence_refs
+                )
+                else ("independent identity discriminator",)
+            )
         ),
         temporal_compatibility_refs=(),
         calibration_cohort=calibration_cohort,
@@ -1284,6 +1324,7 @@ def _build_admission(
     context_disposition: SufficiencyDisposition,
     selected_candidate: EntityCandidate | None,
     has_independent_identity_evidence: bool,
+    conflict_requires_discriminator: bool,
     model_canonical_ref: dict[str, Any] | None,
     confidence: float,
     high_confidence: float,
@@ -1293,6 +1334,13 @@ def _build_admission(
 ) -> tuple[GroundingAdmissionDecision, str]:
     selected: ReferentVersionRef | None = None
     if (
+        selected_candidate is not None
+        and conflict_requires_discriminator
+    ):
+        disposition = GroundingAdmissionDisposition.REVIEW
+        reasons = ("authorized_candidate_conflict_requires_discriminator",)
+        fate = "review"
+    elif (
         selected_candidate is not None
         and has_independent_identity_evidence
         and authoritative_adjudication_ref is not None
@@ -1390,7 +1438,7 @@ def _build_admission(
     )
 
 
-def _independent_evidence_for_candidate(
+def _identity_evidence_for_candidate(
     *,
     selected_candidate: EntityCandidate | None,
     candidate_inputs: tuple[GroundingCandidateInput, ...],
@@ -1402,7 +1450,10 @@ def _independent_evidence_for_candidate(
     for item in candidate_inputs:
         if candidate_id_for_ref(item.canonical_ref) != selected_candidate.candidate_id:
             continue
-        for ref in item.independent_identity_evidence_refs:
+        for ref in (
+            *item.independent_identity_evidence_refs,
+            *item.decisive_authority_refs,
+        ):
             if ref not in seen:
                 seen.add(ref)
                 refs.append(ref)

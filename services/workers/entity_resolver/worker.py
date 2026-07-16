@@ -670,6 +670,17 @@ class EntityResolverWorker:
     @staticmethod
     def _candidate_inputs(ctx: ResolverContext) -> tuple[GroundingCandidateInput, ...]:
         candidates: list[GroundingCandidateInput] = []
+        exact_aliases = [
+            item
+            for item in ctx.recent_aliases
+            if _canonical_target_is_authorized(item)
+        ]
+        source_candidate_ids = {
+            candidate_id_for_ref(ref)
+            for ref in ctx.source_entities_mentioned
+            if isinstance(ref, dict) and ref.get("type") and ref.get("id")
+        }
+        source_candidates_conflict = len(source_candidate_ids) > 1
         for ref in ctx.source_entities_mentioned:
             if isinstance(ref, dict):
                 candidates.append(
@@ -679,11 +690,17 @@ class EntityResolverWorker:
                         positive_evidence_refs=(
                             f"observation:{ctx.observation_id}:entities-mentioned",
                         ),
+                        # A current source hint is part of the exact conflict
+                        # boundary only when an exact alias also exists. It is
+                        # also material when the source itself supplies more
+                        # than one canonical ref. It is never decisive
+                        # authority by itself.
+                        exact_mention_match=(
+                            bool(exact_aliases) or source_candidates_conflict
+                        ),
                     )
                 )
-        for item in ctx.recent_aliases:
-            if not _canonical_target_is_authorized(item):
-                continue
+        for item in exact_aliases:
             alias_ref = f"entity-alias:{item.alias_id}"
             candidates.append(
                 GroundingCandidateInput(
@@ -710,6 +727,16 @@ class EntityResolverWorker:
                                     )
                                 )
                             )
+                        )
+                        else ()
+                    ),
+                    exact_mention_match=True,
+                    decisive_authority_refs=(
+                        (item.identity_basis_ref,)
+                        if (
+                            item.identity_basis_ref
+                            and item.source in {"manual", "ingestion"}
+                            and item.identity_basis_class == "source_authoritative"
                         )
                         else ()
                     ),
@@ -744,6 +771,15 @@ class EntityResolverWorker:
                                     )
                                 )
                             )
+                        )
+                        else ()
+                    ),
+                    decisive_authority_refs=(
+                        (item.identity_basis_ref,)
+                        if (
+                            item.identity_basis_ref
+                            and item.source in {"manual", "ingestion"}
+                            and item.identity_basis_class == "source_authoritative"
                         )
                         else ()
                     ),

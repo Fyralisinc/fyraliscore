@@ -21,6 +21,7 @@ NOW = datetime(2026, 7, 16, 10, 0, tzinfo=timezone.utc)
 TENANT = uuid4()
 OBSERVATION = uuid4()
 CUSTOMER = {"type": "customer", "id": "customer:nimbus"}
+OTHER_CUSTOMER = {"type": "customer", "id": "customer:other"}
 
 
 def _build_detected_episode(*, content_text: str | None = None, **kwargs):
@@ -93,6 +94,35 @@ def _episode(
         model_canonical_ref=canonical_ref,
         model_confidence=confidence,
         model_reasoning="candidate fits the local phrase",
+        high_confidence=0.8,
+        review_min=0.5,
+        now=NOW + timedelta(minutes=1),
+    )
+
+
+def _conflict_episode(
+    *,
+    candidates: tuple[GroundingCandidateInput, ...],
+    selected_ref: dict,
+):
+    return _build_detected_episode(
+        tenant_id=TENANT,
+        observation_id=OBSERVATION,
+        phrase="NBI",
+        occurred_at=NOW,
+        source_channel="slack:message",
+        source_space="C-finance",
+        topology_incomplete=False,
+        boundary_hypotheses=(
+            {"kind": "source_topology", "candidate_count": 2},
+        ),
+        context_observations=(),
+        selection_dependency_refs=("observation:root:v1",),
+        candidates=candidates,
+        model_candidate_id=candidate_id_for_ref(selected_ref),
+        model_canonical_ref=selected_ref,
+        model_confidence=0.99,
+        model_reasoning="selected one exact candidate",
         high_confidence=0.8,
         review_min=0.5,
         now=NOW + timedelta(minutes=1),
@@ -253,6 +283,119 @@ def test_model_confidence_over_navigation_only_alias_cannot_auto_admit() -> None
     assert episode.admission.selected_referent is None
     assert episode.admission.reason_codes == (
         "independent_identity_evidence_required",
+    )
+
+
+def test_conflicting_exact_candidates_require_a_discriminator() -> None:
+    episode = _conflict_episode(
+        candidates=(
+            GroundingCandidateInput(
+                canonical_ref=CUSTOMER,
+                candidate_source="tenant_aliases",
+                positive_evidence_refs=("entity-alias:learned",),
+                independent_identity_evidence_refs=("clarification:learned",),
+                exact_mention_match=True,
+            ),
+            GroundingCandidateInput(
+                canonical_ref=OTHER_CUSTOMER,
+                candidate_source="tenant_aliases",
+                positive_evidence_refs=("entity-alias:other",),
+                independent_identity_evidence_refs=("clarification:other",),
+                exact_mention_match=True,
+            ),
+        ),
+        selected_ref=CUSTOMER,
+    )
+
+    assert episode.current_fate == "review"
+    assert episode.admission.selected_referent is None
+    assert episode.admission.reason_codes == (
+        "authorized_candidate_conflict_requires_discriminator",
+    )
+    assert episode.assessment.decisive_evidence_refs == ()
+    assert episode.assessment.missing_discriminators == (
+        "authorized exact-candidate conflict",
+    )
+
+
+def test_broad_lexical_candidate_does_not_create_an_exact_conflict() -> None:
+    episode = _conflict_episode(
+        candidates=(
+            GroundingCandidateInput(
+                canonical_ref=CUSTOMER,
+                candidate_source="tenant_aliases",
+                positive_evidence_refs=("entity-alias:exact",),
+                independent_identity_evidence_refs=("clarification:exact",),
+                exact_mention_match=True,
+            ),
+            GroundingCandidateInput(
+                canonical_ref=OTHER_CUSTOMER,
+                candidate_source="tenant_aliases",
+                positive_evidence_refs=("entity-alias:broad",),
+                independent_identity_evidence_refs=("directory:broad",),
+                exact_mention_match=False,
+            ),
+        ),
+        selected_ref=CUSTOMER,
+    )
+
+    assert episode.current_fate == "resolved_for_consumer"
+    assert episode.admitted_canonical_ref == {**CUSTOMER, "version": 1}
+
+
+def test_unique_decisive_authority_can_resolve_an_exact_conflict() -> None:
+    authority_ref = "source-binding:crm:customer-other"
+    episode = _conflict_episode(
+        candidates=(
+            GroundingCandidateInput(
+                canonical_ref=CUSTOMER,
+                candidate_source="tenant_aliases",
+                positive_evidence_refs=("entity-alias:learned",),
+                independent_identity_evidence_refs=("clarification:learned",),
+                exact_mention_match=True,
+            ),
+            GroundingCandidateInput(
+                canonical_ref=OTHER_CUSTOMER,
+                candidate_source="tenant_aliases",
+                positive_evidence_refs=("entity-alias:source",),
+                independent_identity_evidence_refs=(authority_ref,),
+                exact_mention_match=True,
+                decisive_authority_refs=(authority_ref,),
+            ),
+        ),
+        selected_ref=OTHER_CUSTOMER,
+    )
+
+    assert episode.current_fate == "resolved_for_consumer"
+    assert episode.admitted_canonical_ref == {**OTHER_CUSTOMER, "version": 1}
+    assert episode.assessment.decisive_evidence_refs == (authority_ref,)
+
+
+def test_model_cannot_override_unique_decisive_conflict_authority() -> None:
+    episode = _conflict_episode(
+        candidates=(
+            GroundingCandidateInput(
+                canonical_ref=CUSTOMER,
+                candidate_source="tenant_aliases",
+                positive_evidence_refs=("entity-alias:learned",),
+                independent_identity_evidence_refs=("clarification:learned",),
+                exact_mention_match=True,
+            ),
+            GroundingCandidateInput(
+                canonical_ref=OTHER_CUSTOMER,
+                candidate_source="tenant_aliases",
+                positive_evidence_refs=("entity-alias:source",),
+                independent_identity_evidence_refs=("source-binding:other",),
+                exact_mention_match=True,
+                decisive_authority_refs=("source-binding:other",),
+            ),
+        ),
+        selected_ref=CUSTOMER,
+    )
+
+    assert episode.current_fate == "review"
+    assert episode.admission.reason_codes == (
+        "authorized_candidate_conflict_requires_discriminator",
     )
 
 

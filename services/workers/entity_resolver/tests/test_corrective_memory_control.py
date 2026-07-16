@@ -163,3 +163,56 @@ def test_candidate_inputs_preserve_non_lifecycle_and_legacy_refs() -> None:
         "jira_issue",
         "customer",
     }
+    by_type = {item.canonical_ref["type"]: item for item in inputs}
+    assert by_type["jira_issue"].exact_mention_match is True
+    assert by_type["jira_issue"].decisive_authority_refs == (
+        "jira:issue:ENG-123",
+    )
+    assert by_type["customer"].exact_mention_match is False
+
+
+def test_generic_source_hint_is_conflicting_but_never_decisive() -> None:
+    learned = RecentAlias(
+        alias_id=uuid7(),
+        alias_text="NBI",
+        resolved_entity_ref={"type": "customer", "id": "customer:nimbus"},
+        confidence=0.99,
+        source="manual",
+        identity_basis_class="independently_adjudicated",
+        identity_basis_ref="clarification-request:nbi",
+        canonical_target_valid=False,
+    )
+    source_ref = {"type": "customer", "id": "customer:other"}
+    ctx = ResolverContext(
+        observation_id=uuid7(),
+        phrase="NBI",
+        tenant_id=uuid7(),
+        recent_aliases=[learned],
+        source_entities_mentioned=[source_ref],
+    )
+
+    inputs = EntityResolverWorker._candidate_inputs(ctx)
+    source_input = next(
+        item for item in inputs if item.candidate_source == "source_mentions"
+    )
+
+    assert source_input.exact_mention_match is True
+    assert source_input.decisive_authority_refs == ()
+
+
+def test_multiple_source_refs_form_a_conservative_exact_conflict() -> None:
+    ctx = ResolverContext(
+        observation_id=uuid7(),
+        phrase="Cafe Ops",
+        tenant_id=uuid7(),
+        source_entities_mentioned=[
+            {"type": "team", "id": "team:cafe-primary"},
+            {"type": "team", "id": "team:cafe-conflict"},
+        ],
+    )
+
+    inputs = EntityResolverWorker._candidate_inputs(ctx)
+
+    assert len(inputs) == 2
+    assert all(item.exact_mention_match for item in inputs)
+    assert all(item.decisive_authority_refs == () for item in inputs)

@@ -1248,8 +1248,12 @@ async def test_clarification_adjudication_changes_future_grounding_fate(
     assert await conflict_worker.process_observation(
         conflicting_observation_id,
         tenant_id,
-    ) == [("NBI", "resolved")]
+    ) == [("NBI", "review")]
     assert len(conflict_provider.calls) == 1
+    conflicting_trace = (
+        await _fetch_grounding_traces(resolver_db, tenant_id)
+    )[-1]
+    assert conflicting_trace["current_fate"] == "review"
 
     # The frozen experiment arm preserves the adjudicated alias in storage but
     # cannot see or replay it. An unrelated manual candidate remains available
