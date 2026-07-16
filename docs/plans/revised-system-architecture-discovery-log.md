@@ -805,6 +805,58 @@ coherent diff.
   deferred-grounding signals converge on the same validation/apply semantics
   without duplicate Models.
 
+### DISC-019 — A frozen learning arm must block the earliest memory consumer
+
+- **Date:** 2026-07-16
+- **Milestone:** Corrective-memory causal evaluation
+- **Status:** `accepted`
+- **Affected documents:** implementation and evaluation
+- **Affected components:** Slack ingest, alias fast-path, entity resolver,
+  clarification-learned aliases, source semantics, Models and paired experiment
+  reporting
+- **Observation:** Disabling governed alias replay only inside the entity
+  resolver does not create a frozen control. Ingestion resolves known aliases
+  before `_unresolved_phrases` are finalized. If ingestion can consume the
+  adjudicated alias, the held-out signal arrives with no grounding opportunity
+  and the frozen resolver never receives the case.
+- **Working core boundary:** Both experiment arms persist the same training
+  correction and adjudicated alias. Production behavior remains adaptive by
+  default. The experiment-only frozen arm prevents clarification-learned
+  corrective memory from being consumed at every pre-outcome read seam,
+  currently ingest entity resolution and resolver context/replay. It does not
+  delete the alias, alter source evidence or hide unrelated manual candidates.
+  The intended treatment difference is corrective-memory reuse, not stored
+  company state, provider behavior or the availability of ordinary entity
+  evidence.
+- **Implementation evidence:** The ingest path already accepts an injected
+  alias repository, so the paired harness supplies a filtered read view that
+  hides only clarification-derived learned aliases before fast-path resolution.
+  The resolver has the matching read-side control and applies the same
+  clarification-derived filter. The paired harness assigns distinct tenants
+  with matched logical company foundations, identical scripted provider
+  behavior, sealed recurrence cases and complete correction-to-Model lineage.
+  The typed report preserves continuous lift/cost metrics and every hard safety
+  incident.
+- **Proof boundary:** This is synthetic E4 causal evidence. The initial
+  executable population contains three exact-alias positive recurrences under
+  deterministic provider behavior and is attached to Company Vitals through a
+  typed, recomputed, fail-closed artifact. It does not yet prove statistical
+  confidence, contextual/conflicting/homonym/unrelated negative controls,
+  unseen alias spellings, open-world E5 robustness or customer value. The
+  experiment remains a non-scoring assurance surface. Its scenario and lift
+  metric are registered under INV-05 and converted into canonical invariant
+  evidence, but declared-partition aggregation retains the lower E3 runtime
+  tier and therefore does not silently turn partial structural evidence into
+  full E4 substantiation.
+- **Reason for decision:** A control arm that receives the treatment upstream
+  can make an adaptive policy appear ineffective, or can remove the very
+  opportunity the experiment intends to compare. Causal isolation must be
+  defined over the complete dataflow from signal ingestion to terminal
+  epistemic outcome.
+- **Return condition:** Add the declared negative-control case kinds and enough
+  held-out pairs for uncertainty estimates, then repeat across non-exact and
+  non-Slack recurrence families.
+
 ## Reconciliation Procedure
 
 At a reconciliation milestone:

@@ -311,6 +311,53 @@ decisions will be added after the parallel audit lanes complete.
   continue through the existing Think path until they have an equivalent
   grounded-semantic ownership contract.
 
+### Slice 9 — Paired adaptive-versus-frozen corrective-memory experiment
+
+- The causal question is whether reusing an adjudicated correction improves a
+  later held-out recurrence, not whether the system can store a correction or
+  close one replay trace.
+- A sealed experiment assigns matched company foundations to distinct adaptive
+  and frozen tenants, gives both arms the same training correction and scripted
+  provider behavior, and then replays the same held-out recurrence cases. The
+  adaptive arm may consume clarification-learned identity memory; the frozen
+  arm preserves that memory in storage but may not consume it.
+- Freezing only the entity resolver is insufficient. Ingestion's alias
+  fast-path runs first and can resolve the held-out phrase from the adjudicated
+  alias, remove the grounding opportunity and prevent the frozen resolver from
+  ever observing the case. The experiment control must therefore disable
+  corrective-memory reuse at every pre-outcome consumer, currently both ingest
+  entity resolution and resolver context/replay, while leaving unrelated
+  manually supplied candidates available.
+- The harness uses the same public domain adjudication operation as the HTTP
+  gateway. Authorization, alias persistence, successor grounding and feedback
+  lineage therefore have one owner rather than a private router implementation.
+- The paired report preserves case, arm, tenant, training correction,
+  clarification, adjudicated alias, recurrence Observation, grounding,
+  source-semantic and Model lineage. It reports continuous correctness,
+  review/abstention, semantic-admission, exactly-one-Model, model-call, latency,
+  estimated-cost and paired-discordance metrics. Unsafe autonomous resolution,
+  wrong replay Models, ignored conflict, contextual globalization, incomplete
+  fates, source mutation, self-authored evidence and Model-cardinality
+  violations remain noncompensatory incidents.
+- The executable harness and Company Vitals attachment now provide synthetic
+  E4 evidence for the first exact-alias positive population: three held-out
+  recurrences resolve correctly in the adaptive arm versus zero in the frozen
+  arm, avoid three model calls and record no hard-safety incident. This is not a
+  completed system-substantiation claim. It does not yet establish confidence
+  intervals, unseen-spelling generalization, negative-control performance,
+  open-world E5 benefit or customer value.
+- Entity identity correctness is measured independently from semantic
+  admission. In the sealed population, renewal produces one new Model while
+  support and risk terminalize as `no_admission`; all three still resolve the
+  learned company object correctly. The evaluator therefore does not reward
+  duplicate or unsupported belief creation merely to make the learning loop
+  appear productive.
+- The experiment scenario and adaptive-minus-frozen lift metric are registered
+  under INV-05 and translated into canonical invariant evidence before proof
+  compilation. Aggregation preserves the E3 tier of the runtime grounding
+  slice, so the added E4 experiment cannot silently upgrade incomplete
+  structural proof.
+
 ## Next Consolidation Targets
 
 1. Keep the source-semantic worker active until its Slack-to-Model vertical is
@@ -319,9 +366,9 @@ decisions will be added after the parallel audit lanes complete.
    task-autonomy service and database naming while retaining compatibility.
 3. Feed typed grounding outcomes into existing reflective/retrieval learning
    before adding any new policy lifecycle.
-4. Add paired adaptive-versus-frozen and held-out entity-recurrence simulations
-   so learned replay is measured for net quality lift, not only closure and
-   model-call avoidance.
+4. Expand the attached adaptive-versus-frozen recurrence experiment from
+   exact-alias positives to contextual, conflict, homonym and unrelated
+   negative controls with enough held-out pairs for uncertainty estimates.
 5. Expand correction closure from the first grounded-Model vertical to every
    materially dependent accepted Model, graph relation and projection.
 
@@ -332,6 +379,12 @@ decisions will be added after the parallel audit lanes complete.
 - Questions, unsupported mentions, ambiguity, and insufficient context do not
   create false beliefs.
 - Duplicate delivery is idempotent.
+- Adaptive and frozen arms share the same stored correction, company
+  foundation, provider behavior and held-out cases; the only intended
+  difference is whether clarification-learned corrective memory may be
+  consumed before outcome.
+- Every upstream consumer that could use corrective memory is frozen in the
+  control arm, including ingestion alias resolution as well as resolver replay.
 - Every active worker is named in the current product scope.
 - No task-autonomy domain or worker is imported by the active epistemic path.
 - The report represents zero exposure as unknown, not success.

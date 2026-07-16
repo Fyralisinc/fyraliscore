@@ -51,6 +51,35 @@ claims that were not checked against code or artifacts.
 
 ## Durable Lessons
 
+### 2026-07-16 - Freeze experiments at the earliest memory consumer
+
+- Context: Building a paired adaptive-versus-frozen experiment for governed
+  entity corrective-memory reuse.
+- Symptom: A resolver configured as frozen could still receive no unresolved
+  phrase, making the control appear clean while the adjudicated alias had
+  already influenced the signal.
+- Cause: Ingestion's alias fast-path consumes entity memory before the resolver
+  builds context or attempts governed replay. Freezing only the component where
+  the learned decision is most visible did not freeze the full treatment path.
+- Lesson: For causal learning-loop tests, enumerate every pre-outcome consumer
+  of the learned state and disable treatment at the earliest one. Keep stored
+  correction state, company foundation, provider behavior and held-out cases
+  matched across arms; vary only whether learned memory may be consumed. Also
+  prove that the frozen case still reaches the intended evaluation opportunity.
+- Evidence: `services/ingest/ingestion/core.py`;
+  `services/workers/entity_resolver/worker.py`;
+  `services/workers/entity_resolver/tests/test_corrective_memory_control.py`;
+  `lib/evaluation/company_learning_experiment.py`;
+  `scripts/run_company_learning_pair_harness.py`;
+  `docs/plans/revised-system-architecture-discovery-log.md` DISC-019.
+- Status: Control boundary, paired evidence contract, real-Postgres execution
+  and fail-closed Company Vitals attachment are implemented on the
+  autonomous-company-learning branch. Negative controls, larger held-out
+  populations and non-exact recurrence families remain follow-up work. The
+  scenario and lift metric are registered under INV-05, and canonical evidence
+  aggregation preserves the lower E3 runtime tier instead of manufacturing E4
+  substantiation.
+
 ### 2026-07-16 - Correction and evaluation must preserve their truth boundaries
 
 - Context: Closing the clarification-to-replay company-learning loop and folding
