@@ -27,6 +27,7 @@ class CorrectiveMemoryArm(StrEnum):
 
 class RecurrenceCaseKind(StrEnum):
     EXACT_ALIAS_POSITIVE = "exact_alias_positive"
+    VARIANT_ALIAS_POSITIVE = "variant_alias_positive"
     CONTEXTUAL_PHRASE_NEGATIVE = "contextual_phrase_negative"
     CONFLICTING_SOURCE_HINT = "conflicting_source_hint"
     HOMONYM_LOCAL_ASSOCIATION = "homonym_local_association"
