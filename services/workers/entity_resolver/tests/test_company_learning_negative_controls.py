@@ -65,6 +65,11 @@ def test_negative_control_plan_is_typed_sealed_and_not_fabricated() -> None:
         conflict.adaptive_expectation.allowed_consumer_fates
         == (ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,)
     )
+    assert (
+        ConsumerTerminalFate.RESOLVED_FOR_CONSUMER
+        not in conflict.frozen_expectation.allowed_consumer_fates
+    )
+    assert conflict.frozen_expectation.expected_model_count == 0
     assert conflict.adaptive_expectation.expected_entity_ref is not None
     assert conflict.frozen_expectation.expected_entity_ref is not None
     for case_id in {

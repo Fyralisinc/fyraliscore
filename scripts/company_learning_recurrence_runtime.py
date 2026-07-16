@@ -14,7 +14,9 @@ from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_experiment import (
     CanonicalEntityRef,
     ConsumerTerminalFate,
+    CorrectiveMemoryExperimentReport,
     CorrectiveMemoryExperimentSpec,
+    PairedRecurrenceResult,
     RecurrenceCaseKind,
     SealedArmExpectation,
     SealedRecurrenceCase,
@@ -142,6 +144,42 @@ class NegativeControlExecutionPlan(_RuntimeModel):
                 raise ValueError(
                     "negative-control assignment tenants do not match sealed gold"
                 )
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_sha256(self.model_dump(mode="json"))
+
+
+class NegativeControlExperimentEvidence(_RuntimeModel):
+    schema_version: str = "company-learning-negative-control-evidence-v1"
+    executed_at: str = Field(min_length=1)
+    fixture_version: str = Field(min_length=1)
+    fixture_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    spec: CorrectiveMemoryExperimentSpec
+    pairs: tuple[PairedRecurrenceResult, ...] = Field(min_length=1)
+    report: CorrectiveMemoryExperimentReport
+    artifact_refs: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def execution_exactly_matches_sealed_plan(self) -> Self:
+        sealed_case_ids = {case.case_id for case in self.spec.cases}
+        pair_case_ids = [pair.case_id for pair in self.pairs]
+        if len(pair_case_ids) != len(set(pair_case_ids)):
+            raise ValueError("negative-control result case IDs must be unique")
+        if set(pair_case_ids) != sealed_case_ids:
+            raise ValueError(
+                "negative-control results must exactly cover sealed cases"
+            )
+        if self.report.spec_digest != self.spec.digest:
+            raise ValueError(
+                "negative-control report must compile the sealed spec"
+            )
+        if self.report.pairs != self.pairs:
+            raise ValueError(
+                "negative-control evidence pairs must match compiled report"
+            )
         return self
 
     @property
@@ -308,14 +346,10 @@ def _sealed_case(
         ),
         frozen_expectation=SealedArmExpectation(
             tenant_id=assignment.frozen_tenant_id,
-            allowed_consumer_fates=(
-                (ConsumerTerminalFate.RESOLVED_FOR_CONSUMER,)
-                if is_conflict
-                else safe_fates
-            ),
+            allowed_consumer_fates=safe_fates,
             expected_entity_ref=frozen_ref,
-            expected_model_count=definition.expected_model_count,
-            autonomous_resolution_permitted=is_conflict,
+            expected_model_count=0 if is_conflict else definition.expected_model_count,
+            autonomous_resolution_permitted=False,
         ),
         artifact_refs=(f"fixture-case:{definition.case_id}",),
     )
