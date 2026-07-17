@@ -1608,6 +1608,27 @@ distinct:
    canonical linking nor company-scale learning behavior. Boundary and type
    uncertainty work continues on development data without changing or
    selectively rerunning v3.
+5. Audited broad v4 is the current disjoint broad-extraction population: 40
+   signals in four genuine ten-signal batches, 69 gold spans, 67 predictions
+   and 66 exact matches. Exact P/R/F1 is
+   `0.985075/0.956522/0.970588`, type accuracy and 20/20 negative cleanliness
+   are `1.0`, workstream is `6/6`, and Slack/email/Jira F1 is
+   `0.976744/0.962963/0.974359`. The immutable pre-fix report SHA-256 is
+   `f67eb4f39ae72ca699d675299186bc2c5050fb81ece91077776724a74b64a245`.
+   Its receipt lacks a pre-call runtime-source digest, which remains an explicit
+   protocol gap. Fixes derived from its misses have unit proof only; the saved
+   output must not be replayed or rescored as fresh post-fix generalization.
+   This population governs current bounded extraction quality, while v3 remains
+historical evidence and the separate DB vertical governs canonical linking.
+
+Objective entity v5 (`ad47a1c0`) now SHA-binds broad v4 with the historical
+and downstream populations. `/tmp/objective_entity_evidence_v5.json` has file
+SHA-256 `83d6a51f9d61d3dd3c219b8882174c89e7bc85e2fb5ef622365cc40ef24b2128`
+and composition SHA-256
+`46bd421e273519c311a5deb44dd81b2fc40ddcd800b1396c76ad1bea372593af`.
+Its broad component scores `0.990196` and readiness is clear, while the missing
+pre-call runtime-source digest and lack of post-holdout current-runtime
+generalization remain explicit proof gaps.
 
 Wrong-type consequential admission is a noncompensatory failure class: an exact
 span with high confidence must not silently create or update a Model, relation,
@@ -1676,14 +1697,14 @@ supports the type. Batch fate closure is independently proven (`6967e605`):
 schema failure, timeout and malformed-sibling cases leave all ten signals with
 terminal fates, zero learned-quality credit and idempotent replay.
 
-Objective composition v2 (`9bcfde1e`) digest-binds immutable v3, the positive
-vertical and adversarial v2 before producing extraction-v1, pipeline-v4 and
-readiness views. `/tmp/objective_entity_evidence_v2.json` has continuous
-readiness `0.9901315789`, full component coverage and a clear blocker verdict.
-Its only below-budget measured slice remains workstream exact F1 `0.5` versus
-`0.8`. Four adversarial relation attempts and two open-world cases cannot
-establish broad graph quality, so exact denominators and the company-scale
-generalization gap remain in the artifact and top-level report.
+Historical objective composition v2 (`9bcfde1e`) digest-bound immutable v3,
+the positive vertical and adversarial v2. Its `0.9901315789` readiness and
+workstream exact-F1 `0.5` tail remain useful falsifying history; they are not
+the governing entity-readiness claim. The current entity composition also
+requires the audited, disjoint broad-v4 extraction population described below.
+The downstream DB vertical remains a separate proof of linking and graph
+admission: extraction quality must not be relabelled as canonical-link quality,
+and neither population establishes open-world or company-scale graph quality.
 
 ### Company-model learning and feedback evidence
 
@@ -1730,17 +1751,25 @@ eight reevaluation pairs, rejects two cycle writes, survives restart exactly,
 adds no replay work and scores `1.0` on every registered check. Neither result
 establishes open-world source drift or unbounded recovery.
 
-`objective-company-learning-evidence-v1` (`eeb917eb`) composes these independent
-SHA-bound components without converting missing evidence into success. The
-current recomposed artifact is
-`/private/tmp/objective_company_learning_evidence_v3.json`, composition SHA-256
-`97d604a66eb51450805f74eca5566f50e3745b990193f80cd7957c1b62863452`.
-All five components are observed; evidence coverage, observed-component score
-and coverage-adjusted score are `1.0`, with no below-policy component or
-noncompensatory blocker, verdict `meets_bounded_policy`. This is a bounded
-system-learning pass only: the artifact retains explicit non-open-world,
-non-customer, no-connector and unbounded-recovery gaps, and v4 remains
-development rather than untouched generalization evidence.
+The governing company-learning composition is v8, not the historical
+five-component v3 portfolio. It fail-closes eight independent SHA-bound
+components: entity/company physics, mature retrieval, adaptive/frozen learning,
+normalized source equivalence, correction homeostasis, the joined runtime,
+matched feedback quality and strict single-Model synthesis. The current bound
+artifact is
+`/private/tmp/objective_company_learning_evidence_v8_boundaries.json` (file
+SHA-256 `9816c876…25706`, composition SHA-256 `a6b9c9a5…67e125`). All eight
+components are observed at score and coverage `1.0`, with no below-policy
+component or noncompensatory blocker. Sixteen successful scope limitations are
+reported as `proof_boundaries`, not as failures.
+
+This is a bounded simulated-system pass, not release or customer proof. The
+joined runtime proves one exact persisted-signal-to-correction vertical; matched
+feedback quality proves adaptive later quality `1.0` versus frozen `0.0`; and
+the frozen strict-synthesis holdout proves learned `3/3` versus frozen `0/3`
+with exactly one complete prior-Model-lineaged Model per thesis. These results
+do not erase the immutable 45-batch verdict, establish open-world behavior or
+prove customer value.
 
 ## 8.3 Anomaly processor
 
