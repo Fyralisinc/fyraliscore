@@ -45,8 +45,11 @@ def _objective_entity_evidence(*, complete: bool = True) -> dict:
 
 
 def _objective_company_learning_evidence(*, numeric: bool = True) -> dict:
-    names = ("retrieval_evolution", "company_model_ablation", "feedback_learning",
-             "source_equivalence", "correction_homeostasis", "joined_runtime")
+    names = (
+        "retrieval_evolution", "company_model_ablation", "feedback_learning",
+        "feedback_quality", "source_equivalence", "correction_homeostasis",
+        "joined_runtime",
+    )
     components = {
         name: {
             "status": "observed",
@@ -263,6 +266,7 @@ def test_objective_learning_evidence_adds_numeric_metrics_without_rewriting_hist
     assert metrics["components"] == {
         "retrieval_evolution": 1.0, "company_model_ablation": 1.0,
         "feedback_learning": 1.0, "source_equivalence": 1.0,
+        "feedback_quality": 1.0,
         "correction_homeostasis": 1.0,
         "joined_runtime": 1.0,
     }
@@ -291,6 +295,27 @@ def test_learning_status_labels_cannot_manufacture_numeric_score():
     assert learning["objective_company_learning_quality"] is None
     assert report["current_bounded_company_learning"] == {}
     assert any("aggregate score disagrees" in gap for gap in report["proof_gaps"])
+
+
+def test_feedback_quality_is_mandatory_in_top_evaluator():
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+    evidence = _objective_company_learning_evidence()
+    evidence["components"].pop("feedback_quality")
+    evidence["exact_populations"].pop("feedback_quality")
+    evidence["evidence_coverage"] = 6 / 7
+    evidence.pop("composition_sha256")
+    evidence["composition_sha256"] = canonical_sha256(evidence)
+
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark, run_summary=run_summary, vitals=vitals,
+        assurance=assurance, run_config=run_config,
+        profile_name="authoritative-45", company_learning_evidence=evidence,
+    )
+
+    assert report["current_bounded_company_learning"]["required_component_count"] == 7
+    assert report["current_bounded_company_learning"]["coverage"] == 6 / 7
+    assert any("required matched feedback-quality" in failure
+               for failure in report["hard_failures"])
 
 def test_partial_objective_entity_metrics_remain_continuous_and_gapped() -> None:
     benchmark, run_summary, vitals, assurance, run_config = _artifacts()

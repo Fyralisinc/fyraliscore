@@ -12,8 +12,29 @@ from lib.evaluation.feedback_learning_effect import validate_feedback_learning_e
 
 COMPONENTS = (
     "retrieval_evolution", "company_model_ablation", "feedback_learning",
-    "source_equivalence", "correction_homeostasis", "joined_runtime",
+    "feedback_quality", "source_equivalence", "correction_homeostasis",
+    "joined_runtime",
 )
+
+FEEDBACK_QUALITY_CHECKS = {
+    "adaptive_correct_model_remains_active",
+    "adaptive_correction_archived_wrong_model",
+    "adaptive_correction_lineage_exact",
+    "adaptive_later_quality_is_correct",
+    "adaptive_reasoning_lineage_corrected_model",
+    "adaptive_relation_fenced",
+    "all_think_runs_succeed",
+    "both_arms_emit_later_models",
+    "frozen_preserves_negative_control",
+    "frozen_reasoning_lineage_wrong_model",
+    "frozen_relation_unchanged",
+    "frozen_wrong_model_remains_active",
+    "later_models_reference_selected_context",
+    "later_quality_improves",
+    "matched_later_batches",
+    "selected_models_are_tenant_isolated",
+    "source_truth_is_immutable_and_matched",
+}
 
 
 @dataclass(frozen=True)
@@ -30,12 +51,14 @@ def compose_objective_company_learning_evidence(
     company_model_ablation_active_failure: BoundArtifact | None = None,
     company_model_ablation_active_predecessor: BoundArtifact | None = None,
     feedback_learning: BoundArtifact | None = None,
+    feedback_quality: BoundArtifact | None = None,
     source_equivalence: BoundArtifact | None = None,
     correction_homeostasis: BoundArtifact | None = None,
     joined_runtime: BoundArtifact | None = None,
 ) -> dict[str, Any]:
     inputs = {
         "feedback_learning": feedback_learning,
+        "feedback_quality": feedback_quality,
         "source_equivalence": source_equivalence,
         "correction_homeostasis": correction_homeostasis,
         "joined_runtime": joined_runtime,
@@ -353,6 +376,23 @@ def _normalize_component(name: str, payload: Mapping[str, Any]) -> dict[str, Any
         population = {"matched_pairs": validated.report.matched_pair_count,
                       "useful_pairs": validated.report.useful_pair_count,
                       "safety_pairs": validated.report.safety_pair_count}
+    elif name == "feedback_quality":
+        _schema(payload, "feedback-quality-matched-db-objective-v1")
+        _verify_objective(payload, "matched feedback quality")
+        internal_digest = str(payload.get("objective_sha256"))
+        population = dict(_object(payload.get("population"), "feedback quality population"))
+        expected_population = {
+            "arms": 2,
+            "correction_episodes": 1,
+            "later_batches_per_arm": 3,
+            "signals_per_later_batch": 2,
+        }
+        if population != expected_population:
+            raise ValueError("feedback quality matched population mismatch")
+        checks = dict(_object(payload.get("checks"), "feedback quality checks"))
+        if set(checks) != FEEDBACK_QUALITY_CHECKS:
+            raise ValueError("feedback quality objective check set mismatch")
+        report = dict(payload)
     elif name == "source_equivalence":
         is_db_objective = payload.get("schema_version") == "source-equivalence-db-objective-v1"
         if payload.get("schema_version") in {
@@ -458,6 +498,7 @@ def _blockers(name: str, report: Mapping[str, Any]) -> list[str]:
         "correction_homeostasis": ("unsafe_reads_contained", "replay_is_idempotent",
                                    "restart_preserves_state", "deep_cascade_is_complete_and_cycle_safe"),
         "joined_runtime": tuple(report.get("checks", {}).keys()),
+        "feedback_quality": tuple(FEEDBACK_QUALITY_CHECKS),
     }.get(name, ())
     blockers = [f"{name}:{key}" for key in names if checks.get(key) is False]
     if name == "feedback_learning":
@@ -474,7 +515,10 @@ def _proof_gaps(name: str, report: Mapping[str, Any]) -> list[str]:
         return [f"{name}:{raw}"]
     if isinstance(raw, list):
         return [f"{name}:{item}" for item in raw]
-    if name in {"retrieval_evolution", "source_equivalence", "feedback_learning"}:
+    if name in {
+        "retrieval_evolution", "source_equivalence", "feedback_learning",
+        "feedback_quality",
+    }:
         return [f"{name}:bounded_component_does_not_establish_open_world_generalization"]
     return []
 

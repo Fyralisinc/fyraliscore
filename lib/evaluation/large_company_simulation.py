@@ -557,7 +557,8 @@ def _objective_company_learning_quality(
     rows = _object(evidence.get("components"))
     required = (
         "retrieval_evolution", "company_model_ablation", "feedback_learning",
-        "source_equivalence", "correction_homeostasis", "joined_runtime",
+        "feedback_quality", "source_equivalence", "correction_homeostasis",
+        "joined_runtime",
     )
     components = {
         name: _optional_ratio(_object(rows.get(name)).get("continuous_score"))
@@ -579,6 +580,15 @@ def _objective_company_learning_quality(
     if joined.get("status") != "observed" or joined.get("verdict") != "meets_policy":
         hard_failures.append(
             "objective company-learning: required joined runtime v2 evidence is missing or failing"
+        )
+    feedback_quality = _object(rows.get("feedback_quality"))
+    if (
+        feedback_quality.get("status") != "observed"
+        or feedback_quality.get("verdict") != "meets_policy"
+    ):
+        hard_failures.append(
+            "objective company-learning: required matched feedback-quality "
+            "evidence is missing or failing"
         )
     hard_failures.extend(
         f"objective company-learning: {blocker}" for blocker in blockers

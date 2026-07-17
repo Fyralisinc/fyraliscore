@@ -34,6 +34,7 @@ def main() -> int:
     parser.add_argument("--company-model-ablation-active-failure", type=Path)
     parser.add_argument("--company-model-ablation-active-predecessor", type=Path)
     parser.add_argument("--feedback-learning", type=Path)
+    parser.add_argument("--feedback-quality", type=Path)
     parser.add_argument("--source-equivalence", type=Path)
     parser.add_argument("--correction-homeostasis", type=Path)
     parser.add_argument("--joined-runtime", type=Path)
@@ -51,6 +52,7 @@ def main() -> int:
             args.company_model_ablation_active_predecessor
         ),
         feedback_learning=_load(args.feedback_learning),
+        feedback_quality=_load(args.feedback_quality),
         source_equivalence=_load(args.source_equivalence),
         correction_homeostasis=_load(args.correction_homeostasis),
         joined_runtime=_load(args.joined_runtime),

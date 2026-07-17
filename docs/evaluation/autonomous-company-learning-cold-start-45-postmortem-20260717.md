@@ -694,3 +694,15 @@ current objective evidence portfolio. This is new bounded capability evidence,
 not a rerun of the 45-batch simulation and not grounds to change this
 postmortem's `not_credible` verdict. The current rerender remains at
 `/private/tmp/large-simulation-gate-joined-v2`.
+
+The later matched feedback-quality DB proof is also now mandatory and distinct
+from the older SAGE salience-effect evidence. In two matched arms it applies one
+governed correction only to the adaptive arm, then runs three identical later
+two-signal batches per arm. Adaptive later conclusion quality is `1.0` versus
+frozen `0.0`, with exact Model/relation lineage, immutable matched source truth,
+tenant isolation, and all 17 objective checks passing. The seven-component
+composition is `/private/tmp/objective_company_learning_evidence_v7.json`
+(`785ec239…f30911d7`). The saved 45-batch artifact was rerendered with this
+evidence at `/private/tmp/large-simulation-gate-feedback-quality-v7`; its score
+remains `0.8859` and its verdict remains `not_credible` because the same three
+historical vitals failures remain.

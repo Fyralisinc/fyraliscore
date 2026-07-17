@@ -1,5 +1,7 @@
 from copy import deepcopy
 
+import pytest
+
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_evidence_composer import (
     BoundArtifact, compose_objective_company_learning_evidence,
@@ -89,6 +91,46 @@ def _feedback():
                                           report=report).artifact_payload()
 
 
+def _feedback_quality():
+    checks = {key: True for key in (
+        "adaptive_correct_model_remains_active",
+        "adaptive_correction_archived_wrong_model",
+        "adaptive_correction_lineage_exact",
+        "adaptive_later_quality_is_correct",
+        "adaptive_reasoning_lineage_corrected_model",
+        "adaptive_relation_fenced",
+        "all_think_runs_succeed",
+        "both_arms_emit_later_models",
+        "frozen_preserves_negative_control",
+        "frozen_reasoning_lineage_wrong_model",
+        "frozen_relation_unchanged",
+        "frozen_wrong_model_remains_active",
+        "later_models_reference_selected_context",
+        "later_quality_improves",
+        "matched_later_batches",
+        "selected_models_are_tenant_isolated",
+        "source_truth_is_immutable_and_matched",
+    )}
+    payload = {
+        "schema_version": "feedback-quality-matched-db-objective-v1",
+        "population": {
+            "arms": 2, "correction_episodes": 1,
+            "later_batches_per_arm": 3, "signals_per_later_batch": 2,
+        },
+        "checks": checks,
+        "continuous_score": 1.0,
+        "verdict": "meets_policy",
+        "proof_boundary": ["bounded matched synthetic company world"],
+    }
+    payload["objective_sha256"] = canonical_sha256(payload)
+    return payload
+
+
+def _reseal(payload):
+    payload.pop("objective_sha256", None)
+    payload["objective_sha256"] = canonical_sha256(payload)
+
+
 def _source():
     checks = {key: True for key in (
         "all_source_families_covered", "semantic_outcomes_consistent",
@@ -161,6 +203,7 @@ def test_composes_all_sha_bound_components_with_exact_populations():
             _active_ablation(learned_lift=False), SHA
         ),
         feedback_learning=BoundArtifact(_feedback(), SHA),
+        feedback_quality=BoundArtifact(_feedback_quality(), SHA),
         source_equivalence=BoundArtifact(_source_db(relations_exposed=True), SHA),
         correction_homeostasis=BoundArtifact(_correction(), SHA),
         joined_runtime=BoundArtifact(_joined_runtime(), SHA),
@@ -172,6 +215,7 @@ def test_composes_all_sha_bound_components_with_exact_populations():
     assert result["noncompensable_blockers"] == []
     assert result["exact_populations"]["company_model_ablation"]["signals"] == 6
     assert result["exact_populations"]["feedback_learning"]["matched_pairs"] == 1
+    assert result["exact_populations"]["feedback_quality"]["arms"] == 2
     assert len(result["composition_sha256"]) == 64
 
 
@@ -264,7 +308,7 @@ def test_missing_components_remain_unknown_and_reduce_coverage():
     )
 
     assert result["verdict"] == "partial_evidence"
-    assert result["evidence_coverage"] == 1 / 6
+    assert result["evidence_coverage"] == 1 / 7
     assert result["components"]["retrieval_evolution"]["status"] == "unknown"
     assert "component_unavailable:retrieval_evolution.current_bounded_postfix" in result[
         "proof_gaps"
@@ -283,6 +327,42 @@ def test_noncompensable_safety_failure_overrides_high_scores():
     assert "source_equivalence:source_authority_preserved" in result[
         "noncompensable_blockers"
     ]
+
+
+def test_salience_feedback_cannot_substitute_for_missing_feedback_quality():
+    result = compose_objective_company_learning_evidence(
+        feedback_learning=BoundArtifact(_feedback(), SHA),
+    )
+
+    assert result["components"]["feedback_learning"]["status"] == "observed"
+    assert result["components"]["feedback_quality"]["status"] == "unknown"
+    assert "component_unavailable:feedback_quality" in result["proof_gaps"]
+    assert result["verdict"] == "partial_evidence"
+
+
+def test_feedback_quality_requires_exact_population_checks_and_digest():
+    malformed = _feedback_quality()
+    malformed["population"]["arms"] = 1
+    _reseal(malformed)
+    with pytest.raises(ValueError, match="matched population mismatch"):
+        compose_objective_company_learning_evidence(
+            feedback_quality=BoundArtifact(malformed, SHA),
+        )
+
+    malformed = _feedback_quality()
+    malformed["checks"].pop("later_quality_improves")
+    _reseal(malformed)
+    with pytest.raises(ValueError, match="check set mismatch"):
+        compose_objective_company_learning_evidence(
+            feedback_quality=BoundArtifact(malformed, SHA),
+        )
+
+    malformed = _feedback_quality()
+    malformed["continuous_score"] = 0.5
+    with pytest.raises(ValueError, match="objective digest mismatch"):
+        compose_objective_company_learning_evidence(
+            feedback_quality=BoundArtifact(malformed, SHA),
+        )
 
 
 def test_db_source_equivalence_cannot_hide_missing_production_relations():

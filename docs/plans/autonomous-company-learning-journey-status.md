@@ -1706,3 +1706,27 @@ The next sequence is validation and remaining pipeline closure:
 - The saved 45-batch artifact was only rerendered. Its verdict remains
   `not_credible`; the joined bounded proof does not rewrite historical runtime
   failures.
+
+### 2026-07-17 — Matched feedback quality became a separate mandatory component
+
+- The top evidence composer now requires `feedback_quality` independently of
+  the older `feedback_learning` SAGE salience effect. Salience evidence cannot
+  substitute for demonstrated improvement in later company-model conclusions.
+- The accepted artifact must be exactly
+  `feedback-quality-matched-db-objective-v1`, pass its objective digest, expose
+  the exact two-arm/one-correction/three-later-batch/two-signal population, and
+  contain the exact registered set of 17 checks. Any false required check is a
+  noncompensable blocker.
+- The fresh DB artifact passed at `1.0`: adaptive later quality `1.0`, frozen
+  quality `0.0`, lift `1.0`. It preserves exact correction and relation
+  lineage, matched immutable source truth, tenant isolation, and decisive
+  Model-use lineage.
+- Objective company-learning evidence now has seven mandatory components. The
+  recomposed artifact is
+  `/private/tmp/objective_company_learning_evidence_v7.json`, composition SHA
+  `785ec239…f30911d7`, coverage and adjusted score `1.0`, with no blocker.
+- The existing 45-batch run was evaluator-rerendered, not rerun, at
+  `/private/tmp/large-simulation-gate-feedback-quality-v7`. Feedback quality is
+  visible as the seventh component, but the authoritative result remains
+  `not_credible`, score `0.8859`, because its original Think failure and two
+  entity-grounding incidents remain unchanged.
