@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
-from lib.evaluation.company_physics_vertical import run_company_physics_vertical
+from services.company_physics_vertical import run_company_physics_vertical
 
 
 async def _install_json_codec(conn: asyncpg.Connection) -> None:

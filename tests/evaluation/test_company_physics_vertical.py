@@ -7,7 +7,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from lib.evaluation.company_physics_vertical import run_company_physics_vertical
+from services.company_physics_vertical import run_company_physics_vertical
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
