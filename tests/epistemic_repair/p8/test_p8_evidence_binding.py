@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from lib.evaluation.epistemic_repair.p8_evidence import bind_fault_execution_evidence
+from lib.evaluation.epistemic_repair.p8_evidence import bind_fault_execution_evidence, summarize_fault_member_receipts
 from lib.evaluation.epistemic_repair.p8_postgres_runner import (
     DurableFaultReceipt,
     P8_DB_COVERED_BOUNDARIES,
@@ -38,6 +38,10 @@ def test_binder_requires_all_24_schedule_executions() -> None:
     evidence = bind_fault_execution_evidence(postgres=postgres, provider=provider, commit_sha="f" * 40)
     assert len(evidence.fault_execution_keys) == 24
     assert evidence.attempt_receipts_persisted is True
+    summary = summarize_fault_member_receipts(postgres=postgres, provider=provider)
+    assert summary["observed_member_receipts"] == 24
+    assert summary["attempt_budget_respected"] is True
+    assert summary["cross_tenant_effects"]["gate"] is False
     with pytest.raises(ValueError, match="denominator complete"):
         bind_fault_execution_evidence(
             postgres=postgres,

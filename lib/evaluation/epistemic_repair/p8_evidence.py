@@ -10,6 +10,38 @@ from lib.evaluation.epistemic_repair.p8_provider_runner import ProviderFaultSlic
 from lib.evaluation.epistemic_repair.p8_scale_runner import ScaleExecution
 
 
+def summarize_fault_member_receipts(
+    *, postgres: PostgresFaultSlice, provider: ProviderFaultSlice,
+) -> dict[str, object]:
+    """Render only claims directly derivable from denominator member receipts."""
+    db, llm = postgres.receipts, provider.receipts
+    attempts = len(db) + len(llm)
+    return {
+        "preregistered_physical_attempt_budget": 24,
+        "observed_member_receipts": attempts,
+        "attempt_budget_respected": attempts <= 24,
+        "every_physical_attempt_has_receipt": attempts == 24 and all(
+            row.persisted_attempt_receipts == 1 for row in llm
+        ),
+        "exactly_once_barrier_violations": sum(row.post_restart_barrier_count != 1 for row in db),
+        "duplicate_model_violations": sum(row.post_restart_model_count > 1 for row in db),
+        "pending_truth_critical_violations": sum(row.post_restart_pending_count != 0 for row in db),
+        "member_receipt_digest_failures": sum(
+            len(row.queried_state_digest) != 64 or len(row.replay_receipt_digest) != 64 for row in db
+        ) + sum(len(row.queried_receipt_digest) != 64 for row in llm),
+        "terminal_fates": sorted({row.pre_restart_fate for row in db}) + sorted(
+            {row.observed_outcome for row in llm}
+        ),
+        "cross_tenant_effects": {"status": "not_recorded_in_member_receipts", "gate": False},
+        "duplicate_relation_transitions": {"status": "not_recorded_in_member_receipts", "gate": False},
+        "duplicate_lifecycle_transitions": {"status": "not_recorded_in_member_receipts", "gate": False},
+        "partial_truth_state": {"status": "partially_observed_via_barrier_model_pending_counts", "gate": False},
+        "stale_active_truth": {"status": "not_recorded_in_member_receipts", "gate": False},
+        "dead_letter_truth_critical_work": {"status": "not_recorded_in_member_receipts", "gate": False},
+        "uninterrupted_reference_digest_equality": {"status": "not_recorded_in_member_receipts", "gate": False},
+    }
+
+
 def bind_fault_execution_evidence(
     *, postgres: PostgresFaultSlice, provider: ProviderFaultSlice, commit_sha: str,
 ) -> ProductionExecutionEvidence:

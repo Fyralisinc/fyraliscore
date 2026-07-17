@@ -15,7 +15,7 @@ import sys
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib.evaluation.epistemic_repair.p8_evidence import bind_fault_execution_evidence
+from lib.evaluation.epistemic_repair.p8_evidence import bind_fault_execution_evidence, summarize_fault_member_receipts
 from lib.evaluation.epistemic_repair.p8_oracles import evaluate_p8
 from lib.evaluation.epistemic_repair.p8_population import build_characterization_manifests, build_fault_schedule
 from lib.evaluation.epistemic_repair.p8_postgres_runner import run_postgres_fault_slice
@@ -42,6 +42,9 @@ async def _run(args: argparse.Namespace) -> int:
         "provider_fault_slice": asdict(provider),
         "bound_execution_evidence": asdict(evidence),
         "fault_hard_gates": {key: value for key, value in artifact["hard_gates"].items() if "fault" in key or "restart" in key},
+        "member_receipt_qualification": summarize_fault_member_receipts(
+            postgres=postgres, provider=provider,
+        ),
         "deterministic_qualification_ready": artifact["deterministic_qualification_ready"],
         "phase_exit_ready": artifact["phase_exit_ready"],
     }
