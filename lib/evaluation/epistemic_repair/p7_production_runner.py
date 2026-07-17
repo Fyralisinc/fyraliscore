@@ -272,7 +272,7 @@ async def _run_arm(
         else:
             provider_identity = None
         snapshot = await _snapshot(pool, runtime.tenant_id)
-        if batch.batch_number in {3, 6, 12}:
+        if batch.batch_number in {3, 6, 10, 12}:
             async with pool.acquire() as conn:
                 model_rows = await conn.fetch(
                     """SELECT model.id,model.truth_version_id,model.truth_version,
@@ -292,11 +292,14 @@ async def _run_arm(
                 relation_rows = await conn.fetch(
                     """SELECT relation.id,relation.truth_relation_kind,
                               relation.truth_rationale,
-                              COALESCE((SELECT array_agg(participant.model_id ORDER BY participant.model_id)
+                              COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                                  'model_id',participant.model_id,
+                                  'participant_role',participant.role
+                                ) ORDER BY participant.role,participant.model_id)
                                 FROM relation_truth_participants participant
                                 WHERE participant.tenant_id=relation.tenant_id
                                   AND participant.relation_version_id=relation.truth_relation_version_id),
-                                ARRAY[]::uuid[]) AS participant_model_ids,
+                                '[]'::jsonb) AS participants,
                               COALESCE((SELECT array_agg(evidence.evidence_id ORDER BY evidence.evidence_id)
                                 FROM relation_truth_evidence evidence
                                 WHERE evidence.tenant_id=relation.tenant_id

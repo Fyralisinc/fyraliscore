@@ -7,18 +7,66 @@ observation evidence IDs joined to sealed P6 signal/claim/lifecycle labels.
 from __future__ import annotations
 
 import random
+import re
 from statistics import mean
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p6_population import P6Population
-from lib.evaluation.epistemic_repair.p7_population import P7_MAX_WORLD_COUNT
+from lib.evaluation.epistemic_repair.p7_population import (
+    P7_MAX_WORLD_COUNT,
+    P7SemanticOraclePopulation,
+    StructuredClaimOracle,
+    build_p7_semantic_oracles,
+)
 from lib.evaluation.epistemic_repair.p7_runner import P7_ARMS
 from lib.shared.errors import InvariantViolation
 
 
 STAGES = (3, 6, 12)
+_RELATION_MARKERS = {
+    "causes": ("cause", "causes", "lead", "leads", "recur when", "driven by"),
+    "depends_on": ("depend", "depends", "requires", "blocked by", "block"),
+    "predicts": ("predict", "predicts", "follows", "indicator"),
+}
+_NEGATED_PREDICATE = re.compile(
+    r"\b(?:does\s+not|do\s+not|did\s+not|never)\b(?:\s+\w+){0,3}\s+"
+    r"(?:cause|causes|lead|leads|recur|depends?|requires?|blocks?|predicts?|follows?)\b"
+)
+
+
+def _semantic_text(model: dict[str, Any]) -> str:
+    proposition = model.get("proposition") or {}
+    return " ".join((str(model.get("natural_text") or ""), str(proposition))).casefold()
+
+
+def entails_structured_claim(
+    model: dict[str, Any], oracle: StructuredClaimOracle,
+) -> bool:
+    """Require subject, cause, effect, relation, and non-opposite polarity."""
+
+    proposition = model.get("proposition") or {}
+    if isinstance(proposition, dict) and str(proposition.get("polarity") or "").casefold() in {
+        "negative", "negated", "opposite",
+    }:
+        return False
+    text = _semantic_text(model)
+    if _NEGATED_PREDICATE.search(text) or re.search(
+        r"\b(?:unrelated|independent)\s+(?:of|from)\b", text
+    ):
+        return False
+    groups = (*oracle.cause_facets, *oracle.effect_facets)
+    return (
+        any(term.casefold() in text for term in oracle.subject_terms)
+        and all(any(term.casefold() in text for term in group) for group in groups)
+        and any(marker in text for marker in _RELATION_MARKERS[oracle.required_relation])
+    )
+
+
+def _matches_facets(model: dict[str, Any], facets: tuple[tuple[str, ...], ...]) -> bool:
+    text = _semantic_text(model)
+    return all(any(term.casefold() in text for term in group) for group in facets)
 
 
 def _metric(num: float, den: int, *, measured: bool = True) -> dict[str, Any]:
@@ -82,7 +130,14 @@ def _model_evidence(
 
 def _score_storyline(
     *, storyline: str, stage: int, snapshot: dict[str, Any], maps: dict[str, Any],
+    semantic_oracle: P7SemanticOraclePopulation,
 ) -> dict[str, Any]:
+    claim_oracle = next(
+        item for item in semantic_oracle.claims if item.storyline_id == storyline
+    )
+    relation_oracle = next(
+        item for item in semantic_oracle.relations if item.storyline_id == storyline
+    )
     expected_gold = [
         item for item in maps["gold_by_observation"].values()
         if item.storyline_id == storyline
@@ -96,11 +151,15 @@ def _score_storyline(
         evidence = _model_evidence(model, maps, through_stage=stage)
         if any(item.storyline_id == storyline for item in evidence):
             candidates.append((model, evidence))
-    pure = [
+    lineage_pure = [
         (model, evidence) for model, evidence in candidates
         if evidence
         and {item.storyline_id for item in evidence if item.storyline_id} == {storyline}
         and all(item.role not in {"noise", "high_similarity_distractor"} for item in evidence)
+    ]
+    pure = [
+        (model, evidence) for model, evidence in lineage_pure
+        if entails_structured_claim(model, claim_oracle)
     ]
     represented_claims = {
         item.claim_id for _, evidence in pure for item in evidence if item.claim_id
@@ -117,25 +176,30 @@ def _score_storyline(
         for model in scoped_models
     )
     relation_outputs = snapshot.get("accepted_relations") or ()
-    model_phase = {
-        str(model["id"]): {item.lifecycle_phase for item in evidence}
-        for model, evidence in pure
-    }
-    expected_relations = []
-    if stage >= 9:
-        expected_relations.append(("contradiction", "correction", {"supersedes", "corrects", "contests"}))
-    if stage >= 11:
-        expected_relations.append(("correction", "external_outcome", {"supports", "confirms", "predicts"}))
+    model_by_id = {str(model["id"]): model for model, _ in lineage_pure}
+    expected_relations = [relation_oracle] if stage >= 6 else []
     matched_expected: set[int] = set()
     valid_relation_outputs = 0
     for relation in relation_outputs:
-        participants = [str(value) for value in relation.get("participant_model_ids") or ()]
-        if not participants or any(value not in model_phase for value in participants):
+        participants = {
+            str(value.get("participant_role")): str(value.get("model_id"))
+            for value in relation.get("participants") or ()
+            if isinstance(value, dict) and value.get("model_id")
+        }
+        if set(participants) != {relation_oracle.cause_role, relation_oracle.effect_role}:
             continue
         kind = str(relation.get("truth_relation_kind") or "").casefold()
-        for index, (left, right, kinds) in enumerate(expected_relations):
-            phases = set().union(*(model_phase[value] for value in participants))
-            if left in phases and right in phases and kind in kinds:
+        for index, expected in enumerate(expected_relations):
+            cause_id = participants[expected.cause_role]
+            effect_id = participants[expected.effect_role]
+            if (
+                kind == expected.relation_kind
+                and cause_id != effect_id
+                and cause_id in model_by_id
+                and effect_id in model_by_id
+                and _matches_facets(model_by_id[cause_id], expected.cause_participant_facets)
+                and _matches_facets(model_by_id[effect_id], expected.effect_participant_facets)
+            ):
                 matched_expected.add(index)
                 valid_relation_outputs += 1
                 break
@@ -159,12 +223,8 @@ def _score_storyline(
         "relation_joint_precision": _metric(valid_relation_outputs, len(relation_outputs)),
         "relation_joint_recall": _metric(len(matched_expected), len(expected_relations)),
         "boundary_entity_safety": _metric(safe_scopes, len(scoped_models)),
-        "false_truth_from_noise": len(candidates) - len(pure),
-        "external_outcome_calibration_ece": {
-            "value": None,
-            "measured": False,
-            "reason": "sealed P6 oracle has no independent binary external-outcome label",
-        },
+        "false_truth_from_noise": len(candidates) - len(lineage_pure),
+        "semantic_contradiction_or_nonentailment": len(lineage_pure) - len(pure),
         "exact_denominators": {
             "expected_claims": len(expected_claims),
             "expected_phases": len(expected_phases),
@@ -207,6 +267,154 @@ def _paired_intervals(endpoints: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return intervals
 
 
+def _mean_measured(rows: list[dict[str, Any]], field: str) -> float | None:
+    values = [row.get(field, {}).get("value") for row in rows]
+    return mean(values) if values and all(value is not None for value in values) else None
+
+
+def _strategic_decision(
+    *, endpoints: list[dict[str, Any]], intervals: list[dict[str, Any]],
+    correction_by_arm: dict[str, dict[str, float | None]],
+    economics: list[dict[str, Any]], historical_raw: dict[str, dict[str, int]],
+    hard_gates: dict[str, bool], global_noise_truth: int,
+) -> tuple[str, dict[str, Any]]:
+    mature = [row for row in endpoints if row["stage_batch"] == 12]
+    by_arm = {arm: [row for row in mature if row["arm_id"] == arm] for arm in P7_ARMS}
+    quality = {
+        arm: {
+            field: _mean_measured(rows, field)
+            for field in (
+                "direct_thesis_accuracy", "atomic_claim_f1",
+                "boundary_entity_safety", "relation_joint_precision",
+                "external_outcome_calibration_ece",
+            )
+        }
+        for arm, rows in by_arm.items()
+    }
+    adaptive = quality["adaptive"]
+    primary_baselines = ("frozen", "observation_only")
+    thesis_deltas = {
+        arm: (
+            adaptive["direct_thesis_accuracy"] - quality[arm]["direct_thesis_accuracy"]
+            if adaptive["direct_thesis_accuracy"] is not None
+            and quality[arm]["direct_thesis_accuracy"] is not None else None
+        ) for arm in primary_baselines
+    }
+    complete_by_world: dict[str, dict[str, int]] = {}
+    for row in mature:
+        complete_by_world.setdefault(row["world_id"], {}).setdefault(row["arm_id"], 0)
+        complete_by_world[row["world_id"]][row["arm_id"]] += int(
+            row["direct_thesis_accuracy"]["value"] or 0
+        )
+    additional_theses = {
+        arm: mean(
+            values.get("adaptive", 0) - values.get(arm, 0)
+            for values in complete_by_world.values()
+        ) for arm in primary_baselines
+    }
+    criterion_1 = all(
+        (thesis_deltas[arm] is not None and thesis_deltas[arm] >= 0.20)
+        or additional_theses[arm] >= 1.0
+        for arm in primary_baselines
+    )
+    baseline_f1 = [quality[arm]["atomic_claim_f1"] for arm in P7_ARMS if arm != "adaptive"]
+    criterion_2 = (
+        adaptive["atomic_claim_f1"] is not None
+        and all(value is not None for value in baseline_f1)
+        and adaptive["atomic_claim_f1"] - max(baseline_f1) >= 0.05
+    )
+    criterion_3 = all(interval["lower_95"] > 0 for interval in intervals)
+    a_correction = correction_by_arm["adaptive"]
+    f_correction = correction_by_arm["frozen"]
+    criterion_4 = (
+        a_correction["latency"] is not None and f_correction["latency"] is not None
+        and a_correction["stale"] is not None and f_correction["stale"] is not None
+        and a_correction["latency"] <= f_correction["latency"]
+        and a_correction["stale"] < f_correction["stale"]
+    )
+    safety_fields = ("boundary_entity_safety", "relation_joint_precision")
+    criterion_5 = global_noise_truth == 0 and all(
+        adaptive[field] is not None
+        and all(
+            quality[arm][field] is not None
+            and adaptive[field] >= quality[arm][field]
+            for arm in P7_ARMS if arm != "adaptive"
+        ) for field in safety_fields
+    )
+    criterion_6 = (
+        adaptive["external_outcome_calibration_ece"] is not None
+        and all(
+            quality[arm]["external_outcome_calibration_ece"] is not None
+            and adaptive["external_outcome_calibration_ece"]
+            <= quality[arm]["external_outcome_calibration_ece"] + 0.02
+            for arm in P7_ARMS if arm != "adaptive"
+        )
+    )
+    mature_cost = {
+        arm: {
+            "tokens": sum(row["input_tokens"] + row["output_tokens"] for row in economics
+                          if row["arm_id"] == arm and row["stage_batch"] == 12),
+            "wall": sum(row["wall_time_s"] for row in economics
+                        if row["arm_id"] == arm and row["stage_batch"] == 12),
+        } for arm in P7_ARMS
+    }
+    baseline_tokens = min(mature_cost[arm]["tokens"] for arm in primary_baselines)
+    baseline_wall = min(mature_cost[arm]["wall"] for arm in primary_baselines)
+    criterion_7 = (
+        baseline_tokens > 0 and baseline_wall > 0
+        and mature_cost["adaptive"]["tokens"] <= 1.5 * baseline_tokens
+        and mature_cost["adaptive"]["wall"] <= 1.5 * baseline_wall
+    )
+    criteria = {
+        "20.7.1_thesis_lift": criterion_1,
+        "20.7.2_atomic_f1_lift": criterion_2,
+        "20.7.3_paired_ci_excludes_zero": criterion_3,
+        "20.7.4_correction_and_stale": criterion_4,
+        "20.7.5_safety_not_worse": criterion_5,
+        "20.7.6_calibration_not_worse": criterion_6,
+        "20.7.7_economics_within_1_5x": criterion_7,
+    }
+    primary = all(hard_gates.values()) and all(criteria.values())
+    if primary:
+        verdict = "primary_memory_earned"
+    else:
+        obs = quality["observation_only"]
+        no_quality_loss = all(
+            adaptive[field] is not None and obs[field] is not None
+            and adaptive[field] >= obs[field]
+            for field in ("direct_thesis_accuracy", "atomic_claim_f1",
+                          "boundary_entity_safety", "relation_joint_precision")
+        )
+        raw_a = historical_raw["adaptive"]
+        raw_o = historical_raw["observation_only"]
+        raw_reduction = (
+            raw_o["selected"] > 0 and raw_a["selected"] <= 0.75 * raw_o["selected"]
+        )
+        token_reduction = (
+            mature_cost["observation_only"]["tokens"] > 0
+            and mature_cost["adaptive"]["tokens"]
+            <= 0.75 * mature_cost["observation_only"]["tokens"]
+        )
+        time_reduction = (
+            mature_cost["observation_only"]["wall"] > 0
+            and mature_cost["adaptive"]["wall"]
+            <= 0.75 * mature_cost["observation_only"]["wall"]
+        )
+        if all(hard_gates.values()) and no_quality_loss and (
+            raw_reduction or token_reduction or time_reduction
+        ):
+            verdict = "limited_compression_value"
+        elif any(value is None for metrics in quality.values() for value in metrics.values()):
+            verdict = "insufficient_evidence"
+        else:
+            verdict = "not_earned"
+    return verdict, {
+        "criteria": criteria, "quality_by_arm": quality,
+        "thesis_deltas": thesis_deltas, "additional_complete_theses": additional_theses,
+        "correction_by_arm": correction_by_arm, "mature_cost_by_arm": mature_cost,
+    }
+
+
 def evaluate_frozen_worlds(
     *, execution_artifact: dict[str, Any], sealed_worlds: dict[str, P6Population],
 ) -> dict[str, Any]:
@@ -219,12 +427,14 @@ def evaluate_frozen_worlds(
             "incomplete or underpowered execution cannot receive scores",
         )
     endpoints = []
+    global_noise_truth = 0
     historical_raw = {arm: {"selected": 0, "unjustified": 0} for arm in P7_ARMS}
     for world_result in world_results:
         world_id = world_result["world_id"]
         population = sealed_worlds.get(world_id)
         if population is None or population.population_digest != world_result["population_digest"]:
             raise InvariantViolation("P7_POSTFREEZE_WORLD_ORACLE_MISMATCH", "world digest mismatch")
+        semantic_oracle = build_p7_semantic_oracles(population)
         for arm_result in world_result["arm_results"]:
             arm = arm_result["arm"]
             tenant_id = UUID(arm_result["tenant_id"])
@@ -238,8 +448,56 @@ def evaluate_frozen_worlds(
                 for storyline, _ in population.thesis_by_storyline:
                     score = _score_storyline(
                         storyline=storyline, stage=stage, snapshot=snapshot, maps=maps,
+                        semantic_oracle=semantic_oracle,
                     )
                     endpoints.append({"world_id": world_id, "arm_id": arm, **score})
+                if stage == 12:
+                    calibration_snapshot = (waves.get(10) or {}).get("stage_snapshot")
+                    if calibration_snapshot is None:
+                        raise InvariantViolation(
+                            "P7_POSTFREEZE_CALIBRATION_FREEZE_MISSING",
+                            "batch-10 confidence freeze is required before outcome signals",
+                        )
+                    for endpoint in endpoints[-4:]:
+                        storyline = endpoint["storyline_id"]
+                        claim_oracle = next(
+                            item for item in semantic_oracle.claims
+                            if item.storyline_id == storyline
+                        )
+                        outcome = next(
+                            item for item in semantic_oracle.outcomes
+                            if item.storyline_id == storyline
+                        )
+                        eligible = [
+                            model for model in calibration_snapshot.get("accepted_models") or ()
+                            if entails_structured_claim(model, claim_oracle)
+                        ]
+                        confidences = [float(model.get("confidence") or 0) for model in eligible]
+                        label = float(outcome.outcome_label)
+                        endpoint["external_outcome_calibration_ece"] = {
+                            "value": (
+                                mean(abs(value - label) for value in confidences)
+                                if confidences else None
+                            ),
+                            "measured": bool(confidences),
+                            "denominator": len(confidences),
+                            "freeze_after_batch": outcome.freeze_after_batch,
+                        }
+                        endpoint["external_outcome_brier"] = {
+                            "value": (
+                                mean((value - label) ** 2 for value in confidences)
+                                if confidences else None
+                            ),
+                            "measured": bool(confidences),
+                            "denominator": len(confidences),
+                        }
+                    for model in snapshot.get("accepted_models") or ():
+                        evidence = _model_evidence(model, maps, through_stage=12)
+                        if evidence and all(
+                            item.role in {"noise", "high_similarity_distractor"}
+                            for item in evidence
+                        ):
+                            global_noise_truth += 1
                 if stage == 12:
                     for decision in snapshot.get("context_decisions") or ():
                         if decision.get("context_item_kind") != "observation" or not decision.get("selected"):
@@ -277,6 +535,9 @@ def evaluate_frozen_worlds(
             "within_two_batches": latency is not None and latency <= 2,
         })
     arm_economics = []
+    lifecycle_by_arm: dict[str, list[tuple[float, float]]] = {
+        arm: [] for arm in P7_ARMS
+    }
     for world in world_results:
         for arm in world["arm_results"]:
             for stage in STAGES:
@@ -293,6 +554,23 @@ def evaluate_frozen_worlds(
                     "physical_attempts": int(ledger.get("physical_attempt_count") or 0),
                     "wall_time_s": sum(float(wave.get("elapsed_s") or 0) for wave in waves),
                 })
+            lifecycle_batches = [
+                int(wave["batch_number"])
+                for wave in arm["waves"]
+                if int(wave["batch_number"]) >= 7
+                and wave.get("lifecycle_receipts")
+            ]
+            if lifecycle_batches:
+                latency = float(min(lifecycle_batches) - 7)
+                lifecycle_by_arm[arm["arm"]].append((latency, latency))
+    correction_by_arm = {
+        arm: {
+            "latency": mean(value[0] for value in values) if values else None,
+            "stale": mean(value[1] for value in values) if values else None,
+            "denominator": len(values),
+        }
+        for arm, values in lifecycle_by_arm.items()
+    }
     gates = {
         "all_failures_preserved": all(
             wave.get("think_run_id") for world in world_results
@@ -323,8 +601,18 @@ def evaluate_frozen_worlds(
             for world in world_results for arm in world["arm_results"]
             if arm["arm"] == "memory_hidden" for wave in arm["waves"]
         ),
-        "semantic_outcome_calibration": False,
+        "semantic_outcome_calibration": all(
+            row.get("external_outcome_calibration_ece", {}).get("measured")
+            for row in endpoints if row["stage_batch"] == 12
+        ),
+        "zero_false_truth_from_noise": global_noise_truth == 0,
     }
+    verdict, decision = _strategic_decision(
+        endpoints=endpoints, intervals=intervals,
+        correction_by_arm=correction_by_arm,
+        economics=arm_economics, historical_raw=historical_raw,
+        hard_gates=gates, global_noise_truth=global_noise_truth,
+    )
     continue_worlds = any(interval["lower_95"] <= 0 <= interval["upper_95"] for interval in intervals)
     payload = {
         "schema_version": "epistemic-repair-p7-postfreeze-oracle-v1",
@@ -332,19 +620,21 @@ def evaluate_frozen_worlds(
         "world_count": len(world_results), "endpoint_denominator": expected_endpoints,
         "endpoints": endpoints, "paired_bootstrap_intervals": intervals,
         "historical_raw_use": historical_raw,
+        "global_false_truth_from_noise": global_noise_truth,
         "correction_and_stale_exposure": corruption_metrics,
         "tokens_calls_and_wall_time": arm_economics,
         "hard_gates": gates,
+        "memory_earns_decision": decision,
         "stopping_rule": {
             "continue": continue_worlds and len(world_results) < P7_MAX_WORLD_COUNT,
             "maximum_worlds": P7_MAX_WORLD_COUNT,
             "reason": "paired facet interval crosses zero" if continue_worlds else "paired intervals resolved",
         },
-        "strategic_verdict": "insufficient_evidence" if not all(gates.values()) else "primary_memory_earned",
-        "phase_exit_ready": all(gates.values()),
+        "strategic_verdict": verdict,
+        "phase_exit_ready": all(gates.values()) and verdict != "insufficient_evidence",
         "proof_boundary": (
             "Claim, lifecycle-phase, contamination, scope, and relation credit use exact sealed evidence IDs.",
-            "External-outcome ECE remains unmeasured because P6 has no independent binary outcome label.",
+            "Pre-outcome batch-10 confidence is scored against sealed batch-11 external outcome labels.",
         ),
     }
     return {**payload, "content_digest": canonical_sha256(payload)}
