@@ -16,7 +16,9 @@ JsonObject = Mapping[str, Any]
 _REQUIRED_SOURCES = frozenset({"slack", "email", "jira", "document_meeting"})
 
 
-def evaluate_normalized_source_equivalence(rows: Sequence[JsonObject]) -> dict[str, Any]:
+def evaluate_normalized_source_equivalence(
+    rows: Sequence[JsonObject], *, require_relation_exposure: bool = False
+) -> dict[str, Any]:
     normalized = [_normalize(row) for row in rows]
     by_case: dict[str, list[dict[str, Any]]] = {}
     for row in normalized:
@@ -31,6 +33,9 @@ def evaluate_normalized_source_equivalence(rows: Sequence[JsonObject]) -> dict[s
             "entity_outcome_similarity": _pairwise_similarity(cases, "entity_refs"),
             "model_outcome_similarity": _pairwise_similarity(cases, "model_signatures"),
             "relation_outcome_similarity": _pairwise_similarity(cases, "relation_signatures"),
+            "relation_outcome_exposure": _mean(
+                bool(row["relation_signatures"]) for row in cases
+            ),
             "source_authority_fidelity": _mean(
                 bool(row["expected_authority_ref"])
                 and row["authority_ref"] == row["expected_authority_ref"]
@@ -60,6 +65,7 @@ def evaluate_normalized_source_equivalence(rows: Sequence[JsonObject]) -> dict[s
         for key in (
             "source_coverage", "entity_outcome_similarity",
             "model_outcome_similarity", "relation_outcome_similarity",
+            "relation_outcome_exposure",
             "source_authority_fidelity", "source_coordinate_fidelity",
             "conversational_boundary_fidelity", "batch_integrity",
             "learning_outcome_lineage",
@@ -77,16 +83,26 @@ def evaluate_normalized_source_equivalence(rows: Sequence[JsonObject]) -> dict[s
             "conversational_boundary_fidelity",
         )
     )
-    continuous_score = (
+    observed_quality_score = (
         0.50 * semantic_equivalence
         + 0.25 * provenance_fidelity
         + 0.10 * measurements["source_coverage"]
         + 0.05 * measurements["batch_integrity"]
         + 0.10 * measurements["learning_outcome_lineage"]
     )
+    semantic_outcome_coverage = _mean((
+        1.0,
+        1.0,
+        measurements["relation_outcome_exposure"] if require_relation_exposure else 1.0,
+    ))
+    continuous_score = observed_quality_score * semantic_outcome_coverage
     checks = {
         "all_source_families_covered": measurements["source_coverage"] == 1.0,
         "semantic_outcomes_consistent": semantic_equivalence >= 0.90,
+        "relation_outcomes_exposed": (
+            measurements["relation_outcome_exposure"] == 1.0
+            if require_relation_exposure else True
+        ),
         "source_authority_preserved": measurements["source_authority_fidelity"] == 1.0,
         "source_coordinates_preserved": measurements["source_coordinate_fidelity"] == 1.0,
         "conversational_boundaries_preserved": (
@@ -100,10 +116,17 @@ def evaluate_normalized_source_equivalence(rows: Sequence[JsonObject]) -> dict[s
         "required_sources": sorted(_REQUIRED_SOURCES),
         "population": {"cases": len(case_reports), "source_batches": len(normalized)},
         "measurements": {**measurements, "semantic_equivalence": semantic_equivalence,
-                         "provenance_fidelity": provenance_fidelity},
+                         "provenance_fidelity": provenance_fidelity,
+                         "semantic_outcome_coverage": semantic_outcome_coverage},
+        "observed_quality_score": observed_quality_score,
         "continuous_score": continuous_score,
         "checks": checks,
         "verdict": "meets_policy" if all(checks.values()) else "below_policy",
+        "proof_gaps": (
+            [] if measurements["relation_outcome_exposure"] == 1.0 else [
+                "relation_outcome_population_unexposed"
+            ]
+        ),
         "cases": case_reports,
     }
 

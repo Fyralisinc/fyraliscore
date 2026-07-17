@@ -81,6 +81,7 @@ def test_equivalent_persisted_source_batches_preserve_semantics_and_provenance()
     assert report["verdict"] == "meets_policy"
     assert report["population"] == {"cases": 2, "source_batches": 8}
     assert report["continuous_score"] == 1.0
+    assert report["measurements"]["relation_outcome_exposure"] == 1.0
     assert all(value == 1.0 for value in report["measurements"].values())
     assert all(report["checks"].values())
 
