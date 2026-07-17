@@ -1,0 +1,196 @@
+{
+  "attempt_history": [
+    {
+      "cache_tokens": 0,
+      "cost_usd": 0,
+      "ended_at": "2026-07-17T14:29:17.202091+00:00",
+      "error_class": "timeout",
+      "error_message": "injected deterministic timeout",
+      "input_tokens": 0,
+      "logical_call_id": "c3788d67-17c4-47fb-b7e5-4dbdbb223cc5",
+      "model": "sealed-p1-script-v1",
+      "ordinal": 1,
+      "outcome": "timeout",
+      "output_tokens": 0,
+      "parent_attempt_id": null,
+      "physical_attempt_id": "27c9e2db-03b6-4d1e-bbfa-84bc7c16174c",
+      "pricing_version": "fyralis-model-pricing-v1",
+      "provider": "deterministic-test",
+      "purpose": "main_reasoning",
+      "retry_scheduled": true,
+      "started_at": "2026-07-17T14:29:17.202061+00:00",
+      "usage_exactness": "unavailable"
+    },
+    {
+      "cache_tokens": 0,
+      "cost_usd": 0,
+      "ended_at": "2026-07-17T14:29:17.202408+00:00",
+      "error_class": null,
+      "error_message": null,
+      "input_tokens": 0,
+      "logical_call_id": "c3788d67-17c4-47fb-b7e5-4dbdbb223cc5",
+      "model": "sealed-p1-script-v1",
+      "ordinal": 2,
+      "outcome": "success",
+      "output_tokens": 0,
+      "parent_attempt_id": "27c9e2db-03b6-4d1e-bbfa-84bc7c16174c",
+      "physical_attempt_id": "a57b4bfd-d6ae-480e-8794-8b18b854614d",
+      "pricing_version": "fyralis-model-pricing-v1",
+      "provider": "deterministic-test",
+      "purpose": "main_reasoning",
+      "retry_scheduled": false,
+      "started_at": "2026-07-17T14:29:17.202109+00:00",
+      "usage_exactness": "unavailable"
+    },
+    {
+      "cache_tokens": 0,
+      "cost_usd": 0,
+      "ended_at": "2026-07-17T14:29:17.203149+00:00",
+      "error_class": "parse_error",
+      "error_message": "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+      "input_tokens": 0,
+      "logical_call_id": "4663ed26-5b7a-4085-8179-5838b7a150d6",
+      "model": "sealed-p1-script-v1",
+      "ordinal": 1,
+      "outcome": "parse_failure",
+      "output_tokens": 0,
+      "parent_attempt_id": null,
+      "physical_attempt_id": "061f25e5-ccfa-450a-8d80-312694c394c5",
+      "pricing_version": "fyralis-model-pricing-v1",
+      "provider": "deterministic-test",
+      "purpose": "main_reasoning",
+      "retry_scheduled": true,
+      "started_at": "2026-07-17T14:29:17.203109+00:00",
+      "usage_exactness": "unavailable"
+    },
+    {
+      "cache_tokens": 0,
+      "cost_usd": 0,
+      "ended_at": "2026-07-17T14:29:17.203175+00:00",
+      "error_class": null,
+      "error_message": null,
+      "input_tokens": 0,
+      "logical_call_id": "4663ed26-5b7a-4085-8179-5838b7a150d6",
+      "model": "sealed-p1-script-v1",
+      "ordinal": 2,
+      "outcome": "success",
+      "output_tokens": 0,
+      "parent_attempt_id": "061f25e5-ccfa-450a-8d80-312694c394c5",
+      "physical_attempt_id": "94e4c4de-c8aa-41e1-b2ca-94855a5bb40a",
+      "pricing_version": "fyralis-model-pricing-v1",
+      "provider": "deterministic-test",
+      "purpose": "parse_repair",
+      "retry_scheduled": false,
+      "started_at": "2026-07-17T14:29:17.203159+00:00",
+      "usage_exactness": "unavailable"
+    }
+  ],
+  "batches": [
+    {
+      "attempt_outcomes": [
+        "timeout",
+        "success"
+      ],
+      "batch_id": "p1-a",
+      "logical_call_id": "c3788d67-17c4-47fb-b7e5-4dbdbb223cc5",
+      "physical_attempt_count": 2,
+      "referenced_signal_count": 6,
+      "signal_count": 10,
+      "timing_reconciled": true,
+      "timing_relative_error": 1.7806303522456397e-16,
+      "wall_ms": 1.247
+    },
+    {
+      "attempt_outcomes": [
+        "parse_failure",
+        "success"
+      ],
+      "batch_id": "p1-b",
+      "logical_call_id": "4663ed26-5b7a-4085-8179-5838b7a150d6",
+      "physical_attempt_count": 2,
+      "referenced_signal_count": 6,
+      "signal_count": 10,
+      "timing_reconciled": true,
+      "timing_relative_error": 0.0,
+      "wall_ms": 0.298
+    }
+  ],
+  "cost_reconciliation": {
+    "actual_cost_usd": "0",
+    "basis": "estimated_zero_for_deterministic_transport; never_actual",
+    "cost_coverage": 1.0,
+    "estimated_cost_usd": "0",
+    "failed_attempt_count": 2,
+    "reconciled": true,
+    "token_coverage": 1.0
+  },
+  "counts": {
+    "cost_rows": 4,
+    "counts_reconciled": true,
+    "logical_calls": 2,
+    "physical_attempts": 4,
+    "think_runs": 2
+  },
+  "deterministic_passed": true,
+  "deterministic_success_criteria": {
+    "at_most_three_attempts_per_operation": true,
+    "attempt_call_run_cost_counts_reconcile": true,
+    "background_call_cap_is_explicit_and_non_negative": true,
+    "context_digest_coverage": true,
+    "estimated_cost_never_labeled_actual": true,
+    "every_attempt_has_exactly_one_receipt": true,
+    "exclusive_timing_within_one_percent": true,
+    "failed_attempts_in_latency_and_uncertainty": true,
+    "operations_within_240_second_deadline": true,
+    "purpose_outcome_cost_basis_coverage": true,
+    "question_planning_rate_at_most_25_percent": true
+  },
+  "execution_mode": "deterministic_no_real_provider",
+  "generated_at": "2026-07-17T14:29:17.203208+00:00",
+  "hard_gates": {
+    "HG-01_benchmark_blindness": true,
+    "HG-13_observability_integrity": true
+  },
+  "hook_scan": {
+    "findings": [],
+    "hook_blind": true,
+    "reachable_module_count": 238,
+    "registry_version": "fyralis-hook-blindness-registry-v1"
+  },
+  "input_contract": {
+    "batch_count": 2,
+    "individual_signal_calls": 0,
+    "signals_per_batch": [
+      10,
+      10
+    ]
+  },
+  "latency": {
+    "deterministic_fault_injected_batch_median_ms": 0.7725000000000001,
+    "deterministic_fault_injected_batch_p95_ms": 1.247,
+    "deterministic_max_to_median_ratio": 1.6142394822006472,
+    "failed_attempts_included": true
+  },
+  "passed": true,
+  "phase_exit_ready": false,
+  "policy": {
+    "background_call_cap": 0,
+    "max_physical_attempts_per_call": 3,
+    "question_planning_call_rate": 0.0,
+    "whole_operation_deadline_s": 240
+  },
+  "population_digest": "52c811bb5ce338b1926b04ea9a2a12330f28e283da11074c1251042494c0df63",
+  "population_version": "p1-observability-population-v1",
+  "proof_boundary": [
+    "No real provider was called.",
+    "This proves P1 deterministic observability, not semantic company-model quality.",
+    "Database receipt durability is evaluated separately."
+  ],
+  "run_wall_ms": 2.307,
+  "schema_version": "epistemic-repair-p1-observability-v1",
+  "unverified_phase_criteria": [
+    "clean_batch_t1_p95_and_three_times_median (both deterministic batches contain injected faults)",
+    "durable PostgreSQL receipt write and recovery behavior",
+    "bounded clean real-provider telemetry smoke"
+  ]
+}
