@@ -241,18 +241,20 @@ class CompanyLearningBarrierService:
         visible_model_ids = {row["truth_version_id"] for row in visible_models}
         if visible_model_ids != set(model_versions):
             raise InvariantViolation("BARRIER_MODEL_VISIBILITY", "expected Models are not current")
-        visible_relations = await tx.fetch(
-            "SELECT truth_relation_version_id FROM accepted_current_relations WHERE tenant_id=$1 AND truth_relation_version_id=ANY($2::uuid[])",
-            tenant_id, list(relation_versions),
-        )
-        if {row["truth_relation_version_id"] for row in visible_relations} != set(relation_versions):
-            raise InvariantViolation("BARRIER_RELATION_VISIBILITY", "expected relations are not current")
-        stale = await tx.fetchval(
-            "SELECT count(*) FROM accepted_current_models WHERE tenant_id=$1 AND truth_version_id=ANY($2::uuid[])",
-            tenant_id, list(invalidated_versions),
-        )
-        if stale:
-            raise InvariantViolation("BARRIER_STALE_VISIBILITY", "invalidated Model remains current")
+        if relation_versions:
+            visible_relations = await tx.fetch(
+                "SELECT truth_relation_version_id FROM accepted_current_relations WHERE tenant_id=$1 AND truth_relation_version_id=ANY($2::uuid[])",
+                tenant_id, list(relation_versions),
+            )
+            if {row["truth_relation_version_id"] for row in visible_relations} != set(relation_versions):
+                raise InvariantViolation("BARRIER_RELATION_VISIBILITY", "expected relations are not current")
+        if invalidated_versions:
+            stale = await tx.fetchval(
+                "SELECT count(*) FROM accepted_current_models WHERE tenant_id=$1 AND truth_version_id=ANY($2::uuid[])",
+                tenant_id, list(invalidated_versions),
+            )
+            if stale:
+                raise InvariantViolation("BARRIER_STALE_VISIBILITY", "invalidated Model remains current")
 
     @staticmethod
     async def _find(*, tx: Any, tenant_id: UUID, batch_id: str) -> BarrierReceipt | None:
