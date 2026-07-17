@@ -16,6 +16,8 @@ from uuid import UUID
 
 import asyncpg
 
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
+
 
 @dataclass(frozen=True)
 class DynamicSignal:
@@ -182,9 +184,9 @@ async def _detect_stale_model_dynamics(
     reference_time: datetime,
 ) -> list[DynamicSignal]:
     rows = await conn.fetch(
-        """
+        f"""
         SELECT id, "natural", activation, last_retrieved_at, created_at
-        FROM accepted_current_models
+        FROM {ACCEPTED_MODEL_ROWS_SQL} AS accepted_model
         WHERE tenant_id = $1
           AND id = ANY($2::uuid[])
           AND status = 'active'

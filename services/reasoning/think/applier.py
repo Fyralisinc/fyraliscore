@@ -2963,15 +2963,20 @@ def _with_claim_evidence_defaults(
         return op
     entry = dict(op.entry)
     prop = dict(entry.get("proposition") or {})
+    # Never promote a transport batch into evidence for every claim. Prefer the
+    # IDs explicitly attached to this exact claim by reasoning/compilation.
+    # Trigger fallback is valid only for a genuinely single-observation run.
     event_ids = _merge_supporting_event_ids(
         entry.get("supporting_event_ids"),
         prop.get("evidence_event_ids"),
-        entry.get("born_from_event_id"),
-        trigger_cause_event_id,
-        trigger_supporting_event_ids,
     )
+    if not event_ids and len(set(trigger_supporting_event_ids)) == 1:
+        event_ids = _merge_supporting_event_ids(trigger_supporting_event_ids)
     if not event_ids:
         return op
+    # Compiled reasoning may use a synthetic event id as provenance for
+    # ``born_from_event_id``.  That is not observation evidence.  Admission is
+    # grounded only in the explicit claim-local lists above.
     entry.setdefault("born_from_event_id", event_ids[0])
     entry["supporting_event_ids"] = event_ids
     if prop and (
@@ -4284,10 +4289,12 @@ async def _apply_claim_insert(
         cause_event_id=cause_event_id,
         trigger_supporting_event_ids=trigger_supporting_event_ids,
     )
-    row = await models_repo.insert(
-        proposed,
-        conn=conn,
-        apply_confidence_calibration=False,
+    from .truth_admission import admit_validated_think_claim
+
+    evidence_ids = tuple(dict.fromkeys(proposed.supporting_event_ids))
+    row = await admit_validated_think_claim(
+        conn, proposed=proposed, evidence_observation_ids=evidence_ids,
+        models_repo=models_repo,
     )
     prediction_row_id = await materialize_model_prediction(conn, model=row)
     return {

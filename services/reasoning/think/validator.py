@@ -1386,6 +1386,60 @@ def _raise_if_every_op_failed(
 # ---------------------------------------------------------------------
 
 
+async def _validate_claim_local_observation_evidence(
+    entry: dict[str, Any],
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID | None,
+) -> None:
+    """Reject claim evidence that is not a same-tenant Observation.
+
+    ``born_from_event_id`` is intentionally excluded: compiled reasoning uses
+    it as a pending-model provenance placeholder, so treating it as evidence
+    would convert an internal UUID into a false citation.
+    """
+
+    proposition = entry.get("proposition")
+    proposition = proposition if isinstance(proposition, dict) else {}
+    raw_ids = [
+        *list(entry.get("supporting_event_ids") or []),
+        *list(proposition.get("evidence_event_ids") or []),
+    ]
+    evidence_ids: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in raw_ids:
+        try:
+            event_id = value if isinstance(value, UUID) else UUID(str(value))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                f"claim_op insert cites non-UUID observation evidence {value!r}"
+            ) from exc
+        if event_id not in seen:
+            seen.add(event_id)
+            evidence_ids.append(event_id)
+    if not evidence_ids:
+        return
+    if tenant_id is None:
+        raise ValidationError(
+            "claim_op insert evidence cannot be authorized without tenant_id"
+        )
+    found = await conn.fetch(
+        """
+        SELECT id FROM observations
+        WHERE tenant_id=$1 AND id=ANY($2::uuid[])
+        """,
+        tenant_id,
+        evidence_ids,
+    )
+    found_ids = {row["id"] for row in found}
+    missing = sorted((str(value) for value in set(evidence_ids) - found_ids))
+    if missing:
+        raise ValidationError(
+            "claim_op insert cites missing or cross-tenant observation "
+            f"evidence: {missing[:8]}"
+        )
+
+
 async def _validate_claim_op(
     op: ClaimOp,
     retrieval_result: Any,
@@ -1458,6 +1512,9 @@ async def _validate_claim_op(
         _mark_empty_situation_members_pending(entry)
         _normalize_hypothesis_assertion_alias(entry)
         validate_proposition(entry.get("proposition"))
+        await _validate_claim_local_observation_evidence(
+            entry, conn, tenant_id=tenant_id,
+        )
         # confidence_at_assertion — if the LLM doesn't supply one, use
         # the pre-calibration raw confidence (clipped). This becomes the
         # immutable "what Think originally said" value.
