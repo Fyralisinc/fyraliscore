@@ -191,6 +191,14 @@ def test_locator_preserves_repeated_unicode_and_possessive_source_coordinates() 
     assert locate_explicit_surface_spans(text, "Acme's") == ((23, 29), (46, 52))
 
 
+def test_question_auxiliary_does_not_swallow_following_entity_acronym() -> None:
+    text = "Is NBI blocked?"
+
+    assert "Is NBI" not in extract_bootstrap_mention_opportunities(text)
+    assert "NBI" in extract_bootstrap_mention_opportunities(text)
+    assert locate_explicit_surface_spans(text, "NBI") == ((3, 6),)
+
+
 def test_identifiers_roles_and_people_are_separate_maximal_surfaces() -> None:
     text = "Decision D-17 moved from VP Sales Jordan Lee to Team Aurora."
 
