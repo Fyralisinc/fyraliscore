@@ -22,15 +22,16 @@
 | Phase/package | State | Evidence |
 | --- | --- | --- |
 | P0 preregistration and baseline characterization | Complete | `779bfd10`, `420fb4f4` |
-| P1-A/P1-F hook quarantine and blind scan | Implemented; final integrated validation pending | focused quarantine tests |
-| P1-B/P1-E receipt schema, service persistence, cost basis | In progress | `27f320fc`; provider emission not yet committed |
-| P1-C unified retry ownership | In progress | deterministic compatibility validation running |
+| P1-A/P1-F hook quarantine and blind scan | Deterministic implementation complete | `16d0f335`, `7256e13b` |
+| P1-B/P1-E receipt schema, emission, runtime persistence, cost basis | Deterministic implementation complete; PostgreSQL proof pending | `27f320fc`, `16d0f335`, `ddf12cc8` |
+| P1-C unified retry ownership | Deterministic implementation complete | `16d0f335` |
 | P1-D timing/cost reconciliation evaluator | Complete as deterministic evaluator | `353b1c24` |
-| P1 two-batch deterministic exit run | Not started | blocked on integrated P1 validation |
+| P1 two-batch deterministic exit run | Population sealed; execution/report pending | `b8d1da2f` |
 
-The runtime is not yet entitled to claim complete wire-attempt observability:
-SDK retry suppression, one shared retry budget, Think-run persistence wiring,
-and deterministic whole-flow reconciliation must all pass first.
+The runtime is not yet entitled to claim complete end-to-end observability. The
+remaining proof boundary is the two-batch whole-flow reconciliation plus a real
+PostgreSQL migration/write check. Codex subprocess transport has no lower SDK
+retry knob, so its receipt completeness is at wrapper-invocation granularity.
 
 ## 1. Purpose
 

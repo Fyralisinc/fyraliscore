@@ -526,6 +526,25 @@ reconciles non-overlapping exclusive leaf spans against logical wall time. It
 reports gap, overlap, error, token coverage, cost coverage, and actual-versus-
 estimated deltas continuously, with the hard timing threshold fixed at 1%.
 
+### 2026-07-17 — LOG-012 — Durable receipts cross a post-commit boundary
+
+**Type:** observed
+
+Think can now collect provider receipts task-locally and persist them with
+tenant, trigger, run, and batch coordinates. In the current orchestration,
+receipt persistence occurs after the domain mutation/finalization path. A
+ledger failure therefore fails closed to the caller but may happen after domain
+effects have committed.
+
+**Evidence:** `services/reasoning/think/reason.py`;
+`tests/epistemic_repair/p1/test_think_receipt_runtime.py`.
+
+**Effect:** deterministic tests prove isolation, returned-failure retention, and
+fail-closed persistence behavior. P1 still needs a real PostgreSQL transaction
+check and a retry/idempotency test for “domain effects committed, ledger write
+failed.” Moving receipts into the mutation transaction is not assumed safe
+without first defining whether provider evidence must survive domain rollback.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
