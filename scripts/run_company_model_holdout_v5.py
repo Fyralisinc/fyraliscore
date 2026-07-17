@@ -10,6 +10,11 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import asyncpg
 
@@ -37,6 +42,8 @@ async def run_once(*, dsn: str, output: Path, receipt: Path) -> dict:
         "run_attempts": 1, "manifest_digest": MANIFEST_DIGEST_V5,
         "corpus_digest": CORPUS_DIGEST_V5, "producer_version": PRODUCER_VERSION,
         "output_path": str(output.resolve()),
+        "launcher_bootstrap_failures_before_experiment": 1,
+        "launcher_bootstrap_failure": "ModuleNotFoundError:scripts",
     }
     try:
         bootstrap = await asyncpg.connect(dsn)
