@@ -32,6 +32,10 @@ from lib.shared.ids import uuid7
 from lib.shared.types import ModelRow, ObservationRow
 from services.domain.models.repo import _SELECT_COLS_SQL as _MODEL_SELECT_COLS_SQL
 from services.domain.models.repo import _hydrate_row as _hydrate_model_row
+from services.domain.models.read_shapes import (
+    ACCEPTED_MODEL_ROWS_SQL,
+    ACCEPTED_PROJECTED_MODEL_EDGES_SQL,
+)
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.retrieval.pathways import PathwayResult
 from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
@@ -69,6 +73,8 @@ from services.reasoning.synthesis.operational_facets import infer_operational_qu
 
 _log = structlog.get_logger(__name__)
 _MAX_LEXICAL_DISCOVERY_PATTERNS = 12
+_ACCEPTED_MODEL_ROWS_SQL = ACCEPTED_MODEL_ROWS_SQL
+_ACCEPTED_PROJECTED_MODEL_EDGES_SQL = ACCEPTED_PROJECTED_MODEL_EDGES_SQL
 _LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS = 1500
 _SPARSE_STRONG_SINGLE_MATCH_MAX_DF = 32
 _ANSWERABILITY_TERM_DF_PROBE_CAP = 1024
@@ -1987,7 +1993,7 @@ async def _load_models(
     rows = await conn.fetch(
         f"""
         SELECT {_MODEL_SELECT_COLS_SQL}
-        FROM models
+        FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
         WHERE tenant_id = $1
           AND status = 'active'
           AND id = ANY($2::uuid[])
@@ -2119,10 +2125,10 @@ async def _load_candidate_edges(
     if not seed_model_ids:
         return []
     model_edge_rows = await conn.fetch(
-        """
+        f"""
         SELECT id, source_model_id, target_model_id, edge_kind,
-               weight, created_at
-        FROM model_edges
+               weight, created_at, 'accepted_projection'::text AS _truth_class
+        FROM {_ACCEPTED_PROJECTED_MODEL_EDGES_SQL} AS model_edges
         WHERE tenant_id = $1
           AND status = 'active'
           AND (
@@ -2141,11 +2147,11 @@ async def _load_candidate_edges(
         SELECT id, source_model_id, target_model_id, edge_kind,
                COALESCE(confidence_score, judgment_leverage_score, 0.55)::float
                  AS weight,
-               created_at
+               created_at, 'candidate'::text AS _truth_class
         FROM relationship_candidates
         WHERE tenant_id = $1
           AND candidate_kind = 'edge'
-          AND review_status IN ('candidate', 'needs_review', 'accepted')
+          AND review_status IN ('candidate', 'needs_review')
           AND (expires_at IS NULL OR expires_at > now())
           AND source_model_id IS NOT NULL
           AND target_model_id IS NOT NULL
@@ -2173,11 +2179,11 @@ async def _load_candidate_edges(
                ) AS edge_kind,
                COALESCE(confidence_score, judgment_leverage_score, 0.55)::float
                  AS weight,
-               created_at
+               created_at, 'edge_type_candidate'::text AS _truth_class
         FROM relationship_candidates
         WHERE tenant_id = $1
           AND candidate_kind = 'edge_type'
-          AND review_status IN ('candidate', 'needs_review', 'accepted')
+          AND review_status IN ('candidate', 'needs_review')
           AND (expires_at IS NULL OR expires_at > now())
           AND cardinality(member_model_ids) >= 2
           AND member_model_ids && $2::uuid[]
@@ -2676,7 +2682,7 @@ async def _fetch_search_document_matches(
         per_term_limit = max(1, int(microquery_per_term_limit))
         rows = await _fetch_bounded_lookup_rows(
             conn,
-            """
+            f"""
             WITH patterns AS (
               SELECT pattern, ord
               FROM unnest($3::text[]) WITH ORDINALITY AS p(pattern, ord)
@@ -2706,7 +2712,7 @@ async def _fetch_search_document_matches(
                    m."natural",
                    scored.match_count
             FROM scored
-            JOIN models m
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
               ON m.id = scored.model_id
              AND m.tenant_id = $1
             WHERE m.status = 'active'
@@ -2752,7 +2758,7 @@ async def _fetch_search_document_matches(
                m."natural",
                matching.match_count
         FROM matching
-        JOIN models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = matching.model_id
         WHERE m.tenant_id = $1
           AND m.status = 'active'
@@ -2797,7 +2803,7 @@ async def _fetch_operational_role_matches(
         )
     rows = await _fetch_bounded_lookup_rows(
         conn,
-        """
+        f"""
         WITH seed_roles AS MATERIALIZED (
           SELECT role::text,
                  ord::int AS role_ord
@@ -2823,7 +2829,7 @@ async def _fetch_operational_role_matches(
                    coalesce(lexical.lexical_match_count, 0)::int
                      AS lexical_match_count
             FROM model_operational_role_postings morp
-            JOIN models m
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
               ON m.id = morp.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -2866,7 +2872,7 @@ async def _fetch_operational_role_matches(
                scored.role_match_count,
                scored.lexical_match_count
         FROM scored
-        JOIN models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -2899,13 +2905,13 @@ async def _fetch_operational_role_matches_legacy(
 ) -> list[asyncpg.Record]:
     rows = await _fetch_bounded_lookup_rows(
         conn,
-        """
+        f"""
         SELECT m.id, m."natural",
                role_matches.matched_roles,
                role_matches.role_match_count,
                lexical.lexical_match_count
         FROM model_search_documents msd
-        JOIN models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = msd.model_id
          AND m.tenant_id = msd.tenant_id
         JOIN LATERAL (
@@ -2958,7 +2964,7 @@ async def _fetch_sparse_term_matches(
         return []
     return await _fetch_bounded_lookup_rows(
         conn,
-        """
+        f"""
         WITH query_terms AS MATERIALIZED (
           SELECT term::text,
                  ord::int AS term_ord
@@ -2970,7 +2976,7 @@ async def _fetch_sparse_term_matches(
         ),
         active_models AS MATERIALIZED (
           SELECT greatest(1, count(*)::int)::float8 AS active_model_count
-          FROM models
+          FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
           WHERE tenant_id = $1
             AND status = 'active'
         ),
@@ -3026,7 +3032,7 @@ async def _fetch_sparse_term_matches(
                scored.match_count
         FROM scored
         CROSS JOIN query_meta
-        JOIN models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -3235,7 +3241,7 @@ async def _fetch_belief_address_matches(
                scored.matched_primitives,
                $4::boolean AS lexical_terms_present
         FROM scored
-        JOIN models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -3268,7 +3274,7 @@ async def _fetch_belief_address_matches_via_address_fts(
         return []
     return await _fetch_bounded_lookup_rows(
         conn,
-        """
+        f"""
         WITH query AS (
           SELECT to_tsquery('simple', $4) AS tsq
         ),
@@ -3308,7 +3314,7 @@ async def _fetch_belief_address_matches_via_address_fts(
                scored.matched_primitives,
                TRUE AS lexical_terms_present
         FROM scored
-        JOIN models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -3387,7 +3393,7 @@ async def _fetch_belief_address_matches_via_search_documents(
                scored.matched_primitives,
                TRUE AS lexical_terms_present
         FROM scored
-        JOIN models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -3430,7 +3436,7 @@ async def _fetch_answerability_index_matches(
     max_term_df = _answerability_max_term_df(limit)
     return await _fetch_bounded_lookup_rows(
         conn,
-        """
+        f"""
         WITH raw_group_tokens AS MATERIALIZED (
           SELECT g.group_ord::int,
                  token.value::text AS term
@@ -3555,7 +3561,7 @@ async def _fetch_answerability_index_matches(
                  models."natural",
                  models.activation,
                  models.created_at
-          FROM models
+          FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
           WHERE models.id = scored.model_id
             AND models.tenant_id = $1
             AND models.status = 'active'

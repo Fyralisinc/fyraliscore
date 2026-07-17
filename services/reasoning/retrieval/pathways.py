@@ -52,6 +52,8 @@ from lib.shared.types import (
     ResourceRow,
 )
 from services.domain.models.read_shapes import (
+    ACCEPTED_MODEL_ROWS_SQL,
+    ACCEPTED_PROJECTED_MODEL_EDGES_SQL,
     MODEL_ROW_SELECT_COLS,
     MODEL_ROW_SELECT_SQL,
     hydrate_model_row,
@@ -177,6 +179,8 @@ def _append_timing(
     _INNER_DURATION.observe(elapsed_ms / 1000.0, stage=stage)
 
 
+_ACCEPTED_MODEL_ROWS_SQL = ACCEPTED_MODEL_ROWS_SQL
+_ACCEPTED_PROJECTED_MODEL_EDGES_SQL = ACCEPTED_PROJECTED_MODEL_EDGES_SQL
 _MODEL_SELECT_COLS = MODEL_ROW_SELECT_COLS
 _MODEL_SELECT_SQL = MODEL_ROW_SELECT_SQL
 
@@ -274,7 +278,7 @@ async def hydrate_active_models_by_ids(
     rows = await conn.fetch(
         f"""
         SELECT {_MODEL_SELECT_SQL}
-        FROM models
+        FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
         WHERE tenant_id = $1
           AND status = 'active'
           AND id = ANY($2::uuid[])
@@ -898,7 +902,7 @@ async def _fetch_pathway_a_entity_sidecar_rows(
            AND mse.entity_id = seeds.entity_id
           JOIN LATERAL (
             SELECT {_MODEL_SELECT_SQL}
-            FROM models
+            FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
             WHERE models.id = mse.model_id
               AND models.tenant_id = $1
               AND models.status = 'active'
@@ -964,7 +968,7 @@ async def _fetch_pathway_a_actor_sidecar_rows(
            AND msa.actor_id = seeds.actor_id
           JOIN LATERAL (
             SELECT {_MODEL_SELECT_SQL}
-            FROM models
+            FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
             WHERE models.id = msa.model_id
               AND models.tenant_id = $1
               AND models.status = 'active'
@@ -1306,7 +1310,7 @@ async def _append_pathway_a_jsonb_fallback_models(
     stage_started = time.perf_counter()
     rows = await conn.fetch(
         f"""
-        SELECT {_MODEL_SELECT_SQL} FROM models
+        SELECT {_MODEL_SELECT_SQL} FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
         WHERE tenant_id = $1
           AND status = 'active'
           AND ({where})
@@ -2234,7 +2238,7 @@ async def _pathway_b_fetch_ann(
     rows = await conn.fetch(
         f"""
         SELECT {_MODEL_SELECT_SQL}
-        FROM models
+        FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
         WHERE tenant_id = $1
           AND status = 'active'
           AND embedding IS NOT NULL
@@ -2313,7 +2317,7 @@ async def _pathway_b_fetch_ranked_models_by_id(
     rows = await conn.fetch(
         f"""
         SELECT {_MODEL_SELECT_SQL}
-        FROM models
+        FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
         WHERE tenant_id = $1
           AND id = ANY($2::uuid[])
         """,
@@ -2341,7 +2345,7 @@ async def _pathway_b_fetch_scope_exact_fallback(
           SELECT $2::vector AS _query_vector, $3::int AS _k
         )
         SELECT id, activation, embedding
-        FROM models, _params
+        FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models, _params
         WHERE tenant_id = $1
           AND status = 'active'
           AND embedding IS NOT NULL
@@ -2381,12 +2385,12 @@ async def _pathway_b_fetch_exact_fallback(
     notes: dict[str, Any],
 ) -> list[ModelRow]:
     exact_rows = await conn.fetch(
-        """
+        f"""
         WITH _params AS (
           SELECT $2::vector AS _query_vector, $3::int AS _k
         )
         SELECT id, activation, embedding
-        FROM models, _params
+        FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models, _params
         WHERE tenant_id = $1
           AND status = 'active'
           AND embedding IS NOT NULL
@@ -2604,7 +2608,7 @@ async def pathway_b_representation_tags(
               CROSS JOIN LATERAL (
                 SELECT post.model_id
                 FROM model_representation_feature_postings post
-                JOIN models m
+                JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
                   ON m.id = post.model_id
                  AND m.tenant_id = $1
                  AND m.status = 'active'
@@ -2630,7 +2634,7 @@ async def pathway_b_representation_tags(
             SELECT {_MODEL_SELECT_SQL},
                    scored._tag_match_rank
             FROM scored
-            JOIN models
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS models
               ON models.id = scored.model_id
              AND models.tenant_id = $1
             WHERE status = 'active'
@@ -2701,7 +2705,7 @@ async def pathway_b_representation_tags(
               CROSS JOIN LATERAL (
                 SELECT post.model_id
                 FROM model_representation_tag_postings post
-                JOIN models m
+                JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
                   ON m.id = post.model_id
                  AND m.tenant_id = $1
                  AND m.status = 'active'
@@ -2727,7 +2731,7 @@ async def pathway_b_representation_tags(
             SELECT {_MODEL_SELECT_SQL},
                    scored._tag_match_rank
             FROM scored
-            JOIN models
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS models
               ON models.id = scored.model_id
              AND models.tenant_id = $1
             WHERE status = 'active'
@@ -2755,7 +2759,7 @@ async def pathway_b_representation_tags(
                      + CASE WHEN coalesce(proposition->'retrieval_tags', '[]'::jsonb) ?| $2::text[] THEN 1 ELSE 0 END
                      + CASE WHEN coalesce(proposition->'coverage_roles', '[]'::jsonb) ?| $3::text[] THEN 1 ELSE 0 END
                    ) AS _tag_match_rank
-            FROM models
+            FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
             WHERE tenant_id = $1
               AND status = 'active'
               AND (
@@ -2825,7 +2829,7 @@ async def pathway_b_representation_tag_candidates(
         )
         notes["postings_per_tag_limit"] = per_tag_limit
         rows = await conn.fetch(
-            """
+            f"""
             WITH query_tags AS MATERIALIZED (
               SELECT *
               FROM (
@@ -2859,7 +2863,7 @@ async def pathway_b_representation_tag_candidates(
               CROSS JOIN LATERAL (
                 SELECT post.model_id
                 FROM model_representation_feature_postings post
-                JOIN models m
+                JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
                   ON m.id = post.model_id
                  AND m.tenant_id = $1
                  AND m.status = 'active'
@@ -2888,7 +2892,7 @@ async def pathway_b_representation_tag_candidates(
                    scored._first_tag_ord,
                    m.activation
             FROM scored
-            JOIN models m
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
               ON m.id = scored.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -2925,7 +2929,7 @@ async def pathway_b_representation_tag_candidates(
         notes["representation_postings_table"] = "model_representation_tag_postings"
         notes["postings_per_tag_limit"] = per_tag_limit
         rows = await conn.fetch(
-            """
+            f"""
             WITH query_tags AS MATERIALIZED (
               SELECT *
               FROM (
@@ -2959,7 +2963,7 @@ async def pathway_b_representation_tag_candidates(
               CROSS JOIN LATERAL (
                 SELECT post.model_id
                 FROM model_representation_tag_postings post
-                JOIN models m
+                JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
                   ON m.id = post.model_id
                  AND m.tenant_id = $1
                  AND m.status = 'active'
@@ -2988,7 +2992,7 @@ async def pathway_b_representation_tag_candidates(
                    scored._first_tag_ord,
                    m.activation
             FROM scored
-            JOIN models m
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
               ON m.id = scored.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -3009,7 +3013,7 @@ async def pathway_b_representation_tag_candidates(
     elif not representation_feature_postings_available:
         notes["representation_postings_index"] = False
         rows = await conn.fetch(
-            """
+            f"""
             SELECT models.id AS model_id,
                    models.activation,
                    (
@@ -3019,7 +3023,7 @@ async def pathway_b_representation_tag_candidates(
                    ) AS _tag_match_rank,
                    1::int AS _tag_match_count,
                    1::int AS _first_tag_ord
-            FROM models
+            FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
             WHERE tenant_id = $1
               AND status = 'active'
               AND (
@@ -3138,7 +3142,7 @@ async def pathway_l_semantic_terms(
               CROSS JOIN LATERAL (
                 SELECT post.model_id
                 FROM model_representation_feature_postings post
-                JOIN models m
+                JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
                   ON m.id = post.model_id
                  AND m.tenant_id = $1
                  AND m.status = 'active'
@@ -3163,7 +3167,7 @@ async def pathway_l_semantic_terms(
             SELECT {_MODEL_SELECT_SQL},
                    scored._semantic_term_overlap
             FROM scored
-            JOIN models
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS models
               ON models.id = scored.model_id
              AND models.tenant_id = $1
             WHERE status = 'active'
@@ -3239,7 +3243,7 @@ async def pathway_l_semantic_terms(
               CROSS JOIN LATERAL (
                 SELECT post.model_id
                 FROM model_semantic_term_postings post
-                JOIN models m
+                JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
                   ON m.id = post.model_id
                  AND m.tenant_id = $1
                  AND m.status = 'active'
@@ -3263,7 +3267,7 @@ async def pathway_l_semantic_terms(
             SELECT {_MODEL_SELECT_SQL},
                    scored._semantic_term_overlap
             FROM scored
-            JOIN models
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS models
               ON models.id = scored.model_id
              AND models.tenant_id = $1
             WHERE status = 'active'
@@ -3286,7 +3290,7 @@ async def pathway_l_semantic_terms(
                      FROM unnest(mst.semantic_terms) AS term
                      WHERE term = ANY($2::text[])
                    ) AS _semantic_term_overlap
-            FROM models
+            FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
             JOIN (
               SELECT model_id, semantic_terms
               FROM model_semantic_terms
@@ -3404,7 +3408,7 @@ async def pathway_l_semantic_term_candidates(
               CROSS JOIN LATERAL (
                 SELECT post.model_id
                 FROM model_representation_feature_postings post
-                JOIN models m
+                JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
                   ON m.id = post.model_id
                  AND m.tenant_id = $1
                  AND m.status = 'active'
@@ -3431,7 +3435,7 @@ async def pathway_l_semantic_term_candidates(
                    scored._first_term_ord,
                    m.activation
             FROM scored
-            JOIN models m
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
               ON m.id = scored.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -3507,7 +3511,7 @@ async def pathway_l_semantic_term_candidates(
               CROSS JOIN LATERAL (
                 SELECT post.model_id
                 FROM model_semantic_term_postings post
-                JOIN models m
+                JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
                   ON m.id = post.model_id
                  AND m.tenant_id = $1
                  AND m.status = 'active'
@@ -3533,7 +3537,7 @@ async def pathway_l_semantic_term_candidates(
                    scored._first_term_ord,
                    m.activation
             FROM scored
-            JOIN models m
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
               ON m.id = scored.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -3558,7 +3562,7 @@ async def pathway_l_semantic_term_candidates(
                      WHERE term = ANY($2::text[])
                    ) AS _semantic_term_overlap,
                    1::int AS _first_term_ord
-            FROM models
+            FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
             JOIN (
               SELECT model_id, semantic_terms
               FROM model_semantic_terms
@@ -3765,7 +3769,7 @@ async def pathway_c_temporal(
     # created_at) — if a Model has been reconsolidated inside the window
     # it is also relevant, otherwise fall back to birth time.
     model_sql = (
-        f"SELECT {_MODEL_SELECT_SQL} FROM models "
+        f"SELECT {_MODEL_SELECT_SQL} FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models "
         "WHERE tenant_id = $1 AND status = 'active' "
         "  AND COALESCE(last_retrieved_at, created_at) >= $2 "
         "  AND COALESCE(last_retrieved_at, created_at) <= $3"
@@ -3834,7 +3838,7 @@ async def pathway_d_pattern(
     if seed_signature is None:
         pattern_sql = f"""
             SELECT {_MODEL_SELECT_SQL}
-            FROM models
+            FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
             WHERE tenant_id = $1
               AND status = 'active'
               AND claim_role = 'pattern'
@@ -3847,7 +3851,7 @@ async def pathway_d_pattern(
         pattern_rows = await conn.fetch(
             f"""
             SELECT {_MODEL_SELECT_SQL}
-            FROM models
+            FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
             WHERE tenant_id = $1
               AND status = 'active'
               AND claim_role = 'pattern'
@@ -3874,7 +3878,7 @@ async def pathway_d_pattern(
             f"""
             WITH edge_instances AS (
               SELECT DISTINCT e.source_model_id AS model_id
-              FROM model_edges e
+              FROM {_ACCEPTED_PROJECTED_MODEL_EDGES_SQL} AS e
               WHERE e.tenant_id = $1
                 AND e.status = 'active'
                 AND e.review_status IN ('accepted', 'candidate', 'needs_review', 'disputed')
@@ -3884,7 +3888,7 @@ async def pathway_d_pattern(
             ),
             json_instances AS (
               SELECT m.id AS model_id
-              FROM models m
+              FROM {_ACCEPTED_MODEL_ROWS_SQL} AS m
               WHERE m.tenant_id = $1
                 AND m.status = 'active'
                 AND m.claim_role = 'pattern'
@@ -3897,7 +3901,7 @@ async def pathway_d_pattern(
               SELECT model_id FROM json_instances
             )
             SELECT {_MODEL_SELECT_SQL}
-            FROM models m
+            FROM {_ACCEPTED_MODEL_ROWS_SQL} AS m
             JOIN instance_ids i ON i.model_id = m.id
             WHERE m.tenant_id = $1
               AND m.status = 'active'
@@ -3988,9 +3992,9 @@ async def _pathway_g_active_seed_candidates(
         return []
     return list(
         await conn.fetch(
-            """
+            f"""
             SELECT id, activation, created_at
-            FROM models
+            FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
             WHERE tenant_id = $1
               AND status = 'active'
               AND id = ANY($2::uuid[])
@@ -4167,10 +4171,10 @@ async def _pathway_g_edge_candidates(
     position_offset: int,
 ) -> list[tuple[UUID, int, str]]:
     rows = await conn.fetch(
-        """
+        f"""
         SELECT source_model_id, target_model_id, edge_kind, confidence,
                weight, review_status
-        FROM model_edges
+        FROM {_ACCEPTED_PROJECTED_MODEL_EDGES_SQL} AS model_edges
         WHERE tenant_id = $1
           AND status = 'active'
           AND review_status IN ('accepted', 'candidate', 'needs_review', 'disputed')
@@ -4280,7 +4284,7 @@ async def _pathway_g_hydrate_models(
     model_rows = await conn.fetch(
         f"""
         SELECT {_MODEL_SELECT_SQL}
-        FROM models
+        FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
         WHERE tenant_id = $1
           AND status = 'active'
           AND id = ANY($2::uuid[])

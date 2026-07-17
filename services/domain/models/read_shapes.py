@@ -14,6 +14,38 @@ from lib.shared.db import RowHydrationError
 from lib.shared.types import ModelRow
 
 
+# ``accepted_current_models`` is the authoritative membership relation, while
+# the legacy ``models`` table temporarily remains the complete ModelRow payload
+# store. Readers must select through this adapter until every ModelRow field is
+# versioned in the truth kernel. The inner join is intentional: an active
+# legacy row that has not been admitted (or whose truth head was retired) is
+# invisible even when every legacy sidecar still references it.
+ACCEPTED_MODEL_ROWS_SQL = """(
+    SELECT legacy.*
+    FROM accepted_current_models accepted
+    JOIN models legacy
+      ON legacy.tenant_id = accepted.tenant_id
+     AND legacy.id = accepted.id
+)"""
+
+# Binary graph traversal is a projection of accepted n-ary relation truth.
+# Projection rows remain rebuildable; joining their source relation through the
+# accepted view prevents an active legacy edge from becoming business truth by
+# accident.
+ACCEPTED_PROJECTED_MODEL_EDGES_SQL = """(
+    SELECT edge.*
+    FROM accepted_current_relations accepted_relation
+    JOIN relation_edge_projections projection
+      ON projection.tenant_id = accepted_relation.tenant_id
+     AND projection.relation_id = accepted_relation.id
+     AND projection.status = 'active'
+    JOIN model_edges edge
+      ON edge.tenant_id = projection.tenant_id
+     AND edge.id = projection.edge_id
+     AND edge.status = 'active'
+)"""
+
+
 MODEL_ROW_SELECT_COLS = (
     "id",
     "tenant_id",
@@ -164,6 +196,8 @@ def _set_invalid_embedding(
 
 
 __all__ = [
+    "ACCEPTED_MODEL_ROWS_SQL",
+    "ACCEPTED_PROJECTED_MODEL_EDGES_SQL",
     "MODEL_ROW_SELECT_COLS",
     "MODEL_ROW_SELECT_SQL",
     "hydrate_model_row",

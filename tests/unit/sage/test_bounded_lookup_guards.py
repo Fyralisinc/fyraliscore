@@ -361,7 +361,8 @@ async def test_sage_sparse_lookup_counts_models_not_sparse_distinct() -> None:
     assert len(conn.fetch_calls) == 1
     query, _args = conn.fetch_calls[0]
     assert "active_models AS MATERIALIZED" in query
-    assert "FROM models" in query
+    assert "FROM accepted_current_models accepted" in query
+    assert "JOIN models legacy" in query
     assert "COUNT(DISTINCT MODEL_ID)" not in query.upper()
     assert "active_sparse_models" not in query
 
