@@ -210,12 +210,7 @@ class AsyncpgRelationKernelStorage:
               relation_evidence_id, tenant_id, relation_version_id,
               evidence_reference_id, model_version_id, polarity, weight,
               evidence_digest, created_at
-            ) SELECT $1,$2,$3,
-                     CASE WHEN $4::text = 'unused' AND ($7::uuid IS NULL OR EXISTS (
-                       SELECT 1 FROM relation_truth_admission_decisions
-                        WHERE tenant_id=$2 AND admitted_relation_version_id=$7
-                     )) THEN 'admit_relation' ELSE 'transition_relation' END,
-                     $5,$6,$7,$8,$9
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
             """,
             [(uuid5(version.relation_version_id, f"evidence:{e.evidence_reference_id}"),
               version.tenant_id, version.relation_version_id,
