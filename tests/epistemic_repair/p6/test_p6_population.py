@@ -43,6 +43,12 @@ def test_population_is_exact_interleaved_and_preregistered() -> None:
     assert all(not any(term in signal.text.casefold() for term in
                        ("confirms", "falsifies", "update memory"))
                for signal in population.signals)
+    assert all(
+        thesis.casefold() not in signal.text.casefold()
+        for _storyline, thesis in population.thesis_by_storyline
+        for signal in population.signals
+    )
+    assert len({signal.text for signal in population.signals}) >= 280
 
 
 def test_runtime_signal_has_no_oracle_fields() -> None:

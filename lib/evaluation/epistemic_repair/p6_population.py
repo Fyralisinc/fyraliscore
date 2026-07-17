@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from lib.contracts.kernel import canonical_sha256
 
 
-P6_POPULATION_VERSION = "epistemic-repair-p6-mixed-stream-12x25-v1"
+P6_POPULATION_VERSION = "epistemic-repair-p6-mixed-stream-12x25-v2"
 P6_BATCH_COUNT = 12
 P6_SIGNALS_PER_BATCH = 25
 P6_SIGNAL_COUNT = 300
@@ -112,44 +112,76 @@ def _story_text(storyline: str, batch: int, ordinal: int) -> str:
     if batch == _SYNTHESIS_BATCH[storyline] and ordinal == 3:
         # Ordinary asserted report selected by the provider-free production seam.
         return f"{surface} is ready."
+    mechanisms = {
+        "atlas": {
+            "dependency": "release certificate",
+            "transition": "certificate ownership handoff",
+            "authority": "infrastructure owner",
+            "outcome": "rollout window",
+            "conflict": "release dashboard",
+        },
+        "beacon": {
+            "dependency": "privileged access review",
+            "transition": "security approval transition",
+            "authority": "identity reviewer",
+            "outcome": "migration completion",
+            "conflict": "deployment dashboard",
+        },
+        "cobalt": {
+            "dependency": "customer approval email",
+            "transition": "renewal approval transition",
+            "authority": "customer procurement lead",
+            "outcome": "renewal signature",
+            "conflict": "CRM health field",
+        },
+        "delta": {
+            "dependency": "named support owner",
+            "transition": "support-to-operations handoff",
+            "authority": "incident commander",
+            "outcome": "repeat incident rate",
+            "conflict": "handoff checklist",
+        },
+    }[storyline]
+    d, t, a, o, c = (mechanisms[key] for key in
+                      ("dependency", "transition", "authority", "outcome", "conflict"))
     variants = {
         "weak_initial": (
-            "A short thread returned to the same owner question.",
-            "The linked record still shows yesterday's status.",
-            "Someone asked whether the handoff happened before the check.",
-            "A pronoun-only reply arrived after a long pause.",
-            "The calendar moved while the operational state stayed unclear.",
+            f"The {d} still has no clearly recorded owner.",
+            f"A late reply asks whether the {t} happened before today's check.",
+            f"The {c} remains optimistic while the underlying record is incomplete.",
+            f"Someone says 'they have it now' without naming the {a}.",
+            f"The {o} moved again after the ownership question resurfaced.",
         ),
         "corroboration": (
-            "A second source mentioned the same transition.",
-            "The structured ticket linked the earlier conversation.",
-            "An independent owner supplied a matching timestamp.",
-            "The evidence now spans two source systems.",
-            "A later reply clarified which object the thread meant.",
+            f"A second source links the open {d} to the delayed {o}.",
+            f"The structured ticket records another {t} just before status changed.",
+            f"The {a} supplied a timestamp that matches the earlier thread.",
+            f"Two independent records now connect ownership of {d} with {o}.",
+            f"A later reply clarifies that 'it' meant the {d}, not the launch note.",
         ),
         "contradiction": (
-            "The newest source conflicts with the optimistic status.",
-            "A required transition is absent from the audit trail.",
-            "The higher-trust record disagrees with the summary field.",
-            "A returning participant challenged the earlier interpretation.",
-            "The dependency appears open despite a completion label.",
+            f"The {c} says complete, but the {a} says {d} is still open.",
+            f"No completed {t} appears in the audit trail.",
+            f"The higher-trust message conflicts with the optimistic {c} value.",
+            f"A returning participant disputes who owned {d} at the cutoff.",
+            f"The {o} remains at risk despite a completion label.",
         ),
         "correction": (
-            "The accountable owner corrected the disputed timestamp.",
-            "Adjudication identified the missing transition.",
-            "The linked record now reflects the authoritative state.",
-            "Dependent notes were revised after the correction.",
-            "The previous interpretation is retained only as history.",
+            f"The {a} corrected the ownership timestamp for {d}.",
+            f"Adjudication identified the missing {t}.",
+            f"The {c} now reflects that {d} was incomplete at the cutoff.",
+            f"Dependent {o} notes were revised after the ownership correction.",
+            f"The earlier completion interpretation is retained only as history.",
         ),
         "external_outcome": (
-            "The subsequent operational result matched the adjudicated state.",
-            "A later customer-visible event supplied independent evidence.",
-            "The retained explanation answered the follow-up without replay.",
-            "No stale dependency appeared in the current view.",
-            "The final audit preserved the original evidence chain.",
+            f"After the corrected {t}, the next {o} completed without the prior delay.",
+            f"A later external result independently matches the adjudicated {d} state.",
+            f"The retained ownership explanation answered the follow-up without replay.",
+            f"No stale {d} state appears in the current view.",
+            f"The final audit preserves the evidence chain from {t} to {o}.",
         ),
     }
-    return f"{surface}: {variants[phase][ordinal - 1]}"
+    return f"{surface}, update {batch}: {variants[phase][ordinal - 1]}"
 
 
 def build_p6_population() -> P6Population:
@@ -182,6 +214,7 @@ def build_p6_population() -> P6Population:
                 "The book club moved its informal discussion.",
                 "A test calendar received a new color label.",
             )[ordinal - 1]
+            text = f"Week {batch}: {text}"
             rows.append((
                 P6Signal(signal_id, batch, position, "slack:message", "slack:general", text),
                 P6Gold(signal_id, None, "noise", None, None, None, None, _phase(batch)),
@@ -193,6 +226,7 @@ def build_p6_population() -> P6Population:
                 "The Atlas certificate training example uses a handoff checklist.",
                 "Cobalt paint approval is listed in the Beacon office ticket.",
             )[ordinal - 1]
+            text = f"Week {batch}: {text}"
             rows.append((
                 P6Signal(signal_id, batch, position, "jira:comment", "jira:workplace", text),
                 P6Gold(signal_id, None, "high_similarity_distractor", None, None,
