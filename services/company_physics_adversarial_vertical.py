@@ -79,7 +79,8 @@ async def run_company_physics_adversarial_vertical(
 
         mention_ids = await conn.fetch(
             """SELECT mention_id FROM entity_mention_detections
-               WHERE tenant_id=$1 ORDER BY created_at LIMIT 3""", tenant_id,
+               WHERE tenant_id=$1 AND mention_id IS NOT NULL
+               ORDER BY detected_at, id LIMIT 3""", tenant_id,
         )
         lineage = {"source_entity_mention_ids": [str(row["mention_id"]) for row in mention_ids]}
         event_ids = [born_from_event]
