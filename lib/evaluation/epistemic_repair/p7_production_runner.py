@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
-from lib.evaluation.epistemic_repair.p6_population import P6Population
+from lib.evaluation.epistemic_repair.p6_population import P6Batch, P6Population
 from lib.evaluation.epistemic_repair.p6_think_runner import (
     _init_p6_connection,
     _persist_runtime_batch,
@@ -45,6 +45,23 @@ class P7ArmRuntime:
     arm: P7EvolutionArm
     tenant_id: UUID
     worker: ThinkWorker | None
+
+
+@dataclass(frozen=True, slots=True)
+class P7SealedExecutionStream:
+    """Gold-free transport object accepted by the production executor."""
+
+    version: str
+    population_digest: str
+    batches: tuple[P6Batch, ...]
+
+
+def seal_execution_stream(population: P6Population) -> P7SealedExecutionStream:
+    return P7SealedExecutionStream(
+        version=population.version,
+        population_digest=population.population_digest,
+        batches=population.batches,
+    )
 
 
 def assess_provider_identity_receipts(
@@ -114,6 +131,8 @@ def assess_provider_identity_receipts(
         "required_model": required_model,
         "logical_call_count": len(logical_receipts),
         "physical_attempt_count": len(attempt_receipts),
+        "input_tokens": sum(int(row.get("input_tokens") or 0) for row in attempt_receipts),
+        "output_tokens": sum(int(row.get("output_tokens") or 0) for row in attempt_receipts),
         "purposes": sorted({str(row.get("purpose")) for row in attempt_receipts}),
         "missing_identity_receipts": missing_identity,
         "identity_mismatches": mismatches,
@@ -135,7 +154,8 @@ async def _validate_provider_identity_ledger(
         tenant_id,
     )]
     attempts = [dict(row) for row in await conn.fetch(
-        """SELECT physical_attempt_id,logical_call_id,provider,model,purpose
+        """SELECT physical_attempt_id,logical_call_id,provider,model,purpose,
+                  input_tokens,output_tokens
            FROM llm_provider_attempt_receipts WHERE tenant_id=$1""",
         tenant_id,
     )]
@@ -184,7 +204,7 @@ async def _run_arm(
     *,
     pool: asyncpg.Pool,
     runtime: P7ArmRuntime,
-    population: P6Population,
+    population: P7SealedExecutionStream,
     per_batch_timeout_s: float,
     required_provider: str,
     required_model: str,
@@ -252,6 +272,47 @@ async def _run_arm(
         else:
             provider_identity = None
         snapshot = await _snapshot(pool, runtime.tenant_id)
+        if batch.batch_number in {3, 6, 12}:
+            async with pool.acquire() as conn:
+                model_rows = await conn.fetch(
+                    """SELECT model.id,model.truth_version_id,model.truth_version,
+                              model.proposition,model.natural_text,model.confidence,
+                              model.scope_entities,model.truth_lifecycle,
+                              model.truth_advanced_at,
+                              COALESCE((SELECT array_agg(ref.evidence_id ORDER BY ref.evidence_id)
+                                FROM model_truth_evidence_references ref
+                                WHERE ref.tenant_id=model.tenant_id
+                                  AND ref.model_version_id=model.truth_version_id
+                                  AND ref.evidence_kind='observation'), ARRAY[]::text[])
+                                AS evidence_observation_ids
+                       FROM accepted_current_models model WHERE model.tenant_id=$1
+                       ORDER BY truth_advanced_at,id""",
+                    runtime.tenant_id,
+                )
+                relation_rows = await conn.fetch(
+                    """SELECT relation.id,relation.truth_relation_kind,
+                              relation.truth_rationale,
+                              COALESCE((SELECT array_agg(participant.model_id ORDER BY participant.model_id)
+                                FROM relation_truth_participants participant
+                                WHERE participant.tenant_id=relation.tenant_id
+                                  AND participant.relation_version_id=relation.truth_relation_version_id),
+                                ARRAY[]::uuid[]) AS participant_model_ids,
+                              COALESCE((SELECT array_agg(evidence.evidence_id ORDER BY evidence.evidence_id)
+                                FROM relation_truth_evidence evidence
+                                WHERE evidence.tenant_id=relation.tenant_id
+                                  AND evidence.relation_version_id=relation.truth_relation_version_id),
+                                ARRAY[]::text[]) AS evidence_ids
+                       FROM accepted_current_relations relation WHERE relation.tenant_id=$1
+                       ORDER BY truth_advanced_at,id""",
+                    runtime.tenant_id,
+                )
+            stage_snapshot = {
+                **snapshot,
+                "accepted_models": [dict(row) for row in model_rows],
+                "accepted_relations": [dict(row) for row in relation_rows],
+            }
+        else:
+            stage_snapshot = None
         waves.append({
             "batch_number": batch.batch_number,
             "reasoning_executed": execution is not None,
@@ -262,6 +323,7 @@ async def _run_arm(
             "lifecycle_receipts": [receipt.model_dump(mode="json") for receipt in receipts],
             "provider_identity_ledger": provider_identity,
             "accepted_model_count": len(snapshot["accepted_models"]),
+            "stage_snapshot": stage_snapshot,
             "elapsed_s": round(time.monotonic() - started, 3),
         })
     recovered = any(
@@ -300,10 +362,11 @@ async def _run_arm(
 async def run_p7_production_staged(
     *,
     database_url: str,
-    population: P6Population,
+    population: P7SealedExecutionStream,
     per_batch_timeout_s: float = 180.0,
     required_provider: str = "codex",
     required_model: str = "gpt-5.4",
+    world_id: str = "p7-world-01",
 ) -> dict[str, Any]:
     """Run five isolated production arms concurrently, each ordered 1 through 12."""
 
@@ -335,7 +398,7 @@ async def run_p7_production_staged(
                 await conn.execute(
                     "INSERT INTO tenants(id,name,is_demo) VALUES($1,$2,FALSE)",
                     tenant_id,
-                    f"p7-production-{arm}-{tenant_id}",
+                    f"p7-production-{world_id}-{arm}-{tenant_id}",
                 )
             worker = None
             if arm != "observation_only":
@@ -372,6 +435,7 @@ async def run_p7_production_staged(
             "schema_version": "epistemic-repair-p7-production-staged-v1",
             "population_version": population.version,
             "population_digest": population.population_digest,
+            "world_id": world_id,
             "gold_visible_during_execution": False,
             "provider_identity": {
                 "provider": observed_provider,
@@ -388,9 +452,60 @@ async def run_p7_production_staged(
         await pool.close()
 
 
+async def run_p7_production_worlds(
+    *,
+    database_url: str,
+    worlds: tuple[tuple[str, P7SealedExecutionStream], ...],
+    per_batch_timeout_s: float = 180.0,
+    required_provider: str = "codex",
+    required_model: str = "gpt-5.4",
+) -> dict[str, Any]:
+    """Execute preregistered world variants concurrently with isolated tenants."""
+
+    if len(worlds) < 3 or len({world_id for world_id, _ in worlds}) != len(worlds):
+        raise InvariantViolation(
+            "P7_WORLD_POPULATION_INVALID",
+            "P7 requires at least three unique preregistered world variants",
+            world_count=len(worlds),
+        )
+    results = await asyncio.gather(*(
+        run_p7_production_staged(
+            database_url=database_url,
+            population=stream,
+            per_batch_timeout_s=per_batch_timeout_s,
+            required_provider=required_provider,
+            required_model=required_model,
+            world_id=world_id,
+        )
+        for world_id, stream in worlds
+    ))
+    tenant_ids = [
+        arm["tenant_id"]
+        for result in results
+        for arm in result["arm_results"]
+    ]
+    return {
+        "schema_version": "epistemic-repair-p7-production-worlds-v1",
+        "world_count": len(results),
+        "arm_execution_count": len(tenant_ids),
+        "isolated_tenant_count": len(set(tenant_ids)),
+        "provider": required_provider,
+        "model": required_model,
+        "gold_visible_during_execution": False,
+        "world_results": results,
+        "complete": (
+            len(set(tenant_ids)) == len(tenant_ids) == len(results) * len(P7_ARMS)
+            and all(result["complete"] for result in results)
+        ),
+    }
+
+
 __all__ = [
     "P7_ARMS",
     "P7ArmRuntime",
+    "P7SealedExecutionStream",
     "assess_provider_identity_receipts",
     "run_p7_production_staged",
+    "run_p7_production_worlds",
+    "seal_execution_stream",
 ]

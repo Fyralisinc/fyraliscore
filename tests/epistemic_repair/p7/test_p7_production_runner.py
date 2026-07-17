@@ -8,7 +8,9 @@ from lib.evaluation.epistemic_repair.p7_production_runner import (
     P7_ARMS,
     _run_id,
     assess_provider_identity_receipts,
+    seal_execution_stream,
 )
+from lib.evaluation.epistemic_repair.p6_population import build_p6_population
 from lib.shared.errors import InvariantViolation
 
 
@@ -20,6 +22,13 @@ def test_p7_arm_set_is_preregistered_and_complete() -> None:
         "memory_hidden",
         "corrupted",
     )
+
+
+def test_sealed_execution_stream_exposes_no_gold_or_semantic_oracle() -> None:
+    stream = seal_execution_stream(build_p6_population())
+    assert not hasattr(stream, "gold")
+    assert not hasattr(stream, "thesis_by_storyline")
+    assert len(stream.batches) == 12
 
 
 def test_run_id_requires_successful_durable_production_run() -> None:
