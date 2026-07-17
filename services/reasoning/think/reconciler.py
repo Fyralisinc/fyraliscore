@@ -59,6 +59,7 @@ import structlog
 from lib.shared.ids import uuid7
 from lib.shared.memory_grammar import derive_memory_grammar
 from services.domain.models.propositions import canonicalize_proposition
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 
 from .diff_schema import ClaimOp
 from .representation_contract import contextual_frames_compatible
@@ -582,7 +583,6 @@ async def _find_candidates(
     # candidates server-side) and let the caller compute cosine.
     # Recency is `created_at >= now() - interval`.
     where = [
-        "status = 'active'",
         "tenant_id = $1",
         "created_at >= now() - ($2::int * interval '1 day')",
     ]
@@ -626,7 +626,7 @@ async def _find_candidates(
                confidence, proposition_kind, "natural", created_at,
                supporting_event_ids, signal_readings, confirmed_count,
                supporting_model_ids, falsifier, proposition, domain_tags
-        FROM accepted_current_models
+        FROM {ACCEPTED_MODEL_ROWS_SQL} AS accepted_model
         WHERE {' AND '.join(where)}
         ORDER BY embedding <=> $LIMITSEED::vector
         LIMIT {int(k)}
