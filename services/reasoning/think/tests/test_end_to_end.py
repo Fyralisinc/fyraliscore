@@ -25,10 +25,127 @@ from services.domain.acts import commitments as commitments_svc
 from services.domain.acts import goals as goals_svc
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.reason import think
+from services.reasoning.think.execution_policy import (
+    issue_evaluation_validate_only_policy,
+)
 from services.reasoning.think.tests.conftest import ScriptedProvider, make_embedding
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+async def test_validate_only_freezes_proposals_receipts_and_rolls_back_semantics(
+    fresh_db, tenant, tenant_cleanup,
+):
+    obs_id, actor_id = await _seed_validate_only_observation(fresh_db, tenant)
+    trig_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1", tenant_id=tenant, subkind="event_arrival",
+        observation_id=obs_id, seed_natural_text="PR merge",
+        seed_entity_ids=[{"type": "actor", "id": str(actor_id)}],
+        seed_occurred_at=datetime.now(timezone.utc),
+        seed_signature={"trigger_id": str(trig_id)},
+    )
+    validated_claim = json.dumps({
+        "trigger_ref": str(trig_id),
+        "tenant_id": str(tenant),
+        "claim_ops": [{
+            "op": "insert",
+            "entry": {
+                "born_from_event_id": str(obs_id),
+                "supporting_event_ids": [str(obs_id)],
+                "proposition": {
+                    "kind": "state", "subject": str(actor_id),
+                    "assertion": "Alice merged the release PR",
+                },
+                "natural": "Alice merged the release PR",
+                "confidence": 0.7,
+                "confidence_at_assertion": 0.7,
+                "scope_actors": [str(actor_id)],
+                "scope_entities": [],
+                "scope_temporal": {},
+                "falsifier": None,
+            },
+        }],
+        "act_ops": [], "resource_ops": [], "new_predictions": [],
+        "reasoning_trace": "The PR merge is directly evidenced by the event",
+    })
+    provider = ScriptedProvider(responses=[validated_claim] * 4)
+    async with fresh_db.acquire() as conn:
+        before = {
+            "models": await conn.fetchval(
+                "SELECT count(*) FROM models WHERE tenant_id=$1", tenant
+            ),
+            "observations": await conn.fetchval(
+                "SELECT count(*) FROM observations WHERE tenant_id=$1", tenant
+            ),
+            "pending": await conn.fetchval(
+                "SELECT count(*) FROM pending_post_commit_actions WHERE tenant_id=$1",
+                tenant,
+            ),
+        }
+    outcome = await think(
+        trigger, fresh_db, llm_provider=provider,
+        execution_policy=issue_evaluation_validate_only_policy(),
+    )
+    assert outcome.status == "success"
+    assert outcome.ops_applied_count == 0
+    assert outcome.validated_only_payload is not None
+    assert outcome.validated_only_payload["apply_skipped"] is True
+    assert outcome.validated_only_payload["validated_proposals"]["claim_ops"]
+    async with fresh_db.acquire() as conn:
+        assert await conn.fetchval(
+            "SELECT count(*) FROM models WHERE tenant_id=$1", tenant
+        ) == before["models"]
+        assert await conn.fetchval(
+            "SELECT count(*) FROM observations WHERE tenant_id=$1", tenant
+        ) == before["observations"]
+        assert await conn.fetchval(
+            "SELECT count(*) FROM pending_post_commit_actions WHERE tenant_id=$1",
+            tenant,
+        ) == before["pending"]
+        run = await conn.fetchrow(
+            "SELECT status,execution_mode,validation_result,ops_applied "
+            "FROM think_runs WHERE trigger_id=$1", trig_id
+        )
+        logical = await conn.fetchval(
+            "SELECT count(*) FROM llm_logical_call_receipts "
+            "WHERE tenant_id=$1 AND think_run_id=$2",
+            tenant, outcome.run_id,
+        )
+        physical = await conn.fetchval(
+            "SELECT count(*) FROM llm_provider_attempt_receipts WHERE tenant_id=$1",
+            tenant,
+        )
+    assert run["status"] == "success"
+    assert run["execution_mode"] == "validate_only"
+    assert run["ops_applied"] is None
+    validation_result = run["validation_result"]
+    if isinstance(validation_result, str):
+        validation_result = json.loads(validation_result)
+    assert validation_result["validated_proposals"]["claim_ops"]
+    assert logical >= 1
+    assert physical >= 1
+
+
+async def _seed_validate_only_observation(pool, tenant: UUID) -> tuple[UUID, UUID]:
+    actor_id, observation_id = uuid7(), uuid7()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO actors (id,tenant_id,type,display_name,status) "
+            "VALUES ($1,$2,'human_internal','Alice','active')",
+            actor_id, tenant,
+        )
+        await conn.execute(
+            """INSERT INTO observations
+                 (id,tenant_id,occurred_at,kind,source_channel,actor_id,
+                  content,content_text,embedding,embedding_pending,trust_tier)
+               VALUES ($1,$2,now(),'signal','test',$3,'{}'::jsonb,$4,$5,FALSE,
+                       'authoritative')""",
+            observation_id, tenant, actor_id, "Alice merged the release PR",
+            make_embedding("Alice merged the release PR"),
+        )
+    return observation_id, actor_id
 
 
 async def _seed_pr_merged_observation(

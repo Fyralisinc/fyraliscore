@@ -58,6 +58,7 @@ from .debug_capture import capture_with_pool as debug_capture_with_pool
 from .deterministic import is_authoritative
 from .lanes import classify_trigger_lane
 from .llm_receipts import ThinkLLMReceiptCollector
+from .execution_policy import NORMAL_EXECUTION_POLICY, ThinkExecutionPolicy
 from .observability import (
     METRICS,
     ThinkRunRecord,
@@ -190,6 +191,7 @@ class ThinkRunOutcome:
     # Raised exception for caller's failure classification.
     exception: BaseException | None = None
     residual_context: ThinkResidualContext | None = None
+    validated_only_payload: dict[str, Any] | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -216,6 +218,7 @@ async def think(
     reason_for_trigger: str | None = None,
     trigger_kind_subkind: str | None = None,
     max_retrieval_reruns: int = 2,
+    execution_policy: ThinkExecutionPolicy = NORMAL_EXECUTION_POLICY,
 ) -> ThinkRunOutcome:
     """
     Single-shot Think invocation.
@@ -231,6 +234,7 @@ async def think(
     transaction (ROLLBACK at teardown), use `think_in_conn` instead —
     see worker.py for the LISTEN/poll-driven caller that uses this.
     """
+    execution_policy.assert_authorized()
     started_at = time.monotonic()
     trigger_id, trigger_kind_full, record = _start_think_record(
         trigger,
@@ -274,6 +278,7 @@ async def think(
                 max_retrieval_reruns=max_retrieval_reruns,
                 usage_agg=usage_agg,
                 receipt_collector=receipt_collector,
+                execution_policy=execution_policy,
             )
         except BaseException as exc:
             if receipt_collector is not None:
@@ -308,6 +313,7 @@ async def _execute_think_run(
     max_retrieval_reruns: int,
     usage_agg: LLMUsageAggregator | None,
     receipt_collector: ThinkLLMReceiptCollector | None,
+    execution_policy: ThinkExecutionPolicy,
 ) -> ThinkRunOutcome:
     """Run Think to a terminal outcome while the caller owns telemetry scopes."""
 
@@ -334,6 +340,7 @@ async def _execute_think_run(
                     expanded_region=expanded_region,
                     reason_cache=reason_cache,
                     receipt_collector=receipt_collector,
+                    execution_policy=execution_policy,
                 )
             except OutOfRegionError as e:
                 rerun_count += 1
@@ -578,11 +585,52 @@ async def _run_think_attempt(
     expanded_region: set[tuple[str, str]] | None,
     reason_cache: dict[str, Any],
     receipt_collector: ThinkLLMReceiptCollector | None,
+    execution_policy: ThinkExecutionPolicy,
 ) -> ThinkRunOutcome:
     use_wide_transaction = (
         is_authoritative(trigger) or not _narrow_inferential_transaction_enabled()
+        or execution_policy.mode == "validate_only"
     )
     async with pool.acquire() as conn:
+        if execution_policy.mode == "validate_only":
+            transaction = conn.transaction()
+            await transaction.start()
+            try:
+                outcome = await _run_once(
+                    conn=conn, trigger=trigger, llm_provider=llm_provider,
+                    embedder=embedder, access_context=access_context,
+                    triggering_content=triggering_content,
+                    reason_for_trigger=reason_for_trigger, record=record,
+                    expanded_region=expanded_region, reason_cache=reason_cache,
+                    receipt_collector=receipt_collector,
+                    execution_policy=execution_policy,
+                )
+            except BaseException:
+                await transaction.rollback()
+                raise
+            await transaction.rollback()
+            payload = outcome.validated_only_payload
+            if payload is None:
+                raise RuntimeError("validate-only Think returned no frozen proposal payload")
+            async with conn.transaction():
+                await insert_think_run(
+                    conn, record,
+                    region_tenant_hash=outcome.region_tenant_hash,
+                    region_entity_hash=outcome.region_entity_hash,
+                )
+                await update_think_run(
+                    conn, record.id, status="success",
+                    retrieval_model_count=int(payload["retrieval_model_count"]),
+                    retrieval_observation_count=int(payload["retrieval_observation_count"]),
+                    llm_latency_ms=outcome.llm_latency_ms,
+                    cascade_depth=0,
+                    execution_mode="validate_only",
+                    validation_result=payload,
+                )
+                await _persist_receipts_in_semantic_transaction(
+                    conn, receipt_collector, outcome
+                )
+            return outcome
         if use_wide_transaction:
             async with conn.transaction():
                 return await _run_once(
@@ -597,6 +645,7 @@ async def _run_think_attempt(
                     expanded_region=expanded_region,
                     reason_cache=reason_cache,
                     receipt_collector=receipt_collector,
+                    execution_policy=execution_policy,
                 )
         return await _run_once(
             conn=conn,
@@ -611,6 +660,7 @@ async def _run_think_attempt(
             read_pool=None if use_wide_transaction else pool,
             reason_cache=reason_cache,
             receipt_collector=receipt_collector,
+            execution_policy=execution_policy,
         )
 
 
@@ -2038,6 +2088,7 @@ async def _run_once(
     read_pool: asyncpg.Pool | None = None,
     reason_cache: dict[str, Any] | None = None,
     receipt_collector: ThinkLLMReceiptCollector | None = None,
+    execution_policy: ThinkExecutionPolicy = NORMAL_EXECUTION_POLICY,
 ) -> ThinkRunOutcome:
     """Run one Think attempt, opening only the short mutation transaction here."""
     trigger_kind_full = record.trigger_kind
@@ -2126,6 +2177,25 @@ async def _run_once(
             reason_cache=reason_cache,
             stage_timings=stage_timings,
         )
+        if execution_policy.mode == "validate_only":
+            frozen = {
+                "execution_mode": "validate_only",
+                "apply_skipped": True,
+                "validated_proposals": validated.model_dump(mode="json"),
+                "context_use_trace": validated_context_use,
+                "retrieval_model_count": len(state.bundle.models),
+                "retrieval_observation_count": len(state.bundle.observations),
+                "reasoning_frame": state.reasoning_frame.to_dict(),
+            }
+            return ThinkRunOutcome(
+                run_id=record.id, trigger_id=record.trigger_id,
+                trigger_kind=trigger_kind_full, status="success",
+                ops_applied_count=0, cascade_depth=0,
+                anomalies_flagged=0, llm_latency_ms=raw.llm_latency_ms,
+                region_tenant_hash=th, region_entity_hash=eh,
+                region_acquisition=acquisition,
+                validated_only_payload=frozen,
+            )
         started = time.perf_counter()
         applied, skipped = await _apply_validated_diff(
             conn=conn,

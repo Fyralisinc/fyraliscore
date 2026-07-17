@@ -447,6 +447,8 @@ async def update_think_run(
     validation_error_count: int | None = None,
     ops_applied: dict | None = None,
     cascade_depth: int | None = None,
+    execution_mode: str | None = None,
+    validation_result: dict | None = None,
 ) -> None:
     """
     Progressive UPDATE on a think_runs row. Every call patches a subset
@@ -488,6 +490,14 @@ async def update_think_run(
     if cascade_depth is not None:
         set_clauses.append(f"cascade_depth = ${i}")
         params.append(cascade_depth)
+        i += 1
+    if execution_mode is not None:
+        set_clauses.append(f"execution_mode = ${i}")
+        params.append(execution_mode)
+        i += 1
+    if validation_result is not None:
+        set_clauses.append(f"validation_result = ${i}::jsonb")
+        params.append(json.dumps(validation_result, default=str))
         i += 1
 
     if not set_clauses:

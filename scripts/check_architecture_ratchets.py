@@ -47,6 +47,9 @@ RAW_THINK_OBLIGATION_INSERT_RE = re.compile(
     r"\bINSERT\s+INTO\s+think_obligations\b",
     re.IGNORECASE,
 )
+VALIDATE_ONLY_POLICY_ISSUER_RE = re.compile(
+    r"\bissue_evaluation_validate_only_policy\b",
+)
 
 RAW_THINK_TRIGGER_INSERT_ALLOWED_FILES = {
     Path("services/domain/triggers.py"),
@@ -61,6 +64,10 @@ RAW_PENDING_POST_COMMIT_ACTION_INSERT_ALLOWED_FILES = {
 }
 RAW_THINK_OBLIGATION_INSERT_ALLOWED_FILES = {
     Path("services/domain/obligations.py"),
+}
+VALIDATE_ONLY_POLICY_ISSUER_ALLOWED_FILES = {
+    Path("lib/evaluation/epistemic_repair/p7_production_runner.py"),
+    Path("services/reasoning/think/execution_policy.py"),
 }
 IMPORT_LINTER_IGNORE_IMPORT_LIMITS = {
     "core never imports the demo / simulation overlays": 0,
@@ -218,6 +225,29 @@ def find_raw_think_obligation_insert_violations(
     )
 
 
+def find_validate_only_policy_issuer_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    roots: Sequence[str] = DEFAULT_ROOTS,
+) -> list[Violation]:
+    """Keep non-applying Think authority inside the sealed evaluator boundary."""
+
+    violations: list[Violation] = []
+    for rel in _iter_python_files(repo_root=repo_root, roots=roots):
+        if rel in VALIDATE_ONLY_POLICY_ISSUER_ALLOWED_FILES or _is_test_path(rel):
+            continue
+        text = (repo_root / rel).read_text(encoding="utf-8", errors="ignore")
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if VALIDATE_ONLY_POLICY_ISSUER_RE.search(line):
+                violations.append(Violation(
+                    check="validate-only-policy-issuer-boundary",
+                    path=rel,
+                    line_number=line_number,
+                    message="validate-only Think policy may only be issued by the P7 evaluator",
+                ))
+    return violations
+
+
 def _import_linter_ignore_counts(repo_root: Path) -> dict[str, int]:
     pyproject = repo_root / "pyproject.toml"
     if not pyproject.exists():
@@ -284,6 +314,7 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
         find_raw_pending_post_commit_action_insert_violations(repo_root=repo_root)
     )
     violations.extend(find_raw_think_obligation_insert_violations(repo_root=repo_root))
+    violations.extend(find_validate_only_policy_issuer_violations(repo_root=repo_root))
     violations.extend(find_import_linter_allowlist_violations(repo_root=repo_root))
     return violations
 

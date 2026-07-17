@@ -8,7 +8,29 @@ from scripts.check_architecture_ratchets import (
     find_raw_pending_post_commit_action_insert_violations,
     find_raw_think_trigger_insert_violations,
     find_raw_think_obligation_insert_violations,
+    find_validate_only_policy_issuer_violations,
 )
+
+
+def test_validate_only_policy_issuer_is_evaluator_and_test_only(tmp_path: Path) -> None:
+    production = tmp_path / "services" / "app"
+    production.mkdir(parents=True)
+    (production / "bad.py").write_text(
+        "from services.reasoning.think.execution_policy import "
+        "issue_evaluation_validate_only_policy\n",
+        encoding="utf-8",
+    )
+    evaluator = tmp_path / "lib" / "evaluation" / "epistemic_repair"
+    evaluator.mkdir(parents=True)
+    (evaluator / "p7_production_runner.py").write_text(
+        "from services.reasoning.think.execution_policy import "
+        "issue_evaluation_validate_only_policy\n",
+        encoding="utf-8",
+    )
+
+    violations = find_validate_only_policy_issuer_violations(repo_root=tmp_path)
+
+    assert [item.path for item in violations] == [Path("services/app/bad.py")]
 
 
 def test_raw_think_trigger_insert_check_flags_production_code(tmp_path: Path) -> None:

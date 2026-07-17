@@ -204,7 +204,7 @@ async def test_missing_counterevidence_and_failed_runs_fail_closed() -> None:
 async def test_arm_policy_is_exact() -> None:
     assert arm_allows_reasoning("frozen", 3)
     assert not arm_allows_reasoning("frozen", 4)
-    assert not arm_allows_reasoning("observation_only", 1)
+    assert arm_allows_reasoning("observation_only", 1)
     assert arm_allows_reasoning("memory_hidden", 12)
     assert not arm_allows_canonical_mutation("frozen", 4)
     assert not arm_allows_canonical_mutation("observation_only", 1)

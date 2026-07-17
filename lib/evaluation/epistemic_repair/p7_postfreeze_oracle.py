@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import random
 import re
+import json
 from statistics import mean
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -103,6 +104,29 @@ def _scope_refs(value: Any) -> set[str]:
     return refs
 
 
+def _models_for_snapshot(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    models = [dict(row) for row in snapshot.get("accepted_models") or ()]
+    for run in snapshot.get("validated_only_runs") or ():
+        payload = run.get("validation_result") or {}
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        validated = payload.get("validated_proposals") or {}
+        for index, op in enumerate(validated.get("claim_ops") or ()):
+            entry = op.get("entry") or {}
+            if op.get("op") != "insert" or not entry:
+                continue
+            models.append({
+                "id": f"validate-only:{run.get('id')}:{index}",
+                "natural_text": entry.get("natural"),
+                "proposition": entry.get("proposition") or {},
+                "confidence": entry.get("confidence"),
+                "scope_entities": entry.get("scope_entities") or (),
+                "evidence_observation_ids": entry.get("supporting_event_ids") or (),
+                "validated_only": True,
+            })
+    return models
+
+
 def _world_maps(population: P6Population, tenant_id: UUID) -> dict[str, Any]:
     batch_by_signal = {
         signal.signal_id: batch.batch_number
@@ -147,7 +171,7 @@ def _score_storyline(
     expected_claims = {item.claim_id for item in expected_gold}
     expected_phases = _expected_phases(stage)
     candidates: list[tuple[dict[str, Any], list[Any]]] = []
-    for model in snapshot.get("accepted_models") or ():
+    for model in _models_for_snapshot(snapshot):
         evidence = _model_evidence(model, maps, through_stage=stage)
         if any(item.storyline_id == storyline for item in evidence):
             candidates.append((model, evidence))
@@ -469,7 +493,7 @@ def evaluate_frozen_worlds(
                             if item.storyline_id == storyline
                         )
                         eligible = [
-                            model for model in calibration_snapshot.get("accepted_models") or ()
+                            model for model in _models_for_snapshot(calibration_snapshot)
                             if entails_structured_claim(model, claim_oracle)
                         ]
                         confidences = [float(model.get("confidence") or 0) for model in eligible]
@@ -491,7 +515,7 @@ def evaluate_frozen_worlds(
                             "measured": bool(confidences),
                             "denominator": len(confidences),
                         }
-                    for model in snapshot.get("accepted_models") or ():
+                    for model in _models_for_snapshot(snapshot):
                         evidence = _model_evidence(model, maps, through_stage=12)
                         if evidence and all(
                             item.role in {"noise", "high_similarity_distractor"}

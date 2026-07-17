@@ -69,8 +69,6 @@ class P7LifecycleBridgeReceipt(_Frozen):
 
 
 def arm_allows_reasoning(arm: P7EvolutionArm, batch_number: int) -> bool:
-    if arm == "observation_only":
-        return False
     if arm == "frozen":
         return batch_number <= 3
     return True

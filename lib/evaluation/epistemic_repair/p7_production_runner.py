@@ -33,6 +33,10 @@ from lib.evaluation.epistemic_repair.p7_retrieval_policy import (
 from lib.llm.provider import build_provider, close_codex_app_server_client, set_response_cache
 from lib.shared.errors import InvariantViolation
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
+from services.reasoning.think.execution_policy import (
+    NORMAL_EXECUTION_POLICY,
+    issue_evaluation_validate_only_policy,
+)
 
 
 P7_ARMS: tuple[P7EvolutionArm, ...] = (
@@ -232,7 +236,11 @@ async def _run_arm(
                 limit=len(observation_ids),
                 run_id=f"p7-{runtime.arm}-batch-{batch.batch_number}",
             )
-            policy = "hide_models" if runtime.arm == "memory_hidden" else "normal"
+            policy = (
+                "hide_models"
+                if runtime.arm in {"memory_hidden", "observation_only"}
+                else "normal"
+            )
             async with production_retrieval_policy(policy):
                 async with asyncio.timeout(per_batch_timeout_s):
                     execution = await _process_one_t1_batch(
@@ -309,10 +317,18 @@ async def _run_arm(
                        ORDER BY truth_advanced_at,id""",
                     runtime.tenant_id,
                 )
+                validate_only_rows = await conn.fetch(
+                    """SELECT id,validation_result FROM think_runs
+                       WHERE tenant_id=$1 AND status='success'
+                         AND execution_mode='validate_only'
+                       ORDER BY started_at,id""",
+                    runtime.tenant_id,
+                )
             stage_snapshot = {
                 **snapshot,
                 "accepted_models": [dict(row) for row in model_rows],
                 "accepted_relations": [dict(row) for row in relation_rows],
+                "validated_only_runs": [dict(row) for row in validate_only_rows],
             }
         else:
             stage_snapshot = None
@@ -320,7 +336,9 @@ async def _run_arm(
             "batch_number": batch.batch_number,
             "reasoning_executed": execution is not None,
             "retrieval_policy": (
-                "hide_models" if runtime.arm == "memory_hidden" else "normal"
+                "hide_models"
+                if runtime.arm in {"memory_hidden", "observation_only"}
+                else "normal"
             ) if execution is not None else "not_executed",
             "think_run_id": str(_run_id(execution)) if execution else None,
             "lifecycle_receipts": [receipt.model_dump(mode="json") for receipt in receipts],
@@ -338,9 +356,7 @@ async def _run_arm(
             "P7_CORRUPTION_INTERVENTION_NOT_ADMITTED",
             "production Think admitted no observable optimistic claim for the corrupted arm",
         )
-    expected_reasoning_batches = 0 if runtime.arm == "observation_only" else (
-        3 if runtime.arm == "frozen" else 12
-    )
+    expected_reasoning_batches = 3 if runtime.arm == "frozen" else 12
     reasoning_batch_count = sum(wave["reasoning_executed"] for wave in waves)
     arm_contract_satisfied = (
         len(waves) == 12
@@ -403,9 +419,7 @@ async def run_p7_production_staged(
                     tenant_id,
                     f"p7-production-{world_id}-{arm}-{tenant_id}",
                 )
-            worker = None
-            if arm != "observation_only":
-                worker = ThinkWorker(
+            worker = ThinkWorker(
                     pool,
                     config=WorkerConfig(
                         poll_batch=30,
@@ -421,6 +435,11 @@ async def run_p7_production_staged(
                     llm_provider=provider,
                     mention_discovery_provider=provider,
                     embedder=embedder,
+                    execution_policy=(
+                        issue_evaluation_validate_only_policy()
+                        if arm == "observation_only"
+                        else NORMAL_EXECUTION_POLICY
+                    ),
                 )
             runtimes.append(P7ArmRuntime(arm=arm, tenant_id=tenant_id, worker=worker))
         results = await asyncio.gather(*(
