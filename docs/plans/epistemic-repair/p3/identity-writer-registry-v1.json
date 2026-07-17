@@ -1,0 +1,14 @@
+{
+  "schema_version": "identity-writer-registry-v1",
+  "canonical_table": "entity_aliases",
+  "mutation_module": "services/domain/entity_aliases/repo.py",
+  "authority_minter": "services/domain/entity_aliases/authority.py",
+  "authority_setting": "app.entity_identity_command",
+  "governed_entrypoints": [
+    "insert_alias_with_connection",
+    "close_aliases_for_entity_with_connection",
+    "delete_stale_aliases_with_connection",
+    "EntityAliasRepo.record_usage"
+  ],
+  "same_role_security_boundary": false
+}

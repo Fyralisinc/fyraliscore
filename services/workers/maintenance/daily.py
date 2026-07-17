@@ -38,6 +38,7 @@ import asyncpg
 from lib.shared.db import get_pool
 from lib.shared.ids import uuid7
 from services.domain.models.decay import archive_decayed, hourly_decay
+from services.domain.entity_aliases.repo import delete_stale_aliases_with_connection
 
 
 log = logging.getLogger(__name__)
@@ -96,17 +97,15 @@ async def entity_alias_cleanup(
     """Delete unused aliases. "Unused" = both counts zero AND stale
     last_used_at. Returns number of rows deleted.
     """
-    runner: Any = conn if conn is not None else get_pool()
-    tag = await runner.execute(
-        """
-        DELETE FROM entity_aliases
-        WHERE confirmed_count = 0
-          AND contested_count = 0
-          AND last_used_at < (now() - ($1 || ' days')::interval)
-        """,
-        str(int(stale_days)),
-    )
-    return _rowcount(tag)
+    if conn is not None:
+        return await delete_stale_aliases_with_connection(
+            conn, stale_days=stale_days
+        )
+    pool = get_pool()
+    async with pool.acquire() as acquired, acquired.transaction():
+        return await delete_stale_aliases_with_connection(
+            acquired, stale_days=stale_days
+        )
 
 
 async def orphan_detection(

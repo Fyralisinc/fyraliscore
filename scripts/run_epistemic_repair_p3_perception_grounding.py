@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import os
 from pathlib import Path
 
 from lib.evaluation.epistemic_repair.p3_runner import (
@@ -24,6 +26,7 @@ from services.domain.entity_grounding.episode import (
 from services.domain.entity_grounding.mentions import (
     prepare_entity_mention_detection,
 )
+from lib.evaluation.epistemic_repair.p3_postgres_probes import run_p3_postgres_probes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,12 +44,28 @@ def _production_runtime() -> P3PerceptionRuntime:
     )
 
 
+async def _postgres_proof(dsn: str) -> dict:
+    import asyncpg
+    conn = await asyncpg.connect(dsn)
+    transaction = conn.transaction()
+    await transaction.start()
+    try:
+        return (await run_p3_postgres_probes(conn)).as_dict()
+    finally:
+        await transaction.rollback()
+        await conn.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Execute the sealed 120-signal P3 evaluator. This starts from "
             "normalized signal fixtures and does not run ingestion listeners."
         )
+    )
+    parser.add_argument(
+        "--dsn", default=os.environ.get("DATABASE_URL"),
+        help="optional PostgreSQL DSN enabling HG-02/HG-06/HG-14 closure",
     )
     parser.add_argument(
         "--repository-root",
@@ -69,6 +88,7 @@ def main() -> int:
     report = run_p3_perception_grounding(
         repository_root=args.repository_root.resolve(),
         runtime=_production_runtime(),
+        postgres_proof=(asyncio.run(_postgres_proof(args.dsn)) if args.dsn else None),
     )
     write_p3_artifact(report, args.output)
     if args.schema_output is not None:

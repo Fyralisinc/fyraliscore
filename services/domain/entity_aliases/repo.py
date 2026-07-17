@@ -54,6 +54,8 @@ from lib.contracts.kernel import canonical_sha256
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import EntityAliasRow
+from services.domain.entity_aliases.authority import governed_identity_writer
+from services.domain.entity_aliases.authority import identity_command_authority
 
 
 # Resolver output is assessment/candidate state, never canonical identity.
@@ -369,6 +371,7 @@ async def validate_governed_alias_replay(
     return False
 
 
+@governed_identity_writer
 async def insert_alias_with_connection(
     conn: asyncpg.Connection,
     *,
@@ -605,6 +608,7 @@ async def insert_alias_with_connection(
     return _hydrate_alias(row)
 
 
+@governed_identity_writer
 async def close_aliases_for_entity_with_connection(
     conn: asyncpg.Connection,
     *,
@@ -684,6 +688,23 @@ async def close_aliases_for_entity_with_connection(
         normalized_phrases,
     )
     return int(result.rsplit(" ", 1)[-1])
+
+
+@governed_identity_writer
+async def delete_stale_aliases_with_connection(
+    conn: asyncpg.Connection, *, stale_days: int
+) -> int:
+    """Governed maintenance transition for unused, stale aliases."""
+    tag = await conn.execute(
+        """
+        DELETE FROM entity_aliases
+        WHERE confirmed_count = 0
+          AND contested_count = 0
+          AND last_used_at < (now() - ($1 || ' days')::interval)
+        """,
+        str(int(stale_days)),
+    )
+    return int(tag.rsplit(" ", 1)[-1])
 
 
 async def _validate_adjudicated_alias_authority(
@@ -1017,20 +1038,22 @@ class EntityAliasRepo:
         (the phrase was used and accepted). Raises ValidationError if
         the alias does not exist.
         """
-        row = await self._pool.fetchrow(
-            """
-            UPDATE entity_aliases
-            SET confirmed_count = confirmed_count + 1,
-                last_used_at = now()
-            WHERE id = $1
-            RETURNING id, tenant_id, alias_text, alias_embedding,
-                      actor_id, resolved_entity_ref, is_canonical,
-                      entity_metadata, confidence,
-                      confirmed_count, contested_count,
-                      first_seen_at, last_used_at, source_event_id
-            """,
-            alias_id,
-        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            async with identity_command_authority(conn):
+                row = await conn.fetchrow(
+                    """
+                    UPDATE entity_aliases
+                    SET confirmed_count = confirmed_count + 1,
+                        last_used_at = now()
+                    WHERE id = $1
+                    RETURNING id, tenant_id, alias_text, alias_embedding,
+                              actor_id, resolved_entity_ref, is_canonical,
+                              entity_metadata, confidence,
+                              confirmed_count, contested_count,
+                              first_seen_at, last_used_at, source_event_id
+                    """,
+                    alias_id,
+                )
         if row is None:
             raise ValidationError(
                 f"alias {alias_id} not found",
@@ -1241,6 +1264,7 @@ __all__ = [
     "EntityAliasRepo",
     "close_aliases_for_entity_with_connection",
     "insert_alias_with_connection",
+    "delete_stale_aliases_with_connection",
     "normalize_phrase",
     "validate_governed_alias_replay",
 ]

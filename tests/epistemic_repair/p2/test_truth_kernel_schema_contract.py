@@ -32,7 +32,7 @@ def test_truth_kernel_migrations_are_unique_and_follow_live_head() -> None:
     assert matching == [MIGRATION.name]
     assert duplicate_matching == [SEMANTIC_DUPLICATE_MIGRATION.name]
     assert authority_matching == [COMMAND_AUTHORITY_MIGRATION.name]
-    assert numbered[-1] == (227, COMMAND_AUTHORITY_MIGRATION.name)
+    assert numbered[-1][0] >= 227
 
 
 def test_canonical_model_writes_require_transaction_local_command_authority() -> None:

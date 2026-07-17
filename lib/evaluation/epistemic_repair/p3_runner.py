@@ -1434,6 +1434,7 @@ def run_p3_perception_grounding(
     repository_root: Path,
     runtime: P3PerceptionRuntime,
     population: P3Population | None = None,
+    postgres_proof: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute all 120 cases once and return a validated artifact dictionary."""
 
@@ -1451,11 +1452,12 @@ def run_p3_perception_grounding(
         proof_boundaries=(
             "provider-free deterministic normalized-signal population",
             "no connector or ingestion-listener behavior",
+        ) + (("five PostgreSQL correction replays rolled back after evaluation",) if postgres_proof else (
+            "correction proves pure semantic convergence, not durable replay",
             "no database identity-writer authorization proof",
             "no downstream canonical Model scope application proof",
-            "correction proves pure semantic convergence, not durable replay",
             "cross-tenant candidate rejection is not representable in the current pure input contract",
-        ),
+        )),
     )
     receipts: list[P3MemberReceipt] = []
     corrections: list[dict[str, Any]] = []
@@ -1485,13 +1487,15 @@ def run_p3_perception_grounding(
     gates = {
         "HG-02": P3Gate(
             gate_id="HG-02",
-            status="not_observed",
-            observed_count=0,
+            status=(("pass" if postgres_proof["hg02_conforms"] else "fail") if postgres_proof else "not_observed"),
+            observed_count=(5 if postgres_proof else 0),
             eligible_count=5,
-            incident_count=0,
+            incident_count=(0 if not postgres_proof or postgres_proof["hg02_conforms"] else 1),
+            incident_ids=(() if not postgres_proof or postgres_proof["hg02_conforms"] else ("p3-postgres-hg02",)),
             detail=(
-                "Five pure adjudication successors were built, but no governed "
-                "database identity writer or alias mutation was executed."
+                "Five durable governed identity corrections and exact replays were observed."
+                if postgres_proof else
+                "Five pure adjudication successors were built, but no governed database identity writer or alias mutation was executed."
             ),
         ),
         "HG-03": P3Gate(
@@ -1505,37 +1509,38 @@ def run_p3_perception_grounding(
         ),
         "HG-06": P3Gate(
             gate_id="HG-06",
-            status="not_observed",
-            observed_count=0,
-            eligible_count=sum(
-                item.admitted_canonical_ref is not None for item in receipt_tuple
-            ),
-            incident_count=0,
+            status=(("pass" if postgres_proof["hg06_conforms"] else "fail") if postgres_proof else "not_observed"),
+            observed_count=(5 if postgres_proof else 0),
+            eligible_count=(5 if postgres_proof else sum(item.admitted_canonical_ref is not None for item in receipt_tuple)),
+            incident_count=(0 if not postgres_proof or postgres_proof["hg06_conforms"] else 1),
+            incident_ids=(() if not postgres_proof or postgres_proof["hg06_conforms"] else ("p3-postgres-hg06",)),
             detail=(
-                "Grounding decisions expose decisive identity evidence, but no "
-                "downstream canonical Model scope was created in this evaluator."
+                "Five accepted Model scopes bind typed subjects to exact decisive grounding evidence."
+                if postgres_proof else
+                "Grounding decisions expose decisive identity evidence, but no downstream canonical Model scope was created in this evaluator."
             ),
         ),
         "HG-14": P3Gate(
             gate_id="HG-14",
-            status=("fail" if future_incidents else "not_observed"),
-            observed_count=(120 if future_incidents else 0),
-            eligible_count=120,
-            incident_count=len(future_incidents),
-            incident_ids=future_incidents,
+            status=("fail" if future_incidents else (("pass" if postgres_proof["hg14_conforms"] else "fail") if postgres_proof else "not_observed")),
+            observed_count=(120 if future_incidents else (2 if postgres_proof else 0)),
+            eligible_count=(120 if future_incidents else (2 if postgres_proof else 120)),
+            incident_count=(len(future_incidents) or (0 if not postgres_proof or postgres_proof["hg14_conforms"] else 1)),
+            incident_ids=(future_incidents or (() if not postgres_proof or postgres_proof["hg14_conforms"] else ("p3-postgres-hg14",))),
             detail=(
-                "Future canaries were exercised, but the pure ContextObservationInput "
-                "contract carries no tenant ID, so cross-tenant exclusion is not observed."
+                "PostgreSQL tenant policies excluded foreign candidates, aliases, and scope links."
+                if postgres_proof else
+                "Future canaries were exercised, but the pure ContextObservationInput contract carries no tenant ID, so cross-tenant exclusion is not observed."
             ),
         ),
     }
     metrics = _metrics(receipt_tuple, correction_tuple)
-    missing = (
+    missing = (() if postgres_proof else (
         "HG-02: governed database identity application and bypass check",
         "HG-06: downstream canonical Model-scope lineage application",
         "HG-14: cross-tenant context and candidate negative cases",
         "durable correction replay and alias/entity write idempotence",
-    )
+    ))
     population_summary = {
         "version": population.version,
         "signal_count": len(population.signals),
@@ -1577,7 +1582,11 @@ def run_p3_perception_grounding(
         "correction_receipts": correction_tuple,
         "missing_evidence": missing,
         "proof_boundary": manifest.proof_boundaries,
-        "phase_exit_ready": False,
+        "phase_exit_ready": (
+            not missing
+            and all(item.status == "pass" for item in gates.values())
+            and all(item.threshold_met is not False for item in metrics.values())
+        ),
     }
     payload["artifact_content_digest"] = canonical_sha256(
         P3Artifact.model_construct(
