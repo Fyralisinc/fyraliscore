@@ -42,6 +42,23 @@ def _metrics_complete(value: Any) -> bool:
     return True
 
 
+def _contention_complete(artifact: dict[str, Any]) -> bool:
+    result = artifact.get("result", {})
+    expected = {"p8-bs10-h12-t1", "p8-bs25-h12-t5", "p8-bs50-h12-t20"}
+    return bool(
+        artifact.get("schema_version") == "p8-shared-contention-v2"
+        and set(result.get("selected_cell_ids", ())) == expected
+        and result.get("concurrent_cells") == len(expected)
+        and isinstance(result.get("wall_time_ms"), (int, float))
+        and result["wall_time_ms"] > 0
+        and isinstance(result.get("individual_wall_time_sum_ms"), (int, float))
+        and result["individual_wall_time_sum_ms"] > 0
+        and isinstance(result.get("contention_ratio"), (int, float))
+        and result["contention_ratio"] > 0
+        and len(result.get("evidence_digest", "")) == 64
+    )
+
+
 def compose_p8_exit(
     *, fault_path: Path, scale_path: Path, characterization_path: Path,
     contention_path: Path, provider_canary_path: Path,
@@ -74,7 +91,7 @@ def compose_p8_exit(
             "deterministic_token_status_explicit", "derived_refresh_pipeline_executed",
         )),
         "deterministic_token_status_exact_not_estimated": scale_gates.get("exact_provider_prompt_token_measurement") is False,
-        "shared_contention_separate": artifacts["contention"].get("schema_version") == "p8-shared-contention-v2",
+        "shared_contention_separate": _contention_complete(artifacts["contention"]),
         "characterization_reporting_complete": characterization_complete,
         "authorized_provider_canaries": False if not latency_green else False,
         "provider_usage_observability": isinstance(usage, dict) and usage.get("input_tokens", 0) > 0,
