@@ -499,7 +499,7 @@ def prepare_context_selection(
         context_observations=eligible_context,
         governed_exact_alias_available=governed_exact_alias_available,
     )
-    context_dependent = (
+    phrase_context_dependent = (
         source_channel == "slack:message"
         and (
             phrase_requires_context(phrase)
@@ -514,17 +514,21 @@ def prepare_context_selection(
         item.inclusion_layer == "temporal_candidate"
         for item in eligible_context
     )
-    required_probe_surfaces = (
-        ("boundary_sensitivity",)
-        if not context_dependent
-        else (
-            ("source_topology", "boundary_sensitivity")
-            if has_structural_context
-            else ("temporal_alternatives", "boundary_sensitivity")
-            if has_temporal_context
-            else ("boundary_sensitivity",)
-        )
+    has_source_reference_context = any(
+        item.inclusion_layer == "source_reference"
+        for item in eligible_context
     )
+    context_dependent = phrase_context_dependent or has_source_reference_context
+    required_probe_surfaces_list: list[str] = []
+    if has_source_reference_context:
+        required_probe_surfaces_list.append("source_reference")
+    if phrase_context_dependent:
+        if has_structural_context:
+            required_probe_surfaces_list.append("source_topology")
+        elif has_temporal_context:
+            required_probe_surfaces_list.append("temporal_alternatives")
+    required_probe_surfaces_list.append("boundary_sensitivity")
+    required_probe_surfaces = tuple(required_probe_surfaces_list)
     request = InterpretationContextRequest(
         request_id=str(uuid7()),
         tenant_id=tenant_id,
@@ -547,7 +551,7 @@ def prepare_context_selection(
             max_latency_ms=10_000,
         ),
         policy_versions=(_CONTEXT_POLICY_VERSION,),
-        self_contained_source=source_channel != "slack:message",
+        self_contained_source=not context_dependent,
     )
     focal = SelectedContextItem(
         event_revision_id=focal_revision_id,
@@ -584,6 +588,21 @@ def prepare_context_selection(
     )[: request.budget.max_events - 1]
     if structural_items:
         groups.append((focal, *structural_items))
+    source_reference_items = tuple(
+        item
+        for item in context_items
+        if item.layer is CandidateContextLayer.SOURCE_REFERENCE
+    )[: request.budget.max_events - 1]
+    if source_reference_items:
+        groups.append((focal, *source_reference_items))
+    if structural_items and source_reference_items:
+        groups.append(
+            (
+                focal,
+                *structural_items,
+                *source_reference_items,
+            )[: request.budget.max_events]
+        )
     temporal_items = tuple(
         item
         for item in context_items
@@ -603,6 +622,16 @@ def prepare_context_selection(
         (focal, item)
         for item in temporal_items[: request.budget.max_events - 1]
     )
+    if source_reference_items:
+        groups.extend(
+            (focal, *source_reference_items, item)
+            for item in temporal_items[
+                : max(
+                    0,
+                    request.budget.max_events - len(source_reference_items) - 1,
+                )
+            ]
+        )
     unique_groups: list[tuple[SelectedContextItem, ...]] = []
     seen_groups: set[tuple[str, ...]] = set()
     for group in groups:
@@ -635,10 +664,12 @@ def prepare_context_selection(
             phrase=phrase,
             selected_context=selected_inputs,
             context_dependent=context_dependent,
+            phrase_context_dependent=phrase_context_dependent,
+            source_reference_required=has_source_reference_context,
             ambiguity_refs=ambiguity_refs,
         )
         hypotheses: tuple[ConversationEpisodeHypothesis, ...] = ()
-        if source_channel == "slack:message":
+        if source_channel == "slack:message" or has_source_reference_context:
             hypotheses = (
                 ConversationEpisodeHypothesis.build(
                     membership_weights={
@@ -651,7 +682,11 @@ def prepare_context_selection(
                     ),
                     split_merge_evidence_refs=(),
                     boundary_confidence=0.35 if topology_incomplete else 0.7,
-                    generator_version="slack-boundary-hypothesis-v2",
+                    generator_version=(
+                        "slack-boundary-hypothesis-v2"
+                        if source_channel == "slack:message"
+                        else "source-reference-boundary-hypothesis-v1"
+                    ),
                     configuration_version=_CONTEXT_POLICY_VERSION,
                 ),
             )
@@ -666,6 +701,11 @@ def prepare_context_selection(
             and CandidateContextLayer.TEMPORAL not in layer_coverage
         ):
             omitted["temporal_alternatives"] = "not included in this candidate"
+        if (
+            has_source_reference_context
+            and CandidateContextLayer.SOURCE_REFERENCE not in layer_coverage
+        ):
+            omitted["source_reference"] = "not included in this candidate"
         candidate = ConversationContextCandidate.build(
             candidate_id=uuid7(),
             request_id=request.request_id,
@@ -700,6 +740,8 @@ def prepare_context_selection(
             completed.append("source_topology")
         if CandidateContextLayer.TEMPORAL in layer_coverage:
             completed.append("temporal_alternatives")
+        if CandidateContextLayer.SOURCE_REFERENCE in layer_coverage:
+            completed.append("source_reference")
         if boundary_resolved:
             completed.append("boundary_sensitivity")
         unresolved = (
@@ -932,6 +974,8 @@ def _candidate_boundary_probe(
     phrase: str,
     selected_context: tuple[ContextObservationInput, ...],
     context_dependent: bool,
+    phrase_context_dependent: bool,
+    source_reference_required: bool,
     ambiguity_refs: tuple[str, ...],
 ) -> tuple[bool, tuple[str, ...]]:
     if not context_dependent:
@@ -950,6 +994,13 @@ def _candidate_boundary_probe(
         return False, signatures or ("unresolved-bare-surface",)
     if not selected_context:
         return False, ("missing-context",)
+    if source_reference_required and not any(
+        item.inclusion_layer == "source_reference"
+        for item in selected_context
+    ):
+        return False, signatures or ("missing-source-reference",)
+    if source_reference_required and not phrase_context_dependent:
+        return True, signatures
     anchor_terms = {
         token
         for token in _tokens(phrase)
@@ -1057,6 +1108,12 @@ def _context_layer(value: str) -> CandidateContextLayer:
         return CandidateContextLayer.SOURCE_TOPOLOGY
     if value == "temporal_candidate":
         return CandidateContextLayer.TEMPORAL
+    if value == "source_reference":
+        return CandidateContextLayer.SOURCE_REFERENCE
+    if value == "external_link":
+        return CandidateContextLayer.EXTERNAL_LINK
+    if value == "cross_channel":
+        return CandidateContextLayer.CROSS_CHANNEL
     return CandidateContextLayer.DISCOURSE
 
 

@@ -515,6 +515,133 @@ def test_future_context_is_excluded_from_as_known_snapshot() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("source_channel", "source_space", "reference_channel", "reference_space"),
+    [
+        ("gmail:message", "gmail:finance", "gmail:message", "gmail:finance"),
+        (
+            "google_drive:document",
+            "drive:customer-success",
+            "jira:issue",
+            "jira:ENG",
+        ),
+    ],
+)
+def test_non_slack_source_reference_is_selected_as_required_context(
+    source_channel: str,
+    source_space: str,
+    reference_channel: str,
+    reference_space: str,
+) -> None:
+    focal_id = uuid4()
+    reference_id = uuid4()
+    future_id = uuid4()
+    command, outcome = prepare_context_selection(
+        tenant_id=uuid4(),
+        observation_id=focal_id,
+        phrase="unresolved-opportunity",
+        occurred_at=NOW,
+        source_channel=source_channel,
+        source_space=source_space,
+        topology_incomplete=False,
+        boundary_hypotheses=(
+            {"kind": "authenticated_source_reference"},
+        ),
+        context_observations=(
+            ContextObservationInput(
+                observation_id=reference_id,
+                occurred_at=NOW - timedelta(minutes=5),
+                source_channel=reference_channel,
+                source_space=reference_space,
+                inclusion_layer="source_reference",
+                inclusion_reasons=("quoted or linked source object",),
+                content_text="The source object records the controlling decision.",
+                token_count=8,
+                topology_edge_ids=(f"link:{reference_id}:{focal_id}",),
+            ),
+            ContextObservationInput(
+                observation_id=future_id,
+                occurred_at=NOW + timedelta(seconds=1),
+                source_channel=reference_channel,
+                source_space=reference_space,
+                inclusion_layer="source_reference",
+                inclusion_reasons=("future source reference canary",),
+                content_text="A later source object must remain invisible.",
+                token_count=7,
+            ),
+        ),
+        selection_dependency_refs=(f"source-reference:{reference_id}",),
+        now=NOW + timedelta(minutes=1),
+        focal_content_text="This item quotes or links the earlier decision.",
+    )
+
+    selected = {
+        item.event_revision_id: item
+        for item in outcome.snapshot.selected_items
+    }
+    reference_revision = f"observation:{reference_id}:v1"
+    future_revision = f"observation:{future_id}:v1"
+    assert outcome.disposition.value == "operationally_sufficient"
+    assert command.request.self_contained_source is False
+    assert command.request.required_probe_surfaces == (
+        "source_reference",
+        "boundary_sensitivity",
+    )
+    assert selected[reference_revision].layer.value == "source_reference"
+    assert future_revision not in selected
+    assert command.request.processing_authority.object_ids.permits(
+        reference_revision
+    )
+    assert not command.request.processing_authority.object_ids.permits(
+        future_revision
+    )
+    assert command.request.allowed_source_spaces.permits(reference_space)
+    assert len(selected) <= command.request.budget.max_events
+    selected_probe = next(
+        probe
+        for probe in command.probes
+        if probe.candidate_id in outcome.selected_candidate_ids
+    )
+    assert selected_probe.contamination_score <= (
+        command.policy.max_contamination_score
+    )
+
+
+def test_self_contained_email_does_not_select_untyped_neighbor_context() -> None:
+    neighbor_id = uuid4()
+    _, outcome = prepare_context_selection(
+        tenant_id=uuid4(),
+        observation_id=uuid4(),
+        phrase="Acme",
+        occurred_at=NOW,
+        source_channel="gmail:message",
+        source_space="gmail:finance",
+        topology_incomplete=False,
+        boundary_hypotheses=(),
+        context_observations=(
+            ContextObservationInput(
+                observation_id=neighbor_id,
+                occurred_at=NOW - timedelta(minutes=1),
+                source_channel="gmail:message",
+                source_space="gmail:finance",
+                inclusion_layer="temporal_candidate",
+                inclusion_reasons=("nearby but not quoted or linked",),
+                content_text="Acme appears in a separate email.",
+            ),
+        ),
+        selection_dependency_refs=(),
+        now=NOW + timedelta(minutes=1),
+        focal_content_text="Acme is fully explained in this message.",
+    )
+
+    assert outcome.disposition.value == "operationally_sufficient"
+    assert len(outcome.snapshot.selected_items) == 1
+    assert all(
+        item.event_revision_id != f"observation:{neighbor_id}:v1"
+        for item in outcome.snapshot.selected_items
+    )
+
+
 def test_context_dependent_slack_phrase_cannot_auto_admit_without_stable_boundary() -> None:
     episode = _build_detected_episode(
         tenant_id=TENANT,

@@ -102,7 +102,7 @@ def test_full_runner_emits_complete_member_level_artifact() -> None:
     P3Artifact.model_validate(report)
 
 
-def test_metrics_are_bounded_denominator_complete_and_keep_known_gap_visible() -> None:
+def test_metrics_are_bounded_denominator_complete_and_context_recall_is_sufficient() -> None:
     report = run_p3_perception_grounding(repository_root=ROOT, runtime=_runtime())
     metrics = report["continuous_metrics"]
 
@@ -110,14 +110,11 @@ def test_metrics_are_bounded_denominator_complete_and_keep_known_gap_visible() -
     assert metrics["canonical_link_precision"]["value"] == 1.0
     assert metrics["safe_abstention_precision"]["value"] == 1.0
     assert metrics["correction_replay_convergence_coverage"]["value"] == 1.0
-    # Current context generation ignores non-Slack source-reference layers.
-    # The sealed oracle must expose that deficit, not tailor gold to make it green.
-    assert metrics["pairwise_boundary_recall"]["threshold_met"] is False
-    assert metrics["sufficient_context_recall"]["threshold_met"] is False
-    assert any(
-        case_id.startswith(("p3-email-", "p3-cross-source-"))
-        for case_id in metrics["pairwise_boundary_recall"]["worst_example_ids"]
-    )
+    # The production selector must recover required email and cross-source
+    # references without changing the sealed oracle or admitting contamination.
+    assert metrics["pairwise_boundary_recall"]["threshold_met"] is True
+    assert metrics["sufficient_context_recall"]["threshold_met"] is True
+    assert metrics["selected_context_contamination"]["value"] == 0.0
     for item in metrics.values():
         assert item["denominator"] > 0
         assert 0.0 <= item["value"] <= 1.0
