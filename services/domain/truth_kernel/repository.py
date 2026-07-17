@@ -278,7 +278,11 @@ class AsyncpgTruthKernelStorage:
             version.evidential_weight, list(version.supporting_model_ids),
             version.visible_to_subjects, version.resolution_outcome,
             version.resolved_at, terminal, version.created_at,
-            ("superseded" if version.lifecycle.value == "superseded" else "decay"),
+            ({
+                "superseded": "superseded",
+                "falsified": "falsifier_triggered",
+                "archived": "decay",
+            }.get(version.lifecycle.value, "decay")),
         )
 
     async def _insert_version_rows(

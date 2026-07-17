@@ -291,6 +291,7 @@ async def advance_validated_think_model(
     visible_to_subjects: bool | None = None,
     resolution_outcome: bool | None = None,
     resolved_at: datetime | None = None,
+    scope: tuple[ClaimScopeBinding, ...] | None = None,
     transition: ModelTruthTransition = ModelTruthTransition.CONFIRM,
     reason_code: str = "validated_think_update",
 ) -> UUID:
@@ -318,7 +319,7 @@ async def advance_validated_think_model(
         reference_id=uuid5(version_id, f"observation:{row['id']}"), tenant_id=tenant_id,
         kind=TruthEvidenceKind.OBSERVATION, evidence_id=str(row["id"]), evidence_version=1,
         evidence_digest=canonical_sha256(str(row["content_text"] or "")),
-        role=(TruthEvidenceRole.COUNTEREVIDENCE if transition is ModelTruthTransition.CONTEST else TruthEvidenceRole.SUPPORT),
+        role=(TruthEvidenceRole.SUPPORT if transition is ModelTruthTransition.CONFIRM else TruthEvidenceRole.COUNTEREVIDENCE),
         coordinate=TruthEvidenceCoordinate(
             source_system=str(row["source_channel"] or "normalized-signal"),
             source_object_id=str(row["id"]), source_revision="1", field_path="content_text",
@@ -336,6 +337,7 @@ async def advance_validated_think_model(
     next_visible = visible_to_subjects if visible_to_subjects is not None else prior.visible_to_subjects
     next_resolution = resolution_outcome if resolution_outcome is not None else prior.resolution_outcome
     next_resolved_at = resolved_at if resolved_at is not None else prior.resolved_at
+    next_scope = scope if scope is not None else prior.scope
     next_version = prior.model_copy(update={
         "version_id": version_id, "version": prior.version + 1,
         "confidence": confidence, "evidence": evidence,
@@ -345,10 +347,11 @@ async def advance_validated_think_model(
         "supporting_model_ids": next_supporting_models,
         "visible_to_subjects": next_visible,
         "resolution_outcome": next_resolution, "resolved_at": next_resolved_at,
+        "scope": next_scope,
         "lifecycle": transition.resulting_lifecycle, "created_at": at,
         "semantic_digest": ModelVersion.compute_semantic_digest(
             proposition=next_proposition, natural=prior.natural, evidence=evidence,
-            scope=prior.scope, confidence=confidence,
+            scope=next_scope, confidence=confidence,
             falsifier=next_falsifier, evidential_weight=next_weight,
             supporting_model_ids=next_supporting_models,
             visible_to_subjects=next_visible,
