@@ -11,6 +11,7 @@ import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
 from decimal import Decimal
+from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Any
@@ -151,6 +152,7 @@ async def run_p1_exit_evaluation(
             schema=BatchReasoningResult,
             max_attempts=3,
             deadline_s=240.0,
+            context_digest=sha256(user.encode()).hexdigest(),
         )
         call = sink.logical_calls[before_calls]
         attempts = sink.attempts[before_attempts:]
@@ -254,6 +256,10 @@ async def run_p1_exit_evaluation(
             all(item.purpose and item.outcome and item.pricing_version for item in sink.attempts)
             and costs.cost_coverage == 1.0
         ),
+        "context_digest_coverage": all(
+            item.context_digest is not None and len(item.context_digest) == 64
+            for item in sink.logical_calls
+        ),
         "question_planning_rate_at_most_25_percent": True,
         "background_call_cap_is_explicit_and_non_negative": True,
     }
@@ -261,7 +267,6 @@ async def run_p1_exit_evaluation(
         "clean_batch_t1_p95_and_three_times_median "
         "(both deterministic batches contain injected faults)",
         "durable PostgreSQL receipt write and recovery behavior",
-        "context digest persistence (prompt digest is covered here)",
         "bounded clean real-provider telemetry smoke",
     ]
     return {

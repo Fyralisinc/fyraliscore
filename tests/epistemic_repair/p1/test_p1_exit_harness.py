@@ -46,6 +46,7 @@ async def test_sealed_two_batch_exit_run_reconciles_without_real_provider() -> N
         "HG-13_observability_integrity": True,
     }
     assert all(report["deterministic_success_criteria"].values())
+    assert report["deterministic_success_criteria"]["context_digest_coverage"]
     assert report["deterministic_passed"]
     assert not report["phase_exit_ready"]
     assert "durable PostgreSQL receipt write and recovery behavior" in report[
