@@ -1446,6 +1446,19 @@ async def _record_apply_observability(
         )
     except Exception as exc:  # noqa: BLE001
         _raise_if_postgres_error(exc)
+    from services.reasoning.think.company_learning_feedback import (
+        record_company_learning_context_credit,
+    )
+
+    await record_company_learning_context_credit(
+        conn,
+        tenant_id=trigger.tenant_id,
+        run_id=record.id,
+        batch_id=_receipt_batch_id(trigger, record.trigger_id) or str(record.id),
+        route_id=_primitive_from_trigger(trigger),
+        context_use=validated_context_use,
+        applied=applied,
+    )
     await debug_capture(
         conn,
         run_id=record.id,
