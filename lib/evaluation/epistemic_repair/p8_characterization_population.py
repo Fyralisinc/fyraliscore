@@ -15,12 +15,14 @@ class CharacterizationCase:
     maturity: str | None
     evaluator_labels: tuple[str, ...]
     runtime_candidate_refs: tuple[str, ...] = ()
+    runtime_source_metadata: tuple[tuple[str, str], ...] = ()
 
     def runtime_payload(self) -> dict[str, object]:
         # This is the only payload production adapters receive.
         return {"case_id": self.case_id, "text": self.runtime_text,
                 "source_kind": self.source_kind, "maturity": self.maturity,
-                "candidate_refs": self.runtime_candidate_refs}
+                "candidate_refs": self.runtime_candidate_refs,
+                "source_metadata": self.runtime_source_metadata}
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,14 +51,27 @@ def build_boundary_population() -> SealedPopulation:
         source = "structured" if episode < 60 else "conversational" if episode < 180 else "cross_source"
         for position in range(5):
             index = episode * 5 + position
-            labels = [source, f"episode:{episode:03d}"]
+            labels = [source]
             for label, minimum in challenge_minima.items():
-                if index < minimum:
+                if (index * 37) % 1200 < minimum:
                     labels.append(label)
+            gold_episode = (episode + 1) % 240 if "topic_drift" in labels else episode
+            labels.append(f"episode:{gold_episode:03d}")
+            metadata = (
+                (("object_id", f"structured:{episode:03d}"),)
+                if source == "structured"
+                else (
+                    ("channel", "C-p8-boundary"),
+                    ("ts", f"{episode:03d}.{position:03d}"),
+                    *(((("thread_ts", f"{episode:03d}.000"),) if position else ())),
+                )
+                if source == "conversational"
+                else (("linked_object_id", f"cross:{episode:03d}"),)
+            )
             cases.append(CharacterizationCase(
                 f"boundary-{index:04d}",
                 f"Harbor episode {episode} update {position} references the prior status.",
-                source, None, tuple(labels),
+                source, None, tuple(labels), (), metadata,
             ))
     return _seal("boundary_discovery", "normalized_observation", cases)
 

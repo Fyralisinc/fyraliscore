@@ -1,7 +1,10 @@
+import asyncio
+
 from lib.evaluation.epistemic_repair.p8_characterization_population import (
     build_all_characterization_populations,
     population_manifest,
 )
+from lib.evaluation.epistemic_repair.p8_characterization_runner import _run_boundary
 
 
 def test_exact_characterization_denominators_and_required_slices() -> None:
@@ -30,3 +33,36 @@ def test_runtime_payloads_never_contain_evaluator_labels() -> None:
             payload = case.runtime_payload()
             assert "evaluator_labels" not in payload
             assert "gold" not in payload
+
+
+def test_boundary_discovery_executes_full_frozen_population_and_registered_slices() -> None:
+    population = next(
+        item for item in build_all_characterization_populations()
+        if item.name == "boundary_discovery"
+    )
+    result = asyncio.run(_run_boundary(population))
+
+    assert result["metric"] == "boundary_discovery_b_cubed"
+    assert result["denominator"] == 1200
+    assert result["predictions_frozen_before_gold"] is True
+    assert result["production_path"] == (
+        "source-native object keys plus Slack source structure projection"
+    )
+    assert 0.0 <= result["precision"] <= 1.0
+    assert 0.0 <= result["recall"] <= 1.0
+    assert 0.0 <= result["f1"] <= 1.0
+    assert result["false_merge_clusters"] >= 0
+    assert result["worst_example_ids"]
+    expected_slices = {
+        "structured", "conversational", "cross_source", "reply_thread_edit",
+        "discourse_reference", "topic_drift", "split_merge",
+        "temporal_distractor", "quote_link", "incomplete_topology",
+        "cross_source_object_link",
+    }
+    assert expected_slices <= result["slices"].keys()
+    for name in expected_slices:
+        row = result["slices"][name]
+        assert row["denominator"] > 0, name
+        assert len(row["precision_ci95"]) == 2
+        assert len(row["recall_ci95"]) == 2
+        assert len(row["f1_ci95"]) == 2

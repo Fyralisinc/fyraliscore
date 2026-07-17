@@ -51,7 +51,7 @@ async def _run(output: Path, database_url: str) -> int:
     artifact["artifact_digest"] = canonical_sha256(artifact)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"characterization_ready=false executed=boundary_context,context,entity_grounding,retrieval,feedback,queues,projection output={output}")
+    print(f"characterization_ready=false executed=boundary_discovery,context,entity_grounding,retrieval,feedback,queues,projection output={output}")
     return 0
 
 

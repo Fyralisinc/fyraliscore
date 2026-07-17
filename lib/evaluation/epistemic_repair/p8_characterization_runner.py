@@ -24,6 +24,10 @@ from services.domain.entity_grounding.episode import (
     prepare_context_selection,
 )
 from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
+from services.domain.conversation_context.slack_source_structure import (
+    SlackSourceObservation,
+    project_slack_source_structure,
+)
 
 
 _TENANT = uuid5(NAMESPACE_URL, "p8-characterization-tenant")
@@ -77,28 +81,84 @@ def _context(
 
 
 async def _run_boundary(population: SealedPopulation) -> dict[str, Any]:
-    outcomes, slices = [], {}
-    history: list[ContextObservationInput] = []
-    for ordinal, case in enumerate(population.cases):
-        if ordinal % 5 == 0:
-            history = []
-        command, outcome = _context(case.case_id, case.runtime_text, case.source_kind, ordinal, prior=tuple(history))
-        selected = {item.event_revision_id for item in outcome.snapshot.selected_items}
-        prior_ids = {f"observation:{item.observation_id}:v1" for item in history}
-        ok = not prior_ids or bool(selected & prior_ids)
-        outcomes.append((case.case_id, ok))
-        for label in case.evaluator_labels:
-            if not label.startswith("episode:"):
-                slices.setdefault(label, []).append((case.case_id, ok))
-        history.append(ContextObservationInput(
-            uuid5(NAMESPACE_URL, case.case_id), _START + timedelta(seconds=ordinal),
-            "slack:message" if case.source_kind == "conversational" else "document:object",
-            f"p8:{case.source_kind}", "source_topology", ("same source episode",),
-            case.runtime_text, len(case.runtime_text.split()), (f"edge:{case.case_id}",),
-        ))
-        if ordinal % 100 == 0:
-            await asyncio.sleep(0)
-    return _metric("boundary_context_recall", outcomes, slices=slices)
+    # Freeze production predictions from source-native metadata before reading
+    # any evaluator episode labels.
+    predicted: dict[str, str] = {}
+    slack_cases = [case for case in population.cases if case.source_kind == "conversational"]
+    slack_observations = tuple(
+        SlackSourceObservation(
+            tenant_id=_TENANT,
+            event_revision_id=f"observation:{uuid5(NAMESPACE_URL, case.case_id)}:v1",
+            occurred_at=_START + timedelta(seconds=int(case.case_id.rsplit("-", 1)[1])),
+            content_text=case.runtime_text,
+            content={**dict(case.runtime_source_metadata), "type": "message", "user": "U-p8"},
+        )
+        for case in slack_cases
+    )
+    structure = project_slack_source_structure(slack_observations)
+    revision_to_case = {
+        f"observation:{uuid5(NAMESPACE_URL, case.case_id)}:v1": case.case_id
+        for case in slack_cases
+    }
+    remaining = set(revision_to_case)
+    while remaining:
+        seed = min(remaining)
+        connected = {seed, *structure.connected_revision_ids(seed, max_hops=10)} & set(revision_to_case)
+        cluster_id = min(connected)
+        for revision in connected:
+            predicted[revision_to_case[revision]] = cluster_id
+        remaining -= connected
+    for case in population.cases:
+        metadata = dict(case.runtime_source_metadata)
+        if case.source_kind == "structured":
+            predicted[case.case_id] = f"object:{metadata['object_id']}"
+        elif case.source_kind == "cross_source":
+            predicted[case.case_id] = f"link:{metadata['linked_object_id']}"
+
+    gold = {
+        case.case_id: next(label for label in case.evaluator_labels if label.startswith("episode:"))
+        for case in population.cases
+    }
+
+    def score(ids: list[str]) -> dict[str, Any]:
+        pred_groups: dict[str, set[str]] = {}
+        gold_groups: dict[str, set[str]] = {}
+        for case_id in ids:
+            pred_groups.setdefault(predicted[case_id], set()).add(case_id)
+            gold_groups.setdefault(gold[case_id], set()).add(case_id)
+        members = []
+        for case_id in ids:
+            intersection = pred_groups[predicted[case_id]] & gold_groups[gold[case_id]]
+            precision = len(intersection) / len(pred_groups[predicted[case_id]])
+            recall = len(intersection) / len(gold_groups[gold[case_id]])
+            f1 = 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
+            members.append((case_id, precision, recall, f1))
+        def summary(index: int):
+            values = [row[index] for row in members]
+            mean = sum(values) / len(values)
+            variance = sum((value - mean) ** 2 for value in values) / max(1, len(values) - 1)
+            margin = 1.96 * sqrt(variance / len(values))
+            return mean, (max(0.0, mean - margin), min(1.0, mean + margin))
+        precision, precision_ci = summary(1)
+        recall, recall_ci = summary(2)
+        f1, f1_ci = summary(3)
+        worst = [row[0] for row in sorted(members, key=lambda row: (row[3], row[0]))[:10]]
+        false_merges = sum(1 for group in pred_groups.values() if len({gold[item] for item in group}) > 1)
+        return {"denominator": len(ids), "precision": precision, "precision_ci95": precision_ci,
+                "recall": recall, "recall_ci95": recall_ci, "f1": f1, "f1_ci95": f1_ci,
+                "false_merge_clusters": false_merges, "worst_example_ids": worst}
+
+    overall_ids = [case.case_id for case in population.cases]
+    labels = sorted({label for case in population.cases for label in case.evaluator_labels if not label.startswith("episode:")})
+    slices = {
+        label: score([case.case_id for case in population.cases if label in case.evaluator_labels])
+        for label in labels
+    }
+    result = score(overall_ids)
+    result.update({"metric": "boundary_discovery_b_cubed", "slices": slices,
+                   "production_path": "source-native object keys plus Slack source structure projection",
+                   "predictions_frozen_before_gold": True})
+    return result
 
 
 async def _run_context(population: SealedPopulation) -> dict[str, Any]:
