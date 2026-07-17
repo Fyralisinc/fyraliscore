@@ -435,6 +435,18 @@ WHERE h.lifecycle = 'active'
     FROM model_truth_evidence_references evidence
     WHERE evidence.tenant_id = v.tenant_id
       AND evidence.model_version_id = v.version_id
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM model_truth_evidence_references evidence
+    LEFT JOIN model_truth_heads evidence_head
+      ON evidence_head.tenant_id = evidence.tenant_id
+     AND evidence_head.version_id::text = evidence.evidence_id
+     AND evidence_head.lifecycle = 'active'
+    WHERE evidence.tenant_id = v.tenant_id
+      AND evidence.model_version_id = v.version_id
+      AND evidence.evidence_kind = 'model_version'
+      AND evidence_head.version_id IS NULL
   );
 
 CREATE OR REPLACE VIEW accepted_current_relations AS

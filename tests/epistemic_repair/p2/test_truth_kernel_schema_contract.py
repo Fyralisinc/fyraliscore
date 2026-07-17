@@ -172,6 +172,8 @@ def test_accepted_views_require_decision_and_active_exact_head() -> None:
         assert "WHERE h.lifecycle = 'active'" in view
         assert "semantic_digest" in view
     assert "model_truth_evidence_references" in models_view
+    assert "evidence.evidence_kind = 'model_version'" in models_view
+    assert "evidence_head.lifecycle = 'active'" in models_view
     assert "relation_truth_participants" in relations_view
     assert "relation_truth_evidence" in relations_view
     assert "model_head.lifecycle = 'active'" in relations_view
