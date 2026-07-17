@@ -1338,11 +1338,9 @@ async def _supplement_exact_batch_anchor_models(
         FROM models
         WHERE tenant_id = $1
           AND status = 'active'
-          AND EXISTS (
-              SELECT 1
-              FROM unnest($2::text[]) AS anchor(pattern)
-              WHERE natural ~* anchor.pattern
-                 OR proposition::text ~* anchor.pattern
+          AND (
+              "natural" ~* ANY($2::text[])
+              OR proposition::text ~* ANY($2::text[])
           )
         ORDER BY activation DESC, confidence DESC, created_at DESC
         LIMIT 64

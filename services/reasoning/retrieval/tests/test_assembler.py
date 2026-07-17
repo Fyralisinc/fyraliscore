@@ -18,6 +18,7 @@ from services.reasoning.retrieval.assembler import (
     _retrieval_score_ceiling,
     _select_observations,
     _selected_model_quality_mass,
+    _supplement_exact_batch_anchor_models,
     assemble_context,
 )
 from services.reasoning.retrieval.config import RetrievalConfig
@@ -402,6 +403,39 @@ async def _fetch_observation_rows(tx_conn, tenant, observation_ids):
         observation_ids=list(observation_ids),
     )
     return await _fetch_trigger_observations(trigger, tx_conn)
+
+
+async def test_batch_anchor_supplement_query_executes_and_hydrates_missing_model(
+    tx_conn, fresh_db, tenant
+):
+    fixture = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    missing_id = fixture.model_ids[0]
+    await tx_conn.execute(
+        'UPDATE models SET "natural" = $2 WHERE id = $1',
+        missing_id,
+        "QuartzBeacon renewal pattern remains unresolved.",
+    )
+    result = RetrievalResult(
+        trigger=TriggerContext(
+            kind="T1",
+            subkind="event_batch",
+            tenant_id=tenant,
+            seed_signature={
+                "batch_signal_fragments": [
+                    {"text": "QuartzBeacon renewal update"}
+                ]
+            },
+        ),
+        models=[],
+    )
+
+    supplemented = await _supplement_exact_batch_anchor_models(
+        result,
+        AccessContext(tenant_id=tenant),
+        tx_conn,
+    )
+
+    assert missing_id in {model.id for model in supplemented}
 
 
 async def test_assembler_respects_size_budgets(
