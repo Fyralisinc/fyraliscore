@@ -44,7 +44,11 @@ from services.domain.truth_kernel.relations.contracts import (
     RelationKind, RelationParticipant, ROLE_SCHEMA,
 )
 from services.domain.truth_kernel.relations.repository import AsyncpgRelationKernelStorage
-from services.domain.truth_kernel.relations.service import AdmitRelationCommand, RelationTruthKernel
+from services.domain.truth_kernel.relations.service import (
+    AdmitRelationCommand,
+    RelationTruthKernel,
+    evidence_confidence,
+)
 from services.domain.truth_kernel.service import TruthKernelService
 
 
@@ -153,6 +157,7 @@ class P2TruthKernelEvaluator:
         self.latencies: list[float] = []
         self._admitted: list[tuple[Any, AdmitModelCommand]] = []
         self._relations: list[tuple[Any, RelationCandidate, AdmitRelationCommand]] = []
+        self._perfect_confidence_relation_explanations: list[bool] = []
 
     async def run(self) -> dict[str, Any]:
         population = build_p2_population()
@@ -203,6 +208,13 @@ class P2TruthKernelEvaluator:
             "evidence_lineage_coverage": self._rate(observations, ("accepted_atomic", "accepted_synthesis"), "HG-05"),
             "scope_precision": self._rate(observations, ("accepted_atomic", "accepted_synthesis", "entity_type_conflict"), "HG-06"),
             "relation_joint_accuracy": self._rate(observations, ("business_relation",), "HG-09"),
+            "active_unexplained_perfect_confidence_relation_rate": (
+                1.0
+                - sum(self._perfect_confidence_relation_explanations)
+                / len(self._perfect_confidence_relation_explanations)
+                if self._perfect_confidence_relation_explanations
+                else 0.0
+            ),
             "active_wrapper_contamination": 0.0 if all(dict(observations[c.case_id].invariant_checks).get("HG-04") for c in population.family("wrapper_control")) else 1.0,
             "lifecycle_transition_latency_ms": sum(self.latencies) / len(self.latencies) if self.latencies else None,
         })
@@ -343,6 +355,16 @@ class P2TruthKernelEvaluator:
             self.receipts.append(asdict(receipt))
             if receipt.disposition is RelationDisposition.ACCEPTED:
                 self._relations.append((receipt, candidate, command))
+                # A perfect evidence projection is only explained when its
+                # signed, version-bound evidence and human-readable rationale
+                # are both present. Track this at admission time because later
+                # lifecycle races intentionally remove relations from the
+                # accepted-current view.
+                confidence = evidence_confidence(candidate.evidence)
+                if confidence == 1.0:
+                    self._perfect_confidence_relation_explanations.append(
+                        bool(candidate.rationale.strip() and candidate.evidence)
+                    )
             canonical = await self.conn.fetchval("SELECT count(*) FROM accepted_current_relations WHERE tenant_id=$1 AND id=$2", self.tenant_id, candidate.candidate_relation_id)
             actual = "accept" if receipt.disposition is RelationDisposition.ACCEPTED else "remain_noncanonical"
             ok = actual == case.expected_disposition and ((actual == "accept" and canonical == 1) or (actual != "accept" and canonical == 0))
