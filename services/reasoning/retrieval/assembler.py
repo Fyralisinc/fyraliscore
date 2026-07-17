@@ -89,11 +89,22 @@ _MMR_GRAPH_ANCHOR_COUNT = 3
 # `natural` text never get skipped as "too big".
 _CHARS_PER_TOKEN = 4
 _WS_RE = re.compile(r"\s+")
+_LEXICAL_ANCHOR_RE = re.compile(r"[a-z0-9][a-z0-9_.:#/-]{3,}", re.I)
 _HEX_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.I)
 _NUMBER_RE = re.compile(r"[$]?[0-9][0-9,]*([.][0-9]+)?")
 _URL_RE = re.compile(r"https?://[^\s)]+", re.I)
 _RAW_REOPENING_REASON_CODES = frozenset(
     {"uncertainty", "contradiction", "correction", "provenance"}
+)
+_LEXICAL_ANCHOR_STOPWORDS = frozenset(
+    {
+        "about", "after", "again", "against", "batch", "before", "being",
+        "between", "company", "could", "current", "evidence", "facet",
+        "facets", "from", "have", "into", "model", "observation", "only",
+        "other", "signal", "signals", "subject", "their", "there", "these",
+        "this", "those", "through", "under", "using", "where", "which",
+        "while", "with", "would",
+    }
 )
 
 
@@ -1314,13 +1325,84 @@ def _sort_models_by_retrieval_score(
     retrieval_result: RetrievalResult,
 ) -> None:
     scores = retrieval_result.model_scores
+    anchor_tokens = _current_batch_lexical_anchors(retrieval_result)
+    model_tokens = {model.id: _model_lexical_tokens(model) for model in models}
+    token_frequency = {
+        token: sum(token in tokens for tokens in model_tokens.values())
+        for token in anchor_tokens
+    }
+
+    def anchor_rank(model: ModelRow) -> tuple[int, float]:
+        if getattr(model, "status", None) != "active" or not anchor_tokens:
+            return 0, 0.0
+        matching = anchor_tokens & model_tokens[model.id]
+        # A token repeated throughout the retrieved reservoir is vocabulary,
+        # not an entity/subject anchor. Rare exact matches are the useful
+        # discriminator when activation otherwise dominates the ordering.
+        rare = {
+            token for token in matching
+            if token_frequency[token] <= max(1, len(models) // 4)
+        }
+        if not rare:
+            return 0, 0.0
+        specificity = sum(1.0 / token_frequency[token] for token in rare)
+        return len(rare), specificity
+
     models.sort(
         key=lambda m: (
+            -anchor_rank(m)[0],
+            -anchor_rank(m)[1],
             -scores.get(m.id, 0.0),
             -m.activation,
             str(m.id),
         )
     )
+
+
+def _current_batch_lexical_anchors(
+    retrieval_result: RetrievalResult,
+) -> set[str]:
+    """Extract explicit lexical anchors from only the current T1 batch.
+
+    This is deliberately an assembler rerank, not a new retrieval pathway:
+    it can reorder already retrieved and authorized active Models but cannot
+    widen tenant, visibility, maturity, or authority scope.
+    """
+    if not _is_explicit_t1_event_batch(retrieval_result):
+        return set()
+    trigger = retrieval_result.trigger
+    trigger_ids = _trigger_observation_ids(retrieval_result)
+    texts = [
+        str(observation.content_text or "")
+        for observation in retrieval_result.observations
+        if observation.id in trigger_ids
+    ]
+    if trigger.seed_natural_text:
+        texts.append(trigger.seed_natural_text)
+    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    fragments = signature.get("batch_signal_fragments")
+    if isinstance(fragments, list):
+        texts.extend(
+            str(fragment.get("text") or "")
+            for fragment in fragments
+            if isinstance(fragment, dict)
+        )
+    for entity in trigger.seed_entity_ids:
+        if isinstance(entity, dict):
+            texts.extend(str(value) for value in entity.values() if value is not None)
+    return _lexical_tokens(" ".join(texts))
+
+
+def _model_lexical_tokens(model: ModelRow) -> set[str]:
+    return _lexical_tokens(f"{model.natural or ''} {model.proposition or ''}")
+
+
+def _lexical_tokens(text: str) -> set[str]:
+    return {
+        token.casefold().strip("._-/:#")
+        for token in _LEXICAL_ANCHOR_RE.findall(text)
+        if token.casefold().strip("._-/:#") not in _LEXICAL_ANCHOR_STOPWORDS
+    }
 
 
 def _select_ranked_models(
