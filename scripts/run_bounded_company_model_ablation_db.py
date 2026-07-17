@@ -201,10 +201,10 @@ async def run(
         manifest = _manifest_for(experiment_version)
         consume_models = experiment_version == "v4-development"
         learned_batches, learned_models, learned_runs = await _run_learned(
-            pool, consume_model_summaries=consume_models
+            pool, consume_model_summaries=consume_models, batch_definitions=BATCHES
         )
         frozen_batches, frozen_models, frozen_runs = await _run_frozen(
-            pool, consume_model_summaries=consume_models
+            pool, consume_model_summaries=consume_models, batch_definitions=BATCHES
         )
         learned = _arm(
             "learned_memory", learned_batches, learned_models,
@@ -242,10 +242,11 @@ def _manifest_for(experiment_version: str) -> dict[str, Any]:
     return manifest
 
 
-async def _run_learned(pool, *, consume_model_summaries: bool):
+async def _run_learned(pool, *, consume_model_summaries: bool,
+                       batch_definitions=BATCHES):
     tenant, actor = await _seed_identity(pool, "learned")
     batches, run_ids = [], []
-    for index, definitions in enumerate(BATCHES, 1):
+    for index, definitions in enumerate(batch_definitions, 1):
         logical, observations = await _insert_batch(pool, tenant, actor, index, definitions)
         run_ids.append(await _think_batch(
             pool, tenant, actor, index, observations,
@@ -255,9 +256,10 @@ async def _run_learned(pool, *, consume_model_summaries: bool):
     return batches, await _models(pool, [tenant]), run_ids
 
 
-async def _run_frozen(pool, *, consume_model_summaries: bool):
+async def _run_frozen(pool, *, consume_model_summaries: bool,
+                      batch_definitions=BATCHES):
     batches, tenants, run_ids = [], [], []
-    for index, definitions in enumerate(BATCHES, 1):
+    for index, definitions in enumerate(batch_definitions, 1):
         tenant, actor = await _seed_identity(pool, f"frozen-{index}")
         tenants.append(tenant)
         logical, observations = await _insert_batch(pool, tenant, actor, index, definitions)
@@ -301,7 +303,7 @@ async def _think_batch(
     pool, tenant, actor, index, observations, *, consume_model_summaries: bool,
 ):
     trigger_id = uuid7()
-    text = "Evidence window containing 6 source signals:\n" + "\n".join(
+    text = f"Evidence window containing {len(observations)} source signals:\n" + "\n".join(
         f"- {value}" for _, value in observations
     )
     trigger = TriggerContext(
