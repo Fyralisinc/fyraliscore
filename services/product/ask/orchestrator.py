@@ -14,6 +14,7 @@ import structlog
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelRow, ObservationRow
 from services.domain.models.repo import _SELECT_COLS_SQL as _MODEL_SELECT_COLS_SQL
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 from services.domain.models.repo import _hydrate_row as _hydrate_model_row
 from services.platform.access_control.authority import (
     ObjectRef,
@@ -437,7 +438,7 @@ async def _fallback_models(
         rows = await conn.fetch(
             f"""
             SELECT {_MODEL_SELECT_COLS_SQL}
-            FROM models
+            FROM {ACCEPTED_MODEL_ROWS_SQL} AS models
             WHERE tenant_id = $1 AND status = 'active' AND id = ANY($2::uuid[])
             ORDER BY activation DESC, created_at DESC
             LIMIT 24
@@ -455,7 +456,7 @@ async def _fallback_models(
             rows = await conn.fetch(
                 f"""
                 SELECT {_MODEL_SELECT_COLS_SQL}
-                FROM models
+                FROM {ACCEPTED_MODEL_ROWS_SQL} AS models
                 WHERE tenant_id = $1 AND status = 'active' AND ({conditions})
                 ORDER BY activation DESC, created_at DESC
                 LIMIT $2
@@ -468,7 +469,7 @@ async def _fallback_models(
             rows = await conn.fetch(
                 f"""
                 SELECT {_MODEL_SELECT_COLS_SQL}
-                FROM models
+                FROM {ACCEPTED_MODEL_ROWS_SQL} AS models
                 WHERE tenant_id = $1 AND status = 'active'
                 ORDER BY activation DESC, created_at DESC
                 LIMIT 24

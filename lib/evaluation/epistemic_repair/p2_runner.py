@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 import time
 from typing import Any
 from uuid import UUID, uuid4
@@ -33,6 +34,7 @@ from lib.evaluation.epistemic_repair.p2_oracles import (
     race_conforms, stable_digest,
 )
 from lib.evaluation.epistemic_repair.p2_population import P2Case, build_p2_population
+from lib.evaluation.epistemic_repair.reader_cutover import scan_reader_cutover
 from lib.evaluation.epistemic_repair.p2_hg10_probes import (
     probe_derived_writer_rejection,
     probe_projection_idempotence,
@@ -234,13 +236,22 @@ class P2TruthKernelEvaluator:
         missing_cases = [item.case_id for item in observations.values() if item.status != "observed"]
         missing_races = [item.scenario_id for item in race_observations if item.status != "observed"]
         report["missing_evidence"] = [f"case:{item}" for item in missing_cases] + [f"race:{item}" for item in missing_races]
+        repo_root = Path(__file__).resolve().parents[3]
+        reader_report = scan_reader_cutover(
+            repo_root,
+            repo_root
+            / "docs/plans/epistemic-repair/p2/reader-authority-manifest-v1.json",
+        )
         report["remaining_compatibility_debt"] = [
             "relation fixtures require the relation-kernel executable evaluator adapter",
             "five-projection fault injection has no public production fault point",
             "derived writer rejection needs capability-enforced component identities",
-            "reader cutover remains statically inventoried rather than runtime-attributed",
+            *[
+                f"uncovered consequential reader: {module}"
+                for module in reader_report.remaining_debt
+            ],
         ]
-        report["reader_cutover_coverage"] = None
+        report["reader_cutover_coverage"] = reader_report.coverage
         report["continuous_metric_thresholds"] = {
             "semantic_duplicate_absorption": 0.90,
         }
@@ -250,6 +261,7 @@ class P2TruthKernelEvaluator:
             and all(item["conforms"] for item in report["race_results"])
             and report["continuous_metrics"]["semantic_duplicate_absorption"]
             >= 0.90
+            and report["reader_cutover_coverage"] == 1.0
         )
         report["artifact_content_digest"] = stable_digest({k: v for k, v in report.items() if k not in {"generated_at", "artifact_content_digest"}})
         return report

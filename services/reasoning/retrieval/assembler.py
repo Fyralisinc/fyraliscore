@@ -59,7 +59,11 @@ from lib.shared.types import (
     ObservationRow,
     ResourceRow,
 )
-from services.domain.models.read_shapes import MODEL_ROW_SELECT_SQL, hydrate_model_row
+from services.domain.models.read_shapes import (
+    ACCEPTED_MODEL_ROWS_SQL,
+    MODEL_ROW_SELECT_SQL,
+    hydrate_model_row,
+)
 
 from .config import CONFIG, RetrievalConfig
 from .primary import RetrievalResult
@@ -1335,7 +1339,7 @@ async def _supplement_exact_batch_anchor_models(
     rows = await conn.fetch(
         f"""
         SELECT {MODEL_ROW_SELECT_SQL}
-        FROM models
+        FROM {ACCEPTED_MODEL_ROWS_SQL} AS models
         WHERE tenant_id = $1
           AND status = 'active'
           AND (

@@ -1,0 +1,29 @@
+{
+  "schema_version": "epistemic-repair-reader-authority-manifest-v1",
+  "source_inventory": "docs/plans/epistemic-repair/p0/authority-writer-reader-inventory.json",
+  "entries": [
+    {"module":"services/domain/models/repo.py","classification":"consequential","authority":"accepted_direct","required_all":["ACCEPTED_MODEL_ROWS_SQL"],"reason":"central default Model hydration"},
+    {"module":"services/reasoning/retrieval/primary.py","classification":"consequential","authority":"accepted_delegate","required_all":["pathway_a_structural","pathway_g_model_edges","models_repo.retrieve"],"reason":"primary company-memory retrieval delegates to admitted pathways and hydration"},
+    {"module":"services/reasoning/retrieval/pathways.py","classification":"consequential","authority":"accepted_direct","required_all":["ACCEPTED_MODEL_ROWS_SQL","ACCEPTED_PROJECTED_MODEL_EDGES_SQL"],"reason":"canonical semantic and graph retrieval"},
+    {"module":"services/reasoning/retrieval/second_pass.py","classification":"consequential","authority":"accepted_delegate","required_all":["from .pathways import","models_repo.retrieve"],"reason":"second-pass expansion delegates to accepted pathways"},
+    {"module":"services/reasoning/retrieval/assembler.py","classification":"consequential","authority":"accepted_direct","required_all":["ACCEPTED_MODEL_ROWS_SQL"],"reason":"context construction and exact-anchor fallback"},
+    {"module":"services/product/ask/orchestrator.py","classification":"consequential","authority":"accepted_direct","required_all":["ACCEPTED_MODEL_ROWS_SQL"],"reason":"default Ask fallback evidence"},
+    {"module":"services/reasoning/sage/reader.py","classification":"consequential","authority":"accepted_direct","required_all":["ACCEPTED_MODEL_ROWS_SQL","ACCEPTED_PROJECTED_MODEL_EDGES_SQL"],"reason":"adaptive synthesis reads"},
+
+    {"module":"services/domain/bridge/queries.py","classification":"consequential","authority":"uncovered","required_all":[],"reason":"domain bridge remains a default raw compatibility reader"},
+    {"module":"services/app/gateway/map_routes.py","classification":"consequential","authority":"uncovered","required_all":[],"reason":"default graph API still has raw Model and edge queries"},
+    {"module":"services/app/gateway/model_page_routes.py","classification":"consequential","authority":"uncovered","required_all":[],"reason":"default Model page still mixes current and historical reads"},
+    {"module":"services/reasoning/sage/company_profile/repo.py","classification":"consequential","authority":"uncovered","required_all":[],"reason":"derived company profile influences adaptive policy"},
+    {"module":"services/reasoning/topology/field.py","classification":"consequential","authority":"uncovered","required_all":[],"reason":"topology projections influence retrieval"},
+
+    {"module":"services/domain/projections/store.py","classification":"exempt","authority":"historical_projection","required_all":[],"reason":"event/checkpoint and immutable projection history, never default truth membership"},
+    {"module":"services/domain/projections/run.py","classification":"exempt","authority":"historical_projection","required_all":[],"reason":"event replay/projector input"},
+    {"module":"services/product/history/aggregator.py","classification":"exempt","authority":"historical","required_all":[],"reason":"explicit history product includes terminal truth by design"},
+    {"module":"services/product/model_trace/repo.py","classification":"exempt","authority":"audit","required_all":[],"reason":"operator audit and causal trace"},
+    {"module":"services/reasoning/think/applier.py","classification":"exempt","authority":"command_integrity","required_all":[],"reason":"mutation validation and exact target lookup, not a default truth reader"},
+    {"module":"services/reasoning/think/validator.py","classification":"exempt","authority":"command_integrity","required_all":[],"reason":"pre-apply validation, not a default truth reader"},
+    {"module":"services/reasoning/edge_intelligence/repo.py","classification":"exempt","authority":"candidate_admin","required_all":[],"reason":"candidate, adjudication and projection administration"},
+    {"module":"services/domain/models/edges_repo.py","classification":"exempt","authority":"legacy_projection_admin","required_all":[],"reason":"legacy binary projection administration; consequential consumers remain forbidden"},
+    {"module":"services/workers/entity_resolver/context.py","classification":"exempt","authority":"identity_only","required_all":[],"reason":"P0 surface is entity aliases, not Model or relation truth"}
+  ]
+}

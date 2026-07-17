@@ -108,6 +108,7 @@ from services.domain.models.events import (
 )
 from services.domain.models.falsifier import is_adequate_falsifier
 from services.domain.models.read_shapes import (
+    ACCEPTED_MODEL_ROWS_SQL,
     MODEL_ROW_SELECT_COLS,
     MODEL_ROW_SELECT_SQL,
     hydrate_model_row,
@@ -2893,7 +2894,7 @@ class ModelsRepo:
         async def _run(c: asyncpg.Connection) -> list[ModelRow]:
             await _ensure_vector_codec(c)
             await c.execute(
-                """
+                f"""
                 INSERT INTO model_activity_sidecar (
                     tenant_id,
                     model_id,
@@ -2911,7 +2912,7 @@ class ModelsRepo:
                     now(),
                     now(),
                     now()
-                    FROM models
+                    FROM {ACCEPTED_MODEL_ROWS_SQL} AS models
                     WHERE id = ANY($1::uuid[])
                     ORDER BY tenant_id, id
                 ON CONFLICT (tenant_id, model_id) DO UPDATE
@@ -2928,7 +2929,7 @@ class ModelsRepo:
             rows = await c.fetch(
                 f"""
                 SELECT {_SELECT_COLS_SQL}
-                FROM models
+                FROM {ACCEPTED_MODEL_ROWS_SQL} AS models
                 WHERE id = ANY($1::uuid[])
                 """,
                 id_list,
@@ -2974,7 +2975,8 @@ class ModelsRepo:
         async def _run(c: asyncpg.Connection) -> ModelRow | None:
             await _ensure_vector_codec(c)
             row = await c.fetchrow(
-                f"SELECT {_SELECT_COLS_SQL} FROM models WHERE id = $1",
+                f"SELECT {_SELECT_COLS_SQL} "
+                f"FROM {ACCEPTED_MODEL_ROWS_SQL} AS models WHERE id = $1",
                 model_id,
             )
             if row is None:
