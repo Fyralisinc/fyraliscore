@@ -1,6 +1,10 @@
 from copy import deepcopy
+from types import SimpleNamespace
+from uuid import uuid4
 
 from lib.evaluation.source_equivalence import evaluate_normalized_source_equivalence
+from lib.contracts.perception import MentionAnchorKind
+from services.domain.source_semantics.extractor import DeterministicSourceSemanticExtractor
 
 
 def _rows():
@@ -15,11 +19,43 @@ def _rows():
         "slack": "slack:user:alice", "email": "email:alice@example.test",
         "jira": "jira:account:alice", "document_meeting": "meeting:speaker:alice",
     }
-    for case_id, models, relations in (
-        ("launch-blocked", ["belief:atlas:blocked"], ["atlas|blocks|launch"]),
-        ("launch-ready", ["belief:atlas:ready"], ["approval|enables|launch"]),
+    extractor = DeterministicSourceSemanticExtractor()
+    tenant_id = uuid4()
+    for case_id, state in (
+        ("launch-blocked", "blocked"),
+        ("launch-ready", "ready"),
     ):
         for source in boundaries:
+            observation_id = uuid4()
+            text = f"Atlas is {state}."
+            observation_ref = f"observation:{observation_id}"
+            grounding = SimpleNamespace(
+                tenant_id=tenant_id,
+                trace_id=uuid4(),
+                source_observation_id=observation_id,
+                content_text=text,
+                source_channel=f"{source}:normalized",
+                source_author_ref=authorities[source],
+                context_snapshot_id=uuid4(),
+                mention=SimpleNamespace(
+                    detection_confidence=0.95,
+                    primary_anchor=SimpleNamespace(
+                        anchor_id=f"mention-anchor:{observation_id}",
+                        kind=MentionAnchorKind.EXPLICIT,
+                        surface_form="Atlas",
+                        coordinate=SimpleNamespace(
+                            evidence_record_id=observation_ref,
+                            source_object_id=observation_ref,
+                            field_path="content_text",
+                            span_start=0,
+                            span_end=5,
+                        ),
+                    ),
+                ),
+            )
+            semantic = extractor.extract(grounding)
+            predicate = semantic.semantic_frame.predicate_or_event_type
+            assertion_source = semantic.source_assertion.coordinates[0].source_system
             rows.append({
                 "semantic_case_id": case_id, "source_kind": source,
                 "batch_signal_count": 3,
@@ -27,11 +63,12 @@ def _rows():
                 "model_lineage_complete": True,
                 "relation_lineage_complete": True,
                 "entity_refs": ["project:atlas", "goal:launch"],
-                "model_signatures": models, "relation_signatures": relations,
-                "authority_ref": authorities[source],
+                "model_signatures": [f"belief:project:atlas:{predicate}"],
+                "relation_signatures": [f"project:atlas|state|{predicate}"],
+                "authority_ref": semantic.source_assertion.current_speaker_or_author,
                 "expected_authority_ref": authorities[source],
-                "assertion_source_system": source.split("_", 1)[0],
-                "expected_source_system": source.split("_", 1)[0],
+                "assertion_source_system": assertion_source,
+                "expected_source_system": source,
                 "boundary_refs": boundaries[source],
                 "expected_boundary_refs": boundaries[source],
             })
