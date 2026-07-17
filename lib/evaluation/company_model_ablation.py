@@ -158,6 +158,9 @@ def evaluate_single_model_synthesis(
         if arm.get("arm") != arm_name:
             raise ValueError(f"synthesis arm must be named {arm_name}")
         prior_ids = {str(value) for value in arm.get("prior_model_ids") or []}
+        required_lineage = arm.get("required_lineage_by_thesis") or {}
+        if not isinstance(required_lineage, Mapping):
+            raise ValueError("required_lineage_by_thesis must be an object")
         models = arm.get("models")
         if not isinstance(models, list):
             raise ValueError("synthesis arm requires models")
@@ -175,7 +178,14 @@ def evaluate_single_model_synthesis(
                 facets = {str(value) for value in model.get("facets") or []}
                 lineage = {str(value) for value in model.get("evidence_model_ids") or []}
                 complete = required <= facets
-                lineaged = bool(lineage) and lineage <= prior_ids
+                expected_lineage = {
+                    str(value) for value in required_lineage.get(thesis_id) or []
+                }
+                lineaged = (
+                    bool(expected_lineage)
+                    and lineage == expected_lineage
+                    and lineage <= prior_ids
+                )
                 persisted = model.get("persisted") is True and bool(model.get("model_id"))
                 if complete and lineaged and persisted:
                     eligible.append(model)

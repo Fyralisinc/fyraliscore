@@ -48,7 +48,7 @@ def _objective_company_learning_evidence(*, numeric: bool = True) -> dict:
     names = (
         "retrieval_evolution", "company_model_ablation", "feedback_learning",
         "feedback_quality", "source_equivalence", "correction_homeostasis",
-        "joined_runtime",
+        "joined_runtime", "single_model_synthesis",
     )
     components = {
         name: {
@@ -269,6 +269,7 @@ def test_objective_learning_evidence_adds_numeric_metrics_without_rewriting_hist
         "feedback_quality": 1.0,
         "correction_homeostasis": 1.0,
         "joined_runtime": 1.0,
+        "single_model_synthesis": 1.0,
     }
     assert metrics["historical_retrieval_verdict"] == "below_policy"
     assert (
@@ -302,7 +303,7 @@ def test_feedback_quality_is_mandatory_in_top_evaluator():
     evidence = _objective_company_learning_evidence()
     evidence["components"].pop("feedback_quality")
     evidence["exact_populations"].pop("feedback_quality")
-    evidence["evidence_coverage"] = 6 / 7
+    evidence["evidence_coverage"] = 7 / 8
     evidence.pop("composition_sha256")
     evidence["composition_sha256"] = canonical_sha256(evidence)
 
@@ -312,9 +313,30 @@ def test_feedback_quality_is_mandatory_in_top_evaluator():
         profile_name="authoritative-45", company_learning_evidence=evidence,
     )
 
-    assert report["current_bounded_company_learning"]["required_component_count"] == 7
-    assert report["current_bounded_company_learning"]["coverage"] == 6 / 7
+    assert report["current_bounded_company_learning"]["required_component_count"] == 8
+    assert report["current_bounded_company_learning"]["coverage"] == 7 / 8
     assert any("required matched feedback-quality" in failure
+               for failure in report["hard_failures"])
+
+
+def test_single_model_synthesis_is_mandatory_in_top_evaluator():
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+    evidence = _objective_company_learning_evidence()
+    evidence["components"].pop("single_model_synthesis")
+    evidence["exact_populations"].pop("single_model_synthesis")
+    evidence["evidence_coverage"] = 7 / 8
+    evidence.pop("composition_sha256")
+    evidence["composition_sha256"] = canonical_sha256(evidence)
+
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark, run_summary=run_summary, vitals=vitals,
+        assurance=assurance, run_config=run_config,
+        profile_name="authoritative-45", company_learning_evidence=evidence,
+    )
+
+    assert report["current_bounded_company_learning"]["required_component_count"] == 8
+    assert report["current_bounded_company_learning"]["coverage"] == 7 / 8
+    assert any("required strict single-Model synthesis" in failure
                for failure in report["hard_failures"])
 
 def test_partial_objective_entity_metrics_remain_continuous_and_gapped() -> None:

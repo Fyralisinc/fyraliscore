@@ -558,7 +558,7 @@ def _objective_company_learning_quality(
     required = (
         "retrieval_evolution", "company_model_ablation", "feedback_learning",
         "feedback_quality", "source_equivalence", "correction_homeostasis",
-        "joined_runtime",
+        "joined_runtime", "single_model_synthesis",
     )
     components = {
         name: _optional_ratio(_object(rows.get(name)).get("continuous_score"))
@@ -588,6 +588,12 @@ def _objective_company_learning_quality(
     ):
         hard_failures.append(
             "objective company-learning: required matched feedback-quality "
+            "evidence is missing or failing"
+        )
+    synthesis = _object(rows.get("single_model_synthesis"))
+    if synthesis.get("status") != "observed" or synthesis.get("verdict") != "meets_policy":
+        hard_failures.append(
+            "objective company-learning: required strict single-Model synthesis "
             "evidence is missing or failing"
         )
     hard_failures.extend(

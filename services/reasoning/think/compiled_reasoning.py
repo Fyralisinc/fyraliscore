@@ -3225,6 +3225,14 @@ def _claim_op_from_batch_decision(
     ]
     if evidence_event_ids:
         proposition["evidence_event_ids"] = evidence_event_ids
+    evidence_model_ids = (
+        [decision.model_id]
+        if decision.model_id is not None
+        else _dedupe_uuids([
+            *_uuid_values(candidate.get("evidence_model_ids")),
+            *_uuid_values(candidate.get("target_model_ids")),
+        ])
+    )
     entry = {
         "tenant_id": str(trigger.tenant_id),
         "born_from_event_id": str(born_event),
@@ -3237,6 +3245,10 @@ def _claim_op_from_batch_decision(
         "scope_temporal": {},
         "falsifier": None,
     }
+    if evidence_model_ids:
+        entry["supporting_model_ids"] = [
+            str(model_id) for model_id in evidence_model_ids
+        ]
     return ClaimOp(op="insert", entry=entry), born_event, ""
 
 

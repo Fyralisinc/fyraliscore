@@ -713,9 +713,12 @@ not rerun: it remains the sole 45-batch, 1,125-signal, zero-semantic-seed,
 batch-only large run.
 
 The active v7 holdout establishes collective cross-batch facet availability,
-not strict synthesis into one learned Model. A strict single-Model claim must
-be supported by a separate frozen holdout in which exactly one persisted Model
-per thesis contains all required facets and eligible prior-Model lineage, while
-the frozen arm contains none. Distributed facets across several Models do not
-count. That evidence is pending and is not part of the seven-component
-portfolio described here.
+not strict synthesis into one learned Model. The separate frozen v1 synthesis
+holdout now establishes the stricter claim: each of three new subjects produced
+exactly one persisted complete Model with exact prior-Model lineage across six
+batch-only, zero-seed batches; the frozen arm recovered none. Distributed facets
+across Models do not count. This is now the eighth mandatory component in
+`/private/tmp/objective_company_learning_evidence_v8.json`. The 45-batch run was
+only evaluator-rerendered at
+`/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_synthesis_v1/large_company_simulation_evaluation.json`;
+its `not_credible` verdict and three historical hard failures remain unchanged.

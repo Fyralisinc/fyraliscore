@@ -6,14 +6,17 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from lib.contracts.kernel import canonical_sha256
-from lib.evaluation.company_model_ablation import evaluate_company_model_ablation
+from lib.evaluation.company_model_ablation import (
+    evaluate_company_model_ablation,
+    evaluate_single_model_synthesis,
+)
 from lib.evaluation.feedback_learning_effect import validate_feedback_learning_effect_artifact
 
 
 COMPONENTS = (
     "retrieval_evolution", "company_model_ablation", "feedback_learning",
     "feedback_quality", "source_equivalence", "correction_homeostasis",
-    "joined_runtime",
+    "joined_runtime", "single_model_synthesis",
 )
 
 FEEDBACK_QUALITY_CHECKS = {
@@ -55,6 +58,7 @@ def compose_objective_company_learning_evidence(
     source_equivalence: BoundArtifact | None = None,
     correction_homeostasis: BoundArtifact | None = None,
     joined_runtime: BoundArtifact | None = None,
+    single_model_synthesis: BoundArtifact | None = None,
 ) -> dict[str, Any]:
     inputs = {
         "feedback_learning": feedback_learning,
@@ -62,6 +66,7 @@ def compose_objective_company_learning_evidence(
         "source_equivalence": source_equivalence,
         "correction_homeostasis": correction_homeostasis,
         "joined_runtime": joined_runtime,
+        "single_model_synthesis": single_model_synthesis,
     }
     components: dict[str, Any] = {}
     bindings: dict[str, Any] = {}
@@ -443,6 +448,25 @@ def _normalize_component(name: str, payload: Mapping[str, Any]) -> dict[str, Any
             "active_populations", "material_use_ablation", "correction",
             "negative_controls", "proof_boundary", "batch_count", "signal_count",
         )}
+    elif name == "single_model_synthesis":
+        _schema(payload, "single-model-synthesis-holdout-v1-artifact-v1")
+        report = _object(payload.get("evaluation"), "single-Model synthesis evaluation")
+        recomputed = evaluate_single_model_synthesis(
+            manifest=_object(payload.get("manifest"), "synthesis manifest"),
+            learned=_object(payload.get("learned_arm"), "synthesis learned arm"),
+            frozen=_object(payload.get("frozen_arm"), "synthesis frozen arm"),
+        )
+        if dict(report) != recomputed:
+            raise ValueError("single-Model synthesis evaluation does not recompute")
+        arms = _object(report.get("arms"), "synthesis arms")
+        population = {
+            "batches": 6,
+            "hidden_patterns": sum(
+                int(_object(arm, "synthesis arm").get("thesis_count") or 0)
+                for arm in arms.values()
+            ) // max(1, len(arms)),
+            "arms": len(arms),
+        }
     else:  # pragma: no cover
         raise ValueError(f"unknown component {name}")
     score = report.get("continuous_score")
@@ -499,6 +523,7 @@ def _blockers(name: str, report: Mapping[str, Any]) -> list[str]:
                                    "restart_preserves_state", "deep_cascade_is_complete_and_cycle_safe"),
         "joined_runtime": tuple(report.get("checks", {}).keys()),
         "feedback_quality": tuple(FEEDBACK_QUALITY_CHECKS),
+        "single_model_synthesis": tuple(report.get("checks", {}).keys()),
     }.get(name, ())
     blockers = [f"{name}:{key}" for key in names if checks.get(key) is False]
     if name == "feedback_learning":
@@ -517,7 +542,7 @@ def _proof_gaps(name: str, report: Mapping[str, Any]) -> list[str]:
         return [f"{name}:{item}" for item in raw]
     if name in {
         "retrieval_evolution", "source_equivalence", "feedback_learning",
-        "feedback_quality",
+        "feedback_quality", "single_model_synthesis",
     }:
         return [f"{name}:bounded_component_does_not_establish_open_world_generalization"]
     return []

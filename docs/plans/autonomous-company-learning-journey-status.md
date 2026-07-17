@@ -1740,9 +1740,15 @@ The next sequence is validation and remaining pipeline closure:
   cold start. It used 25-signal batches, no unbatched T1 processing and zero
   seeded semantic Models. No second large simulation is authorized or needed
   for this milestone.
-- The governing objective portfolio currently has seven mandatory SHA-bound
-  components. The strict single-Model synthesis evaluator is not yet an eighth
-  accepted component in this ledger.
+- The governing objective portfolio now has eight mandatory SHA-bound
+  components. Strict single-Model synthesis passed its frozen v1 holdout at
+  `1.0` (learned 3/3, frozen 0/3) across six batch-only, zero-seed batches and
+  exact prior-Model lineage. The bound artifact is
+  `/private/tmp/single-model-synthesis-holdout-v1.json` (SHA-256
+  `ff2ce5fe…ddb103f`); the eight-component composition is
+  `/private/tmp/objective_company_learning_evidence_v8.json` (composition SHA
+  `d6e8e19e…daf77929`). The saved 45-batch run was evaluator-rerendered, not
+  rerun, and remains `not_credible` with its original three hard failures.
 - Active v7 demonstrates cross-batch evidence accumulation and availability.
   It does not demonstrate that one persisted Model contains every required
   thesis facet with eligible prior-Model lineage. That stricter claim remains

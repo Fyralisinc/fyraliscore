@@ -113,11 +113,13 @@ def test_synthesis_requires_one_complete_persisted_model_with_prior_lineage() ->
             "required_facets": ["usage_drop", "security_hold"]}]}
     learned = {"schema_version": "company-model-synthesis-arm-v1",
         "arm": "learned_memory", "prior_model_ids": ["prior-a", "prior-b"],
+        "required_lineage_by_thesis": {"renewal": ["prior-a", "prior-b"]},
         "models": [{"model_id": "synthesis-1", "thesis_id": "renewal",
             "facets": ["usage_drop", "security_hold"],
             "evidence_model_ids": ["prior-a", "prior-b"], "persisted": True}]}
     frozen = {"schema_version": "company-model-synthesis-arm-v1",
-        "arm": "frozen_memory", "prior_model_ids": [], "models": []}
+        "arm": "frozen_memory", "prior_model_ids": [],
+        "required_lineage_by_thesis": {"renewal": []}, "models": []}
 
     report = evaluate_single_model_synthesis(
         manifest=manifest, learned=learned, frozen=frozen)
@@ -132,6 +134,7 @@ def test_collective_facets_across_models_do_not_count_as_synthesis() -> None:
             "required_facets": ["usage_drop", "security_hold"]}]}
     learned = {"schema_version": "company-model-synthesis-arm-v1",
         "arm": "learned_memory", "prior_model_ids": ["prior-a", "prior-b"],
+        "required_lineage_by_thesis": {"renewal": ["prior-a", "prior-b"]},
         "models": [
             {"model_id": "m1", "thesis_id": "renewal", "facets": ["usage_drop"],
              "evidence_model_ids": ["prior-a"], "persisted": True},
@@ -139,7 +142,8 @@ def test_collective_facets_across_models_do_not_count_as_synthesis() -> None:
              "evidence_model_ids": ["prior-b"], "persisted": True},
         ]}
     frozen = {"schema_version": "company-model-synthesis-arm-v1",
-        "arm": "frozen_memory", "prior_model_ids": [], "models": []}
+        "arm": "frozen_memory", "prior_model_ids": [],
+        "required_lineage_by_thesis": {"renewal": []}, "models": []}
 
     report = evaluate_single_model_synthesis(
         manifest=manifest, learned=learned, frozen=frozen)

@@ -6,7 +6,11 @@ from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_evidence_composer import (
     BoundArtifact, compose_objective_company_learning_evidence,
 )
-from lib.evaluation.company_model_ablation import evaluate_company_model_ablation, manifest_digest
+from lib.evaluation.company_model_ablation import (
+    evaluate_company_model_ablation,
+    evaluate_single_model_synthesis,
+    manifest_digest,
+)
 from lib.evaluation.feedback_learning_effect import (
     FeedbackLearningEffectEvidence, FeedbackLearningEffectReport, MatchedSalienceEffect,
 )
@@ -191,6 +195,23 @@ def _joined_runtime():
     return payload
 
 
+def _single_model_synthesis():
+    manifest = {"schema_version": "company-model-synthesis-manifest-v1",
+        "hidden_patterns": [{"thesis_id": "x", "required_facets": ["a", "b"]}]}
+    learned = {"schema_version": "company-model-synthesis-arm-v1",
+        "arm": "learned_memory", "prior_model_ids": ["p"],
+        "required_lineage_by_thesis": {"x": ["p"]},
+        "models": [{"model_id": "m", "thesis_id": "x", "facets": ["a", "b"],
+            "evidence_model_ids": ["p"], "persisted": True}]}
+    frozen = {"schema_version": "company-model-synthesis-arm-v1",
+        "arm": "frozen_memory", "prior_model_ids": [],
+        "required_lineage_by_thesis": {"x": []}, "models": []}
+    return {"schema_version": "single-model-synthesis-holdout-v1-artifact-v1",
+        "manifest": manifest, "learned_arm": learned, "frozen_arm": frozen,
+        "evaluation": evaluate_single_model_synthesis(
+            manifest=manifest, learned=learned, frozen=frozen)}
+
+
 def test_composes_all_sha_bound_components_with_exact_populations():
     result = compose_objective_company_learning_evidence(
         retrieval_evolution=BoundArtifact(_retrieval(), SHA),
@@ -207,6 +228,7 @@ def test_composes_all_sha_bound_components_with_exact_populations():
         source_equivalence=BoundArtifact(_source_db(relations_exposed=True), SHA),
         correction_homeostasis=BoundArtifact(_correction(), SHA),
         joined_runtime=BoundArtifact(_joined_runtime(), SHA),
+        single_model_synthesis=BoundArtifact(_single_model_synthesis(), SHA),
     )
 
     assert result["verdict"] == "meets_bounded_policy"
@@ -216,6 +238,7 @@ def test_composes_all_sha_bound_components_with_exact_populations():
     assert result["exact_populations"]["company_model_ablation"]["signals"] == 6
     assert result["exact_populations"]["feedback_learning"]["matched_pairs"] == 1
     assert result["exact_populations"]["feedback_quality"]["arms"] == 2
+    assert result["exact_populations"]["single_model_synthesis"]["hidden_patterns"] == 1
     assert len(result["composition_sha256"]) == 64
 
 
@@ -308,7 +331,7 @@ def test_missing_components_remain_unknown_and_reduce_coverage():
     )
 
     assert result["verdict"] == "partial_evidence"
-    assert result["evidence_coverage"] == 1 / 7
+    assert result["evidence_coverage"] == 1 / 8
     assert result["components"]["retrieval_evolution"]["status"] == "unknown"
     assert "component_unavailable:retrieval_evolution.current_bounded_postfix" in result[
         "proof_gaps"
