@@ -59,6 +59,7 @@ from lib.shared.types import (
     ObservationRow,
     ResourceRow,
 )
+from services.domain.models.read_shapes import MODEL_ROW_SELECT_SQL, hydrate_model_row
 
 from .config import CONFIG, RetrievalConfig
 from .primary import RetrievalResult
@@ -1281,8 +1282,13 @@ async def _select_context_models(
     cfg: RetrievalConfig,
     budget_models: int,
 ) -> dict[str, Any]:
+    candidate_models = await _supplement_exact_batch_anchor_models(
+        retrieval_result,
+        access_context,
+        conn,
+    )
     tenant_scoped, cross_tenant_redactions = _tenant_scope_models(
-        retrieval_result.models, access_context.tenant_id
+        candidate_models, access_context.tenant_id
     )
     visible_models, redactions_inner, reason_counts = await _filter_models_via_db(
         tenant_scoped,
@@ -1304,6 +1310,55 @@ async def _select_context_models(
         "cross_tenant_redactions": cross_tenant_redactions,
         "mmr": mmr_notes,
     }
+
+
+async def _supplement_exact_batch_anchor_models(
+    retrieval_result: RetrievalResult,
+    access_context: AccessContext,
+    conn: asyncpg.Connection,
+) -> list[ModelRow]:
+    """Union exact current-batch lexical matches into the candidate reservoir.
+
+    Semantic/graph retrieval remains primary. This bounded fallback repairs a
+    specific blind spot: an explicit subject already present in active memory
+    can be absent from the approximate reservoir. Database predicates enforce
+    tenant and active-state gates; the normal visibility/authority filter runs
+    immediately afterward.
+    """
+    anchors = sorted(_current_batch_lexical_anchors(retrieval_result))
+    if not anchors:
+        return list(retrieval_result.models)
+    patterns = [
+        rf"(^|[^a-z0-9]){re.escape(token)}([^a-z0-9]|$)"
+        for token in anchors
+    ]
+    rows = await conn.fetch(
+        f"""
+        SELECT {MODEL_ROW_SELECT_SQL}
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND EXISTS (
+              SELECT 1
+              FROM unnest($2::text[]) AS anchor(pattern)
+              WHERE natural ~* anchor.pattern
+                 OR proposition::text ~* anchor.pattern
+          )
+        ORDER BY activation DESC, confidence DESC, created_at DESC
+        LIMIT 64
+        """,
+        access_context.tenant_id,
+        patterns,
+    )
+    by_id = {model.id: model for model in retrieval_result.models}
+    for row in rows:
+        model = hydrate_model_row(
+            row,
+            null_invalid_embedding=True,
+            use_vector_to_list=True,
+        )
+        by_id.setdefault(model.id, model)
+    return list(by_id.values())
 
 
 def _tenant_scope_models(

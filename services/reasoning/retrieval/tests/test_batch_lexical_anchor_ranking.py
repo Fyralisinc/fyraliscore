@@ -3,7 +3,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
-from services.reasoning.retrieval.assembler import _sort_models_by_retrieval_score
+from services.reasoning.retrieval import assembler
+from services.reasoning.retrieval.assembler import (
+    AccessContext,
+    _sort_models_by_retrieval_score,
+    _supplement_exact_batch_anchor_models,
+)
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
 
 
@@ -85,3 +90,49 @@ def test_archived_matching_model_does_not_receive_batch_anchor_priority():
     _sort_models_by_retrieval_score(models, result)
 
     assert [model.id for model in models] == [active.id, archived_match.id]
+
+
+async def test_exact_batch_anchor_supplements_model_absent_from_initial_reservoir(
+    monkeypatch,
+):
+    tenant_id = uuid4()
+    unrelated = _model(
+        tenant_id=tenant_id,
+        natural="Nimbus migration remains active.",
+        activation=1.0,
+    )
+    missing_match = _model(
+        tenant_id=tenant_id,
+        natural="Beta renewal evidence remains unresolved.",
+        activation=0.4,
+    )
+    result = RetrievalResult(
+        trigger=TriggerContext(
+            kind="T1",
+            subkind="event_batch",
+            tenant_id=tenant_id,
+            seed_signature={
+                "batch_signal_fragments": [{"text": "Beta renewal update"}],
+            },
+        ),
+        models=[unrelated],
+        model_scores={unrelated.id: 0.95},
+    )
+
+    class Connection:
+        async def fetch(self, sql, query_tenant_id, patterns):
+            assert "tenant_id = $1" in sql
+            assert "status = 'active'" in sql
+            assert query_tenant_id == tenant_id
+            assert any("beta" in pattern for pattern in patterns)
+            return [missing_match]
+
+    monkeypatch.setattr(assembler, "hydrate_model_row", lambda row, **_: row)
+
+    supplemented = await _supplement_exact_batch_anchor_models(
+        result,
+        AccessContext(tenant_id=tenant_id),
+        Connection(),
+    )
+
+    assert {model.id for model in supplemented} == {unrelated.id, missing_match.id}
