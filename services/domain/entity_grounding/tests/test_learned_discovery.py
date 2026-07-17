@@ -7,6 +7,7 @@ import pytest
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from services.domain.entity_grounding.learned_discovery import (
     AMBIGUOUS_IDENTIFIER_TYPE_CONFIDENCE_CAP,
+    MIN_ACCEPTED_CONFIDENCE,
     DISCOVERY_BATCHES,
     DISCOVERY_READINESS,
     DiscoveryProviderPreflightError,
@@ -197,6 +198,35 @@ async def test_explicit_syntax_example_is_rejected_but_real_request_survives() -
         by_surface["request AB-22"].reason_codes
     )
     assert by_surface["Request AB-22"].fate is EntityMentionDetectionFate.DETECTED
+
+
+@pytest.mark.asyncio
+async def test_explicit_role_overrides_cross_signal_abstention_without_leaking_to_meta() -> None:
+    positive_id, negative_id = uuid4(), uuid4()
+    positive = "Workstream Granite Petal depends on system TIDE-22."
+    negative = "TIDE-22 is a test datum here, not a deployed system or business entity."
+    provider = ScriptedProvider({"mentions": [
+        {"signal_id": str(positive_id), "surface": "system TIDE-22",
+         "span_start": positive.index("system TIDE-22"),
+         "span_end": positive.index("system TIDE-22") + len("system TIDE-22"),
+         "entity_type": "system", "confidence": .18, "abstain": True},
+        {"signal_id": str(negative_id), "surface": "TIDE-22",
+         "span_start": 0, "span_end": len("TIDE-22"),
+         "entity_type": "system", "confidence": .91, "abstain": False},
+    ]})
+
+    result = await discover_batch_mentions(provider=provider, signals=(
+        PersistedSignalText(positive_id, "jira:issue", positive),
+        PersistedSignalText(negative_id, "jira:issue", negative),
+    ))
+    by_signal = {item.signal_id: item for item in result.candidates}
+
+    assert by_signal[positive_id].fate is EntityMentionDetectionFate.DETECTED
+    assert by_signal[positive_id].confidence == MIN_ACCEPTED_CONFIDENCE
+    assert "source_explicit_type_designator_overrode_model_abstention" in (
+        by_signal[positive_id].reason_codes
+    )
+    assert by_signal[negative_id].fate is EntityMentionDetectionFate.REJECTED_NOT_ENTITY
 
 
 @pytest.mark.asyncio

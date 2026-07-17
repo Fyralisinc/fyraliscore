@@ -52,9 +52,15 @@ Extract every explicit named company-entity mention from this persisted signal b
 Work signal by signal, treating one signal as focal at a time. Other signals may
 disambiguate a literal name, but never copy a name into a focal signal where its
 characters do not occur.
+The same literal may be a real entity in one signal and syntax, metadata, or an
+unresolved reference in another. Never transfer entity/non-entity status,
+typing, confidence, or abstention across signals merely because surfaces match.
 Complete one signal before advancing: scan its people, organizations, named work,
 technical objects, and typed identifiers, then make a final left-to-right pass for
 omissions. A signal can contain many mentions. Return each distinct literal occurrence.
+When a signal explicitly introduces an alias (for example "Project Long Name,
+called Short-Name internally"), return both written occurrences with the role
+established in that focal signal; do not treat the later alias as metadata.
 
 BOUNDARIES
 Offsets are zero-based Python character offsets into exact content_text and
@@ -274,6 +280,22 @@ def _explicit_meta_language_non_entity(
             r"(?:schema\s+field|not\s+(?:a|an)\s+(?:company|business)\s+entit)",
             local,
         )
+        or re.search(
+            r"<candidate>\s+(?:is|are)\b.{0,64}\bnot\s+(?:a|an)\b.{0,32}"
+            r"\b(?:company|business)\s+entit",
+            local,
+        )
+    )
+
+
+def _surface_has_explicit_type_designator(surface: str, entity_type: str) -> bool:
+    """Return whether the exact surface itself states its ontology role."""
+
+    normalized = surface.casefold().strip()
+    return any(
+        re.match(rf"^{re.escape(cue)}\b", normalized)
+        or re.search(rf"\b{re.escape(cue)}$", normalized)
+        for cue in _TYPE_CUES.get(entity_type, ())
     )
 
 
@@ -441,6 +463,9 @@ def _verify_candidates(
             )
             if expanded:
                 surface = signal.content_text[span_start:span_end]
+        explicit_type_designator = _surface_has_explicit_type_designator(
+            surface, item.entity_type
+        )
         if not exact:
             fate = EntityMentionDetectionFate.REJECTED_NOT_ANCHORED
             reasons = ("learned_span_failed_exact_source_verification",)
@@ -454,7 +479,9 @@ def _verify_candidates(
                 "source_explicitly_marks_literal_as_syntax_or_schema_metadata",
                 f"learned_type:{item.entity_type}",
             )
-        elif item.abstain or item.confidence < MIN_ACCEPTED_CONFIDENCE:
+        elif (
+            item.abstain or item.confidence < MIN_ACCEPTED_CONFIDENCE
+        ) and not explicit_type_designator:
             fate = EntityMentionDetectionFate.REJECTED_NOT_ENTITY
             reasons = (
                 "learned_extractor_abstained" if item.abstain
@@ -463,6 +490,10 @@ def _verify_candidates(
             )
         else:
             fate = EntityMentionDetectionFate.DETECTED
+            explicit_designator_override = (
+                (item.abstain or item.confidence < MIN_ACCEPTED_CONFIDENCE)
+                and explicit_type_designator
+            )
             type_confidence, type_reason = _type_confidence_for_candidate(
                 signal_text=signal.content_text,
                 surface=item.surface,
@@ -486,6 +517,10 @@ def _verify_candidates(
                 f"learned_type:{item.entity_type}",
                 f"learned_type_hypothesis:{item.entity_type}",
                 type_reason,
+                *(
+                    ("source_explicit_type_designator_overrode_model_abstention",)
+                    if explicit_designator_override else ()
+                ),
             )
         if fate is not EntityMentionDetectionFate.DETECTED:
             type_confidence = item.confidence
@@ -499,7 +534,12 @@ def _verify_candidates(
             span_start=span_start,
             span_end=span_end,
             entity_type=item.entity_type,
-            confidence=item.confidence,
+            confidence=(
+                max(item.confidence, MIN_ACCEPTED_CONFIDENCE)
+                if fate is EntityMentionDetectionFate.DETECTED
+                and explicit_type_designator
+                else item.confidence
+            ),
             fate=fate,
             reason_codes=reasons,
             type_confidence=type_confidence,
