@@ -1,0 +1,657 @@
+{
+  "$defs": {
+    "P3Gate": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "eligible_count": {
+          "minimum": 0,
+          "title": "Eligible Count",
+          "type": "integer"
+        },
+        "gate_id": {
+          "enum": [
+            "HG-02",
+            "HG-03",
+            "HG-06",
+            "HG-14"
+          ],
+          "title": "Gate Id",
+          "type": "string"
+        },
+        "incident_count": {
+          "minimum": 0,
+          "title": "Incident Count",
+          "type": "integer"
+        },
+        "incident_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Incident Ids",
+          "type": "array"
+        },
+        "observed_count": {
+          "minimum": 0,
+          "title": "Observed Count",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "not_observed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gate_id",
+        "status",
+        "observed_count",
+        "eligible_count",
+        "incident_count",
+        "detail"
+      ],
+      "title": "P3Gate",
+      "type": "object"
+    },
+    "P3MemberReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "admitted_canonical_ref": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Admitted Canonical Ref"
+        },
+        "assessed_canonical_ref": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Assessed Canonical Ref"
+        },
+        "boundary_feature": {
+          "title": "Boundary Feature",
+          "type": "string"
+        },
+        "candidate_set_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Candidate Set Digest"
+        },
+        "context_budget_adhered": {
+          "title": "Context Budget Adhered",
+          "type": "boolean"
+        },
+        "context_disposition": {
+          "title": "Context Disposition",
+          "type": "string"
+        },
+        "context_snapshot_digest": {
+          "title": "Context Snapshot Digest",
+          "type": "string"
+        },
+        "context_snapshot_id": {
+          "title": "Context Snapshot Id",
+          "type": "string"
+        },
+        "correction_converged": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Correction Converged"
+        },
+        "decisive_identity_evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Decisive Identity Evidence Refs",
+          "type": "array"
+        },
+        "episode_id": {
+          "title": "Episode Id",
+          "type": "string"
+        },
+        "expected_grounding_fate": {
+          "title": "Expected Grounding Fate",
+          "type": "string"
+        },
+        "family": {
+          "title": "Family",
+          "type": "string"
+        },
+        "future_context_selected": {
+          "title": "Future Context Selected",
+          "type": "boolean"
+        },
+        "gold_canonical_ref": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Gold Canonical Ref"
+        },
+        "gold_context_signal_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Gold Context Signal Ids",
+          "type": "array"
+        },
+        "gold_entity_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Gold Entity Type"
+        },
+        "gold_mention_spans": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Gold Mention Spans",
+          "type": "array"
+        },
+        "grounding_fate": {
+          "title": "Grounding Fate",
+          "type": "string"
+        },
+        "high_consequence_link": {
+          "title": "High Consequence Link",
+          "type": "boolean"
+        },
+        "mention_fate": {
+          "title": "Mention Fate",
+          "type": "string"
+        },
+        "omitted_gold_context": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Omitted Gold Context",
+          "type": "array"
+        },
+        "predicted_entity_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Predicted Entity Type"
+        },
+        "predicted_mention_spans": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "type": "array"
+          },
+          "title": "Predicted Mention Spans",
+          "type": "array"
+        },
+        "safe_abstention_or_review": {
+          "title": "Safe Abstention Or Review",
+          "type": "boolean"
+        },
+        "selected_context_contaminants": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Context Contaminants",
+          "type": "array"
+        },
+        "selected_context_signal_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Selected Context Signal Ids",
+          "type": "array"
+        },
+        "signal_id": {
+          "title": "Signal Id",
+          "type": "string"
+        },
+        "split_merge_decision": {
+          "title": "Split Merge Decision",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "signal_id",
+        "family",
+        "episode_id",
+        "boundary_feature",
+        "context_disposition",
+        "selected_context_signal_ids",
+        "gold_context_signal_ids",
+        "selected_context_contaminants",
+        "omitted_gold_context",
+        "context_snapshot_id",
+        "context_snapshot_digest",
+        "future_context_selected",
+        "context_budget_adhered",
+        "mention_fate",
+        "predicted_mention_spans",
+        "gold_mention_spans",
+        "predicted_entity_type",
+        "gold_entity_type",
+        "grounding_fate",
+        "expected_grounding_fate",
+        "assessed_canonical_ref",
+        "admitted_canonical_ref",
+        "gold_canonical_ref",
+        "decisive_identity_evidence_refs",
+        "candidate_set_digest",
+        "correction_converged",
+        "split_merge_decision",
+        "high_consequence_link",
+        "safe_abstention_or_review"
+      ],
+      "title": "P3MemberReceipt",
+      "type": "object"
+    },
+    "P3Metric": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence_interval": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence Interval"
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta"
+        },
+        "denominator": {
+          "minimum": 0,
+          "title": "Denominator",
+          "type": "integer"
+        },
+        "early_middle_mature_slices": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Early Middle Mature Slices",
+          "type": "object"
+        },
+        "metric_id": {
+          "minLength": 1,
+          "title": "Metric Id",
+          "type": "string"
+        },
+        "numerator": {
+          "title": "Numerator",
+          "type": "number"
+        },
+        "prior_baseline": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prior Baseline"
+        },
+        "source_artifact": {
+          "minLength": 1,
+          "title": "Source Artifact",
+          "type": "string"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        },
+        "threshold_met": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold Met"
+        },
+        "threshold_operator": {
+          "anyOf": [
+            {
+              "enum": [
+                ">=",
+                "<=",
+                "="
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold Operator"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "worst_example_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Worst Example Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "metric_id",
+        "numerator",
+        "denominator",
+        "source_artifact"
+      ],
+      "title": "P3Metric",
+      "type": "object"
+    },
+    "P3SealedManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_execution_count": {
+          "const": 1,
+          "default": 1,
+          "title": "Allowed Execution Count",
+          "type": "integer"
+        },
+        "evaluation_policy_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evaluation Policy Sha256",
+          "type": "string"
+        },
+        "evaluation_policy_version": {
+          "title": "Evaluation Policy Version",
+          "type": "string"
+        },
+        "gold_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Gold Sha256",
+          "type": "string"
+        },
+        "population_version": {
+          "title": "Population Version",
+          "type": "string"
+        },
+        "proof_boundaries": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Proof Boundaries",
+          "type": "array"
+        },
+        "random_seeds": {
+          "default": [
+            17071726
+          ],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Random Seeds",
+          "type": "array"
+        },
+        "required_hard_gates": {
+          "default": [
+            "HG-02",
+            "HG-03",
+            "HG-06",
+            "HG-14"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Hard Gates",
+          "type": "array"
+        },
+        "runtime_source_sha256": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Runtime Source Sha256",
+          "type": "object"
+        },
+        "scenario_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Scenario Sha256",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "epistemic-repair-p3-sealed-manifest-v1",
+          "default": "epistemic-repair-p3-sealed-manifest-v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "signal_count": {
+          "const": 120,
+          "default": 120,
+          "title": "Signal Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "population_version",
+        "scenario_sha256",
+        "gold_sha256",
+        "evaluation_policy_version",
+        "evaluation_policy_sha256",
+        "runtime_source_sha256",
+        "proof_boundaries"
+      ],
+      "title": "P3SealedManifest",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_content_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Artifact Content Digest",
+      "type": "string"
+    },
+    "continuous_metrics": {
+      "additionalProperties": {
+        "$ref": "#/$defs/P3Metric"
+      },
+      "title": "Continuous Metrics",
+      "type": "object"
+    },
+    "correction_receipts": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Correction Receipts",
+      "type": "array"
+    },
+    "execution_status": {
+      "const": "complete",
+      "default": "complete",
+      "title": "Execution Status",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "hard_gates": {
+      "additionalProperties": {
+        "$ref": "#/$defs/P3Gate"
+      },
+      "title": "Hard Gates",
+      "type": "object"
+    },
+    "member_receipts": {
+      "items": {
+        "$ref": "#/$defs/P3MemberReceipt"
+      },
+      "title": "Member Receipts",
+      "type": "array"
+    },
+    "missing_evidence": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Missing Evidence",
+      "type": "array"
+    },
+    "phase_exit_ready": {
+      "title": "Phase Exit Ready",
+      "type": "boolean"
+    },
+    "population": {
+      "additionalProperties": true,
+      "title": "Population",
+      "type": "object"
+    },
+    "proof_boundary": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Proof Boundary",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "epistemic-repair-p3-perception-grounding-v1",
+      "default": "epistemic-repair-p3-perception-grounding-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sealed_manifest": {
+      "$ref": "#/$defs/P3SealedManifest"
+    }
+  },
+  "required": [
+    "generated_at",
+    "sealed_manifest",
+    "population",
+    "hard_gates",
+    "continuous_metrics",
+    "member_receipts",
+    "correction_receipts",
+    "missing_evidence",
+    "proof_boundary",
+    "phase_exit_ready",
+    "artifact_content_digest"
+  ],
+  "title": "P3Artifact",
+  "type": "object"
+}
