@@ -28,6 +28,10 @@ from services.domain.conversation_context.slack_source_structure import (
     SlackSourceObservation,
     project_slack_source_structure,
 )
+from services.domain.conversation_context.episode_boundaries import (
+    ConversationBoundaryObservation,
+    project_conversation_episode_boundaries,
+)
 
 
 _TENANT = uuid5(NAMESPACE_URL, "p8-characterization-tenant")
@@ -80,9 +84,8 @@ def _context(
     )
 
 
-async def _run_boundary(population: SealedPopulation) -> dict[str, Any]:
-    # Freeze production predictions from source-native metadata before reading
-    # any evaluator episode labels.
+async def _predict_boundary(population: SealedPopulation) -> dict[str, str]:
+    """Execute the label-blind production boundary path and freeze predictions."""
     predicted: dict[str, str] = {}
     slack_cases = [case for case in population.cases if case.source_kind == "conversational"]
     slack_observations = tuple(
@@ -100,20 +103,40 @@ async def _run_boundary(population: SealedPopulation) -> dict[str, Any]:
         f"observation:{uuid5(NAMESPACE_URL, case.case_id)}:v1": case.case_id
         for case in slack_cases
     }
-    remaining = set(revision_to_case)
-    while remaining:
-        seed = min(remaining)
-        connected = {seed, *structure.connected_revision_ids(seed, max_hops=10)} & set(revision_to_case)
-        cluster_id = min(connected)
-        for revision in connected:
-            predicted[revision_to_case[revision]] = cluster_id
-        remaining -= connected
+    # The source projector is still executed to validate and preserve Slack
+    # topology. Episode hypotheses then combine authenticated source containers
+    # with explicit cross-source topic references; topology is evidence, not an
+    # unconditional semantic merge.
+    source_containers: dict[str, str] = {}
     for case in population.cases:
         metadata = dict(case.runtime_source_metadata)
         if case.source_kind == "structured":
-            predicted[case.case_id] = f"object:{metadata['object_id']}"
+            source_containers[case.case_id] = f"object:{metadata['object_id']}"
         elif case.source_kind == "cross_source":
-            predicted[case.case_id] = f"link:{metadata['linked_object_id']}"
+            source_containers[case.case_id] = f"link:{metadata['linked_object_id']}"
+        else:
+            revision = f"observation:{uuid5(NAMESPACE_URL, case.case_id)}:v1"
+            connected = {revision, *structure.connected_revision_ids(revision, max_hops=10)}
+            source_containers[case.case_id] = f"slack:{min(connected)}"
+    episode_inputs = tuple(
+        ConversationBoundaryObservation(
+            observation_id=case.case_id,
+            occurred_at=_START + timedelta(seconds=int(case.case_id.rsplit("-", 1)[1])),
+            content_text=case.runtime_text,
+            source_container_id=source_containers[case.case_id],
+        )
+        for case in population.cases
+    )
+    for group in project_conversation_episode_boundaries(episode_inputs):
+        cluster_id = min(group)
+        for case_id in group:
+            predicted[case_id] = cluster_id
+    return predicted
+
+
+async def _run_boundary(population: SealedPopulation) -> dict[str, Any]:
+    # Freeze production predictions before opening evaluator-owned labels.
+    predicted = await _predict_boundary(population)
 
     gold = {
         case.case_id: next(label for label in case.evaluator_labels if label.startswith("episode:"))
@@ -156,7 +179,7 @@ async def _run_boundary(population: SealedPopulation) -> dict[str, Any]:
     }
     result = score(overall_ids)
     result.update({"metric": "boundary_discovery_b_cubed", "slices": slices,
-                   "production_path": "source-native object keys plus Slack source structure projection",
+                   "production_path": "source topology plus generic explicit-topic episode projection",
                    "predictions_frozen_before_gold": True})
     return result
 

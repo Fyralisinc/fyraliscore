@@ -28,16 +28,19 @@ class CharacterizationCase:
 @dataclass(frozen=True, slots=True)
 class SealedPopulation:
     name: str
+    version: str
     unit: str
     cases: tuple[CharacterizationCase, ...]
     runtime_digest: str
     gold_digest: str
 
 
-def _seal(name: str, unit: str, cases: list[CharacterizationCase]) -> SealedPopulation:
+def _seal(
+    name: str, unit: str, cases: list[CharacterizationCase], *, version: str = "1",
+) -> SealedPopulation:
     runtime = [case.runtime_payload() for case in cases]
     gold = [{"case_id": case.case_id, "labels": case.evaluator_labels} for case in cases]
-    return SealedPopulation(name, unit, tuple(cases), canonical_sha256(runtime), canonical_sha256(gold))
+    return SealedPopulation(name, version, unit, tuple(cases), canonical_sha256(runtime), canonical_sha256(gold))
 
 
 def build_boundary_population() -> SealedPopulation:
@@ -68,12 +71,15 @@ def build_boundary_population() -> SealedPopulation:
                 if source == "conversational"
                 else (("linked_object_id", f"cross:{episode:03d}"),)
             )
+            # Topic-drift gold is observable in the runtime signal: the
+            # message explicitly references the new business episode while
+            # retaining its original source container/thread metadata.
             cases.append(CharacterizationCase(
                 f"boundary-{index:04d}",
-                f"Harbor episode {episode} update {position} references the prior status.",
+                f"Harbor episode {gold_episode} update {position} references the prior status.",
                 source, None, tuple(labels), (), metadata,
             ))
-    return _seal("boundary_discovery", "normalized_observation", cases)
+    return _seal("boundary_discovery", "normalized_observation", cases, version="2")
 
 
 def build_context_population() -> SealedPopulation:
@@ -169,7 +175,8 @@ def population_manifest(population: SealedPopulation) -> dict[str, object]:
     for case in population.cases:
         for label in case.evaluator_labels:
             counts[label] = counts.get(label, 0) + 1
-    return {"name": population.name, "unit": population.unit, "size": len(population.cases),
+    return {"name": population.name, "version": population.version,
+            "unit": population.unit, "size": len(population.cases),
             "label_counts": counts, "runtime_digest": population.runtime_digest,
             "gold_digest": population.gold_digest,
             "source_digest": canonical_sha256(asdict(population))}

@@ -1,10 +1,14 @@
 import asyncio
+from dataclasses import replace
 
 from lib.evaluation.epistemic_repair.p8_characterization_population import (
     build_all_characterization_populations,
     population_manifest,
 )
-from lib.evaluation.epistemic_repair.p8_characterization_runner import _run_boundary
+from lib.evaluation.epistemic_repair.p8_characterization_runner import (
+    _predict_boundary,
+    _run_boundary,
+)
 
 
 def test_exact_characterization_denominators_and_required_slices() -> None:
@@ -14,6 +18,7 @@ def test_exact_characterization_denominators_and_required_slices() -> None:
         "entity_grounding": 2400, "retrieval": 600, "feedback": 360,
     }
     boundary = population_manifest(pops["boundary_discovery"])["label_counts"]
+    assert pops["boundary_discovery"].version == "2"
     assert boundary["structured"] == 300
     assert boundary["conversational"] == 600
     assert boundary["cross_source"] == 300
@@ -46,7 +51,7 @@ def test_boundary_discovery_executes_full_frozen_population_and_registered_slice
     assert result["denominator"] == 1200
     assert result["predictions_frozen_before_gold"] is True
     assert result["production_path"] == (
-        "source-native object keys plus Slack source structure projection"
+        "source topology plus generic explicit-topic episode projection"
     )
     assert 0.0 <= result["precision"] <= 1.0
     assert 0.0 <= result["recall"] <= 1.0
@@ -66,3 +71,26 @@ def test_boundary_discovery_executes_full_frozen_population_and_registered_slice
         assert len(row["precision_ci95"]) == 2
         assert len(row["recall_ci95"]) == 2
         assert len(row["f1_ci95"]) == 2
+
+
+def test_boundary_predictions_are_invariant_to_evaluator_gold_mutation() -> None:
+    population = next(
+        item for item in build_all_characterization_populations()
+        if item.name == "boundary_discovery"
+    )
+    poisoned = replace(
+        population,
+        cases=tuple(
+            replace(
+                case,
+                evaluator_labels=tuple(
+                    "episode:999" if label.startswith("episode:") else label
+                    for label in case.evaluator_labels
+                ),
+            )
+            for case in population.cases
+        ),
+    )
+    assert asyncio.run(_predict_boundary(population)) == asyncio.run(
+        _predict_boundary(poisoned)
+    )
