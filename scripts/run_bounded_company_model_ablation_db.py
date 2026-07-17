@@ -243,7 +243,7 @@ def _manifest_for(experiment_version: str) -> dict[str, Any]:
 
 
 async def _run_learned(pool, *, consume_model_summaries: bool,
-                       batch_definitions=BATCHES):
+                       batch_definitions=BATCHES, provider_factory=None):
     tenant, actor = await _seed_identity(pool, "learned")
     batches, run_ids = [], []
     for index, definitions in enumerate(batch_definitions, 1):
@@ -251,13 +251,14 @@ async def _run_learned(pool, *, consume_model_summaries: bool,
         run_ids.append(await _think_batch(
             pool, tenant, actor, index, observations,
             consume_model_summaries=consume_model_summaries,
+            provider_factory=provider_factory,
         ))
         batches.append(logical)
     return batches, await _models(pool, [tenant]), run_ids
 
 
 async def _run_frozen(pool, *, consume_model_summaries: bool,
-                      batch_definitions=BATCHES):
+                      batch_definitions=BATCHES, provider_factory=None):
     batches, tenants, run_ids = [], [], []
     for index, definitions in enumerate(batch_definitions, 1):
         tenant, actor = await _seed_identity(pool, f"frozen-{index}")
@@ -266,6 +267,7 @@ async def _run_frozen(pool, *, consume_model_summaries: bool,
         run_ids.append(await _think_batch(
             pool, tenant, actor, index, observations,
             consume_model_summaries=consume_model_summaries,
+            provider_factory=provider_factory,
         ))
         batches.append(logical)
     return batches, await _models(pool, tenants), run_ids
@@ -301,6 +303,7 @@ async def _insert_batch(pool, tenant, actor, index, definitions):
 
 async def _think_batch(
     pool, tenant, actor, index, observations, *, consume_model_summaries: bool,
+    provider_factory=None,
 ):
     trigger_id = uuid7()
     text = f"Evidence window containing {len(observations)} source signals:\n" + "\n".join(
@@ -318,10 +321,14 @@ async def _think_batch(
             "batch_signal_fragments": [{"text": row[1]} for row in observations],
         },
     )
-    provider = FacetCompressionProvider(
-        trigger_id=trigger_id, tenant_id=tenant,
-        event_id=observations[0][0], actor_id=actor,
-        consume_model_summaries=consume_model_summaries,
+    provider = (
+        provider_factory()
+        if provider_factory is not None
+        else FacetCompressionProvider(
+            trigger_id=trigger_id, tenant_id=tenant,
+            event_id=observations[0][0], actor_id=actor,
+            consume_model_summaries=consume_model_summaries,
+        )
     )
     outcome = await think(
         trigger, pool, llm_provider=provider,
