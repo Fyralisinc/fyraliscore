@@ -1632,7 +1632,8 @@ treated as causal origin; durable source-mention metadata is required. These
 metrics expose how entity errors propagate into topology, but become company
 quality evidence only when a populated gold relation suite is executed.
 
-That populated proof now exists for one bounded, production-shaped vertical.
+That populated proof now exists for one bounded, production-shaped positive
+vertical and one separate adversarial extension.
 The sealed company-physics vertical (`eaa02f3f`) starts from seven normalized,
 persisted signals processed as one genuine batch. Five of five eligible cases
 place the correct canonical target in the candidate set and resolve correctly;
@@ -1653,6 +1654,21 @@ perfect rates prove the production bridge and evaluator semantics for those
 cases, not open-world accuracy, scale, drift resistance or company-wide graph
 quality.
 
+The adversarial v2 vertical (`8234ee74`, repaired and made reproducibly
+composable through `8e21e444` and `be021303`) reuses that exact positive
+substrate without weakening it. One DB execution safely rejects all four
+attempted harmful graph mutations without a write: two critical
+wrong-direction/wrong-type attempts and two high-consequence self-link/cycle
+attempts. It also creates a two-hop support chain with exact mention lineage,
+retires the first hop after correction, enqueues the immediate dependent for
+reevaluation and explicitly leaves the second hop active pending that work.
+The artifact therefore proves bounded correction propagation, not completed
+transitive repair. The v2 objective entity composer SHA-binds this artifact to
+the exact positive vertical and exposes adversarial topology, correction,
+consequence-tier and open-world scores plus noncompensatory unsafe-write and
+repair-failure blockers. The bounded adversarial components have a combined
+top-level weight no larger than one ordinary entity component.
+
 Type confidence is independent of mention-detection confidence (`200d7e48`).
 An ambiguous code-like identifier may remain a valid detected mention while
 its type confidence is capped below resolver narrowing when no local role cue
@@ -1660,12 +1676,71 @@ supports the type. Batch fate closure is independently proven (`6967e605`):
 schema failure, timeout and malformed-sibling cases leave all ten signals with
 terminal fates, zero learned-quality credit and idempotent replay.
 
-Objective composition (`0b230b13`) digest-binds immutable v3 and the sealed
-vertical before producing extraction-v1, pipeline-v4 and readiness views. The
-current artifact has continuous readiness `0.98828125`, component coverage
-`1.0` and no noncompensatory blocker. Its only below-budget measured slice is
-workstream exact F1 `0.5` versus `0.8`; unlabeled/open-world canonical,
-relation-topology and semantic-impact populations remain explicit gaps.
+Objective composition v2 (`9bcfde1e`) digest-binds immutable v3, the positive
+vertical and adversarial v2 before producing extraction-v1, pipeline-v4 and
+readiness views. `/tmp/objective_entity_evidence_v2.json` has continuous
+readiness `0.9901315789`, full component coverage and a clear blocker verdict.
+Its only below-budget measured slice remains workstream exact F1 `0.5` versus
+`0.8`. Four adversarial relation attempts and two open-world cases cannot
+establish broad graph quality, so exact denominators and the company-scale
+generalization gap remain in the artifact and top-level report.
+
+### Company-model learning and feedback evidence
+
+Mature retrieval now has a bounded, preregistered nine-batch proof. Early
+retrieval is observation-heavy (`1.0` observation share); late retrieval
+selects Models for `8/11` eligible items (`0.7272727`), actually references
+Models at `0.8`, and records a reason for every late raw-evidence reopening.
+This meets the bounded policy but does not rewrite the immutable 45-batch
+flat/mixed result.
+
+The first real matched company-model ablation then falsified the broader
+learning claim. V2 (`/tmp/bounded_company_model_ablation_v2.json`, SHA-256
+`abe417b302f8193ead3d9c10dcbefc45050c766b66e5e447a27244a8950e038e`)
+ran three genuine six-signal batches in learned and frozen arms. Both recovered
+`0/3` hidden theses, lift was `0`, learned ECE was `0.5725`, continuous score
+was `0.7`, and no prior Models were selected. The SAGE/Think seam fix
+`a2467b0f` preserves material SAGE Models in composed Think context. Postfix v3
+(`/tmp/bounded_company_model_ablation_postfix_v3.json`, SHA-256
+`322f7c2a4bf00414aa80e586e64cfbfea1914aef7074934cea83f8b82d3b60e7`)
+proves the seam changed selection—three prior Models in learned batch two and
+six in batch three, versus zero frozen—but referenced Models remained zero and
+the same `0/3`, zero-lift, `0.5725` ECE, `0.7 below_policy` result remained.
+This localized the remaining seam to actual context use.
+
+The explicit v4 development experiment (`ce6ea870`,
+`/tmp/bounded_company_model_ablation_v4_development.json`, SHA-256
+`b76ed8cac461c6fdd8c5f8a30635f0bddec3acba20e1e2ba6a4d005f6e43fe99`)
+uses the same signals, hidden truth and policy with a generic Model-summary
+consumer that never receives hidden truth. It meets bounded policy at score
+`1.0`: learned recovers `3/3` versus frozen `0/3`, lift `1.0`, ECE
+`0.1925` versus `0.5725`, and Brier `0.037056` versus `0.327756`.
+Learned selected/referenced Models are exactly `0/0`, `3/3`, `6/6` across the
+three batches; frozen remains zero. V2/v3 remain falsifying discovery evidence;
+v4 proves the corrected mechanism on development data, not untouched
+generalization or customer value.
+
+Two additional bounded proofs close narrower portability and repair questions.
+Normalized Slack, email, Jira and document/meeting inputs produce equivalent
+entity/Model/relation outcomes across two semantic cases and eight genuine
+source batches with continuous score `1.0`, while retaining source authority,
+coordinates and conversational boundaries. The real-Postgres correction
+homeostasis vertical executes two corrections, fences eight Models, records
+eight reevaluation pairs, rejects two cycle writes, survives restart exactly,
+adds no replay work and scores `1.0` on every registered check. Neither result
+establishes open-world source drift or unbounded recovery.
+
+`objective-company-learning-evidence-v1` (`eeb917eb`) composes these independent
+SHA-bound components without converting missing evidence into success. The
+current recomposed artifact is
+`/private/tmp/objective_company_learning_evidence_v3.json`, composition SHA-256
+`97d604a66eb51450805f74eca5566f50e3745b990193f80cd7957c1b62863452`.
+All five components are observed; evidence coverage, observed-component score
+and coverage-adjusted score are `1.0`, with no below-policy component or
+noncompensatory blocker, verdict `meets_bounded_policy`. This is a bounded
+system-learning pass only: the artifact retains explicit non-open-world,
+non-customer, no-connector and unbounded-recovery gaps, and v4 remains
+development rather than untouched generalization evidence.
 
 ## 8.3 Anomaly processor
 

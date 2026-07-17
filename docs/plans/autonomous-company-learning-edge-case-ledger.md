@@ -170,10 +170,15 @@ transport are excluded from this goal.
 - **Evidence:** The serialized real-Postgres correction proof establishes
   source immutability, tenant isolation, bounded cycle-safe recursive fanout,
   fresh uncontaminated projection rebuild and replay idempotency.
-- **Remaining boundary:** The proof is a seeded second-hop cascade, not an
-  oracle-complete production dependency census. Very large/deep graphs,
-  sustained refresh load, kill/restart/reorder, hidden dependents, distinct
-  revocation/deletion and policy/reward/intent repair remain unproven.
+- **Additional homeostasis evidence:** `933b048c` runs two DB corrections,
+  fences eight Models, records eight reevaluation pairs, rejects two cycle
+  writes, creates no work on replay and preserves the exact durable fingerprint
+  across runtime restart. Every registered check scores `1.0`; objective SHA
+  begins `382df`.
+- **Remaining boundary:** The proof is bounded, not an oracle-complete
+  production dependency census. Very large graphs, infrastructure loss,
+  sustained refresh load, hidden dependents, revocation/deletion and
+  policy/reward/intent repair remain unproven.
 - **Return condition:** Reopen for production-scale repair, oracle dependency
   coverage and non-identity correction classes.
 
@@ -533,22 +538,22 @@ transport are excluded from this goal.
 
 ### EDGE-026 — Mature retrieval remains flat and mixed
 
-- **Status:** `implemented; focused proof only`, P0 validation
+- **Status:** `bounded pass`; authoritative large-run failure retained
 - **Trigger:** The requested cold-start behavior expected early observation use
   to give way to mostly Model retrieval.
-- **Current behavior:** `666ae2ee` introduces cold/developing/mature budgets,
-  Model-first mature context and typed raw-evidence reopening reasons;
-  `e04da5e8` gates maturity on quality-weighted Model mass so a weak Model tail
-  cannot suppress necessary evidence. The quoted flat shares remain the
-  unrerun 45-batch baseline.
+- **Current behavior:** The post-fix nine-batch proof meets preregistered policy:
+  early observation share `1.0`, late Model selection `8/11`, late actual Model
+  reference `0.8`, and late reopening-reason coverage `1.0`. The quoted flat
+  shares remain the immutable 45-batch baseline.
 - **Risk:** High prompt cost, raw-evidence dependence, weak compression value
   and repeated selection of unused context.
-- **Use evidence:** Late normal waves referenced roughly 31.3% of selected
-  Models and 65.6% of selected observations. Fourteen late raw reopenings had no
-  recorded reason.
-- **Safe boundary:** Do not claim Model-first memory metabolism.
-- **Return condition:** Outcome-gated observation budgets, explicit reopening
-  reasons and stable late Model dominance with improved selected/use ratios.
+- **Use evidence:** Historical late waves referenced roughly 31.3% of selected
+  Models and 65.6% of selected observations with 14 unjustified reopenings;
+  bounded post-fix use is `0.8` with full reason coverage.
+- **Safe boundary:** Claim bounded retrieval-policy correction only, not
+  company-scale metabolism or learning lift.
+- **Return condition:** Untouched long-horizon evidence preserves Model
+  dominance/use and improves a terminal company-model measure.
 
 ### EDGE-027 — Batch context contaminates canonical Model scope and text
 
@@ -783,7 +788,7 @@ transport are excluded from this goal.
 
 ### EDGE-036 — Entity correctness can silently corrupt relation topology
 
-- **Status:** `bounded`; one populated topology vertical, broader P0 remains
+- **Status:** `bounded adversarial DB pass`; broader P0 remains
 - **Trigger:** A missed, false or wrongly linked mention can create a wrong
   active edge, reverse direction, choose the wrong relation type, or contaminate
   Models beyond the originating grounding case.
@@ -792,17 +797,39 @@ transport are excluded from this goal.
   identity, type, direction, exact mention-lineage, unexpected-edge, harmful
   relation/model propagation, unknown-endpoint and unlineaged-active-edge
   metrics. Shared endpoint adjacency is not accepted as causal origin. The
-  sealed vertical admits one directed `blocks` edge with exact source-mention
+  positive vertical admits one directed `blocks` edge with exact source-mention
   lineage and preserves an explicit no-edge expectation; admission, endpoint,
   type, direction and lineage are `1.0` on their exact denominators, with zero
-  unexpected or harmful edges.
+  unexpected or harmful edges. Adversarial v2 then rejects four harmful writes
+  without mutation across wrong direction, mutually exclusive type, self-link
+  and cycle closure; it measures a two-hop chain and immediate correction
+  propagation. Objective entity v2 scores `0.9901315789`, blockers clear.
 - **Risk:** Strong extraction can coexist with a meaningless or poisoned
   company graph; a five-case link population cannot bound broad identity risk.
-- **Safe boundary:** Treat this as proof of one exact relation/no-relation
-  vertical, not company-scale topology quality or broad relation recall.
-- **Return condition:** Widen production-shaped relation gold through canonical
-  linking and graph admission to wrong-link, reversed-edge, wrong-type,
-  multi-hop, contradiction, repair and unlabeled-case populations.
+- **Safe boundary:** Four adversarial attempts and two open-world cases do not
+  establish company-scale topology quality; completed transitive repair is not
+  claimed while the second hop awaits reevaluation.
+- **Return condition:** Widen relation gold across organizations, relation
+  families, consequence tiers, unlabeled cases, temporal drift and completed
+  multi-hop repair under load.
+
+### EDGE-037 — Selected Models are not necessarily used by reasoning
+
+- **Status:** `resolved on versioned development data; generalization open`
+- **Trigger:** Real ablation v2 selected no prior Models. After the SAGE seam
+  fix, postfix v3 selected three Models in learned batch two and six in batch
+  three, but referenced zero; both arms still recovered `0/3` hidden theses.
+- **Risk:** Retrieval dashboards can look Model-first while reasoning continues
+  to reconstruct from raw evidence, producing no causal learning advantage.
+- **Current behavior:** `ce6ea870` adds a generic summary consumer with no
+  hidden-truth access. On the same matched three-by-six development experiment,
+  learned selects/references `0/0`, `3/3`, `6/6`, recovers `3/3` versus frozen
+  `0/3`, lift `1.0`, ECE `0.1925` versus `0.5725`, Brier `0.037056` versus
+  `0.327756`, score `1.0`.
+- **Safe boundary:** V2/v3 failures remain in the evidence trail. V4 is
+  development mechanism evidence, not untouched or customer-value proof.
+- **Return condition:** Repeat on a newly sealed organization/entity/time split
+  with independent hidden truth and retain Model-reference and terminal lift.
 
 ## Entry Template
 

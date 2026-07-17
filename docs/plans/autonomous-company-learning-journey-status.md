@@ -293,13 +293,17 @@ flowchart LR
 | Conversational reconstruction | All nine Slack-shaped semantic families are source-attributed, supported and correct with zero contamination from persisted normalized fixtures; provider transport is not part of the claim | Complete for sealed gold: 9/9 |
 | Broad correction propagation | Wrong Models, recursive dependents, relations and projections are fenced or rebuilt; queued refresh work is consumed through the existing projector runtime | Complete for the seeded recursive cascade |
 | Cross-source company physics | Persisted Jira-, Linear-, Google Drive- and Gmail-attributed fixtures preserve governed source identity through grounding; connector/listener transport and equivalent causal learning are outside or beyond the current proof | Complete for the persisted identity semantics measured |
-| SAGE feedback reuse | Grounding and source-semantic terminal outcomes alter future matching-source retrieval salience without truth or authority writes | Complete for first bounded source-salience bridge |
+| SAGE feedback reuse | Grounding/source-semantic outcomes alter salience without truth writes; matched effect evaluator exists | Source-salience loop has bounded policy-effect proof only. Separate v4 proves Model-use lift; it does not establish this salience bridge's terminal contribution |
 | Active-surface evaluator | Six sealed identity surfaces across Jira, Linear, Google Drive and Gmail plus five source-salience cases are recomputed, reopened and gated noncompensatorily | Complete in assurance v6: identity 6/6, salience 5/5 |
 | Source-identity lifecycle | Bindings support close, revoke and supersede with valid-time history, immutable attachment versions, a database exclusion constraint, populated colliding-tenant proof and a digest-bound query/row/error manifest | Complete for the sealed 12/12 E4 lifecycle proof |
 | Retention and forgetting evaluator | Exact and governed-variant behavior is measured at 0/4/16 alias-interference cycles and 0/1/2 worker-object restarts; correction, four negative controls and three collision families are checked noncompensatorily | Complete in assurance v6: 14/14, forgetting 0.0; not process-restart or long-duration proof |
 | Canonical resource replacement | One atomic orchestrator governs transition lineage, predecessor retirement, alias closure, exact source-binding supersession and projection invalidation while preserving Observations, attachments and Models; resource reads can resolve the lineage head at explicit valid/known cutoffs | Complete for the sealed resource vertical: 20/20 observed, zero gaps or violations |
 | Large cold-start company learning | One fresh tenant processed 1,125 signals in 45 genuine 25-signal batches from zero semantic memory; all work drained and later evidence changed memory | Executed; authoritative verdict `not_credible` because entity grounding and retrieval behavior failed required trust gates |
-| Postmortem semantic repairs | Persisted batches close mention-candidate fates; canonical aliases require grounded adjudication; claim scope is claim-local; asymmetric edges are role-stable; retrieval maturity is quality-weighted and records raw-evidence reopening; causal thesis and calibration reporting are stronger | Implemented and focused-test proven at `8f4e75e8`; the 45-batch simulation has not been rerun, so end-state impact remains unproven |
+| Postmortem semantic repairs | Persisted batches close mention-candidate fates; aliases require adjudication; claim scope is local; asymmetric edges are role-stable; mature retrieval is Model-first with explicit reopening reasons | Retrieval passes nine-batch policy proof. Ablation v2/v3 preserve zero-use failures; development v4 closes the Model-reference seam and shows `3/3` versus `0/3` lift, but is not untouched generalization |
+| Adversarial company physics | Positive v1 plus adversarial v2 cover canonical links, semantic fates, exact relation lineage, four rejected harmful writes, a two-hop chain and immediate correction propagation | DB-backed bounded pass; four relation attempts and two open-world cases do not establish broad topology quality or completed transitive repair |
+| Source equivalence | Two semantic cases across eight normalized Slack/email/Jira/document-meeting batches preserve outcomes, authority, coordinates and boundaries | Bounded score `1.0`; connectors, open-world discourse and drift excluded |
+| Correction homeostasis | Two DB corrections fence eight Models, create eight reevaluation pairs, reject cycles, replay idempotently and survive restart | Bounded score `1.0`; unbounded recovery and infrastructure loss excluded |
+| Objective company learning | Five-component SHA-bound composer separates observed quality, coverage and blockers | All five observed; coverage/observed/adjusted scores `1.0`, no blocker, `meets_bounded_policy`; open-world/customer/connector/unbounded recovery excluded |
 | Entity extraction and company physics | Gold span/type evaluation and pipeline-v4 separate discovery, typing, resolver handoff, canonical linking, semantic disposition and relation lineage | V3 populates untouched extraction; the separate sealed DB vertical populates canonical/link/semantic/topology outcomes for exact authored cases. Broader generalization remains open |
 | Learned batched discovery | Persisted signals are discovered as batches through a learned provider path, with typed candidates committed into the existing mention-fate ledger and handed to the existing resolver; deterministic discovery remains an availability fallback | Implemented with focused tests and provider readiness preflight; learned quality is promising but not exceptional |
 | Learned discovery provider readiness | Worker startup preflights the configured learned-discovery provider/model so a missing or incompatible provider is an explicit incident instead of silently becoming the normal mode | Implemented after a real provider/model configuration incident |
@@ -729,9 +733,9 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
-| Scoped company-learning runtime implementation | 94–96% | The repaired batched path now reaches canonical identity, semantic admission/no-admission and relation lineage in a sealed DB vertical; breadth, retrieval evolution and autonomous-learning proof remain |
-| Customer-free objective substantiation | 80–84% | Objective entity evidence is precise and nearly within budget, but workstream extraction, broad/open-world populations and the immutable `not_credible` large run prevent a system-wide belief claim |
-| Broader revised system excluding task autonomy | 80–84% | Core company memory and principal repairs exist; open-world entity breadth, large-run retrieval transition, causal-thesis recovery, calibration, paired adaptive learning, human gap closure and customer-value evidence remain incomplete |
+| Scoped company-learning runtime implementation | 96–98% | Batched path, bounded retrieval transition, adversarial company physics, source equivalence, restart-safe correction and development causal Model use execute; untouched/open-world generalization remains |
+| Customer-free objective substantiation | 87–90% | Objective bounded learning now passes all five components and entity v2 is `0.9901315789`; workstream F1 `0.5`, development-only ablation lift, open-world breadth and the immutable `not_credible` large run prevent generalization |
+| Broader revised system excluding task autonomy | 85–88% | Core company memory is strong in bounded slices; open-world breadth, untouched causal-thesis recovery, long-horizon calibration/learning, human gap closure and customer value remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
@@ -759,9 +763,10 @@ one, the `be401f25` 45-batch verdict remains the authoritative large-run result.
    - Preserve the distinction between v3, whose referents are intentionally
      null, and the separate sealed vertical, whose bounded canonical coverage
      and accuracy are `5/5`. Widen rather than relabel the latter.
-   - Expand the populated semantic/topology vertical beyond two Models, two
-     no-admissions and one directed edge to adversarial wrong-link,
-     wrong-direction, wrong-type, repair and multi-hop populations.
+   - Current result: adversarial v2 adds four safely rejected harmful writes,
+     a two-hop chain, immediate correction propagation and consequence-tier
+     denominators. Keep widening beyond these four attempts and two open-world
+     cases; do not relabel this bounded pass as company-scale topology quality.
    - Preserve the deterministic locator as explicit availability fallback, not
      as evidence that learned discovery succeeded.
 
@@ -1621,11 +1626,11 @@ The next sequence is validation and remaining pipeline closure:
   known-wrong-type consequential admissions are zero. The trace materializes
   two belief Models, preserves two no-admission outcomes and one directed
   exact-lineage `blocks` edge.
-- `f24e79ae`, `ab4b93fd` and `0b230b13` add disposition-aware denominators, a
-  versioned continuous readiness budget and digest-bound composition of v3 plus
-  the vertical. Current readiness is `0.98828125`, coverage `1.0`, blocker
-  verdict clear; workstream exact F1 `0.5` remains below its `0.8` budget and
-  four unlabeled/open-world population gaps remain explicit.
+- `f24e79ae`, `ab4b93fd`, `0b230b13` and `9bcfde1e` add disposition-aware
+  denominators, a versioned readiness budget and digest-bound v2 composition
+  of v3, the positive vertical and adversarial v2. Current readiness is
+  `0.9901315789`, coverage `1.0`, blocker verdict clear; workstream exact F1
+  `0.5` remains below `0.8`, and bounded/open-world gaps remain explicit.
 - `499acfd0` prevents observed status labels from manufacturing entity quality.
   An evaluator-only rerender of the existing 45-batch artifact remains
   `not_credible` at score `0.8858`, coverage `1.0`, three historical hard
@@ -1642,3 +1647,34 @@ The next sequence is validation and remaining pipeline closure:
   resolver-owned canonical writes remain incidents in that artifact even
   though the mechanism now forbids them. The authoritative 45-batch verdict is
   still `not_credible`.
+
+### 2026-07-17 — Bounded company-learning evidence became objective and falsifiable
+
+- Post-fix retrieval meets its preregistered nine-batch policy: early
+  observation share `1.0`, late Model selection `8/11`, late actual Model
+  reference `0.8` and reopening-reason coverage `1.0`. This does not revise the
+  immutable flat/mixed 45-batch trace.
+- Real ablation v2 and postfix v3 are retained as failures: both arms recover
+  `0/3`, lift is zero, learned ECE is `0.5725` and score is `0.7 below_policy`.
+  V3 selects 3 then 6 prior Models but references none, localizing the seam.
+- `ce6ea870` executes the explicit v4 development consumer on the same matched
+  batches and hidden truth. Learned references exactly 3 and 6 prior Models in
+  batches two and three, recovers `3/3` versus frozen `0/3`, lift `1.0`, ECE
+  `0.1925` versus `0.5725`, Brier `0.037056` versus `0.327756`, score `1.0`.
+  Artifact SHA is `b76ed8ca…6e43fe99`; it is development evidence, not an
+  untouched holdout.
+- Adversarial entity v2 passed its bounded DB vertical. Objective entity v2 at
+  `/tmp/objective_entity_evidence_v2.json` scores `0.9901315789`, all blockers
+  clear; workstream F1 `0.5` is the only below-budget measurement. Four graph
+  attacks and two open-world cases remain too small for generalization.
+- Normalized source equivalence scores `1.0` across two cases and eight source
+  batches. Correction homeostasis scores `1.0` after two corrections, eight
+  fenced Models, eight reevaluation pairs, two cycle rejections, idempotent
+  replay and exact restart stability.
+- `eeb917eb` composes independent learning evidence. The final bounded v3
+  composition at `/private/tmp/objective_company_learning_evidence_v3.json`
+  observes all five components: coverage, observed score and adjusted score
+  `1.0`, no below-policy component or blocker, verdict
+  `meets_bounded_policy`; composition SHA `97d604a6…2863452`. It preserves
+  explicit non-open-world, non-customer, no-connector and unbounded-recovery
+  proof gaps and does not revise the large-run verdict.

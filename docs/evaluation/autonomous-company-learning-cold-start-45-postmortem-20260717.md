@@ -588,6 +588,9 @@ The most likely structural causes are:
 ### P1 — Learning quality
 
 6. Make mature retrieval Model-first and require raw-evidence reopening reasons.
+   **Bounded post-fix pass:** nine genuine batches now measure early observation
+   share `1.0`, late Model selection `8/11`, late actual Model reference `0.8`
+   and reopening-reason coverage `1.0`. The historical run remains unchanged.
 7. Use independent thesis correctness as the primary hidden-pattern measure.
 8. Replace temporal contact proxies with explicit claim lifecycle outcomes.
 9. Calibrate confidence against later evidence.
@@ -601,6 +604,40 @@ The most likely structural causes are:
 14. Fix evaluator rates that exceed 1.0.
 15. Measure actual projection consumption, decision quality and customer
     outcomes.
+
+## Post-fix evidence reconciliation
+
+This section updates the remediation state; it does not alter the run above or
+its `not_credible` verdict.
+
+- Entity physics now has a positive DB vertical plus adversarial v2. The latter
+  rejects four harmful graph writes without mutation, exercises a two-hop
+  chain and immediate correction propagation. Objective entity v2 scores
+  `0.9901315789` with clear blockers; workstream F1 `0.5` remains below budget.
+  Four graph attempts and two open-world cases are bounded evidence only.
+- The first real company-model ablation v2 and postfix v3 are preserved as
+  failures. Each runs matched three-by-six batches; both arms recover `0/3`,
+  lift is zero, learned ECE is `0.5725`, score `0.7 below_policy`. V3 proves the
+  SAGE seam fix selects three then six prior Models but references none.
+- Development v4 (`ce6ea870`) closes that use seam with a generic summary
+  consumer that cannot see hidden truth. Learned selects/references exactly
+  `0/0`, `3/3`, `6/6`, recovers `3/3` versus frozen `0/3`, lift `1.0`, ECE
+  `0.1925` versus `0.5725`, Brier `0.037056` versus `0.327756`, score `1.0`.
+  This is versioned development evidence, not a new untouched generalization
+  run. V2/v3 remain part of the discovery trail.
+- Normalized source equivalence passes at `1.0` across two semantic cases and
+  eight Slack/email/Jira/document-meeting batches while preserving provenance
+  and conversational boundaries. Connector behavior and source drift remain
+  outside scope.
+- Correction homeostasis passes its real-Postgres bounded proof at `1.0`: two
+  corrections, eight fenced Models, eight reevaluation pairs, two cycle-write
+  rejections, idempotent replay and exact restart stability.
+- The final SHA-bound bounded objective artifact observes all five components.
+  Coverage, observed-component score and coverage-adjusted score are `1.0`,
+  with no below-policy component or blocker; verdict
+  `meets_bounded_policy`. Its proof gaps explicitly retain non-open-world,
+  non-customer, no-connector and unbounded-recovery limits. It does not alter
+  this historical large-run verdict.
 
 ## What We Can Claim
 
@@ -621,7 +658,8 @@ The run does not establish that:
 - the graph is directionally trustworthy;
 - hidden-pattern recovery is consistently causal and uncontaminated;
 - confidence is calibrated;
-- mature retrieval primarily uses compressed Models;
+- mature retrieval primarily uses compressed Models at company scale (the
+  bounded nine-batch proof passes, but the authoritative run does not);
 - customer-facing decisions improve;
 - production connectors or transport are durable;
 - open-world company understanding is reliable.
