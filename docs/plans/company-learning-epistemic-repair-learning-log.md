@@ -614,6 +614,71 @@ retrieval activity canonical semantics. The zero embedding is a temporary
 derived placeholder and must be replaced by the normal embedding projector;
 it is not evidence and cannot affect admission or confidence.
 
+### 2026-07-17 — LOG-017 — Source references are part of conversational context
+
+**Type:** observed + corrected
+
+The first P3 grounding evaluator exposed that reply topology alone cannot
+recover the antecedent for email, document, and cross-source references. The
+production grounding episode now selects authorized `source_reference`
+context alongside temporal and reply context.
+
+**Evidence:** `services/domain/entity_grounding/episode.py`;
+`tests/epistemic_repair/p3/`.
+
+**Effect:** the sealed 120-signal P3 population now has complete sufficient-
+context recall with zero cross-tenant or future-evidence contamination. This
+is a production context-selection rule, not a benchmark-specific hook.
+
+### 2026-07-17 — LOG-018 — Online learning requires an explicit causal barrier
+
+**Type:** observed + decided
+
+Queue drain and eventual projection refresh do not prove that batch N learning
+was available to batch N+1 reasoning. P4 introduced a durable barrier plus
+decision-level context and outcome links, and the six-batch evaluator checks
+the exact selected evidence, actual use, outcome, and policy credit chain.
+
+**Evidence:** `db/migrations/0229_company_learning_causal_barrier.sql`;
+`services/domain/company_learning/barrier.py`;
+`services/reasoning/think/company_learning_feedback.py`.
+
+**Effect:** every batch must close with zero truth-critical pending work before
+the next batch can claim online learning. Activity counts cannot substitute for
+causal attribution.
+
+### 2026-07-17 — LOG-019 — An evaluator must bind its verdict to queried rows
+
+**Type:** observed + corrected
+
+The first P5 oracle could be handed a plausible artifact containing a forged
+accepted-state boolean. Adversarial tests demonstrated that digesting an
+artifact is insufficient when the fields inside it are not independently
+reconstructed from durable state.
+
+**Evidence:** `lib/evaluation/epistemic_repair/p5_oracles.py`;
+`tests/epistemic_repair/p5/test_p5_oracle_adversarial.py`.
+
+**Effect:** the P5 oracle now binds all 75 sealed signal identities, positions,
+and digests to queried observations and context-decision fates and rejects
+missing, duplicated, stale, or fabricated state.
+
+### 2026-07-17 — LOG-020 — Deterministic vertical success is not provider parity
+
+**Type:** observed + decided
+
+The three-batch zero-seed vertical processes 75 signals through grounding,
+source semantics, admission, accepted-memory retrieval, relation lifecycle,
+correction, dependent repair, decision credit, and causal barriers. Its seven
+focused tests pass on a freshly migrated PostgreSQL database.
+
+**Evidence:** commit `096a4812`; `scripts/run_epistemic_repair_p5_vertical.py`;
+`tests/epistemic_repair/p5/`.
+
+**Effect:** this is sufficient to continue simulated P6-P8 work without waiting
+for provider funding. It is not evidence of real-provider semantic parity,
+which remains a visible P1/P5/P9 proof boundary.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
