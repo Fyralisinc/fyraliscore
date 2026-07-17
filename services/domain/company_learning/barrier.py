@@ -178,11 +178,9 @@ class CompanyLearningBarrierService:
                 "cannot complete while truth-critical work remains",
                 pending=truth_critical_pending_count,
             )
-        await tx.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-            f"company-learning-barrier:{tenant_id}",
+        replay = await self._lock_and_find(
+            tx=tx, tenant_id=tenant_id, batch_id=batch_id,
         )
-        replay = await self._find(tx=tx, tenant_id=tenant_id, batch_id=batch_id)
         if replay is not None:
             return replay
         await self._assert_visibility(
@@ -263,6 +261,34 @@ class CompanyLearningBarrierService:
             tenant_id, batch_id,
         )
         if row is None:
+            return None
+        return BarrierReceipt(
+            row["barrier_id"], row["tenant_id"], row["batch_id"],
+            int(row["barrier_version"]), row["prior_barrier_id"],
+            tuple(row["expected_model_version_ids"]),
+            tuple(row["expected_relation_version_ids"]),
+            tuple(row["invalidated_model_version_ids"]),
+            int(row["truth_critical_pending_count"]), row["completed_at"],
+            row["receipt_digest"],
+        )
+
+    @staticmethod
+    async def _lock_and_find(
+        *, tx: Any, tenant_id: UUID, batch_id: str,
+    ) -> BarrierReceipt | None:
+        """Serialize one tenant and check replay in one database round trip."""
+        row = await tx.fetchrow(
+            """WITH locked AS (
+                 SELECT pg_advisory_xact_lock(hashtextextended($3, 0))
+               )
+               SELECT b.* FROM locked
+               LEFT JOIN LATERAL (
+                 SELECT * FROM company_learning_barriers
+                 WHERE tenant_id=$1 AND batch_id=$2
+               ) b ON true""",
+            tenant_id, batch_id, f"company-learning-barrier:{tenant_id}",
+        )
+        if row is None or row["barrier_id"] is None:
             return None
         return BarrierReceipt(
             row["barrier_id"], row["tenant_id"], row["batch_id"],

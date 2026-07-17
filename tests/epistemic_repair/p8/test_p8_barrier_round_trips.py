@@ -8,6 +8,27 @@ from lib.shared.errors import InvariantViolation
 from services.domain.company_learning.barrier import CompanyLearningBarrierService
 
 
+class _NoReplayTx:
+    def __init__(self):
+        self.calls = []
+
+    async def fetchrow(self, sql, *args):
+        self.calls.append((sql, args))
+        return {"barrier_id": None}
+
+
+async def test_lock_and_replay_lookup_share_one_round_trip() -> None:
+    from uuid import uuid4
+
+    tx = _NoReplayTx()
+    assert await CompanyLearningBarrierService()._lock_and_find(
+        tx=tx, tenant_id=uuid4(), batch_id="batch-1",
+    ) is None
+    assert len(tx.calls) == 1
+    assert "pg_advisory_xact_lock" in tx.calls[0][0]
+    assert "company_learning_barriers" in tx.calls[0][0]
+
+
 class _VisibilityTx:
     def __init__(self, *, model_ids=(), relation_ids=(), stale=0):
         self.model_ids = model_ids
