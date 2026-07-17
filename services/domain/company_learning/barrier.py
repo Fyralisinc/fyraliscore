@@ -178,20 +178,18 @@ class CompanyLearningBarrierService:
                 "cannot complete while truth-critical work remains",
                 pending=truth_critical_pending_count,
             )
+        await tx.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            f"company-learning-barrier:{tenant_id}",
+        )
         if not expected_relation_version_ids and not invalidated_model_version_ids:
-            replay = await self._lock_and_find(
-                tx=tx, tenant_id=tenant_id, batch_id=batch_id,
-            )
-            if replay is not None:
-                return replay
-            prior = await self._assert_models_and_select_prior(
-                tx=tx, tenant_id=tenant_id,
-                model_versions=expected_model_version_ids,
+            return await self._complete_common_atomic(
+                tx=tx, barrier_id=barrier_id, tenant_id=tenant_id,
+                batch_id=batch_id, model_versions=expected_model_version_ids,
+                completed_at=completed_at,
             )
         else:
-            replay = await self._lock_and_find(
-                tx=tx, tenant_id=tenant_id, batch_id=batch_id,
-            )
+            replay = await self._find(tx=tx, tenant_id=tenant_id, batch_id=batch_id)
             if replay is not None:
                 return replay
             await self._assert_visibility(
@@ -237,6 +235,86 @@ class CompanyLearningBarrierService:
             expected_model_version_ids, expected_relation_version_ids,
             invalidated_model_version_ids, 0, completed_at, digest,
         )
+
+    @staticmethod
+    async def _complete_common_atomic(
+        *, tx: Any, barrier_id: UUID, tenant_id: UUID, batch_id: str,
+        model_versions: tuple[UUID, ...], completed_at: datetime,
+    ) -> BarrierReceipt:
+        models_json = json.dumps(sorted(map(str, model_versions)), separators=(",", ":"))
+        row = await tx.fetchrow(
+            """WITH replay AS (
+                 SELECT * FROM company_learning_barriers
+                 WHERE tenant_id=$1 AND batch_id=$2
+               ), visible AS (
+                 SELECT count(*)::int AS n FROM accepted_current_models
+                 WHERE tenant_id=$1 AND truth_version_id=ANY($4::uuid[])
+               ), prior AS (
+                 SELECT barrier_id, barrier_version FROM company_learning_barriers
+                 WHERE tenant_id=$1 ORDER BY barrier_version DESC LIMIT 1 FOR UPDATE
+               ), candidate AS (
+                 SELECT COALESCE(prior.barrier_version,0)+1 AS barrier_version,
+                        prior.barrier_id AS prior_barrier_id
+                 FROM visible LEFT JOIN prior ON true
+                 WHERE visible.n=cardinality($4::uuid[]) AND NOT EXISTS (SELECT 1 FROM replay)
+               ), inserted AS (
+                 INSERT INTO company_learning_barriers (
+                   barrier_id,tenant_id,batch_id,barrier_version,prior_barrier_id,
+                   expected_model_version_ids,expected_relation_version_ids,
+                   invalidated_model_version_ids,truth_critical_pending_count,status,
+                   receipt_digest,completed_at
+                 )
+                 SELECT $3::uuid,$1::uuid,$2::text,c.barrier_version,c.prior_barrier_id,$4::uuid[],
+                        '{}'::uuid[],'{}'::uuid[],0,'complete',
+                        encode(sha256(convert_to(
+                          '{"barrier_id":'||to_jsonb($3::text)::text||
+                          ',"barrier_version":'||c.barrier_version::text||
+                          ',"batch_id":'||to_jsonb($2::text)::text||
+                          ',"completed_at":'||to_jsonb($5::text)::text||
+                          ',"expected_model_version_ids":'||$6||
+                          ',"expected_relation_version_ids":[]'||
+                          ',"invalidated_model_version_ids":[]'||
+                          ',"prior_barrier_id":'||COALESCE(to_jsonb(c.prior_barrier_id::text)::text,'null')||
+                          ',"tenant_id":'||to_jsonb($1::text)::text||
+                          ',"truth_critical_pending_count":0}', 'UTF8')), 'hex'), $7
+                 FROM candidate c
+                 ON CONFLICT (tenant_id,batch_id) DO NOTHING RETURNING *
+               ), chosen AS (
+                 SELECT * FROM replay UNION ALL SELECT * FROM inserted LIMIT 1
+               )
+               SELECT chosen.*, visible.n AS visible_count FROM visible LEFT JOIN chosen ON true""",
+            tenant_id, batch_id, barrier_id, list(model_versions),
+            completed_at.isoformat(), models_json, completed_at,
+        )
+        if row["barrier_id"] is None:
+            raise InvariantViolation(
+                "BARRIER_MODEL_VISIBILITY", "expected Models are not current",
+            )
+        receipt = BarrierReceipt(
+            row["barrier_id"], row["tenant_id"], row["batch_id"],
+            int(row["barrier_version"]), row["prior_barrier_id"],
+            tuple(row["expected_model_version_ids"]),
+            tuple(row["expected_relation_version_ids"]),
+            tuple(row["invalidated_model_version_ids"]),
+            int(row["truth_critical_pending_count"]), row["completed_at"],
+            row["receipt_digest"],
+        )
+        payload = {
+            "barrier_id": str(receipt.barrier_id), "tenant_id": str(receipt.tenant_id),
+            "batch_id": receipt.batch_id, "barrier_version": receipt.barrier_version,
+            "prior_barrier_id": str(receipt.prior_barrier_id) if receipt.prior_barrier_id else None,
+            "expected_model_version_ids": sorted(map(str, receipt.expected_model_version_ids)),
+            "expected_relation_version_ids": [], "invalidated_model_version_ids": [],
+            "truth_critical_pending_count": 0,
+            "completed_at": receipt.completed_at.isoformat(),
+        }
+        expected_digest = canonical_sha256(payload)
+        if receipt.receipt_digest != expected_digest:
+            raise InvariantViolation(
+                "BARRIER_RECEIPT_DIGEST", "atomic receipt digest mismatch",
+                actual=receipt.receipt_digest, expected=expected_digest,
+            )
+        return receipt
 
     async def _assert_visibility(
         self, *, tx: Any, tenant_id: UUID,
@@ -302,34 +380,6 @@ class CompanyLearningBarrierService:
             tenant_id, batch_id,
         )
         if row is None:
-            return None
-        return BarrierReceipt(
-            row["barrier_id"], row["tenant_id"], row["batch_id"],
-            int(row["barrier_version"]), row["prior_barrier_id"],
-            tuple(row["expected_model_version_ids"]),
-            tuple(row["expected_relation_version_ids"]),
-            tuple(row["invalidated_model_version_ids"]),
-            int(row["truth_critical_pending_count"]), row["completed_at"],
-            row["receipt_digest"],
-        )
-
-    @staticmethod
-    async def _lock_and_find(
-        *, tx: Any, tenant_id: UUID, batch_id: str,
-    ) -> BarrierReceipt | None:
-        """Serialize one tenant and check replay in one database round trip."""
-        row = await tx.fetchrow(
-            """WITH locked AS (
-                 SELECT pg_advisory_xact_lock(hashtextextended($3, 0))
-               )
-               SELECT b.* FROM locked
-               LEFT JOIN LATERAL (
-                 SELECT * FROM company_learning_barriers
-                 WHERE tenant_id=$1 AND batch_id=$2
-               ) b ON true""",
-            tenant_id, batch_id, f"company-learning-barrier:{tenant_id}",
-        )
-        if row is None or row["barrier_id"] is None:
             return None
         return BarrierReceipt(
             row["barrier_id"], row["tenant_id"], row["batch_id"],
