@@ -57,6 +57,7 @@ from .debug_capture import capture as debug_capture
 from .debug_capture import capture_with_pool as debug_capture_with_pool
 from .deterministic import is_authoritative
 from .lanes import classify_trigger_lane
+from .llm_receipts import ThinkLLMReceiptCollector
 from .observability import (
     METRICS,
     ThinkRunRecord,
@@ -247,6 +248,67 @@ async def think(
         return skipped
 
     usage_agg, usage_ctx = _install_usage_aggregator(llm_provider)
+    receipt_collector = _new_receipt_collector(
+        trigger,
+        trigger_id=trigger_id,
+        run_id=record.id,
+        llm_provider=llm_provider,
+    )
+    receipt_ctx = receipt_collector.capture() if receipt_collector is not None else None
+    if receipt_ctx is not None:
+        receipt_ctx.__enter__()
+
+    try:
+        try:
+            outcome = await _execute_think_run(
+                trigger,
+                pool,
+                llm_provider=llm_provider,
+                embedder=embedder,
+                access_context=access_context,
+                triggering_content=triggering_content,
+                reason_for_trigger=reason_for_trigger,
+                trigger_kind_full=trigger_kind_full,
+                record=record,
+                started_at=started_at,
+                max_retrieval_reruns=max_retrieval_reruns,
+                usage_agg=usage_agg,
+            )
+        except BaseException as exc:
+            if receipt_collector is not None:
+                receipt_collector.set_terminal_outcomes(
+                    validation_outcome=type(exc).__name__,
+                    apply_outcome="orchestration_failed",
+                )
+                await _persist_llm_receipts(pool, receipt_collector)
+            raise
+        if receipt_collector is not None:
+            _set_receipt_terminal_outcomes(receipt_collector, outcome)
+            await _persist_llm_receipts(pool, receipt_collector)
+        return outcome
+    finally:
+        if receipt_ctx is not None:
+            receipt_ctx.__exit__(None, None, None)
+        _detach_usage_and_trace(llm_provider, usage_ctx)
+
+
+async def _execute_think_run(
+    trigger: TriggerContext,
+    pool: asyncpg.Pool,
+    *,
+    llm_provider: LLMProvider | None,
+    embedder: Any | None,
+    access_context: AccessContext | None,
+    triggering_content: str | None,
+    reason_for_trigger: str | None,
+    trigger_kind_full: str,
+    record: ThinkRunRecord,
+    started_at: float,
+    max_retrieval_reruns: int,
+    usage_agg: LLMUsageAggregator | None,
+) -> ThinkRunOutcome:
+    """Run Think to a terminal outcome while the caller owns telemetry scopes."""
+
     rerun_count = 0
     transaction_retry_count = 0
     max_transaction_retries = int(
@@ -278,7 +340,7 @@ async def think(
                         trigger=trigger,
                         record=record,
                         trigger_kind_full=trigger_kind_full,
-                        trigger_id=trigger_id,
+                        trigger_id=record.trigger_id,
                         exc=e,
                         started_at=started_at,
                         rerun_count=rerun_count,
@@ -327,7 +389,7 @@ async def think(
             pool,
             trigger=trigger,
             record=record,
-            trigger_id=trigger_id,
+            trigger_id=record.trigger_id,
             trigger_kind_full=trigger_kind_full,
             exc=e,
             started_at=started_at,
@@ -340,7 +402,7 @@ async def think(
             pool,
             trigger=trigger,
             record=record,
-            trigger_id=trigger_id,
+            trigger_id=record.trigger_id,
             trigger_kind_full=trigger_kind_full,
             exc=e,
             started_at=started_at,
@@ -348,8 +410,69 @@ async def think(
             usage_agg=usage_agg,
             llm_provider=llm_provider,
         )
-    finally:
-        _detach_usage_and_trace(llm_provider, usage_ctx)
+
+
+def _new_receipt_collector(
+    trigger: TriggerContext,
+    *,
+    trigger_id: UUID,
+    run_id: UUID,
+    llm_provider: LLMProvider | None,
+) -> ThinkLLMReceiptCollector | None:
+    """Create the task-local ledger only for runs capable of calling an LLM."""
+
+    if llm_provider is None:
+        return None
+    return ThinkLLMReceiptCollector(
+        tenant_id=trigger.tenant_id,
+        trigger_id=trigger_id,
+        think_run_id=run_id,
+        batch_id=_receipt_batch_id(trigger, trigger_id),
+    )
+
+
+def _receipt_batch_id(trigger: TriggerContext, trigger_id: UUID) -> str | None:
+    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    explicit = signature.get("batch_id")
+    if explicit is not None:
+        return str(explicit)
+    if trigger.observation_ids or trigger.member_trigger_ids or trigger.member_model_ids:
+        return str(trigger_id)
+    return None
+
+
+def _set_receipt_terminal_outcomes(
+    collector: ThinkLLMReceiptCollector,
+    outcome: ThinkRunOutcome,
+) -> None:
+    if outcome.status == "success":
+        collector.set_terminal_outcomes(
+            validation_outcome="accepted",
+            apply_outcome="applied",
+        )
+    elif outcome.status == "skipped_idempotent":
+        collector.set_terminal_outcomes(
+            validation_outcome="not_required",
+            apply_outcome="skipped_idempotent",
+        )
+    else:
+        error_type = type(outcome.exception).__name__ if outcome.exception else "failed"
+        collector.set_terminal_outcomes(
+            validation_outcome=error_type,
+            apply_outcome="not_applied",
+        )
+
+
+async def _persist_llm_receipts(
+    pool: asyncpg.Pool,
+    collector: ThinkLLMReceiptCollector,
+) -> None:
+    """Fail closed when emitted provider evidence cannot be made durable."""
+
+    if not collector.logical_calls and not collector.attempts:
+        return
+    async with pool.acquire() as conn:
+        await collector.persist(conn)
 
 
 def _start_think_record(
