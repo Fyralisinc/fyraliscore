@@ -1,6 +1,6 @@
 # Codex Learning Log
 
-Last reviewed: 2026-07-01.
+Last reviewed: 2026-07-17.
 
 This file is the durable cross-run memory for Fyralis Core. Use it for lessons
 that should compound across Codex sessions: failed benchmark interpretation,
@@ -50,6 +50,29 @@ claims that were not checked against code or artifacts.
 ```
 
 ## Durable Lessons
+
+### 2026-07-17 - Batch extraction must isolate identical surfaces by focal signal
+
+- Context: A precommitted entity holdout placed the same literal in a typed
+  company-entity statement and an explicit metadata negative within one batch.
+- Symptom: The model transferred uncertainty between signals, abstaining on an
+  exact `system NAME` designation because another signal marked `NAME` as test
+  data. It also omitted an explicitly introduced alias after seeing the alias
+  used as metadata elsewhere in the batch.
+- Cause: Batching is operationally correct, but shared prompt context can leak
+  entity status between focal signals unless isolation is explicit. The run
+  receipt also bound corpus/report digests but not the runtime-source digest.
+- Lesson: Require one call per genuine batch while stating that entity status,
+  type and abstention are focal-signal properties. Let exact source role
+  designators override model abstention only after explicit metadata rejection.
+  Pre-call receipts for semantic holdouts must bind corpus, prompt/runtime source,
+  provider configuration and attempt count—not only the eventual report.
+- Evidence: `services/domain/entity_grounding/learned_discovery.py`;
+  `tests/evaluation/learned_entity_discovery_quality_corpus_v4.py`;
+  `services/domain/entity_grounding/tests/test_learned_discovery.py`;
+  `scripts/run_learned_entity_discovery_quality_v4.py`.
+- Status: Isolation and source-role containment landed after the holdout and have
+  unit evidence only. Fresh disjoint generalization evidence remains required.
 
 ### 2026-07-17 - Company-learning Postgres harnesses require UTF8
 
