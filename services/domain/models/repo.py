@@ -29,9 +29,9 @@ Public API per BUILD-PLAN §2 Prompt 1-C + Q3 resolution:
         9. Return Model
 
   .retrieve(ids, *, conn=None) -> list[ModelRow]
-      Reconsolidation side effect: last_retrieved_at=now(),
+      Activity-sidecar effect: last_retrieved_at=now(),
       retrieval_count+=1, activation = LEAST(1.0, activation+0.15).
-      confidence NOT touched.
+      Canonical model truth and confidence are NOT touched.
 
   .archive(model_id, reason, *, conn=None) -> ModelRow
       status='archived', archived_at=now(), archive_reason=reason.
@@ -2865,7 +2865,7 @@ class ModelsRepo:
         return vec
 
     # =================================================================
-    # retrieve — reconsolidation side effect
+    # retrieve — non-semantic activity sidecar effect
     # =================================================================
     async def retrieve(
         self,
@@ -2874,16 +2874,17 @@ class ModelsRepo:
         conn: asyncpg.Connection | None = None,
     ) -> list[ModelRow]:
         """
-        Fetch models by id AND bump activation/retrieval counters.
+        Fetch models by id and record retrieval heat outside canonical truth.
 
-        Reconsolidation is best-effort under concurrency: rows that are
-        already locked by another Think run are still returned for
-        retrieval, but their activation/retrieval counters are skipped
-        for this pass. These counters are heat signals, not correctness
-        gates, so large signal drains must never serialize on them.
+        ``model_activity_sidecar`` is keyed by both tenant and model.  The
+        tenant is derived from the canonical row rather than supplied by a
+        caller, preventing a retrieval from attributing activity to another
+        tenant.  The returned ``ModelRow`` preserves the historical API by
+        overlaying sidecar activation/counters on the canonical payload.
 
-        confidence is NOT TOUCHED. Ever. Reconsolidation is read-only
-        with respect to the epistemic value.
+        No UPDATE is issued against ``models``. Confidence, lifecycle and
+        immutable truth versions/heads therefore cannot change as a result
+        of retrieval activity.
         """
         id_list = list(ids)
         if not id_list:
@@ -2893,19 +2894,34 @@ class ModelsRepo:
             await _ensure_vector_codec(c)
             await c.execute(
                 """
-                WITH target AS (
-                    SELECT id
+                INSERT INTO model_activity_sidecar (
+                    tenant_id,
+                    model_id,
+                    retrieval_count,
+                    activation,
+                    first_retrieved_at,
+                    last_retrieved_at,
+                    updated_at
+                )
+                SELECT
+                    tenant_id,
+                    id,
+                    1,
+                    LEAST(1.0, activation + 0.15),
+                    now(),
+                    now(),
+                    now()
                     FROM models
                     WHERE id = ANY($1::uuid[])
-                    ORDER BY id
-                    FOR UPDATE SKIP LOCKED
-                )
-                UPDATE models AS m
-                SET last_retrieved_at = now(),
-                    retrieval_count = retrieval_count + 1,
-                    activation = LEAST(1.0, activation + 0.15)
-                FROM target
-                WHERE m.id = target.id
+                    ORDER BY tenant_id, id
+                ON CONFLICT (tenant_id, model_id) DO UPDATE
+                SET retrieval_count = model_activity_sidecar.retrieval_count + 1,
+                    activation = LEAST(
+                        1.0,
+                        model_activity_sidecar.activation + 0.15
+                    ),
+                    last_retrieved_at = EXCLUDED.last_retrieved_at,
+                    updated_at = EXCLUDED.updated_at
                 """,
                 id_list,
             )
@@ -2917,7 +2933,29 @@ class ModelsRepo:
                 """,
                 id_list,
             )
-            return [_hydrate_row(r) for r in rows]
+            activity_rows = await c.fetch(
+                """
+                SELECT tenant_id, model_id, retrieval_count, activation,
+                       last_retrieved_at
+                FROM model_activity_sidecar
+                WHERE model_id = ANY($1::uuid[])
+                """,
+                id_list,
+            )
+            activity = {
+                (row["tenant_id"], row["model_id"]): row
+                for row in activity_rows
+            }
+            hydrated: list[ModelRow] = []
+            for row in rows:
+                payload = dict(row)
+                sidecar = activity.get((payload["tenant_id"], payload["id"]))
+                if sidecar is not None:
+                    payload["retrieval_count"] = sidecar["retrieval_count"]
+                    payload["activation"] = sidecar["activation"]
+                    payload["last_retrieved_at"] = sidecar["last_retrieved_at"]
+                hydrated.append(_hydrate_row(payload))
+            return hydrated
 
         if conn is not None:
             return await _run(conn)

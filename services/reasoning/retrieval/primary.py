@@ -17,10 +17,10 @@ Ranking: each item (Model, Observation, etc.) is scored with
 in multiple pathways sums its weights. Returned sorted by that score,
 capped at `top_n` (default 80 Models).
 
-Reconsolidation: the returned Models are passed to
-`ModelsRepo.retrieve(ids, conn=conn)` which bumps activation by 0.15
-(clipped to 1.0), increments retrieval_count, and sets
-last_retrieved_at = now(). Confidence is NOT touched. The call happens
+Retrieval activity: the returned Models are passed to
+`ModelsRepo.retrieve(ids, conn=conn)` which records activation heat,
+retrieval_count, and last_retrieved_at in `model_activity_sidecar`.
+Canonical model truth and confidence are NOT touched. The call happens
 inside the CALLER's transaction (we never open our own transaction
 here — Think opens one for its whole run and we live inside it).
 

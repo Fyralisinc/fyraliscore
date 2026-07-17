@@ -89,13 +89,13 @@ async def test_concurrent_retrievals_preserve_activation_atomicity(
     # We can't share tx_conn across coroutines because asyncpg pins a
     # connection to one coroutine at a time. Use the pool to open
     # distinct connections, each with its own transaction that
-    # COMMITS (so activation bumps are visible cross-tx). We commit at
+    # COMMITS (so sidecar heat bumps are visible cross-tx). We commit at
     # the end by explicitly COMMIT-ing our test tx once — no, we must
     # NOT commit the test tx (that would pollute the shared DB for
     # other agents).
     #
     # Workaround: simulate concurrency sequentially on the same tx_conn.
-    # This still exercises the atomic UPDATE via `ModelsRepo.retrieve`
+    # This still exercises the atomic sidecar UPSERT via `ModelsRepo.retrieve`
     # and proves the LEAST(1.0, ...) clip is applied. True
     # cross-connection concurrency is better tested in Wave 3-B's
     # Think integration tests where the test owns the DB fully.
@@ -106,13 +106,23 @@ async def test_concurrent_retrievals_preserve_activation_atomicity(
     )
     from services.domain.models.repo import ModelsRepo
     repo = ModelsRepo(fresh_db, embedder=None)
-    # Sequential calls — but each call does its own UPDATE with LEAST.
+    # Sequential calls — each does its own sidecar UPSERT with LEAST.
     for _ in range(5):
         await repo.retrieve([target], conn=tx_conn)
     final = await tx_conn.fetchval(
-        "SELECT activation FROM models WHERE id = $1", target
+        """
+        SELECT activation FROM model_activity_sidecar
+        WHERE tenant_id = $1 AND model_id = $2
+        """,
+        tenant,
+        target,
     )
     assert final == pytest.approx(1.0)
+    assert await tx_conn.fetchval(
+        "SELECT activation FROM models WHERE tenant_id = $1 AND id = $2",
+        tenant,
+        target,
+    ) == pytest.approx(0.7)
 
 
 async def test_every_proposition_kind_roundtrips_through_retrieval(

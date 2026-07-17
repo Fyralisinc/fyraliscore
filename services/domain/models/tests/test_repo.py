@@ -779,7 +779,8 @@ async def test_retrieve_bumps_activation_clipped_at_1_confidence_untouched(
             ),
             conn=tx_conn,
         )
-    # Pin activation at 0.9 so a +0.15 bump stays below 1.0.
+    # Pin the legacy payload at 0.9. The first sidecar write starts from this
+    # compatibility value but must never write the bump back to models.
     await tx_conn.execute(
         "UPDATE models SET activation = 0.9 WHERE id = $1", row.id
     )
@@ -788,6 +789,13 @@ async def test_retrieve_bumps_activation_clipped_at_1_confidence_untouched(
     assert got[0].retrieval_count == 1
     assert got[0].activation == pytest.approx(1.0)   # 0.9 + 0.15 → clipped 1.0
     assert got[0].last_retrieved_at is not None
+    canonical = await tx_conn.fetchrow(
+        "SELECT activation, retrieval_count, last_retrieved_at FROM models WHERE id = $1",
+        row.id,
+    )
+    assert canonical["activation"] == pytest.approx(0.9)
+    assert canonical["retrieval_count"] == 0
+    assert canonical["last_retrieved_at"] is None
     # Cold-start calibration applied on insert; confidence untouched by retrieval.
     expected_conf = 0.5 * 0.95  # belief default
     assert got[0].confidence == pytest.approx(expected_conf)
@@ -798,13 +806,13 @@ async def test_retrieve_bumps_activation_clipped_at_1_confidence_untouched(
     assert got2[0].confidence == pytest.approx(expected_conf)
 
 
-async def test_retrieve_skips_locked_reconsolidation_rows_without_blocking(
+async def test_retrieve_activity_does_not_lock_canonical_model_rows(
     repo: ModelsRepo,
     fresh_db: asyncpg.Pool,
     tenant: uuid.UUID,
     embedding: list[float],
 ) -> None:
-    """Hot retrieval bookkeeping must not serialize large Think drains."""
+    """Sidecar heat writes must not contend on canonical model locks."""
     from pgvector.asyncpg import register_vector
 
     actor_id = uuid7()
@@ -886,8 +894,8 @@ async def test_retrieve_skips_locked_reconsolidation_rows_without_blocking(
 
         assert elapsed < 0.5
         assert [m.id for m in got] == [row.id]
-        assert got[0].retrieval_count == 0
-        assert got[0].last_retrieved_at is None
+        assert got[0].retrieval_count == 1
+        assert got[0].last_retrieved_at is not None
     finally:
         await lock_tx.rollback()
         await fresh_db.release(locker)
@@ -971,9 +979,35 @@ async def test_reconsolidation_never_touches_confidence(
     # Cold-start calibration discounts: 0.45 × 0.95 (belief default) = 0.4275.
     # Retrieval must never mutate that value.
     expected_conf = 0.45 * 0.95
-    for _ in range(10):
+    before = await tx_conn.fetchrow(
+        """
+        SELECT proposition, "natural", confidence, status, archive_reason,
+               archived_at
+        FROM models WHERE id = $1
+        """,
+        row.id,
+    )
+    for _ in range(100):
         got = await repo.retrieve([row.id], conn=tx_conn)
         assert got[0].confidence == pytest.approx(expected_conf)
+    after = await tx_conn.fetchrow(
+        """
+        SELECT proposition, "natural", confidence, status, archive_reason,
+               archived_at
+        FROM models WHERE id = $1
+        """,
+        row.id,
+    )
+    assert dict(after) == dict(before)
+    assert got[0].retrieval_count == 100
+    assert await tx_conn.fetchval(
+        """
+        SELECT retrieval_count FROM model_activity_sidecar
+        WHERE tenant_id = $1 AND model_id = $2
+        """,
+        tenant,
+        row.id,
+    ) == 100
 
 
 # =====================================================================

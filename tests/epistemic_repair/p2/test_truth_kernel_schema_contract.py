@@ -1,5 +1,8 @@
 from pathlib import Path
+import inspect
 import re
+
+from services.domain.models.repo import ModelsRepo
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -95,6 +98,7 @@ def test_commands_and_lifecycle_events_are_idempotent_immutable_receipts() -> No
 def test_evidence_contract_is_typed_coordinate_authority_and_cutoff_bound() -> None:
     sql = _sql()
 
+    assert "PRIMARY KEY (tenant_id, model_version_id, reference_id)" in sql
     assert "evidence_kind IN ('observation', 'model_version', 'registered')" in sql
     assert "evidence_role IN ('support', 'counterevidence', 'context', 'derivation', 'authority')" in sql
     for column in (
@@ -189,6 +193,27 @@ def test_activity_is_separate_from_semantic_versions() -> None:
     assert "retrieval_count BIGINT" in sidecar_body
     assert "activation DOUBLE PRECISION" in sidecar_body
     assert "last_retrieved_at TIMESTAMPTZ" in sidecar_body
+
+
+def test_model_retrieval_can_only_write_nonsemantic_activity() -> None:
+    """Repeated reads have no code path to mutate truth or legacy semantics."""
+    source = inspect.getsource(ModelsRepo.retrieve)
+    write_sql = source.split("await c.execute(", 1)[1].split(")\n            rows =", 1)[0]
+
+    assert "INSERT INTO model_activity_sidecar" in write_sql
+    assert "ON CONFLICT (tenant_id, model_id) DO UPDATE" in write_sql
+    assert "SELECT\n                    tenant_id,\n                    id" in write_sql
+    assert "UPDATE models" not in write_sql
+    assert "model_truth_versions" not in write_sql
+    assert "model_truth_heads" not in write_sql
+    for semantic_field in (
+        "confidence",
+        "semantic_digest",
+        "lifecycle",
+        "proposition",
+        "natural_text",
+    ):
+        assert semantic_field not in write_sql
 
 
 def test_every_tenant_table_has_rls_and_all_history_tables_are_immutable() -> None:

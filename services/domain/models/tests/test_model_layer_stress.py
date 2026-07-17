@@ -337,6 +337,11 @@ async def test_model_layer_stress_heterogeneous_inserts_preserve_core_invariants
     assert retrieved[0].activation == pytest.approx(0.55)
     assert retrieved[0].confidence == pytest.approx(before_confidence)
     assert retrieved[0].confidence_at_assertion == first.confidence_at_assertion
+    assert await tx_conn.fetchval(
+        "SELECT activation FROM models WHERE tenant_id = $1 AND id = $2",
+        tenant,
+        first.id,
+    ) == pytest.approx(0.40)
 
     with pytest.raises(FalsifierInadequateError):
         await repo.insert(

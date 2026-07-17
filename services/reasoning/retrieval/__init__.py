@@ -13,9 +13,9 @@ Public API is curated in submodules:
   - projection_context.py: load_constraint_context / load_projection_context
   - projection_pathway.py: projection-first Model candidates
 
-Retrieval is READ-ONLY except for two write side-effects:
-  1. Reconsolidation via ModelsRepo.retrieve(ids) — bumps activation,
-     retrieval_count, last_retrieved_at. Confidence is NOT touched.
+Retrieval is canonical-truth read-only with two operational side-effects:
+  1. ModelsRepo.retrieve(ids) records activation, retrieval_count, and
+     last_retrieved_at in model_activity_sidecar. Model truth is untouched.
   2. relationship_maintenance_log writes from the background worker.
 
 See BUILD-PLAN §4 Prompt 3.A and ARCHITECTURE-FINAL.md §8, §9, §10, §26.
