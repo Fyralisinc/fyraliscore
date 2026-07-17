@@ -27,9 +27,17 @@ from services.domain.observations.events import notify_scope
 
 
 async def run_company_physics_adversarial_vertical(
-    *, pool: asyncpg.Pool, tenant_id: UUID, output_path: Path | None = None,
+    *,
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    output_path: Path | None = None,
+    base_output_path: Path | None = None,
 ) -> dict[str, Any]:
-    base = await run_company_physics_vertical(pool=pool, tenant_id=tenant_id)
+    base = await run_company_physics_vertical(
+        pool=pool,
+        tenant_id=tenant_id,
+        output_path=base_output_path,
+    )
     edges = EdgesRepo()
     models = ModelsRepo(pool, run_topology_on_insert=False)
 

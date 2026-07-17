@@ -27,7 +27,9 @@ async def _install_json_codec(conn: asyncpg.Connection) -> None:
         )
 
 
-async def _run(*, dsn: str, tenant_id: UUID, output: Path) -> None:
+async def _run(
+    *, dsn: str, tenant_id: UUID, output: Path, base_output: Path | None,
+) -> None:
     pool = await asyncpg.create_pool(
         dsn, min_size=1, max_size=4, init=_install_json_codec,
     )
@@ -38,7 +40,10 @@ async def _run(*, dsn: str, tenant_id: UUID, output: Path) -> None:
                 tenant_id, f"sealed-company-physics-adversarial-{tenant_id}",
             )
         result = await run_company_physics_adversarial_vertical(
-            pool=pool, tenant_id=tenant_id, output_path=output,
+            pool=pool,
+            tenant_id=tenant_id,
+            output_path=output,
+            base_output_path=base_output,
         )
         print(result["objective_sha256"])
     finally:
@@ -53,10 +58,23 @@ def main() -> int:
         "--output", type=Path,
         default=Path("/tmp/sealed_company_physics_adversarial_vertical.json"),
     )
+    parser.add_argument(
+        "--base-output",
+        type=Path,
+        default=Path("/tmp/sealed_company_physics_vertical_v2_base.json"),
+        help="Write the exact positive vertical bound by the adversarial artifact.",
+    )
     args = parser.parse_args()
     if not args.dsn:
         raise SystemExit("--dsn or DATABASE_URL is required")
-    asyncio.run(_run(dsn=args.dsn, tenant_id=args.tenant_id, output=args.output))
+    asyncio.run(
+        _run(
+            dsn=args.dsn,
+            tenant_id=args.tenant_id,
+            output=args.output,
+            base_output=args.base_output,
+        )
+    )
     return 0
 
 
