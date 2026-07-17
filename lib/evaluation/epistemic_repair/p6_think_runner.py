@@ -21,6 +21,7 @@ from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from lib.evaluation.epistemic_repair.p6_population import P6Batch, P6Population
 from lib.llm.provider import build_provider, close_codex_app_server_client, set_response_cache
 from services.app.gateway.db_bootstrap import _register_codecs
+from services.domain.company_learning.barrier import CompanyLearningBarrierService
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
 
@@ -53,16 +54,91 @@ async def _snapshot(pool: asyncpg.Pool, tenant_id: UUID) -> dict[str, Any]:
             FROM company_learning_context_decisions WHERE tenant_id=$1
             ORDER BY decided_at,decision_id
         """, tenant_id)
+        trigger_pending = int(await conn.fetchval("""
+            SELECT count(*) FROM think_trigger_queue
+            WHERE tenant_id=$1 AND completed_at IS NULL
+        """, tenant_id))
+        eventual_rows = await conn.fetch("""
+            SELECT action_kind,count(*)::int AS pending
+            FROM pending_post_commit_actions
+            WHERE tenant_id=$1 AND processed_at IS NULL AND dead_lettered_at IS NULL
+            GROUP BY action_kind ORDER BY action_kind
+        """, tenant_id)
+        eventual_by_action = {
+            str(row["action_kind"]): int(row["pending"]) for row in eventual_rows
+        }
         return {
             "accepted_models": [dict(row) for row in models],
             "accepted_relation_count": int(await conn.fetchval(
                 "SELECT count(*) FROM accepted_current_relations WHERE tenant_id=$1", tenant_id)),
             "context_decisions": [dict(row) for row in decisions],
-            "pending_truth_work": int(await conn.fetchval("""
-                SELECT (SELECT count(*) FROM think_trigger_queue WHERE tenant_id=$1 AND completed_at IS NULL)
-                     + (SELECT count(*) FROM pending_post_commit_actions WHERE tenant_id=$1 AND processed_at IS NULL AND dead_lettered_at IS NULL)
-            """, tenant_id)),
+            "pending_work": {
+                # Incomplete Think triggers can still change accepted truth and
+                # therefore fence barrier completion.
+                "truth_critical": {
+                    "total": trigger_pending,
+                    "by_queue": {"think_trigger_queue": trigger_pending},
+                },
+                # Post-commit actions materialize projections, invalidate
+                # caches/metrics, broadcast, or discover *candidate* edges.
+                # They do not mutate accepted truth and may trail the barrier.
+                "eventual_derived": {
+                    "total": sum(eventual_by_action.values()),
+                    "by_action_kind": eventual_by_action,
+                },
+            },
         }
+
+
+async def _complete_and_reopen_barrier(
+    conn: asyncpg.Connection, *, tenant_id: UUID, batch_number: int,
+    previous_model_versions: set[UUID],
+) -> tuple[dict[str, Any], set[UUID]]:
+    """Atomically fence exact visible truth, then reopen its durable receipt."""
+
+    model_versions = tuple(await conn.fetchval("""
+        SELECT COALESCE(array_agg(truth_version_id ORDER BY truth_version_id), '{}'::uuid[])
+        FROM accepted_current_models WHERE tenant_id=$1
+    """, tenant_id))
+    relation_versions = tuple(await conn.fetchval("""
+        SELECT COALESCE(array_agg(truth_relation_version_id ORDER BY truth_relation_version_id), '{}'::uuid[])
+        FROM accepted_current_relations WHERE tenant_id=$1
+    """, tenant_id))
+    current_models = set(model_versions)
+    invalidated = tuple(sorted(previous_model_versions - current_models, key=str))
+    truth_pending = int(await conn.fetchval("""
+        SELECT count(*) FROM think_trigger_queue
+        WHERE tenant_id=$1 AND completed_at IS NULL
+    """, tenant_id))
+    service = CompanyLearningBarrierService()
+    receipt = await service.complete(
+        tx=conn,
+        barrier_id=uuid5(NAMESPACE_URL, f"p6-think:{tenant_id}:barrier:{batch_number}"),
+        tenant_id=tenant_id, batch_id=f"p6-batch-{batch_number}",
+        expected_model_version_ids=model_versions,
+        expected_relation_version_ids=relation_versions,
+        invalidated_model_version_ids=invalidated,
+        truth_critical_pending_count=truth_pending,
+        completed_at=datetime.now(timezone.utc),
+    )
+    reopened = await service._find(
+        tx=conn, tenant_id=tenant_id, batch_id=f"p6-batch-{batch_number}",
+    )
+    if reopened != receipt:
+        raise RuntimeError("durable barrier receipt did not reopen exactly")
+    return ({
+        "barrier_id": str(receipt.barrier_id),
+        "batch_id": receipt.batch_id,
+        "barrier_version": receipt.barrier_version,
+        "prior_barrier_id": str(receipt.prior_barrier_id) if receipt.prior_barrier_id else None,
+        "expected_model_version_ids": list(receipt.expected_model_version_ids),
+        "expected_relation_version_ids": list(receipt.expected_relation_version_ids),
+        "invalidated_model_version_ids": list(receipt.invalidated_model_version_ids),
+        "truth_critical_pending_count": receipt.truth_critical_pending_count,
+        "completed_at": receipt.completed_at,
+        "receipt_digest": receipt.receipt_digest,
+        "reopened_exactly": True,
+    }, current_models)
 
 
 async def _llm_receipts(pool: asyncpg.Pool, tenant_id: UUID) -> list[dict[str, Any]]:
@@ -165,6 +241,7 @@ async def run_p6_production_think(
     )
     started = time.monotonic()
     waves: list[dict[str, Any]] = []
+    previous_model_versions: set[UUID] = set()
     terminal_reason: str | None = None
     try:
         async with pool.acquire() as conn:
@@ -204,12 +281,23 @@ async def run_p6_production_think(
                     "elapsed_s": round(time.monotonic() - batch_started, 3),
                 })
                 break
-            snapshot = await _snapshot(pool, tenant_id)
             run = execution.get("run") or {}
+            barrier_receipt: dict[str, Any] | None = None
+            if run.get("status") == "success":
+                async with pool.acquire() as conn, conn.transaction():
+                    barrier_receipt, previous_model_versions = (
+                        await _complete_and_reopen_barrier(
+                            conn, tenant_id=tenant_id,
+                            batch_number=batch.batch_number,
+                            previous_model_versions=previous_model_versions,
+                        )
+                    )
+            snapshot = await _snapshot(pool, tenant_id)
             waves.append({
                 "batch_number": batch.batch_number,
                 "status": run.get("status") or "missing_run",
                 "execution": execution,
+                "barrier_receipt": barrier_receipt,
                 "snapshot": snapshot,
                 "elapsed_s": round(time.monotonic() - batch_started, 3),
             })

@@ -77,3 +77,14 @@ BEGIN
   RETURN NEXT v_receipt;
 END;
 $$;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'company_os') THEN
+    GRANT SELECT, INSERT, UPDATE
+      ON TABLE company_learning_barrier_heads TO company_os;
+    GRANT EXECUTE ON FUNCTION complete_company_learning_barrier_common(
+      UUID, TEXT, UUID, UUID[], TIMESTAMPTZ
+    ) TO company_os;
+  END IF;
+END $$;
