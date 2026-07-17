@@ -35,6 +35,10 @@ class DurableProviderFaultReceipt:
     persisted_logical_receipts: int
     persisted_attempt_receipts: int
     queried_receipt_digest: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_tokens: int = 0
+    usage_exactness: str = "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +113,11 @@ async def _persist_and_query(
     dsn: str, *, tenant_id: UUID, boundary: str, outcome: str,
     stdout: bytes, event_count: int, started: datetime, ended: datetime,
 ) -> tuple[DurableProviderFaultReceipt, DurableProviderFaultReceipt]:
+    usage = _reported_usage(stdout)
+    input_tokens = int(usage.get("input_tokens", 0))
+    output_tokens = int(usage.get("output_tokens", 0))
+    cache_tokens = int(usage.get("cached_input_tokens", 0))
+    usage_exactness = "reported" if usage else "unavailable"
     logical_id, attempt_id = f"p8:{boundary}:{uuid4()}", f"p8-attempt:{uuid4()}"
     conn = await asyncpg.connect(dsn)
     await conn.execute("INSERT INTO tenants (id,name) VALUES ($1,$2)", tenant_id, f"p8-provider-{tenant_id}")
@@ -133,9 +142,10 @@ async def _persist_and_query(
                  model, purpose, started_at, ended_at, outcome, error_class,
                  error_message, retry_scheduled, input_tokens, output_tokens,
                  cache_tokens, cost_usd, usage_exactness, pricing_version
-               ) VALUES ($1,$2,$3,1,'codex-cli','gpt-5.4',$4,$5,$6,$7,$8,$9,false,0,0,0,0,'unavailable','codex-cli-unpriced')""",
+               ) VALUES ($1,$2,$3,1,'codex-cli','gpt-5.4',$4,$5,$6,$7,$8,$9,false,$10,$11,$12,0,$13,'codex-cli-unpriced')""",
             tenant_id, attempt_id, logical_id, f"p8:{boundary}", started, ended,
             outcome, boundary, f"stdout_bytes={len(stdout)} events={event_count}",
+            input_tokens, output_tokens, cache_tokens, usage_exactness,
         )
         await tx.commit()
     finally:
@@ -164,8 +174,26 @@ async def _persist_and_query(
             boundary, duplicate, str(tenant_id), logical_id, attempt_id,
             row["outcome"], len(stdout), event_count, 1, row["attempts"],
             canonical_sha256(state),
+            input_tokens, output_tokens, cache_tokens, usage_exactness,
         ))
     return receipts[0], receipts[1]
+
+
+def _reported_usage(stdout: bytes) -> dict[str, int]:
+    """Extract provider-reported usage; never estimate absent fields."""
+    for line in reversed(stdout.splitlines()):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        usage = event.get("usage")
+        if event.get("type") == "turn.completed" and isinstance(usage, dict):
+            return {
+                key: int(usage[key])
+                for key in ("input_tokens", "output_tokens", "cached_input_tokens")
+                if isinstance(usage.get(key), int)
+            }
+    return {}
 
 
 async def run_provider_fault_slice(dsn: str) -> ProviderFaultSlice:

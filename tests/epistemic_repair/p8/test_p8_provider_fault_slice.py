@@ -6,11 +6,25 @@ import pytest
 
 from lib.evaluation.epistemic_repair.p8_provider_runner import (
     PROVIDER_BOUNDARIES,
+    _reported_usage,
     run_provider_fault_slice,
 )
 
 
 pytestmark = pytest.mark.asyncio
+
+
+def test_codex_turn_completed_usage_is_exactly_reported_not_estimated() -> None:
+    stdout = (
+        b'{"type":"item.completed"}\n'
+        b'{"type":"turn.completed","usage":{"input_tokens":16711,'
+        b'"cached_input_tokens":16256,"output_tokens":21}}\n'
+    )
+    assert _reported_usage(stdout) == {
+        "input_tokens": 16711, "cached_input_tokens": 16256,
+        "output_tokens": 21,
+    }
+    assert _reported_usage(b'{"type":"turn.started"}\n') == {}
 
 
 @pytest.mark.real_llm
