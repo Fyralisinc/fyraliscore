@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from lib.evaluation.epistemic_repair.p2_runner import _admission
+from lib.evaluation.epistemic_repair.p4_runner import _admit_relation
 from lib.evaluation.epistemic_repair.p8_characterization_population import (
     build_feedback_population,
     build_retrieval_population,
@@ -41,7 +42,13 @@ async def run_db_characterization(conn) -> dict[str, object]:
     tenant_id = uuid4()
     await conn.execute("INSERT INTO tenants (id,name) VALUES ($1,'p8-characterization')", tenant_id)
     truth = build_default_truth_kernel()
-    admitted = await truth.admit(tx=conn, command=_admission(tenant_id, 8801))
+    first_command = _admission(tenant_id, 8801)
+    second_command = _admission(tenant_id, 8802)
+    admitted = await truth.admit(tx=conn, command=first_command)
+    second = await truth.admit(tx=conn, command=second_command)
+    relation, _ = await _admit_relation(
+        conn, tenant_id, [(admitted, first_command), (second, second_command)],
+    )
     barrier = CompanyLearningBarrierService()
     retrieval_pop = build_retrieval_population()
     retrieval_outcomes, retrieval_slices = [], {}
@@ -56,18 +63,27 @@ async def run_db_characterization(conn) -> dict[str, object]:
             tenant_id,
         )
         has_model = any(row["truth_version_id"] == admitted.version_id for row in rows)
-        if "multi_hop_relation" in labels:
-            kind, referenced, ok = "accepted_relation", False, False
-        elif "sparse_no_match_raw_reopen" in labels:
+        if "depend on" in case.runtime_text:
+            relation_rows = await conn.fetch(
+                "SELECT truth_relation_version_id FROM accepted_current_relations WHERE tenant_id=$1",
+                tenant_id,
+            )
+            relation_hit = any(row["truth_relation_version_id"] == relation.relation_version_id for row in relation_rows)
+            kind, referenced, ok = "accepted_relation", relation_hit, relation_hit
+        elif "reopen source evidence" in case.runtime_text:
             kind, referenced, ok = "historical_observation", True, True
-        elif "noise_noop" in labels:
+        elif "social chatter" in case.runtime_text:
             kind, referenced, ok = "current_episode", False, True
         else:
             kind, referenced, ok = "accepted_model", has_model, has_model
+        context_item_id = (
+            str(relation.relation_version_id) if kind == "accepted_relation"
+            else str(admitted.model_id)
+        )
         decision = ContextDecision(
             decision_id=uuid4(), tenant_id=tenant_id, batch_id=f"retrieval-{index // 50}",
             route_id=f"p8-characterization:{case.maturity}", context_item_kind=kind,
-            context_item_id=str(admitted.model_id), context_item_version="1",
+            context_item_id=context_item_id, context_item_version="1",
             retrieved=True, selected=True, included=True, referenced=referenced,
             counterevidence_retained="contradiction_lifecycle" in labels,
             confidence_affecting=referenced, necessary_background=False,

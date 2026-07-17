@@ -24,7 +24,7 @@ async def test_queue_manifest_binds_every_current_production_family() -> None:
         result = await validate_queue_manifest(conn)
     finally:
         await conn.close()
-    assert result["families"] == 7
+    assert result["families"] == 6
     assert result["manifest_complete"] is (
         not result["missing_tables"] and not result["missing_tenant_columns"]
     )

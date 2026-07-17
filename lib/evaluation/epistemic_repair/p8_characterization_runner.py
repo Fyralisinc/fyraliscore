@@ -58,15 +58,21 @@ def _metric(name: str, outcomes: list[tuple[str, bool]], *, slices: dict[str, li
     }
 
 
-def _context(case_id: str, text: str, source_kind: str, ordinal: int, *, prior: tuple[ContextObservationInput, ...] = ()):
+def _context(
+    case_id: str, text: str, source_kind: str, ordinal: int, *,
+    prior: tuple[ContextObservationInput, ...] = (),
+    governed_exact_alias_available: bool = False,
+    phrase: str = "this update",
+):
     occurred = _START + timedelta(seconds=ordinal)
     channel = "slack:message" if source_kind in {"conversational", "slack"} else "document:object"
     return prepare_context_selection(
-        tenant_id=_TENANT, observation_id=uuid5(NAMESPACE_URL, case_id), phrase="this update",
+        tenant_id=_TENANT, observation_id=uuid5(NAMESPACE_URL, case_id), phrase=phrase,
         occurred_at=occurred, source_channel=channel, source_space=f"p8:{source_kind}",
         topology_incomplete=False, boundary_hypotheses=({"kind": "bounded_alternative"},),
         context_observations=prior, selection_dependency_refs=(f"case:{case_id}",),
         now=occurred + timedelta(seconds=1), focal_content_text=text,
+        governed_exact_alias_available=governed_exact_alias_available,
     )
 
 
@@ -115,12 +121,17 @@ async def _run_context(population: SealedPopulation) -> dict[str, Any]:
 
 
 async def _run_entity(population: SealedPopulation) -> dict[str, Any]:
-    outcomes, slices = [], {}
+    outcomes, slices, mention_slices = [], {}, {}
     grounding_outcomes = []
     false_merge_ids = []
+    fate_counts: dict[str, int] = {}
     for ordinal, case in enumerate(population.cases):
         phrase = f"Entity-{ordinal:04d}"
-        command, context = _context(case.case_id, case.runtime_text, case.source_kind, ordinal + 4000)
+        command, context = _context(
+            case.case_id, case.runtime_text, case.source_kind, ordinal + 4000,
+            governed_exact_alias_available=len(case.runtime_candidate_refs) == 1,
+            phrase=phrase,
+        )
         mention_command = prepare_entity_mention_detection(
             tenant_id=_TENANT, observation_id=uuid5(NAMESPACE_URL, case.case_id),
             phrase=phrase, content_text=case.runtime_text, source_channel="document:object",
@@ -132,31 +143,32 @@ async def _run_entity(population: SealedPopulation) -> dict[str, Any]:
         predicted = detection.mention is not None
         ok = predicted == expected
         outcomes.append((case.case_id, ok))
+        for label in case.evaluator_labels:
+            mention_slices.setdefault(label, []).append((case.case_id, ok))
         grounding_ok = ok
-        competing = any(label in case.evaluator_labels for label in (
-            "ambiguous_alias", "near_name_collision", "cross_customer_trap",
-            "merge_split_correction",
-        ))
+        competing = len(case.runtime_candidate_refs) > 1
         if predicted:
             primary_ref = {"type": "project", "id": f"project:{case.case_id}", "version": 1}
             candidates = ()
             model_id = None
             model_ref = primary_ref
-            if "open_world_none_known" not in case.evaluator_labels:
-                candidates = (GroundingCandidateInput(
-                    canonical_ref=primary_ref, candidate_source="tenant_aliases",
-                    positive_evidence_refs=(f"observation:{case.case_id}",),
-                    independent_identity_evidence_refs=(f"identity:{case.case_id}",),
-                    exact_mention_match=True,
-                    decisive_authority_refs=(() if competing else (f"authority:{case.case_id}",)),
-                ),)
-                if competing:
-                    secondary_ref = {"type": "customer", "id": f"customer:{case.case_id}", "version": 1}
-                    candidates += (GroundingCandidateInput(
-                        canonical_ref=secondary_ref, candidate_source="tenant_aliases",
-                        positive_evidence_refs=(f"alias:{case.case_id}:secondary",),
+            if case.runtime_candidate_refs:
+                built = []
+                for ref_text in case.runtime_candidate_refs:
+                    kind, _ = ref_text.split(":", 1)
+                    canonical_ref = {"type": kind, "id": ref_text, "version": 1}
+                    built.append(GroundingCandidateInput(
+                        canonical_ref=canonical_ref, candidate_source="authenticated_fixture_registry",
+                        positive_evidence_refs=(f"observation:{case.case_id}",),
+                        independent_identity_evidence_refs=(f"identity:{ref_text}",),
                         exact_mention_match=True,
-                    ),)
+                        decisive_authority_refs=(
+                            (f"authority:{ref_text}",) if len(case.runtime_candidate_refs) == 1 else ()
+                        ),
+                    ))
+                candidates = tuple(built)
+                primary_ref = candidates[0].canonical_ref
+                model_ref = primary_ref
                 model_id = candidate_id_for_ref(primary_ref)
             episode = build_grounding_episode(
                 tenant_id=_TENANT, observation_id=uuid5(NAMESPACE_URL, case.case_id),
@@ -178,17 +190,21 @@ async def _run_entity(population: SealedPopulation) -> dict[str, Any]:
                 else "review" if competing else "resolved_for_consumer"
             )
             grounding_ok = episode.current_fate == expected_fate
+            fate_counts[episode.current_fate] = fate_counts.get(episode.current_fate, 0) + 1
             if competing and episode.current_fate == "resolved_for_consumer":
                 false_merge_ids.append(case.case_id)
         grounding_outcomes.append((case.case_id, grounding_ok))
         for label in case.evaluator_labels:
-            slices.setdefault(label, []).append((case.case_id, ok))
+            slices.setdefault(label, []).append((case.case_id, grounding_ok))
         if ordinal % 100 == 0:
             await asyncio.sleep(0)
     metric = _metric("canonical_entity_grounding", grounding_outcomes, slices=slices)
-    metric["mention_detection"] = _metric("label_blind_explicit_mention_detection", outcomes, slices=slices)
+    metric["mention_detection"] = _metric(
+        "label_blind_explicit_mention_detection", outcomes, slices=mention_slices,
+    )
     metric["automatic_false_merges"] = len(false_merge_ids)
     metric["automatic_false_merge_ids"] = false_merge_ids[:10]
+    metric["fate_counts"] = fate_counts
     metric["grounding_executed"] = True
     return metric
 
@@ -214,7 +230,7 @@ async def run_characterization_contract(repository_root: Path) -> dict[str, Any]
         "executed_metrics": {"boundary": boundary, "context": context, "entity": entity},
         "retrieval": {"status": "not_executed", "denominator": 600},
         "feedback": {"status": "not_executed", "base_decisions": 360, "policy_executions": 720},
-        "entity_grounding": {"status": "not_executed", "mention_detection_only": True},
+        "entity_grounding": {"status": "executed", "mention_detection_only": False},
         "queue_measurement": {"status": "not_executed"},
         "projection_refresh": {"status": "not_executed"},
         "real_provider_sample": {"status": "separate_not_run"},

@@ -16,7 +16,10 @@ if __package__ in {None, ""}:
 
 from lib.evaluation.epistemic_repair.p8_characterization_runner import run_characterization_contract
 from lib.evaluation.epistemic_repair.p8_characterization_db import run_db_characterization
-from lib.evaluation.epistemic_repair.p8_measurement_contracts import projection_refresh_measure_is_usable
+from lib.evaluation.epistemic_repair.p8_measurement_contracts import (
+    RETIRED_QUEUE_EVIDENCE,
+    projection_refresh_measure_is_usable,
+)
 from lib.contracts.kernel import canonical_sha256
 
 
@@ -36,6 +39,7 @@ async def _run(output: Path, database_url: str) -> int:
         "status": "executed",
         "complete": db_result["queue_measurement_complete"],
         "samples": db_result["queue_samples"],
+        "retired_queue_evidence": RETIRED_QUEUE_EVIDENCE,
     }
     artifact["projection_refresh"] = {
         "status": "executed",
@@ -47,7 +51,7 @@ async def _run(output: Path, database_url: str) -> int:
     artifact["artifact_digest"] = canonical_sha256(artifact)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"characterization_ready=false executed=boundary,context,mention_detection,retrieval,feedback,queues,projection output={output}")
+    print(f"characterization_ready=false executed=boundary_context,context,entity_grounding,retrieval,feedback,queues,projection output={output}")
     return 0
 
 

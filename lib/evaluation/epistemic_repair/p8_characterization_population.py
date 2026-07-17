@@ -14,11 +14,13 @@ class CharacterizationCase:
     source_kind: str
     maturity: str | None
     evaluator_labels: tuple[str, ...]
+    runtime_candidate_refs: tuple[str, ...] = ()
 
-    def runtime_payload(self) -> dict[str, str | None]:
+    def runtime_payload(self) -> dict[str, object]:
         # This is the only payload production adapters receive.
         return {"case_id": self.case_id, "text": self.runtime_text,
-                "source_kind": self.source_kind, "maturity": self.maturity}
+                "source_kind": self.source_kind, "maturity": self.maturity,
+                "candidate_refs": self.runtime_candidate_refs}
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +93,14 @@ def build_entity_population() -> SealedPopulation:
             for label, minimum in challenges.items():
                 if index < minimum:
                     labels.append(label)
-            cases.append(CharacterizationCase(f"entity-{index:04d}", text, "mixed", None, tuple(labels)))
+            runtime_refs: tuple[str, ...] = ()
+            if role not in {"negative", "open_world_none_known"}:
+                runtime_refs = (f"project:{index:04d}",)
+                if any(label in labels for label in ("ambiguous_alias", "near_name_collision", "cross_customer_trap", "merge_split_correction")):
+                    runtime_refs += (f"customer:{index:04d}",)
+            cases.append(CharacterizationCase(
+                f"entity-{index:04d}", text, "mixed", None, tuple(labels), runtime_refs,
+            ))
             index += 1
     return _seal("entity_grounding", "mention_opportunity", cases)
 
@@ -105,8 +114,15 @@ def build_retrieval_population() -> SealedPopulation:
     for maturity in ("cold", "intermediate", "mature"):
         for offset in range(200):
             label = expanded[index]
+            text = {
+                "supporting_equivalent": "What accepted Harbor status supports this update?",
+                "contradiction_lifecycle": "What accepted Harbor status contradicts this update?",
+                "multi_hop_relation": "How does Harbor depend on the certificate work?",
+                "sparse_no_match_raw_reopen": "No known model matches; reopen source evidence.",
+                "noise_noop": "Unrelated social chatter needs no company-memory retrieval.",
+            }[label]
             cases.append(CharacterizationCase(
-                f"retrieval-{index:04d}", f"Harbor claim-local decision {index}.",
+                f"retrieval-{index:04d}", text,
                 "mixed", maturity, (label, maturity),
             ))
             index += 1

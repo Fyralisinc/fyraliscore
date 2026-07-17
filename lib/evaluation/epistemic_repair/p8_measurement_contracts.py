@@ -20,10 +20,17 @@ QUEUE_FAMILIES = (
     QueueFamilyMeasure("model_reevaluation", "model_reeval_queue", "tenant_id", "processed_at IS NULL", None),
     QueueFamilyMeasure("entity_review", "entity_review_queue", "tenant_id", "resolved_at IS NULL", None),
     QueueFamilyMeasure("post_commit", "pending_post_commit_actions", "tenant_id", "processed_at IS NULL AND dead_lettered_at IS NULL", "dead_lettered_at IS NOT NULL"),
-    QueueFamilyMeasure("topology_dirty", "topo_dirty_queue", "tenant_id", "processed_at IS NULL", None),
     QueueFamilyMeasure("summarization_items", "summarization_batch_items", "tenant_id", "status IN ('queued','submitting','submitted')", "status = 'failed'"),
     QueueFamilyMeasure("projection_refresh", "projection_refresh_jobs", "tenant_id", "status IN ('pending','leased')", "status = 'dead_letter'"),
 )
+
+RETIRED_QUEUE_EVIDENCE = {
+    "topo_dirty_queue": {
+        "status": "retired",
+        "migration": "0127_drop_retired_routing_topology_queues.sql",
+        "replacement_boundary": "accepted truth and projection refresh paths",
+    }
+}
 
 
 async def validate_queue_manifest(conn: Any) -> dict[str, object]:
