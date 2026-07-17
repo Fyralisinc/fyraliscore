@@ -28,7 +28,11 @@ async def test_receipt_round_trip_and_conflict_guard_in_postgres():
     try:
         tenant_id = await conn.fetchval("SELECT id FROM tenants ORDER BY id LIMIT 1")
         if tenant_id is None:
-            pytest.skip("receipt proof requires one existing tenant")
+            tenant_id = uuid4()
+            await conn.execute(
+                "INSERT INTO tenants (id, name) VALUES ($1, 'p1-receipt-proof')",
+                tenant_id,
+            )
 
         now = datetime.now(timezone.utc)
         logical_id = f"p1-pg-logical-{uuid4()}"
