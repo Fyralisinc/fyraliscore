@@ -1,0 +1,10 @@
+{
+  "artifact_sha256": "224977ad9f492521cc9f1b8c195792de10a3e76fa71a5efa68c2e84f46f06ce2",
+  "continuous_score": 0.8,
+  "corpus_digest": "deab6272d9299064f25bc76ced1158a4d20035d6b94a2651374874dd2a92d8f6",
+  "manifest_digest": "0977b5b1e6b89fd5da7730ecfff2e52e71721b7a4ef9a2c7e5fc39368b0e5207",
+  "receipt_sha256": "3d33ed33928194bd14f7129a490925c8778d30f79b4feac2ca5d82b707e88649",
+  "run_attempts": 1,
+  "status": "completed",
+  "verdict": "below_policy"
+}
