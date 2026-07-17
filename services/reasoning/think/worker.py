@@ -52,6 +52,7 @@ from lib.shared.ids import uuid7
 from services.domain.entity_grounding import (
     ensure_persisted_observation_mention_fates,
 )
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 from services.domain.triggers import enqueue_trigger
 
 from services.reasoning.retrieval.primary import TriggerContext
@@ -65,6 +66,7 @@ from .lanes import (
 )
 from .observability import METRICS, emit, render_prometheus_text
 from .reason import think
+from .execution_policy import NORMAL_EXECUTION_POLICY, ThinkExecutionPolicy
 
 
 _log = structlog.get_logger(__name__)
@@ -687,6 +689,7 @@ class ThinkWorker:
         llm_provider: LLMProvider | None = None,
         mention_discovery_provider: LLMProvider | None = None,
         embedder: Any | None = None,
+        execution_policy: ThinkExecutionPolicy | None = None,
     ) -> None:
         self.pool = pool
         self.config = config or WorkerConfig.from_env()
@@ -706,6 +709,8 @@ class ThinkWorker:
             except Exception:  # noqa: BLE001
                 embedder = None
         self.embedder = embedder
+        self.execution_policy = execution_policy or NORMAL_EXECUTION_POLICY
+        self.execution_policy.assert_authorized()
         self._semaphores: dict[UUID, asyncio.Semaphore] = {}
         self._shutdown_event = asyncio.Event()
         self._in_flight: set[asyncio.Task] = set()
@@ -2219,9 +2224,9 @@ class ThinkWorker:
         model_ids = list(dict.fromkeys(model_ids))
         rows = (
             await conn.fetch(
-                """
+                f"""
             SELECT id, "natural", scope_actors, scope_entities
-            FROM accepted_current_models
+            FROM {ACCEPTED_MODEL_ROWS_SQL} AS models
             WHERE id = ANY($1::uuid[])
             ORDER BY array_position($1::uuid[], id)
             """,
@@ -2921,6 +2926,7 @@ class ThinkWorker:
                     if row["trigger_subkind"]
                     else row["trigger_kind"]
                 ),
+                execution_policy=self.execution_policy,
             )
             if self.config.run_timeout_s > 0:
                 outcome = await asyncio.wait_for(

@@ -41,6 +41,7 @@ from services.domain.acts import goals as goals_svc
 from services.domain.acts.invariants import is_unsatisfied_dependency
 from services.domain.observations.state_change import emit_state_change
 from services.domain.triggers import enqueue_trigger
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 
 
 _log = structlog.get_logger(__name__)
@@ -611,7 +612,8 @@ async def enqueue_t2_belief_updated(
     """
     # Fetch natural text + scope actors from the model so retrieval has seeds.
     row = await conn.fetchrow(
-        'SELECT "natural", scope_actors FROM accepted_current_models WHERE id = $1 AND tenant_id = $2',
+        f'SELECT "natural", scope_actors FROM {ACCEPTED_MODEL_ROWS_SQL} AS models '
+        'WHERE id = $1 AND tenant_id = $2',
         model_id,
         tenant_id,
     )

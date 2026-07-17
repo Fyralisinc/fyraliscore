@@ -19,6 +19,8 @@ from uuid import UUID
 
 import asyncpg
 
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
+
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.sage.model_predictions.repo import ModelPredictionsRepo
@@ -1065,11 +1067,11 @@ async def _handle_t3_missing_transition(
         )
 
     src_row = await conn.fetchrow(
-        """
+        f"""
         SELECT id, "natural" AS natural,
                scope_actors, scope_entities, scope_temporal,
                status
-        FROM accepted_current_models
+        FROM {ACCEPTED_MODEL_ROWS_SQL} AS models
         WHERE id = $1 AND tenant_id = $2
         """,
         model_id,

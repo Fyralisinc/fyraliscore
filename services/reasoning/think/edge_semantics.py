@@ -14,6 +14,8 @@ from uuid import UUID
 
 import asyncpg
 
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
+
 from .diff_schema import EdgeOp
 
 
@@ -357,9 +359,9 @@ async def _load_endpoint_text(
     if not ids:
         return EdgeEndpointText()
     rows = await conn.fetch(
-        """
+        f"""
         SELECT id, "natural", proposition
-        FROM accepted_current_models
+        FROM {ACCEPTED_MODEL_ROWS_SQL} AS models
         WHERE tenant_id = $1
           AND id = ANY($2::uuid[])
         """,

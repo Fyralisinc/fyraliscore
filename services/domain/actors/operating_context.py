@@ -14,6 +14,7 @@ from uuid import UUID
 
 import asyncpg
 
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 from services.domain.projections.repo import ProjectionRecord, ProjectionRepo
 
 
@@ -83,11 +84,11 @@ async def load_actor_operating_context(
     names = {r["id"]: r["display_name"] for r in actor_rows}
 
     model_rows = await conn.fetch(
-        """
+        f"""
         SELECT id, "natural", proposition_kind, claim_role,
                abstraction_level, confidence, activation, scope_actors,
                created_at
-        FROM accepted_current_models
+        FROM {ACCEPTED_MODEL_ROWS_SQL} AS models
         WHERE tenant_id = $1
           AND status = 'active'
           AND scope_actors && $2::uuid[]

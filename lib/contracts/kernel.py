@@ -28,11 +28,16 @@ def _require_aware(value: datetime, *, field_name: str) -> datetime:
 
 
 def _canonicalize(value):
+    if isinstance(value, BaseModel):
+        return _canonicalize(value.model_dump(mode="json"))
     if isinstance(value, dict):
         return {key: _canonicalize(item) for key, item in sorted(value.items())}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple, set, frozenset)):
         normalized = [_canonicalize(item) for item in value]
-        return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True))
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True, default=str),
+        )
     return value
 
 
