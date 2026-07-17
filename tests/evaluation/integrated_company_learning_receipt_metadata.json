@@ -1,0 +1,9 @@
+{
+  "artifact_sha256": "4d892d01ec7cd8e0e9113bc593616ce00e7495bef98f836e654a4dfdad3e476c",
+  "continuous_score": 1.0,
+  "objective_sha256": "9a74bd0af57bfd5ab762c068aaff1bc3fe4224ab768946a8fc0edd6f062a6d50",
+  "receipt_sha256": "e27c1a4df48487acbdf2f46d10ceffac6770cd3ee0224dcbce7445c1496fea25",
+  "run_attempts": 1,
+  "status": "completed",
+  "verdict": "meets_policy"
+}
