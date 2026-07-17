@@ -41,10 +41,14 @@ def _extraction(**updates) -> GoldEntityExtractionReport:
 def _pipeline(**updates) -> GoldEntityPipelineReport:
     values = {}
     for name, field in EntityPipelineMetrics.model_fields.items():
-        if field.default is not PydanticUndefined:
+        if field.default_factory is not None:
+            values[name] = field.default_factory()
+        elif field.default is not PydanticUndefined:
             values[name] = field.default
         elif name in {"candidate_recall_at_k", "gold_type_present_at_k"}:
             values[name] = {1: None, 3: None, 5: None}
+        elif name == "candidate_recall_hits_at_k":
+            values[name] = {1: 0, 3: 0, 5: 0}
         else:
             values[name] = 0
     values.update(dict(

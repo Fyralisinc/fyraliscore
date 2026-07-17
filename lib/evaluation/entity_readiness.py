@@ -58,7 +58,7 @@ class EntityReadinessThresholds(_Record):
 
 class ExactRatePopulation(_Record):
     numerator: int = Field(ge=0)
-    denominator: int = Field(gt=0)
+    denominator: int = Field(ge=0)
 
     @model_validator(mode="after")
     def numerator_within_population(self) -> "ExactRatePopulation":
@@ -67,8 +67,8 @@ class ExactRatePopulation(_Record):
         return self
 
     @property
-    def rate(self) -> float:
-        return self.numerator / self.denominator
+    def rate(self) -> float | None:
+        return self.numerator / self.denominator if self.denominator else None
 
 
 class EntityReadinessEvidence(_Record):

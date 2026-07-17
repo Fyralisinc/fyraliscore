@@ -57,7 +57,12 @@ def _pipeline_row(
     type_distribution = type_distribution or {"unknown": 1.0}
     semantic_interpretation_id = uuid4() if semantic_disposition else None
     semantic_admission_id = uuid4() if semantic_disposition else None
+    semantic_grounding_admission_id = (
+        uuid4() if semantic_disposition == "belief_applied"
+        else (admission_id if semantic_disposition == "no_admission" else None)
+    )
     semantic_model_id = uuid4() if semantic_disposition == "belief_applied" else None
+    mention_ref = f"mention:{detection_id}"
     distribution = {
         item["candidate_id"]: max(0.01, 0.9 - index * 0.2)
         for index, item in enumerate(candidates)
@@ -78,6 +83,7 @@ def _pipeline_row(
             }}
         },
         "candidate_request_id": request_id,
+        "mention_ref": mention_ref,
         "candidate_request": {
             "entity_type_assessment_refs": [str(type_assessment_id)],
         },
@@ -104,7 +110,37 @@ def _pipeline_row(
         "semantic_context_snapshot_id": context_id if semantic_disposition else None,
         "semantic_entity_mention_id": detection_id if semantic_disposition else None,
         "semantic_resolution_assessment_id": assessment_id if semantic_disposition else None,
-        "semantic_grounding_admission_id": admission_id if semantic_disposition else None,
+        "semantic_grounding_admission_id": semantic_grounding_admission_id,
+        "semantic_grounding_admission_assessment_id": (
+            assessment_id if semantic_disposition else None
+        ),
+        "semantic_grounding_admission_consumer": (
+            "epistemic-applier" if semantic_disposition == "belief_applied"
+            else ("entity-resolver" if semantic_disposition == "no_admission" else None)
+        ),
+        "semantic_grounding_admission_purpose": (
+            "belief-admission" if semantic_disposition == "belief_applied"
+            else ("entity-resolution" if semantic_disposition == "no_admission" else None)
+        ),
+        "semantic_grounding_admission_operation": (
+            "create-grounded-belief" if semantic_disposition == "belief_applied"
+            else ("resolve-mention" if semantic_disposition == "no_admission" else None)
+        ),
+        "semantic_grounding_continuity": (
+            {
+                "grounding_admission_ref": (
+                    f"grounding-admission:{semantic_grounding_admission_id}"
+                ),
+                "resolution_assessment_ref": f"resolution-assessment:{assessment_id}",
+                "mention_ref": mention_ref,
+                "downstream_object_ref": (
+                    f"model:{semantic_model_id}"
+                    if semantic_disposition == "belief_applied"
+                    else f"source-semantic-interpretation:{semantic_interpretation_id}"
+                ),
+            }
+            if semantic_disposition else None
+        ),
         "semantic_admission_id": semantic_admission_id,
         "semantic_disposition": semantic_disposition,
         "semantic_admitted_model_id": semantic_model_id,
@@ -317,6 +353,52 @@ async def test_rejected_detection_with_candidate_population_is_reported_not_scor
     assert report.overall.candidate_population_count == 0
     assert report.overall.assessed_case_count == 0
     assert report.overall.lineage_integrity == 0.0
+
+
+@pytest.mark.asyncio
+async def test_semantic_lineage_rejects_swapped_disposition_admission_contracts() -> None:
+    tenant_id = uuid4()
+    observation_ids = [uuid4(), uuid4()]
+    referent = {"type": "customer", "id": "customer:nimbus", "version": 1}
+    belief = _pipeline_row(
+        observation_id=observation_ids[0], surface="NBI",
+        candidates=[_canonical("nimbus", "customer", "customer:nimbus")],
+        selected_id="nimbus", selected_ref=referent,
+        semantic_disposition="belief_applied",
+    )
+    # Applied beliefs may not reuse the resolver's consumer admission.
+    belief["semantic_grounding_admission_id"] = belief["admission_id"]
+    belief["semantic_grounding_continuity"]["grounding_admission_ref"] = (
+        f"grounding-admission:{belief['admission_id']}"
+    )
+    no_admission = _pipeline_row(
+        observation_id=observation_ids[1], surface="NBI",
+        candidates=[_canonical("nimbus", "customer", "customer:nimbus")],
+        selected_id="nimbus", selected_ref=referent,
+        semantic_disposition="no_admission",
+    )
+    # A non-admission may not manufacture a separate epistemic authorization.
+    foreign_admission = uuid4()
+    no_admission["semantic_grounding_admission_id"] = foreign_admission
+    no_admission["semantic_grounding_continuity"]["grounding_admission_ref"] = (
+        f"grounding-admission:{foreign_admission}"
+    )
+    cases = [
+        GoldEntityPipelineCase(
+            case_id=f"semantic-{index}", batch_id="batch",
+            source_observation_id=observation_id, surface="NBI",
+            gold_entity_type="customer", gold_canonical_label="gold:nimbus",
+            expected_semantic_disposition=disposition,
+        )
+        for index, (observation_id, disposition) in enumerate(zip(
+            observation_ids, ("belief_applied", "no_admission"), strict=True
+        ))
+    ]
+    report = await evaluate_persisted_entity_pipeline(
+        _FakeDb([belief, no_admission]), tenant_id=tenant_id, gold_cases=cases,
+        canonical_gold_labels={canonical_ref_key(referent): "gold:nimbus"},
+    )
+    assert report.overall.semantic_lineage_integrity == 0.0
 
 
 @pytest.mark.asyncio

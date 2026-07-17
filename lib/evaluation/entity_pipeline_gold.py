@@ -83,10 +83,15 @@ class EntityPipelineMetrics(_Record):
     type_assessment_brier_score: float | None = Field(default=None, ge=0)
     type_assessment_log_loss: float | None = Field(default=None, ge=0)
     candidate_recall_at_k: dict[int, float | None]
+    candidate_recall_hits_at_k: dict[int, int] = Field(default_factory=dict)
+    candidate_recall_population_count: int = Field(default=0, ge=0)
     gold_type_present_at_k: dict[int, float | None]
     selected_type_accuracy: float | None = Field(default=None, ge=0, le=1)
     canonical_link_accuracy: float | None = Field(default=None, ge=0, le=1)
     canonical_link_coverage: float | None = Field(default=None, ge=0, le=1)
+    canonical_link_correct_count: int = Field(default=0, ge=0)
+    canonical_link_admitted_count: int = Field(default=0, ge=0)
+    canonical_link_population_count: int = Field(default=0, ge=0)
     abstention_rate: float | None = Field(default=None, ge=0, le=1)
     review_rate: float | None = Field(default=None, ge=0, le=1)
     terminal_fate_accuracy: float | None = Field(default=None, ge=0, le=1)
@@ -96,6 +101,7 @@ class EntityPipelineMetrics(_Record):
     lineage_integrity: float | None = Field(default=None, ge=0, le=1)
     rejected_detection_candidate_count: int = Field(ge=0)
     unknown_canonical_ref_count: int = Field(ge=0)
+    known_wrong_type_consequential_admission_count: int = Field(default=0, ge=0)
     invalid_type_assessment_count: int = Field(ge=0)
     type_assessment_lineage_integrity: float | None = Field(default=None, ge=0, le=1)
     semantic_expected_case_count: int = Field(ge=0)
@@ -110,6 +116,10 @@ class EntityPipelineMetrics(_Record):
     belief_model_lineage_integrity: float | None = Field(default=None, ge=0, le=1)
     no_admission_no_model_safety_rate: float | None = Field(default=None, ge=0, le=1)
     harmful_semantic_propagation_rate: float | None = Field(default=None, ge=0, le=1)
+    safe_no_admission_count: int = Field(default=0, ge=0)
+    no_admission_count: int = Field(default=0, ge=0)
+    harmful_semantic_propagation_count: int = Field(default=0, ge=0)
+    semantic_propagation_count: int = Field(default=0, ge=0)
     relation_expectation_count: int = Field(ge=0)
     expected_relation_admission_count: int = Field(ge=0)
     observed_active_relation_count: int = Field(ge=0)
@@ -121,6 +131,8 @@ class EntityPipelineMetrics(_Record):
     relation_direction_accuracy: float | None = Field(default=None, ge=0, le=1)
     relation_lineage_coverage: float | None = Field(default=None, ge=0, le=1)
     relation_lineage_integrity: float | None = Field(default=None, ge=0, le=1)
+    relation_lineage_correct_count: int = Field(default=0, ge=0)
+    exact_admitted_relation_count: int = Field(default=0, ge=0)
     unexpected_relation_rate: float | None = Field(default=None, ge=0, le=1)
     harmful_topology_relation_count: int = Field(ge=0)
     harmful_topology_model_count: int = Field(ge=0)
@@ -279,6 +291,7 @@ def analyze_entity_pipeline_rows(
         known_link_total = linked = link_correct = 0
         abstained = reviewed = lineage_ok = rejected_with_candidates = unknown_refs = 0
         invalid_type_assessments = 0
+        known_wrong_type_consequential_admissions = 0
         semantic_expected = semantic_interpreted = semantic_decided = 0
         semantic_disposition_correct = semantic_lineage_ok = 0
         belief_applied = belief_materialized = belief_model_lineage_ok = 0
@@ -405,6 +418,10 @@ def analyze_entity_pipeline_rows(
             resolved_label = None
             if admitted_ref:
                 linked += int(case.gold_canonical_label is not None)
+                known_wrong_type_consequential_admissions += int(
+                    selected is not None
+                    and selected.get("candidate_type") != case.gold_entity_type
+                )
                 resolved_label = canonical_gold_labels.get(canonical_ref_key(admitted_ref))
                 unknown_refs += int(resolved_label is None)
                 link_correct += int(
@@ -473,7 +490,18 @@ def analyze_entity_pipeline_rows(
                     has_semantic_decision
                     and semantic_disposition == case.expected_semantic_disposition
                 )
-                semantic_lineage_ok += int(
+                semantic_continuity = (
+                    _json(row.get("semantic_grounding_continuity")) or {}
+                )
+                semantic_grounding_admission_id = row.get(
+                    "semantic_grounding_admission_id"
+                )
+                is_belief_applied = semantic_disposition == "belief_applied"
+                is_no_admission = semantic_disposition == "no_admission"
+                model_id = row.get("downstream_model_id")
+                admitted_model_id = row.get("semantic_admitted_model_id")
+                model_materialized = model_id is not None
+                shared_semantic_lineage = (
                     has_interpretation
                     and str(row.get("semantic_grounding_trace_id"))
                     == str(row.get("trace_id"))
@@ -485,14 +513,43 @@ def analyze_entity_pipeline_rows(
                     == str(row.get("entity_mention_id"))
                     and str(row.get("semantic_resolution_assessment_id"))
                     == str(row.get("assessment_id"))
-                    and str(row.get("semantic_grounding_admission_id"))
-                    == str(row.get("admission_id"))
+                    and semantic_grounding_admission_id is not None
+                    and str(row.get("semantic_grounding_admission_assessment_id"))
+                    == str(row.get("assessment_id"))
+                    and semantic_continuity.get("grounding_admission_ref")
+                    == f"grounding-admission:{semantic_grounding_admission_id}"
+                    and semantic_continuity.get("resolution_assessment_ref")
+                    == f"resolution-assessment:{row.get('assessment_id')}"
+                    and semantic_continuity.get("mention_ref")
+                    == row.get("mention_ref")
                 )
-                is_belief_applied = semantic_disposition == "belief_applied"
-                is_no_admission = semantic_disposition == "no_admission"
-                model_id = row.get("downstream_model_id")
-                admitted_model_id = row.get("semantic_admitted_model_id")
-                model_materialized = model_id is not None
+                belief_lineage = (
+                    is_belief_applied
+                    and str(semantic_grounding_admission_id)
+                    != str(row.get("admission_id"))
+                    and row.get("semantic_grounding_admission_consumer")
+                    == "epistemic-applier"
+                    and row.get("semantic_grounding_admission_purpose")
+                    == "belief-admission"
+                    and row.get("semantic_grounding_admission_operation")
+                    == "create-grounded-belief"
+                    and semantic_continuity.get("downstream_object_ref")
+                    == f"model:{admitted_model_id}"
+                )
+                no_admission_lineage = (
+                    is_no_admission
+                    and str(semantic_grounding_admission_id)
+                    == str(row.get("admission_id"))
+                    and semantic_continuity.get("downstream_object_ref")
+                    == f"source-semantic-interpretation:{interpretation_id}"
+                    and admitted_model_id is None
+                    and not model_materialized
+                    and int(row.get("semantic_interpretation_model_count") or 0) == 0
+                )
+                semantic_lineage_ok += int(
+                    shared_semantic_lineage
+                    and (belief_lineage or no_admission_lineage)
+                )
                 interpretation_model_count = int(
                     row.get("semantic_interpretation_model_count") or 0
                 )
@@ -674,10 +731,15 @@ def analyze_entity_pipeline_rows(
             type_assessment_brier_score=(brier_sum / type_assessed if type_assessed else None),
             type_assessment_log_loss=(log_loss_sum / type_assessed if type_assessed else None),
             candidate_recall_at_k={k: _rate(recall_hits[k], recall_denominator) for k in ks},
+            candidate_recall_hits_at_k=dict(recall_hits),
+            candidate_recall_population_count=recall_denominator,
             gold_type_present_at_k={k: _rate(type_hits[k], type_denominator) for k in ks},
             selected_type_accuracy=_rate(selected_type_correct, selected_type_total),
             canonical_link_accuracy=_rate(link_correct, linked),
             canonical_link_coverage=_rate(linked, known_link_total),
+            canonical_link_correct_count=link_correct,
+            canonical_link_admitted_count=linked,
+            canonical_link_population_count=known_link_total,
             abstention_rate=_rate(abstained, detected), review_rate=_rate(reviewed, detected),
             terminal_fate_accuracy=_rate(terminal_correct, terminal_expected),
             safe_decision_rate=_rate(safe_decisions, detected),
@@ -686,6 +748,9 @@ def analyze_entity_pipeline_rows(
             lineage_integrity=_rate(lineage_ok, len(cases)),
             rejected_detection_candidate_count=rejected_with_candidates,
             unknown_canonical_ref_count=unknown_refs,
+            known_wrong_type_consequential_admission_count=(
+                known_wrong_type_consequential_admissions
+            ),
             invalid_type_assessment_count=invalid_type_assessments,
             type_assessment_lineage_integrity=_rate(type_lineage_ok, type_assessed),
             semantic_expected_case_count=semantic_expected,
@@ -709,6 +774,10 @@ def analyze_entity_pipeline_rows(
                 harmful_semantic_propagations,
                 semantic_propagated,
             ),
+            safe_no_admission_count=safe_no_admission,
+            no_admission_count=no_admission,
+            harmful_semantic_propagation_count=harmful_semantic_propagations,
+            semantic_propagation_count=semantic_propagated,
             relation_expectation_count=len(expectations),
             expected_relation_admission_count=len(expected_admissions),
             observed_active_relation_count=len(unique_relations),
@@ -736,6 +805,8 @@ def analyze_entity_pipeline_rows(
             relation_lineage_integrity=_rate(
                 relation_lineage_ok, exact_admitted
             ),
+            relation_lineage_correct_count=relation_lineage_ok,
+            exact_admitted_relation_count=exact_admitted,
             unexpected_relation_rate=_rate(
                 len(unexpected_relation_ids), len(unique_relations)
             ),
@@ -796,7 +867,8 @@ async def evaluate_persisted_entity_pipeline(
                d.id AS detection_id, d.fate AS detection_fate,
                d.mention_id AS entity_mention_id,
                d.context_snapshot_id, acr.command AS detection_command,
-               req.id AS candidate_request_id, cs.id AS candidate_set_id,
+               req.id AS candidate_request_id, req.mention_ref,
+               cs.id AS candidate_set_id,
                req.request AS candidate_request, cs.candidates, ra.id AS assessment_id,
                ra.candidate_distribution, ra.selected_candidate_id,
                gad.id AS admission_id, gt.id AS trace_id, gt.current_fate,
@@ -808,6 +880,12 @@ async def evaluate_persisted_entity_pipeline(
                ssi.entity_mention_id AS semantic_entity_mention_id,
                ssi.resolution_assessment_id AS semantic_resolution_assessment_id,
                ssi.grounding_admission_id AS semantic_grounding_admission_id,
+               ssi.grounding_continuity AS semantic_grounding_continuity,
+               semantic_gad.assessment_id
+                   AS semantic_grounding_admission_assessment_id,
+               semantic_gad.consumer AS semantic_grounding_admission_consumer,
+               semantic_gad.purpose AS semantic_grounding_admission_purpose,
+               semantic_gad.operation AS semantic_grounding_admission_operation,
                ssad.id AS semantic_admission_id,
                ssad.disposition AS semantic_disposition,
                ssad.admitted_model_id AS semantic_admitted_model_id,
@@ -842,6 +920,9 @@ async def evaluate_persisted_entity_pipeline(
           ON gad.tenant_id=gt.tenant_id AND gad.id=gt.grounding_admission_id
         LEFT JOIN source_semantic_interpretations ssi
           ON ssi.tenant_id=gt.tenant_id AND ssi.grounding_trace_id=gt.id
+        LEFT JOIN grounding_admission_decisions semantic_gad
+          ON semantic_gad.tenant_id=ssi.tenant_id
+         AND semantic_gad.id=ssi.grounding_admission_id
         LEFT JOIN source_semantic_admission_decisions ssad
           ON ssad.tenant_id=ssi.tenant_id AND ssad.interpretation_id=ssi.id
         LEFT JOIN models downstream_model
