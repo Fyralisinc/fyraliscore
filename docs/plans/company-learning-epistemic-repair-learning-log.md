@@ -577,6 +577,43 @@ drift checking still reports one unrelated pre-existing column,
 and receipts are now ordered in one transaction; the outside replay is a
 durability assertion rather than the first write.
 
+### 2026-07-17 — LOG-015 — Static migration contracts missed executable SQL
+
+**Type:** observed + corrected
+
+Migration 0225 passed twelve static schema tests but failed on PostgreSQL
+because `natural` was used as an unquoted column name. After correcting it to
+`natural_text`, runtime admission exposed a second issue: globally unique
+evidence-reference IDs prevented the same immutable citation from carrying
+forward to a new Model version. The primary key is now version-bound.
+
+**Evidence:** `db/migrations/0225_epistemic_truth_kernel.sql`;
+`tests/epistemic_repair/p2/test_truth_kernel_postgres.py`.
+
+**Effect:** schema token tests are not migration proof. Every P2 migration must
+be applied and replayed on PostgreSQL, then exercised through the actual
+repository adapter before its schema lane is considered validated.
+
+### 2026-07-17 — LOG-016 — Canonical truth and legacy payload are now asymmetric
+
+**Type:** decided
+
+Immutable truth versions deliberately do not contain embeddings, activation,
+or the full historical `ModelRow` payload. Existing retrieval still needs that
+shape. Admission now creates a zero-embedding compatibility projection in the
+legacy `models` table in the same transaction, while accepted membership and
+lifecycle come only from truth heads/views. Unadmitted legacy rows are
+therefore unreadable through the cut-over pathways.
+
+**Evidence:** `services/domain/truth_kernel/repository.py`;
+`services/domain/models/read_shapes.py`;
+`tests/epistemic_repair/p2/test_accepted_truth_reader_cutover.py`.
+
+**Effect:** this restores end-to-end readability without making embeddings or
+retrieval activity canonical semantics. The zero embedding is a temporary
+derived placeholder and must be replaced by the normal embedding projector;
+it is not evidence and cannot affect admission or confidence.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
