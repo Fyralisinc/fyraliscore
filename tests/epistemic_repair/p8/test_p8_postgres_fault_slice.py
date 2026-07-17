@@ -19,13 +19,13 @@ async def test_postgres_fault_slice_restarts_queries_and_replays_without_overcla
     if not dsn:
         pytest.skip("DATABASE_URL is required")
     result = await run_postgres_fault_slice(dsn)
-    assert len(result.receipts) == 10
-    assert len(P8_DB_COVERED_BOUNDARIES) == 5
-    assert len(P8_DB_UNCOVERED_BOUNDARIES) == 7
+    assert len(result.receipts) == 18
+    assert len(P8_DB_COVERED_BOUNDARIES) == 9
+    assert len(P8_DB_UNCOVERED_BOUNDARIES) == 3
     assert result.exact_required_fault_coverage is False
     assert len(result.evidence_digest) == 64
     assert all(row.post_restart_barrier_count == 1 for row in result.receipts)
     assert all(row.post_restart_model_count == 1 for row in result.receipts)
     assert all(row.post_restart_pending_count == 0 for row in result.receipts)
     assert all(len(row.replay_receipt_digest) == 64 for row in result.receipts)
-    assert len({row.queried_state_digest for row in result.receipts}) == 10
+    assert len({row.queried_state_digest for row in result.receipts}) == 18
