@@ -8,9 +8,9 @@
 
 **Verdict:** `not_credible`
 
-**Measured quality:** `0.9159`
+**Current evaluator-only rerender quality:** `0.8883`
 
-**Evidence coverage:** `0.9667`
+**Evidence coverage:** `1.0000`
 
 ## Evidence Artifacts
 
@@ -23,7 +23,7 @@
 - DB-backed Company Vitals:
   `/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/vitals/vitals_scorecard.json`
 - Authoritative aggregate:
-  `/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation/large_company_simulation_evaluation.json`
+  `/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_synthesis_boundaries_v1/large_company_simulation_evaluation.json`
 - Assurance v7:
   `/tmp/fyralis-company-learning-assurance-be401f25/company_learning_assurance_summary.json`
 
@@ -38,14 +38,17 @@ trigger, post-commit and topology work.
 
 It does **not** prove that the resulting company model is trustworthy.
 
-Three noncompensatory hard failures prevent that conclusion:
+The original Vitals artifact reported three hard failures. Forensic
+classification leaves two noncompensatory company-physics failures and one
+recovered operational incident:
 
 1. the mention-detection fate protocol executed for none of the measured
    entity-mention opportunities;
 2. the entity resolver directly polluted the canonical identity registry with
    50 aliases;
 3. one T1 reasoning attempt exhausted three 180-second provider calls before
-   the same batch recovered on a run-level retry.
+   the same batch recovered on a run-level retry. This is real reliability,
+   latency and cost degradation, but not terminal workload loss.
 
 The run also contradicts the desired retrieval behavior. Retrieval became
 mixed rather than Model-dominant: mature batches continued to select roughly
@@ -57,6 +60,25 @@ The deepest product conclusion is:
 > Fyralis can learn a lot from an evolving company simulation, but its entity
 > grounding, claim-local scope, retrieval selectivity, graph directionality
 > and calibration are not yet precise enough to trust the learned graph.
+
+## Forensic Failure Classification
+
+The classifications below distinguish the state that the saved run proves
+from what later bounded tests prove. “Evaluator mismatch” does not mean the
+underlying incident was harmless; it means the gate assigned the wrong fate to
+the incident.
+
+| Original hard failure | Primary classification | What the saved run proves | Current gate treatment |
+| --- | --- | --- | --- |
+| `Think failures present: failed=1` | Evaluator mismatch over a real recovered operational incident | Wave 19 attempt one failed after three 180-second provider timeouts; attempt two completed the same 25-member batch, all 45 required batches succeeded and all queues drained | Operational degradation and proof gap, not a hard failure |
+| `mention_opportunity_without_detection_fate=10325` | Observability/fate-accounting integration defect, plus evaluator-denominator weakness | All 10,325 heuristic opportunities across all 1,125 signal observations lack a governed detection/rejection fate; this does not prove 10,325 missed gold entities | Hard failure remains |
+| `resolver_mutated_identity_registry=50` | Real runtime authority/semantic defect; row-level attribution is only partially preserved | The evaluator serialized 50 `resolver_worker` alias creations while governed traces claim zero identity-registry mutation | Hard failure remains |
+
+The corrected evaluator-only rerender remains `not_credible`: score `0.8883`,
+coverage `1.0`, and two hard failures. This did not rerun or modify the
+simulation. The original append-only `think_runs_failed=1` counter remains in
+the report alongside `think_failures_recovered=1` and
+`think_failures_terminal=0`.
 
 ## Evaluation Boundary
 
@@ -225,12 +247,29 @@ The denominator is noisy. It includes real entity names alongside phrases such
 as `Enterprise`, `Evidence`, `Local`, `Long-horizon`, `Protect`, `T1`, `It`,
 `The team` and `the renewal`.
 
+The failure covers every signal observation, not one source or one difficult
+Slack corner: 1,125/1,125 eligible observations have at least one unfated
+opportunity. Slack accounts for 2,867 opportunities across 336 observations:
+executive 665, risk 540, customer escalations 431, contradictions 427, noise
+300, implementation 231, aliases 156, and general messages 117. Non-Slack
+sources are also fully implicated: Salesforce accounts contributes 688,
+finance email 647, Zendesk 630, and security email 612 opportunities. The fault is therefore
+a missing cross-source protocol integration, even though Slack remains the
+harder semantic extraction surface.
+
 Two failures are therefore present simultaneously:
 
 1. **Runtime/wiring failure:** none of the opportunities received a governed
    detection or terminal fate.
 2. **Evaluator-denominator weakness:** broad heuristic opportunities are not a
    gold precision/recall population.
+
+Classification: the absence of detection/rejection receipts is an objective
+fate-accounting defect. Whether legacy extraction missed or correctly handled
+any particular phrase is unresolved because this run did not preserve a gold
+mention population or bridge legacy entity refs into the new detection
+protocol. The gate is valid for protocol closure and invalid as a recall
+estimate.
 
 The hard gate is correct as a total-fate integration gate. It must not be read
 as entity-extraction recall.
@@ -263,6 +302,14 @@ Database inspection confirms 50 canonical aliases with
 No false merge was directly observed: each alias mapped one-to-one and no alias
 string mapped to multiple referents. The proven defect is canonical-registry
 pollution and premature promotion.
+
+The saved scorecard preserves the count as `resolver_created_alias_count=50`
+but only one coarse incident reference for the run. The 11/19/20 type split,
+13 source events, and 46 UUID-like strings came from the contemporaneous
+database inspection summarized here; the exported artifact set does not retain
+the 50 row receipts needed to independently recompute that distribution. This
+is a second observability defect, but it does not erase the serialized mutation
+count or make direct resolver promotion safe.
 
 The resolver is bypassing the intended candidate/adjudication boundary. This is
 especially serious because grounding traces simultaneously report
@@ -511,16 +558,21 @@ same trigger was retried at the run level and succeeded. Therefore:
 - the queue drained;
 - the historical failed attempt is real reliability and cost evidence.
 
-Treating any recovered attempt as an unconditional hard failure is too severe.
-The evaluator should distinguish:
+Treating any recovered attempt as an unconditional hard failure was an
+evaluator bug. The benchmark already encoded the correct contract and its unit
+test explicitly accepts a required T1 batch that recovers. The aggregate gate
+was blindly promoting the append-only Vitals attempt counter. The evaluator now
+distinguishes:
 
 - terminal/unrecovered failure;
 - recovered batch failure;
 - individual provider-call retries;
 - retry cost and latency.
 
-The current run should still be penalized operationally, but recovered failure
-should not be conflated with missing company learning.
+The run is still penalized operationally, but the recovered failure is no
+longer conflated with missing company learning. The rerender records 84
+successful Think runs, one historical failed run, one recovered failure, zero
+terminal failures, two validation errors, and an operational score of `0.7833`.
 
 ## Product and Projection Findings
 
@@ -692,11 +744,11 @@ checks on six bounded batches, including exact relation-ID correction fencing
 and material prior-Model synthesis with an ablation. It is required in the
 current objective evidence portfolio. This is new bounded capability evidence,
 not a rerun of the 45-batch simulation and not grounds to change this
-postmortem's `not_credible` verdict. The current assurance-backed rerender is
-`/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_joined_v2/large_company_simulation_evaluation.json`.
-It includes Assurance v7, objective entity v4 and the current objective
-company-learning portfolio; intermediate joined-only rerenders are not the
-current aggregate truth.
+postmortem's `not_credible` verdict. The current failure-fate-corrected and
+proof-boundary-aware rerender is
+`/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_synthesis_boundaries_v1/large_company_simulation_evaluation.json`.
+It includes Assurance v7, objective entity v4 and objective company learning
+v8; intermediate rerenders are not the current aggregate truth.
 
 The later matched feedback-quality DB proof is also now mandatory and distinct
 from the older SAGE salience-effect evidence. In two matched arms it applies one
@@ -704,11 +756,16 @@ governed correction only to the adaptive arm, then runs three identical later
 two-signal batches per arm. Adaptive later conclusion quality is `1.0` versus
 frozen `0.0`, with exact Model/relation lineage, immutable matched source truth,
 tenant isolation, and all 17 objective checks passing. The seven-component
-composition is `/private/tmp/objective_company_learning_evidence_v7.json`
-(`785ec239…f30911d7`). The saved 45-batch artifact was rerendered with this
-evidence in the assurance-backed aggregate path above; its score remains
-`0.8859`, coverage remains `1.0`, and its verdict remains `not_credible`
-because the same three historical vitals failures remain. The simulation was
+composition `/private/tmp/objective_company_learning_evidence_v7.json`
+(`785ec239…f30911d7`) is preserved as a historical checkpoint. The current
+eight-component composition is
+`/private/tmp/objective_company_learning_evidence_v8_boundaries.json`. The
+saved 45-batch artifact was rerendered with this evidence in the aggregate
+lineage above. The current rerender score is
+`0.8883`, coverage is `1.0`, and its verdict remains `not_credible` because the
+two company-physics hard failures remain. It reports 68 aggregate proof gaps
+and 16 successful scope limitations separately as proof boundaries. The
+simulation was
 not rerun: it remains the sole 45-batch, 1,125-signal, zero-semantic-seed,
 batch-only large run.
 
@@ -718,7 +775,10 @@ holdout now establishes the stricter claim: each of three new subjects produced
 exactly one persisted complete Model with exact prior-Model lineage across six
 batch-only, zero-seed batches; the frozen arm recovered none. Distributed facets
 across Models do not count. This is now the eighth mandatory component in
-`/private/tmp/objective_company_learning_evidence_v8.json`. The 45-batch run was
-only evaluator-rerendered at
-`/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_synthesis_v1/large_company_simulation_evaluation.json`;
-its `not_credible` verdict and three historical hard failures remain unchanged.
+`/private/tmp/objective_company_learning_evidence_v8_boundaries.json` (file
+SHA-256 `9816c876…25706`, composition SHA `a6b9c9a5…67e125`). Its
+successful bounded scope is emitted as a `proof_boundary`, not a `proof_gap`.
+The 45-batch run was only evaluator-rerendered; its company state remains
+unchanged. Strict synthesis evidence does not repair or overwrite either
+historical company-physics incident. No second large simulation was run or
+authorized.

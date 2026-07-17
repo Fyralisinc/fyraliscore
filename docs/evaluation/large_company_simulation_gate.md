@@ -24,6 +24,12 @@ The accepted artifact set must prove all of the following:
 Any failed run-contract check makes the run `not_credible`, even when its
 continuous quality score is high.
 
+Think failure accounting is fate-aware. Append-only failed-attempt history is
+retained as reliability, latency and cost degradation, but a required T1 batch
+that later succeeds is not terminal workload loss. A terminal failed batch, or
+a failed-run count that cannot be reconciled to saved successful retry
+receipts, remains non-compensatory.
+
 ## Report
 
 The report combines:

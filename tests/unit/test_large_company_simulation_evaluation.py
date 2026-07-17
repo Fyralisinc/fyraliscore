@@ -73,6 +73,7 @@ def _objective_company_learning_evidence(*, numeric: bool = True) -> dict:
         "historical_below_policy_components": ["retrieval_evolution"],
         "noncompensable_blockers": [],
         "proof_gaps": ["bounded current evidence"],
+        "proof_boundaries": ["single_model_synthesis:bounded sealed synthesis"],
         "verdict": "meets_bounded_policy",
         "guarantee_boundary": "bounded only",
     }
@@ -281,6 +282,10 @@ def test_objective_learning_evidence_adds_numeric_metrics_without_rewriting_hist
     ] == 1.0
     assert any("Immutable historical 45-batch retrieval" in gap
                for gap in report["proof_gaps"])
+    assert report["proof_boundaries"] == [
+        "single_model_synthesis:bounded sealed synthesis"
+    ]
+    assert "single_model_synthesis:bounded sealed synthesis" not in report["proof_gaps"]
 
 
 def test_learning_status_labels_cannot_manufacture_numeric_score():
@@ -442,6 +447,66 @@ def test_safety_and_drain_failures_are_noncompensatory() -> None:
     assert len(report["hard_failures"]) == 2
 
 
+def test_recovered_think_attempt_is_degradation_not_hard_failure() -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+    wave = benchmark["waves"][18]
+    wave["t1_batch"]["attempt_history"] = [
+        {"attempt": 1, "status": "failed", "error": "provider timeout"},
+        {"attempt": 2, "status": "success", "error": None},
+    ]
+    wave["t1_batch"]["run"]["recovered_after_retry"] = True
+    benchmark["run_health"]["think_runs_failed"] = 1
+    run_summary["think_runs_failed"] = 1
+    vitals["hard_failures"] = ["Think failures present: failed=1"]
+
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark,
+        run_summary=run_summary,
+        vitals=vitals,
+        assurance=assurance,
+        run_config=run_config,
+        profile_name="authoritative-45",
+    )
+
+    assert report["hard_failures"] == []
+    assert report["status"] == "strong"
+    operational = report["dimensions"]["operational_drain"]["metrics"]
+    assert operational["think_runs_failed_historical"] == 1
+    assert operational["think_failures_recovered"] == 1
+    assert operational["think_failures_terminal"] == 0
+    assert operational["think_runs_failed"] == 0
+    assert any(
+        "Recovered Think failure history" in gap for gap in report["proof_gaps"]
+    )
+
+
+def test_terminal_think_failure_remains_noncompensatory() -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+    wave = benchmark["waves"][18]
+    wave["t1_batch"]["attempt_history"] = [
+        {"attempt": 1, "status": "failed", "error": "provider timeout"},
+    ]
+    wave["t1_batch"]["run"]["status"] = "failed"
+    benchmark["run_health"]["think_runs_failed"] = 1
+    run_summary["think_runs_failed"] = 1
+    vitals["hard_failures"] = ["Think failures present: failed=1"]
+
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark,
+        run_summary=run_summary,
+        vitals=vitals,
+        assurance=assurance,
+        run_config=run_config,
+        profile_name="authoritative-45",
+    )
+
+    assert report["status"] == "not_credible"
+    assert "vitals: Think failures present: failed=1" in report["hard_failures"]
+    operational = report["dimensions"]["operational_drain"]["metrics"]
+    assert operational["think_failures_terminal"] == 1
+    assert operational["think_runs_failed"] == 1
+
+
 def test_authoritative_contract_rejects_seeded_or_fake_batches() -> None:
     benchmark, run_summary, vitals, assurance, run_config = _artifacts()
     run_config["seed_models"] = 5
@@ -508,4 +573,5 @@ def test_cli_writes_json_and_markdown(tmp_path: Path) -> None:
         "objective_entity_evidence.json"
     )
     assert "## Hidden Pattern Recovery" in markdown
+    assert "## Proof Boundaries" in markdown
     assert "## Claims This Run Does Not Support" in markdown

@@ -71,9 +71,32 @@ def evaluate_large_company_simulation(
         if profile.require_vitals:
             hard_failures.append("required Company Vitals artifact is missing")
     else:
-        hard_failures.extend(
-            f"vitals: {item}" for item in _strings(vitals.get("hard_failures"))
+        vital_failures = _strings(vitals.get("hard_failures"))
+        terminal_think_failures, recovered_think_failures = _think_failure_fates(
+            benchmark
         )
+        reported_think_failures = int(
+            _number(
+                _object(benchmark.get("run_health")).get("think_runs_failed")
+            )
+        )
+        unaccounted_think_failures = max(
+            terminal_think_failures,
+            reported_think_failures - recovered_think_failures,
+        )
+        for item in vital_failures:
+            if (
+                item.startswith("Think failures present:")
+                and not unaccounted_think_failures
+            ):
+                if recovered_think_failures:
+                    gaps.append(
+                        "Recovered Think failure history remains operational "
+                        f"degradation: recovered_attempts={recovered_think_failures}; "
+                        "no required T1 batch ended failed."
+                    )
+                continue
+            hard_failures.append(f"vitals: {item}")
 
     if assurance is None:
         gaps.append("Company-learning Assurance v7 artifact is missing.")
@@ -150,6 +173,9 @@ def evaluate_large_company_simulation(
         )
         + (_strings(vitals.get("proof_gaps")) if vitals else [])
     )
+    all_boundaries = _dedupe(
+        _strings(objective_learning[2].get("proof_boundaries"))
+    )
     status = _status(
         score=overall,
         coverage=evidence_coverage,
@@ -175,6 +201,7 @@ def evaluate_large_company_simulation(
         "current_bounded_company_learning": objective_learning[2],
         "hard_failures": _dedupe(hard_failures),
         "proof_gaps": all_gaps,
+        "proof_boundaries": all_boundaries,
         "claims_supported": _claims_supported(
             dimensions=dimension_rows,
             hard_failures=hard_failures,
@@ -628,6 +655,7 @@ def _objective_company_learning_quality(
         "current_bounded_retrieval_verdict": current_verdict,
         "exact_populations": _object(evidence.get("exact_populations")),
         "guarantee_boundary": evidence.get("guarantee_boundary"),
+        "proof_boundaries": _strings(evidence.get("proof_boundaries")),
     }
 
 
@@ -658,8 +686,15 @@ def _operational_dimension(
             )
         )
     )
-    failed_think = int(
+    historical_failed_think = int(
         _number(health.get("think_runs_failed", run_summary.get("think_runs_failed")))
+    )
+    terminal_failed_think, recovered_failed_think = _think_failure_fates(benchmark)
+    # Preserve the historical attempt counter as reliability/cost evidence, but
+    # score terminal workload loss separately from a batch that recovered.
+    failed_think = max(
+        terminal_failed_think,
+        historical_failed_think - recovered_failed_think,
     )
     successful_think = int(
         _number(
@@ -692,12 +727,43 @@ def _operational_dimension(
             "dead_lettered_post_commit_actions": dead,
             "think_runs_success": successful_think,
             "think_runs_failed": failed_think,
+            "think_runs_failed_historical": historical_failed_think,
+            "think_failures_recovered": recovered_failed_think,
+            "think_failures_terminal": terminal_failed_think,
             "think_success_rate": success_rate,
             "validation_errors": validation_errors,
             "control_plane_health": vitals_control,
             "noncompensatory_failure_count": len(hard_failures),
         },
     )
+
+
+def _think_failure_fates(benchmark: JsonObject) -> tuple[int, int]:
+    """Return terminal and recovered failed Think-run counts from wave receipts.
+
+    `think_runs_failed` is an append-only attempt counter. A required batch can
+    therefore finish successfully while retaining a failed earlier run. The
+    authoritative gate must not conflate that history with terminal workload
+    loss, but it must keep the recovered failure visible as degradation.
+    """
+    recovered = 0
+    terminal = 0
+    for wave in _objects(benchmark.get("waves")):
+        batch = _object(wave.get("t1_batch"))
+        run = _object(batch.get("run"))
+        history = _objects(
+            batch.get("attempt_history") or run.get("attempt_history")
+        )
+        failed_attempts = sum(
+            1 for attempt in history if str(attempt.get("status")) == "failed"
+        )
+        final_status = str(run.get("status") or "")
+        recovered_flag = bool(run.get("recovered_after_retry"))
+        if final_status == "success" and (recovered_flag or failed_attempts):
+            recovered += failed_attempts
+        elif final_status == "failed":
+            terminal += max(1, failed_attempts)
+    return terminal, recovered
 
 
 def _proof_dimension(

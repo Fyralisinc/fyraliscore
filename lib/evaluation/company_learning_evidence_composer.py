@@ -72,6 +72,7 @@ def compose_objective_company_learning_evidence(
     bindings: dict[str, Any] = {}
     blockers: list[str] = []
     gaps: list[str] = []
+    boundaries: list[str] = []
     retrieval_component, retrieval_bindings, retrieval_gaps = _compose_retrieval_evidence(
         retrieval_evolution, retrieval_evolution_postfix
     )
@@ -80,6 +81,10 @@ def compose_objective_company_learning_evidence(
     gaps.extend(retrieval_gaps)
     if retrieval_component["status"] == "observed":
         blockers.extend(_blockers("retrieval_evolution", retrieval_component["report"]))
+        boundaries.extend(
+            _proof_boundaries("retrieval_evolution", retrieval_component["report"])
+        )
+        gaps.extend(_reported_proof_gaps("retrieval_evolution", retrieval_component["report"]))
     ablation_component, ablation_bindings, ablation_gaps = _compose_ablation_evidence(
         legacy=company_model_ablation_legacy,
         active_failure=company_model_ablation_active_failure,
@@ -91,6 +96,10 @@ def compose_objective_company_learning_evidence(
     gaps.extend(ablation_gaps)
     if ablation_component["status"] == "observed":
         blockers.extend(_blockers("company_model_ablation", ablation_component["report"]))
+        boundaries.extend(
+            _proof_boundaries("company_model_ablation", ablation_component["report"])
+        )
+        gaps.extend(_reported_proof_gaps("company_model_ablation", ablation_component["report"]))
     for name, bound in inputs.items():
         if bound is None:
             components[name] = {"status": "unknown", "continuous_score": None,
@@ -107,7 +116,8 @@ def compose_objective_company_learning_evidence(
             "internal_digest": normalized.get("internal_digest"),
         }
         blockers.extend(_blockers(name, normalized["report"]))
-        gaps.extend(_proof_gaps(name, normalized["report"]))
+        boundaries.extend(_proof_boundaries(name, normalized["report"]))
+        gaps.extend(_reported_proof_gaps(name, normalized["report"]))
 
     observed = [row for row in components.values() if row["status"] == "observed"]
     coverage = len(observed) / len(COMPONENTS)
@@ -148,6 +158,7 @@ def compose_objective_company_learning_evidence(
         "historical_below_policy_components": historical_below,
         "noncompensable_blockers": sorted(set(blockers)),
         "proof_gaps": sorted(set(gaps)),
+        "proof_boundaries": sorted(set(boundaries)),
         "verdict": verdict,
         "guarantee_boundary": (
             "The summary composes bounded simulated and database-backed company-learning "
@@ -189,9 +200,6 @@ def _compose_ablation_evidence(
             "schema_version": legacy_component["schema_version"],
             "verdict": legacy_component["verdict"],
         }
-        gaps.append(
-            "company_model_ablation:legacy_v4_development_is_not_active_lane_evidence"
-        )
     else:
         bindings["legacy_v4_development"] = {
             "status": "unavailable", "artifact_sha256": None,
@@ -212,9 +220,6 @@ def _compose_ablation_evidence(
             "internal_digest": active_failure.payload.get("objective_sha256"),
             "verdict": active_failure.payload.get("verdict"),
         }
-        gaps.append(
-            "company_model_ablation:active_v5_inconclusive_runtime_contract_failure"
-        )
     else:
         bindings["active_v5_contract_failure"] = {
             "status": "unavailable", "artifact_sha256": None,
@@ -242,9 +247,6 @@ def _compose_ablation_evidence(
             "schema_version": predecessor_schema,
             "verdict": predecessor_component["verdict"],
         }
-        gaps.append(
-            "company_model_ablation:superseded_active_holdout_is_historical_not_governing"
-        )
     else:
         bindings["superseded_active_holdout"] = {
             "status": "unavailable", "artifact_sha256": None,
@@ -280,10 +282,6 @@ def _compose_ablation_evidence(
                 "with prior-Model lineage"
             ),
         })
-        gaps.append(
-            "company_model_ablation:v7_collective_facet_union_is_not_single_model_synthesis"
-        )
-    gaps.extend(_proof_gaps("company_model_ablation", active_component["report"]))
     bindings["current_active_holdout"] = {
         "status": "observed", "artifact_sha256": active.artifact_sha256,
         "schema_version": schema, "verdict": active_component["verdict"],
@@ -324,12 +322,13 @@ def _compose_retrieval_evidence(
         _schema(postfix.payload, "bounded-retrieval-evolution-postfix-objective-v1")
         _verify_objective(postfix.payload, "postfix retrieval")
         postfix_report = dict(_object(postfix.payload.get("evaluation"), "postfix retrieval evaluation"))
+        if postfix.payload.get("proof_boundary") is not None:
+            postfix_report["proof_boundary"] = postfix.payload["proof_boundary"]
         bindings["current_bounded_postfix"] = {
             "status": "observed", "artifact_sha256": postfix.artifact_sha256,
             "schema_version": postfix.payload["schema_version"],
             "internal_digest": postfix.payload.get("objective_sha256"),
         }
-        gaps.append(f"retrieval_evolution:{postfix.payload.get('proof_boundary')}")
     else:
         bindings["current_bounded_postfix"] = {"status": "unavailable", "artifact_sha256": None}
         gaps.append("component_unavailable:retrieval_evolution.current_bounded_postfix")
@@ -534,7 +533,7 @@ def _blockers(name: str, report: Mapping[str, Any]) -> list[str]:
     return blockers
 
 
-def _proof_gaps(name: str, report: Mapping[str, Any]) -> list[str]:
+def _proof_boundaries(name: str, report: Mapping[str, Any]) -> list[str]:
     raw = report.get("proof_boundary")
     if isinstance(raw, str):
         return [f"{name}:{raw}"]
@@ -546,6 +545,13 @@ def _proof_gaps(name: str, report: Mapping[str, Any]) -> list[str]:
     }:
         return [f"{name}:bounded_component_does_not_establish_open_world_generalization"]
     return []
+
+
+def _reported_proof_gaps(name: str, report: Mapping[str, Any]) -> list[str]:
+    raw = report.get("proof_gaps")
+    if not isinstance(raw, list):
+        return []
+    return [f"{name}:{item}" for item in raw if isinstance(item, str) and item]
 
 
 def _schema(payload: Mapping[str, Any], expected: str) -> None:

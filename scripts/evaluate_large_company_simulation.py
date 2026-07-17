@@ -194,6 +194,10 @@ def _render_markdown(report: dict[str, Any]) -> str:
     lines.extend(f"- {item}" for item in report["proof_gaps"])
     if not report["proof_gaps"]:
         lines.append("- None reported.")
+    lines.extend(["", "## Proof Boundaries", ""])
+    lines.extend(f"- {item}" for item in report.get("proof_boundaries") or [])
+    if not report.get("proof_boundaries"):
+        lines.append("- None reported.")
     lines.extend(["", "## Claims Supported by This Run", ""])
     lines.extend(f"- {item}" for item in report["claims_supported"])
     if not report["claims_supported"]:

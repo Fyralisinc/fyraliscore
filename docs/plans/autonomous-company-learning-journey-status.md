@@ -1721,13 +1721,14 @@ The next sequence is validation and remaining pipeline closure:
   quality `0.0`, lift `1.0`. It preserves exact correction and relation
   lineage, matched immutable source truth, tenant isolation, and decisive
   Model-use lineage.
-- Objective company-learning evidence now has seven mandatory components. The
-  recomposed artifact is
+- At this historical checkpoint, objective company-learning evidence had seven
+  mandatory components. That superseded composition is
   `/private/tmp/objective_company_learning_evidence_v7.json`, composition SHA
   `785ec239…f30911d7`, coverage and adjusted score `1.0`, with no blocker.
-- The existing 45-batch run was evaluator-rerendered, not rerun, at
+- At that checkpoint, the existing 45-batch run was evaluator-rerendered, not
+  rerun, at
   `/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_joined_v2/large_company_simulation_evaluation.json`.
-  This is the current assurance-backed rerender: it includes Assurance v7,
+  That was the then-current assurance-backed rerender: it includes Assurance v7,
   objective entity v4 and the seven-component objective company-learning
   portfolio. Feedback quality is visible as the seventh component, but the
   authoritative result remains `not_credible`, score `0.8859`, coverage `1.0`,
@@ -1746,11 +1747,25 @@ The next sequence is validation and remaining pipeline closure:
   exact prior-Model lineage. The bound artifact is
   `/private/tmp/single-model-synthesis-holdout-v1.json` (SHA-256
   `ff2ce5fe…ddb103f`); the eight-component composition is
-  `/private/tmp/objective_company_learning_evidence_v8.json` (composition SHA
-  `d6e8e19e…daf77929`). The saved 45-batch run was evaluator-rerendered, not
-  rerun, and remains `not_credible` with its original three hard failures.
+  `/private/tmp/objective_company_learning_evidence_v8_boundaries.json`
+  (file SHA-256 `9816c876…25706`, composition SHA
+  `a6b9c9a5…67e125`). Its eight components score `1.0`; successful scope
+  limitations are 16 `proof_boundaries`, and component `proof_gaps` are empty.
 - Active v7 demonstrates cross-batch evidence accumulation and availability.
   It does not demonstrate that one persisted Model contains every required
-  thesis facet with eligible prior-Model lineage. That stricter claim remains
-  pending the separate frozen single-Model synthesis holdout; distributed
-  facets across multiple Models must score zero.
+  thesis facet with eligible prior-Model lineage. The separate frozen v1
+  synthesis holdout now proves that stricter bounded claim: learned `3/3`,
+  frozen `0/3`, with exactly one complete, prior-Model-lineaged persisted Model
+  per learned thesis. Distributed facets across multiple Models score zero.
+- The current composer separates successful scope limits into
+  `proof_boundaries`; they no longer inflate `proof_gaps`. The current v8
+  artifact is `/private/tmp/objective_company_learning_evidence_v8_boundaries.json`.
+- The current synthesis-aware assurance rerender is
+  `/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_synthesis_boundaries_v1/large_company_simulation_evaluation.json`.
+  It exposes all eight bounded components at `1.0`, but the immutable large-run
+  verdict remains `not_credible`, score `0.8883`, coverage `1.0`, with two
+  noncompensatory company-physics hard failures, 68 aggregate proof gaps and
+  16 separately reported proof boundaries. The historical Think failure is
+  classified as a recovered operational degradation, not terminal workload
+  loss. This was an evaluator-only rerender; no simulation was rerun and no
+  second large simulation is authorized.

@@ -239,6 +239,11 @@ def test_composes_all_sha_bound_components_with_exact_populations():
     assert result["exact_populations"]["feedback_learning"]["matched_pairs"] == 1
     assert result["exact_populations"]["feedback_quality"]["arms"] == 2
     assert result["exact_populations"]["single_model_synthesis"]["hidden_patterns"] == 1
+    assert "single_model_synthesis:one complete persisted Model per thesis with prior-Model lineage" in result[
+        "proof_boundaries"
+    ]
+    assert not any("bounded DB proof" in gap for gap in result["proof_gaps"])
+    assert any("bounded DB proof" in boundary for boundary in result["proof_boundaries"])
     assert len(result["composition_sha256"]) == 64
 
 
@@ -285,7 +290,7 @@ def test_future_active_holdout_replaces_v6_without_erasing_history():
         "cross_batch_evidence_accumulation_and_availability"
     )
     assert component["synthesis_claim"] == "not_established"
-    assert "v7_collective_facet_union_is_not_single_model_synthesis" in " ".join(
+    assert "v7_collective_facet_union_is_not_single_model_synthesis" not in " ".join(
         result["proof_gaps"]
     )
     assert component["active_lane_verdict"] == "meets_policy"
