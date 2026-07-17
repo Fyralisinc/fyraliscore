@@ -125,6 +125,11 @@ def _observation_selection_notes(bundle: ContextBundle) -> dict[str, Any]:
     return selection if isinstance(selection, dict) else {}
 
 
+def _raw_observation_reopening(selection: dict[str, Any]) -> dict[str, Any]:
+    reopening = selection.get("raw_evidence_reopening")
+    return reopening if isinstance(reopening, dict) else {}
+
+
 def _referenced_model_ids(diff: RawDiff | ValidatedDiff) -> set[UUID]:
     referenced: set[UUID] = set()
 
@@ -439,6 +444,7 @@ def _graph_relation_contract_satisfied(
 def _context_use_report(values: dict[str, Any]) -> dict[str, Any]:
     diff = values["diff"]
     observation_selection = values["observation_selection"]
+    raw_reopening = _raw_observation_reopening(observation_selection)
     selected_context_reference_count = values["selected_context_reference_count"]
     selected_context_count = values["selected_context_count"]
     selected_count = values["selected_count"]
@@ -499,6 +505,12 @@ def _context_use_report(values: dict[str, Any]) -> dict[str, Any]:
         "selected_historical_observation_count": int(
             observation_selection.get("selected_historical_count") or 0
         ),
+        "raw_observation_reopening_reasons": [
+            str(reason)
+            for reason in (raw_reopening.get("reason_codes") or [])
+            if str(reason).strip()
+        ],
+        "raw_observation_reopening": raw_reopening,
         "historical_observation_cap": int(
             observation_selection.get("historical_cap") or 0
         ),

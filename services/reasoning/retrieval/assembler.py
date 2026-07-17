@@ -92,6 +92,9 @@ _WS_RE = re.compile(r"\s+")
 _HEX_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.I)
 _NUMBER_RE = re.compile(r"[$]?[0-9][0-9,]*([.][0-9]+)?")
 _URL_RE = re.compile(r"https?://[^\s)]+", re.I)
+_RAW_REOPENING_REASON_CODES = frozenset(
+    {"uncertainty", "contradiction", "correction", "provenance"}
+)
 
 
 def _estimate_model_tokens(m: ModelRow) -> int:
@@ -388,6 +391,26 @@ def _raw_evidence_reopening(
     return note
 
 
+def _requested_raw_reopening_reasons(
+    retrieval_result: RetrievalResult,
+) -> list[str]:
+    signature = retrieval_result.trigger.seed_signature
+    if not isinstance(signature, dict):
+        return []
+    raw = signature.get("raw_observation_reopening_reasons") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return sorted(
+        {
+            str(reason).strip().lower()
+            for reason in raw
+            if str(reason).strip().lower() in _RAW_REOPENING_REASON_CODES
+        }
+    )
+
+
 def _select_observations(
     retrieval_result: RetrievalResult,
     observations: list[ObservationRow],
@@ -469,26 +492,44 @@ def _select_observations(
                 total_cap=budget_observations,
             )
         if floor_selected:
+            requested_reasons = _requested_raw_reopening_reasons(retrieval_result)
+            historical_reopened = (
+                historical_observations[
+                    : min(
+                        len(historical_observations),
+                        max(0, budget_observations - len(floor_selected)),
+                        max(
+                            0,
+                            int(getattr(cfg, "historical_observation_cap", 0)),
+                        ),
+                    )
+                ]
+                if requested_reasons
+                else []
+            )
+            selected = [*floor_selected, *historical_reopened]
             reason = (
                 "fresh_trigger_verification_sample"
                 if memory_state
                 and memory_state["semantic_memory_sufficiency"] >= 0.75
                 else "semantic_memory_partial_batch_coverage"
             )
-            return floor_selected, {
+            return selected, {
                 "model_first_context_enabled": True,
                 "retrieved_count": len(observations),
-                "selected_count": len(floor_selected),
+                "selected_count": len(selected),
                 "selected_trigger_count": len(floor_selected),
-                "selected_historical_count": 0,
+                "selected_historical_count": len(historical_reopened),
                 "trigger_candidate_count": len(trigger_observations),
                 "historical_candidate_count": len(historical_observations),
                 "trigger_cap": len(floor_selected),
-                "historical_cap": 0,
+                "historical_cap": len(historical_reopened),
                 "dropped_trigger_count": max(
                     0, len(trigger_observations) - len(floor_selected)
                 ),
-                "dropped_historical_count": len(historical_observations),
+                "dropped_historical_count": max(
+                    0, len(historical_observations) - len(historical_reopened)
+                ),
                 "observation_context_mode": mode,
                 "observation_context_min_models": min_models,
                 "selected_model_count": int(selected_model_count),
@@ -502,8 +543,8 @@ def _select_observations(
                     getattr(cfg, "t1_event_batch_raw_source_floor", 0)
                 ),
                 "raw_evidence_reopening": _raw_evidence_reopening(
-                    selected=floor_selected,
-                    reason_codes=[reason],
+                    selected=selected,
+                    reason_codes=[reason, *requested_reasons],
                     memory_state=memory_state,
                 ),
             }

@@ -586,6 +586,11 @@ def test_context_use_accounts_for_selected_context_in_non_empty_diff():
         "selected_trigger_count": 1,
         "selected_historical_count": 0,
         "historical_cap": 4,
+        "raw_evidence_reopening": {
+            "opened": True,
+            "reason_codes": ["fresh_trigger_verification_sample"],
+            "maturity": "mature",
+        },
     }
     diff = RawDiff(
         trigger_ref=trigger_id,
@@ -617,6 +622,10 @@ def test_context_use_accounts_for_selected_context_in_non_empty_diff():
     assert report["reasoning_trace_context_decision_used"] is True
     assert report["selected_trigger_observation_count"] == 1
     assert report["selected_historical_observation_count"] == 0
+    assert report["raw_observation_reopening_reasons"] == [
+        "fresh_trigger_verification_sample"
+    ]
+    assert report["raw_observation_reopening"]["maturity"] == "mature"
 
 
 def test_context_use_accepts_explicit_no_edge_rationale_for_graph_context():

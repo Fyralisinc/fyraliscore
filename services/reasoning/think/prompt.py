@@ -136,6 +136,10 @@ Core discipline:
   changes the diff, cite its full UUID in the relevant op. If selected context
   is irrelevant, reasoning_trace must cite at least one selected full UUID and
   say why it did not warrant a state, edge, action, or resource change.
+- When semantic memory is mature, reason from selected Models first and cite
+  their full UUIDs. Raw Observations are verification/correction evidence, not
+  a parallel default memory substrate; use them only for the reopening reason
+  supplied in <retrieval_priority> and cite any Observation actually used.
 
 Falsifier schema (pick the right kind):
 1. observation_pattern -> {"kind":"observation_pattern","pattern":"specific signal shape, >=20 chars","within_window":"ISO-8601 duration"}
@@ -2611,6 +2615,12 @@ def _build_retrieval_guidance_section(
     graph_count = len(graph_model_ids)
     if isinstance(selection, dict):
         selected_count = int(selection.get("selected_count") or selected_count)
+    observation_selection = notes.get("observation_selection")
+    reopening = (
+        observation_selection.get("raw_evidence_reopening")
+        if isinstance(observation_selection, dict)
+        else None
+    )
 
     def _ids(values: set[str]) -> str:
         ordered = sorted(values)
@@ -2654,6 +2664,23 @@ def _build_retrieval_guidance_section(
         lines.append(
             f"    selected_model_ids ({selected_count}): {_ids(selected_model_ids)}"
         )
+        if isinstance(reopening, dict):
+            maturity = str(reopening.get("maturity") or "unknown")
+            reason_codes = [
+                str(reason)
+                for reason in (reopening.get("reason_codes") or [])
+                if str(reason).strip()
+            ]
+            lines.append(
+                "    semantic_memory_policy: "
+                f"maturity={maturity}; models_are_primary=true; "
+                f"raw_reopening_reasons={','.join(reason_codes) or 'none'}"
+            )
+            lines.append(
+                "    Start from selected Models and cite their UUIDs. Consult "
+                "selected raw Observations only for those reopening reasons; "
+                "cite each raw Observation that materially changes the diff."
+            )
     if graph_model_ids:
         lines.append(
             f"    graph_anchor_model_ids ({graph_count}): {_ids(graph_model_ids)}"
