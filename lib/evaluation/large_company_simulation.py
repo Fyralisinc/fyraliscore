@@ -374,6 +374,7 @@ def _objective_entity_quality(
         "objective-entity-evidence-v1", "objective-entity-evidence-v2",
         "objective-entity-evidence-v3",
         "objective-entity-evidence-v4",
+        "objective-entity-evidence-v5",
     }:
         gaps.append("Objective entity evidence has an unsupported schema version.")
         return None, 0.0, {}
@@ -431,6 +432,7 @@ def _objective_entity_quality(
     if evidence.get("schema_version") in {
         "objective-entity-evidence-v2", "objective-entity-evidence-v3",
         "objective-entity-evidence-v4",
+        "objective-entity-evidence-v5",
     }:
         readiness = _object(evidence.get("readiness"))
         readiness_components = _object(readiness.get("component_scores"))
@@ -453,13 +455,20 @@ def _objective_entity_quality(
         components["boundary_type_exceptional"] = _optional_ratio(
             boundary_type.get("continuous_score")
         )
-    if evidence.get("schema_version") == "objective-entity-evidence-v4":
+    if evidence.get("schema_version") in {
+        "objective-entity-evidence-v4", "objective-entity-evidence-v5",
+    }:
         boundary_type = _object(evidence.get("boundary_type_exceptional"))
         closure = _object(evidence.get("boundary_type_protocol_closure"))
         components["boundary_type_exceptional"] = _optional_ratio(
             boundary_type.get("continuous_score"))
         components["boundary_type_protocol_closure"] = _optional_ratio(
             closure.get("continuous_score"))
+    if evidence.get("schema_version") == "objective-entity-evidence-v5":
+        broad = _object(evidence.get("broad_extraction_generalization"))
+        components["broad_extraction_generalization"] = _optional_ratio(
+            broad.get("continuous_score")
+        )
     observed = [value for value in components.values() if value is not None]
     coverage = len(observed) / len(components)
     if components["canonical_link_accuracy"] is None or components[
@@ -484,6 +493,7 @@ def _objective_entity_quality(
     if evidence.get("schema_version") in {
         "objective-entity-evidence-v2", "objective-entity-evidence-v3",
         "objective-entity-evidence-v4",
+        "objective-entity-evidence-v5",
     }:
         adversarial = _object(evidence.get("adversarial_company_physics"))
         population = _object(adversarial.get("population"))

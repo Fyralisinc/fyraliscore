@@ -211,6 +211,27 @@ def _boundary_type_closure() -> dict:
             "type_accuracy": 1.0}}}
 
 
+def _broad_extraction() -> tuple[dict, dict]:
+    report = {
+        "schema_version": "learned-entity-discovery-quality-v4",
+        "evidence_class": "precommitted_untouched_broad_holdout",
+        "frozen_corpus_sha256": "2" * 64, "precommit_commit": "6f9da6a2",
+        "batch_only": True,
+        "metrics": {"overall": {
+            "signal_count": 40, "batch_count": 4, "gold_count": 69,
+            "prediction_count": 67, "exact_match_count": 66,
+            "matched_count": 67, "span_f1": 0.9705882352941176,
+            "type_accuracy": 1.0,
+        }, "by_entity_type": {"workstream": {"span_f1": 1.0}}},
+        "negative_cleanliness": {"negative_signal_count": 20,
+            "clean_negative_signals": 20, "rate": 1.0},
+        "operational": {"structured_calls": 4, "provider_errors": 0},
+    }
+    receipt = {"status": "completed", "attempt": 1,
+        "frozen_corpus_sha256": "2" * 64, "report_sha256": "3" * 64}
+    return report, receipt
+
+
 def test_composes_normalized_reports_readiness_bindings_and_gaps() -> None:
     output = compose_objective_entity_evidence(
         v3=_v3(), vertical=_vertical(),
@@ -268,6 +289,44 @@ def test_composes_protocol_closure_as_separate_small_component() -> None:
     assert closure["exact_populations"]["negative_signals"] == 5
     assert closure["protocol"]["raw_output"] is True
     assert closure["blocker_verdict"] == "clear"
+
+
+def test_composes_broad_one_shot_without_erasing_historical_v3() -> None:
+    broad, receipt = _broad_extraction()
+    output = compose_objective_entity_evidence(
+        v3=_v3(), vertical=_vertical(), v3_artifact_sha256="b" * 64,
+        vertical_artifact_sha256="c" * 64, adversarial=_adversarial(),
+        adversarial_artifact_sha256="d" * 64,
+        boundary_type_closure=_boundary_type_closure(),
+        boundary_type_closure_artifact_sha256="f" * 64,
+        broad_extraction=broad, broad_extraction_artifact_sha256="3" * 64,
+        broad_extraction_receipt=receipt,
+        broad_extraction_receipt_sha256="4" * 64,
+    )
+
+    assert output["schema_version"] == "objective-entity-evidence-v5"
+    component = output["broad_extraction_generalization"]
+    assert component["overall_span_f1"] == 0.9705882352941176
+    assert component["workstream_span_f1"] == 1.0
+    assert component["does_not_erase"].endswith("f1_0.5")
+    assert "post_holdout_runtime_changes_require_new_disjoint_evidence" in " ".join(
+        component["proof_gaps"]
+    )
+
+
+def test_broad_receipt_must_bind_exact_report_digest() -> None:
+    broad, receipt = _broad_extraction()
+    receipt["report_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="does not bind report"):
+        compose_objective_entity_evidence(
+            v3=_v3(), vertical=_vertical(), v3_artifact_sha256="b" * 64,
+            vertical_artifact_sha256="c" * 64, adversarial=_adversarial(),
+            adversarial_artifact_sha256="d" * 64,
+            broad_extraction=broad,
+            broad_extraction_artifact_sha256="3" * 64,
+            broad_extraction_receipt=receipt,
+            broad_extraction_receipt_sha256="4" * 64,
+        )
 
 
 def test_fails_closed_when_vertical_lacks_exact_readiness_population() -> None:

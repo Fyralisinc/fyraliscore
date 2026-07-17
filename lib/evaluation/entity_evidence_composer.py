@@ -29,6 +29,7 @@ READINESS_INPUT_SCHEMA = "sealed-company-physics-readiness-evidence-v1"
 OUTPUT_SCHEMA = "objective-entity-evidence-v2"
 BOUNDARY_TYPE_SCHEMA = "objective-boundary-type-supplement-v1"
 BOUNDARY_TYPE_CLOSURE_SCHEMA = "boundary-type-untouched-holdout-v3"
+BROAD_EXTRACTION_SCHEMA = "learned-entity-discovery-quality-v4"
 _REQUIRED_POPULATIONS = frozenset({
     "pipeline.candidate_recall_at_3",
     "pipeline.canonical_link_coverage",
@@ -87,6 +88,10 @@ def compose_objective_entity_evidence(
     boundary_type_artifact_sha256: str | None = None,
     boundary_type_closure: Mapping[str, Any] | None = None,
     boundary_type_closure_artifact_sha256: str | None = None,
+    broad_extraction: Mapping[str, Any] | None = None,
+    broad_extraction_artifact_sha256: str | None = None,
+    broad_extraction_receipt: Mapping[str, Any] | None = None,
+    broad_extraction_receipt_sha256: str | None = None,
     thresholds: EntityReadinessThresholds | None = None,
 ) -> dict[str, Any]:
     """Validate, normalize and compose two already SHA-bound artifact objects."""
@@ -193,9 +198,20 @@ def compose_objective_entity_evidence(
         if boundary_type_closure_artifact_sha256 is None:
             raise ValueError("boundary/type closure requires artifact SHA")
         closure_component = _boundary_type_closure_component(boundary_type_closure)
+    broad_component = None
+    if broad_extraction is not None or broad_extraction_receipt is not None:
+        if not all((broad_extraction is not None, broad_extraction_artifact_sha256,
+                    broad_extraction_receipt is not None,
+                    broad_extraction_receipt_sha256)):
+            raise ValueError("broad extraction requires report and receipt with SHAs")
+        broad_component = _broad_extraction_component(
+            broad_extraction, broad_extraction_receipt,
+            report_sha256=broad_extraction_artifact_sha256,
+        )
     output: dict[str, Any] = {
         "schema_version": (
-            "objective-entity-evidence-v4" if closure_component
+            "objective-entity-evidence-v5" if broad_component
+            else "objective-entity-evidence-v4" if closure_component
             else "objective-entity-evidence-v3" if boundary_component else OUTPUT_SCHEMA
         ),
         "artifact_bindings": {
@@ -241,8 +257,87 @@ def compose_objective_entity_evidence(
             "schema": BOUNDARY_TYPE_CLOSURE_SCHEMA,
         }
         output["boundary_type_protocol_closure"] = closure_component
+    if broad_component is not None:
+        output["artifact_bindings"]["broad_extraction_holdout_v4"] = {
+            "artifact_sha256": broad_extraction_artifact_sha256,
+            "receipt_sha256": broad_extraction_receipt_sha256,
+            "corpus_sha256": broad_extraction.get("frozen_corpus_sha256"),
+            "schema": BROAD_EXTRACTION_SCHEMA,
+        }
+        output["broad_extraction_generalization"] = broad_component
+        output["proof_gaps"].extend(broad_component["proof_gaps"])
+        output["proof_gaps"] = sorted(set(output["proof_gaps"]))
     output["composition_sha256"] = sha256_bytes(canonical_json_bytes(output))
     return output
+
+
+def _broad_extraction_component(
+    report: Mapping[str, Any], receipt: Mapping[str, Any], *, report_sha256: str,
+) -> dict[str, Any]:
+    if report.get("schema_version") != BROAD_EXTRACTION_SCHEMA:
+        raise ValueError("unsupported broad extraction schema")
+    if report.get("evidence_class") != "precommitted_untouched_broad_holdout":
+        raise ValueError("broad extraction is not precommitted untouched evidence")
+    corpus_sha = report.get("frozen_corpus_sha256")
+    if not isinstance(corpus_sha, str) or len(corpus_sha) != 64:
+        raise ValueError("broad extraction lacks corpus digest")
+    if receipt.get("status") != "completed" or receipt.get("attempt") != 1:
+        raise ValueError("broad extraction receipt is not one-shot completed")
+    if receipt.get("report_sha256") != report_sha256:
+        raise ValueError("broad extraction receipt does not bind report")
+    if receipt.get("frozen_corpus_sha256") != corpus_sha:
+        raise ValueError("broad extraction receipt does not bind corpus")
+    if report.get("batch_only") is not True:
+        raise ValueError("broad extraction did not assert batch-only execution")
+    overall = _object(_object(report.get("metrics"), "broad metrics").get("overall"),
+                      "broad overall")
+    expected = {"signal_count": 40, "batch_count": 4, "gold_count": 69,
+                "prediction_count": 67, "exact_match_count": 66,
+                "matched_count": 67}
+    if any(overall.get(key) != value for key, value in expected.items()):
+        raise ValueError("broad extraction exact populations disagree")
+    if abs(float(overall.get("span_f1", -1)) - 0.9705882352941176) > 1e-12:
+        raise ValueError("broad extraction F1 mismatch")
+    if overall.get("type_accuracy") != 1.0:
+        raise ValueError("broad extraction type accuracy mismatch")
+    negative = _object(report.get("negative_cleanliness"), "broad negatives")
+    if negative.get("negative_signal_count") != 20 or negative.get(
+        "clean_negative_signals") != 20 or negative.get("rate") != 1.0:
+        raise ValueError("broad extraction negative population mismatch")
+    operational = _object(report.get("operational"), "broad operational")
+    if operational.get("structured_calls") != 4 or operational.get(
+        "provider_errors") != 0:
+        raise ValueError("broad extraction call/error contract mismatch")
+    workstream = _object(_object(report.get("metrics"), "broad metrics").get(
+        "by_entity_type"), "broad type strata").get("workstream")
+    if not isinstance(workstream, Mapping) or workstream.get("span_f1") != 1.0:
+        raise ValueError("broad extraction workstream correction not proven")
+    return {
+        "scope": "broad_literal_mention_and_role_type_generalization",
+        "does_not_erase": "historical_sealed_v3_workstream_f1_0.5",
+        "exact_populations": {**expected, "negative_signals": 20,
+                              "clean_negative_signals": 20},
+        "overall_span_f1": overall["span_f1"],
+        "type_accuracy": overall["type_accuracy"],
+        "negative_cleanliness": negative["rate"],
+        "workstream_span_f1": workstream["span_f1"],
+        "continuous_score": (
+            overall["span_f1"] + overall["type_accuracy"] + negative["rate"]
+        ) / 3,
+        "protocol": {"precommitted_commit": report.get("precommit_commit"),
+                     "pre_call_running_receipt": True, "raw_outputs": True,
+                     "per_batch_checkpoint": True, "run_attempts": 1,
+                     "batch_only": True,
+                     "runtime_source_digest_prebound": False},
+        "blocker_verdict": "clear", "blockers": [],
+        "proof_gaps": [
+            "broad_extraction_v4:no_canonical_alias_link_claim",
+            "broad_extraction_v4:no_implicit_reference_resolution_claim",
+            "broad_extraction_v4:bounded_synthetic_normalized_signals_not_open_world",
+            "broad_extraction_v4:post_holdout_runtime_changes_require_new_disjoint_evidence",
+            "broad_extraction_v4:pre_call_receipt_did_not_bind_runtime_source_digest",
+        ],
+    }
 
 
 def _boundary_type_closure_component(value: Mapping[str, Any]) -> dict[str, Any]:
