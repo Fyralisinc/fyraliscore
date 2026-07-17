@@ -55,7 +55,7 @@ INSERT INTO truth_repair_obligations (
   obligation_id, tenant_id, invalidated_model_version_id, affected_kind,
   affected_id, cause_code, status, created_at
 )
-SELECT gen_random_uuid(), evidence.tenant_id, $2, 'model_version',
+SELECT gen_random_uuid(), evidence.tenant_id, $2::uuid, 'model_version',
        evidence.model_version_id, 'support_version_invalidated', 'pending', $3
 FROM model_truth_evidence_references evidence
 JOIN model_truth_heads dependent_head
@@ -76,7 +76,7 @@ INSERT INTO truth_repair_obligations (
   obligation_id, tenant_id, invalidated_model_version_id, affected_kind,
   affected_id, cause_code, status, created_at
 )
-SELECT gen_random_uuid(), evidence.tenant_id, $2, 'relation_version',
+SELECT gen_random_uuid(), evidence.tenant_id, $2::uuid, 'relation_version',
        evidence.relation_version_id, 'relation_evidence_invalidated', 'pending', $3
 FROM relation_truth_evidence evidence
 JOIN relation_truth_heads relation_head
@@ -84,7 +84,7 @@ JOIN relation_truth_heads relation_head
  AND relation_head.relation_version_id = evidence.relation_version_id
  AND relation_head.lifecycle = 'active'
 WHERE evidence.tenant_id = $1
-  AND evidence.model_version_id = $2
+  AND evidence.model_version_id = $2::uuid
 ON CONFLICT (
   tenant_id, invalidated_model_version_id, affected_kind, affected_id, cause_code
 ) DO NOTHING
@@ -96,7 +96,7 @@ INSERT INTO truth_repair_obligations (
   obligation_id, tenant_id, invalidated_model_version_id, affected_kind,
   affected_id, cause_code, status, created_at
 )
-SELECT gen_random_uuid(), evidence.tenant_id, $2, 'projection', projection.id,
+SELECT gen_random_uuid(), evidence.tenant_id, $2::uuid, 'projection', projection.id,
        'relation_projection_invalidated', 'pending', $3
 FROM relation_truth_evidence evidence
 JOIN relation_truth_versions relation_version
@@ -107,7 +107,7 @@ JOIN relation_edge_projections projection
  AND projection.relation_id = relation_version.relation_id
  AND projection.status = 'active'
 WHERE evidence.tenant_id = $1
-  AND evidence.model_version_id = $2
+  AND evidence.model_version_id = $2::uuid
 ON CONFLICT (
   tenant_id, invalidated_model_version_id, affected_kind, affected_id, cause_code
 ) DO NOTHING
