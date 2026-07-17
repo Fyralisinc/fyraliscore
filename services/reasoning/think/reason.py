@@ -273,6 +273,7 @@ async def think(
                 started_at=started_at,
                 max_retrieval_reruns=max_retrieval_reruns,
                 usage_agg=usage_agg,
+                receipt_collector=receipt_collector,
             )
         except BaseException as exc:
             if receipt_collector is not None:
@@ -306,6 +307,7 @@ async def _execute_think_run(
     started_at: float,
     max_retrieval_reruns: int,
     usage_agg: LLMUsageAggregator | None,
+    receipt_collector: ThinkLLMReceiptCollector | None,
 ) -> ThinkRunOutcome:
     """Run Think to a terminal outcome while the caller owns telemetry scopes."""
 
@@ -331,6 +333,7 @@ async def _execute_think_run(
                     record=record,
                     expanded_region=expanded_region,
                     reason_cache=reason_cache,
+                    receipt_collector=receipt_collector,
                 )
             except OutOfRegionError as e:
                 rerun_count += 1
@@ -574,6 +577,7 @@ async def _run_think_attempt(
     record: ThinkRunRecord,
     expanded_region: set[tuple[str, str]] | None,
     reason_cache: dict[str, Any],
+    receipt_collector: ThinkLLMReceiptCollector | None,
 ) -> ThinkRunOutcome:
     use_wide_transaction = (
         is_authoritative(trigger) or not _narrow_inferential_transaction_enabled()
@@ -592,6 +596,7 @@ async def _run_think_attempt(
                     record=record,
                     expanded_region=expanded_region,
                     reason_cache=reason_cache,
+                    receipt_collector=receipt_collector,
                 )
         return await _run_once(
             conn=conn,
@@ -605,6 +610,7 @@ async def _run_think_attempt(
             expanded_region=expanded_region,
             read_pool=None if use_wide_transaction else pool,
             reason_cache=reason_cache,
+            receipt_collector=receipt_collector,
         )
 
 
@@ -2018,6 +2024,7 @@ async def _run_once(
     embedder: Any | None = None,
     read_pool: asyncpg.Pool | None = None,
     reason_cache: dict[str, Any] | None = None,
+    receipt_collector: ThinkLLMReceiptCollector | None = None,
 ) -> ThinkRunOutcome:
     """Run one Think attempt, opening only the short mutation transaction here."""
     trigger_kind_full = record.trigger_kind
@@ -2120,6 +2127,9 @@ async def _run_once(
         )
         record_stage_timing(stage_timings, "apply_and_adjudication", started)
         if skipped is not None:
+            await _persist_receipts_in_semantic_transaction(
+                conn, receipt_collector, skipped
+            )
             return skipped
         assert applied is not None
         started = time.perf_counter()
@@ -2158,7 +2168,7 @@ async def _run_once(
             started,
             anomaly_count=len(anomalies),
         )
-        return await _finalize_successful_run(
+        outcome = await _finalize_successful_run(
             conn=conn,
             trigger=trigger,
             record=record,
@@ -2172,6 +2182,23 @@ async def _run_once(
             acquisition=acquisition,
             stage_timings=stage_timings,
         )
+        await _persist_receipts_in_semantic_transaction(
+            conn, receipt_collector, outcome
+        )
+        return outcome
+
+
+async def _persist_receipts_in_semantic_transaction(
+    conn: asyncpg.Connection,
+    collector: ThinkLLMReceiptCollector | None,
+    outcome: ThinkRunOutcome,
+) -> None:
+    """Persist provider evidence before the semantic transaction commits."""
+
+    if collector is None or (not collector.logical_calls and not collector.attempts):
+        return
+    _set_receipt_terminal_outcomes(collector, outcome)
+    await collector.persist(conn)
 
 
 __all__ = [

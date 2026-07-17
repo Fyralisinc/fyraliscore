@@ -41,10 +41,25 @@ class _Transaction:
         return False
 
 
+class _RollbackTransaction:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        self.snapshot = list(self.conn.domain_effects)
+        return self
+
+    async def __aexit__(self, exc_type, *_: object):
+        if exc_type is not None:
+            self.conn.domain_effects[:] = self.snapshot
+        return False
+
+
 class _Connection:
     def __init__(self, *, reject: bool = False):
         self.reject = reject
         self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.domain_effects: list[str] = []
 
     def transaction(self):
         return _Transaction()
@@ -52,6 +67,11 @@ class _Connection:
     async def fetchval(self, sql: str, *args: object):
         self.calls.append((sql, args))
         return None if self.reject else args[1]
+
+
+class _RollbackConnection(_Connection):
+    def transaction(self):
+        return _RollbackTransaction(self)
 
 
 class _Pool:
@@ -221,3 +241,34 @@ def test_batch_identity_prefers_explicit_then_uses_batched_trigger_identity():
         TriggerContext(kind="T1", tenant_id=uuid4(), observation_id=uuid4()),
         trigger_id,
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_receipt_failure_rolls_back_the_surrounding_semantic_effects():
+    trigger = _trigger()
+    provider = _ScriptedProvider(['{"answer":"yes"}'])
+    collector = reason._new_receipt_collector(
+        trigger,
+        trigger_id=uuid4(),
+        run_id=uuid4(),
+        llm_provider=provider,
+    )
+    assert collector is not None
+    with collector.capture():
+        await provider.structured(system="system", user="user", schema=_Answer)
+    outcome = reason.ThinkRunOutcome(
+        run_id=collector.think_run_id,
+        trigger_id=collector.trigger_id,
+        trigger_kind="T4",
+        status="success",
+    )
+    conn = _RollbackConnection(reject=True)
+
+    with pytest.raises(ReceiptIntegrityError):
+        async with conn.transaction():
+            conn.domain_effects.append("canonical-model-write")
+            await reason._persist_receipts_in_semantic_transaction(
+                conn, collector, outcome
+            )
+
+    assert conn.domain_effects == []
