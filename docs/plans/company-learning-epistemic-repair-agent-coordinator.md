@@ -2,7 +2,7 @@
 
 **Document type:** Central implementation and evaluation coordinator
 
-**Status:** Proposed execution contract; implementation has not started
+**Status:** In execution — P0 complete; P1 in progress
 
 **Active branch:** `codex/autonomous-company-learning`
 
@@ -16,6 +16,21 @@
 
 **Reuse boundary:**
 [Autonomous Company-Learning Reuse Audit](autonomous-company-learning-reuse-audit.md)
+
+## Current execution checkpoint — 2026-07-17
+
+| Phase/package | State | Evidence |
+| --- | --- | --- |
+| P0 preregistration and baseline characterization | Complete | `779bfd10`, `420fb4f4` |
+| P1-A/P1-F hook quarantine and blind scan | Implemented; final integrated validation pending | focused quarantine tests |
+| P1-B/P1-E receipt schema, service persistence, cost basis | In progress | `27f320fc`; provider emission not yet committed |
+| P1-C unified retry ownership | In progress | deterministic compatibility validation running |
+| P1-D timing/cost reconciliation evaluator | Complete as deterministic evaluator | `353b1c24` |
+| P1 two-batch deterministic exit run | Not started | blocked on integrated P1 validation |
+
+The runtime is not yet entitled to claim complete wire-attempt observability:
+SDK retry suppression, one shared retry budget, Think-run persistence wiring,
+and deterministic whole-flow reconciliation must all pass first.
 
 ## 1. Purpose
 
