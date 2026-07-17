@@ -267,6 +267,8 @@ class AsyncpgTruthKernelStorage:
             {"id": str(binding.subject_id), "type": binding.subject_kind.value}
             for binding in version.scope if binding.role.value != "actor"
         ]
+        compatibility_proposition = dict(version.proposition)
+        compatibility_proposition.setdefault("kind", "belief")
         await tx.execute(
             """
             UPDATE models
@@ -282,7 +284,7 @@ class AsyncpgTruthKernelStorage:
                 archive_reason=CASE WHEN $16 THEN $18::text ELSE NULL END
             WHERE tenant_id=$1 AND id=$2
             """,
-            version.tenant_id, version.model_id, json.dumps(version.proposition),
+            version.tenant_id, version.model_id, json.dumps(compatibility_proposition),
             version.natural, version.confidence, observation_ids,
             json.dumps(version.falsifier) if version.falsifier is not None else None,
             version.evidential_weight, list(version.supporting_model_ids),

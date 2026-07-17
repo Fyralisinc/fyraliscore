@@ -84,6 +84,30 @@ _ALIASES = (
         "Cobalt renewal": "Indigo renewal",
         "Delta handoff": "Nova handoff",
     },
+    {
+        "Atlas release": "Harbor release",
+        "Beacon migration": "Copper migration",
+        "Cobalt renewal": "Mosaic renewal",
+        "Delta handoff": "Ember handoff",
+    },
+    {
+        "Atlas release": "Apex release",
+        "Beacon migration": "Willow migration",
+        "Cobalt renewal": "Kite renewal",
+        "Delta handoff": "Fjord handoff",
+    },
+    {
+        "Atlas release": "Cedar release",
+        "Beacon migration": "Prism migration",
+        "Cobalt renewal": "Lumen renewal",
+        "Delta handoff": "Tide handoff",
+    },
+    {
+        "Atlas release": "Vertex release",
+        "Beacon migration": "Grove migration",
+        "Cobalt renewal": "Sable renewal",
+        "Delta handoff": "Orbit handoff",
+    },
 )
 
 _FACETS = {
