@@ -69,3 +69,57 @@ def test_p9_verdict_precedence_is_constitutional_then_memory_then_ops(tmp_path: 
     report = build_release_report(release_commit=commit, worktree_clean=True, evidence=evidence)
     assert report["verdict"] == "safety_or_truth_blocked"
     assert report["verdict"] in ALLOWED_VERDICTS
+
+
+def test_p9_recomputes_semantic_and_operational_health_from_hard_gates(
+    tmp_path: Path,
+) -> None:
+    commit = "d" * 40
+    evidence = [
+        _artifact(tmp_path / f"{phase}.json", phase, commit)
+        for phase in (f"p{i}" for i in range(9))
+    ]
+    p6 = json.loads(evidence[6].path.read_text())
+    p6["hard_gates"] = {"mixed_stream_quality": False}
+    # A stale or dishonest summary flag must not override member evidence.
+    p6["phase_exit_ready"] = True
+    raw = json.dumps(p6, sort_keys=True).encode()
+    evidence[6].path.write_bytes(raw)
+    evidence[6] = PhaseEvidence("p6", evidence[6].path, sha256(raw).hexdigest())
+
+    report = build_release_report(
+        release_commit=commit,
+        worktree_clean=True,
+        evidence=evidence,
+    )
+
+    assert report["semantic_green"] is False
+    assert report["verdict"] == "mechanically_ready_semantically_insufficient"
+    assert report["completion_authorized"] is False
+
+
+def test_p9_rejects_historical_evidence_as_required_current_phase(
+    tmp_path: Path,
+) -> None:
+    commit = "e" * 40
+    evidence = [
+        _artifact(tmp_path / f"{phase}.json", phase, commit)
+        for phase in (f"p{i}" for i in range(9))
+    ]
+    p5 = evidence[5]
+    evidence[5] = PhaseEvidence(
+        p5.phase,
+        p5.path,
+        p5.expected_sha256,
+        evidence_class="historical_falsifying",
+    )
+
+    report = build_release_report(
+        release_commit=commit,
+        worktree_clean=True,
+        evidence=evidence,
+    )
+
+    assert report["evidence_complete"] is False
+    assert report["verdict"] == "insufficient_evidence"
+    assert report["completion_authorized"] is False

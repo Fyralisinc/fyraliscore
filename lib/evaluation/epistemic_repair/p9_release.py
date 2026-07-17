@@ -25,6 +25,7 @@ ALLOWED_VERDICTS = {
     "safety_or_truth_blocked",
     "insufficient_evidence",
 }
+CURRENT_EVIDENCE_CLASSES = {"integrated_current", "bounded_current"}
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,16 @@ def _hard_gate_values(artifact: Mapping[str, Any]) -> list[bool]:
         elif isinstance(value, Mapping) and isinstance(value.get("passed"), bool):
             values.append(bool(value["passed"]))
     return values
+
+
+def _record_green(record: Mapping[str, Any]) -> bool:
+    """Recompute phase health instead of trusting a summary-ready flag alone."""
+
+    return bool(
+        record.get("phase_ready")
+        and record.get("hard_gate_count", 0) > 0
+        and record.get("all_declared_hard_gates_green")
+    )
 
 
 def _phase_ready(phase: str, artifact: Mapping[str, Any]) -> bool:
@@ -164,21 +175,22 @@ def build_release_report(
             and record.get("digest_verified")
             and record.get("commit_matches")
             and record.get("continuous_metric_contract_complete")
+            and record.get("evidence_class") in CURRENT_EVIDENCE_CLASSES
             for record in records
         )
     )
     constitutional_phases = {"p0", "p1", "p2", "p3", "p4"}
     constitutional_green = all(
-        record.get("phase_ready") and record.get("all_declared_hard_gates_green")
+        _record_green(record)
         for record in records
         if record["phase"] in constitutional_phases
     ) and constitutional_phases <= set(artifacts)
     semantic_green = all(
-        next((r.get("phase_ready", False) for r in records if r["phase"] == phase), False)
+        next((_record_green(r) for r in records if r["phase"] == phase), False)
         for phase in ("p5", "p6")
     )
     operational_green = all(
-        next((r.get("phase_ready", False) for r in records if r["phase"] == phase), False)
+        next((_record_green(r) for r in records if r["phase"] == phase), False)
         for phase in ("p7", "p8")
     )
     p7 = artifacts.get("p7", {})
