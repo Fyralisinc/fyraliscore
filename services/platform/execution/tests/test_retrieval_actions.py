@@ -244,7 +244,7 @@ async def test_hybrid_sparse_model_scan_uses_supplied_active_sparse_model_count(
 
 
 @pytest.mark.asyncio
-async def test_cached_active_sparse_model_count_uses_models_not_sparse_distinct() -> None:
+async def test_cached_active_sparse_model_count_uses_accepted_heads_not_sparse_distinct() -> None:
     conn = _RecordingLookupConn(rows=[{"active_model_count": 42}])
     cache: dict[UUID, int] = {}
     tenant_id = uuid4()
@@ -259,14 +259,15 @@ async def test_cached_active_sparse_model_count_uses_models_not_sparse_distinct(
     assert cache[tenant_id] == 42
     assert len(conn.fetch_calls) == 1
     query, args = conn.fetch_calls[0]
-    assert "FROM models" in query
+    assert "FROM accepted_current_models" in query
+    assert "status = 'active'" not in query
     assert "COUNT(DISTINCT MODEL_ID)" not in query.upper()
     assert "FROM model_sparse_terms" not in query
     assert args == (tenant_id,)
 
 
 @pytest.mark.asyncio
-async def test_hybrid_sparse_model_scan_counts_models_not_sparse_distinct() -> None:
+async def test_hybrid_sparse_model_scan_counts_accepted_heads_not_sparse_distinct() -> None:
     conn = _RecordingLookupConn()
 
     hits = await retrieval_actions.hybrid_sparse_model_scan(
@@ -281,7 +282,7 @@ async def test_hybrid_sparse_model_scan_counts_models_not_sparse_distinct() -> N
     assert len(conn.fetch_calls) == 1
     query, _args = conn.fetch_calls[0]
     assert "active_models AS MATERIALIZED" in query
-    assert "FROM models" in query
+    assert "FROM accepted_current_models" in query
     assert "COUNT(DISTINCT MODEL_ID)" not in query.upper()
     assert "active_sparse_models" not in query
 
@@ -308,7 +309,9 @@ async def test_focused_scope_sparse_scan_bounds_scope_candidates_first() -> None
     assert "CROSS JOIN LATERAL" in query
     assert "WITH scoped_ids AS MATERIALIZED" in query
     assert "FROM model_scope_entities mse" in query
-    assert "JOIN models m" in query
+    assert "FROM accepted_current_models accepted" in query
+    assert "JOIN models legacy" in query
+    assert "FROM accepted_current_models\n          WHERE models." not in query
     assert "EXISTS (" not in query
     assert "ORDER BY m.activation DESC" in query
     assert "LIMIT $6" in query
@@ -372,7 +375,8 @@ async def test_focused_direct_scope_scan_bounds_scope_candidates() -> None:
     assert "CROSS JOIN LATERAL" in query
     assert "WITH scoped_ids AS MATERIALIZED" in query
     assert "FROM model_scope_entities mse" in query
-    assert "JOIN models m" in query
+    assert "FROM accepted_current_models accepted" in query
+    assert "JOIN models legacy" in query
     assert "EXISTS (" not in query
     assert "ORDER BY m.activation DESC" in query
     assert "LIMIT $5" in query
@@ -404,7 +408,8 @@ async def test_focused_answerability_scan_bounds_scope_overlap() -> None:
     assert "LIMIT $9" in query
     assert "stats.term_df <= $10" in query
     assert "FROM model_scope_entities mse" in query
-    assert "JOIN models m" in query
+    assert "FROM accepted_current_models accepted" in query
+    assert "JOIN models legacy" in query
     assert "EXISTS (" not in query
     assert "ORDER BY m.activation DESC" in query
     assert "LIMIT $8" in query

@@ -41,7 +41,7 @@ def _cfg(**overrides) -> OllamaConfig:
 async def test_embed_success():
     vec = [0.1] * EMBEDDING_DIM
     with respx.mock(base_url=BASE) as mock:
-        mock.post("/api/embeddings").respond(200, json={"embedding": vec})
+        mock.post("/api/embed").respond(200, json={"embeddings": [vec]})
         async with OllamaClient(_cfg()) as c:
             out = await c.embed("hello")
         assert out == vec
@@ -57,7 +57,7 @@ async def test_embed_rejects_non_str():
 
 async def test_embed_dimension_mismatch():
     with respx.mock(base_url=BASE) as mock:
-        mock.post("/api/embeddings").respond(200, json={"embedding": [0.0] * 512})
+        mock.post("/api/embed").respond(200, json={"embeddings": [[0.0] * 512]})
         async with OllamaClient(_cfg()) as c:
             with pytest.raises(OllamaDimensionMismatch) as exc:
                 await c.embed("x")
@@ -67,7 +67,7 @@ async def test_embed_dimension_mismatch():
 
 async def test_embed_missing_embedding_field():
     with respx.mock(base_url=BASE) as mock:
-        mock.post("/api/embeddings").respond(200, json={"wrong": "payload"})
+        mock.post("/api/embed").respond(200, json={"wrong": "payload"})
         async with OllamaClient(_cfg()) as c:
             with pytest.raises(OllamaError):
                 await c.embed("x")
@@ -76,11 +76,11 @@ async def test_embed_missing_embedding_field():
 async def test_embed_retries_on_5xx_and_succeeds():
     good = [0.0] * EMBEDDING_DIM
     with respx.mock(base_url=BASE) as mock:
-        route = mock.post("/api/embeddings")
+        route = mock.post("/api/embed")
         route.side_effect = [
             httpx.Response(500, text="boom"),
             httpx.Response(502, text="boom"),
-            httpx.Response(200, json={"embedding": good}),
+            httpx.Response(200, json={"embeddings": [good]}),
         ]
         async with OllamaClient(_cfg(max_retries=3)) as c:
             out = await c.embed("x")
@@ -90,7 +90,7 @@ async def test_embed_retries_on_5xx_and_succeeds():
 
 async def test_embed_gives_up_after_max_retries():
     with respx.mock(base_url=BASE) as mock:
-        route = mock.post("/api/embeddings")
+        route = mock.post("/api/embed")
         route.side_effect = [httpx.Response(503) for _ in range(5)]
         async with OllamaClient(_cfg(max_retries=3)) as c:
             with pytest.raises(OllamaError):
@@ -100,7 +100,7 @@ async def test_embed_gives_up_after_max_retries():
 
 async def test_embed_does_not_retry_4xx():
     with respx.mock(base_url=BASE) as mock:
-        route = mock.post("/api/embeddings").respond(400, text="bad")
+        route = mock.post("/api/embed").respond(400, text="bad")
         async with OllamaClient(_cfg(max_retries=5)) as c:
             with pytest.raises(OllamaError) as exc:
                 await c.embed("x")
@@ -108,12 +108,55 @@ async def test_embed_does_not_retry_4xx():
         assert route.call_count == 1
 
 
+async def test_embed_falls_back_once_when_modern_endpoint_is_missing():
+    vector = [0.25] * EMBEDDING_DIM
+    with respx.mock(base_url=BASE) as mock:
+        modern = mock.post("/api/embed").respond(404, text="not found")
+        legacy = mock.post("/api/embeddings").respond(
+            200, json={"embedding": vector}
+        )
+        async with OllamaClient(_cfg(max_retries=5)) as client:
+            assert await client.embed("legacy server") == vector
+        assert modern.call_count == 1
+        assert legacy.call_count == 1
+
+
+async def test_embed_does_not_fallback_for_non_404_modern_4xx():
+    with respx.mock(base_url=BASE, assert_all_called=False) as mock:
+        modern = mock.post("/api/embed").respond(422, text="bad input")
+        legacy = mock.post("/api/embeddings").respond(
+            200, json={"embedding": [0.0] * EMBEDDING_DIM}
+        )
+        async with OllamaClient(_cfg(max_retries=5)) as client:
+            with pytest.raises(OllamaError) as exc:
+                await client.embed("bad")
+        assert exc.value.context["status"] == 422
+        assert modern.call_count == 1
+        assert legacy.call_count == 0
+
+
+async def test_embed_does_not_treat_missing_model_404_as_missing_endpoint():
+    with respx.mock(base_url=BASE, assert_all_called=False) as mock:
+        modern = mock.post("/api/embed").respond(
+            404, text='{"error":"model missing, try pulling it first"}'
+        )
+        legacy = mock.post("/api/embeddings").respond(
+            200, json={"embedding": [0.0] * EMBEDDING_DIM}
+        )
+        async with OllamaClient(_cfg(max_retries=5)) as client:
+            with pytest.raises(OllamaError) as exc:
+                await client.embed("bad model")
+        assert exc.value.context["status"] == 404
+        assert modern.call_count == 1
+        assert legacy.call_count == 0
+
+
 async def test_embed_retries_on_connect_error():
     with respx.mock(base_url=BASE) as mock:
-        route = mock.post("/api/embeddings")
+        route = mock.post("/api/embed")
         route.side_effect = [
             httpx.ConnectError("refused"),
-            httpx.Response(200, json={"embedding": [0.0] * EMBEDDING_DIM}),
+            httpx.Response(200, json={"embeddings": [[0.0] * EMBEDDING_DIM]}),
         ]
         async with OllamaClient(_cfg(max_retries=3)) as c:
             out = await c.embed("x")
@@ -124,12 +167,12 @@ async def test_embed_batch_returns_ordered_vectors():
     vecs = [[float(i)] * EMBEDDING_DIM for i in range(3)]
     call_idx = {"n": 0}
     with respx.mock(base_url=BASE) as mock:
-        route = mock.post("/api/embeddings")
+        route = mock.post("/api/embed")
 
         def _side(request: httpx.Request) -> httpx.Response:
             idx = call_idx["n"]
             call_idx["n"] += 1
-            return httpx.Response(200, json={"embedding": vecs[idx]})
+            return httpx.Response(200, json={"embeddings": [vecs[idx]]})
 
         route.side_effect = _side
 
@@ -147,7 +190,7 @@ async def test_embed_batch_empty():
 
 async def test_embed_returns_floats_not_ints():
     with respx.mock(base_url=BASE) as mock:
-        mock.post("/api/embeddings").respond(200, json={"embedding": [1] * EMBEDDING_DIM})
+        mock.post("/api/embed").respond(200, json={"embeddings": [[1] * EMBEDDING_DIM]})
         async with OllamaClient(_cfg()) as c:
             out = await c.embed("x")
         assert all(isinstance(v, float) for v in out)
@@ -155,7 +198,7 @@ async def test_embed_returns_floats_not_ints():
 
 async def test_embed_non_json_body_raises():
     with respx.mock(base_url=BASE) as mock:
-        mock.post("/api/embeddings").respond(200, text="not json")
+        mock.post("/api/embed").respond(200, text="not json")
         async with OllamaClient(_cfg()) as c:
             with pytest.raises(OllamaError):
                 await c.embed("x")

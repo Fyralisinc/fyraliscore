@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
 from services.reasoning.sage.health import build_sage_health_report
+
+
+async def test_accepted_current_model_health_read_does_not_require_legacy_status() -> None:
+    source = Path("services/reasoning/sage/health.py").read_text()
+    accepted_read = source.split("FROM accepted_current_models m", 1)[1].split(
+        '"""', 1
+    )[0]
+    assert "m.status" not in accepted_read
 
 
 pytestmark = pytest.mark.asyncio
@@ -18,7 +27,7 @@ class _HealthReportConn:
             return table_name if table_name in self.present_tables else None
         if "LEFT JOIN model_structural_features" in query:
             return 1
-        if "FROM models" in query and "status = 'active'" in query:
+        if "FROM accepted_current_models" in query and "LEFT JOIN" not in query:
             return 4
         if "count(DISTINCT e.inquiry_session_id)" in query:
             return 2

@@ -1,5 +1,5 @@
 """
-lib/embeddings/ollama.py — async client for Ollama /api/embeddings.
+lib/embeddings/ollama.py — async client for Ollama /api/embed.
 
 Spec §23: Ollama is the local, private embedding service. Default
 model is `nomic-embed-text` (v1.5 is what we pin here) producing
@@ -29,7 +29,7 @@ from lib.observability import counter, histogram
 
 
 EMBEDDING_DIM = 768  # SCHEMA-LOCK.md S1.1 / S2.1 / S6.1 — VECTOR(768)
-DEFAULT_MODEL = "nomic-embed-text"
+DEFAULT_MODEL = "nomic-embed-text:v1.5"
 
 
 # ---------------------------------------------------------------------
@@ -139,11 +139,33 @@ class OllamaClient:
         """
         if not isinstance(text, str):
             raise TypeError(f"text must be str, got {type(text).__name__}")
-        body = {"model": self.config.model, "prompt": text}
-        payload = await self._post_with_retry("/api/embeddings", body)
-        vec = payload.get("embedding")
+        try:
+            payload = await self._post_with_retry(
+                "/api/embed", {"model": self.config.model, "input": text}
+            )
+            embeddings = payload.get("embeddings")
+            vec = embeddings[0] if (
+                isinstance(embeddings, list)
+                and len(embeddings) == 1
+                and isinstance(embeddings[0], list)
+            ) else None
+        except OllamaError as exc:
+            # A precise endpoint 404 permits one bounded compatibility call to
+            # old Ollama. Other 4xx and exhausted transient failures remain loud.
+            error_body = str(exc.context.get("body") or "").casefold()
+            if (
+                exc.context.get("status") != 404
+                or "model" in error_body
+                or "pulling it first" in error_body
+            ):
+                raise
+            payload = await self._post_with_retry(
+                "/api/embeddings", {"model": self.config.model, "prompt": text},
+                operation="embed_legacy_fallback",
+            )
+            vec = payload.get("embedding")
         if not isinstance(vec, list) or not all(isinstance(x, (int, float)) for x in vec):
-            raise OllamaError("Ollama response missing 'embedding' list", body=payload)
+            raise OllamaError("Ollama response missing one embedding vector", body=payload)
         if len(vec) != self.config.expected_dim:
             _DIM_MISMATCH.inc(model=self.config.model)
             raise OllamaDimensionMismatch(
@@ -157,9 +179,9 @@ class OllamaClient:
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """
-        Embed many strings. Ollama's /api/embeddings endpoint is
-        single-input, so this is a concurrent fan-out (bounded by
-        Ollama's own queueing, not by us).
+        Embed many strings as an order-preserving concurrent fan-out. Keeping
+        one text per request gives modern and legacy endpoints identical
+        validation and bounded fallback behavior.
         """
         if not texts:
             return []

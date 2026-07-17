@@ -601,7 +601,6 @@ async def _grounding_correction_revalidation_ops(
               JOIN accepted_current_models supporter
                 ON supporter.tenant_id=edge.tenant_id
                AND supporter.id=edge.source_model_id
-               AND supporter.status='active'
               WHERE edge.tenant_id=$1
                 AND edge.target_model_id=$2
                 AND edge.source_model_id<>$3

@@ -79,8 +79,8 @@ async def test_successful_embed_bumps_requests_total_ok():
     before_count = _duration().get_count(**ok_labels)
 
     with respx.mock(base_url=BASE) as mock:
-        mock.post("/api/embeddings").respond(
-            200, json={"embedding": [0.1] * EMBEDDING_DIM}
+        mock.post("/api/embed").respond(
+            200, json={"embeddings": [[0.1] * EMBEDDING_DIM]}
         )
         async with OllamaClient(_cfg()) as c:
             out = await c.embed("hello")
@@ -100,10 +100,10 @@ async def test_5xx_then_200_bumps_retries_total():
     before_5xx = _requests().get(**err_labels)
 
     with respx.mock(base_url=BASE) as mock:
-        route = mock.post("/api/embeddings")
+        route = mock.post("/api/embed")
         route.side_effect = [
             httpx.Response(500, text="boom"),
-            httpx.Response(200, json={"embedding": [0.0] * EMBEDDING_DIM}),
+            httpx.Response(200, json={"embeddings": [[0.0] * EMBEDDING_DIM]}),
         ]
         async with OllamaClient(_cfg(max_retries=3)) as c:
             out = await c.embed("x")
@@ -120,8 +120,8 @@ async def test_dimension_mismatch_raises_and_bumps_counter():
     before = _mismatches().get(model=MODEL)
 
     with respx.mock(base_url=BASE) as mock:
-        mock.post("/api/embeddings").respond(
-            200, json={"embedding": [0.0] * 512}
+        mock.post("/api/embed").respond(
+            200, json={"embeddings": [[0.0] * 512]}
         )
         async with OllamaClient(_cfg()) as c:
             with pytest.raises(OllamaDimensionMismatch):

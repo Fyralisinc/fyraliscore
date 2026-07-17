@@ -10,6 +10,7 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.types import ModelRow
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 from services.domain.models.repo import ModelsRepo
 from services.reasoning.retrieval.pathways import (
     ModelCandidateHit,
@@ -44,6 +45,7 @@ from .types import RetrievalAction
 
 _LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS = 1500
 _ANSWERABILITY_TERM_DF_PROBE_CAP = 1024
+_ACCEPTED_MODEL_ROWS_SQL = ACCEPTED_MODEL_ROWS_SQL
 
 
 def _answerability_max_term_df(limit: int) -> int:
@@ -338,7 +340,7 @@ async def focused_answerability_index_scan(
     max_term_df = _answerability_max_term_df(limit)
     rows = await fetch_bounded_lookup_rows(
         conn,
-        """
+        f"""
         WITH raw_group_tokens AS MATERIALIZED (
           SELECT g.group_ord::int,
                  token.value::text AS term
@@ -446,7 +448,7 @@ async def focused_answerability_index_scan(
             )
             SELECT scoped_ids.model_id
             FROM scoped_ids
-            JOIN accepted_current_models m
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
               ON m.id = scoped_ids.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -471,7 +473,7 @@ async def focused_answerability_index_scan(
           SELECT models.id,
                  models.activation,
                  models.created_at
-          FROM accepted_current_models
+          FROM {_ACCEPTED_MODEL_ROWS_SQL} AS models
           WHERE models.id = scored.model_id
             AND models.tenant_id = $1
             AND models.status = 'active'
@@ -535,7 +537,7 @@ async def focused_scope_sparse_scan(
     scope_pool_limit = max(240, min(960, max(1, int(limit)) * 20))
     rows = await fetch_bounded_lookup_rows(
         conn,
-        """
+        f"""
         WITH group_tokens AS MATERIALIZED (
           SELECT g.group_ord::int,
                  token.value::text AS term
@@ -564,7 +566,7 @@ async def focused_scope_sparse_scan(
             )
             SELECT scoped_ids.model_id
             FROM scoped_ids
-            JOIN accepted_current_models m
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
               ON m.id = scoped_ids.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -586,7 +588,7 @@ async def focused_scope_sparse_scan(
                  m.activation,
                  m.created_at
           FROM scope_overlap
-          JOIN accepted_current_models m
+          JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
             ON m.id = scope_overlap.model_id
            AND m.tenant_id = $1
            AND m.status = 'active'
@@ -632,7 +634,7 @@ async def focused_scope_sparse_scan(
         FROM lexical_scored
         JOIN scope_pool
           ON scope_pool.model_id = lexical_scored.model_id
-        JOIN accepted_current_models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = lexical_scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -681,7 +683,7 @@ async def focused_direct_scope_scan(
     per_scope_limit = max(24, min(240, max(1, int(limit)) * 16))
     rows = await fetch_bounded_lookup_rows(
         conn,
-        """
+        f"""
         WITH scope_candidates AS MATERIALIZED (
           SELECT hit.model_id,
                  seed.seed_ord::int AS seed_ord
@@ -697,7 +699,7 @@ async def focused_direct_scope_scan(
             )
             SELECT scoped_ids.model_id
             FROM scoped_ids
-            JOIN accepted_current_models m
+            JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
               ON m.id = scoped_ids.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -716,7 +718,7 @@ async def focused_direct_scope_scan(
         SELECT m.id,
                scope_overlap.overlap::int AS scope_overlap
         FROM scope_overlap
-        JOIN accepted_current_models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = scope_overlap.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -1610,11 +1612,10 @@ async def _cached_active_sparse_model_count(
         return None
     rows = await fetch_bounded_lookup_rows(
         conn,
-        """
+        f"""
         SELECT greatest(1, count(*)::int) AS active_model_count
         FROM accepted_current_models
         WHERE tenant_id = $1
-          AND status = 'active'
         """,
         tenant_id,
         label="hybrid_sparse_active_model_count",
@@ -1912,7 +1913,7 @@ async def hybrid_lexical_model_scan(
         return []
     rows = await fetch_bounded_lookup_rows(
         conn,
-        """
+        f"""
         WITH patterns AS (
           SELECT pattern, ord
           FROM unnest($3::text[]) WITH ORDINALITY AS p(pattern, ord)
@@ -1941,7 +1942,7 @@ async def hybrid_lexical_model_scan(
         SELECT m.id,
                scored.match_count
         FROM scored
-        JOIN accepted_current_models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -2000,7 +2001,6 @@ async def hybrid_sparse_model_scan(
           SELECT greatest(1, count(*)::int)::float8 AS active_model_count
           FROM accepted_current_models
           WHERE tenant_id = $1
-            AND status = 'active'
         ),
         """
     )
@@ -2078,7 +2078,7 @@ async def hybrid_sparse_model_scan(
                scored.match_count
         FROM scored
         CROSS JOIN query_meta
-        JOIN accepted_current_models m
+        JOIN {_ACCEPTED_MODEL_ROWS_SQL} AS m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'

@@ -86,7 +86,6 @@ async def _count_active_models(conn: asyncpg.Connection, tenant_id: UUID) -> int
         SELECT count(*)
         FROM accepted_current_models
         WHERE tenant_id = $1
-          AND status = 'active'
         """,
         tenant_id,
     )
@@ -172,7 +171,6 @@ async def _load_structural_feature_stats(
           ON f.model_id = m.id
          AND f.tenant_id = m.tenant_id
         WHERE m.tenant_id = $1
-          AND m.status = 'active'
           AND (
             f.model_id IS NULL
             OR f.updated_at < now() - (($2::text)::interval)
