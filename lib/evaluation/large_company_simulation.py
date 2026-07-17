@@ -344,7 +344,8 @@ def _objective_entity_quality(
     if not evidence:
         return None, 0.0, {}
     if evidence.get("schema_version") not in {
-        "objective-entity-evidence-v1", "objective-entity-evidence-v2"
+        "objective-entity-evidence-v1", "objective-entity-evidence-v2",
+        "objective-entity-evidence-v3",
     }:
         gaps.append("Objective entity evidence has an unsupported schema version.")
         return None, 0.0, {}
@@ -399,7 +400,9 @@ def _objective_entity_quality(
             pipeline_overall.get("unlineaged_active_relation_rate")
         ),
     }
-    if evidence.get("schema_version") == "objective-entity-evidence-v2":
+    if evidence.get("schema_version") in {
+        "objective-entity-evidence-v2", "objective-entity-evidence-v3"
+    }:
         readiness = _object(evidence.get("readiness"))
         readiness_components = _object(readiness.get("component_scores"))
         components.update({
@@ -416,6 +419,11 @@ def _objective_entity_quality(
                 readiness_components.get("open_world_safety")
             ),
         })
+    if evidence.get("schema_version") == "objective-entity-evidence-v3":
+        boundary_type = _object(evidence.get("boundary_type_exceptional"))
+        components["boundary_type_exceptional"] = _optional_ratio(
+            boundary_type.get("continuous_score")
+        )
     observed = [value for value in components.values() if value is not None]
     coverage = len(observed) / len(components)
     if components["canonical_link_accuracy"] is None or components[
@@ -437,7 +445,9 @@ def _objective_entity_quality(
         f"Objective entity evidence: {item}"
         for item in _strings(evidence.get("proof_gaps"))
     )
-    if evidence.get("schema_version") == "objective-entity-evidence-v2":
+    if evidence.get("schema_version") in {
+        "objective-entity-evidence-v2", "objective-entity-evidence-v3"
+    }:
         adversarial = _object(evidence.get("adversarial_company_physics"))
         population = _object(adversarial.get("population"))
         attempts = population.get("adversarial_relation_attempts")

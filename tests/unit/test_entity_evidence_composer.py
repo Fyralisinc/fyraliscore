@@ -179,6 +179,28 @@ def _adversarial(*, unsafe: bool = False, base: dict | None = None) -> dict:
     return result
 
 
+def _boundary_type() -> dict:
+    return {
+        "schema_version": "objective-boundary-type-supplement-v1",
+        "evidence_class": "sealed_untouched_holdout_supplemental",
+        "report_sha256": "e" * 64,
+        "corpus_sha256": "f" * 64,
+        "exact_populations": {
+            "signals": 30, "batches": 3, "gold_mentions": 31,
+            "predictions": 32, "exact_matches": 31,
+            "negative_signals": 15, "clean_negative_signals": 14,
+        },
+        "metrics": {"overall_span_f1": 0.9841269841269841,
+            "type_accuracy": 1.0, "worst_type": "resource",
+            "worst_type_span_f1": 0.888888888888889},
+        "false_positive_negative_control": {
+            "count": 1, "surface": "request AB-22"},
+        "receipt_auditability": {
+            "pre_call_running_receipt_present": False,
+            "raw_provider_output_present": False},
+    }
+
+
 def test_composes_normalized_reports_readiness_bindings_and_gaps() -> None:
     output = compose_objective_entity_evidence(
         v3=_v3(), vertical=_vertical(),
@@ -201,6 +223,25 @@ def test_composes_normalized_reports_readiness_bindings_and_gaps() -> None:
         "proof_gaps"
     ]
     assert len(output["composition_sha256"]) == 64
+
+
+def test_composes_supplement_without_overwriting_broader_v3() -> None:
+    output = compose_objective_entity_evidence(
+        v3=_v3(), vertical=_vertical(), v3_artifact_sha256="b" * 64,
+        vertical_artifact_sha256="c" * 64, adversarial=_adversarial(),
+        adversarial_artifact_sha256="d" * 64,
+        boundary_type=_boundary_type(), boundary_type_artifact_sha256="e" * 64,
+    )
+
+    assert output["schema_version"] == "objective-entity-evidence-v3"
+    supplement = output["boundary_type_exceptional"]
+    assert supplement["does_not_replace"] == "sealed_v3_broader_extraction"
+    assert supplement["historical_v3_workstream_span_f1"] == 0.5
+    assert supplement["exact_populations"]["negative_signals"] == 15
+    assert supplement["false_positive_negative_control"]["count"] == 1
+    assert supplement["blocker_verdict"] == "unknown"
+    assert len(supplement["blockers"]) == 2
+    assert output["per_type_extraction"]["customer"]["gold_count"] == 10
 
 
 def test_fails_closed_when_vertical_lacks_exact_readiness_population() -> None:

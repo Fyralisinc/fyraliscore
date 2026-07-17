@@ -763,6 +763,14 @@ transport are excluded from this goal.
   attributable; malformed-sibling isolation remains regression tested; and a
   future prompt change addresses workstream boundaries on development data and
   earns new sealed evidence rather than rescoring/rerunning v3.
+- **Supplemental v2 evidence:** A separate untouched boundary/type holdout now
+  reports exact F1 `0.984127` over 31 gold mentions and worst-type resource F1
+  `0.888889`. It is additive evidence, not a v3 rescore: v3 workstream F1 stays
+  `0.5`. One of 15 negative signals admitted `request AB-22` as a resource, and
+  the executed artifact lacks raw provider output and a pre-call running
+  receipt. Objective readiness therefore records narrow exceptional quality,
+  below-budget negative cleanliness (`14/15`) and unknown auditability blockers
+  simultaneously.
 
 ### EDGE-035 — High-confidence wrong type can drive consequential admission
 

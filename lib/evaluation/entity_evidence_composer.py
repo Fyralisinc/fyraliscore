@@ -27,6 +27,7 @@ VERTICAL_SCHEMA = "sealed-company-physics-objective-v1"
 ADVERSARIAL_SCHEMA = "sealed-company-physics-adversarial-objective-v2"
 READINESS_INPUT_SCHEMA = "sealed-company-physics-readiness-evidence-v1"
 OUTPUT_SCHEMA = "objective-entity-evidence-v2"
+BOUNDARY_TYPE_SCHEMA = "objective-boundary-type-supplement-v1"
 _REQUIRED_POPULATIONS = frozenset({
     "pipeline.candidate_recall_at_3",
     "pipeline.canonical_link_coverage",
@@ -81,6 +82,8 @@ def compose_objective_entity_evidence(
     vertical_artifact_sha256: str,
     adversarial: Mapping[str, Any],
     adversarial_artifact_sha256: str,
+    boundary_type: Mapping[str, Any] | None = None,
+    boundary_type_artifact_sha256: str | None = None,
     thresholds: EntityReadinessThresholds | None = None,
 ) -> dict[str, Any]:
     """Validate, normalize and compose two already SHA-bound artifact objects."""
@@ -176,8 +179,16 @@ def compose_objective_entity_evidence(
             "does_not_establish_company_scale_generalization"
         ]
     ))
+    boundary_component = None
+    if boundary_type is not None:
+        if boundary_type_artifact_sha256 is None:
+            raise ValueError("boundary/type supplement requires artifact SHA")
+        boundary_component = _boundary_type_component(boundary_type)
+        proof_gaps.extend(boundary_component["proof_gaps"])
     output: dict[str, Any] = {
-        "schema_version": OUTPUT_SCHEMA,
+        "schema_version": (
+            "objective-entity-evidence-v3" if boundary_component else OUTPUT_SCHEMA
+        ),
         "artifact_bindings": {
             "sealed_v3": {
                 "artifact_sha256": v3_artifact_sha256,
@@ -206,8 +217,75 @@ def compose_objective_entity_evidence(
         "adversarial_company_physics": dict(adversarial),
         "proof_gaps": proof_gaps,
     }
+    if boundary_component is not None:
+        output["artifact_bindings"]["boundary_type_holdout_v2"] = {
+            "artifact_sha256": boundary_type_artifact_sha256,
+            "report_sha256": boundary_type.get("report_sha256"),
+            "corpus_sha256": boundary_type.get("corpus_sha256"),
+            "schema": BOUNDARY_TYPE_SCHEMA,
+        }
+        output["boundary_type_exceptional"] = boundary_component
     output["composition_sha256"] = sha256_bytes(canonical_json_bytes(output))
     return output
+
+
+def _boundary_type_component(value: Mapping[str, Any]) -> dict[str, Any]:
+    if value.get("schema_version") != BOUNDARY_TYPE_SCHEMA:
+        raise ValueError("unsupported boundary/type supplement schema")
+    if value.get("evidence_class") != "sealed_untouched_holdout_supplemental":
+        raise ValueError("boundary/type supplement is not untouched evidence")
+    populations = _object(value.get("exact_populations"), "boundary/type populations")
+    expected = {
+        "signals": 30, "batches": 3, "gold_mentions": 31,
+        "predictions": 32, "exact_matches": 31,
+        "negative_signals": 15, "clean_negative_signals": 14,
+    }
+    if populations != expected:
+        raise ValueError("boundary/type exact populations disagree with sealed v2")
+    metrics = _object(value.get("metrics"), "boundary/type metrics")
+    if abs(float(metrics.get("overall_span_f1", -1)) - 0.9841269841269841) > 1e-12:
+        raise ValueError("boundary/type overall F1 mismatch")
+    if abs(float(metrics.get("worst_type_span_f1", -1)) - 0.888888888888889) > 1e-12:
+        raise ValueError("boundary/type worst-type F1 mismatch")
+    if metrics.get("worst_type") != "resource":
+        raise ValueError("boundary/type worst type mismatch")
+    false_positive = _object(value.get("false_positive_negative_control"), "false positive")
+    if false_positive.get("count") != 1 or false_positive.get("surface") != "request AB-22":
+        raise ValueError("boundary/type false-positive control mismatch")
+    audit = _object(value.get("receipt_auditability"), "boundary/type auditability")
+    gaps = []
+    blockers = []
+    for code, present in (
+        ("pre_call_running_receipt_missing", audit.get("pre_call_running_receipt_present")),
+        ("raw_provider_output_missing", audit.get("raw_provider_output_present")),
+    ):
+        if present is not False:
+            raise ValueError(f"boundary/type audit fact must explicitly be false: {code}")
+        blockers.append({"code": code, "status": "unknown", "observed_count": None})
+        gaps.append(f"boundary_type_holdout_v2:{code}")
+    negative_rate = 14 / 15
+    measurements = [
+        {"name": "boundary_type.overall_span_f1", "value": metrics["overall_span_f1"],
+         "threshold": 0.90, "status": "meets", "continuous_score": 1.0},
+        {"name": "boundary_type.worst_type_span_f1", "value": metrics["worst_type_span_f1"],
+         "threshold": 0.80, "status": "meets", "continuous_score": 1.0},
+        {"name": "boundary_type.negative_cleanliness", "value": negative_rate,
+         "threshold": 0.98, "status": "below_budget",
+         "continuous_score": negative_rate / 0.98},
+    ]
+    return {
+        "scope": "supplemental_full_boundary_and_code_type_ambiguity",
+        "does_not_replace": "sealed_v3_broader_extraction",
+        "historical_v3_workstream_span_f1": 0.5,
+        "exact_populations": populations,
+        "metrics": metrics,
+        "false_positive_negative_control": false_positive,
+        "measurements": measurements,
+        "continuous_score": sum(row["continuous_score"] for row in measurements) / 3,
+        "blockers": blockers,
+        "blocker_verdict": "unknown",
+        "proof_gaps": gaps,
+    }
 
 
 def write_atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
