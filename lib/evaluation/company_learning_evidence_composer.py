@@ -212,14 +212,35 @@ def _normalize_component(name: str, payload: Mapping[str, Any]) -> dict[str, Any
                       "useful_pairs": validated.report.useful_pair_count,
                       "safety_pairs": validated.report.safety_pair_count}
     elif name == "source_equivalence":
-        if payload.get("schema_version") == "bounded-source-equivalence-objective-v1":
+        is_db_objective = payload.get("schema_version") == "source-equivalence-db-objective-v1"
+        if payload.get("schema_version") in {
+            "bounded-source-equivalence-objective-v1",
+            "source-equivalence-db-objective-v1",
+        }:
             _verify_objective(payload, "source equivalence")
             internal_digest = str(payload.get("objective_sha256"))
             report = _object(payload.get("evaluation"), "source equivalence evaluation")
         else:
             _schema(payload, "normalized-source-equivalence-evaluation-v1")
             report = payload
-        population = dict(_object(payload.get("population"), "source population"))
+        report = dict(report)
+        checks = dict(_object(report.get("checks"), "source equivalence checks"))
+        relation_path = payload.get("relation_path")
+        population_payload = _object(payload.get("population"), "source population")
+        production_relation_path_exercised = bool(
+            is_db_objective
+            and isinstance(relation_path, Mapping)
+            and int(relation_path.get("accepted_edges") or 0)
+            == int(population_payload.get("sources") or 0)
+            and checks.get("relation_outcomes_exposed") is True
+        )
+        checks["production_relation_path_exercised"] = production_relation_path_exercised
+        report["checks"] = checks
+        if not production_relation_path_exercised:
+            report["verdict"] = "below_policy"
+        if payload.get("proof_boundary") is not None:
+            report["proof_boundary"] = payload["proof_boundary"]
+        population = dict(population_payload)
     elif name == "correction_homeostasis":
         _schema(payload, "correction-homeostasis-db-objective-v1")
         _verify_objective(payload, "correction-homeostasis")
@@ -243,8 +264,11 @@ def _blockers(name: str, report: Mapping[str, Any]) -> list[str]:
     names = {
         "retrieval_evolution": ("late_raw_reopening_is_justified",),
         "company_model_ablation": ("no_learned_safety_incident",),
-        "source_equivalence": ("source_authority_preserved", "source_coordinates_preserved",
-                               "conversational_boundaries_preserved", "learning_outcomes_are_lineaged"),
+        "source_equivalence": (
+            "source_authority_preserved", "source_coordinates_preserved",
+            "conversational_boundaries_preserved", "learning_outcomes_are_lineaged",
+            "relation_outcomes_exposed", "production_relation_path_exercised",
+        ),
         "correction_homeostasis": ("unsafe_reads_contained", "replay_is_idempotent",
                                    "restart_preserves_state", "deep_cascade_is_complete_and_cycle_safe"),
     }.get(name, ())

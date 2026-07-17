@@ -72,6 +72,21 @@ def _source():
             "continuous_score": 1.0, "verdict": "meets_policy"}
 
 
+def _source_db(*, relations_exposed: bool):
+    report = _source()
+    report["checks"]["relation_outcomes_exposed"] = relations_exposed
+    report["continuous_score"] = 1.0 if relations_exposed else 2 / 3
+    report["verdict"] = "meets_policy" if relations_exposed else "below_policy"
+    payload = {
+        "schema_version": "source-equivalence-db-objective-v1",
+        "population": {"signal_batches": 1, "signals": 8, "sources": 4},
+        "relation_path": {"accepted_edges": 4 if relations_exposed else 0},
+        "evaluation": report,
+    }
+    payload["objective_sha256"] = canonical_sha256(payload)
+    return payload
+
+
 def _correction():
     checks = {key: True for key in (
         "repeated_corrections_exercised", "correction_converges", "unsafe_reads_contained",
@@ -96,7 +111,7 @@ def test_composes_all_sha_bound_components_with_exact_populations():
             run_bounded_retrieval_evolution_postfix(), SHA),
         company_model_ablation=BoundArtifact(_ablation(), SHA),
         feedback_learning=BoundArtifact(_feedback(), SHA),
-        source_equivalence=BoundArtifact(run_bounded_source_equivalence(), SHA),
+        source_equivalence=BoundArtifact(_source_db(relations_exposed=True), SHA),
         correction_homeostasis=BoundArtifact(_correction(), SHA),
     )
 
@@ -150,5 +165,32 @@ def test_noncompensable_safety_failure_overrides_high_scores():
 
     assert result["verdict"] == "not_credible"
     assert "source_equivalence:source_authority_preserved" in result[
+        "noncompensable_blockers"
+    ]
+
+
+def test_db_source_equivalence_cannot_hide_missing_production_relations():
+    result = compose_objective_company_learning_evidence(
+        source_equivalence=BoundArtifact(_source_db(relations_exposed=False), SHA),
+    )
+
+    source = result["components"]["source_equivalence"]
+    assert source["population"] == {
+        "signal_batches": 1, "signals": 8, "sources": 4,
+    }
+    assert source["continuous_score"] == 2 / 3
+    assert result["verdict"] == "not_credible"
+    assert "source_equivalence:relation_outcomes_exposed" in result[
+        "noncompensable_blockers"
+    ]
+
+
+def test_constructor_only_source_equivalence_is_not_objective_production_proof():
+    result = compose_objective_company_learning_evidence(
+        source_equivalence=BoundArtifact(run_bounded_source_equivalence(), SHA),
+    )
+
+    assert result["components"]["source_equivalence"]["verdict"] == "below_policy"
+    assert "source_equivalence:production_relation_path_exercised" in result[
         "noncompensable_blockers"
     ]
