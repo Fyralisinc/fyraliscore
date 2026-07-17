@@ -63,7 +63,7 @@ Rules:
 | --- | --- |
 | Repository checkpoint before these docs | `d4335afa4b0d` |
 | Repair implementation | Not started under the new coordinator |
-| Current phase | P0 contract/baseline/preregistration pending |
+| Current phase | P0 characterization complete; P1 implementation next |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
@@ -310,8 +310,8 @@ authoritative dependency and success rules.
 
 | Package/phase | Owner | Input commit | State | Evidence | Last note |
 | --- | --- | --- | --- | --- | --- |
-| P0 contract/baseline/preregistration | unassigned | `d4335afa4b0d` | pending | — | Coordinator being established. |
-| P1 blindness/observability/retry | unassigned | — | pending | — | Blocked on P0. |
+| P0 contract/baseline/preregistration | root + three parallel lanes | `841f6f93e4de` | validated | `docs/plans/epistemic-repair/p0/epistemic-repair-p0-baseline-v1.json`; 21 focused tests | Characterization complete; repairs intentionally not mixed into P0. |
+| P1 blindness/observability/retry | unassigned | P0 checkpoint | pending | — | Four hook families and five telemetry reconciliation gaps are the exact repair surface. |
 | P2 truth/evidence/lifecycle/relation | unassigned | — | pending | — | Contracts may start after P0. |
 | P3 boundary/context/entity | unassigned | — | pending | — | Contracts may start after P0/P1. |
 | P4 online barrier/retrieval/feedback | unassigned | — | pending | — | Integration waits on P2/P3. |
@@ -424,6 +424,72 @@ replacement must become immutable version append rather than delete/reinsert.
 versions, retrieval sidecars, signed unique evidence, typed evidence
 references, compare-and-swap relation versions, and historical participant
 bindings.
+
+### 2026-07-17 — LOG-006 — P0 authority and illegal-state baseline completed
+
+**Type:** observed
+
+The direct production SQL census found 22 canonical writer modules and 86
+canonical reader modules across seven truth tables. Authority is fragmented
+across domain, reasoning, product, and maintenance code. Six bypass families
+are confirmed, including maintenance alias deletion, accepted binary-edge
+writes, relation/projection co-location, and retrieval heat on canonical Model
+rows. Fifteen cross-table illegal truth-state classes remain representable.
+
+**Evidence:** `docs/plans/epistemic-repair/p0/authority-writer-reader-inventory.json`;
+`docs/plans/epistemic-repair/p0/truth-state-inventory.json`.
+
+**Effect:** P2 must consolidate registered authority and reader fences. Static
+inventory coverage is not proof against dynamic SQL, database procedures, or
+external writers.
+
+### 2026-07-17 — LOG-007 — Benchmark blindness and telemetry both fail baseline
+
+**Type:** observed
+
+Four hook families are reachable from production Think: dynamic reasoning
+augmentors, an explicitly benchmark-only capability injector, a fixture-
+phrase-sensitive pricing bridge, and a fixture/scorer-aligned noise fast path.
+Physical failed provider attempts have no durable receipt; logical calls have
+no stable IDs; retry classes are conflated; stage timings lack parent/exclusive
+semantics; and no coherent queue/batch/run receipt reconciles the whole run.
+
+**Evidence:** `docs/plans/epistemic-repair/p0/benchmark-hook-inventory.json`;
+`docs/plans/epistemic-repair/p0/telemetry-inventory.json`.
+
+**Effect:** HG-01 and HG-13 are red. P1 starts with hook quarantine and a
+physical-attempt/logical-call ledger before semantic evaluation resumes.
+
+### 2026-07-17 — LOG-008 — Preregistration and evidence identity are now explicit
+
+**Type:** observed + decided
+
+The P0 contract now seals scenario, gold, evaluation policy, runtime sources,
+provider configuration, repository overlay, seeds, hard gates, proof
+boundaries, allowed executions, and whole-operation budgets. Reopening detects
+tampering and exhausted execution allowances. Eight historical/bounded
+evidence items are inventoried without composing them into one system score;
+nine required populations remain open.
+
+**Evidence:** `lib/evaluation/epistemic_repair/preregistration.py`;
+`docs/plans/epistemic-repair/p0/evidence-inventory.json`;
+`docs/plans/epistemic-repair/p0/epistemic-repair-p0-baseline-v1.json`.
+
+**Effect:** later runs cannot change inputs or mix code states silently. The
+contract proves preregistration identity, not runtime or semantic success.
+
+### 2026-07-17 — LOG-009 — P0 validation boundary recorded
+
+**Type:** observed
+
+All 21 P0 focused tests, JSON parsing, compile checks, import contracts,
+architecture ratchets, and the production-environment contract passed. Ruff is
+not installed in this worktree. The repository technical-debt budget remains
+red on pre-existing aggregate debt and named existing paths; no P0 production
+file appeared in the reported path violations.
+
+**Effect:** P0 is valid as a characterization checkpoint. The debt-budget
+failure is visible but does not justify mixing unrelated cleanup into P1.
 
 ## 13. Entry Template
 

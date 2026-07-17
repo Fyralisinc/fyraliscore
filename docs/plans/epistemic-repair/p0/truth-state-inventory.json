@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "purpose": "P0-C characterization of legal target states and presently representable illegal states",
+  "truth_planes": {
+    "evidence": ["observations", "authorized context snapshots", "grounding decisions"],
+    "accepted": ["active Models", "model_events", "relation_instances", "relation_participants"],
+    "derived": ["candidates", "SAGE policy", "model_edges compatibility projections", "projection snapshots", "indexes"]
+  },
+  "state_rules": [
+    {"id":"TS-01","subject":"model admission","legal":"Only accepted claims may be status=active and default-retrievable.","illegal_fixture":"candidate_active_model","current_enforcement":"partial application validation; database status lacks admission-state coupling","gate":"HG-04","p2_owner":"P2-A"},
+    {"id":"TS-02","subject":"model evidence","legal":"Every active Model has non-empty direct or transitive evidence and a source cutoff.","illegal_fixture":"active_model_without_evidence","current_enforcement":"not a complete database constraint","gate":"HG-05","p2_owner":"P2-B"},
+    {"id":"TS-03","subject":"claim scope","legal":"Every scope entry is claim-local, typed, role-bearing, and provenance-linked.","illegal_fixture":"active_model_with_untyped_batch_scope","current_enforcement":"JSONB/sidecar shape permits untyped or batch-wide scope","gate":"HG-06","p2_owner":"P2-B"},
+    {"id":"TS-04","subject":"representation","legal":"Natural rendering and proposition bind to one immutable semantic version and digest.","illegal_fixture":"active_model_with_stale_natural","current_enforcement":"no shared representation digest constraint","gate":"HG-07","p2_owner":"P2-C"},
+    {"id":"TS-05","subject":"falsification","legal":"A falsified Model is not active/default-retrievable and stale dependents are fenced atomically.","illegal_fixture":"falsified_but_active_model","current_enforcement":"lifecycle transitions exist but are distributed and not transactionally closed over all readers","gate":"HG-08","p2_owner":"P2-D"},
+    {"id":"TS-06","subject":"supersession","legal":"A superseded Model is fenced before its replacement becomes default-retrievable; incompatible dependents are retired or pending with owner.","illegal_fixture":"superseded_model_still_retrievable","current_enforcement":"no universal read fence/version barrier","gate":"HG-08","p2_owner":"P2-D"},
+    {"id":"TS-07","subject":"relation admission","legal":"Only accepted, fully bound, evidenced, role-valid relation instances enter canonical relation reads.","illegal_fixture":"accepted_unbound_relation","current_enforcement":"status and participant_binding_status are independently valid columns","gate":"HG-09","p2_owner":"P2-E"},
+    {"id":"TS-08","subject":"relation evidence","legal":"Every accepted relation has evidence event/model lineage and rationale consistent with kind/direction.","illegal_fixture":"accepted_relation_without_evidence","current_enforcement":"arrays may be empty; rationale consistency is application-only","gate":"HG-05/HG-09","p2_owner":"P2-E"},
+    {"id":"TS-09","subject":"relation endpoints","legal":"Accepted relation participants exist, share tenant, carry valid roles, and meet arity/direction requirements.","illegal_fixture":"accepted_relation_with_missing_participant","current_enforcement":"participant FKs protect existing rows but do not require minimum/role-complete participant sets","gate":"HG-09/HG-14","p2_owner":"P2-E"},
+    {"id":"TS-10","subject":"edge projection","legal":"Accepted binary model_edges are produced only from a validated canonical relation instance.","illegal_fixture":"accepted_edge_without_relation_source","current_enforcement":"EdgesRepo can directly insert accepted edges","gate":"HG-09/HG-10","p2_owner":"P2-F"},
+    {"id":"TS-11","subject":"candidate isolation","legal":"Candidate/review/rejected relations never appear in default relation or edge reads.","illegal_fixture":"candidate_relation_projected_active","current_enforcement":"reader and repository method dependent","gate":"HG-04","p2_owner":"P2-A/P2-F"},
+    {"id":"TS-12","subject":"derived-plane authority","legal":"SAGE, topology, projections, and evaluator artifacts can propose or rank but never mutate canonical truth.","illegal_fixture":"derived_policy_direct_truth_write","current_enforcement":"module convention/import boundaries; no registered write authority","gate":"HG-10","p2_owner":"P2-A"},
+    {"id":"TS-13","subject":"identity authority","legal":"Every alias/entity mutation carries tenant, authority, source provenance, and governed-writer identity.","illegal_fixture":"alias_mutation_without_provenance","current_enforcement":"repo validates core row fields but not a universal authority receipt","gate":"HG-02/HG-14","p2_owner":"P3-F"},
+    {"id":"TS-14","subject":"retrieval side effects","legal":"Retrieval counters, activation, indexes, and topology are rebuildable sidecars and cannot change semantic truth/version.","illegal_fixture":"retrieval_mutates_canonical_model_row","current_enforcement":"ModelsRepo.retrieve updates models.last_retrieved_at/retrieval_count","gate":"HG-10","p2_owner":"P2-G"},
+    {"id":"TS-15","subject":"event closure","legal":"Every semantic/lifecycle mutation emits exactly one causally linked model event in the same transaction.","illegal_fixture":"model_mutation_without_event","current_enforcement":"event emission is orchestrated by some repositories but direct SQL paths exist","gate":"HG-08/HG-11","p2_owner":"P2-D"}
+  ],
+  "illegal_fixtures": [
+    {"id":"candidate_active_model","state":{"plane":"candidate","status":"active","default_retrievable":true},"expected":"illegal","currently_representable":true},
+    {"id":"active_model_without_evidence","state":{"status":"active","evidence_event_ids":[],"supporting_model_ids":[],"source_cutoff":null},"expected":"illegal","currently_representable":true},
+    {"id":"active_model_with_untyped_batch_scope","state":{"status":"active","scope_entities":[{"id":"customer-1"}],"scope_origin":"batch_fanout"},"expected":"illegal","currently_representable":true},
+    {"id":"active_model_with_stale_natural","state":{"status":"active","proposition_digest":"v2","natural_digest":"v1"},"expected":"illegal","currently_representable":true},
+    {"id":"falsified_but_active_model","state":{"status":"active","latest_lifecycle":"falsified","default_retrievable":true},"expected":"illegal","currently_representable":true},
+    {"id":"superseded_model_still_retrievable","state":{"status":"active","superseded_by":"replacement","default_retrievable":true},"expected":"illegal","currently_representable":true},
+    {"id":"accepted_unbound_relation","state":{"status":"accepted","participant_binding_status":"unbound"},"expected":"illegal","currently_representable":true},
+    {"id":"accepted_relation_without_evidence","state":{"status":"accepted","evidence_event_ids":[],"evidence_model_ids":[]},"expected":"illegal","currently_representable":true},
+    {"id":"accepted_relation_with_missing_participant","state":{"status":"accepted","participants":[]},"expected":"illegal","currently_representable":true},
+    {"id":"accepted_edge_without_relation_source","state":{"table":"model_edges","status":"active","relation_instance_id":null},"expected":"illegal","currently_representable":true},
+    {"id":"candidate_relation_projected_active","state":{"relation_status":"candidate","projection_status":"active"},"expected":"illegal","currently_representable":true},
+    {"id":"derived_policy_direct_truth_write","state":{"writer_plane":"derived","target":"models"},"expected":"illegal","currently_representable":true},
+    {"id":"alias_mutation_without_provenance","state":{"target":"entity_aliases","authority_receipt":null,"source_provenance":null},"expected":"illegal","currently_representable":true},
+    {"id":"retrieval_mutates_canonical_model_row","state":{"operation":"read","mutated_fields":["last_retrieved_at","retrieval_count"]},"expected":"illegal","currently_representable":true},
+    {"id":"model_mutation_without_event","state":{"semantic_mutation":true,"model_event_count":0},"expected":"illegal","currently_representable":true}
+  ],
+  "legal_control_fixtures": [
+    {"id":"accepted_grounded_model","state":{"plane":"accepted","status":"active","default_retrievable":true,"evidence_count":2,"typed_scope":true,"representation_digest_equal":true},"expected":"legal"},
+    {"id":"candidate_isolated_model","state":{"plane":"candidate","status":"needs_review","default_retrievable":false},"expected":"legal"},
+    {"id":"accepted_bound_relation","state":{"status":"accepted","participant_binding_status":"bound","participant_count":2,"evidence_count":1,"role_valid":true},"expected":"legal"},
+    {"id":"retired_model_historical_only","state":{"status":"archived","default_retrievable":false,"historical_retrievable":true},"expected":"legal"}
+  ],
+  "current_verdict": "All 15 target illegal classes are mechanically detectable by a future admission/lifecycle evaluator, but all remain representable on at least one current direct-write path. This is a P0 characterization result, not a P2 repair claim."
+}

@@ -51,6 +51,24 @@ claims that were not checked against code or artifacts.
 
 ## Durable Lessons
 
+### 2026-07-17 - Characterize epistemic bypasses before repairing them
+
+- Context: Starting the company-learning epistemic repair after a contaminated
+  45-batch benchmark and later bounded proofs.
+- Symptom: A green bounded portfolio could obscure four production-reachable
+  benchmark-hook families, five unreconciled telemetry levels, fragmented
+  canonical writers, and fifteen representable illegal truth states.
+- Cause: Mechanical durability and bounded component quality had stronger
+  enforcement/evidence than benchmark blindness, single-writer authority,
+  cross-table truth invariants, and whole-run receipt identity.
+- Lesson: Freeze direct writer/reader, hook, telemetry, truth-state, and evidence
+  inventories before semantic repair. Keep characterization tests green while
+  the constitutional gates remain explicitly red; a passing characterization
+  test proves inventory coverage, not repaired behavior.
+- Evidence: `docs/plans/epistemic-repair/p0/`;
+  `tests/epistemic_repair/p0/`.
+- Status: P0 characterization landed; P1/P2 production repairs remain open.
+
 ### 2026-07-17 - Batch extraction must isolate identical surfaces by focal signal
 
 - Context: A precommitted entity holdout placed the same literal in a typed

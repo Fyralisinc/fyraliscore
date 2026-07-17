@@ -1,0 +1,142 @@
+{
+  "schema_version": "epistemic-repair-hard-gate-ownership-v1",
+  "baseline_commit": "841f6f93e4de",
+  "interpretation": "P0 names enforcement and test seams; it does not claim failed gates are repaired.",
+  "gates": [
+    {
+      "id": "HG-01",
+      "name": "benchmark_blindness",
+      "current_result": "fail",
+      "current_owner": "services/reasoning/think production pipeline",
+      "enforcement_seam": "P1 hook quarantine plus production-path reachability scanner",
+      "test_seam": "tests/epistemic_repair/p0/test_hook_telemetry_characterization.py and P1 sealed blindness population",
+      "evidence": "docs/plans/epistemic-repair/p0/benchmark-hook-inventory.json"
+    },
+    {
+      "id": "HG-02",
+      "name": "identity_authority",
+      "current_result": "fail",
+      "current_owner": "entity alias/canonical referent repositories plus maintenance writers",
+      "enforcement_seam": "P2 registered writer authority and P3 governed identity applier",
+      "test_seam": "P0 writer census followed by P2/P3 raw-SQL bypass and correction tests",
+      "evidence": "docs/plans/epistemic-repair/p0/authority-writer-reader-inventory.json"
+    },
+    {
+      "id": "HG-03",
+      "name": "total_evidence_fate",
+      "current_result": "bounded_only",
+      "current_owner": "entity grounding mention/work/fate ledgers",
+      "enforcement_seam": "P3 denominator-complete mention/context work ledger",
+      "test_seam": "P3 sealed mixed-source mention population with one fate per opportunity",
+      "evidence": "docs/plans/epistemic-repair/p0/evidence-inventory.json"
+    },
+    {
+      "id": "HG-04",
+      "name": "admission_isolation",
+      "current_result": "fail",
+      "current_owner": "Model/relation formation, repositories, and default readers",
+      "enforcement_seam": "P2 immutable candidate plus AdmissionDecision plus accepted-truth reader view",
+      "test_seam": "P0 illegal-state fixtures followed by P2 reader/endpoint leakage tests",
+      "evidence": "docs/plans/epistemic-repair/p0/truth-state-inventory.json"
+    },
+    {
+      "id": "HG-05",
+      "name": "evidence_lineage",
+      "current_result": "fail",
+      "current_owner": "Model/event/relation repositories and Think mutation compiler",
+      "enforcement_seam": "P2 typed decisive evidence links on every canonical version",
+      "test_seam": "P2 missing, cross-tenant, future, whole-batch, and transitive evidence cases",
+      "evidence": "docs/plans/epistemic-repair/p0/truth-state-inventory.json"
+    },
+    {
+      "id": "HG-06",
+      "name": "claim_local_scope",
+      "current_result": "fail",
+      "current_owner": "Model facets/address/scope repositories and Think compiler",
+      "enforcement_seam": "P2 role-bearing scope derived from typed evidence closure",
+      "test_seam": "P2 interleaved-story scope oracle and P6 mixed-stream score",
+      "evidence": "docs/plans/epistemic-repair/p0/truth-state-inventory.json"
+    },
+    {
+      "id": "HG-07",
+      "name": "representation_coherence",
+      "current_result": "fail",
+      "current_owner": "Model event/proposition/read-shape writers",
+      "enforcement_seam": "P2 immutable semantic version with proposition and renderer digests",
+      "test_seam": "P2 natural-only/proposition-only mutation and rebuild-parity tests",
+      "evidence": "docs/plans/epistemic-repair/p0/truth-state-inventory.json"
+    },
+    {
+      "id": "HG-08",
+      "name": "lifecycle_closure",
+      "current_result": "fail",
+      "current_owner": "Model events, falsifier, applier, maintenance, and dependent repair",
+      "enforcement_seam": "P2 compare-and-swap lifecycle transaction plus causal fence",
+      "test_seam": "P2 fault injection, concurrent confirm/falsify, and stale-read tests",
+      "evidence": "docs/plans/epistemic-repair/p0/truth-state-inventory.json"
+    },
+    {
+      "id": "HG-09",
+      "name": "relation_validity",
+      "current_result": "fail",
+      "current_owner": "relation claims/instances, edge intelligence, Think validator/compiler",
+      "enforcement_seam": "P2 versioned typed N-ary relation authority and semantic admission validator",
+      "test_seam": "P2 endpoint/kind/direction/time/rationale/evidence oracle",
+      "evidence": "docs/plans/epistemic-repair/p0/truth-state-inventory.json"
+    },
+    {
+      "id": "HG-10",
+      "name": "plane_isolation",
+      "current_result": "convention_not_physical",
+      "current_owner": "canonical repositories, projectors, SAGE, topology, and retrieval sidecars",
+      "enforcement_seam": "P2 registered truth writer plus projector/SAGE proposal-only permissions",
+      "test_seam": "P2 direct-write denial and derived-plane wipe/rebuild tests",
+      "evidence": "docs/plans/epistemic-repair/p0/authority-writer-reader-inventory.json"
+    },
+    {
+      "id": "HG-11",
+      "name": "online_causal_availability",
+      "current_result": "unmeasured",
+      "current_owner": "Think worker, post-commit queues, retrieval indexes, and lifecycle repair",
+      "enforcement_seam": "P4 versioned truth-critical causal barrier",
+      "test_seam": "P4 six-batch proof and P5 three-batch vertical",
+      "evidence": "docs/plans/epistemic-repair/p0/signal-flow-trace.md"
+    },
+    {
+      "id": "HG-12",
+      "name": "feedback_attribution",
+      "current_result": "fail",
+      "current_owner": "context-use telemetry, edge feedback, and SAGE outcome evaluator",
+      "enforcement_seam": "P4 decision/evidence/mutation/outcome ledger with normalized credit",
+      "test_seam": "P4 batch pseudo-replication, delayed reward, and retraction population",
+      "evidence": "docs/plans/epistemic-repair/p0/signal-flow-trace.md"
+    },
+    {
+      "id": "HG-13",
+      "name": "telemetry_reconciliation",
+      "current_result": "fail",
+      "current_owner": "LLM provider, Think run/cost/stage records, workers, and harness receipts",
+      "enforcement_seam": "P1 physical-attempt/logical-call ledger and parented exclusive timings",
+      "test_seam": "P0 telemetry characterization followed by P1 injected timeout/parse/retry cases",
+      "evidence": "docs/plans/epistemic-repair/p0/telemetry-inventory.json"
+    },
+    {
+      "id": "HG-14",
+      "name": "tenant_authority_isolation",
+      "current_result": "bounded_only",
+      "current_owner": "database tenant constraints/RLS, access context, and every canonical repository",
+      "enforcement_seam": "P2/P3 same-tenant writer, evidence, scope, candidate, and endpoint checks",
+      "test_seam": "cross-tenant raw SQL, candidate, retrieval, scope, relation, policy, and projection cases",
+      "evidence": "docs/plans/epistemic-repair/p0/truth-state-inventory.json"
+    },
+    {
+      "id": "HG-15",
+      "name": "metric_validity",
+      "current_result": "historical_fail_current_contract_added",
+      "current_owner": "lib/evaluation and Company Vitals",
+      "enforcement_seam": "preregistered evaluator schemas, normalized-score assertions, and coherent-run manifest",
+      "test_seam": "P0 receipt round-trip/tamper tests and phase-specific member-level evaluator tests",
+      "evidence": "lib/evaluation/epistemic_repair/preregistration.py"
+    }
+  ]
+}

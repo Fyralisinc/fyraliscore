@@ -1,0 +1,164 @@
+{
+  "schema_version": "epistemic-repair-telemetry-inventory-v1",
+  "phase": "P0",
+  "work_package": "P0-D",
+  "characterization_only": true,
+  "production_changes": false,
+  "summary": {
+    "hg_13_current_result": "fail",
+    "fully_durable_levels": ["think_run_success_or_compact_failure", "aggregate_cost_by_purpose"],
+    "missing_durable_levels": ["physical_provider_attempt", "logical_llm_request", "exclusive_stage_interval", "benchmark_batch_receipt", "coherent_run_receipt"],
+    "primary_gap": "Usage is recorded only after a provider response exposes or permits token estimation; attempts that time out or fail before usage recording are absent from llm_calls_count."
+  },
+  "counting_definitions": {
+    "physical_provider_attempt": "One actual transport invocation, including success, timeout, rate limit, circuit-open fast failure, malformed response, and SDK/CLI failure.",
+    "logical_llm_request": "One caller intent to obtain a typed result; it may contain multiple physical attempts because of transport or parse repair.",
+    "think_run": "One invocation of think() identified by run_id; it may contain transaction retries, region reruns, logical LLM requests, and physical attempts.",
+    "stage_interval": "One measured interval with explicit parent, start/end, and exclusive/inclusive semantics.",
+    "batch_wall": "Monotonic wall from batch release through its declared causal barrier and terminal queue fate.",
+    "run_wall": "Monotonic wall from preregistered run start through final drain/barrier and receipt finalization."
+  },
+  "surfaces": [
+    {
+      "id": "TM-001",
+      "level": "physical_provider_attempt",
+      "current_source": "Provider-specific _raw_call methods; successful responses call _record_usage.",
+      "durable_store": null,
+      "export": null,
+      "coverage": "partial_success_only",
+      "source_refs": ["lib/llm/provider.py:1049", "lib/llm/provider.py:1204"],
+      "gap": "No attempt id, logical-call id, started/ended time, error class, timeout, retry ordinal, or receipt exists. A failed attempt before _record_usage is invisible."
+    },
+    {
+      "id": "TM-002",
+      "level": "logical_llm_request",
+      "current_source": "provider.structured called from the outer Think reasoning retry loop.",
+      "durable_store": null,
+      "export": "Only aggregate warning logs and successful usage totals.",
+      "coverage": "not_identified",
+      "source_refs": ["services/reasoning/think/llm_reason.py:236", "lib/llm/provider.py:1117"],
+      "gap": "No logical_call_id or durable start/outcome row. Outer transport retries and inner parse retries cannot be reconstructed exactly."
+    },
+    {
+      "id": "TM-003",
+      "level": "successful_usage_call",
+      "current_source": "LLMUsageAggregator append on _record_usage, tagged by main_reasoning, question_planning, or parse_repair.",
+      "durable_store": "think_run_costs aggregated by trigger/computed_at/purpose",
+      "export": "Think outcome and Prometheus aggregate counters",
+      "coverage": "successful_or_estimable_response_only",
+      "source_refs": ["lib/llm/provider.py:241", "services/reasoning/think/reason.py:982", "db/migrations/0132_think_run_costs_purpose_cache.sql:25"],
+      "gap": "llm_calls_count means recorded usage blocks, not physical attempts or logical requests; Codex CLI/app-server usage can be estimated and cache-token fields remain zero."
+    },
+    {
+      "id": "TM-004",
+      "level": "think_run",
+      "current_source": "ThinkRunRecord plus think_runs progressive transaction row; compact failed row is written out of band.",
+      "durable_store": "think_runs",
+      "export": "ThinkRunOutcome, logs, Prometheus run counters/latencies",
+      "coverage": "durable_with_asymmetric_failure_detail",
+      "source_refs": ["services/reasoning/think/observability.py:398", "services/reasoning/think/reason.py:1076", "db/migrations/0008_think_runs_applied_triggers_dead_letter.sql:70"],
+      "gap": "Failed compact rows lose retrieval, LLM latency, stage timing, ops, and retry detail. started_at is rewritten to failure-record time, so failed-run DB wall is not the invocation wall."
+    },
+    {
+      "id": "TM-005",
+      "level": "retry_and_rerun",
+      "current_source": "Outer reasoning transport attempts, provider parse attempts, Think region reruns, transaction retries, and queue attempts are separate counters.",
+      "durable_store": "think_run_costs.retry_count combines only transaction retries plus region reruns; trigger queue has attempts.",
+      "export": "Partial logs and benchmark queue snapshots",
+      "coverage": "semantically_conflated",
+      "source_refs": ["services/reasoning/think/llm_reason.py:249", "services/reasoning/think/reason.py:255", "lib/llm/provider.py:1204"],
+      "gap": "retry_count excludes provider transport/parse attempts and conflates transaction retries with region reruns. There is no unified budget or attempt tree."
+    },
+    {
+      "id": "TM-006",
+      "level": "tokens_and_cost",
+      "current_source": "Per-response usage or text estimate, aggregated by purpose and priced using current model tables.",
+      "durable_store": "think_run_costs",
+      "export": "Prometheus aggregates and benchmark cost profile",
+      "coverage": "good_for_recorded_responses_not_attempt_complete",
+      "source_refs": ["lib/llm/provider.py:1049", "services/reasoning/think/reason.py:999", "db/migrations/0016_think_run_costs.sql:20"],
+      "gap": "Failed attempts may consume provider tokens/cost without a usage record; aggregate rows have no physical attempt lineage."
+    },
+    {
+      "id": "TM-007",
+      "level": "stage_timing",
+      "current_source": "perf_counter intervals appended to think_stage_timings and stored inside successful think_runs.ops_applied.",
+      "durable_store": "think_runs.ops_applied JSONB on successful apply",
+      "export": "Storyline benchmark latency breakdown",
+      "coverage": "successful_runs_only_nonexclusive",
+      "source_refs": ["services/reasoning/think/run_pipeline.py:90", "services/reasoning/think/reason.py:1164"],
+      "gap": "Intervals have no timestamps or parent ids, are summed as if exclusive, may nest measured_llm_ms inside a wider interval, and are absent from compact failure rows."
+    },
+    {
+      "id": "TM-008",
+      "level": "queue",
+      "current_source": "think_trigger_queue and downstream queue status/attempt columns plus in-memory depth gauges.",
+      "durable_store": "individual queue tables",
+      "export": "Worker metrics and benchmark point-in-time queue_counts",
+      "coverage": "distributed_not_reconciled",
+      "source_refs": ["services/reasoning/think/worker.py:1", "scripts/run_storyline_batch_benchmark.py:2276"],
+      "gap": "No single receipt proves enqueue-to-terminal fate across every truth-critical and post-commit queue; point snapshots cannot establish causal closure."
+    },
+    {
+      "id": "TM-009",
+      "level": "batch_wall",
+      "current_source": "Benchmark-local monotonic elapsed fields and queue snapshots.",
+      "durable_store": "generated benchmark artifact only",
+      "export": "wave/batch JSON",
+      "coverage": "harness_local",
+      "source_refs": ["scripts/run_storyline_batch_benchmark.py:2164", "scripts/run_storyline_batch_benchmark.py:2487"],
+      "gap": "No core batch identity or durable release/barrier/terminal timestamps; elapsed fields vary by helper and do not reconcile to stage or run walls."
+    },
+    {
+      "id": "TM-010",
+      "level": "run_wall_and_receipt",
+      "current_source": "Benchmark-local elapsed_seconds and assembled report artifacts.",
+      "durable_store": "generated artifact only",
+      "export": "benchmark summary/report",
+      "coverage": "not_cryptographically_coherent",
+      "source_refs": ["scripts/run_storyline_batch_benchmark.py:10747", "lib/evaluation/large_company_simulation.py:48"],
+      "gap": "No one receipt binds commit, config, manifests, provider attempts, batches, queues, costs, and report to a single run; mixed or incomplete evidence cannot be mechanically rejected."
+    }
+  ],
+  "reconciliation_failures": [
+    {
+      "id": "TG-001",
+      "equation": "physical_attempts = successful_usage_calls + failed_attempt_receipts",
+      "current_result": "unknown",
+      "reason": "failed_attempt_receipts do not exist"
+    },
+    {
+      "id": "TG-002",
+      "equation": "logical_calls = distinct logical_call_id",
+      "current_result": "unknown",
+      "reason": "logical_call_id does not exist"
+    },
+    {
+      "id": "TG-003",
+      "equation": "sum(exclusive_stage_ms) approximately equals think_run_wall_ms",
+      "current_result": "invalid",
+      "reason": "stage intervals are not declared exclusive and failed runs lack them"
+    },
+    {
+      "id": "TG-004",
+      "equation": "sum(batch_wall_ms plus declared interbatch gaps) approximately equals run_wall_ms",
+      "current_result": "unknown",
+      "reason": "batch and run receipts are harness-local and lack a common interval contract"
+    },
+    {
+      "id": "TG-005",
+      "equation": "all truth-critical queue items have exactly one terminal receipt before the next causal barrier",
+      "current_result": "unknown",
+      "reason": "queues are queried separately and no causal-barrier receipt exists"
+    }
+  ],
+  "required_p1_contract": {
+    "ids": ["run_id", "batch_id", "think_run_id", "logical_call_id", "physical_attempt_id", "parent_attempt_id"],
+    "attempt_fields": ["provider", "model", "purpose", "ordinal", "started_at", "ended_at", "outcome", "error_class", "input_tokens", "output_tokens", "cache_tokens", "cost_usd", "usage_exactness"],
+    "timing_rule": "Every interval declares inclusive or exclusive semantics; HG-13 compares independently measured walls with <=1% error.",
+    "failure_rule": "An attempt receipt is written even when no provider usage block is returned.",
+    "queue_rule": "Every eligible queue item links enqueue, lease, retry, terminal fate, and causal barrier.",
+    "coherence_rule": "One final receipt binds commit/config/manifest digests and rejects foreign-run evidence."
+  },
+  "completion_rule": "P0-D is complete when all current sources and gaps are independently reproduced. HG-13 remains failed until P1 makes TG-001 through TG-005 mechanically computable and exact within the declared tolerance."
+}

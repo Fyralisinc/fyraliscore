@@ -1,0 +1,122 @@
+{
+  "schema_version": "epistemic-repair-benchmark-hook-inventory-v1",
+  "phase": "P0",
+  "work_package": "P0-B",
+  "characterization_only": true,
+  "production_changes": false,
+  "scope": "Conditions reachable from production Think that can recognize benchmark-shaped inputs, inject benchmark-requested outputs, or admit external evaluator/demo context.",
+  "summary": {
+    "reachable_hook_count": 4,
+    "confirmed_benchmark_specific_count": 2,
+    "fixture_phrase_sensitive_count": 2,
+    "external_extension_seam_count": 1,
+    "hg_01_current_result": "fail"
+  },
+  "hooks": [
+    {
+      "id": "BH-001",
+      "name": "runtime_reasoning_augmentor_entry_points",
+      "classification": "external_overlay_context_hook",
+      "benchmark_specific": false,
+      "production_reachable": true,
+      "activation": "Any installed package may register company_os.reasoning_augmentors; discovery is automatic and has no production allowlist or benchmark-mode fence.",
+      "effect": "Arbitrary async augmentors may mutate the retrieved ContextBundle and expand allowed_region before reasoning.",
+      "source": {
+        "definition": "services/reasoning/think/hooks.py:34",
+        "discovery": "services/reasoning/think/hooks.py:42",
+        "execution": "services/reasoning/think/hooks.py:65",
+        "production_call": "services/reasoning/think/context_planner.py:730"
+      },
+      "evidence_anchors": [
+        "company_os.reasoning_augmentors",
+        "for augmentor in _discover()",
+        "return await augment_context("
+      ],
+      "risk": "A demo, evaluator, or other installed distribution can silently change production reasoning context and mutation authority without appearing in the core commit.",
+      "required_p1_disposition": "Remove production reachability or require an explicit governed production-safe registration contract whose identity is included in run receipts."
+    },
+    {
+      "id": "BH-002",
+      "name": "capability_probe_diff_injector",
+      "classification": "explicit_benchmark_output_injector",
+      "benchmark_specific": true,
+      "production_reachable": true,
+      "activation": "A T1 signal or batch fragment contains capability_probe plus recognized capability_probe_kinds vocabulary.",
+      "effect": "Deterministically appends prediction, resource, ontology-gap, archive, evidence-attachment, or question-policy operations after the LLM response and before validation/apply.",
+      "source": {
+        "definition": "services/reasoning/think/capability_probes.py:33",
+        "input_match": "services/reasoning/think/capability_probes.py:92",
+        "production_call": "services/reasoning/think/run_pipeline.py:513",
+        "fixture_producer": "scripts/run_storyline_batch_benchmark.py:1471"
+      },
+      "evidence_anchors": [
+        "benchmark-only coverage signals",
+        "capability_probe_kinds=",
+        "raw_diff = maybe_inject_capability_probe_ops("
+      ],
+      "risk": "The benchmark can request the exact rare output surfaces it later scores, so the output is not evidence of spontaneous company understanding.",
+      "required_p1_disposition": "Delete from production Think reachability; evaluate rare surfaces with sealed inputs and independent outcome checks."
+    },
+    {
+      "id": "BH-003",
+      "name": "pricing_transition_bridge_injector",
+      "classification": "fixture_phrase_sensitive_semantic_injector",
+      "benchmark_specific": false,
+      "production_reachable": true,
+      "activation": "A batch contains at least two observations and matches hard-coded pricing plus before-state, after-state, and missing-transition phrase families.",
+      "effect": "Appends a fixed-form bounded pricing-transition hypothesis with confidence 0.58 after the LLM response.",
+      "source": {
+        "phrase_lexicon": "services/reasoning/think/bridge_inference.py:19",
+        "definition": "services/reasoning/think/bridge_inference.py:56",
+        "injection": "services/reasoning/think/bridge_inference.py:99",
+        "production_call": "services/reasoning/think/run_pipeline.py:512",
+        "matching_fixture": "scripts/run_storyline_batch_benchmark.py:1200"
+      },
+      "evidence_anchors": [
+        "sensor\\s+trail",
+        "bounded\\s+inferred\\s+bridge",
+        "confidence\": 0.58",
+        "raw_diff = maybe_inject_latent_bridge("
+      ],
+      "risk": "A benchmark storyline uses the same distinctive vocabulary as the production detector, allowing phrase recognition to masquerade as general hidden-pattern inference.",
+      "required_p1_disposition": "Either remove the injector from production reasoning or reframe it as a separately evaluated domain rule with broad counterfactual and paraphrase populations; it cannot support general synthesis claims."
+    },
+    {
+      "id": "BH-004",
+      "name": "noise_phrase_fast_path",
+      "classification": "fixture_phrase_sensitive_short_circuit",
+      "benchmark_specific": false,
+      "production_reachable": true,
+      "activation": "A T1 trigger matches hard-coded noise channel/text markers while avoiding an actionable keyword list.",
+      "effect": "Skips retrieval and the LLM and emits an empty noise no-op diff.",
+      "source": {
+        "phrase_lexicon": "services/reasoning/think/llm_reason.py:57",
+        "definition": "services/reasoning/think/llm_reason.py:345",
+        "activation_logic": "services/reasoning/think/llm_reason.py:363",
+        "early_production_call": "services/reasoning/think/reason.py:1862",
+        "benchmark_scoring_marker": "scripts/run_storyline_batch_benchmark.py:5897"
+      },
+      "evidence_anchors": [
+        "general operational chatter",
+        "duplicated dashboard links",
+        "build_noise_only_raw_diff(trigger)",
+        "discard_as_noise"
+      ],
+      "risk": "The benchmark produces and scores recognizable noise phrasing; a phrase list can earn noise-handling credit without robust semantic classification and may discard real signals that omit the small actionable lexicon.",
+      "required_p1_disposition": "Replace benchmark-aligned phrases with an independently evaluated semantic classifier or policy whose false-negative behavior is measured on adversarial paraphrases."
+    }
+  ],
+  "explicit_non_findings": [
+    {
+      "id": "BN-001",
+      "claim": "No direct import of fyralis_demo, demo, or simulation was found in services.reasoning.",
+      "boundary": "This does not make BH-001 safe because entry-point loading is dynamic."
+    },
+    {
+      "id": "BN-002",
+      "claim": "Generic SAGE bridge topology terms are not classified as benchmark hooks.",
+      "boundary": "Only production conditions tied to benchmark-shaped semantic inputs or external augmentation were inventoried."
+    }
+  ],
+  "completion_rule": "P0-B is complete when every listed source anchor still resolves and an independent scan finds no additional production-reachable benchmark/evaluator condition. HG-01 remains failed until P1 removes or governs all listed reachability."
+}

@@ -1,0 +1,86 @@
+{
+  "schema_version": "epistemic-repair-p0-baseline-v1",
+  "status": "characterization_complete_repairs_not_started",
+  "baseline": {
+    "git_commit": "841f6f93e4de",
+    "git_status_before_p0": "clean",
+    "branch": "codex/autonomous-company-learning",
+    "migration_head": "0223_source_identity_binding_overlap_guard.sql",
+    "python": "3.12.13",
+    "provider_environment": {
+      "LLM_PROVIDER": "unset",
+      "CODEX_MODEL": "unset",
+      "LLM_MODEL": "unset",
+      "code_default_provider": "codex",
+      "code_default_model": "gpt-5.5",
+      "provider_execution_in_p0": "prohibited"
+    }
+  },
+  "inventories": {
+    "canonical_tables": 7,
+    "direct_writer_modules": 22,
+    "direct_reader_modules": 86,
+    "known_authority_bypasses": 6,
+    "illegal_truth_state_classes": 15,
+    "legal_truth_state_controls": 4,
+    "production_reachable_hook_families": 4,
+    "telemetry_surfaces": 10,
+    "telemetry_reconciliation_failures": 5,
+    "hard_gates_with_named_owner_enforcement_and_test_seams": 15,
+    "historical_or_bounded_evidence_items": 8,
+    "missing_required_populations": 9
+  },
+  "current_gate_summary": {
+    "benchmark_blindness": "fail",
+    "telemetry_reconciliation": "fail",
+    "canonical_truth_authority": "fragmented",
+    "illegal_truth_states": "15 classes currently representable",
+    "coherent_integrated_semantic_proof": "absent"
+  },
+  "artifacts": [
+    "docs/plans/epistemic-repair/p0/authority-writer-reader-inventory.json",
+    "docs/plans/epistemic-repair/p0/benchmark-hook-inventory.json",
+    "docs/plans/epistemic-repair/p0/truth-state-inventory.json",
+    "docs/plans/epistemic-repair/p0/telemetry-inventory.json",
+    "docs/plans/epistemic-repair/p0/evidence-inventory.json",
+    "docs/plans/epistemic-repair/p0/hard-gate-ownership-matrix.json",
+    "docs/plans/epistemic-repair/p0/signal-flow-trace.md",
+    "lib/evaluation/epistemic_repair/preregistration.py"
+  ],
+  "characterization_tests": [
+    "tests/epistemic_repair/p0/test_truth_state_characterization.py",
+    "tests/epistemic_repair/p0/test_hook_telemetry_characterization.py",
+    "tests/epistemic_repair/p0/test_preregistration_contract.py"
+  ],
+  "validation": {
+    "focused_p0_tests": "21 passed",
+    "json_parse": "passed",
+    "python_compileall": "passed",
+    "git_diff_check": "passed",
+    "import_contracts": "7 kept, 0 broken",
+    "architecture_ratchets": "passed",
+    "production_environment_contract": "passed",
+    "ruff": "unavailable in worktree environment",
+    "tech_debt_budget": "failed on pre-existing repository debt: 58 files, 122 functions, and 34 classes over aggregate thresholds plus listed existing path budgets; no P0 production file contributed a reported path violation"
+  },
+  "proof_boundaries": [
+    "No production semantic behavior changed in P0.",
+    "No real provider call was made.",
+    "Writer/reader completeness covers direct canonical SQL in production Python services; dynamic SQL, database procedures, and external writers remain for P2 authority enforcement.",
+    "Characterization tests preserve known failure classes; passing them does not mean the corresponding hard gate is green.",
+    "Historical evidence without a repository artifact is inventory evidence only and cannot be reopened from this manifest."
+  ],
+  "next_phase": {
+    "phase": "P1",
+    "blocking_repairs": [
+      "remove or quarantine four production-reachable benchmark-hook families",
+      "add durable physical-attempt and logical-call identity",
+      "separate provider, transaction, and region retry accounting",
+      "add parented stage timing and coherent batch/run receipts"
+    ],
+    "parallel_contract_work_allowed": [
+      "P2 truth/admission/evidence/lifecycle test-first design",
+      "P3 sealed boundary/entity gold construction"
+    ]
+  }
+}
