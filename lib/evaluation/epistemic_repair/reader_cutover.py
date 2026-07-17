@@ -47,9 +47,32 @@ def scan_reader_cutover(repo_root: Path, manifest_path: Path) -> ReaderCutoverRe
     manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
     inventory_path = repo_root / manifest["source_inventory"]
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
-    entries = manifest["entries"]
+    entries = list(manifest["entries"])
+    for group in manifest.get("exemption_groups", []):
+        entries.extend(
+            {
+                "module": module,
+                "classification": "exempt",
+                "authority": group["authority"],
+                "required_all": [],
+                "reason": group["reason"],
+            }
+            for module in group["modules"]
+        )
+    entries.extend(
+        {
+            "module": item["module"],
+            "classification": "consequential",
+            "authority": "accepted_direct",
+            "required_all": ["accepted_current_models"],
+            "reason": item["reason"],
+        }
+        for item in manifest.get("additional_consequential", [])
+    )
     by_module = {entry["module"]: entry for entry in entries}
-    inventoried = {entry["module"] for entry in inventory["reader_modules"]}
+    inventoried = {
+        entry["module"] for entry in inventory["reader_modules"]
+    } | set(inventory["direct_canonical_reader_modules"])
     if set(by_module) != inventoried:
         missing = sorted(inventoried - set(by_module))
         extra = sorted(set(by_module) - inventoried)

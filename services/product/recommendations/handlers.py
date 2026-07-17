@@ -123,7 +123,7 @@ async def _load_active_recommendation(
         SELECT id, tenant_id, born_from_event_id, proposition,
                "natural" AS natural, status, archived_at, archive_reason,
                target_actor_id, supporting_model_ids
-        FROM models
+        FROM accepted_current_models
         WHERE id = $1 AND tenant_id = $2
           AND claim_role = 'recommendation'
         """,
@@ -171,7 +171,7 @@ async def _load_active_hypothesis(
                "natural" AS natural, status, archived_at, archive_reason,
                target_actor_id, confidence, scope_actors, scope_entities,
                scope_temporal, supporting_model_ids
-        FROM models
+        FROM accepted_current_models
         WHERE id = $1 AND tenant_id = $2
           AND claim_role = 'hypothesis'
         """,

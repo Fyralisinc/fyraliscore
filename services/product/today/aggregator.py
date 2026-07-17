@@ -424,7 +424,7 @@ def _truncate(s: str, n: int) -> str:
 _SUPPORTING_MODELS_SQL = """
 SELECT id, "natural", confidence, proposition_kind,
        proposition->>'qualitative_impact' AS qualitative_impact
-FROM models
+FROM accepted_current_models
 WHERE id = ANY($1::uuid[])
   AND tenant_id = $2
   AND status = 'active'
@@ -824,7 +824,7 @@ async def _render_calibration(
         SELECT
           count(*) FILTER (WHERE archive_reason = 'acted_upon')         AS acted,
           count(*) FILTER (WHERE archive_reason LIKE 'dismissed%')      AS dismissed
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1
           AND target_actor_id = $2
           AND claim_role = 'recommendation'
@@ -1363,7 +1363,7 @@ async def _calibration_metric(
     row = await conn.fetchrow(
         """
         SELECT avg(confidence_at_assertion) AS mean_conf, count(*) AS n
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1 AND resolved_at IS NOT NULL
           AND resolved_at > now() - interval '30 days'
         """,
@@ -1511,7 +1511,7 @@ async def _build_vitals(
     held_model_rows = await conn.fetch(
         """
         SELECT id
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1 AND target_actor_id = $2
           AND status = 'archived' AND archive_reason = 'manual'
         """,
@@ -1784,7 +1784,7 @@ async def build_today(
     held_rows = await conn.fetch(
         """
         SELECT id
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1 AND target_actor_id = $2
           AND status = 'archived' AND archive_reason = 'manual'
         """,
@@ -1999,7 +1999,7 @@ def _relative_age(now: datetime, when: datetime | None) -> str:
 
 _JUST_UPDATED_SQL = """
 SELECT id, "natural", proposition_kind, confidence, created_at
-FROM models
+FROM accepted_current_models
 WHERE tenant_id = $1
   AND status = 'active'
   AND created_at >= $2

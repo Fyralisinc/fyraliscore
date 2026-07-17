@@ -172,7 +172,7 @@ async def evaluate_check_expression(
         op = m.group(2)
         threshold = float(m.group(3))
         conf = await ctx.conn.fetchval(
-            "SELECT confidence FROM models WHERE id = $1 AND tenant_id = $2",
+            "SELECT confidence FROM accepted_current_models WHERE id = $1 AND tenant_id = $2",
             mid,
             ctx.tenant_id,
         )

@@ -36,6 +36,10 @@ from services.app.gateway.map_router import (
     TopologyEventsResponse,
 )
 from services.reasoning.topology.umap_projector import UMAPProjector
+from services.domain.models.read_shapes import (
+    ACCEPTED_MODEL_ROWS_SQL,
+    ACCEPTED_PROJECTED_MODEL_EDGES_SQL,
+)
 
 
 # All four legal edge_kinds. Used as the default edge_kinds filter on
@@ -270,7 +274,8 @@ async def _fetch_snapshot_models(
     include_archived: bool,
     since: datetime | None,
 ) -> dict[UUID, dict[str, Any]]:
-    status_filter = "" if include_archived else " AND m.status = 'active'"
+    model_rows = "models" if include_archived else ACCEPTED_MODEL_ROWS_SQL
+    status_filter = "" if include_archived else ""
     since_filter = ""
     args: list[Any] = [tenant_id]
     if since is not None:
@@ -297,7 +302,7 @@ async def _fetch_snapshot_models(
           m.last_confirmed_at,
           m.created_at,
           mnm.neighborhood_id AS neighborhood_id
-        FROM models m
+        FROM {model_rows} m
         LEFT JOIN model_neighborhood_membership mnm
           ON mnm.model_id = m.id AND mnm.tenant_id = m.tenant_id
         WHERE m.tenant_id = $1
@@ -322,11 +327,11 @@ async def _fetch_snapshot_edges(
         return []
     return list(
         await pool.fetch(
-            """
+            f"""
             SELECT
               e.source_model_id, e.target_model_id, e.edge_kind,
               e.weight, e.status, e.detected_by
-            FROM model_edges e
+            FROM {ACCEPTED_PROJECTED_MODEL_EDGES_SQL} e
             WHERE e.tenant_id = $1
               AND e.status = 'active'
               AND e.edge_kind = ANY($2::text[])

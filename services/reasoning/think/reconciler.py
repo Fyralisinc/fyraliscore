@@ -626,7 +626,7 @@ async def _find_candidates(
                confidence, proposition_kind, "natural", created_at,
                supporting_event_ids, signal_readings, confirmed_count,
                supporting_model_ids, falsifier, proposition, domain_tags
-        FROM models
+        FROM accepted_current_models
         WHERE {' AND '.join(where)}
         ORDER BY embedding <=> $LIMITSEED::vector
         LIMIT {int(k)}

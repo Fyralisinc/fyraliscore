@@ -189,7 +189,7 @@ async def _linked_predictions(
     rows = await conn.fetch(
         """
         SELECT id, "natural" AS natural, confidence, evaluate_at
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1
           AND status = 'active'
           AND claim_role = 'prediction'

@@ -115,7 +115,7 @@ SELECT
     m.supporting_model_ids,
     m.created_at,
     m.scope_entities
-FROM models m
+FROM accepted_current_models m
 WHERE m.tenant_id           = $1
   -- Imaginary-node pattern: hypothesis Models (system-imputed
   -- intermediate states awaiting ratification) surface in the same

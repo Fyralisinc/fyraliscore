@@ -382,7 +382,7 @@ async def _existing_model_ids_in_order(
     rows = await conn.fetch(
         """
         SELECT id
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1
           AND id = ANY($2::uuid[])
         """,

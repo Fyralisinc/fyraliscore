@@ -28,11 +28,9 @@ def _function_source(relative: str, name: str) -> str:
 
 def test_manifest_reconciles_every_p0_reader_module() -> None:
     report = scan_reader_cutover(ROOT, MANIFEST)
-    assert len(report.results) > 21
+    assert len(report.results) == 86
     assert all(item.reason for item in report.results)
-    assert any(
-        item.reason.startswith("P0 direct reader") for item in report.results
-    )
+    assert all(item.authority != "uncovered" for item in report.results)
 
 
 def test_historical_and_audit_exemptions_are_explicit() -> None:
@@ -45,14 +43,8 @@ def test_historical_and_audit_exemptions_are_explicit() -> None:
 
 def test_current_coverage_is_truthful_and_names_all_debt() -> None:
     report = scan_reader_cutover(ROOT, MANIFEST)
-    assert report.coverage == 7 / len(report.consequential)
-    assert {
-        "services/domain/bridge/queries.py",
-        "services/app/gateway/map_routes.py",
-        "services/app/gateway/model_page_routes.py",
-        "services/reasoning/sage/company_profile/repo.py",
-        "services/reasoning/topology/field.py",
-    }.issubset(report.remaining_debt)
+    assert report.coverage == 1.0
+    assert report.remaining_debt == ()
 
 
 def test_central_cutover_tokens_are_ratcheted() -> None:
@@ -85,3 +77,18 @@ def test_cut_over_central_sql_seams_cannot_regress_to_raw_models() -> None:
         source = _function_source(module, function)
         assert "ACCEPTED_MODEL_ROWS_SQL" in source, (module, function)
         assert not RAW_MODEL_READ.search(source), (module, function)
+
+
+def test_newly_classified_consequential_readers_have_no_raw_model_sql() -> None:
+    import json
+
+    manifest = json.loads(MANIFEST.read_text())
+    for item in manifest["additional_consequential"]:
+        source = (ROOT / item["module"]).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        sql_literals = "\n".join(
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        )
+        assert not RAW_MODEL_READ.search(sql_literals), item["module"]

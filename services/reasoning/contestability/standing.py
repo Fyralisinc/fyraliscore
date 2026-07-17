@@ -58,7 +58,7 @@ async def actor_has_standing_on_model(
     row = await conn.fetchrow(
         """
         SELECT scope_actors, scope_entities, tenant_id
-        FROM models
+        FROM accepted_current_models
         WHERE id = $1
         """,
         model_id,

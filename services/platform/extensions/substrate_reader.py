@@ -152,7 +152,7 @@ class CapabilityScopedReader:
                 """
                 SELECT id, tenant_id, proposition_kind, status, confidence,
                        proposition, natural, created_at
-                FROM models WHERE id = $1
+                FROM accepted_current_models WHERE id = $1
                 """,
                 model_id,
             )

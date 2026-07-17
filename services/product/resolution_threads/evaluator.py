@@ -167,7 +167,7 @@ async def _load_evidence(
         rows = await conn.fetch(
             """
             SELECT id, kind, proposition, updated_at
-            FROM models
+            FROM accepted_current_models
             WHERE tenant_id = $1 AND id = $2
             """,
             tenant_id,

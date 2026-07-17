@@ -359,7 +359,7 @@ async def _load_endpoint_text(
     rows = await conn.fetch(
         """
         SELECT id, "natural", proposition
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1
           AND id = ANY($2::uuid[])
         """,

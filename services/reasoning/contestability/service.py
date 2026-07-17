@@ -155,7 +155,7 @@ async def _load_model_snapshot(
         """
         SELECT id, tenant_id, scope_actors, confidence, signal_readings,
                reading_contestable
-        FROM models
+        FROM accepted_current_models
         WHERE id = $1
         """,
         inp.model_id,

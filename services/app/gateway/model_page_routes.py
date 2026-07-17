@@ -39,6 +39,10 @@ from services.product.model_trace.repo import (
     trace_forward,
 )
 from services.product.resolution_threads import repo as resolution_repo
+from services.domain.models.read_shapes import (
+    ACCEPTED_MODEL_ROWS_SQL,
+    ACCEPTED_PROJECTED_MODEL_EDGES_SQL,
+)
 
 
 # =====================================================================
@@ -456,12 +460,12 @@ async def _fetch_models(pool, tenant_id: UUID) -> list[dict[str, Any]]:
     coarse mapping and don't want to re-fit UMAP / topology data.
     """
     rows = await pool.fetch(
-        """
+        f"""
         SELECT m.id, m."natural" AS natural, m.proposition_kind,
                m.proposition, m.confidence, m.activation, m.status,
                m.contested_count, m.confirmed_count, m.created_at,
                m.last_confirmed_at
-        FROM models m
+        FROM {ACCEPTED_MODEL_ROWS_SQL} m
         WHERE m.tenant_id = $1
           AND m.status = 'active'
         ORDER BY m.activation * m.confidence DESC, m.created_at DESC
@@ -524,9 +528,9 @@ async def _fetch_edges(
     if not model_ids:
         return []
     rows = await pool.fetch(
-        """
+        f"""
         SELECT source_model_id, target_model_id, edge_kind, weight, status
-        FROM model_edges
+        FROM {ACCEPTED_PROJECTED_MODEL_EDGES_SQL}
         WHERE tenant_id = $1
           AND status = 'active'
           AND source_model_id = ANY($2::uuid[])
@@ -1206,12 +1210,12 @@ async def _build_item_detail(
     flagged so the renderer can style them as soft connections.
     """
     row = await pool.fetchrow(
-        """
+        f"""
         SELECT m.id, m."natural" AS natural, m.proposition_kind,
                m.proposition, m.confidence, m.activation, m.status,
                m.contested_count, m.confirmed_count, m.created_at,
                m.last_confirmed_at
-        FROM models m
+        FROM {ACCEPTED_MODEL_ROWS_SQL} m
         WHERE m.id = $1 AND m.tenant_id = $2
         """,
         item_id, tenant_id,
@@ -1233,7 +1237,7 @@ async def _build_item_detail(
     # Pull direct neighbors via model_edges JOIN models so we get
     # category classification on the other side too.
     edge_rows_out = await pool.fetch(
-        """
+        f"""
         SELECT e.target_model_id AS other_id, e.edge_kind, e.weight,
                m2."natural" AS other_natural,
                m2.proposition_kind AS other_kind,
@@ -1242,8 +1246,8 @@ async def _build_item_detail(
                m2.activation AS other_activation,
                m2.contested_count AS other_contested,
                m2.confirmed_count AS other_confirmed
-        FROM model_edges e
-        JOIN models m2 ON m2.id = e.target_model_id AND m2.tenant_id = e.tenant_id
+        FROM {ACCEPTED_PROJECTED_MODEL_EDGES_SQL} e
+        JOIN {ACCEPTED_MODEL_ROWS_SQL} m2 ON m2.id = e.target_model_id AND m2.tenant_id = e.tenant_id
         WHERE e.tenant_id = $1 AND e.source_model_id = $2
           AND e.status = 'active'
         LIMIT 12
@@ -1251,7 +1255,7 @@ async def _build_item_detail(
         tenant_id, item_id,
     )
     edge_rows_in = await pool.fetch(
-        """
+        f"""
         SELECT e.source_model_id AS other_id, e.edge_kind, e.weight,
                m2."natural" AS other_natural,
                m2.proposition_kind AS other_kind,
@@ -1260,8 +1264,8 @@ async def _build_item_detail(
                m2.activation AS other_activation,
                m2.contested_count AS other_contested,
                m2.confirmed_count AS other_confirmed
-        FROM model_edges e
-        JOIN models m2 ON m2.id = e.source_model_id AND m2.tenant_id = e.tenant_id
+        FROM {ACCEPTED_PROJECTED_MODEL_EDGES_SQL} e
+        JOIN {ACCEPTED_MODEL_ROWS_SQL} m2 ON m2.id = e.source_model_id AND m2.tenant_id = e.tenant_id
         WHERE e.tenant_id = $1 AND e.target_model_id = $2
           AND e.status = 'active'
         LIMIT 12
@@ -1447,12 +1451,12 @@ async def _synth_neighbors(
     # first. We use the same band/category classifier so the routing
     # is consistent with the rest of the API.
     rows = await pool.fetch(
-        """
+        f"""
         SELECT m.id, m."natural" AS natural, m.proposition_kind,
                m.proposition, m.confidence, m.activation, m.status,
                m.contested_count, m.confirmed_count, m.created_at,
                m.last_confirmed_at
-        FROM models m
+        FROM {ACCEPTED_MODEL_ROWS_SQL} m
         WHERE m.tenant_id = $1
           AND m.status = 'active'
         ORDER BY m.activation * m.confidence DESC, m.created_at DESC

@@ -153,7 +153,7 @@ class ProbeHandler:
                     SELECT id, proposition_kind,
                            proposition->>'qualitative_impact' AS qualitative_impact,
                            proposition->>'text' AS proposition_text
-                    FROM models
+                    FROM accepted_current_models
                     WHERE id = $1 AND tenant_id = $2
                       AND claim_role = 'recommendation'
                     """,

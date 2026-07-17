@@ -25,6 +25,7 @@ import asyncpg
 from lib.shared.utility_governor import downstream_trigger_utility
 from lib.shared.types import ModelRow
 from services.domain.triggers import enqueue_trigger
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 from services.reasoning.judgment.scoring import JudgmentScores, clamp_score
 from services.reasoning.relationships.candidates import (
     TOPOLOGY_EMITTABLE_EDGE_KINDS,
@@ -578,7 +579,7 @@ class LatentTopologyService:
         row = await conn.fetchrow(
             f"""
             SELECT {_MODEL_TOPOLOGY_COLUMNS}
-            FROM models
+            FROM {ACCEPTED_MODEL_ROWS_SQL}
             WHERE tenant_id = $1
               AND id = $2
             """,
@@ -612,7 +613,7 @@ class LatentTopologyService:
         rows = await conn.fetch(
             f"""
             SELECT {_MODEL_TOPOLOGY_COLUMNS}
-            FROM models
+            FROM {ACCEPTED_MODEL_ROWS_SQL}
             WHERE tenant_id = $1
               AND status = 'active'
               AND embedding IS NOT NULL
@@ -669,7 +670,7 @@ class LatentTopologyService:
                    confidence, activation, status, proposition_kind,
                    created_at,
                    1.0 - (embedding <=> '{embedding_literal}'::vector) AS latent_affinity
-            FROM models
+            FROM {ACCEPTED_MODEL_ROWS_SQL}
             WHERE tenant_id = $1
               AND status = 'active'
               AND id != $2
@@ -688,19 +689,19 @@ class LatentTopologyService:
         scope_entities = _normalized_scope_entities(model.scope_entities)
         if scope_entities or model.scope_actors:
             surface_rows = await conn.fetch(
-                """
+                f"""
                 SELECT DISTINCT m.id, m.tenant_id, m.proposition,
                        m."natural" AS natural, m.embedding, m.scope_actors,
                        m.scope_entities, m.scope_temporal, m.confidence,
                        m.activation, m.status, m.proposition_kind,
                        m.created_at,
                        NULL::float AS latent_affinity
-                FROM models m
+                FROM {ACCEPTED_MODEL_ROWS_SQL} m
                 WHERE m.tenant_id = $1
                   AND m.status = 'active'
                   AND m.id != $2
                   AND (
-                    ($3::uuid[] != '{}'::uuid[] AND m.scope_actors && $3::uuid[])
+                    ($3::uuid[] != '{{}}'::uuid[] AND m.scope_actors && $3::uuid[])
                     OR
                     ($4::jsonb != '[]'::jsonb AND m.scope_entities @> $4::jsonb)
                   )

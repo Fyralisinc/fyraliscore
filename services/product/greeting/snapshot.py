@@ -389,7 +389,7 @@ class SnapshotComposer:
                    confidence_at_assertion, proposition_kind, status,
                    created_at, last_retrieved_at,
                    scope_actors, scope_entities
-            FROM models
+            FROM accepted_current_models
             WHERE tenant_id = $1
               AND status = 'active'
               AND confidence >= $2
@@ -414,7 +414,7 @@ class SnapshotComposer:
                        confidence_at_assertion, proposition_kind, status,
                        created_at, last_retrieved_at,
                        scope_actors, scope_entities
-                FROM models
+                FROM accepted_current_models
                 WHERE tenant_id = $1
                   AND status = 'active'
                 ORDER BY confidence DESC, created_at DESC
@@ -756,7 +756,7 @@ class SnapshotComposer:
                 'contested_model'::text AS uncertainty_kind,
                 'contested_count exceeds confirmations'::text AS why,
                 (m.contested_count - m.confirmed_count + 1)::float AS score
-              FROM models m
+              FROM accepted_current_models m
               WHERE m.tenant_id = $1
                 AND m.status = 'active'
                 AND m.contested_count > m.confirmed_count
@@ -770,7 +770,7 @@ class SnapshotComposer:
                 'overdue_prediction'::text AS uncertainty_kind,
                 'prediction is past evaluate_at without resolution'::text AS why,
                 1.0::float AS score
-              FROM models m
+              FROM accepted_current_models m
               WHERE m.tenant_id = $1
                 AND m.status = 'active'
                 AND m.claim_role = 'prediction'
@@ -791,7 +791,7 @@ class SnapshotComposer:
                 concat(e.edge_kind, ' edge needs review') AS why,
                 GREATEST(e.confidence, ABS(COALESCE(e.weight, 0.6)))::float AS score
               FROM model_edges e
-              JOIN models m
+              JOIN accepted_current_models m
                 ON m.tenant_id = e.tenant_id
                AND m.id = e.source_model_id
                AND m.status = 'active'

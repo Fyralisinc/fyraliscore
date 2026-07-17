@@ -84,7 +84,7 @@ async def _count_active_models(conn: asyncpg.Connection, tenant_id: UUID) -> int
     value = await conn.fetchval(
         """
         SELECT count(*)
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1
           AND status = 'active'
         """,
@@ -167,7 +167,7 @@ async def _load_structural_feature_stats(
     stale_rows = await conn.fetchval(
         """
         SELECT count(*)
-        FROM models m
+        FROM accepted_current_models m
         LEFT JOIN model_structural_features f
           ON f.model_id = m.id
          AND f.tenant_id = m.tenant_id

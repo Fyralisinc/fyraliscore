@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 from uuid import UUID
 
 import asyncpg
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 
 from services.reasoning.sage.company_profile.builder import (
     build_company_learning_profile,
@@ -161,7 +162,7 @@ async def _load_source_reliability_stats(
             break
     if grounding_tables_exist:
         grounding_rows = await conn.fetch(
-            """
+            f"""
             WITH recent_traces AS (
               SELECT trace.*
               FROM grounding_traces trace
@@ -217,7 +218,7 @@ async def _load_source_reliability_stats(
               LEFT JOIN source_semantic_admission_decisions admission
                 ON admission.tenant_id = interpretation.tenant_id
                AND admission.interpretation_id = interpretation.id
-              LEFT JOIN models model
+              LEFT JOIN {ACCEPTED_MODEL_ROWS_SQL} model
                 ON model.tenant_id = admission.tenant_id
                AND model.id = admission.admitted_model_id
               LEFT JOIN corrected_predecessors correction

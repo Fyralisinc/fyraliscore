@@ -1071,7 +1071,7 @@ class ThinkWorker:
                       'auto_completed_by',
                       $1::text
                     )
-                FROM models m
+                FROM accepted_current_models m
                 WHERE q.completed_at IS NULL
                   AND q.batch_parent_id IS NULL
                   AND q.trigger_kind = 'T2'
@@ -1106,7 +1106,7 @@ class ThinkWorker:
                   {tenant_clause}
                   AND NOT EXISTS (
                     SELECT 1
-                    FROM models m
+                    FROM accepted_current_models m
                     WHERE m.id = q.model_id
                       AND m.tenant_id = q.tenant_id
                   )
@@ -1581,7 +1581,7 @@ class ThinkWorker:
         model_rows = await conn.fetch(
             """
             SELECT id, scope_actors, scope_entities
-            FROM models
+            FROM accepted_current_models
             WHERE id = ANY($1::uuid[])
             """,
             model_ids,
@@ -1721,7 +1721,7 @@ class ThinkWorker:
             await conn.fetch(
                 """
                 SELECT id, scope_actors, scope_entities
-                FROM models
+                FROM accepted_current_models
                 WHERE id = ANY($1::uuid[])
                 """,
                 model_ids,
@@ -2221,7 +2221,7 @@ class ThinkWorker:
             await conn.fetch(
                 """
             SELECT id, "natural", scope_actors, scope_entities
-            FROM models
+            FROM accepted_current_models
             WHERE id = ANY($1::uuid[])
             ORDER BY array_position($1::uuid[], id)
             """,

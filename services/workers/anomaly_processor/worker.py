@@ -551,7 +551,7 @@ class AnomalyProcessor:
                     SELECT tenant_id FROM observations
                       WHERE occurred_at >= now() - interval '1 hour'
                     UNION
-                    SELECT tenant_id FROM models WHERE status = 'active'
+                    SELECT tenant_id FROM accepted_current_models
                     UNION
                     SELECT tenant_id FROM commitments
                       WHERE state NOT IN ('doneverified', 'closed')

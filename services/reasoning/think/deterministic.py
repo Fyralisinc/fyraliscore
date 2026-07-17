@@ -186,7 +186,7 @@ async def _handle_t2_prediction(
                contributing_models, confirmed_count, contested_count,
                last_confirmed_at, resolution_outcome,
                confidence_at_assertion
-        FROM models WHERE id = $1
+        FROM accepted_current_models WHERE id = $1
         """,
         model_id,
     )
@@ -266,7 +266,7 @@ async def _handle_t2_prediction(
         contributors = row["contributing_models"] or []
         for cid in contributors:
             c_row = await conn.fetchrow(
-                "SELECT confidence FROM models WHERE id = $1", cid
+                "SELECT confidence FROM accepted_current_models WHERE id = $1", cid
             )
             if c_row is None:
                 continue
@@ -474,7 +474,7 @@ async def _handle_t4_background(
             if cause_kind:
                 nudge = nudge_map.get(cause_kind, -0.05)
                 row = await conn.fetchrow(
-                    "SELECT confidence FROM models WHERE id = $1",
+                    "SELECT confidence FROM accepted_current_models WHERE id = $1",
                     dependent_model_id,
                 )
                 if row is not None:
@@ -541,7 +541,7 @@ async def _grounding_correction_revalidation_ops(
     row = await conn.fetchrow(
         """
         SELECT status, visible_to_subjects, supporting_model_ids
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id=$1 AND id=$2
         """,
         tenant_id,
@@ -562,7 +562,7 @@ async def _grounding_correction_revalidation_ops(
     surviving_legacy_rows = await conn.fetch(
         """
         SELECT id
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id=$1
           AND id=ANY($2::uuid[])
           AND id<>$3
@@ -598,7 +598,7 @@ async def _grounding_correction_revalidation_ops(
             SELECT EXISTS (
               SELECT 1
               FROM model_edges edge
-              JOIN models supporter
+              JOIN accepted_current_models supporter
                 ON supporter.tenant_id=edge.tenant_id
                AND supporter.id=edge.source_model_id
                AND supporter.status='active'
@@ -742,7 +742,7 @@ async def _handle_t2_hypothesis_approved(
         """
         SELECT id, confidence, confirmed_count, signal_readings,
                claim_role, status
-        FROM models
+        FROM accepted_current_models
         WHERE id = $1 AND tenant_id = $2
         """,
         model_id, trigger.tenant_id,
@@ -845,7 +845,7 @@ async def _handle_t2_hypothesis_corrected(
         SELECT id, claim_role, status, scope_actors, scope_entities,
                scope_temporal, supporting_model_ids, born_from_event_id,
                proposition
-        FROM models
+        FROM accepted_current_models
         WHERE id = $1 AND tenant_id = $2
         """,
         model_id, trigger.tenant_id,
@@ -956,7 +956,7 @@ async def _handle_t2_hypothesis_other(
         return _empty_diff(trigger, "no model_id")
 
     row = await conn.fetchrow(
-        "SELECT claim_role, status FROM models "
+        "SELECT claim_role, status FROM accepted_current_models "
         "WHERE id = $1 AND tenant_id = $2",
         model_id, trigger.tenant_id,
     )
@@ -1070,7 +1070,7 @@ async def _handle_t3_missing_transition(
         SELECT id, "natural" AS natural,
                scope_actors, scope_entities, scope_temporal,
                status
-        FROM models
+        FROM accepted_current_models
         WHERE id = $1 AND tenant_id = $2
         """,
         model_id,

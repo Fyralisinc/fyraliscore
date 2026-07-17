@@ -35,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from lib.shared.db import get_pool
 from lib.shared.types import CommitmentRow
 from services.domain.resources.bridge import arr_usd_from_current_value
+from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 
 
 # =====================================================================
@@ -141,7 +142,7 @@ class _RevenueAtRiskCustomers:
 # =====================================================================
 
 
-_REVENUE_AT_RISK_SQL = """
+_REVENUE_AT_RISK_SQL = f"""
     WITH at_risk_cmt AS (
       SELECT c.id AS commitment_id, c.state
       FROM commitments c
@@ -150,7 +151,7 @@ _REVENUE_AT_RISK_SQL = """
         AND (
           (c.due_date IS NOT NULL AND c.due_date < now() + $3)
           OR EXISTS (
-            SELECT 1 FROM models m
+            SELECT 1 FROM {ACCEPTED_MODEL_ROWS_SQL} m
             WHERE m.tenant_id = $1
               AND m.proposition_kind = 'prediction'
               AND m.status = 'active'
@@ -169,7 +170,7 @@ _REVENUE_AT_RISK_SQL = """
         AND c.state = ANY($2::text[])
         AND (c.due_date IS NULL OR c.due_date >= now() + $3)
         AND EXISTS (
-          SELECT 1 FROM models m
+          SELECT 1 FROM {ACCEPTED_MODEL_ROWS_SQL} m
           WHERE m.tenant_id = $1
             AND m.proposition_kind = 'prediction'
             AND m.status = 'active'

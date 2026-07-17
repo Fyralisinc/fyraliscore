@@ -184,7 +184,7 @@ async def _detect_stale_model_dynamics(
     rows = await conn.fetch(
         """
         SELECT id, "natural", activation, last_retrieved_at, created_at
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1
           AND id = ANY($2::uuid[])
           AND status = 'active'

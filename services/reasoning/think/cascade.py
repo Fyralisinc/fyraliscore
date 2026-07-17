@@ -611,7 +611,7 @@ async def enqueue_t2_belief_updated(
     """
     # Fetch natural text + scope actors from the model so retrieval has seeds.
     row = await conn.fetchrow(
-        'SELECT "natural", scope_actors FROM models WHERE id = $1 AND tenant_id = $2',
+        'SELECT "natural", scope_actors FROM accepted_current_models WHERE id = $1 AND tenant_id = $2',
         model_id,
         tenant_id,
     )

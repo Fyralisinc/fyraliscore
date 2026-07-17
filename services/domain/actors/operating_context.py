@@ -87,7 +87,7 @@ async def load_actor_operating_context(
         SELECT id, "natural", proposition_kind, claim_role,
                abstraction_level, confidence, activation, scope_actors,
                created_at
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1
           AND status = 'active'
           AND scope_actors && $2::uuid[]

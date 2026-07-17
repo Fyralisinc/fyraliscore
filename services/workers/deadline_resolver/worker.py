@@ -21,7 +21,7 @@ Design notes
   lines 730-760). BUILD-PLAN §5 Prompt 4.A says "across all tenants,
   or loop per-tenant if the repo requires a tenant_id (check the API;
   document whichever)". We loop per-tenant: one lightweight
-  `SELECT DISTINCT tenant_id FROM models WHERE status='active' AND
+  `SELECT DISTINCT tenant_id FROM accepted_current_models AND
   evaluate_at <= $now` per cycle, then call `get_predictions_due` for
   each discovered tenant. Documented in BUILD-LOG deviation (a).
 
@@ -323,7 +323,7 @@ class DeadlineResolver:
             rows = await conn.fetch(
                 """
                 SELECT DISTINCT tenant_id
-                FROM models
+                FROM accepted_current_models
                 WHERE status = 'active'
                   AND evaluate_at IS NOT NULL
                   AND evaluate_at <= $1

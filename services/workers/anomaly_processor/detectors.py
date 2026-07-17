@@ -266,7 +266,7 @@ async def detect_silent_disagreement(
         """
         SELECT id, scope_actors, confidence, confidence_at_assertion,
                supporting_event_ids, proposition
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1
           AND status = 'active'
           AND array_length(scope_actors, 1) >= 1
@@ -357,7 +357,7 @@ async def detect_activation_decay_anomaly(
     rows = await conn.fetch(
         """
         SELECT id, proposition_kind, activation
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1 AND status = 'active'
         """,
         tenant_id,

@@ -446,7 +446,7 @@ async def focused_answerability_index_scan(
             )
             SELECT scoped_ids.model_id
             FROM scoped_ids
-            JOIN models m
+            JOIN accepted_current_models m
               ON m.id = scoped_ids.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -471,7 +471,7 @@ async def focused_answerability_index_scan(
           SELECT models.id,
                  models.activation,
                  models.created_at
-          FROM models
+          FROM accepted_current_models
           WHERE models.id = scored.model_id
             AND models.tenant_id = $1
             AND models.status = 'active'
@@ -564,7 +564,7 @@ async def focused_scope_sparse_scan(
             )
             SELECT scoped_ids.model_id
             FROM scoped_ids
-            JOIN models m
+            JOIN accepted_current_models m
               ON m.id = scoped_ids.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -586,7 +586,7 @@ async def focused_scope_sparse_scan(
                  m.activation,
                  m.created_at
           FROM scope_overlap
-          JOIN models m
+          JOIN accepted_current_models m
             ON m.id = scope_overlap.model_id
            AND m.tenant_id = $1
            AND m.status = 'active'
@@ -632,7 +632,7 @@ async def focused_scope_sparse_scan(
         FROM lexical_scored
         JOIN scope_pool
           ON scope_pool.model_id = lexical_scored.model_id
-        JOIN models m
+        JOIN accepted_current_models m
           ON m.id = lexical_scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -697,7 +697,7 @@ async def focused_direct_scope_scan(
             )
             SELECT scoped_ids.model_id
             FROM scoped_ids
-            JOIN models m
+            JOIN accepted_current_models m
               ON m.id = scoped_ids.model_id
              AND m.tenant_id = $1
              AND m.status = 'active'
@@ -716,7 +716,7 @@ async def focused_direct_scope_scan(
         SELECT m.id,
                scope_overlap.overlap::int AS scope_overlap
         FROM scope_overlap
-        JOIN models m
+        JOIN accepted_current_models m
           ON m.id = scope_overlap.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -1612,7 +1612,7 @@ async def _cached_active_sparse_model_count(
         conn,
         """
         SELECT greatest(1, count(*)::int) AS active_model_count
-        FROM models
+        FROM accepted_current_models
         WHERE tenant_id = $1
           AND status = 'active'
         """,
@@ -1941,7 +1941,7 @@ async def hybrid_lexical_model_scan(
         SELECT m.id,
                scored.match_count
         FROM scored
-        JOIN models m
+        JOIN accepted_current_models m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
@@ -1998,7 +1998,7 @@ async def hybrid_sparse_model_scan(
         else """
         active_models AS MATERIALIZED (
           SELECT greatest(1, count(*)::int)::float8 AS active_model_count
-          FROM models
+          FROM accepted_current_models
           WHERE tenant_id = $1
             AND status = 'active'
         ),
@@ -2078,7 +2078,7 @@ async def hybrid_sparse_model_scan(
                scored.match_count
         FROM scored
         CROSS JOIN query_meta
-        JOIN models m
+        JOIN accepted_current_models m
           ON m.id = scored.model_id
          AND m.tenant_id = $1
         WHERE m.status = 'active'
