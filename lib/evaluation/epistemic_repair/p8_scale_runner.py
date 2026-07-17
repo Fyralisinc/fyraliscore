@@ -33,7 +33,9 @@ class TenantScaleReceipt:
     batches: int
     observations: int
     retrieval_samples_ms: tuple[float, ...]
+    observation_write_samples_ms: tuple[float, ...]
     barrier_samples_ms: tuple[float, ...]
+    barrier_sql_calls: tuple[int, ...]
     prompt_token_samples: tuple[int, ...]
     queue_depth_samples: tuple[int, ...]
     accepted_model_hits: int
@@ -42,6 +44,7 @@ class TenantScaleReceipt:
     canonical_versions: int
     barriers: int
     elapsed_ms: float
+    pool_wait_ms: float
     queried_state_digest: str
 
 
@@ -53,6 +56,7 @@ class ActualScaleCell:
     tenant_concurrency: int
     tenant_receipts: tuple[TenantScaleReceipt, ...]
     retrieval_p95_ms: float
+    observation_write_p95_ms: float
     barrier_p95_ms: float
     prompt_token_p95: int
     queue_depth_slope_final_half: float
@@ -89,6 +93,34 @@ class ScaleExecution:
     shared_contention: SharedContentionResult | None
     exact_matrix_coverage: bool
     physically_isolated_databases: bool
+    evidence_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class WarmPairSample:
+    repetition: int
+    tenant_concurrency: int
+    pool_wait_p95_ms: float
+    observation_write_p95_ms: float
+    barrier_p95_ms: float
+    barrier_sql_calls_per_batch: int
+    end_to_end_batch_p95_ms: float
+    cell_wall_time_ms: float
+    semantic_quality: float
+    cross_tenant_leakage: int
+
+
+@dataclass(frozen=True, slots=True)
+class WarmPairDiagnostic:
+    batch_size: int
+    memory_horizon_batches: int
+    repetitions: int
+    pool_size: int
+    samples: tuple[WarmPairSample, ...]
+    barrier_ratio_p95: float
+    end_to_end_ratio_p95: float
+    pool_wait_ratio_p95: float | None
+    diagnosis: str
     evidence_digest: str
 
 
@@ -148,6 +180,25 @@ def _p95(values: list[float] | tuple[float, ...]) -> float:
     return float(ordered[min(len(ordered) - 1, ceil(.95 * len(ordered)) - 1)])
 
 
+class _CountingTx:
+    """Transparent statement counter for one production barrier call."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self.conn = conn
+        self.calls = 0
+
+    def __getattr__(self, name: str):
+        value = getattr(self.conn, name)
+        if name not in {"execute", "fetch", "fetchrow", "fetchval"}:
+            return value
+
+        async def counted(*args, **kwargs):
+            self.calls += 1
+            return await value(*args, **kwargs)
+
+        return counted
+
+
 def _slope_final_half(values: list[int]) -> float:
     tail = values[len(values) // 2:]
     if len(tail) < 2:
@@ -158,13 +209,19 @@ def _slope_final_half(values: list[int]) -> float:
     return 0.0 if denominator == 0 else sum((x - xbar) * (y - ybar) for x, y in zip(xs, tail)) / denominator
 
 
-async def _run_tenant(dsn: str, cell: ScaleCell, ordinal: int) -> TenantScaleReceipt:
+async def _run_tenant(
+    dsn: str, cell: ScaleCell, ordinal: int, *, pool: asyncpg.Pool | None = None,
+) -> TenantScaleReceipt:
     tenant_id, started = uuid4(), time.perf_counter()
-    conn = await asyncpg.connect(dsn)
+    wait_started = time.perf_counter()
+    conn = await pool.acquire() if pool is not None else await asyncpg.connect(dsn)
+    pool_wait_ms = (time.perf_counter() - wait_started) * 1000
     tx = conn.transaction()
     await tx.start()
     retrieval: list[float] = []
+    observation_writes: list[float] = []
     barriers: list[float] = []
+    barrier_sql_calls: list[int] = []
     prompt_tokens: list[int] = []
     queue_depth: list[int] = []
     hits = leakage = 0
@@ -183,13 +240,24 @@ async def _run_tenant(dsn: str, cell: ScaleCell, ordinal: int) -> TenantScaleRec
                     observation_id, tenant_id, base + timedelta(minutes=batch, seconds=position),
                     "synthetic:normalized", json.dumps({"text": text}), text,
                 ))
-            await conn.executemany(
+            before = time.perf_counter()
+            await conn.execute(
                 """INSERT INTO observations (
                      id, tenant_id, occurred_at, kind, source_channel, content,
                      content_text, embedding_pending, trust_tier, entities_mentioned
-                   ) VALUES ($1,$2,$3,'signal',$4,$5::jsonb,$6,true,'ordinary','[]'::jsonb)""",
-                rows,
+                   )
+                   SELECT ids.id, ids.tenant_id, ids.occurred_at, 'signal',
+                          ids.source_channel, ids.content_json::jsonb,
+                          ids.content_text, true, 'ordinary', '[]'::jsonb
+                   FROM unnest(
+                     $1::uuid[], $2::uuid[], $3::timestamptz[],
+                     $4::text[], $5::text[], $6::text[]
+                   ) AS ids(id,tenant_id,occurred_at,source_channel,content_json,content_text)""",
+                [row[0] for row in rows], [row[1] for row in rows],
+                [row[2] for row in rows], [row[3] for row in rows],
+                [row[4] for row in rows], [row[5] for row in rows],
             )
+            observation_writes.append((time.perf_counter() - before) * 1000)
             before = time.perf_counter()
             found = await conn.fetch(
                 """SELECT tenant_id, truth_version_id, proposition
@@ -205,13 +273,15 @@ async def _run_tenant(dsn: str, cell: ScaleCell, ordinal: int) -> TenantScaleRec
             }
             prompt_tokens.append(ceil(len(json.dumps(context, sort_keys=True).encode("utf-8")) / 4))
             before = time.perf_counter()
+            counting_tx = _CountingTx(conn)
             await barrier_service.complete(
-                tx=conn, barrier_id=uuid4(), tenant_id=tenant_id,
+                tx=counting_tx, barrier_id=uuid4(), tenant_id=tenant_id,
                 batch_id=f"{cell.cell_id}:tenant-{ordinal}:batch-{batch}",
                 expected_model_version_ids=(admitted.version_id,),
                 truth_critical_pending_count=0, completed_at=base + timedelta(minutes=batch, seconds=59),
             )
             barriers.append((time.perf_counter() - before) * 1000)
+            barrier_sql_calls.append(counting_tx.calls)
             queue_depth.append(await conn.fetchval(
                 """SELECT count(*)::int FROM company_learning_barriers
                    WHERE tenant_id=$1 AND truth_critical_pending_count > 0""", tenant_id,
@@ -228,23 +298,31 @@ async def _run_tenant(dsn: str, cell: ScaleCell, ordinal: int) -> TenantScaleRec
         return TenantScaleReceipt(
             str(tenant_id), cell.memory_horizon_batches,
             cell.batch_size * cell.memory_horizon_batches, tuple(retrieval),
-            tuple(barriers), tuple(prompt_tokens), tuple(queue_depth), hits,
+            tuple(observation_writes), tuple(barriers), tuple(barrier_sql_calls),
+            tuple(prompt_tokens), tuple(queue_depth), hits,
             leakage, model_count, version_count, barrier_count,
-            (time.perf_counter() - started) * 1000, canonical_sha256(state),
+            (time.perf_counter() - started) * 1000, pool_wait_ms,
+            canonical_sha256(state),
         )
     finally:
         await tx.rollback()
-        await conn.close()
+        if pool is not None:
+            await pool.release(conn)
+        else:
+            await conn.close()
 
 
-async def run_scale_cell(dsn: str, cell: ScaleCell) -> ActualScaleCell:
+async def run_scale_cell(
+    dsn: str, cell: ScaleCell, *, pool: asyncpg.Pool | None = None,
+) -> ActualScaleCell:
     before_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     started = time.perf_counter()
     receipts = tuple(await asyncio.gather(*(
-        _run_tenant(dsn, cell, ordinal) for ordinal in range(cell.tenant_concurrency)
+        _run_tenant(dsn, cell, ordinal, pool=pool) for ordinal in range(cell.tenant_concurrency)
     )))
     wall_ms = (time.perf_counter() - started) * 1000
     retrieval = [sample for row in receipts for sample in row.retrieval_samples_ms]
+    observation_writes = [sample for row in receipts for sample in row.observation_write_samples_ms]
     barriers = [sample for row in receipts for sample in row.barrier_samples_ms]
     prompts = [sample for row in receipts for sample in row.prompt_token_samples]
     queues = [sample for row in receipts for sample in row.queue_depth_samples]
@@ -256,7 +334,8 @@ async def run_scale_cell(dsn: str, cell: ScaleCell) -> ActualScaleCell:
     }
     return ActualScaleCell(
         cell.cell_id, cell.batch_size, cell.memory_horizon_batches,
-        cell.tenant_concurrency, receipts, _p95(retrieval), _p95(barriers),
+        cell.tenant_concurrency, receipts, _p95(retrieval),
+        _p95(observation_writes), _p95(barriers),
         int(_p95(prompts)), _slope_final_half(queues), _p95(barriers),
         min(throughputs) / max(throughputs),
         sum(row.accepted_model_hits for row in receipts) /
@@ -293,4 +372,65 @@ async def run_shared_contention(dsn: str) -> SharedContentionResult:
     return SharedContentionResult(
         tuple(cell.cell_id for cell in results), len(results), wall_ms, individual,
         wall_ms / max(individual, .000001), canonical_sha256(payload),
+    )
+
+
+async def run_warm_pair_diagnostic(
+    dsn: str, *, batch_size: int = 10, memory_horizon_batches: int = 50,
+    repetitions: int = 5, pool_size: int = 20,
+) -> WarmPairDiagnostic:
+    if repetitions < 5:
+        raise ValueError("warm-pair diagnosis requires at least five repetitions")
+    pool = await asyncpg.create_pool(dsn, min_size=pool_size, max_size=pool_size)
+    try:
+        # Explicit warmups are excluded from the denominator.
+        for concurrency in (1, 20):
+            await run_scale_cell(
+                dsn, ScaleCell(f"p8-warmup-t{concurrency}", batch_size, 3, concurrency),
+                pool=pool,
+            )
+        samples: list[WarmPairSample] = []
+        for repetition in range(1, repetitions + 1):
+            # Alternate order to avoid assigning monotonic DB drift to one arm.
+            order = (1, 20) if repetition % 2 else (20, 1)
+            for concurrency in order:
+                cell = await run_scale_cell(
+                    dsn,
+                    ScaleCell(
+                        f"p8-warm-b{batch_size}-h{memory_horizon_batches}-t{concurrency}-r{repetition}",
+                        batch_size, memory_horizon_batches, concurrency,
+                    ),
+                    pool=pool,
+                )
+                waits = [row.pool_wait_ms for row in cell.tenant_receipts]
+                total_per_batch = [row.elapsed_ms / memory_horizon_batches for row in cell.tenant_receipts]
+                sql_calls = [call for row in cell.tenant_receipts for call in row.barrier_sql_calls]
+                samples.append(WarmPairSample(
+                    repetition, concurrency, _p95(waits), cell.observation_write_p95_ms,
+                    cell.barrier_p95_ms, max(sql_calls), _p95(total_per_batch),
+                    cell.wall_time_ms, cell.semantic_quality,
+                    cell.cross_tenant_leakage,
+                ))
+    finally:
+        await pool.close()
+    by_concurrency = {
+        concurrency: [row for row in samples if row.tenant_concurrency == concurrency]
+        for concurrency in (1, 20)
+    }
+    barrier = {key: _p95([x.barrier_p95_ms for x in rows]) for key, rows in by_concurrency.items()}
+    total = {key: _p95([x.end_to_end_batch_p95_ms for x in rows]) for key, rows in by_concurrency.items()}
+    wait = {key: _p95([x.pool_wait_p95_ms for x in rows]) for key, rows in by_concurrency.items()}
+    barrier_ratio = barrier[20] / max(barrier[1], .000001)
+    total_ratio = total[20] / max(total[1], .000001)
+    wait_ratio = None if wait[1] <= .000001 else wait[20] / wait[1]
+    diagnosis = (
+        "database_execution_contention" if barrier_ratio > 2 and wait[20] < barrier[20]
+        else "pool_saturation" if wait[20] >= barrier[20]
+        else "within_declared_envelope"
+    )
+    payload = {"samples": [asdict(row) for row in samples], "pool_size": pool_size,
+               "barrier_ratio": barrier_ratio, "total_ratio": total_ratio}
+    return WarmPairDiagnostic(
+        batch_size, memory_horizon_batches, repetitions, pool_size, tuple(samples),
+        barrier_ratio, total_ratio, wait_ratio, diagnosis, canonical_sha256(payload),
     )
