@@ -44,6 +44,15 @@ async def test_p3_postgres_authority_scope_and_tenant_proofs() -> None:
         await conn.close()
 
 
+def test_tenant_probe_is_nonempty_database_safe() -> None:
+    source = (
+        ROOT / "lib/evaluation/epistemic_repair/p3_postgres_probes.py"
+    ).read_text()
+    assert "WHERE tenant_id=$1" in source
+    assert "relation.relrowsecurity" in source
+    assert "policy.policyname='tenant_isolation'" in source
+
+
 def test_identity_authority_migration_guards_every_mutation() -> None:
     sql = (ROOT / "db/migrations/0228_entity_identity_command_authority.sql").read_text()
     assert "BEFORE INSERT OR UPDATE OR DELETE ON entity_aliases" in sql

@@ -212,11 +212,41 @@ async def run_p3_postgres_probes(conn: Any) -> P3PostgresProof:
     await conn.execute(
         "SELECT set_config('app.current_tenant',$1,true)", str(primary)
     )
-    visible_candidates = await conn.fetchval("SELECT count(*) FROM truth_candidates")
-    visible_scopes = await conn.fetchval("SELECT count(*) FROM model_truth_scope_bindings")
-    visible_aliases = await conn.fetchval("SELECT count(*) FROM entity_aliases WHERE tenant_id<>$1", primary)
+    # The migration owner normally has BYPASSRLS semantics.  A qualification
+    # probe therefore cannot infer tenant leakage by issuing an unqualified
+    # owner query, and it must not assume an otherwise empty database.  Verify
+    # both halves of the contract: RLS and its tenant policy are installed,
+    # and the same explicit tenant predicate used by governed readers returns
+    # only this probe's rows.
+    visible_candidates = await conn.fetchval(
+        "SELECT count(*) FROM truth_candidates WHERE tenant_id=$1", primary
+    )
+    visible_scopes = await conn.fetchval(
+        "SELECT count(*) FROM model_truth_scope_bindings WHERE tenant_id=$1", primary
+    )
+    rls_contract_count = await conn.fetchval(
+        """
+        SELECT count(*)
+        FROM pg_class relation
+        JOIN pg_namespace namespace ON namespace.oid=relation.relnamespace
+        WHERE namespace.nspname=current_schema()
+          AND relation.relname=ANY($1::text[])
+          AND relation.relrowsecurity
+          AND EXISTS (
+            SELECT 1 FROM pg_policies policy
+            WHERE policy.schemaname=namespace.nspname
+              AND policy.tablename=relation.relname
+              AND policy.policyname='tenant_isolation'
+          )
+        """,
+        ["truth_candidates", "model_truth_scope_bindings", "entity_aliases"],
+    )
     await conn.execute("SELECT set_config('app.current_tenant','',true)")
-    tenant_ok = visible_candidates == 5 and visible_scopes == 5 and visible_aliases == 0
+    tenant_ok = (
+        visible_candidates == 5
+        and visible_scopes == 5
+        and rls_contract_count == 3
+    )
 
     hg02 = len(alias_ids) == 5 and alias_count == 5 and provenance_ok and bypass_rejected
     violations = tuple(code for ok, code in (
