@@ -2,7 +2,7 @@
 
 **Document type:** Central implementation and evaluation coordinator
 
-**Status:** In execution — deterministic P0-P5 complete; P6-P8 active in parallel
+**Status:** In execution — P0-P5 complete; P6-P8 active in parallel
 
 **Active branch:** `codex/autonomous-company-learning`
 
@@ -26,7 +26,7 @@
 | P1-B/P1-E receipt schema, emission, runtime persistence, cost basis | Deterministic implementation complete; PostgreSQL proof pending | `27f320fc`, `16d0f335`, `ddf12cc8` |
 | P1-C unified retry ownership | Deterministic implementation complete | `16d0f335` |
 | P1-D timing/cost reconciliation evaluator | Complete as deterministic evaluator | `353b1c24` |
-| P1 two-batch deterministic exit run | Population sealed; execution/report pending | `b8d1da2f` |
+| P1 reconciled observability and bounded real provider | Complete with Codex CLI plus durable PostgreSQL receipt reopen/replay | `d5a43734` |
 | P2 governed truth kernel and accepted-reader cutover | Complete on deterministic and PostgreSQL suites | `07420a95` through `e02d2679` |
 | P3 boundary, context, and entity grounding | Complete on sealed 120-signal qualification population | `68ff4a59`, `cc9de466`, `905ad557` |
 | P4 causal barrier and decision-level feedback | Complete on deterministic six-batch PostgreSQL evaluator | `6ca84393`, `33f51fde`, `3d38da74` |
@@ -36,10 +36,11 @@
 The deterministic company-learning kernel now has one PostgreSQL-backed
 zero-seed vertical over three genuine 25-signal batches. That result proves
 production-seam mechanical coherence, not provider-semantic quality or release
-readiness. P1 real-provider success remains externally unavailable after a
-truthfully recorded DeepSeek HTTP 402, and P6-P8 plus the coherent P9 release
-audit remain required. Codex subprocess transport still has no lower SDK retry
-knob, so its receipt completeness is at wrapper-invocation granularity.
+readiness. The former DeepSeek HTTP 402 is no longer a dependency: the bounded
+real-provider gate passed through subscription-backed Codex CLI using pinned
+model `gpt-5.4`. P6-P8 plus the coherent P9 release audit remain required.
+Codex subprocess transport still has no lower SDK retry knob, so its receipt
+completeness is at wrapper-invocation granularity.
 
 ## 1. Purpose
 

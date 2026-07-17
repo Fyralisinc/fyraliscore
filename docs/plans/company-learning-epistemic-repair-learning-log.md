@@ -679,6 +679,42 @@ focused tests pass on a freshly migrated PostgreSQL database.
 for provider funding. It is not evidence of real-provider semantic parity,
 which remains a visible P1/P5/P9 proof boundary.
 
+### 2026-07-18 — LOG-021 — Codex CLI replaces the funded-provider dependency
+
+**Type:** observed + corrected
+
+The original real-provider smoke was coupled to DeepSeek and stopped at HTTP
+402. The repository already had a first-class Codex provider using local
+subscription authentication. The configured `gpt-5.6-terra` required a newer
+CLI than the installed `0.142.4`; pinning the documented `gpt-5.4` workflow
+model made the direct CLI transport succeed.
+
+**Evidence:** `/tmp/epistemic-repair-p1-complete-codex.json`; commit
+`d5a43734`; `scripts/run_epistemic_repair_p1_real_smoke.py`.
+
+**Effect:** P1 now combines the deterministic two-batch reconciliation, one
+clean 10-signal Codex batch, and the exact provider receipts persisted,
+reopened through a new PostgreSQL connection, and replayed idempotently. The
+provider blocker is removed. Wrapper receipts still cannot claim visibility
+inside opaque Codex service retries.
+
+### 2026-07-18 — LOG-022 — Reference vectors cannot qualify fault or scale behavior
+
+**Type:** observed + corrected
+
+The first P8 implementation generated plausible fault and scale distributions
+from sealed formulas. Those values are useful evaluator reference vectors but
+are not production execution evidence and were initially at risk of being
+labeled deterministic qualification.
+
+**Evidence:** `lib/evaluation/epistemic_repair/p8_oracles.py`;
+`lib/evaluation/epistemic_repair/p8_postgres_runner.py`; commit `521b46b8`.
+
+**Effect:** P8 now fails closed unless production evidence binds queried
+durable state. Five of twelve fault boundaries have ten genuine PostgreSQL
+normal/duplicate executions; the remaining seven boundaries, scale matrix,
+contention, and provider canaries remain explicit rather than inferred.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
