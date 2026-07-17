@@ -715,6 +715,81 @@ durable state. Five of twelve fault boundaries have ten genuine PostgreSQL
 normal/duplicate executions; the remaining seven boundaries, scale matrix,
 contention, and provider canaries remain explicit rather than inferred.
 
+### 2026-07-18 — LOG-023 — Legacy Model writes made learned memory invisible
+
+**Type:** observed + corrected
+
+A genuine 25-signal production Think batch retrieved context, generated two
+claims, passed validation, and committed two state changes. Both writes landed
+only in legacy `models`; `model_truth_versions` and
+`accepted_current_models` remained empty. The next batch therefore retrieved
+zero learned Models exactly as the accepted-reader boundary requires.
+
+**Evidence:** `/tmp/p6-think-smoke-6.json`; `services/reasoning/think/applier.py`;
+`services/reasoning/think/truth_admission.py`.
+
+**Effect:** P2 reader enforcement exposed the missing writer cutover. Think
+claim insertion must compile a governed truth command with exact claim-local
+observation evidence; the truth kernel, not a parallel legacy insert, owns the
+compatibility projection.
+
+### 2026-07-18 — LOG-024 — Batch-wide evidence defaulting recreates contamination
+
+**Type:** observed + decided
+
+The legacy applier filled missing claim evidence by merging every trigger
+observation into every claim. In a 25-signal batch this makes unrelated signals
+appear to support each claim and recreates the original batch-scope failure
+inside the new truth kernel.
+
+**Evidence:** `services/reasoning/think/applier.py::_with_claim_evidence_defaults`;
+live P6 admission failure.
+
+**Effect:** multi-signal claims must carry explicit claim-local observation
+IDs and fail closed when they do not. Trigger fallback is permitted only for a
+single normalized observation. A passing admission count is not success if its
+lineage is batch-wide.
+
+### 2026-07-18 — LOG-025 — Current adaptive memory did not earn complexity
+
+**Type:** observed
+
+The clean P7 run executed 3 worlds x 5 arms x 3 stages with 45 successful
+Codex calls and 45 durable attempt receipts. Adaptive mature thesis-facet
+completeness was 0.1667 versus 0.25 for observation-only; adaptive atomic F1
+was 0.1267 and direct-thesis accuracy was 0. All paired facet-lift intervals
+included zero or were negative. All three injected corrupted Models remained
+active beyond two batches.
+
+**Evidence:** `/tmp/epistemic-repair-p7-real-provider-clean-v1.json`; commit
+`f8375cdf`.
+
+**Effect:** memory has not earned its role in this run. The artifact remains
+`insufficient_evidence` because corrupted-memory safety is red, and the runner
+also revealed that provider answers were evaluated without applying adaptive
+memory evolution between stages. P7 must exercise the real mutation/lifecycle
+loop before choosing the strategic fork.
+
+### 2026-07-18 — LOG-026 — Fault correctness passed while scale efficiency failed
+
+**Type:** observed
+
+P8 bound all 12 required fault boundaries across normal and duplicate delivery
+using 18 PostgreSQL restart executions and six durable Codex provider receipt
+reads. The 27-cell scale matrix executed 358,020 observation writes and 12,636
+barriers. Literal cloned-database isolation was proven separately. Repeated
+isolated measurements still exceeded the concurrency ratio gate; pool wait was
+negligible and database execution dominated.
+
+**Evidence:** `/tmp/p8-production-fault-evidence.json`;
+`/tmp/p8-postgres-scale-matrix.json`; `/tmp/p8-isolated-warm-pair.json`;
+commits `ee3a7ec6`, `33a1d7a0`, and `a0470516`.
+
+**Effect:** P8 fault/restart correctness is green, but scale qualification is
+not. Absolute latencies are small, yet the preregistered concurrency ratio may
+not be waived or diluted. Queue-family, projector-refresh, and exact token
+measurement also remain fail-closed until their real pipelines execute.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:

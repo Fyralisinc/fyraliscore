@@ -30,8 +30,10 @@
 | P2 governed truth kernel and accepted-reader cutover | Complete on deterministic and PostgreSQL suites | `07420a95` through `e02d2679` |
 | P3 boundary, context, and entity grounding | Complete on sealed 120-signal qualification population | `68ff4a59`, `cc9de466`, `905ad557` |
 | P4 causal barrier and decision-level feedback | Complete on deterministic six-batch PostgreSQL evaluator | `6ca84393`, `33f51fde`, `3d38da74` |
-| P5 zero-seed integrated vertical | Deterministic three-batch vertical complete; real-provider parity remains unproven | `096a4812` |
-| P6 mixed stream / P7 ablation / P8 fault and scale | Active as three isolated work packages | current execution |
+| P5 zero-seed integrated vertical | Deterministic three-batch vertical complete; Codex production-Think parity is being repaired in P6 | `096a4812` |
+| P6 12-batch mixed stream | Exact 300-signal mechanical run complete; live Think admission/synthesis repair active | `61061de8`, `16565834` |
+| P7 matched memory ablation | Clean 45-call Codex experiment complete but adaptive evolution and corruption safety are red | `f8375cdf` |
+| P8 fault, scale, and characterization | All fault boundaries proven; scale executed and latency gate red; characterization active | `ee3a7ec6` through `a0470516` |
 
 The deterministic company-learning kernel now has one PostgreSQL-backed
 zero-seed vertical over three genuine 25-signal batches. That result proves
