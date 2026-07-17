@@ -41,6 +41,7 @@ from services.domain.entity_grounding.mention_fates import (
     ensure_observation_mention_fates,
     ensure_persisted_observation_mention_fates,
 )
+from services.domain.entity_grounding.learned_discovery import DISCOVERY_BATCHES
 from services.workers.entity_resolver.context import build_context
 from services.workers.entity_resolver.worker import (
     EntityResolverWorker,
@@ -74,6 +75,39 @@ class ScriptedProvider(LLMProvider):
         if isinstance(nxt, Exception):
             raise nxt
         return nxt
+
+
+class FailingBatchDiscoveryProvider:
+    """One-call structured provider exercising batch-level failure classes."""
+
+    def __init__(self, failure_mode: str) -> None:
+        self.failure_mode = failure_mode
+        self.calls: list[dict] = []
+
+    async def structured(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.failure_mode == "timeout":
+            raise TimeoutError("structured discovery timed out")
+        if self.failure_mode == "schema_failure":
+            return kwargs["schema"].model_validate({"mentions": "not-a-list"})
+        if self.failure_mode == "unsupported_sibling":
+            signals = json.loads(kwargs["user"])["signals"]
+            mentions = []
+            for index, signal in enumerate(signals):
+                surface = signal["content_text"].split()[0]
+                mentions.append({
+                    "signal_id": signal["signal_id"],
+                    "surface": surface,
+                    "span_start": 0,
+                    "span_end": len(surface),
+                    "entity_type": (
+                        "unsupported_planet" if index == len(signals) - 1 else "resource"
+                    ),
+                    "confidence": 0.95,
+                    "abstain": False,
+                })
+            return kwargs["schema"].model_validate({"mentions": mentions})
+        raise AssertionError(self.failure_mode)
 
 
 def _resolution_json(
@@ -2066,6 +2100,127 @@ async def test_persisted_batch_detection_heads_feed_grounding_without_redetectio
     assert len(provider.calls) == 2
     assert annotation_counts_after == annotation_counts_before
     assert rejected not in by_observation
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    ("schema_failure", "timeout", "unsupported_sibling"),
+)
+async def test_failed_learned_batch_closes_fallback_fates_once_without_quality_credit(
+    resolver_db: asyncpg.Pool,
+    tenant_id: UUID,
+    failure_mode: str,
+) -> None:
+    """A bad structured turn cannot erase or duplicate a persisted denominator."""
+
+    base = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
+    observation_ids = []
+    for index in range(10):
+        surface = f"CASE-{700 + index}"
+        observation_ids.append(await _seed_observation(
+            resolver_db,
+            tenant_id,
+            content_text=f"{surface} blocked.",
+            unresolved_phrases=[surface],
+            source_channel="jira:issue",
+            occurred_at=base + timedelta(seconds=index),
+            unresolved_location="top_level",
+        ))
+    discovery = FailingBatchDiscoveryProvider(failure_mode)
+    learned_before = DISCOVERY_BATCHES.get(mode="learned", outcome="success")
+    fallback_before = DISCOVERY_BATCHES.get(
+        mode="deterministic_fallback", outcome="provider_error"
+    )
+
+    async with resolver_db.acquire() as conn, conn.transaction():
+        first = await ensure_persisted_observation_mention_fates(
+            conn=conn,
+            tenant_id=tenant_id,
+            observation_ids=observation_ids,
+            now=base + timedelta(minutes=1),
+            discovery_provider=discovery,
+        )
+    assert len(discovery.calls) == 1
+    assert len(json.loads(discovery.calls[0]["user"])["signals"]) == 10
+    assert first.discovery_mode == "deterministic_fallback"
+    assert first.learned_candidates == 0
+    assert first.provider_error is not None
+    assert first.eligible_opportunities == 10
+    assert first.committed_fates == 10
+    assert first.existing_fates == 0
+    assert first.coverage == 1.0
+    assert DISCOVERY_BATCHES.get(mode="learned", outcome="success") == learned_before
+    assert DISCOVERY_BATCHES.get(
+        mode="deterministic_fallback", outcome="provider_error"
+    ) == fallback_before + 1
+
+    resolver_provider = ScriptedProvider([
+        _resolution_json(type=None, confidence=0.1, reasoning="open identifier")
+        for _ in range(10)
+    ])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=resolver_provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+        budget=ResolverLLMBudget(per_minute=1000),
+    )
+    assert await worker.process_pending(limit=20, tenant_id=tenant_id) == 10
+
+    async def stage_counts() -> dict[str, int]:
+        async with resolver_db.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                  (SELECT count(*) FROM entity_mention_detections
+                   WHERE tenant_id=$1) AS detections,
+                  (SELECT count(*) FROM entity_mention_detection_heads
+                   WHERE tenant_id=$1) AS heads,
+                  (SELECT count(DISTINCT detection_key)
+                   FROM entity_mention_detection_heads
+                   WHERE tenant_id=$1) AS distinct_heads,
+                  (SELECT count(*) FROM entity_candidate_generation_requests
+                   WHERE tenant_id=$1) AS candidate_requests,
+                  (SELECT count(*) FROM entity_candidate_sets
+                   WHERE tenant_id=$1) AS candidate_sets,
+                  (SELECT count(*) FROM resolution_assessments
+                   WHERE tenant_id=$1) AS assessments,
+                  (SELECT count(*) FROM grounding_traces
+                   WHERE tenant_id=$1) AS traces
+                """,
+                tenant_id,
+            )
+        return {key: int(row[key]) for key in row.keys()}
+
+    before_replay = await stage_counts()
+    assert before_replay == {
+        "detections": 10,
+        "heads": 10,
+        "distinct_heads": 10,
+        "candidate_requests": 10,
+        "candidate_sets": 10,
+        "assessments": 10,
+        "traces": 10,
+    }
+
+    # Replay the same persisted batch without invoking the failed provider
+    # again. Existing deterministic keys close all ten opportunities.
+    async with resolver_db.acquire() as conn, conn.transaction():
+        replay = await ensure_persisted_observation_mention_fates(
+            conn=conn,
+            tenant_id=tenant_id,
+            observation_ids=reversed(observation_ids),
+            now=base + timedelta(minutes=2),
+            discovery_provider=None,
+        )
+    assert replay.discovery_mode == "deterministic_fallback"
+    assert replay.learned_candidates == 0
+    assert replay.eligible_opportunities == 10
+    assert replay.committed_fates == 0
+    assert replay.existing_fates == 10
+    assert replay.coverage == 1.0
+    assert await worker.process_pending(limit=20, tenant_id=tenant_id) == 0
+    assert await stage_counts() == before_replay
+    assert len(resolver_provider.calls) == 10
 
 
 # =====================================================================
