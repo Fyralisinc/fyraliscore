@@ -248,6 +248,38 @@ class AsyncpgTruthKernelStorage:
         await self._insert_version_rows(
             tx=tx, version=version, supersedes=prior_head.version_id
         )
+        observation_ids: list[UUID] = []
+        for item in version.evidence:
+            if item.kind.value != "observation" or item.role.value != "support":
+                continue
+            try:
+                observation_ids.append(UUID(item.evidence_id))
+            except ValueError:
+                # External observation coordinates need not be UUID-backed;
+                # the legacy compatibility array can represent only UUID rows.
+                continue
+        terminal = version.lifecycle.terminal
+        await tx.execute(
+            """
+            UPDATE models
+            SET proposition=$3::jsonb, "natural"=$4, confidence=$5,
+                supporting_event_ids=$6::uuid[],
+                falsifier=$7::jsonb, evidential_weight=$8,
+                supporting_model_ids=$9::uuid[], visible_to_subjects=$10,
+                resolution_outcome=$11, resolved_at=$12::timestamptz,
+                status=CASE WHEN $13 THEN 'archived' ELSE 'active' END,
+                archived_at=CASE WHEN $13 THEN $14::timestamptz ELSE NULL END,
+                archive_reason=CASE WHEN $13 THEN $15::text ELSE NULL END
+            WHERE tenant_id=$1 AND id=$2
+            """,
+            version.tenant_id, version.model_id, json.dumps(version.proposition),
+            version.natural, version.confidence, observation_ids,
+            json.dumps(version.falsifier) if version.falsifier is not None else None,
+            version.evidential_weight, list(version.supporting_model_ids),
+            version.visible_to_subjects, version.resolution_outcome,
+            version.resolved_at, terminal, version.created_at,
+            ("superseded" if version.lifecycle.value == "superseded" else "decay"),
+        )
 
     async def _insert_version_rows(
         self, *, tx: Any, version: ModelVersion, supersedes: UUID | None
@@ -257,9 +289,13 @@ class AsyncpgTruthKernelStorage:
             INSERT INTO model_truth_versions (
               version_id, tenant_id, model_id, version, admission_decision_id,
               source_candidate_id, source_candidate_version, natural_text,
-              proposition, lifecycle, semantic_digest, supersedes_version_id,
+              proposition, confidence, semantic_digest_version, falsifier,
+              evidential_weight, supporting_model_ids, visible_to_subjects,
+              resolution_outcome, resolved_at, lifecycle,
+              semantic_digest, supersedes_version_id,
               created_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12::jsonb,
+                      $13,$14::uuid[],$15,$16,$17,$18,$19,$20,$21)
             """,
             version.version_id,
             version.tenant_id,
@@ -270,6 +306,14 @@ class AsyncpgTruthKernelStorage:
             version.source_candidate_version,
             version.natural,
             json.dumps(version.proposition),
+            version.confidence,
+            version.semantic_digest_version,
+            json.dumps(version.falsifier) if version.falsifier is not None else None,
+            version.evidential_weight,
+            list(version.supporting_model_ids),
+            version.visible_to_subjects,
+            version.resolution_outcome,
+            version.resolved_at,
             version.lifecycle.value,
             version.semantic_digest,
             supersedes,

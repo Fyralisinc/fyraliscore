@@ -3313,19 +3313,39 @@ async def _append_observe_reading(
         "evidential_weight": _audit_jsonable(row["evidential_weight"]),
     }
     evidential_weight = min(1.0, float(row["evidential_weight"] or 0.5) + 0.02)
+    is_accepted = bool(await conn.fetchval(
+        "SELECT 1 FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
+        tenant_id, model_id,
+    ))
+    if is_accepted:
+        from .truth_admission import advance_validated_think_model
+
+        confidence = await conn.fetchval(
+            "SELECT confidence FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
+            tenant_id, model_id,
+        )
+        await advance_validated_think_model(
+            conn, tenant_id=tenant_id, model_id=model_id,
+            confidence=float(confidence),
+            evidence_observation_ids=tuple(merged_supporting_event_ids),
+            evidential_weight=evidential_weight,
+            reason_code=f"validated_think_evidence_absorption:{source_event_id or 'none'}",
+        )
     await conn.execute(
-        """
+        ("""
+        UPDATE models SET signal_readings = $3::jsonb
+        WHERE tenant_id = $1 AND id = $2
+        """ if is_accepted else """
         UPDATE models
         SET signal_readings = $3::jsonb,
             supporting_event_ids = $4::uuid[],
             evidential_weight = $5
         WHERE tenant_id = $1 AND id = $2
-        """,
+        """),
         tenant_id,
         model_id,
         json.dumps(existing_readings, default=str),
-        merged_supporting_event_ids,
-        evidential_weight,
+        *([] if is_accepted else [merged_supporting_event_ids, evidential_weight]),
     )
 
     detail = {
@@ -4373,6 +4393,46 @@ async def _apply_claim_update(
     if not prepared.changes and prepared.situation_merge_payload is None:
         return _skipped_claim_update_result(op, prepared)
 
+    is_accepted = bool(await conn.fetchval(
+        "SELECT 1 FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
+        tenant_id, op.model_id,
+    ))
+    if is_accepted and prepared.changes:
+        from .truth_admission import advance_validated_think_model
+
+        current_confidence = await conn.fetchval(
+            "SELECT confidence FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
+            tenant_id, op.model_id,
+        )
+        await advance_validated_think_model(
+            conn, tenant_id=tenant_id, model_id=op.model_id,
+            confidence=float(prepared.changes.get("confidence", current_confidence)),
+            evidence_observation_ids=tuple(
+                dict.fromkeys(prepared.changes.get("supporting_event_ids") or ())
+            ),
+            proposition=prepared.changes.get("proposition"),
+            evidential_weight=prepared.changes.get("evidential_weight"),
+            supporting_model_ids=(
+                tuple(prepared.changes["supporting_model_ids"])
+                if "supporting_model_ids" in prepared.changes else None
+            ),
+            visible_to_subjects=prepared.changes.get("visible_to_subjects"),
+            resolution_outcome=prepared.changes.get("resolution_outcome"),
+            resolved_at=prepared.changes.get("resolved_at"),
+            reason_code=(
+                "validated_think_claim_update:"
+                f"{cause_event_id or 'no-cause'}"
+            ),
+        )
+        # The truth-kernel storage projects compatibility fields while its
+        # command capability is active.  The applier never mints that capability.
+        for governed_field in (
+            "confidence", "proposition", "supporting_event_ids",
+            "evidential_weight", "supporting_model_ids", "visible_to_subjects",
+            "resolution_outcome", "resolved_at",
+        ):
+            prepared.changes.pop(governed_field, None)
+
     emitted = await _apply_claim_confidence_update(
         prepared.changes,
         op,
@@ -4467,9 +4527,9 @@ async def _merge_supporting_update_ids(
         return
     supporting_update_ids = _merge_event_ids(
         changes.get("supporting_event_ids"),
-        cause_event_id,
-        trigger_supporting_event_ids,
     )
+    if not supporting_update_ids and len(set(trigger_supporting_event_ids)) == 1:
+        supporting_update_ids = _merge_event_ids(trigger_supporting_event_ids)
     if not supporting_update_ids:
         return
     row = await conn.fetchrow(

@@ -93,6 +93,13 @@ class TruthCandidate(_TruthAdmissionContract):
     review_state: CandidateReviewState
     natural: str = Field(min_length=1)
     proposition: dict[str, Any]
+    confidence: float = Field(default=0.5, ge=0.05, le=0.95)
+    falsifier: dict[str, Any] | None = None
+    evidential_weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    supporting_model_ids: tuple[UUID, ...] = ()
+    visible_to_subjects: bool = True
+    resolution_outcome: bool | None = None
+    resolved_at: datetime | None = None
     proposed_evidence: tuple[TruthEvidenceReference, ...] = Field(min_length=1)
     proposed_scope: tuple[ClaimScopeBinding, ...] = ()
     created_at: datetime
@@ -164,6 +171,14 @@ class ModelVersion(_TruthAdmissionContract):
     source_candidate_version: int = Field(ge=1)
     natural: str = Field(min_length=1)
     proposition: dict[str, Any]
+    confidence: float = Field(default=0.5, ge=0.05, le=0.95)
+    semantic_digest_version: int = Field(default=1, ge=1, le=2)
+    falsifier: dict[str, Any] | None = None
+    evidential_weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    supporting_model_ids: tuple[UUID, ...] = ()
+    visible_to_subjects: bool = True
+    resolution_outcome: bool | None = None
+    resolved_at: datetime | None = None
     evidence: tuple[TruthEvidenceReference, ...] = Field(min_length=1)
     scope: tuple[ClaimScopeBinding, ...] = ()
     lifecycle: ModelTruthLifecycle = ModelTruthLifecycle.ACTIVE
@@ -182,15 +197,29 @@ class ModelVersion(_TruthAdmissionContract):
         natural: str,
         evidence: tuple[TruthEvidenceReference, ...],
         scope: tuple[ClaimScopeBinding, ...],
+        confidence: float | None = None,
+        falsifier: dict[str, Any] | None = None,
+        evidential_weight: float | None = None,
+        supporting_model_ids: tuple[UUID, ...] | None = None,
+        visible_to_subjects: bool | None = None,
+        resolution_outcome: bool | None = None,
+        resolved_at: datetime | None = None,
     ) -> str:
-        return canonical_sha256(
-            {
+        payload: dict[str, Any] = {
                 "proposition": proposition,
                 "natural": natural,
                 "evidence": [item.model_dump(mode="json") for item in evidence],
                 "scope": [item.model_dump(mode="json") for item in scope],
-            }
-        )
+        }
+        if confidence is not None:
+            payload["confidence"] = confidence
+            payload["falsifier"] = falsifier
+            payload["evidential_weight"] = evidential_weight
+            payload["supporting_model_ids"] = [str(x) for x in (supporting_model_ids or ())]
+            payload["visible_to_subjects"] = visible_to_subjects
+            payload["resolution_outcome"] = resolution_outcome
+            payload["resolved_at"] = resolved_at.isoformat() if resolved_at else None
+        return canonical_sha256(payload)
 
     @model_validator(mode="after")
     def version_is_coherent_and_claim_local(self) -> Self:
@@ -204,6 +233,13 @@ class ModelVersion(_TruthAdmissionContract):
             natural=self.natural,
             evidence=self.evidence,
             scope=self.scope,
+            confidence=(self.confidence if self.semantic_digest_version >= 2 else None),
+            falsifier=self.falsifier,
+            evidential_weight=self.evidential_weight,
+            supporting_model_ids=self.supporting_model_ids,
+            visible_to_subjects=self.visible_to_subjects,
+            resolution_outcome=self.resolution_outcome,
+            resolved_at=self.resolved_at,
         )
         if self.semantic_digest != expected:
             raise ValueError("Model semantic digest does not match its representation")
@@ -271,6 +307,13 @@ class AdmitModelCommand(_TruthAdmissionContract):
         if (
             self.version.natural != self.candidate.natural
             or self.version.proposition != self.candidate.proposition
+            or self.version.confidence != self.candidate.confidence
+            or self.version.falsifier != self.candidate.falsifier
+            or self.version.evidential_weight != self.candidate.evidential_weight
+            or self.version.supporting_model_ids != self.candidate.supporting_model_ids
+            or self.version.visible_to_subjects != self.candidate.visible_to_subjects
+            or self.version.resolution_outcome != self.candidate.resolution_outcome
+            or self.version.resolved_at != self.candidate.resolved_at
             or self.version.evidence != self.candidate.proposed_evidence
             or self.version.scope != self.candidate.proposed_scope
         ):

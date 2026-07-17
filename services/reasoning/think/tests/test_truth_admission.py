@@ -11,7 +11,10 @@ from lib.shared.types import ModelCreate
 from services.domain.models.repo import ModelsRepo
 from services.reasoning.think.applier import _with_claim_evidence_defaults
 from services.reasoning.think.diff_schema import ClaimOp
-from services.reasoning.think.truth_admission import admit_validated_think_claim
+from services.reasoning.think.truth_admission import (
+    admit_validated_think_claim,
+    advance_validated_think_model,
+)
 from services.reasoning.think.validator import _validate_claim_op
 
 
@@ -122,10 +125,27 @@ async def test_governed_admission_persists_exact_claim_local_evidence() -> None:
             "SELECT count(*) FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
             tenant_id, row.id,
         ) == 1
+        first_command = await advance_validated_think_model(
+            conn, tenant_id=tenant_id, model_id=row.id, confidence=0.61,
+            evidence_observation_ids=(observation_id,), reason_code="focused-proof",
+        )
+        replay_command = await advance_validated_think_model(
+            conn, tenant_id=tenant_id, model_id=row.id, confidence=0.61,
+            evidence_observation_ids=(observation_id,), reason_code="focused-proof",
+        )
+        assert replay_command == first_command
         assert await conn.fetchval(
             "SELECT count(*) FROM model_truth_versions WHERE tenant_id=$1 AND model_id=$2",
             tenant_id, row.id,
-        ) == 1
+        ) == 2
+        assert await conn.fetchval(
+            "SELECT confidence FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
+            tenant_id, row.id,
+        ) == pytest.approx(0.61)
+        assert await conn.fetchval(
+            "SELECT confidence FROM models WHERE tenant_id=$1 AND id=$2",
+            tenant_id, row.id,
+        ) == pytest.approx(0.61)
         assert await conn.fetchval(
             """
             SELECT count(*)
@@ -133,6 +153,9 @@ async def test_governed_admission_persists_exact_claim_local_evidence() -> None:
             JOIN model_truth_versions version
               ON version.tenant_id=evidence.tenant_id
              AND version.version_id=evidence.model_version_id
+            JOIN model_truth_heads head
+              ON head.tenant_id=version.tenant_id
+             AND head.version_id=version.version_id
             WHERE evidence.tenant_id=$1 AND version.model_id=$2
               AND evidence.evidence_id=$3
             """,
