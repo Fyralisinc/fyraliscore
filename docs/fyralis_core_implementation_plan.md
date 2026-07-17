@@ -1632,6 +1632,41 @@ treated as causal origin; durable source-mention metadata is required. These
 metrics expose how entity errors propagate into topology, but become company
 quality evidence only when a populated gold relation suite is executed.
 
+That populated proof now exists for one bounded, production-shaped vertical.
+The sealed company-physics vertical (`eaa02f3f`) starts from seven normalized,
+persisted signals processed as one genuine batch. Five of five eligible cases
+place the correct canonical target in the candidate set and resolve correctly;
+candidate recall at 1/3/5, canonical-link coverage and accuracy, and safe
+decision rate are `1.0`, while harmful false links and resolver-owned canonical
+alias writes are zero. The same trace materializes two belief Models, preserves
+two explicit no-admission outcomes, and admits one directed `blocks` relation
+with exact source-mention lineage while preserving the declared no-edge case.
+Semantic-disposition, Model-materialization, no-admission-safety,
+relation-admission, direction, type and lineage rates are all `1.0` for their
+exact labeled denominators; cross-tenant, untraceable and known-wrong-type
+consequential incidents are zero.
+
+This vertical is deliberately not merged into v3. V3 remains immutable
+extraction evidence with null referents; the DB-backed vertical is separate
+linking and downstream-physics evidence over a small authored population. Its
+perfect rates prove the production bridge and evaluator semantics for those
+cases, not open-world accuracy, scale, drift resistance or company-wide graph
+quality.
+
+Type confidence is independent of mention-detection confidence (`200d7e48`).
+An ambiguous code-like identifier may remain a valid detected mention while
+its type confidence is capped below resolver narrowing when no local role cue
+supports the type. Batch fate closure is independently proven (`6967e605`):
+schema failure, timeout and malformed-sibling cases leave all ten signals with
+terminal fates, zero learned-quality credit and idempotent replay.
+
+Objective composition (`0b230b13`) digest-binds immutable v3 and the sealed
+vertical before producing extraction-v1, pipeline-v4 and readiness views. The
+current artifact has continuous readiness `0.98828125`, component coverage
+`1.0` and no noncompensatory blocker. Its only below-budget measured slice is
+workstream exact F1 `0.5` versus `0.8`; unlabeled/open-world canonical,
+relation-topology and semantic-impact populations remain explicit gaps.
+
 ## 8.3 Anomaly processor
 
 Responsibilities:

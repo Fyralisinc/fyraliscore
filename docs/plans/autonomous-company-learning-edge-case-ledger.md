@@ -642,18 +642,20 @@ transport are excluded from this goal.
 
 ### EDGE-032 — Entity pipeline stops before canonical-link proof
 
-- **Status:** `active`, P0
+- **Status:** `bounded`; exact production-shaped vertical populated, broader P0 remains
 - **Current behavior:** Pipeline evaluator metrics exist for discovery, typing,
   resolver handoff and canonical linking, and learned candidates enter the
-  existing resolver. The learned benchmark deliberately uses null canonical
-  referents, so canonical-link accuracy and coverage are unpopulated.
+  existing resolver. The learned v3 benchmark deliberately uses null canonical
+  referents. Separately, `eaa02f3f` executes a sealed seven-signal DB-backed
+  vertical. Candidate recall at 1/3/5 is `1.0`; canonical coverage and accuracy
+  are `5/5`; harmful false links and resolver-owned canonical writes are zero.
 - **Risk:** Good spans and types can coexist with wrong company identity, making
   downstream Models and graph structure meaningless.
-- **Safe boundary:** State `no canonical-link claim`; do not infer link quality
-  from resolver handoff or fate closure.
-- **Return condition:** Sealed gold referents populate candidate inclusion,
-  abstention/review, link coverage, link accuracy and downstream wrong-link
-  impact through the production-shaped bridge.
+- **Safe boundary:** State `no v3 canonical-link claim` and `bounded vertical
+  link proof`; do not generalize five eligible cases to open-world accuracy.
+- **Return condition:** Widen sealed referents across organizations,
+  common/tail/homonymous entities, temporal transitions, source drift and
+  consequential downstream uses with calibrated automatic coverage.
 
 ### EDGE-033 — Post-hoc learned-output repair is not an independent run
 
@@ -692,10 +694,10 @@ transport are excluded from this goal.
   candidates, losing all 15 gold mentions in that batch. This accounts for
   15/16 omissions. Across the seven schema-valid learned batches, overlap
   coverage was 98/99 and the only semantic omission was `Kýma contract`.
-  A single malformed mention must be rejected or normalized through an
-  explicit ontology boundary without discarding valid siblings. Fallback must
-  have independently measured recovery recall and must never be counted as
-  learned success.
+  `6967e605` now proves schema failure, timeout and malformed-sibling handling
+  preserve terminal fate for all ten signals, award zero learned-quality credit
+  and replay idempotently. This closes accountability loss; fallback recovery
+  quality remains separate and can never be counted as learned success.
 - **P0 — preserve role-bearing mention boundaries:** Seventeen overlap matches
   were not exact: Jira seven, Slack six and email four. The dominant pattern is
   removal of a type-bearing prefix or suffix, for example `Decision D-β12` to
@@ -759,7 +761,7 @@ transport are excluded from this goal.
 
 ### EDGE-035 — High-confidence wrong type can drive consequential admission
 
-- **Status:** `active`, P0 noncompensatory risk
+- **Status:** `bounded`, P0 noncompensatory risk
 - **Trigger:** Sealed v3 contains one exact-span, high-confidence (`0.92`)
   prediction routed as `resource` where evaluator gold is `goal`. The frozen
   example is not a tuning fixture; the risk class is what matters.
@@ -769,16 +771,19 @@ transport are excluded from this goal.
 - **Safe boundary:** Span correctness never compensates for consequential type
   error. Preserve the type distribution and abstain/review before any
   consequential write when the consequence-specific type threshold is unmet.
-- **Current work:** Boundary and type-uncertainty behavior is being improved on
-  mutable development data. The four frozen-v3 boundary errors and this type
-  error remain immutable evaluation evidence; v3 is not rescored or rerun.
+- **Current behavior:** `200d7e48` separates detection confidence from type
+  confidence. Ambiguous code-like identifiers without a nearby role cue retain
+  their mention but cap type confidence below resolver narrowing. The sealed
+  vertical shows zero known-wrong-type consequential admissions. The four
+  frozen-v3 boundary errors and its type error remain immutable evaluation
+  evidence; v3 is not rescored or rerun.
 - **Return condition:** A sealed production-shaped pipeline suite shows zero
   wrong-type consequential admissions, calibrated type risk at automatic
   coverage, and complete downstream containment/repair for injected mistakes.
 
 ### EDGE-036 — Entity correctness can silently corrupt relation topology
 
-- **Status:** `active`, P0 measurement gap narrowed
+- **Status:** `bounded`; one populated topology vertical, broader P0 remains
 - **Trigger:** A missed, false or wrongly linked mention can create a wrong
   active edge, reverse direction, choose the wrong relation type, or contaminate
   Models beyond the originating grounding case.
@@ -786,14 +791,18 @@ transport are excluded from this goal.
   evaluator with evaluator-owned admission/non-admission expectations, endpoint
   identity, type, direction, exact mention-lineage, unexpected-edge, harmful
   relation/model propagation, unknown-endpoint and unlineaged-active-edge
-  metrics. Shared endpoint adjacency is not accepted as causal origin.
+  metrics. Shared endpoint adjacency is not accepted as causal origin. The
+  sealed vertical admits one directed `blocks` edge with exact source-mention
+  lineage and preserves an explicit no-edge expectation; admission, endpoint,
+  type, direction and lineage are `1.0` on their exact denominators, with zero
+  unexpected or harmful edges.
 - **Risk:** Strong extraction can coexist with a meaningless or poisoned
-  company graph, especially while canonical links are unmeasured.
-- **Safe boundary:** Treat the evaluator as stage-localization machinery only.
-  Do not infer topology quality from its existence or from v3 extraction.
-- **Return condition:** Execute populated production-shaped relation gold from
-  persisted batched signals through canonical linking and graph admission,
-  including no-edge, wrong-link, reversed-edge, wrong-type and repair cases.
+  company graph; a five-case link population cannot bound broad identity risk.
+- **Safe boundary:** Treat this as proof of one exact relation/no-relation
+  vertical, not company-scale topology quality or broad relation recall.
+- **Return condition:** Widen production-shaped relation gold through canonical
+  linking and graph admission to wrong-link, reversed-edge, wrong-type,
+  multi-hop, contradiction, repair and unlabeled-case populations.
 
 ## Entry Template
 

@@ -4467,24 +4467,30 @@ Current evidence must be read as a vector, not a pass:
 | Historical v1 source-verifiable repair and threshold rescore | exact-span P/R/F1 `0.8500/0.8226/0.8361`; type accuracy `0.9286` | Post-hoc rescore of the same saved v1 outputs only; not a fresh or untouched run |
 | Sealed v2 recovered `gpt-5.4` run | 80 signals, eight ten-signal batches, 114 spans and 40 negatives; exact recovered P/R/F1 `0.8020/0.7105/0.7535`; type accuracy `0.8163`; negative cleanliness `0.95`; one schema-invalid batch | Exact recovery of eight completed structured turns after report rendering failed, not a provider rerun. One invalid item caused batch-atomic loss; no canonical-link claim |
 | Mutable development corpus and checkpointed runner (`5b708d0c`) | four genuine ten-signal batches; post-verification P/R/F1 `0.7727/0.7969/0.7846`; type accuracy `0.8906`; negative cleanliness `1.0`; four calls, zero provider errors | Prompt-development feedback only. The corpus and results were inspected and informed later prompt work, so this is explicitly not generalization evidence |
-| Complete-boundary and role-typed prompt (`813848ce`) | production prompt/schema now require complete written designations, per-signal omission passes, role-grounded closed types and transport-coordinate negatives | Focused contract tests prove instructions and one-batch payload shape; no fresh provider-quality claim for the revised prompt |
+| Complete-boundary and role-typed prompt (`813848ce`) | production prompt/schema require complete written designations, per-signal omission passes, role-grounded closed types and transport-coordinate negatives | Focused contract tests prove instructions and sealed v3 is its one untouched provider-quality execution |
 | Sealed one-shot v3 (`0d9d8e65`) | 40 signals, four ten-signal batches, 70 gold mentions, 20 negatives; four calls/no errors; raw exact F1 `0.762590`; 13 coordinates uniquely source-repaired; complete path 70/70 overlap, 66/70 exact, post P/R/F1 `0.942857`; type `0.985714`; cleanliness `1.0`; report SHA `4427b73f…2263eca` | Strong untouched one-shot complete-pipeline extraction evidence for this frozen population, not direct model-offset quality. Canonical links are null, four boundaries remain wrong, workstream F1 is `0.5`, and one exact high-confidence (`0.92`) resource-vs-goal type error remains |
 | V3 source strata | Slack F1 `0.9545`, email `0.9286`, Jira `0.95` | Strong measured cross-source extraction within the sealed fixture; not connector/listener or open-world source-drift evidence |
-| Relation-topology evaluator (`a8487036`) | Evaluator-owned edge admission/non-admission, endpoint, type, direction, mention-lineage, unexpected-edge, harmful propagation, unknown-endpoint and unlineaged-active-edge metrics | Executable stage-localization machinery with focused tests. It is not a populated end-to-end topology benchmark and cannot upgrade company-scale graph quality by itself |
+| Relation-topology evaluator (`a8487036`) | Evaluator-owned edge admission/non-admission, endpoint, type, direction, mention-lineage, unexpected-edge, harmful propagation, unknown-endpoint and unlineaged-active-edge metrics | Executable stage-localization machinery; populated evidence is reported separately rather than inferred from evaluator existence |
 | Deterministic holdouts | first adapted holdout strong; final untouched holdout weak | Fixture adaptation is regression evidence, not generalization proof |
-| Pipeline metrics | discovery, type, resolver-handoff and canonical-link fields exist | Stage localization is possible; population is incomplete |
-| Canonical linking | no sealed gold referents in the learned benchmark | No canonical-link coverage or accuracy claim |
+| Sealed company-physics vertical (`eaa02f3f`) | seven normalized persisted signals in one genuine batch; candidate recall@1/3/5 `1.0`; canonical coverage/accuracy `5/5`; safe decisions `1.0`; harmful false links and resolver canonical writes `0`; two belief Models, two safe no-admissions and one exact-lineage directed `blocks` edge | Populated production-bridge evidence for these exact known/open/homonym/source-identity/correction cases; not open-world, load, drift or company-scale accuracy |
+| Pipeline metrics (`f24e79ae`) | exact disposition-aware denominators; grounding, semantic disposition, Model materialization, no-admission safety and relation lineage all `1.0` on the sealed vertical | The tested vertical closes canonical-to-semantic/topology fate; unlabeled populations remain explicit rather than counted as success |
+| Canonical linking | v3 referents remain null; the separate sealed vertical reports candidate and canonical outcomes | No v3 canonical-link claim. Bounded vertical link coverage/accuracy is `5/5`; generalization beyond its labeled population is unproven |
+| Batch failure fate closure (`6967e605`) | schema failure, timeout and malformed sibling preserve `10/10` terminal signal fates, zero learned credit and idempotent replay | Failure accountability is batch-complete without relabeling failed output as learned quality |
+| Objective readiness (`0b230b13`) | digest-bound v3 plus sealed vertical; continuous score `0.98828125`, component coverage `1.0`, blocker verdict clear; workstream F1 `0.5` below `0.8` | Precise current state, not a binary release certificate; four source-specific unlabeled/open-world proof gaps remain |
 | Tenant-scoped resolver polling (`b5cb50b8`) | scoped polls filter unresolved observations by tenant while omitted scope preserves production global polling | Focused isolation/worker contract only; it neither improves extraction quality nor grants alias-write authority |
-| Full company simulation | authoritative 45-batch run remains pre-fix `not_credible` | No aggregate upgrade; no second large run occurred |
+| Full company simulation | immutable authoritative 45-batch run remains pre-fix `not_credible`; evaluator-only rerender with objective entity evidence scores `0.8858`, coverage `1.0`, with three hard failures and 62 proof gaps | New bounded component evidence is visible, but historical incidents are not rewritten and no second large run occurred |
 
 Every report must keep historical v1, sealed v2, mutable development, sealed
 one-shot v3 and deterministic-fallback populations separate. Development
 feedback cannot be relabeled as a holdout because it is checkpointed or
 provider-backed. V3's completed receipt and report SHA make the one execution
-auditable and prohibit selective rerun; they do not widen its scope. The next
-independent work must populate the pipeline through canonical link and execute
-the evaluator-owned relation expectations on production-shaped persisted
-batches. A post-hoc artifact rescore or recovered prior output may diagnose
+auditable and prohibit selective rerun; they do not widen its scope. Separate
+independent work has now populated one production-shaped persisted-batch
+vertical through canonical link, semantic admission/non-admission and an
+evaluator-owned relation expectation. The next evidence must widen that
+population across organizations, entity classes, ambiguity, time, load and
+adversarial topology. A post-hoc artifact rescore or recovered prior output may
+diagnose
 parser/admission loss, but cannot substitute for the sealed v3 evidence or
 prove identity/topology/company-scale behavior.
 
@@ -4492,8 +4498,29 @@ V3 reports must render raw-model and post-verification metrics side by side.
 Unique source repair is legitimate production behavior because it is
 deterministic and evidence-bound, but its lift cannot be attributed to the
 model. The four residual boundary errors and the high-confidence wrong-type
-case remain active error populations; boundary/type uncertainty work may use
-development data but must not mutate or rerun sealed v3.
+case remain immutable error populations. Detection and type confidence are now
+separate, and ambiguous code-like types without local role evidence are capped
+below consequential narrowing (`200d7e48`), but this mechanism fix does not
+rescore v3. Boundary/type work may use development data but must not mutate or
+rerun sealed v3.
+
+The versioned readiness budget (`ab4b93fd`) reports continuous measurements,
+exact denominators and noncompensatory incidents separately. Missing metrics or
+eligible populations are `unknown`, never implicit passes. The objective
+composer (`0b230b13`) binds the exact v3 and vertical file hashes before
+composition. Its present readiness score is `0.98828125` with complete
+component coverage and no blocker, but workstream exact F1 remains below budget
+and canonical/open-world, topology and semantic-impact denominators outside the
+sealed vertical remain declared gaps.
+
+The top-level evaluator (`499acfd0`) accepts only objective entity evidence; an
+`active_surfaces.status=observed` label cannot manufacture a perfect entity
+score. Rerendering the existing 45-batch artifact with the post-fix component
+produces `not_credible`, score `0.8858`, evidence coverage `1.0`, three hard
+failures and 62 proof gaps. The hard failures remain the historical recovered
+Think failure count, 10,325 mention opportunities without detection fates and
+50 resolver-owned identity writes. This is an evaluator rerender, not a
+simulation rerun, and it deliberately preserves historical facts.
 
 Most entity health remains continuous. Before calling the system ready for a
 controlled pilot, the report must nevertheless support these claims at the

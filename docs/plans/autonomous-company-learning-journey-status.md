@@ -300,7 +300,7 @@ flowchart LR
 | Canonical resource replacement | One atomic orchestrator governs transition lineage, predecessor retirement, alias closure, exact source-binding supersession and projection invalidation while preserving Observations, attachments and Models; resource reads can resolve the lineage head at explicit valid/known cutoffs | Complete for the sealed resource vertical: 20/20 observed, zero gaps or violations |
 | Large cold-start company learning | One fresh tenant processed 1,125 signals in 45 genuine 25-signal batches from zero semantic memory; all work drained and later evidence changed memory | Executed; authoritative verdict `not_credible` because entity grounding and retrieval behavior failed required trust gates |
 | Postmortem semantic repairs | Persisted batches close mention-candidate fates; canonical aliases require grounded adjudication; claim scope is claim-local; asymmetric edges are role-stable; retrieval maturity is quality-weighted and records raw-evidence reopening; causal thesis and calibration reporting are stronger | Implemented and focused-test proven at `8f4e75e8`; the 45-batch simulation has not been rerun, so end-state impact remains unproven |
-| Entity extraction measurement | Gold span/type evaluation and a pipeline evaluator now separate mention discovery, type assessment, resolver handoff and canonical-link coverage instead of treating fate closure as extraction quality | Metrics exist; deterministic holdouts exposed adaptation risk and the canonical-link fields remain unpopulated in current learned evidence |
+| Entity extraction and company physics | Gold span/type evaluation and pipeline-v4 separate discovery, typing, resolver handoff, canonical linking, semantic disposition and relation lineage | V3 populates untouched extraction; the separate sealed DB vertical populates canonical/link/semantic/topology outcomes for exact authored cases. Broader generalization remains open |
 | Learned batched discovery | Persisted signals are discovered as batches through a learned provider path, with typed candidates committed into the existing mention-fate ledger and handed to the existing resolver; deterministic discovery remains an availability fallback | Implemented with focused tests and provider readiness preflight; learned quality is promising but not exceptional |
 | Learned discovery provider readiness | Worker startup preflights the configured learned-discovery provider/model so a missing or incompatible provider is an explicit incident instead of silently becoming the normal mode | Implemented after a real provider/model configuration incident |
 | Resolver poll isolation | Tenant-specific simulations and worker runs can bound unresolved-observation polling by tenant; omitted scope preserves the production global poll | Implemented and focused-test proven at `b5cb50b8`; this is isolation evidence, not extraction or canonical-link quality |
@@ -308,9 +308,9 @@ flowchart LR
 | Historical v1 source-verifiable rescore | Repairing uniquely verifiable source offsets and rescoring the same saved v1 outputs at the tuned admission threshold yields P/R/F1 `0.8500/0.8226/0.8361` and type accuracy `0.9286` | Post-hoc artifact rescore only, not a new provider run |
 | Sealed v2 recovered run | 80 signals, eight ten-signal batches, 114 spans and 40 negatives; exact recovered P/R/F1 `0.8020/0.7105/0.7535`, type accuracy `0.8163`, negative cleanliness `0.95`; one schema-invalid batch | Exact recovery of completed structured turns, not a rerun; exposes batch-atomic schema loss and makes no canonical-link claim |
 | Mutable development feedback | A checkpointed `gpt-5.4` run processed four genuine ten-signal batches with one call each and zero provider errors; post-verification P/R/F1 was `0.7727/0.7969/0.7846`, type accuracy `0.8906`, negative cleanliness `1.0` | Development feedback only. The inspected corpus/results informed later prompt work and cannot be used as holdout or generalization evidence |
-| Complete-boundary and role-type prompt | The current production prompt requires per-signal completeness, exact complete written designations, role-grounded closed types and transport-coordinate negatives | Implemented with focused prompt/schema tests at `813848ce`; not yet scored by a fresh untouched provider run |
+| Complete-boundary and role-type prompt | The production prompt requires per-signal completeness, exact complete written designations, role-grounded closed types and transport-coordinate negatives | Implemented at `813848ce` and scored once by sealed v3; ambiguous type confidence was subsequently contained without rescoring v3 |
 | Sealed one-shot v3 | 40 signals/4x10, 70 gold, 20 negatives, four calls/no errors; raw exact F1 `0.762590`; 13 uniquely source-repaired coordinates; complete path 70/70 overlap, 66/70 exact, post F1 `0.942857`, type `0.985714`, cleanliness `1.0`; report SHA `4427b73f…2263eca` | Strong complete-pipeline extraction generalization, not direct model-offset quality. Four boundaries, workstream F1 `0.5`, and one exact high-confidence resource-vs-goal type error remain; no canonical-link/company-scale claim |
-| Relation-topology evaluator | Gold edge admission/non-admission, endpoint, type, direction, mention-lineage, unexpected-edge, harmful-propagation, unknown-endpoint and unlineaged-edge metrics extend the entity pipeline | Implemented and focused-test proven at `a8487036`; not yet a populated production-shaped topology proof |
+| Relation-topology evaluator | Gold edge admission/non-admission, endpoint, type, direction, mention-lineage, unexpected-edge, harmful-propagation, unknown-endpoint and unlineaged-edge metrics extend the entity pipeline | Populated for one directed relation and one explicit no-edge case in the sealed vertical; broad topology generalization remains open |
 
 ## Important Implementation Checkpoints
 
@@ -729,9 +729,9 @@ mere presence in the repository is not counted as completed company learning.
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
-| Scoped company-learning runtime implementation | 92–95% | The postmortem repairs, learned batched discovery and strong v3 complete-pipeline extraction evidence are integrated; raw offset quality, type uncertainty, canonical-link population, populated topology proof and broad semantic validation remain incomplete |
-| Customer-free objective substantiation | 74–80% | V3 strongly validates the complete extraction path on its population, but 13 repairs separate model from pipeline quality, residual boundary/type risk remains, canonical linking and company-scale topology are unproven, and the authoritative 45-batch artifact remains `not_credible` |
-| Broader revised system excluding task autonomy | 76–82% | Core company memory and principal repairs exist; open-world entity quality, canonical linking, pipeline population, large-run retrieval transition, causal-thesis recovery, calibration, human gap closure and customer-value evidence remain incomplete |
+| Scoped company-learning runtime implementation | 94–96% | The repaired batched path now reaches canonical identity, semantic admission/no-admission and relation lineage in a sealed DB vertical; breadth, retrieval evolution and autonomous-learning proof remain |
+| Customer-free objective substantiation | 80–84% | Objective entity evidence is precise and nearly within budget, but workstream extraction, broad/open-world populations and the immutable `not_credible` large run prevent a system-wide belief claim |
+| Broader revised system excluding task autonomy | 80–84% | Core company memory and principal repairs exist; open-world entity breadth, large-run retrieval transition, causal-thesis recovery, calibration, paired adaptive learning, human gap closure and customer-value evidence remain incomplete |
 
 Task autonomy is excluded from all percentages.
 
@@ -756,8 +756,12 @@ one, the `be401f25` 45-batch verdict remains the authoritative large-run result.
      boundaries and workstream F1 `0.5` remain; do not selectively rerun it.
    - Treat a high-confidence exact-span wrong type as noncompensatory whenever
      it reaches consequential Model, relation, authority or learning admission.
-   - Prove canonical-link coverage and accuracy. Current benchmark referents are
-     intentionally null and therefore make no canonical-link claim.
+   - Preserve the distinction between v3, whose referents are intentionally
+     null, and the separate sealed vertical, whose bounded canonical coverage
+     and accuracy are `5/5`. Widen rather than relabel the latter.
+   - Expand the populated semantic/topology vertical beyond two Models, two
+     no-admissions and one directed edge to adversarial wrong-link,
+     wrong-direction, wrong-type, repair and multi-hop populations.
    - Preserve the deterministic locator as explicit availability fallback, not
      as evidence that learned discovery succeeded.
 
@@ -1600,13 +1604,40 @@ The next sequence is validation and remaining pipeline closure:
   goal. Report SHA is `4427b73f…2263eca`; canonical referents remain null.
 - `a8487036` extended the persisted entity-pipeline evaluator into relation
   admission, endpoints, type, direction, exact mention lineage, unexpected
-  edges and harmful topology propagation. Focused tests prove the metric
-  mechanics, not production-shaped graph quality.
-- This is strong one-shot complete-pipeline extraction generalization evidence,
-  not direct model-offset quality. It does not establish canonical linking,
-  populated relation-topology quality or the complete company-learning loop.
-  Wrong-type consequential admission remains noncompensatory, boundary/type
-  uncertainty work is in progress, and the 45-batch verdict is `not_credible`.
+  edges and harmful topology propagation.
+- `200d7e48` separated mention-detection confidence from type confidence so an
+  ambiguous code-like mention survives while an unsupported type is capped
+  below consequential resolver narrowing. V3 remains immutable and was not
+  rescored.
+- `6967e605` proved batch fate closure under schema failure, timeout and a
+  malformed sibling: all ten signals receive terminal fates, failed learned
+  output receives zero learned credit, and replay is idempotent.
+- `eaa02f3f` executed a sealed DB-backed company-physics vertical from seven
+  normalized persisted signals in one genuine batch. Candidate recall@1/3/5,
+  canonical coverage/accuracy, safe decision, grounding, semantic disposition,
+  Model/no-admission safety and relation lineage are all `1.0` on their exact
+  labeled denominators. Resolver canonical writes, harmful false links,
+  unexpected edges, cross-tenant incidents, untraceable assignments and
+  known-wrong-type consequential admissions are zero. The trace materializes
+  two belief Models, preserves two no-admission outcomes and one directed
+  exact-lineage `blocks` edge.
+- `f24e79ae`, `ab4b93fd` and `0b230b13` add disposition-aware denominators, a
+  versioned continuous readiness budget and digest-bound composition of v3 plus
+  the vertical. Current readiness is `0.98828125`, coverage `1.0`, blocker
+  verdict clear; workstream exact F1 `0.5` remains below its `0.8` budget and
+  four unlabeled/open-world population gaps remain explicit.
+- `499acfd0` prevents observed status labels from manufacturing entity quality.
+  An evaluator-only rerender of the existing 45-batch artifact remains
+  `not_credible` at score `0.8858`, coverage `1.0`, three historical hard
+  failures and 62 proof gaps. No simulation was rerun.
+- V3 is strong one-shot complete-pipeline extraction generalization evidence,
+  not direct model-offset quality. The separate sealed vertical establishes a
+  bounded extraction-to-link-to-semantic/topology bridge for its authored
+  cases, not open-world or company-scale quality or the complete autonomous
+  company-learning loop.
+  Wrong-type consequential admission remains noncompensatory, workstream
+  boundary quality remains below budget, and the 45-batch verdict is
+  `not_credible`.
 - These focused changes do not revise the historical large-run outcome: the 50
   resolver-owned canonical writes remain incidents in that artifact even
   though the mechanism now forbids them. The authoritative 45-batch verdict is
