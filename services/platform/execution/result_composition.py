@@ -272,7 +272,10 @@ def _select_relevant_models(
     prev_score: float | None = None
     for idx, pair in enumerate(scored):
         score = pair[1].final_score
-        below_threshold = score < threshold
+        focused_sage_selection = _is_material_focused_sage_selection(
+            pair[1], model_pathways.get(pair[0].id, set())
+        )
+        below_threshold = score < threshold and not focused_sage_selection
         if below_threshold and len(selected_pairs) >= min_material:
             dropped_below_threshold += 1
             cutoff_reason = "score below relevance threshold"
@@ -358,6 +361,19 @@ def _select_relevant_models(
         "selected_model_ids": [str(model.id) for model in selected],
     }
     return selected, notes
+
+
+def _is_material_focused_sage_selection(
+    relevance: ModelRelevance,
+    pathways: set[str],
+) -> bool:
+    """Preserve an authorized SAGE projection only with material overlap."""
+
+    return (
+        bool(pathways & {"SAGE", "sage_reader"})
+        and (relevance.lexical_score > 0.0 or relevance.scope_score > 0.0)
+        and "declares unrelated to trigger" not in relevance.reasons
+    )
 
 
 def _pack_structural_links(

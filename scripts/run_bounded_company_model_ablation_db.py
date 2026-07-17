@@ -154,9 +154,16 @@ class FacetCompressionProvider(LLMProvider):
 async def run(*, dsn: str, output: Path) -> dict[str, Any]:
     os.environ["INQUIRY_LLM_QUESTION_PLANNING_ENABLED"] = "0"
     os.environ["THINK_COMPILED_BATCH_MEMORY_REASONING"] = "0"
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=8, init=pgvector_pool_init)
-    async with pool.acquire() as conn:
-        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+    bootstrap_conn = await asyncpg.connect(dsn)
+    try:
+        await apply_migrations_dir(bootstrap_conn, REPO_ROOT / "db" / "migrations")
+    finally:
+        await bootstrap_conn.close()
+    # Register vector/json codecs only after migrations have installed their
+    # database types; a pool opened before migration can retain text codecs.
+    pool = await asyncpg.create_pool(
+        dsn, min_size=1, max_size=8, init=pgvector_pool_init
+    )
     try:
         learned_batches, learned_models, learned_runs = await _run_learned(pool)
         frozen_batches, frozen_models, frozen_runs = await _run_frozen(pool)
