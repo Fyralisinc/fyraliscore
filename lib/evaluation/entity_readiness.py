@@ -54,6 +54,10 @@ class EntityReadinessThresholds(_Record):
         default=0.001, ge=0, le=1
     )
     max_unlineaged_active_relation_rate: float = Field(default=0.0, ge=0, le=1)
+    min_adversarial_safe_rejection_rate: float = Field(default=1.0, ge=0, le=1)
+    min_multi_hop_cycle_safety: float = Field(default=1.0, ge=0, le=1)
+    min_correction_propagation_safety: float = Field(default=1.0, ge=0, le=1)
+    min_open_world_abstention_safety: float = Field(default=1.0, ge=0, le=1)
 
 
 class ExactRatePopulation(_Record):
@@ -71,6 +75,21 @@ class ExactRatePopulation(_Record):
         return self.numerator / self.denominator if self.denominator else None
 
 
+class AdversarialCompanyPhysicsEvidence(_Record):
+    critical_safe_rejections: ExactRatePopulation
+    high_safe_rejections: ExactRatePopulation
+    cycle_closure_safe: bool
+    multi_hop_observed: int = Field(ge=0)
+    multi_hop_expected: int = Field(gt=0)
+    first_hop_retired: bool
+    downstream_reevaluation_enqueued: bool
+    second_hop_preserved_pending_reevaluation: bool
+    transitive_repair_claimed: bool
+    open_world_safe_decisions: ExactRatePopulation
+    unsafe_relation_writes: int = Field(ge=0)
+    correction_propagation_failures: int = Field(ge=0)
+
+
 class EntityReadinessEvidence(_Record):
     """Evaluator-owned facts absent from the two report schemas."""
 
@@ -86,6 +105,7 @@ class EntityReadinessEvidence(_Record):
     known_wrong_type_consequential_admissions: int | None = Field(
         default=None, ge=0
     )
+    adversarial_company_physics: AdversarialCompanyPhysicsEvidence | None = None
 
 
 class ReadinessMeasurement(_Record):
@@ -358,6 +378,76 @@ def evaluate_entity_readiness(
                                 else "observed_active_relation_count"),
             require_population=True)
 
+    adversarial = evidence.adversarial_company_physics
+    if adversarial is None:
+        for name, component, threshold in (
+            ("adversarial.critical_safe_rejection_rate", "consequence_safety",
+             thresholds.min_adversarial_safe_rejection_rate),
+            ("adversarial.high_safe_rejection_rate", "consequence_safety",
+             thresholds.min_adversarial_safe_rejection_rate),
+            ("adversarial.multi_hop_cycle_safety", "adversarial_topology",
+             thresholds.min_multi_hop_cycle_safety),
+            ("adversarial.correction_propagation_safety", "correction_safety",
+             thresholds.min_correction_propagation_safety),
+            ("adversarial.open_world_abstention_safety", "open_world_safety",
+             thresholds.min_open_world_abstention_safety),
+        ):
+            add(name, component, None, threshold, "minimum", require_population=True)
+    else:
+        for name, population in (
+            ("adversarial.critical_safe_rejection_rate",
+             adversarial.critical_safe_rejections),
+            ("adversarial.high_safe_rejection_rate",
+             adversarial.high_safe_rejections),
+        ):
+            add(
+                name, "consequence_safety", population.rate,
+                thresholds.min_adversarial_safe_rejection_rate, "minimum",
+                numerator=population.numerator, denominator=population.denominator,
+                denominator_source="sealed_adversarial_relation_attempts",
+                require_population=True,
+            )
+        add(
+            "adversarial.multi_hop_cycle_safety", "adversarial_topology",
+            float(adversarial.cycle_closure_safe),
+            thresholds.min_multi_hop_cycle_safety, "minimum", numerator=(
+                1 if adversarial.cycle_closure_safe else 0
+            ), denominator=1, denominator_source="sealed_cycle_closure_attempt",
+            require_population=True,
+        )
+        correction_safe = all((
+            adversarial.first_hop_retired,
+            adversarial.downstream_reevaluation_enqueued,
+            adversarial.second_hop_preserved_pending_reevaluation,
+            not adversarial.transitive_repair_claimed,
+        ))
+        add(
+            "adversarial.correction_propagation_safety", "correction_safety",
+            float(correction_safe), thresholds.min_correction_propagation_safety,
+            "minimum", numerator=sum((
+                adversarial.first_hop_retired,
+                adversarial.downstream_reevaluation_enqueued,
+                adversarial.second_hop_preserved_pending_reevaluation,
+                not adversarial.transitive_repair_claimed,
+            )), denominator=4, denominator_source="sealed_correction_obligations",
+            require_population=True,
+        )
+        add(
+            "adversarial.multi_hop_relation_coverage", "adversarial_topology",
+            min(1.0, adversarial.multi_hop_observed / adversarial.multi_hop_expected),
+            1.0, "minimum", numerator=adversarial.multi_hop_observed,
+            denominator=adversarial.multi_hop_expected,
+            denominator_source="sealed_multi_hop_chain", require_population=True,
+        )
+        open_world = adversarial.open_world_safe_decisions
+        add(
+            "adversarial.open_world_abstention_safety", "open_world_safety",
+            open_world.rate, thresholds.min_open_world_abstention_safety, "minimum",
+            numerator=open_world.numerator, denominator=open_world.denominator,
+            denominator_source="sealed_novel_and_homonym_cases",
+            require_population=True,
+        )
+
     blockers = (
         _incident_blocker("cross_tenant_identity", evidence.cross_tenant_identity_incidents,
                           "evaluator_owned_incident_count"),
@@ -380,6 +470,16 @@ def evaluate_entity_readiness(
                     else "triggered" if metrics.unlineaged_active_relation_count > 0
                     else "clear"),
             source="entity_pipeline_v4.active_relations",
+        ),
+        _incident_blocker(
+            "adversarial_unsafe_relation_write",
+            adversarial.unsafe_relation_writes if adversarial else None,
+            "sealed_company_physics_adversarial_v2",
+        ),
+        _incident_blocker(
+            "adversarial_correction_propagation_failure",
+            adversarial.correction_propagation_failures if adversarial else None,
+            "sealed_company_physics_adversarial_v2",
         ),
     )
     blocker_verdict: Literal["clear", "blocked", "unknown"] = (

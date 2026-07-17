@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from lib.evaluation.entity_extraction_gold import (
     EntityExtractionMetrics,
@@ -15,6 +15,7 @@ from lib.evaluation.entity_extraction_gold import (
 )
 from lib.evaluation.entity_pipeline_gold import GoldEntityPipelineReport
 from lib.evaluation.entity_readiness import (
+    AdversarialCompanyPhysicsEvidence,
     EntityReadinessEvidence,
     EntityReadinessThresholds,
     ExactRatePopulation,
@@ -23,8 +24,9 @@ from lib.evaluation.entity_readiness import (
 
 V3_SCHEMA = "learned-entity-discovery-quality-v3"
 VERTICAL_SCHEMA = "sealed-company-physics-objective-v1"
+ADVERSARIAL_SCHEMA = "sealed-company-physics-adversarial-objective-v2"
 READINESS_INPUT_SCHEMA = "sealed-company-physics-readiness-evidence-v1"
-OUTPUT_SCHEMA = "objective-entity-evidence-v1"
+OUTPUT_SCHEMA = "objective-entity-evidence-v2"
 _REQUIRED_POPULATIONS = frozenset({
     "pipeline.candidate_recall_at_3",
     "pipeline.canonical_link_coverage",
@@ -77,6 +79,8 @@ def compose_objective_entity_evidence(
     vertical: Mapping[str, Any],
     v3_artifact_sha256: str,
     vertical_artifact_sha256: str,
+    adversarial: Mapping[str, Any],
+    adversarial_artifact_sha256: str,
     thresholds: EntityReadinessThresholds | None = None,
 ) -> dict[str, Any]:
     """Validate, normalize and compose two already SHA-bound artifact objects."""
@@ -88,6 +92,12 @@ def compose_objective_entity_evidence(
     if vertical.get("schema_version") != VERTICAL_SCHEMA:
         raise ValueError("unsupported company-physics objective schema")
     _verify_vertical_objective_digest(vertical)
+    if adversarial.get("schema_version") != ADVERSARIAL_SCHEMA:
+        raise ValueError("unsupported adversarial company-physics schema")
+    _verify_vertical_objective_digest(adversarial)
+    if adversarial.get("base_objective_sha256") != vertical.get("objective_sha256"):
+        raise ValueError("adversarial evidence is not bound to the supplied base vertical")
+    adversarial_evidence = _adversarial_readiness_evidence(adversarial)
 
     post = _object(v3.get("post_verification"), "v3.post_verification")
     extraction_payload = _object(post.get("metrics"), "v3 post metrics")
@@ -146,6 +156,7 @@ def compose_objective_entity_evidence(
         known_wrong_type_consequential_admissions=readiness_input.incidents[
             "known_wrong_type_consequential_admissions"
         ],
+        adversarial_company_physics=adversarial_evidence,
     )
     readiness = evaluate_entity_readiness(
         extraction=extraction, pipeline=pipeline, evidence=evidence,
@@ -157,6 +168,13 @@ def compose_objective_entity_evidence(
         + [f"readiness_coverage_gap:{item}" for item in readiness.coverage_gaps]
         + [f"readiness_blocker_unknown:{item.code}"
            for item in readiness.blockers if item.status == "unknown"]
+        + [
+            "adversarial_company_physics_is_bounded:"
+            f"critical={adversarial_evidence.critical_safe_rejections.denominator},"
+            f"high={adversarial_evidence.high_safe_rejections.denominator},"
+            f"open_world={adversarial_evidence.open_world_safe_decisions.denominator};"
+            "does_not_establish_company_scale_generalization"
+        ]
     ))
     output: dict[str, Any] = {
         "schema_version": OUTPUT_SCHEMA,
@@ -171,6 +189,12 @@ def compose_objective_entity_evidence(
                 "objective_sha256": vertical.get("objective_sha256"),
                 "schema": VERTICAL_SCHEMA,
             },
+            "company_physics_adversarial": {
+                "artifact_sha256": adversarial_artifact_sha256,
+                "objective_sha256": adversarial.get("objective_sha256"),
+                "base_objective_sha256": adversarial.get("base_objective_sha256"),
+                "schema": ADVERSARIAL_SCHEMA,
+            },
         },
         "extraction": extraction.model_dump(mode="json"),
         "pipeline": pipeline.model_dump(mode="json"),
@@ -179,6 +203,7 @@ def compose_objective_entity_evidence(
         },
         "negative_cleanliness": negative_population.model_dump(mode="json"),
         "readiness": readiness.model_dump(mode="json"),
+        "adversarial_company_physics": dict(adversarial),
         "proof_gaps": proof_gaps,
     }
     output["composition_sha256"] = sha256_bytes(canonical_json_bytes(output))
@@ -204,6 +229,77 @@ def _verify_vertical_objective_digest(vertical: Mapping[str, Any]) -> None:
     actual = sha256_bytes(canonical_json_bytes(body))
     if actual != expected:
         raise ValueError("vertical objective_sha256 mismatch")
+
+
+def _adversarial_readiness_evidence(
+    adversarial: Mapping[str, Any],
+) -> AdversarialCompanyPhysicsEvidence:
+    tiers = _object(adversarial.get("consequence_tier_denominators"), "adversarial tiers")
+    critical = _exact_tier(tiers.get("critical"), "critical")
+    high = _exact_tier(tiers.get("high"), "high")
+    attempts = tuple(adversarial.get("adversarial_attempts") or ())
+    if len(attempts) != critical.denominator + high.denominator:
+        raise ValueError("adversarial attempt count disagrees with tier denominators")
+    population = _object(adversarial.get("population"), "adversarial population")
+    if _integer(
+        population.get("adversarial_relation_attempts"), "adversarial population attempts"
+    ) != len(attempts):
+        raise ValueError("adversarial population count disagrees with attempt rows")
+    unsafe_writes = sum(
+        not bool(_object(row, "adversarial attempt").get("rejected_without_write"))
+        for row in attempts
+    )
+    multi_hop = _object(adversarial.get("multi_hop"), "adversarial multi_hop")
+    correction = _object(
+        adversarial.get("correction_propagation"), "adversarial correction"
+    )
+    open_world = _object(
+        adversarial.get("open_world_abstention"), "adversarial open_world"
+    )
+    novel_count = _integer(open_world.get("novel_and_homonym_cases"), "open-world cases")
+    safe_rate = open_world.get("safe_decision_rate")
+    if not isinstance(safe_rate, (int, float)) or not 0 <= safe_rate <= 1:
+        raise ValueError("open-world safe decision rate must be in [0,1]")
+    safe_count = round(float(safe_rate) * novel_count)
+    if abs((safe_count / novel_count if novel_count else 0.0) - float(safe_rate)) > 1e-12:
+        raise ValueError("open-world rate lacks an exact integral population")
+    correction_failures = sum(not bool(correction.get(name)) for name in (
+        "first_hop_retired", "downstream_reevaluation_enqueued",
+        "second_hop_preserved_pending_reevaluation",
+    )) + int(bool(correction.get("transitive_repair_claimed")))
+    return AdversarialCompanyPhysicsEvidence(
+        critical_safe_rejections=critical,
+        high_safe_rejections=high,
+        cycle_closure_safe=bool(multi_hop.get("cycle_closure_rejected")),
+        multi_hop_observed=_integer(
+            multi_hop.get("observed_active_hops_before_correction"), "observed hops"
+        ),
+        multi_hop_expected=_integer(multi_hop.get("expected_hops"), "expected hops"),
+        first_hop_retired=bool(correction.get("first_hop_retired")),
+        downstream_reevaluation_enqueued=bool(
+            correction.get("downstream_reevaluation_enqueued")
+        ),
+        second_hop_preserved_pending_reevaluation=bool(
+            correction.get("second_hop_preserved_pending_reevaluation")
+        ),
+        transitive_repair_claimed=bool(correction.get("transitive_repair_claimed")),
+        open_world_safe_decisions=ExactRatePopulation(
+            numerator=safe_count, denominator=novel_count
+        ),
+        unsafe_relation_writes=unsafe_writes,
+        correction_propagation_failures=correction_failures,
+    )
+
+
+def _exact_tier(value: Any, label: str) -> ExactRatePopulation:
+    tier = _object(value, f"{label} tier")
+    population = ExactRatePopulation(
+        numerator=_integer(tier.get("safe_rejections"), f"{label} safe rejections"),
+        denominator=_integer(tier.get("attempts"), f"{label} attempts"),
+    )
+    if population.rate != tier.get("safe_rejection_rate"):
+        raise ValueError(f"{label} tier rate disagrees with exact population")
+    return population
 
 
 def _verify_population_rates(

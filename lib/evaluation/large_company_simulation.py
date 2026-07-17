@@ -336,7 +336,9 @@ def _objective_entity_quality(
 
     if not evidence:
         return None, 0.0, {}
-    if evidence.get("schema_version") != "objective-entity-evidence-v1":
+    if evidence.get("schema_version") not in {
+        "objective-entity-evidence-v1", "objective-entity-evidence-v2"
+    }:
         gaps.append("Objective entity evidence has an unsupported schema version.")
         return None, 0.0, {}
     extraction = _object(evidence.get("extraction"))
@@ -390,6 +392,23 @@ def _objective_entity_quality(
             pipeline_overall.get("unlineaged_active_relation_rate")
         ),
     }
+    if evidence.get("schema_version") == "objective-entity-evidence-v2":
+        readiness = _object(evidence.get("readiness"))
+        readiness_components = _object(readiness.get("component_scores"))
+        components.update({
+            "adversarial_topology_safety": _optional_ratio(
+                readiness_components.get("adversarial_topology")
+            ),
+            "correction_propagation_safety": _optional_ratio(
+                readiness_components.get("correction_safety")
+            ),
+            "consequence_tier_safety": _optional_ratio(
+                readiness_components.get("consequence_safety")
+            ),
+            "open_world_abstention_safety": _optional_ratio(
+                readiness_components.get("open_world_safety")
+            ),
+        })
     observed = [value for value in components.values() if value is not None]
     coverage = len(observed) / len(components)
     if components["canonical_link_accuracy"] is None or components[
@@ -411,14 +430,41 @@ def _objective_entity_quality(
         f"Objective entity evidence: {item}"
         for item in _strings(evidence.get("proof_gaps"))
     )
+    if evidence.get("schema_version") == "objective-entity-evidence-v2":
+        adversarial = _object(evidence.get("adversarial_company_physics"))
+        population = _object(adversarial.get("population"))
+        attempts = population.get("adversarial_relation_attempts")
+        gaps.append(
+            "Objective adversarial company-physics evidence is bounded to "
+            f"{attempts if isinstance(attempts, int) else 'unknown'} relation "
+            "attempts and does not establish company-scale generalization."
+        )
+    component_weights = {
+        key: (0.25 if key in {
+            "adversarial_topology_safety", "correction_propagation_safety",
+            "consequence_tier_safety", "open_world_abstention_safety",
+        } else 1.0)
+        for key in components
+    }
+    weighted = [
+        (value, component_weights[key])
+        for key, value in components.items() if value is not None
+    ]
+    weighted_score = (
+        sum(value * weight for value, weight in weighted)
+        / sum(weight for _value, weight in weighted)
+        if weighted else None
+    )
     return (
-        _mean(observed) if observed else None,
+        weighted_score,
         coverage,
         {
             "components": components,
             "observed_component_count": len(observed),
             "required_component_count": len(components),
             "coverage": round(coverage, 4),
+            "component_weights": component_weights,
+            "bounded_adversarial_total_weight": 1.0,
         },
     )
 

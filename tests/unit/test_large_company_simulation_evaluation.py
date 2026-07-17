@@ -243,6 +243,37 @@ def test_partial_objective_entity_metrics_remain_continuous_and_gapped() -> None
     )
 
 
+def test_v2_adversarial_components_are_visible_but_weight_capped() -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+    evidence = _objective_entity_evidence()
+    evidence.update({
+        "schema_version": "objective-entity-evidence-v2",
+        "readiness": {"component_scores": {
+            "adversarial_topology": 1.0,
+            "correction_safety": 1.0,
+            "consequence_safety": 1.0,
+            "open_world_safety": 1.0,
+        }},
+        "adversarial_company_physics": {
+            "population": {"adversarial_relation_attempts": 4}
+        },
+    })
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark, run_summary=run_summary, vitals=vitals,
+        assurance=assurance, run_config=run_config,
+        profile_name="authoritative-45", entity_evidence=evidence,
+    )
+    objective = report["dimensions"]["entity_model_quality"]["metrics"][
+        "entity_identity_metrics"
+    ]
+    assert objective["components"]["adversarial_topology_safety"] == 1.0
+    assert objective["component_weights"]["adversarial_topology_safety"] == 0.25
+    assert objective["bounded_adversarial_total_weight"] == 1.0
+    assert any(
+        "bounded to 4 relation attempts" in gap for gap in report["proof_gaps"]
+    )
+
+
 def test_scale_shortfall_is_precise_instead_of_binary() -> None:
     benchmark, run_summary, vitals, assurance, run_config = _artifacts(
         batches=1,

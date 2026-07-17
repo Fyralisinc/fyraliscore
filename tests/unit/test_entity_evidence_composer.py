@@ -125,19 +125,78 @@ def _vertical(*, omit_population: str | None = None) -> dict:
     return result
 
 
+def _adversarial(*, unsafe: bool = False, base: dict | None = None) -> dict:
+    attempts = [
+        {
+            "case_id": case_id,
+            "consequence_tier": tier,
+            "relation_type": "blocks",
+            "error_type": None if unsafe and index == 0 else "EdgeRegistryError",
+            "rejected_without_write": not (unsafe and index == 0),
+        }
+        for index, (case_id, tier) in enumerate((
+            ("wrong-direction-reciprocal", "critical"),
+            ("wrong-type-mutual-exclusion", "critical"),
+            ("wrong-link-self-edge", "high"),
+            ("multi-hop-cycle-closure", "high"),
+        ))
+    ]
+    critical_safe = 1 if unsafe else 2
+    result = {
+        "schema_version": "sealed-company-physics-adversarial-objective-v2",
+        "base_objective_sha256": (base or _vertical())["objective_sha256"],
+        "population": {
+            "signal_batches": 1, "signals": 7,
+            "adversarial_relation_attempts": 4, "multi_hop_chains": 1,
+            "correction_events": 1,
+        },
+        "adversarial_attempts": attempts,
+        "consequence_tier_denominators": {
+            "critical": {"attempts": 2, "safe_rejections": critical_safe,
+                         "safe_rejection_rate": critical_safe / 2},
+            "high": {"attempts": 2, "safe_rejections": 2,
+                     "safe_rejection_rate": 1.0},
+        },
+        "multi_hop": {
+            "expected_hops": 2, "observed_active_hops_before_correction": 2,
+            "cycle_closure_rejected": True, "mention_lineage_count": 3,
+        },
+        "correction_propagation": {
+            "pre_correction_active_hops": 2, "first_hop_retired": True,
+            "downstream_reevaluation_enqueued": True,
+            "second_hop_preserved_pending_reevaluation": True,
+            "transitive_repair_claimed": False,
+        },
+        "open_world_abstention": {
+            "safe_decision_rate": 1.0, "harmful_false_link_rate": 0.0,
+            "relation_non_admission_safety_rate": 1.0,
+            "novel_and_homonym_cases": 2,
+        },
+        "durable_graph": {"active_edges_after_correction": 2},
+        "proof_boundary": "bounded",
+    }
+    result["objective_sha256"] = sha256_bytes(canonical_json_bytes(result))
+    return result
+
+
 def test_composes_normalized_reports_readiness_bindings_and_gaps() -> None:
     output = compose_objective_entity_evidence(
         v3=_v3(), vertical=_vertical(),
         v3_artifact_sha256="b" * 64, vertical_artifact_sha256="c" * 64,
+        adversarial=_adversarial(), adversarial_artifact_sha256="d" * 64,
     )
 
-    assert output["schema_version"] == "objective-entity-evidence-v1"
+    assert output["schema_version"] == "objective-entity-evidence-v2"
     assert output["extraction"]["schema_version"] == "gold-entity-extraction-v1"
     assert "by_entity_type" not in output["extraction"]
     assert output["per_type_extraction"]["customer"]["gold_count"] == 10
     assert output["pipeline"]["schema_version"] == "gold-entity-pipeline-v4"
     assert output["readiness"]["blocker_verdict"] == "clear"
     assert output["artifact_bindings"]["sealed_v3"]["artifact_sha256"] == "b" * 64
+    assert output["artifact_bindings"]["company_physics_adversarial"][
+        "artifact_sha256"
+    ] == "d" * 64
+    assert output["readiness"]["component_scores"]["consequence_safety"] == 1.0
     assert "canonical_link_metrics_exclude_gold_without_referents" in output[
         "proof_gaps"
     ]
@@ -151,6 +210,8 @@ def test_fails_closed_when_vertical_lacks_exact_readiness_population() -> None:
         compose_objective_entity_evidence(
             v3=_v3(), vertical=vertical,
             v3_artifact_sha256="b" * 64, vertical_artifact_sha256="c" * 64,
+            adversarial=_adversarial(base=vertical),
+            adversarial_artifact_sha256="d" * 64,
         )
 
 
@@ -167,7 +228,24 @@ def test_fails_closed_when_exact_population_disagrees_with_pipeline() -> None:
         compose_objective_entity_evidence(
             v3=_v3(), vertical=vertical,
             v3_artifact_sha256="b" * 64, vertical_artifact_sha256="c" * 64,
+            adversarial=_adversarial(base=vertical),
+            adversarial_artifact_sha256="d" * 64,
         )
+
+
+def test_adversarial_unsafe_write_is_noncompensatory_blocker() -> None:
+    output = compose_objective_entity_evidence(
+        v3=_v3(), vertical=_vertical(),
+        v3_artifact_sha256="b" * 64, vertical_artifact_sha256="c" * 64,
+        adversarial=_adversarial(unsafe=True),
+        adversarial_artifact_sha256="d" * 64,
+    )
+    blocker = next(
+        item for item in output["readiness"]["blockers"]
+        if item["code"] == "adversarial_unsafe_relation_write"
+    )
+    assert blocker["status"] == "triggered"
+    assert output["readiness"]["blocker_verdict"] == "blocked"
 
 
 def test_load_binding_and_atomic_output_fail_closed(tmp_path: Path) -> None:
