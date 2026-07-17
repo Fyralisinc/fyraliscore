@@ -526,24 +526,23 @@ reconciles non-overlapping exclusive leaf spans against logical wall time. It
 reports gap, overlap, error, token coverage, cost coverage, and actual-versus-
 estimated deltas continuously, with the hard timing threshold fixed at 1%.
 
-### 2026-07-17 — LOG-012 — Durable receipts cross a post-commit boundary
+### 2026-07-17 — LOG-012 — Receipt post-commit gap found and closed
 
-**Type:** observed
+**Type:** observed + corrected
 
 Think can now collect provider receipts task-locally and persist them with
-tenant, trigger, run, and batch coordinates. In the current orchestration,
-receipt persistence occurs after the domain mutation/finalization path. A
-ledger failure therefore fails closed to the caller but may happen after domain
-effects have committed.
+tenant, trigger, run, and batch coordinates. The first integration persisted
+only after domain finalization, allowing ledger failure after domain effects
+committed. The corrected path writes receipts inside the semantic mutation
+transaction, then performs an identical idempotent durability check outside.
 
 **Evidence:** `services/reasoning/think/reason.py`;
 `tests/epistemic_repair/p1/test_think_receipt_runtime.py`.
 
-**Effect:** deterministic tests prove isolation, returned-failure retention, and
-fail-closed persistence behavior. P1 still needs a real PostgreSQL transaction
-check and a retry/idempotency test for “domain effects committed, ledger write
-failed.” Moving receipts into the mutation transaction is not assumed safe
-without first defining whether provider evidence must survive domain rollback.
+**Effect:** deterministic tests prove isolation, returned-failure retention,
+fail-closed persistence, and rollback of surrounding semantic effects when the
+ledger rejects a receipt. Missing receipt evidence can no longer be created by
+committing domain effects first.
 
 ### 2026-07-17 — LOG-013 — Real-provider failure is now truthful evidence
 
@@ -574,8 +573,9 @@ drift checking still reports one unrelated pre-existing column,
 
 **Evidence:** `tests/epistemic_repair/p1/test_llm_receipt_postgres.py`.
 
-**Effect:** basic receipt durability is proven on PostgreSQL. Recovery from a
-ledger failure after domain effects commit remains a separate open test.
+**Effect:** basic receipt durability is proven on PostgreSQL. Semantic writes
+and receipts are now ordered in one transaction; the outside replay is a
+durability assertion rather than the first write.
 
 ## 13. Entry Template
 
