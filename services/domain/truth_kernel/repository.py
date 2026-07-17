@@ -259,6 +259,14 @@ class AsyncpgTruthKernelStorage:
                 # the legacy compatibility array can represent only UUID rows.
                 continue
         terminal = version.lifecycle.terminal
+        scope_actors = [
+            binding.subject_id for binding in version.scope
+            if binding.role.value == "actor"
+        ]
+        scope_entities = [
+            {"id": str(binding.subject_id), "type": binding.subject_kind.value}
+            for binding in version.scope if binding.role.value != "actor"
+        ]
         await tx.execute(
             """
             UPDATE models
@@ -267,9 +275,11 @@ class AsyncpgTruthKernelStorage:
                 falsifier=$7::jsonb, evidential_weight=$8,
                 supporting_model_ids=$9::uuid[], visible_to_subjects=$10,
                 resolution_outcome=$11, resolved_at=$12::timestamptz,
-                status=CASE WHEN $13 THEN 'archived' ELSE 'active' END,
-                archived_at=CASE WHEN $13 THEN $14::timestamptz ELSE NULL END,
-                archive_reason=CASE WHEN $13 THEN $15::text ELSE NULL END
+                scope_actors=$13::uuid[], scope_entities=$14::jsonb,
+                scope_temporal=$15::jsonb,
+                status=CASE WHEN $16 THEN 'archived' ELSE 'active' END,
+                archived_at=CASE WHEN $16 THEN $17::timestamptz ELSE NULL END,
+                archive_reason=CASE WHEN $16 THEN $18::text ELSE NULL END
             WHERE tenant_id=$1 AND id=$2
             """,
             version.tenant_id, version.model_id, json.dumps(version.proposition),
@@ -277,7 +287,8 @@ class AsyncpgTruthKernelStorage:
             json.dumps(version.falsifier) if version.falsifier is not None else None,
             version.evidential_weight, list(version.supporting_model_ids),
             version.visible_to_subjects, version.resolution_outcome,
-            version.resolved_at, terminal, version.created_at,
+            version.resolved_at, scope_actors, json.dumps(scope_entities),
+            json.dumps(version.temporal_scope), terminal, version.created_at,
             ({
                 "superseded": "superseded",
                 "falsified": "falsifier_triggered",
@@ -295,11 +306,11 @@ class AsyncpgTruthKernelStorage:
               source_candidate_id, source_candidate_version, natural_text,
               proposition, confidence, semantic_digest_version, falsifier,
               evidential_weight, supporting_model_ids, visible_to_subjects,
-              resolution_outcome, resolved_at, lifecycle,
+              resolution_outcome, resolved_at, temporal_scope, lifecycle,
               semantic_digest, supersedes_version_id,
               created_at
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12::jsonb,
-                      $13,$14::uuid[],$15,$16,$17,$18,$19,$20,$21)
+                      $13,$14::uuid[],$15,$16,$17,$18::jsonb,$19,$20,$21,$22)
             """,
             version.version_id,
             version.tenant_id,
@@ -318,6 +329,7 @@ class AsyncpgTruthKernelStorage:
             version.visible_to_subjects,
             version.resolution_outcome,
             version.resolved_at,
+            json.dumps(version.temporal_scope),
             version.lifecycle.value,
             version.semantic_digest,
             supersedes,

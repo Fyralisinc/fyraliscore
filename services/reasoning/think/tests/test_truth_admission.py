@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import os
+import json
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import asyncpg
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 
 from lib.shared.errors import InvariantViolation, ValidationError
 from lib.shared.types import ModelCreate
+from lib.contracts.truth_evidence import (
+    ClaimScopeBinding, ClaimScopeRole, ScopeSubjectKind,
+)
+from lib.contracts.truth_admission import ModelTruthLifecycle, ModelTruthTransition
 from services.domain.models.repo import ModelsRepo
 from services.reasoning.think.applier import _with_claim_evidence_defaults
 from services.reasoning.think.diff_schema import ClaimOp
@@ -125,13 +132,47 @@ async def test_governed_admission_persists_exact_claim_local_evidence() -> None:
             "SELECT count(*) FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
             tenant_id, row.id,
         ) == 1
+        claim_evidence_ref = await conn.fetchval(
+            """
+            SELECT evidence.reference_id
+            FROM model_truth_evidence_references evidence
+            JOIN model_truth_heads head
+              ON head.tenant_id=evidence.tenant_id
+             AND head.version_id=evidence.model_version_id
+            WHERE head.tenant_id=$1 AND head.model_id=$2
+            """, tenant_id, row.id,
+        )
+        scoped_subject = uuid4()
+        revised_proposition = {
+            "kind": "state", "subject": "Atlas", "assertion": "blocked",
+            "qualifier": "release certificate",
+        }
+        revised_falsifier = {"kind": "observation_pattern", "pattern": "certificate clears"}
+        supporting_model_id = uuid4()
+        resolved_at = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
+        revised_scope = (ClaimScopeBinding(
+            subject_id=scoped_subject, subject_kind=ScopeSubjectKind.PROJECT,
+            role=ClaimScopeRole.SUBJECT,
+            claim_local_evidence_refs=(claim_evidence_ref,),
+        ),)
+        revised_temporal_scope = {"valid_from": "2026-07-10T09:00:00+00:00"}
         first_command = await advance_validated_think_model(
             conn, tenant_id=tenant_id, model_id=row.id, confidence=0.61,
             evidence_observation_ids=(observation_id,), reason_code="focused-proof",
+            proposition=revised_proposition, falsifier=revised_falsifier,
+            evidential_weight=0.73, supporting_model_ids=(supporting_model_id,),
+            visible_to_subjects=False, resolution_outcome=False,
+            resolved_at=resolved_at, scope=revised_scope,
+            temporal_scope=revised_temporal_scope,
         )
         replay_command = await advance_validated_think_model(
             conn, tenant_id=tenant_id, model_id=row.id, confidence=0.61,
             evidence_observation_ids=(observation_id,), reason_code="focused-proof",
+            proposition=revised_proposition, falsifier=revised_falsifier,
+            evidential_weight=0.73, supporting_model_ids=(supporting_model_id,),
+            visible_to_subjects=False, resolution_outcome=False,
+            resolved_at=resolved_at, scope=revised_scope,
+            temporal_scope=revised_temporal_scope,
         )
         assert replay_command == first_command
         assert await conn.fetchval(
@@ -142,10 +183,49 @@ async def test_governed_admission_persists_exact_claim_local_evidence() -> None:
             "SELECT confidence FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
             tenant_id, row.id,
         ) == pytest.approx(0.61)
+        projected = await conn.fetchrow(
+            """
+            SELECT proposition,falsifier,evidential_weight,visible_to_subjects,
+                   supporting_model_ids,resolution_outcome,resolved_at,
+                   scope_entities,scope_temporal
+            FROM models WHERE tenant_id=$1 AND id=$2
+            """, tenant_id, row.id,
+        )
+        assert json.loads(projected["proposition"]) == revised_proposition
+        assert json.loads(projected["falsifier"]) == revised_falsifier
+        assert float(projected["evidential_weight"]) == pytest.approx(0.73)
+        assert projected["visible_to_subjects"] is False
+        assert list(projected["supporting_model_ids"]) == [supporting_model_id]
+        assert projected["resolution_outcome"] is False
+        assert projected["resolved_at"] == resolved_at
+        assert str(scoped_subject) in str(projected["scope_entities"])
+        assert "valid_from" in str(projected["scope_temporal"])
         assert await conn.fetchval(
             "SELECT confidence FROM models WHERE tenant_id=$1 AND id=$2",
             tenant_id, row.id,
         ) == pytest.approx(0.61)
+        # Every accepted semantic compatibility field is command-guarded.  The
+        # truth-kernel projection above is the only permitted write path.
+        forbidden_mutations = (
+            "proposition = '{}'::jsonb", "\"natural\" = 'bypass'",
+            f"scope_actors = ARRAY['{scoped_subject}']::uuid[]",
+            "scope_entities = '[]'::jsonb",
+            "scope_temporal = '{}'::jsonb", "confidence = 0.62",
+            "falsifier = '{}'::jsonb", "supporting_event_ids = ARRAY[]::uuid[]",
+            "supporting_model_ids = ARRAY[]::uuid[]", "evidential_weight = 0.74",
+            "visible_to_subjects = TRUE", "resolution_outcome = TRUE",
+            "resolved_at = NULL", "status = 'archived'",
+            "archived_at = now()", "archive_reason = 'bypass'",
+        )
+        for mutation in forbidden_mutations:
+            savepoint = conn.transaction()
+            await savepoint.start()
+            with pytest.raises(asyncpg.RaiseError, match="truth-kernel command"):
+                await conn.execute(
+                    f"UPDATE models SET {mutation} WHERE tenant_id=$1 AND id=$2",
+                    tenant_id, row.id,
+                )
+            await savepoint.rollback()
         assert await conn.fetchval(
             """
             SELECT count(*)
@@ -170,6 +250,91 @@ async def test_governed_admission_persists_exact_claim_local_evidence() -> None:
             )
         assert raised.value.context["missing"] == [str(missing_id)]
         assert raised.value.context["found"] == []
+    finally:
+        await transaction.rollback()
+        await conn.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transition,expected", [
+    (ModelTruthTransition.CONTEST, ModelTruthLifecycle.DISPUTED),
+    (ModelTruthTransition.FALSIFY, ModelTruthLifecycle.FALSIFIED),
+    (ModelTruthTransition.SUPERSEDE, ModelTruthLifecycle.SUPERSEDED),
+    (ModelTruthTransition.ARCHIVE, ModelTruthLifecycle.ARCHIVED),
+])
+async def test_postgres_lifecycle_matrix_hides_nonactive_truth_and_blocks_terminals(
+    transition: ModelTruthTransition, expected: ModelTruthLifecycle,
+) -> None:
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL is required for the PostgreSQL lifecycle proof")
+    conn = await asyncpg.connect(dsn)
+    transaction = conn.transaction()
+    await transaction.start()
+    try:
+        tenant_id, support_id, challenge_id = uuid4(), uuid4(), uuid4()
+        await conn.execute(
+            "INSERT INTO tenants (id,name) VALUES ($1,$2)",
+            tenant_id, f"truth-lifecycle-{transition.value}",
+        )
+        for observation_id, text in (
+            (support_id, "Atlas is blocked"),
+            (challenge_id, "Atlas is no longer blocked"),
+        ):
+            await conn.execute(
+                """
+                INSERT INTO observations
+                  (id,tenant_id,occurred_at,kind,source_channel,content,content_text,
+                   embedding,embedding_pending,trust_tier)
+                VALUES ($1,$2,now(),'signal','test','{}'::jsonb,$3,$4,FALSE,'authoritative')
+                """, observation_id, tenant_id, text,
+                "[" + ",".join(["0"] * 768) + "]",
+            )
+        proposed = ModelCreate(
+            tenant_id=tenant_id, born_from_event_id=support_id,
+            proposition={"kind": "state", "subject": "Atlas", "assertion": "blocked"},
+            natural="Atlas is blocked", embedding=[0.0] * 768,
+            scope_temporal={}, confidence=0.7, confidence_at_assertion=0.7,
+            supporting_event_ids=[support_id],
+        )
+        row = await admit_validated_think_claim(
+            conn, proposed=proposed, evidence_observation_ids=(support_id,),
+            models_repo=ModelsRepo(None, embedder=None),
+        )
+        await advance_validated_think_model(
+            conn, tenant_id=tenant_id, model_id=row.id, confidence=0.4,
+            evidence_observation_ids=(challenge_id,), transition=transition,
+            reason_code=f"matrix-{transition.value}",
+        )
+        head = await conn.fetchrow(
+            "SELECT lifecycle,version FROM model_truth_heads WHERE tenant_id=$1 AND model_id=$2",
+            tenant_id, row.id,
+        )
+        assert head["lifecycle"] == expected.value
+        assert head["version"] == 2
+        assert await conn.fetchval(
+            "SELECT count(*) FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
+            tenant_id, row.id,
+        ) == 0
+        assert await conn.fetchval(
+            """
+            SELECT count(*) FROM model_truth_evidence_references evidence
+            JOIN model_truth_heads head ON head.tenant_id=evidence.tenant_id
+              AND head.version_id=evidence.model_version_id
+            WHERE head.tenant_id=$1 AND head.model_id=$2
+              AND evidence.evidence_role='counterevidence'
+            """, tenant_id, row.id,
+        ) == 1
+        if expected.terminal:
+            with pytest.raises(
+                (PydanticValidationError, ValidationError, InvariantViolation),
+                match="terminal",
+            ):
+                await advance_validated_think_model(
+                    conn, tenant_id=tenant_id, model_id=row.id, confidence=0.8,
+                    evidence_observation_ids=(), transition=ModelTruthTransition.CONFIRM,
+                    reason_code=f"matrix-resurrect-{transition.value}",
+                )
     finally:
         await transaction.rollback()
         await conn.close()

@@ -1,5 +1,7 @@
 -- First-class immutable confidence for canonical Model truth.
 
+BEGIN;
+
 ALTER TABLE model_truth_versions
   ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION;
 ALTER TABLE model_truth_versions
@@ -10,6 +12,7 @@ ALTER TABLE model_truth_versions ADD COLUMN IF NOT EXISTS supporting_model_ids U
 ALTER TABLE model_truth_versions ADD COLUMN IF NOT EXISTS visible_to_subjects BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE model_truth_versions ADD COLUMN IF NOT EXISTS resolution_outcome BOOLEAN;
 ALTER TABLE model_truth_versions ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+ALTER TABLE model_truth_versions ADD COLUMN IF NOT EXISTS temporal_scope JSONB NOT NULL DEFAULT '{}';
 
 ALTER TABLE model_truth_versions DISABLE TRIGGER model_truth_versions_immutable;
 ALTER TABLE model_truth_versions DISABLE TRIGGER model_truth_versions_command_authority;
@@ -22,6 +25,7 @@ SET confidence = COALESCE(model.confidence, 0.5),
     visible_to_subjects = model.visible_to_subjects,
     resolution_outcome = model.resolution_outcome,
     resolved_at = model.resolved_at
+    , temporal_scope = model.scope_temporal
 FROM models model
 WHERE version.tenant_id = model.tenant_id
   AND version.model_id = model.id
@@ -113,6 +117,9 @@ BEGIN
        OR NEW.supporting_event_ids IS DISTINCT FROM OLD.supporting_event_ids
        OR NEW.supporting_model_ids IS DISTINCT FROM OLD.supporting_model_ids
        OR NEW.evidential_weight IS DISTINCT FROM OLD.evidential_weight
+       OR NEW.visible_to_subjects IS DISTINCT FROM OLD.visible_to_subjects
+       OR NEW.resolution_outcome IS DISTINCT FROM OLD.resolution_outcome
+       OR NEW.resolved_at IS DISTINCT FROM OLD.resolved_at
        OR NEW.status IS DISTINCT FROM OLD.status
        OR NEW.archived_at IS DISTINCT FROM OLD.archived_at
        OR NEW.archive_reason IS DISTINCT FROM OLD.archive_reason THEN
@@ -124,3 +131,5 @@ BEGIN
   END IF;
   RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
 END $$;
+
+COMMIT;

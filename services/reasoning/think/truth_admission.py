@@ -147,6 +147,7 @@ async def build_think_admission_command(
         supporting_model_ids=tuple(proposed.supporting_model_ids),
         visible_to_subjects=proposed.visible_to_subjects,
         resolution_outcome=None, resolved_at=None,
+        temporal_scope=proposed.scope_temporal,
         proposed_evidence=evidence_tuple,
         proposed_scope=scope, created_at=admitted_at,
     )
@@ -172,6 +173,7 @@ async def build_think_admission_command(
         evidential_weight=proposed.evidential_weight,
         supporting_model_ids=tuple(proposed.supporting_model_ids),
         visible_to_subjects=proposed.visible_to_subjects,
+        temporal_scope=proposed.scope_temporal,
         evidence=evidence_tuple, scope=scope,
         lifecycle=ModelTruthLifecycle.ACTIVE, created_at=admitted_at,
         semantic_digest=ModelVersion.compute_semantic_digest(
@@ -182,6 +184,7 @@ async def build_think_admission_command(
             evidential_weight=proposed.evidential_weight,
             supporting_model_ids=tuple(proposed.supporting_model_ids),
             visible_to_subjects=proposed.visible_to_subjects,
+            temporal_scope=proposed.scope_temporal,
         ),
     )
     return AdmitModelCommand(
@@ -265,6 +268,10 @@ async def _current_truth_version(
     if isinstance(proposition, str):
         import json
         proposition = json.loads(proposition)
+    temporal_scope = row["temporal_scope"] or {}
+    if isinstance(temporal_scope, str):
+        import json
+        temporal_scope = json.loads(temporal_scope)
     return ModelVersion(
         version_id=row["version_id"], model_id=row["model_id"], version=row["version"],
         tenant_id=row["tenant_id"], admission_decision_id=row["admission_decision_id"],
@@ -276,6 +283,7 @@ async def _current_truth_version(
         supporting_model_ids=tuple(row["supporting_model_ids"] or ()),
         visible_to_subjects=bool(row["visible_to_subjects"]),
         resolution_outcome=row["resolution_outcome"], resolved_at=row["resolved_at"],
+        temporal_scope=temporal_scope,
         scope=tuple(scope), lifecycle=ModelTruthLifecycle(row["lifecycle"]),
         created_at=row["created_at"], semantic_digest=row["semantic_digest"],
     )
@@ -292,6 +300,7 @@ async def advance_validated_think_model(
     resolution_outcome: bool | None = None,
     resolved_at: datetime | None = None,
     scope: tuple[ClaimScopeBinding, ...] | None = None,
+    temporal_scope: dict[str, Any] | None = None,
     transition: ModelTruthTransition = ModelTruthTransition.CONFIRM,
     reason_code: str = "validated_think_update",
 ) -> UUID:
@@ -338,6 +347,7 @@ async def advance_validated_think_model(
     next_resolution = resolution_outcome if resolution_outcome is not None else prior.resolution_outcome
     next_resolved_at = resolved_at if resolved_at is not None else prior.resolved_at
     next_scope = scope if scope is not None else prior.scope
+    next_temporal_scope = temporal_scope if temporal_scope is not None else prior.temporal_scope
     next_version = prior.model_copy(update={
         "version_id": version_id, "version": prior.version + 1,
         "confidence": confidence, "evidence": evidence,
@@ -348,6 +358,7 @@ async def advance_validated_think_model(
         "visible_to_subjects": next_visible,
         "resolution_outcome": next_resolution, "resolved_at": next_resolved_at,
         "scope": next_scope,
+        "temporal_scope": next_temporal_scope,
         "lifecycle": transition.resulting_lifecycle, "created_at": at,
         "semantic_digest": ModelVersion.compute_semantic_digest(
             proposition=next_proposition, natural=prior.natural, evidence=evidence,
@@ -356,6 +367,7 @@ async def advance_validated_think_model(
             supporting_model_ids=next_supporting_models,
             visible_to_subjects=next_visible,
             resolution_outcome=next_resolution, resolved_at=next_resolved_at,
+            temporal_scope=next_temporal_scope,
         ),
     })
     command_id = uuid5(version_id, "think-update-command")

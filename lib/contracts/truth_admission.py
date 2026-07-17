@@ -100,6 +100,7 @@ class TruthCandidate(_TruthAdmissionContract):
     visible_to_subjects: bool = True
     resolution_outcome: bool | None = None
     resolved_at: datetime | None = None
+    temporal_scope: dict[str, Any] = Field(default_factory=dict)
     proposed_evidence: tuple[TruthEvidenceReference, ...] = Field(min_length=1)
     proposed_scope: tuple[ClaimScopeBinding, ...] = ()
     created_at: datetime
@@ -179,6 +180,7 @@ class ModelVersion(_TruthAdmissionContract):
     visible_to_subjects: bool = True
     resolution_outcome: bool | None = None
     resolved_at: datetime | None = None
+    temporal_scope: dict[str, Any] = Field(default_factory=dict)
     evidence: tuple[TruthEvidenceReference, ...] = Field(min_length=1)
     scope: tuple[ClaimScopeBinding, ...] = ()
     lifecycle: ModelTruthLifecycle = ModelTruthLifecycle.ACTIVE
@@ -204,6 +206,7 @@ class ModelVersion(_TruthAdmissionContract):
         visible_to_subjects: bool | None = None,
         resolution_outcome: bool | None = None,
         resolved_at: datetime | None = None,
+        temporal_scope: dict[str, Any] | None = None,
     ) -> str:
         payload: dict[str, Any] = {
                 "proposition": proposition,
@@ -219,6 +222,7 @@ class ModelVersion(_TruthAdmissionContract):
             payload["visible_to_subjects"] = visible_to_subjects
             payload["resolution_outcome"] = resolution_outcome
             payload["resolved_at"] = resolved_at.isoformat() if resolved_at else None
+            payload["temporal_scope"] = temporal_scope or {}
         return canonical_sha256(payload)
 
     @model_validator(mode="after")
@@ -240,6 +244,7 @@ class ModelVersion(_TruthAdmissionContract):
             visible_to_subjects=self.visible_to_subjects,
             resolution_outcome=self.resolution_outcome,
             resolved_at=self.resolved_at,
+            temporal_scope=self.temporal_scope,
         )
         if self.semantic_digest != expected:
             raise ValueError("Model semantic digest does not match its representation")
@@ -314,6 +319,7 @@ class AdmitModelCommand(_TruthAdmissionContract):
             or self.version.visible_to_subjects != self.candidate.visible_to_subjects
             or self.version.resolution_outcome != self.candidate.resolution_outcome
             or self.version.resolved_at != self.candidate.resolved_at
+            or self.version.temporal_scope != self.candidate.temporal_scope
             or self.version.evidence != self.candidate.proposed_evidence
             or self.version.scope != self.candidate.proposed_scope
         ):
