@@ -664,15 +664,24 @@ The most likely structural causes are:
 This section updates the remediation state; it does not alter the run above or
 its `not_credible` verdict.
 
-- Entity physics now has objective entity v5. It binds audited broad-v4
+- Entity physics first reached objective entity v5. It binds audited broad-v4
   extraction (40 signals in four genuine batches, exact F1 `0.970588`, type
   accuracy `1.0`, negative cleanliness `1.0`, workstream `6/6`) independently
   from the positive DB vertical and adversarial v2. The latter rejects four
   harmful graph writes without mutation, exercises a two-hop chain and
   immediate correction propagation. V5's broad component scores `0.990196`
-  and readiness is clear. The missing pre-call runtime-source digest,
-  post-holdout current-runtime generalization, and wider graph populations
-  remain explicit gaps.
+  and readiness is clear. Its missing pre-call runtime-source digest and
+  post-holdout current-runtime evidence were explicit gaps at that checkpoint.
+- Objective entity v6 now adds a genuinely disjoint, precommitted current-runtime
+  one-shot holdout: three batches, 24 signals, 35 gold mentions, 34 exact spans,
+  type accuracy `1.0`, 12/12 clean hard negatives, Slack 17/17 exact and 37/37
+  provider proposals with terminal fates. The pre-call receipt binds commit,
+  corpus, six runtime-source digests, prompt and zero-retry provider config
+  before the sole execution. The immutable 34/35 result contains one frozen
+  annotation disagreement: runtime included `Engineer` as the bound prompt
+  requires, while gold marked only `Pavel Ito`. There was no corpus edit,
+  tuning or rerun. This closes current-runtime audit provenance, not canonical
+  identity or open-world/company-scale generalization.
 - The first real company-model ablation v2 and postfix v3 are preserved as
   failures. Each runs matched three-by-six batches; both arms recover `0/3`,
   lift is zero, learned ECE is `0.5725`, score `0.7 below_policy`. V3 proves the
@@ -754,8 +763,8 @@ current objective evidence portfolio. This is new bounded capability evidence,
 not a rerun of the 45-batch simulation and not grounds to change this
 postmortem's `not_credible` verdict. The current failure-fate-corrected and
 proof-boundary-aware rerender is
-`/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_entity_v5/large_company_simulation_evaluation.json`
-(SHA-256 `cae61794…dfa77`). It includes objective entity v5 and objective
+`/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_entity_v6/large_company_simulation_evaluation.json`
+(SHA-256 `08969dca…302a5`). It includes objective entity v6 and objective
 company learning v8; intermediate rerenders are historical, not the current
 aggregate truth.
 
@@ -772,9 +781,9 @@ eight-component composition is
 saved 45-batch artifact was rerendered with this evidence in the aggregate
 lineage above. The current rerender score is
 `0.8883`, coverage is `1.0`, and its verdict remains `not_credible` because the
-two company-physics hard failures remain. It reports 73 aggregate proof gaps
-and 16 successful scope limitations separately as proof boundaries. The
-simulation was
+two company-physics hard failures remain. It reports 75 aggregate proof gaps
+and 16 successful scope limitations separately as proof boundaries. Entity
+objective quality is `0.994513` with 22/22 measurements observed. The simulation was
 not rerun: it remains the sole 45-batch, 1,125-signal, zero-semantic-seed,
 batch-only large run.
 

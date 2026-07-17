@@ -6,8 +6,8 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `ad47a1c0` broad-v4/objective-entity-v5 integration;
-entity-v5 synthesis-aware 45-batch evaluator rerender
+**Current checkpoint:** `8fd4e72f` current-runtime/objective-entity-v6 integration;
+entity-v6 synthesis-aware 45-batch evaluator rerender
 
 **Last updated:** 2026-07-17
 
@@ -305,7 +305,7 @@ flowchart LR
 | Source equivalence | Two semantic cases across eight normalized Slack/email/Jira/document-meeting batches preserve outcomes, authority, coordinates and boundaries | Bounded score `1.0`; connectors, open-world discourse and drift excluded |
 | Correction homeostasis | Two DB corrections fence eight Models, create eight reevaluation pairs, reject cycles, replay idempotently and survive restart | Bounded score `1.0`; unbounded recovery and infrastructure loss excluded |
 | Objective company learning | Eight-component SHA-bound v8 composer separates observed quality, coverage, blockers and successful proof boundaries; joined runtime, feedback quality and strict synthesis are independently mandatory | All eight observed at score/coverage `1.0`, no blocker, `meets_bounded_policy`; open-world/customer/connector/unbounded recovery excluded |
-| Entity extraction and company physics | Objective entity v5 separates broad-v4 span/type extraction from resolver handoff, canonical linking, semantic disposition and relation lineage | Broad-v4 exact F1 `0.970588`, type `1.0`, negative cleanliness `1.0`, workstream `6/6`; the separate sealed DB vertical populates canonical/link/semantic/topology outcomes for exact authored cases. Protocol and broader-generalization gaps remain explicit |
+| Entity extraction and company physics | Objective entity v6 preserves broad-v4 and adds a fully prebound current-runtime one-shot holdout while separating extraction from resolver handoff, canonical linking, semantic disposition and relation lineage | Current exact F1 `0.971429`, type `1.0`, negative cleanliness `1.0`, candidate-fate closure `1.0`; Slack/project/system are exact. The one person-title annotation disagreement and broader-generalization gaps remain explicit |
 | Learned batched discovery | Persisted signals are discovered as batches through a learned provider path, with typed candidates committed into the existing mention-fate ledger and handed to the existing resolver; deterministic discovery remains an availability fallback | Implemented with focused tests and provider readiness preflight; learned quality is promising but not exceptional |
 | Learned discovery provider readiness | Worker startup preflights the configured learned-discovery provider/model so a missing or incompatible provider is an explicit incident instead of silently becoming the normal mode | Implemented after a real provider/model configuration incident |
 | Resolver poll isolation | Tenant-specific simulations and worker runs can bound unresolved-observation polling by tenant; omitted scope preserves the production global poll | Implemented and focused-test proven at `b5cb50b8`; this is isolation evidence, not extraction or canonical-link quality |
@@ -735,7 +735,7 @@ mere presence in the repository is not counted as completed company learning.
 | --- | ---: | --- |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
 | Scoped company-learning runtime implementation | 98–99% | Batched path, retrieval transition, adversarial company physics, source equivalence, restart-safe correction, exact joined runtime, matched feedback lift and strict single-Model synthesis execute in bounded populations |
-| Customer-free objective substantiation | 95–97% | Eight-component v8 scores `1.0`; strict synthesis is learned `3/3` versus frozen `0/3`; objective entity v5 now binds broad-v4 at exact F1 `0.970588`. The immutable `not_credible` large run and open-world breadth prevent company-scale generalization |
+| Customer-free objective substantiation | 97–98% | Eight-component v8 scores `1.0`; strict synthesis is learned `3/3` versus frozen `0/3`; objective entity v6 adds exact-runtime F1 `0.971429`, type/fate/negative safety `1.0` with complete pre-call provenance. The immutable `not_credible` large run and open-world breadth prevent company-scale generalization |
 | Broader revised system excluding task autonomy | 90–93% | Core company memory is strong in bounded slices. Long-horizon/open-world behavior, large-run post-fix proof, production operations and customer value remain incomplete |
 
 Task autonomy is excluded from all percentages.
@@ -750,14 +750,15 @@ one, the `be401f25` 45-batch verdict remains the authoritative large-run result.
 ### P0 — Required before believing the company-learning system broadly works
 
 0. **Preserve and widen strong bounded entity physics**
-   - Broad-v4 now supplies governing disjoint extraction evidence over 40
+   - Broad-v4 supplies historical broad disjoint extraction evidence over 40
      signals in four batches: exact F1 `0.970588`, type accuracy `1.0`, negative
      cleanliness `1.0`, workstream `6/6`, with all three source strata above
-     `0.96`. Objective entity v5 now binds this artifact without pretending
-     that extraction proves canonical linking.
-   - Keep the missing pre-call runtime-source digest as an explicit protocol
-     gap. Post-run fixes derived from v4 misses have unit proof only; do not
-     describe their behavior as post-fix generalization.
+     `0.96`. Objective entity v6 retains this artifact without pretending that
+     extraction proves canonical linking.
+   - Current-runtime v5 closes the missing pre-call runtime-source/currentness
+     gap on a disjoint three-batch population. Preserve its one frozen
+     person-title annotation disagreement and do not widen its scope beyond
+     literal extraction, role typing and semantic-isolation behavior.
    - Treat historical v1 fresh F1 `0.7207`, its post-hoc `0.8361` rescore,
      sealed-v2 recovered F1 `0.7535`, and mutable-development F1 `0.7846` as
      distinct non-current-prompt populations.
@@ -776,13 +777,13 @@ one, the `be401f25` 45-batch verdict remains the authoritative large-run result.
    - Preserve the deterministic locator as explicit availability fallback, not
      as evidence that learned discovery succeeded.
 
-1. **Close the final evidence and reporting boundary**
-   - Objective entity v5 is composed and the existing 45-batch artifact has
+1. **Preserve the final evidence and reporting boundary**
+   - Objective entity v6 is composed and the existing 45-batch artifact has
      been evaluator-rerendered without rerunning the simulation. Preserve its
      two historical company-physics incidents alongside the eight green bounded
      components.
-   - Bind the assurance summary to reviewed document identities and run the
-     final focused, DB and architecture gates.
+   - Keep the current artifact identities and final focused, DB and architecture
+     gate results together; do not reinterpret rerendering as a simulation run.
 
 2. **Add non-resolution and ambiguity controls**
    - Contextual phrase negative.
@@ -1641,7 +1642,7 @@ The next sequence is validation and remaining pipeline closure:
 
 This ledger entry records the then-current five-component v3 composition. It
 was later superseded by the eight-component v8 portfolio, strict synthesis,
-matched feedback quality and objective entity v5.
+matched feedback quality and objective entity v6.
 
 - Post-fix retrieval meets its preregistered nine-batch policy: early
   observation share `1.0`, late Model selection `8/11`, late actual Model
@@ -1754,20 +1755,40 @@ matched feedback quality and objective entity v5.
 - The current composer separates successful scope limits into
   `proof_boundaries`; they no longer inflate `proof_gaps`. The current v8
   artifact is `/private/tmp/objective_company_learning_evidence_v8_boundaries.json`.
-- Objective entity v5 (`ad47a1c0`) now binds audited broad-v4 extraction:
+- Objective entity v5 (`ad47a1c0`) bound audited broad-v4 extraction:
   four genuine ten-signal batches, exact F1 `0.970588`, type accuracy `1.0`,
   negative cleanliness `1.0` and workstream `6/6`. The objective artifact is
   `/tmp/objective_entity_evidence_v5.json` (file SHA-256
   `83d6a51f…24b2128`, composition SHA `46bd421e…2593af`). Its missing pre-call
   runtime-source digest and lack of fresh post-holdout current-runtime
-  generalization remain explicit proof gaps.
-- The current entity-v5, synthesis-aware assurance rerender is
-  `/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_entity_v5/large_company_simulation_evaluation.json`
-  (SHA-256 `cae61794…dfa77`).
+  generalization were explicit proof gaps at that checkpoint.
+- Current-runtime entity holdout v5 was frozen in commit `e6d4b4cd` before any
+  provider call. Its immutable pre-call receipt (SHA-256
+  `dd3f07eb…55b6ea`) binds the corpus, six exact runtime-source digests, prompt
+  contract, commit, provider/model/config, zero prior executions, one allowed
+  execution and zero retries. The sole three-batch execution processed 24
+  normalized signals: 34/35 exact spans (F1 `0.971429`), type accuracy `1.0`,
+  12/12 clean hard negatives and 37/37 raw proposals with terminal fates.
+  Slack is 17/17 exact; project and system are 6/6 each. The only exact
+  disagreement is `Pavel Ito` versus runtime `Engineer Pavel Ito`: the frozen
+  gold omitted the attached title that the bound prompt explicitly requires.
+  The corpus, score and raw output were preserved; it was not tuned or rerun.
+- Objective entity v6 (`8fd4e72f`) binds that report (SHA-256
+  `030346c5…854040`), pre-call receipt and completed execution receipt
+  (`4b9076ce…53c2`) while retaining v3 and v4. The objective artifact is
+  `/tmp/objective_entity_evidence_v6.json` (file SHA-256
+  `a0f9dc80…f79281`, composition SHA `98fdb546…745f1`); its current-runtime
+  component scores `0.992857`. This closes the v4 runtime-source/currentness
+  audit gaps, not canonical linking, implicit-reference, open-world or
+  company-scale claims.
+- The current entity-v6, synthesis-aware assurance rerender is
+  `/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_entity_v6/large_company_simulation_evaluation.json`
+  (SHA-256 `08969dca…302a5`).
   It exposes all eight bounded components at `1.0`, but the immutable large-run
   verdict remains `not_credible`, score `0.8883`, coverage `1.0`, with two
-  noncompensatory company-physics hard failures, 73 aggregate proof gaps and
-  16 separately reported proof boundaries. The historical Think failure is
+  noncompensatory company-physics hard failures, 75 aggregate proof gaps and
+  16 separately reported proof boundaries. Entity objective quality is
+  `0.994513` at coverage `1.0` across 22/22 measurements. The historical Think failure is
   classified as a recovered operational degradation, not terminal workload
   loss. This was an evaluator-only rerender; no simulation was rerun and no
   second large simulation is authorized.
