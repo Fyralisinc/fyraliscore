@@ -21,7 +21,7 @@ import asyncpg
 from lib.evaluation.company_model_ablation import evaluate_company_model_ablation
 from lib.shared.migrations import apply_migrations_dir
 from scripts.run_bounded_company_model_ablation_db import (
-    REPO_ROOT, _arm, _models, _run_frozen, _run_learned, _runtime_runs,
+    REPO_ROOT, _arm, _run_frozen, _run_learned, _runtime_runs,
 )
 from services.domain.models.repo import pgvector_pool_init
 from tests.evaluation.company_model_holdout_v5 import (

@@ -51,7 +51,6 @@ from lib.evaluation.company_learning_variant_population import (
     VariantAliasExecutionObservation,
     VariantAliasMechanismMetrics,
     VariantAliasPairMechanismEvidence,
-    VariantAliasPopulationReport,
     evaluate_variant_alias_population,
     load_variant_alias_population,
     validate_variant_population_evidence_artifact,

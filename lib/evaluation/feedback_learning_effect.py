@@ -15,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.company_learning_active_surfaces import (
-    ActiveLearningSurfacesEvidence,
     SourceSalienceObservation,
     validate_active_learning_surfaces_artifact,
 )

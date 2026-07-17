@@ -16,7 +16,7 @@ from lib.contracts.kernel import canonical_sha256
 from lib.shared.ids import uuid7
 from lib.shared.migrations import apply_migrations_dir
 from scripts.compiled_facet_decision_provider import CompiledFacetDecisionProvider
-from scripts.run_bounded_company_model_ablation_db import REPO_ROOT, _models, _runtime_runs, _think_batch
+from scripts.run_bounded_company_model_ablation_db import REPO_ROOT, _runtime_runs, _think_batch
 from services.domain.correction_propagation.service import CorrectionPropagationService
 from services.domain.models.repo import pgvector_pool_init
 from services.reasoning.think.applier import apply_diff

@@ -73,6 +73,11 @@ async def _report(conn, tenant, *, signals, enqueued, elapsed):
         return round(a / b, 3) if b else 0.0
 
     runs = cost["think_runs"] or 0
+    kinds = ", ".join(f"{row['k']}={row['c']}" for row in by_kind) or "(none)"
+    roles = ", ".join(f"{row['r']}={row['c']}" for row in by_role) or "(none)"
+    outcome_counts = (
+        ", ".join(f"{row['outcome']}={row['c']}" for row in outcomes) or "(none)"
+    )
     print("\n" + "=" * 62)
     print("  ALPEN MODEL-LAYER SCORECARD (Think e2e, codex)")
     print("=" * 62)
@@ -83,8 +88,8 @@ async def _report(conn, tenant, *, signals, enqueued, elapsed):
     print(f"  wall-clock               : {elapsed:.1f}s")
     print("  -- model layer produced --")
     print(f"  active models            : {models}")
-    print(f"    by kind   : {', '.join(f'{r['k']}={r['c']}' for r in by_kind) or '(none)'}")
-    print(f"    by role   : {', '.join(f'{r['r']}={r['c']}' for r in by_role) or '(none)'}")
+    print(f"    by kind   : {kinds}")
+    print(f"    by role   : {roles}")
     print(f"  graph edges              : {edges}  (review debt: {review_debt})")
     print("  -- intelligence ratios (scorecard) --")
     print(f"  compression  models/signal   : {ratio(models, signals)}")
@@ -96,7 +101,7 @@ async def _report(conn, tenant, *, signals, enqueued, elapsed):
     print(f"  tokens in/out            : {cost['in_tok']}/{cost['out_tok']}")
     print(f"  cost (usd)               : ${cost['usd']}")
     print(f"  avg think latency        : {cost['avg_ms']} ms")
-    print(f"  outcomes                 : {', '.join(f'{r['outcome']}={r['c']}' for r in outcomes) or '(none)'}")
+    print(f"  outcomes                 : {outcome_counts}")
     print("=" * 62)
 
 
