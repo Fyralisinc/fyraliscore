@@ -545,6 +545,38 @@ check and a retry/idempotency test for “domain effects committed, ledger write
 failed.” Moving receipts into the mutation transaction is not assumed safe
 without first defining whether provider evidence must survive domain rollback.
 
+### 2026-07-17 — LOG-013 — Real-provider failure is now truthful evidence
+
+**Type:** observed
+
+The bounded clean DeepSeek smoke reached the provider and received HTTP 402
+`Insufficient Balance`. The wrapper classified it as permanent, made no retry,
+and emitted one logical-call receipt plus one physical-attempt receipt with the
+context digest, failure timing, unavailable usage basis, and zero claimed cost.
+
+**Evidence:**
+`docs/plans/epistemic-repair/p1/epistemic-repair-p1-real-smoke-v1.json`;
+`scripts/run_epistemic_repair_p1_real_smoke.py`.
+
+**Effect:** HG-13 behavior is correct for this provider failure, but the clean
+real-provider success and clean-batch latency criteria remain unproven. Do not
+retry this smoke until provider balance or credentials change.
+
+### 2026-07-17 — LOG-014 — Receipt schema is proven on PostgreSQL
+
+**Type:** observed
+
+Migration 0224 was applied to the local development PostgreSQL database. A
+transactional integration test proved insert, identical replay, guarded
+conflict rejection, logical-to-attempt linkage, and rollback cleanup. Schema
+drift checking still reports one unrelated pre-existing column,
+`model_edges.source_relation_instance_id`.
+
+**Evidence:** `tests/epistemic_repair/p1/test_llm_receipt_postgres.py`.
+
+**Effect:** basic receipt durability is proven on PostgreSQL. Recovery from a
+ledger failure after domain effects commit remains a separate open test.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
