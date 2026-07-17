@@ -11,6 +11,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from lib.contracts.kernel import canonical_sha256
+
 
 JsonObject = Mapping[str, Any]
 
@@ -52,6 +54,7 @@ def evaluate_large_company_simulation(
     run_config: JsonObject,
     profile_name: str,
     entity_evidence: JsonObject | None = None,
+    company_learning_evidence: JsonObject | None = None,
 ) -> dict[str, Any]:
     """Return a precise continuous report over saved simulation artifacts."""
     profile = PROFILES[profile_name]
@@ -101,7 +104,10 @@ def evaluate_large_company_simulation(
     entity_model = _entity_model_dimension(
         dimensions, vitals, entity_evidence, gaps
     )
-    learning = _learning_dimension(vitals, assurance, gaps)
+    objective_learning = _objective_company_learning_quality(
+        company_learning_evidence, gaps, hard_failures
+    )
+    learning = _learning_dimension(vitals, assurance, gaps, objective_learning)
     operational = _operational_dimension(
         benchmark=benchmark,
         run_summary=run_summary,
@@ -166,6 +172,7 @@ def evaluate_large_company_simulation(
         "scale": proof["metrics"]["scale"],
         "run_contract": proof["metrics"]["run_contract"],
         "retrieval_evolution": retrieval_evolution,
+        "current_bounded_company_learning": objective_learning[2],
         "hard_failures": _dedupe(hard_failures),
         "proof_gaps": all_gaps,
         "claims_supported": _claims_supported(
@@ -473,6 +480,7 @@ def _learning_dimension(
     vitals: JsonObject | None,
     assurance: JsonObject | None,
     gaps: list[str],
+    objective_learning: tuple[float | None, float, dict[str, Any]],
 ) -> dict[str, Any]:
     vital_rows = _object((vitals or {}).get("vitals"))
     self_improvement = _nested_score(vital_rows, "self_improvement")
@@ -481,13 +489,19 @@ def _learning_dimension(
     correction = _assurance_component_score(assurance, "correction")
     retention = _assurance_component_score(assurance, "retention")
     safety = _assurance_component_score(assurance, "negative")
-    values = [positive, correction, retention, safety, self_improvement, human_loop]
+    objective_score, objective_coverage, objective_metrics = objective_learning
+    base_values = [positive, correction, retention, safety, self_improvement, human_loop]
+    values = [*base_values, objective_score] if objective_score is not None else base_values
     observed = [value for value in values if value is not None]
     if assurance is None:
         gaps.append("Learning and correction lift lacks Assurance v7 evidence.")
     return _dimension(
         _mean(observed),
-        len(observed) / len(values),
+        (
+            (sum(value is not None for value in base_values) + objective_coverage) / 7
+            if objective_score is not None
+            else sum(value is not None for value in base_values) / 6
+        ),
         {
             "adaptive_minus_frozen_lift": positive,
             "correction_assurance": correction,
@@ -495,8 +509,85 @@ def _learning_dimension(
             "negative_control_assurance": safety,
             "self_improvement": self_improvement,
             "human_loop_closure": human_loop,
+            "objective_company_learning_quality": objective_score,
+            "objective_company_learning_evidence_coverage": objective_coverage,
+            "objective_company_learning_metrics": objective_metrics,
         },
     )
+
+
+def _objective_company_learning_quality(
+    evidence: JsonObject | None,
+    gaps: list[str],
+    hard_failures: list[str],
+) -> tuple[float | None, float, dict[str, Any]]:
+    """Credit numeric bounded components only; labels never become scores."""
+    if not evidence:
+        gaps.append("Objective current bounded company-learning evidence is missing.")
+        return None, 0.0, {}
+    if evidence.get("schema_version") != "objective-company-learning-evidence-v1":
+        gaps.append("Objective company-learning evidence has an unsupported schema version.")
+        return None, 0.0, {}
+    expected = evidence.get("composition_sha256")
+    body = dict(evidence)
+    body.pop("composition_sha256", None)
+    if expected != canonical_sha256(body):
+        gaps.append("Objective company-learning evidence composition digest is invalid.")
+        return None, 0.0, {}
+    rows = _object(evidence.get("components"))
+    required = (
+        "retrieval_evolution", "company_model_ablation", "feedback_learning",
+        "source_equivalence", "correction_homeostasis",
+    )
+    components = {
+        name: _optional_ratio(_object(rows.get(name)).get("continuous_score"))
+        for name in required
+    }
+    observed = [value for value in components.values() if value is not None]
+    coverage = len(observed) / len(required)
+    score = _mean(observed) if observed else None
+    reported_coverage = _optional_ratio(evidence.get("evidence_coverage"))
+    reported_score = _optional_ratio(evidence.get("observed_component_score"))
+    if reported_coverage is None or abs(reported_coverage - coverage) > 1e-9:
+        gaps.append("Objective company-learning reported coverage disagrees with numeric components.")
+        return None, 0.0, {}
+    if score is None or reported_score is None or abs(reported_score - score) > 1e-9:
+        gaps.append("Objective company-learning aggregate score disagrees with numeric components.")
+        return None, 0.0, {}
+    blockers = _strings(evidence.get("noncompensable_blockers"))
+    hard_failures.extend(
+        f"objective company-learning: {blocker}" for blocker in blockers
+    )
+    gaps.extend(
+        f"Objective company-learning evidence: {item}"
+        for item in _strings(evidence.get("proof_gaps"))
+    )
+    retrieval = _object(rows.get("retrieval_evolution"))
+    historical_verdict = retrieval.get("historical_verdict")
+    current_verdict = retrieval.get("current_bounded_verdict")
+    if historical_verdict == "below_policy":
+        gaps.append(
+            "Immutable historical 45-batch retrieval evolution remains below policy; "
+            "the current bounded post-fix pass does not rewrite that result."
+        )
+    return score, coverage, {
+        "schema_version": evidence.get("schema_version"),
+        "composition_sha256": expected,
+        "components": components,
+        "observed_component_count": len(observed),
+        "required_component_count": len(required),
+        "coverage": coverage,
+        "reported_verdict": evidence.get("verdict"),
+        "below_policy_components": _strings(evidence.get("below_policy_components")),
+        "historical_below_policy_components": _strings(
+            evidence.get("historical_below_policy_components")
+        ),
+        "noncompensable_blockers": blockers,
+        "historical_retrieval_verdict": historical_verdict,
+        "current_bounded_retrieval_verdict": current_verdict,
+        "exact_populations": _object(evidence.get("exact_populations")),
+        "guarantee_boundary": evidence.get("guarantee_boundary"),
+    }
 
 
 def _operational_dimension(

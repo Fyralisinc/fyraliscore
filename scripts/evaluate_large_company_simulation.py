@@ -48,6 +48,10 @@ def main(argv: list[str] | None = None) -> int:
         report_dir / "objective_entity_evidence.json",
         report_dir / "vitals" / "objective_entity_evidence.json",
     )
+    company_learning_evidence_path = args.company_learning_evidence or _first_existing(
+        report_dir / "objective_company_learning_evidence.json",
+        report_dir / "vitals" / "objective_company_learning_evidence.json",
+    )
     report = evaluate_large_company_simulation(
         benchmark=_read_json(benchmark_path),
         run_summary=_read_json(run_path),
@@ -58,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
         entity_evidence=(
             _read_json(entity_evidence_path) if entity_evidence_path else None
         ),
+        company_learning_evidence=(
+            _read_json(company_learning_evidence_path)
+            if company_learning_evidence_path else None
+        ),
     )
     report["artifact_inputs"] = {
         "benchmark": str(benchmark_path),
@@ -67,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
         "assurance": str(assurance_path) if assurance_path else None,
         "entity_evidence": (
             str(entity_evidence_path) if entity_evidence_path else None
+        ),
+        "company_learning_evidence": (
+            str(company_learning_evidence_path)
+            if company_learning_evidence_path else None
         ),
     }
     output_dir = (args.output_dir or report_dir / "large_simulation_gate").resolve()
@@ -100,6 +112,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--vitals", type=Path)
     parser.add_argument("--assurance", type=Path)
     parser.add_argument("--entity-evidence", type=Path)
+    parser.add_argument("--company-learning-evidence", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--fail-on-not-credible", action="store_true")
     return parser.parse_args(argv)
@@ -158,6 +171,10 @@ def _render_markdown(report: dict[str, Any]) -> str:
     lines.append(
         json.dumps(report["retrieval_evolution"], indent=2, sort_keys=True)
     )
+    lines.append("```")
+    lines.extend(["", "## Current Bounded Company-Learning Evidence", "", "```json"])
+    lines.append(json.dumps(report.get("current_bounded_company_learning") or {},
+                            indent=2, sort_keys=True))
     lines.append("```")
     lines.extend(["", "## Hidden Pattern Recovery", "", "```json"])
     lines.append(

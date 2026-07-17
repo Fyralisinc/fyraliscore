@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.large_company_simulation import (
     evaluate_large_company_simulation,
 )
@@ -41,6 +42,39 @@ def _objective_entity_evidence(*, complete: bool = True) -> dict:
         },
         "proof_gaps": [],
     }
+
+
+def _objective_company_learning_evidence(*, numeric: bool = True) -> dict:
+    names = ("retrieval_evolution", "company_model_ablation", "feedback_learning",
+             "source_equivalence", "correction_homeostasis")
+    components = {
+        name: {
+            "status": "observed",
+            "continuous_score": (1.0 if numeric else None),
+            "verdict": "meets_policy",
+        }
+        for name in names
+    }
+    components["retrieval_evolution"].update({
+        "historical_verdict": "below_policy",
+        "current_bounded_verdict": "meets_preregistered_policy",
+    })
+    payload = {
+        "schema_version": "objective-company-learning-evidence-v1",
+        "components": components,
+        "exact_populations": {name: {"n": 1} for name in names},
+        "evidence_coverage": 1.0 if numeric else 0.0,
+        "observed_component_score": 1.0 if numeric else None,
+        "coverage_adjusted_score": 1.0 if numeric else None,
+        "below_policy_components": [],
+        "historical_below_policy_components": ["retrieval_evolution"],
+        "noncompensable_blockers": [],
+        "proof_gaps": ["bounded current evidence"],
+        "verdict": "meets_bounded_policy",
+        "guarantee_boundary": "bounded only",
+    }
+    payload["composition_sha256"] = canonical_sha256(payload)
+    return payload
 
 
 def _artifacts(*, batches: int = 45, signals: int = 1125) -> tuple[dict, ...]:
@@ -203,7 +237,6 @@ def test_status_only_active_surfaces_cannot_manufacture_entity_quality() -> None
         assurance=assurance, run_config=run_config,
         profile_name="authoritative-45",
     )
-
     entity = report["dimensions"]["entity_model_quality"]
     assert vitals["company_physics"]["assurance_suite"]["active_surfaces"] == {
         "status": "observed"
@@ -216,6 +249,47 @@ def test_status_only_active_surfaces_cannot_manufacture_entity_quality() -> None
         for gap in report["proof_gaps"]
     )
 
+
+def test_objective_learning_evidence_adds_numeric_metrics_without_rewriting_history():
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark, run_summary=run_summary, vitals=vitals,
+        assurance=assurance, run_config=run_config,
+        profile_name="authoritative-45",
+        company_learning_evidence=_objective_company_learning_evidence(),
+    )
+
+    metrics = report["current_bounded_company_learning"]
+    assert metrics["components"] == {
+        "retrieval_evolution": 1.0, "company_model_ablation": 1.0,
+        "feedback_learning": 1.0, "source_equivalence": 1.0,
+        "correction_homeostasis": 1.0,
+    }
+    assert metrics["historical_retrieval_verdict"] == "below_policy"
+    assert (
+        metrics["current_bounded_retrieval_verdict"]
+        == "meets_preregistered_policy"
+    )
+    assert report["dimensions"]["learning_correction_lift"]["metrics"][
+        "objective_company_learning_quality"
+    ] == 1.0
+    assert any("Immutable historical 45-batch retrieval" in gap
+               for gap in report["proof_gaps"])
+
+
+def test_learning_status_labels_cannot_manufacture_numeric_score():
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark, run_summary=run_summary, vitals=vitals,
+        assurance=assurance, run_config=run_config,
+        profile_name="authoritative-45",
+        company_learning_evidence=_objective_company_learning_evidence(numeric=False),
+    )
+
+    learning = report["dimensions"]["learning_correction_lift"]["metrics"]
+    assert learning["objective_company_learning_quality"] is None
+    assert report["current_bounded_company_learning"] == {}
+    assert any("aggregate score disagrees" in gap for gap in report["proof_gaps"])
 
 def test_partial_objective_entity_metrics_remain_continuous_and_gapped() -> None:
     benchmark, run_summary, vitals, assurance, run_config = _artifacts()
@@ -358,6 +432,10 @@ def test_cli_writes_json_and_markdown(tmp_path: Path) -> None:
         (vitals_dir / "vitals_scorecard.json", vitals),
         (report_dir / "company_learning_assurance_summary.json", assurance),
         (report_dir / "objective_entity_evidence.json", _objective_entity_evidence()),
+        (
+            report_dir / "objective_company_learning_evidence.json",
+            _objective_company_learning_evidence(),
+        ),
     ):
         path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -367,6 +445,10 @@ def test_cli_writes_json_and_markdown(tmp_path: Path) -> None:
     payload = json.loads(
         (output / "large_company_simulation_evaluation.json").read_text()
     )
+    assert payload["artifact_inputs"]["company_learning_evidence"].endswith(
+        "objective_company_learning_evidence.json"
+    )
+    assert payload["current_bounded_company_learning"]["coverage"] == 1.0
     markdown = (
         output / "large_company_simulation_evaluation.md"
     ).read_text()
