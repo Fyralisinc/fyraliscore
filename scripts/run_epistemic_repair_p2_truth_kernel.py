@@ -19,7 +19,7 @@ async def _run(dsn: str, output: Path) -> None:
     transaction = conn.transaction()
     await transaction.start()
     try:
-        report = await run_p2_truth_kernel(conn)
+        report = await run_p2_truth_kernel(conn, concurrency_dsn=dsn)
         write_p2_exit_artifact(report, output)
     finally:
         await transaction.rollback()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from uuid import UUID, uuid5
 
@@ -16,6 +17,22 @@ from lib.contracts.truth_admission import (
 from services.domain.truth_kernel.service import TruthCommandReceipt
 
 
+MODEL_HEAD_CAS_SQL_TEMPLATE = """
+            UPDATE {head_relation}
+            SET version_id=$3, version=$4, semantic_digest=$5,
+                lifecycle=$6, advanced_at=$7
+            WHERE tenant_id=$1 AND model_id=$2 AND version_id=$8
+              AND version=$9 AND semantic_digest=$10 AND lifecycle=$11
+            """
+
+
+def render_model_head_cas_sql(head_relation: str = "model_truth_heads") -> str:
+    """Render the production CAS statement for a trusted relation name."""
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?", head_relation):
+        raise ValueError("invalid CAS head relation")
+    return MODEL_HEAD_CAS_SQL_TEMPLATE.format(head_relation=head_relation)
+
+
 class AsyncpgTruthKernelStorage:
     """Persist one command through the transaction supplied by the caller."""
 
@@ -25,7 +42,7 @@ class AsyncpgTruthKernelStorage:
         row = await tx.fetchrow(
             """
             SELECT r.command_id, r.tenant_id, r.idempotency_key,
-                   r.command_kind, r.request_digest, r.recorded_at,
+                   r.command_kind, r.request_digest, r.outcome, r.recorded_at,
                    v.model_id, v.version_id, v.version,
                    v.semantic_digest, v.lifecycle
             FROM truth_command_receipts r
@@ -51,7 +68,38 @@ class AsyncpgTruthKernelStorage:
             semantic_digest=row["semantic_digest"],
             lifecycle=ModelTruthLifecycle(row["lifecycle"]),
             applied_at=row["recorded_at"],
+            outcome=(
+                "absorbed_duplicate"
+                if row["outcome"] == "absorbed_duplicate"
+                else "applied"
+            ),
         )
+
+    async def lock_semantic_admission(
+        self, *, tx: Any, tenant_id: UUID, semantic_digest: str
+    ) -> None:
+        await tx.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            f"truth-semantic-admission:{tenant_id}:{semantic_digest}",
+        )
+
+    async def find_active_semantic_head(
+        self, *, tx: Any, tenant_id: UUID, semantic_digest: str
+    ) -> ModelHead | None:
+        row = await tx.fetchrow(
+            """
+            SELECT tenant_id, model_id, version_id, version,
+                   semantic_digest, lifecycle, advanced_at
+            FROM model_truth_heads
+            WHERE tenant_id=$1 AND semantic_digest=$2 AND lifecycle='active'
+            ORDER BY advanced_at, version_id
+            LIMIT 1
+            FOR UPDATE
+            """,
+            tenant_id,
+            semantic_digest,
+        )
+        return self._head(row) if row else None
 
     async def insert_admission_bundle(
         self, *, tx: Any, command: AdmitModelCommand
@@ -321,13 +369,7 @@ class AsyncpgTruthKernelStorage:
         self, *, tx: Any, expected: ModelHead, successor: ModelHead
     ) -> bool:
         result = await tx.execute(
-            """
-            UPDATE model_truth_heads
-            SET version_id=$3, version=$4, semantic_digest=$5,
-                lifecycle=$6, advanced_at=$7
-            WHERE tenant_id=$1 AND model_id=$2 AND version_id=$8
-              AND version=$9 AND semantic_digest=$10 AND lifecycle=$11
-            """,
+            render_model_head_cas_sql(),
             successor.tenant_id,
             successor.model_id,
             successor.version_id,
@@ -385,14 +427,45 @@ class AsyncpgTruthKernelStorage:
             INSERT INTO truth_command_receipts (
               command_id, tenant_id, idempotency_key, command_kind,
               request_digest, outcome, result_model_version_id, recorded_at
-            ) VALUES ($1,$2,$3,$4,$5,'applied',$6,$7)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
             """,
             receipt.command_id,
             receipt.tenant_id,
             receipt.idempotency_key,
             "admit_model" if receipt.operation == "admit" else "transition_model",
             receipt.request_digest,
+            receipt.outcome,
             receipt.version_id,
+            receipt.applied_at,
+        )
+
+    async def insert_semantic_absorption(
+        self,
+        *,
+        tx: Any,
+        command: AdmitModelCommand,
+        receipt: TruthCommandReceipt,
+    ) -> None:
+        if receipt.outcome != "absorbed_duplicate":
+            raise ValueError("semantic absorption requires an absorbed receipt")
+        await tx.execute(
+            """
+            INSERT INTO truth_semantic_absorptions (
+              command_id, tenant_id, request_digest, semantic_digest,
+              attempted_candidate_id, attempted_model_id,
+              attempted_version_id, absorbed_into_version_id,
+              attempted_command, recorded_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
+            """,
+            command.command_id,
+            command.tenant_id,
+            command.request_digest,
+            command.version.semantic_digest,
+            command.candidate.candidate_id,
+            command.version.model_id,
+            command.version.version_id,
+            receipt.version_id,
+            json.dumps(command.model_dump(mode="json")),
             receipt.applied_at,
         )
 
@@ -409,7 +482,10 @@ class AsyncpgTruthKernelStorage:
         )
 
 
-__all__ = ["AsyncpgTruthKernelStorage"]
+__all__ = [
+    "AsyncpgTruthKernelStorage", "MODEL_HEAD_CAS_SQL_TEMPLATE",
+    "render_model_head_cas_sql",
+]
 
 
 def _uuid_or_reference(value: str, fallback: UUID) -> UUID:

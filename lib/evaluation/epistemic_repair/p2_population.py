@@ -88,6 +88,19 @@ def build_p2_population() -> P2Population:
     for i in range(1, 6):
         cases.append(_case("accepted_synthesis", i, "admit_synthesis_model", "accept", facts={"evidence_kind": "accepted_model_version", "transitive_provenance": "complete", "scope_role": "subject"}, invariants=("HG-05", "HG-06")))
 
+    # Independently keyed attempts over one exact proposition + evidence +
+    # scope identity. These cases feed the continuous absorption metric.
+    for i in range(1, 11):
+        cases.append(
+            _case(
+                "semantic_duplicate",
+                i,
+                "admit_exact_semantic_duplicate",
+                "accept",
+                facts={"duplicate_group": "sealed-exact-identity-1"},
+            )
+        )
+
     wrappers = ("batch_envelope", "prompt_instruction", "control_language", "processing_wrapper", "generic_summary")
     for i, kind in enumerate(wrappers, 1):
         cases.append(_case("wrapper_control", i, "admit_model", "remain_noncanonical", facts={"wrapper_kind": kind}, invariants=("HG-04",)))

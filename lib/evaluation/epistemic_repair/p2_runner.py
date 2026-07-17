@@ -37,6 +37,10 @@ from lib.evaluation.epistemic_repair.p2_hg10_probes import (
     probe_derived_writer_rejection,
     probe_projection_idempotence,
 )
+from lib.evaluation.epistemic_repair.p2_race_probes import (
+    probe_concurrent_transitions,
+    probe_fault_rollback_and_retry,
+)
 from lib.shared.errors import InvariantViolation
 from services.domain.truth_kernel.repository import AsyncpgTruthKernelStorage
 from services.domain.truth_kernel.relations.contracts import (
@@ -148,8 +152,9 @@ async def _snapshot(conn: Any, tenant_id: UUID) -> dict[str, Any]:
 class P2TruthKernelEvaluator:
     """Execute the sealed population in a caller-owned rollback transaction."""
 
-    def __init__(self, conn: Any, tenant_id: UUID) -> None:
+    def __init__(self, conn: Any, tenant_id: UUID, *, concurrency_dsn: str | None = None) -> None:
         self.conn, self.tenant_id = conn, tenant_id
+        self.concurrency_dsn = concurrency_dsn
         self.service = TruthKernelService(storage=AsyncpgTruthKernelStorage())
         self.relation_service = RelationTruthKernel(AsyncpgRelationKernelStorage())
         self.receipts: list[dict[str, Any]] = []
@@ -157,6 +162,9 @@ class P2TruthKernelEvaluator:
         self.latencies: list[float] = []
         self._admitted: list[tuple[Any, AdmitModelCommand]] = []
         self._relations: list[tuple[Any, RelationCandidate, AdmitRelationCommand]] = []
+        self.duplicate_attempts = 0
+        self.duplicates_absorbed = 0
+        self._fault_retry_probe: Any | None = None
         self._perfect_confidence_relation_explanations: list[bool] = []
 
     async def run(self) -> dict[str, Any]:
@@ -208,6 +216,11 @@ class P2TruthKernelEvaluator:
             "evidence_lineage_coverage": self._rate(observations, ("accepted_atomic", "accepted_synthesis"), "HG-05"),
             "scope_precision": self._rate(observations, ("accepted_atomic", "accepted_synthesis", "entity_type_conflict"), "HG-06"),
             "relation_joint_accuracy": self._rate(observations, ("business_relation",), "HG-09"),
+            "semantic_duplicate_absorption": (
+                self.duplicates_absorbed / self.duplicate_attempts
+                if self.duplicate_attempts
+                else None
+            ),
             "active_unexplained_perfect_confidence_relation_rate": (
                 1.0
                 - sum(self._perfect_confidence_relation_explanations)
@@ -228,10 +241,15 @@ class P2TruthKernelEvaluator:
             "reader cutover remains statically inventoried rather than runtime-attributed",
         ]
         report["reader_cutover_coverage"] = None
+        report["continuous_metric_thresholds"] = {
+            "semantic_duplicate_absorption": 0.90,
+        }
         report["phase_exit_ready"] = (
             not report["missing_evidence"]
             and all(gate["status"] == "pass" for gate in report["hard_gates"].values())
             and all(item["conforms"] for item in report["race_results"])
+            and report["continuous_metrics"]["semantic_duplicate_absorption"]
+            >= 0.90
         )
         report["artifact_content_digest"] = stable_digest({k: v for k, v in report.items() if k not in {"generated_at", "artifact_content_digest"}})
         return report
@@ -253,6 +271,50 @@ class P2TruthKernelEvaluator:
             checks["HG-06"] = bool(row and scope_count >= 1)
             checks["HG-07"] = bool(row and row["truth_semantic_digest"] == command.version.semantic_digest)
             return P2CaseObservation(case.case_id, "observed", "accept", tuple(sorted(checks.items())), before_digest, command_receipt_id=str(receipt.command_id))
+        if family == "semantic_duplicate":
+            if not self._admitted:
+                return P2CaseObservation(
+                    case.case_id,
+                    "missing",
+                    violation_codes=("duplicate_source_model_missing",),
+                )
+            source_receipt, source_command = self._admitted[0]
+            ordinal = self.duplicate_attempts + 1
+            duplicate = source_command.model_copy(
+                update={
+                    "command_id": uuid4(),
+                    "idempotency_key": f"p2-semantic-duplicate:{ordinal}",
+                    "issued_at": source_command.issued_at
+                    + timedelta(seconds=ordinal),
+                }
+            )
+            before_versions = await self.conn.fetchval(
+                "SELECT count(*) FROM model_truth_versions WHERE tenant_id=$1",
+                self.tenant_id,
+            )
+            receipt = await self.service.admit(tx=self.conn, command=duplicate)
+            after_versions = await self.conn.fetchval(
+                "SELECT count(*) FROM model_truth_versions WHERE tenant_id=$1",
+                self.tenant_id,
+            )
+            self.duplicate_attempts += 1
+            absorbed = (
+                receipt.outcome == "absorbed_duplicate"
+                and receipt.version_id == source_receipt.version_id
+                and before_versions == after_versions
+            )
+            self.duplicates_absorbed += int(absorbed)
+            self.receipts.append(asdict(receipt))
+            return P2CaseObservation(
+                case.case_id,
+                "observed",
+                "accept",
+                before_digest=before_digest,
+                command_receipt_id=str(receipt.command_id),
+                violation_codes=()
+                if absorbed
+                else ("exact_semantic_duplicate_not_absorbed",),
+            )
         if family == "nonaccepted_admission":
             command = _admission(self.tenant_id, 100 + len(self.receipts))
             disposition = AdmissionDisposition(case.fact("admission_state")) if case.fact("admission_state") in {"rejected", "needs_review"} else AdmissionDisposition.NEEDS_REVIEW
@@ -456,6 +518,61 @@ class P2TruthKernelEvaluator:
         for race in races:
             before = await _snapshot(self.conn, self.tenant_id)
             before_digest = stable_digest(before)
+            if race.operation in {
+                "falsify_model_with_five_projections",
+                "retry_falsify_model_with_five_projections",
+            }:
+                if self._fault_retry_probe is None:
+                    base = _admission(self.tenant_id, 900)
+                    admitted = await self.service.admit(tx=self.conn, command=base)
+                    command = _advance(
+                        admitted, base.version, ModelTruthTransition.FALSIFY, 900
+                    )
+                    self._fault_retry_probe = await probe_fault_rollback_and_retry(
+                        self.conn, command=command
+                    )
+                probe = self._fault_retry_probe
+                rollback_case = race.operation == "falsify_model_with_five_projections"
+                conforms = probe.rollback_conforms if rollback_case else probe.retry_conforms
+                results.append(P2RaceObservation(
+                    race.scenario_id,
+                    "observed",
+                    race.expected_outcome if conforms else "lifecycle_fault_probe_mismatch",
+                    before_digest,
+                    stable_digest(await _snapshot(self.conn, self.tenant_id)),
+                    lifecycle_event_count=(
+                        probe.rollback_lifecycle_event_count
+                        if rollback_case else probe.lifecycle_event_count
+                    ),
+                    repair_obligation_count=(
+                        probe.rollback_repair_obligation_count
+                        if rollback_case else probe.repair_obligation_count
+                    ),
+                    violation_codes=() if conforms else probe.violation_codes,
+                ))
+                continue
+            if race.operation == "concurrent_confirm_and_falsify_same_expected_version":
+                if not self.concurrency_dsn:
+                    results.append(P2RaceObservation(
+                        race.scenario_id, "missing", before_digest=before_digest,
+                        after_digest=stable_digest(await _snapshot(self.conn, self.tenant_id)),
+                        violation_codes=("concurrency_dsn_not_supplied",),
+                    ))
+                    continue
+                isolated_tenant = uuid4()
+                probe = await probe_concurrent_transitions(
+                    self.concurrency_dsn, tenant_id=isolated_tenant,
+                    model_id=uuid4(),
+                )
+                results.append(P2RaceObservation(
+                    race.scenario_id, "observed",
+                    race.expected_outcome if probe.conforms else "concurrent_transition_mismatch",
+                    before_digest,
+                    stable_digest(await _snapshot(self.conn, self.tenant_id)),
+                    lifecycle_event_count=probe.lifecycle_event_count,
+                    violation_codes=probe.violation_codes,
+                ))
+                continue
             if race.operation == "falsify_nonparticipant_relation_evidence" and self._relations:
                 receipt, candidate, _ = self._relations[0]
                 invalidated = candidate.evidence[0].model_version_id
@@ -566,8 +683,12 @@ class P2TruthKernelEvaluator:
         return sum(dict(item.invariant_checks).get(gate) is True for item in items) / len(items) if items else None
 
 
-async def run_p2_truth_kernel(conn: Any, *, tenant_id: UUID | None = None) -> dict[str, Any]:
-    return await P2TruthKernelEvaluator(conn, tenant_id or uuid4()).run()
+async def run_p2_truth_kernel(
+    conn: Any, *, tenant_id: UUID | None = None, concurrency_dsn: str | None = None
+) -> dict[str, Any]:
+    return await P2TruthKernelEvaluator(
+        conn, tenant_id or uuid4(), concurrency_dsn=concurrency_dsn
+    ).run()
 
 
 __all__ = ["P2TruthKernelEvaluator", "run_p2_truth_kernel"]

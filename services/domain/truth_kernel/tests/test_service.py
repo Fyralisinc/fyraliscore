@@ -199,6 +199,7 @@ class MemoryStorage:
         self.heads = {}
         self.events = []
         self.receipts: dict[tuple[UUID, str], TruthCommandReceipt] = {}
+        self.absorptions = []
 
     @asynccontextmanager
     async def transaction(self):
@@ -212,6 +213,21 @@ class MemoryStorage:
 
     async def find_receipt(self, *, tx, tenant_id, idempotency_key):
         return self.receipts.get((tenant_id, idempotency_key))
+
+    async def lock_semantic_admission(self, *, tx, tenant_id, semantic_digest):
+        return None
+
+    async def find_active_semantic_head(self, *, tx, tenant_id, semantic_digest):
+        return next(
+            (
+                head
+                for head in self.heads.values()
+                if head.tenant_id == tenant_id
+                and head.semantic_digest == semantic_digest
+                and head.lifecycle is ModelTruthLifecycle.ACTIVE
+            ),
+            None,
+        )
 
     async def insert_admission_bundle(self, *, tx, command):
         self.candidates[command.candidate.candidate_id] = command.candidate
@@ -240,6 +256,9 @@ class MemoryStorage:
 
     async def insert_receipt(self, *, tx, receipt):
         self.receipts[(receipt.tenant_id, receipt.idempotency_key)] = receipt
+
+    async def insert_semantic_absorption(self, *, tx, command, receipt):
+        self.absorptions.append((command, receipt))
 
 
 class RecordingFence:
@@ -275,6 +294,79 @@ async def test_admission_persists_exact_version_head_event_and_idempotent_receip
     assert len(STORE.candidates) == len(STORE.decisions) == len(STORE.versions) == 1
     assert len(STORE.heads) == len(STORE.events) == len(STORE.receipts) == 1
     assert first.semantic_digest == command.version.semantic_digest
+
+
+@pytest.mark.asyncio
+async def test_independently_keyed_exact_semantic_duplicate_is_absorbed() -> None:
+    command = admission()
+    service = TruthKernelService(storage=STORE)
+    async with STORE.transaction() as tx:
+        first = await service.admit(tx=tx, command=command)
+
+    receipts = []
+    for ordinal in range(10):
+        duplicate = command.model_copy(
+            update={
+                "command_id": uuid4(),
+                "idempotency_key": f"semantic-duplicate:{ordinal}",
+                "issued_at": command.issued_at + timedelta(seconds=ordinal + 1),
+            }
+        )
+        async with STORE.transaction() as tx:
+            receipts.append(await service.admit(tx=tx, command=duplicate))
+
+    assert all(item.outcome == "absorbed_duplicate" for item in receipts)
+    assert all(item.version_id == first.version_id for item in receipts)
+    assert len(STORE.versions) == len(STORE.heads) == 1
+    assert len(STORE.receipts) == 11
+    assert len(STORE.absorptions) == 10
+    assert all(
+        command.request_digest == receipt.request_digest
+        and command.version.semantic_digest == receipt.semantic_digest
+        for command, receipt in STORE.absorptions
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_text_with_distinct_evidence_is_not_absorbed() -> None:
+    service = TruthKernelService(storage=STORE)
+    first_command = admission()
+    second_command = admission()
+    assert first_command.version.natural == second_command.version.natural
+    assert first_command.version.semantic_digest != second_command.version.semantic_digest
+
+    async with STORE.transaction() as tx:
+        first = await service.admit(tx=tx, command=first_command)
+        second = await service.admit(tx=tx, command=second_command)
+
+    assert first.outcome == second.outcome == "applied"
+    assert first.version_id != second.version_id
+    assert len(STORE.versions) == len(STORE.heads) == 2
+
+
+def test_semantic_identity_distinguishes_evidence_and_scope() -> None:
+    command = admission()
+    version = command.version
+    changed_evidence = (
+        version.evidence[0].model_copy(update={"evidence_id": "different-signal"}),
+    )
+    changed_scope = (
+        version.scope[0].model_copy(update={"subject_id": uuid4()}),
+    )
+    evidence_digest = ModelVersion.compute_semantic_digest(
+        proposition=version.proposition,
+        natural=version.natural,
+        evidence=changed_evidence,
+        scope=version.scope,
+    )
+    scope_digest = ModelVersion.compute_semantic_digest(
+        proposition=version.proposition,
+        natural=version.natural,
+        evidence=version.evidence,
+        scope=changed_scope,
+    )
+    assert evidence_digest != version.semantic_digest
+    assert scope_digest != version.semantic_digest
 
 
 @pytest.mark.asyncio

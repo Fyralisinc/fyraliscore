@@ -122,4 +122,5 @@ async def test_lifecycle_adapter_binds_cas_event_and_receipt_to_exact_versions(
     assert version_args[11] == head.version_id
     assert event_args[3:6] == (head.version_id, successor.version_id, "falsify")
     assert receipt_args[0] == event_args[2] == command.command_id
-    assert receipt_args[5] == successor.version_id
+    assert receipt_args[5] == "applied"
+    assert receipt_args[6] == successor.version_id

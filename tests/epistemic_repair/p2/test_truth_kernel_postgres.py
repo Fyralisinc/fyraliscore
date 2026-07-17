@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import json
 import os
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ import asyncpg
 import pytest
 
 from lib.contracts.truth_admission import (
+    AdmitModelCommand,
     AdvanceModelHeadCommand,
     ModelHeadExpectation,
     ModelTruthLifecycle,
@@ -151,6 +153,89 @@ async def test_admission_replay_and_terminal_fence_on_postgres():
         )
         with pytest.raises(InvariantViolation, match="terminal"):
             await service.advance(tx=conn, command=competing)
+    finally:
+        await outer.rollback()
+        await conn.close()
+
+
+async def test_exact_duplicate_absorption_preserves_distinct_evidence_on_postgres():
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL is required for the PostgreSQL truth proof")
+
+    conn = await asyncpg.connect(dsn)
+    outer = conn.transaction()
+    await outer.start()
+    try:
+        tenant_id = uuid4()
+        await conn.execute(
+            "INSERT INTO tenants (id, name) VALUES ($1, 'p2-duplicate-proof')",
+            tenant_id,
+        )
+        service = TruthKernelService(storage=AsyncpgTruthKernelStorage())
+        original_command = _for_tenant(tenant_id)
+        original = await service.admit(tx=conn, command=original_command)
+
+        absorbed = []
+        for ordinal in range(10):
+            duplicate = original_command.model_copy(
+                update={
+                    "command_id": uuid4(),
+                    "idempotency_key": f"postgres-semantic-duplicate:{ordinal}",
+                    "issued_at": original_command.issued_at
+                    + timedelta(seconds=ordinal + 1),
+                }
+            )
+            absorbed.append(await service.admit(tx=conn, command=duplicate))
+
+        assert all(item.outcome == "absorbed_duplicate" for item in absorbed)
+        assert all(item.version_id == original.version_id for item in absorbed)
+        assert await conn.fetchval(
+            "SELECT count(*) FROM model_truth_versions WHERE tenant_id=$1",
+            tenant_id,
+        ) == 1
+        assert await conn.fetchval(
+            """
+            SELECT count(*) FROM truth_command_receipts
+            WHERE tenant_id=$1 AND outcome='absorbed_duplicate'
+            """,
+            tenant_id,
+        ) == 10
+        assert await conn.fetchval(
+            "SELECT count(*) FROM truth_semantic_absorptions WHERE tenant_id=$1",
+            tenant_id,
+        ) == 10
+        audit = await conn.fetchrow(
+            """
+            SELECT request_digest, semantic_digest, attempted_command,
+                   absorbed_into_version_id
+            FROM truth_semantic_absorptions
+            WHERE tenant_id=$1 ORDER BY recorded_at LIMIT 1
+            """,
+            tenant_id,
+        )
+        attempted_command = audit["attempted_command"]
+        if isinstance(attempted_command, str):
+            attempted_command = json.loads(attempted_command)
+        assert attempted_command["version"]["semantic_digest"] == original.semantic_digest
+        assert AdmitModelCommand.model_validate(
+            attempted_command
+        ).request_digest == audit["request_digest"]
+        assert audit["absorbed_into_version_id"] == original.version_id
+
+        distinct_evidence = _for_tenant(tenant_id)
+        assert distinct_evidence.version.natural == original_command.version.natural
+        assert (
+            distinct_evidence.version.semantic_digest
+            != original_command.version.semantic_digest
+        )
+        distinct = await service.admit(tx=conn, command=distinct_evidence)
+        assert distinct.outcome == "applied"
+        assert distinct.version_id != original.version_id
+        assert await conn.fetchval(
+            "SELECT count(*) FROM model_truth_versions WHERE tenant_id=$1",
+            tenant_id,
+        ) == 2
     finally:
         await outer.rollback()
         await conn.close()

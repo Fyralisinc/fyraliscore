@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol, Sequence
+from typing import Any, Literal, Protocol, Sequence
 from uuid import UUID
 
 from lib.contracts.kernel import canonical_sha256
@@ -38,6 +38,7 @@ class TruthCommandReceipt:
     semantic_digest: str
     lifecycle: ModelTruthLifecycle
     applied_at: datetime
+    outcome: Literal["applied", "absorbed_duplicate"] = "applied"
 
     @property
     def result_digest(self) -> str:
@@ -54,6 +55,7 @@ class TruthCommandReceipt:
                 "semantic_digest": self.semantic_digest,
                 "lifecycle": self.lifecycle.value,
                 "applied_at": self.applied_at.isoformat(),
+                "outcome": self.outcome,
             }
         )
 
@@ -82,6 +84,14 @@ class TruthKernelStorage(Protocol):
     async def find_receipt(
         self, *, tx: Any, tenant_id: UUID, idempotency_key: str
     ) -> TruthCommandReceipt | None: ...
+
+    async def lock_semantic_admission(
+        self, *, tx: Any, tenant_id: UUID, semantic_digest: str
+    ) -> None: ...
+
+    async def find_active_semantic_head(
+        self, *, tx: Any, tenant_id: UUID, semantic_digest: str
+    ) -> ModelHead | None: ...
 
     async def insert_admission_bundle(
         self, *, tx: Any, command: AdmitModelCommand
@@ -118,6 +128,14 @@ class TruthKernelStorage(Protocol):
         self, *, tx: Any, receipt: TruthCommandReceipt
     ) -> None: ...
 
+    async def insert_semantic_absorption(
+        self,
+        *,
+        tx: Any,
+        command: AdmitModelCommand,
+        receipt: TruthCommandReceipt,
+    ) -> None: ...
+
 
 class TruthKernelService:
     """The sole semantic command owner for Model admission and head movement."""
@@ -140,6 +158,42 @@ class TruthKernelService:
         replay = await self._idempotent_replay(tx=tx, command=command)
         if replay is not None:
             return replay
+
+        # The semantic digest binds proposition, representation, evidence and
+        # typed scope. Serializing on that complete identity absorbs exact
+        # duplicates without conflating textually similar but distinct claims.
+        await self._storage.lock_semantic_admission(
+            tx=tx,
+            tenant_id=command.tenant_id,
+            semantic_digest=command.version.semantic_digest,
+        )
+        duplicate = await self._storage.find_active_semantic_head(
+            tx=tx,
+            tenant_id=command.tenant_id,
+            semantic_digest=command.version.semantic_digest,
+        )
+        if duplicate is not None:
+            receipt = TruthCommandReceipt(
+                command_id=command.command_id,
+                tenant_id=command.tenant_id,
+                idempotency_key=command.idempotency_key,
+                request_digest=command.request_digest,
+                operation="admit",
+                model_id=duplicate.model_id,
+                version_id=duplicate.version_id,
+                version=duplicate.version,
+                semantic_digest=duplicate.semantic_digest,
+                lifecycle=duplicate.lifecycle,
+                applied_at=command.issued_at,
+                outcome="absorbed_duplicate",
+            )
+            await self._storage.insert_receipt(tx=tx, receipt=receipt)
+            await self._storage.insert_semantic_absorption(
+                tx=tx,
+                command=command,
+                receipt=receipt,
+            )
+            return receipt
 
         existing = await self._storage.lock_head(
             tx=tx, tenant_id=command.tenant_id, model_id=command.version.model_id

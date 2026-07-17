@@ -8,21 +8,26 @@ from services.domain.models.repo import ModelsRepo
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATIONS = ROOT / "db" / "migrations"
 MIGRATION = MIGRATIONS / "0225_epistemic_truth_kernel.sql"
+SEMANTIC_DUPLICATE_MIGRATION = (
+    MIGRATIONS / "0226_truth_semantic_duplicate_absorption.sql"
+)
 
 
 def _sql() -> str:
     return MIGRATION.read_text()
 
 
-def test_migration_number_is_unique_and_follows_live_head() -> None:
+def test_truth_kernel_migrations_are_unique_and_follow_live_head() -> None:
     numbered = sorted(
         (int(path.name[:4]), path.name)
         for path in MIGRATIONS.glob("[0-9][0-9][0-9][0-9]_*.sql")
     )
     matching = [name for number, name in numbered if number == 225]
+    duplicate_matching = [name for number, name in numbered if number == 226]
 
     assert matching == [MIGRATION.name]
-    assert numbered[-1] == (225, MIGRATION.name)
+    assert duplicate_matching == [SEMANTIC_DUPLICATE_MIGRATION.name]
+    assert numbered[-1] == (226, SEMANTIC_DUPLICATE_MIGRATION.name)
 
 
 def test_schema_defines_every_p2_truth_surface() -> None:
