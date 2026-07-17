@@ -37,31 +37,36 @@ class CompiledFacetDecisionProvider(LLMProvider):
         del temperature, max_tokens, schema_hint
         self.calls.append({"system": system, "user": user})
         grouped: dict[str, set[str]] = defaultdict(set)
+        current_subjects: set[str] = set()
         for subject, facet in _FACET.findall(user):
             grouped[subject.lower()].add(facet.lower())
+            current_subjects.add(subject.lower())
         consumed_model_ids: list[str] = []
         for model_id, subject, raw_facets in _MODEL_CARD.findall(user):
             consumed_model_ids.append(model_id)
-            grouped[subject.lower()].update(
-                facet.strip().lower() for facet in raw_facets.split(",")
-                if facet.strip())
+            # Prior Model content establishes lineage and duplicate awareness.
+            # Claims remain scoped to current-batch facets so distinct evidence
+            # windows are not rewritten into synthetic, self-citing summaries.
+            del subject, raw_facets
         # Also accept model-card renderings without an id for format tolerance;
         # they contribute content but cannot be claimed as referenced lineage.
-        for subject, raw_facets in _SUMMARY.findall(user):
-            grouped[subject.lower()].update(
-                facet.strip().lower() for facet in raw_facets.split(",")
-                if facet.strip())
+        # Parse format-tolerant summaries without treating them as new facts.
+        _SUMMARY.findall(user)
         candidate_blocks: list[tuple[str, str]] = []
         for block in _CANDIDATE.findall(user):
             match = _CANDIDATE_ID.search(block)
             if match:
                 candidate_blocks.append((match.group(1).rstrip(","), block.lower()))
         decisions = []
+        unused_current = sorted(current_subjects)
         unused_subjects = sorted(grouped)
         for candidate_id, block in candidate_blocks:
-            bound = next((subject for subject in unused_subjects if subject in block), None)
-            subject = bound or (unused_subjects[0] if unused_subjects else None)
+            bound = next((subject for subject in unused_current if subject in block), None)
+            subject = bound or (unused_current[0] if unused_current else None)
+            subject = subject or (unused_subjects[0] if unused_subjects else None)
             if subject is not None:
+                if subject in unused_current:
+                    unused_current.remove(subject)
                 unused_subjects.remove(subject)
                 facets = sorted(grouped[subject])
                 decisions.append({

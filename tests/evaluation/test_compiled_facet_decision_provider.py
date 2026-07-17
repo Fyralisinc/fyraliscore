@@ -28,6 +28,6 @@ async def test_generic_provider_satisfies_active_compiled_contract_and_consumes_
     assert parsed.decisions[0].operation == "claim"
     assert parsed.decisions[0].confidence >= 0.55
     assert parsed.decisions[0].claim_text == (
-        "omega evidence facets: audit, security, usage_drop"
+        "omega evidence facets: usage_drop"
     )
     assert "00000000-0000-0000-0000-000000000001" in parsed.reasoning_trace
