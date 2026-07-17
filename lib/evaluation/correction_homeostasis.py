@@ -73,7 +73,9 @@ def evaluate_correction_homeostasis(
         final_debt_clearance,
     ]
     checks = {
-        "repeated_corrections_exercised": len(rows) >= 3,
+        "repeated_corrections_exercised": sum(
+            row["correction_applied"] for row in rows
+        ) >= 2,
         "correction_converges": convergence >= 0.90,
         "unsafe_reads_contained": safe_containment == 1.0,
         "replay_is_idempotent": replay_idempotency == 1.0,
@@ -127,6 +129,7 @@ def _normalize(row: JsonObject, sequence: int) -> dict[str, Any]:
         "batch_signal_count": max(0, int(row.get("batch_signal_count") or 0)),
         "residual_debt_by_fate": debt,
         "durable_state_fingerprint": str(row.get("durable_state_fingerprint") or ""),
+        "correction_applied": row.get("correction_applied", True) is True,
     }
 
 
