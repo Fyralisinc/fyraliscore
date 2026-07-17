@@ -491,6 +491,41 @@ file appeared in the reported path violations.
 **Effect:** P0 is valid as a characterization checkpoint. The debt-budget
 failure is visible but does not justify mixing unrelated cleanup into P1.
 
+### 2026-07-17 — LOG-010 — Logical calls and physical attempts are different facts
+
+**Type:** observed + decided
+
+Provider instrumentation showed that a logical structured-output request may
+produce several physical attempts through parse repair, transport retry, or an
+SDK's own retry policy. Aggregate call counters cannot prove attempt count,
+latency, failure rate, or cost when those layers are conflated.
+
+**Evidence:** `lib/llm/telemetry.py`;
+`db/migrations/0224_llm_call_attempt_receipts.sql`;
+`tests/epistemic_repair/p1/test_llm_attempt_receipts.py`.
+
+**Effect:** P1 records immutable logical-call and physical-attempt identities
+separately. Provider code emits facts; the Think-owned adapter attaches tenant,
+trigger, run, batch, context, validation, and apply coordinates. The remaining
+retry work must establish one owner and disable opaque SDK retries before the
+ledger can claim wire-attempt completeness.
+
+### 2026-07-17 — LOG-011 — Timing reconciliation requires exclusive leaves
+
+**Type:** decided
+
+Summing nested stage timings double-counts work, while recording only a run wall
+time hides uninstrumented gaps. Failed attempts also consume time and cost and
+cannot be omitted from health reports.
+
+**Evidence:** `lib/evaluation/epistemic_repair/reconciliation.py`;
+`tests/epistemic_repair/p1/test_timing_cost_reconciliation.py`.
+
+**Effect:** P1 evaluation treats inclusive parent spans as navigation only and
+reconciles non-overlapping exclusive leaf spans against logical wall time. It
+reports gap, overlap, error, token coverage, cost coverage, and actual-versus-
+estimated deltas continuously, with the hard timing threshold fixed at 1%.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:

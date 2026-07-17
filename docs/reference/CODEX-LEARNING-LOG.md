@@ -251,3 +251,21 @@ claims that were not checked against code or artifacts.
   a targeted runtime slice that touches filesystem-loading paths.
 - Evidence: `docs/reference/CODEBASE-MANAGEMENT.md`.
 - Status: Historical lesson; apply during future restructures.
+
+### 2026-07-17 - Separate logical LLM calls from physical provider attempts
+
+- Context: Epistemic-repair telemetry hardening for autonomous company learning.
+- Symptom: Aggregate LLM counters looked coherent while parse repair, transport
+  retry, and SDK-internal retry could create more provider attempts than the
+  runtime could identify or reconcile.
+- Cause: Logical requests, wrapper attempts, and provider-wire attempts were
+  treated as one event and retry ownership was split across layers.
+- Lesson: Give every logical call a stable ID and every physical attempt its own
+  chained ID and receipt. Persist failures as well as successes, attach tenant
+  and Think-run coordinates in the service layer, and permit only one retry
+  owner with SDK retry disabled before claiming complete attempt telemetry.
+- Evidence: `lib/llm/telemetry.py`;
+  `db/migrations/0224_llm_call_attempt_receipts.sql`;
+  `services/reasoning/think/llm_receipts.py`.
+- Status: P1 contract landed; runtime retry unification and end-to-end proof are
+  still required.
