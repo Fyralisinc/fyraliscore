@@ -1,0 +1,255 @@
+"""Compose sealed extraction and company-physics evidence without trust inflation."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Mapping
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from lib.evaluation.entity_extraction_gold import (
+    EntityExtractionMetrics,
+    GoldEntityExtractionReport,
+)
+from lib.evaluation.entity_pipeline_gold import GoldEntityPipelineReport
+from lib.evaluation.entity_readiness import (
+    EntityReadinessEvidence,
+    EntityReadinessThresholds,
+    ExactRatePopulation,
+    evaluate_entity_readiness,
+)
+
+V3_SCHEMA = "learned-entity-discovery-quality-v3"
+VERTICAL_SCHEMA = "sealed-company-physics-objective-v1"
+READINESS_INPUT_SCHEMA = "sealed-company-physics-readiness-evidence-v1"
+OUTPUT_SCHEMA = "objective-entity-evidence-v1"
+_REQUIRED_POPULATIONS = frozenset({
+    "pipeline.candidate_recall_at_3",
+    "pipeline.canonical_link_coverage",
+    "pipeline.canonical_link_accuracy",
+    "pipeline.no_admission_no_model_safety_rate",
+    "pipeline.harmful_semantic_propagation_rate",
+    "pipeline.relation_lineage_integrity",
+})
+_REQUIRED_INCIDENTS = frozenset({
+    "cross_tenant_identity_incidents",
+    "untraceable_canonical_assignments",
+    "known_wrong_type_consequential_admissions",
+})
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class VerticalReadinessInput(_Strict):
+    schema_version: str
+    exact_rate_populations: Mapping[str, ExactRatePopulation]
+    incidents: Mapping[str, int]
+
+
+def canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def load_bound_json(path: Path, *, expected_sha256: str) -> dict[str, Any]:
+    raw = path.read_bytes()
+    actual = sha256_bytes(raw)
+    if actual != expected_sha256:
+        raise ValueError(f"artifact SHA mismatch for {path}: {actual} != {expected_sha256}")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError(f"artifact root must be an object: {path}")
+    return payload
+
+
+def compose_objective_entity_evidence(
+    *,
+    v3: Mapping[str, Any],
+    vertical: Mapping[str, Any],
+    v3_artifact_sha256: str,
+    vertical_artifact_sha256: str,
+    thresholds: EntityReadinessThresholds | None = None,
+) -> dict[str, Any]:
+    """Validate, normalize and compose two already SHA-bound artifact objects."""
+
+    if v3.get("benchmark") != V3_SCHEMA:
+        raise ValueError("unsupported sealed v3 benchmark schema")
+    if v3.get("evidence_class") != "sealed_untouched_holdout_one_shot_completed":
+        raise ValueError("v3 is not sealed completed one-shot evidence")
+    if vertical.get("schema_version") != VERTICAL_SCHEMA:
+        raise ValueError("unsupported company-physics objective schema")
+    _verify_vertical_objective_digest(vertical)
+
+    post = _object(v3.get("post_verification"), "v3.post_verification")
+    extraction_payload = _object(post.get("metrics"), "v3 post metrics")
+    extraction = GoldEntityExtractionReport.model_validate({
+        key: extraction_payload[key]
+        for key in GoldEntityExtractionReport.model_fields
+        if key in extraction_payload
+    })
+    per_type_payload = _object(
+        extraction_payload.get("by_entity_type"), "v3 by_entity_type"
+    )
+    per_type = {
+        str(name): EntityExtractionMetrics.model_validate(value)
+        for name, value in per_type_payload.items()
+    }
+    if not per_type:
+        raise ValueError("v3 lacks per-type extraction populations")
+
+    pipeline = GoldEntityPipelineReport.model_validate(
+        _object(vertical.get("entity_pipeline_v4"), "vertical entity_pipeline_v4")
+    )
+    readiness_input = VerticalReadinessInput.model_validate(
+        _object(vertical.get("readiness_evidence_v1"), "vertical readiness evidence")
+    )
+    if readiness_input.schema_version != READINESS_INPUT_SCHEMA:
+        raise ValueError("unsupported vertical readiness evidence schema")
+    _require_exact_keys(
+        readiness_input.exact_rate_populations,
+        _REQUIRED_POPULATIONS,
+        "exact readiness populations",
+    )
+    _require_exact_keys(readiness_input.incidents, _REQUIRED_INCIDENTS, "incidents")
+    if any(not isinstance(value, int) or value < 0
+           for value in readiness_input.incidents.values()):
+        raise ValueError("readiness incidents must be nonnegative integers")
+    _verify_population_rates(pipeline, readiness_input.exact_rate_populations)
+
+    negative = _object(post.get("negative_cleanliness"), "v3 negative cleanliness")
+    negative_population = ExactRatePopulation(
+        numerator=_integer(negative.get("clean_negative_signals"), "clean negatives"),
+        denominator=_integer(negative.get("negative_signal_count"), "negative signals"),
+    )
+    if negative_population.rate != negative.get("rate"):
+        raise ValueError("v3 negative-cleanliness rate disagrees with exact population")
+
+    evidence = EntityReadinessEvidence(
+        per_type_extraction=per_type,
+        negative_cleanliness=negative_population,
+        exact_rate_populations=readiness_input.exact_rate_populations,
+        cross_tenant_identity_incidents=readiness_input.incidents[
+            "cross_tenant_identity_incidents"
+        ],
+        untraceable_canonical_assignments=readiness_input.incidents[
+            "untraceable_canonical_assignments"
+        ],
+        known_wrong_type_consequential_admissions=readiness_input.incidents[
+            "known_wrong_type_consequential_admissions"
+        ],
+    )
+    readiness = evaluate_entity_readiness(
+        extraction=extraction, pipeline=pipeline, evidence=evidence,
+        thresholds=thresholds,
+    )
+    proof_gaps = sorted(set(
+        list(extraction.uncertainties)
+        + list(pipeline.uncertainties)
+        + [f"readiness_coverage_gap:{item}" for item in readiness.coverage_gaps]
+        + [f"readiness_blocker_unknown:{item.code}"
+           for item in readiness.blockers if item.status == "unknown"]
+    ))
+    output: dict[str, Any] = {
+        "schema_version": OUTPUT_SCHEMA,
+        "artifact_bindings": {
+            "sealed_v3": {
+                "artifact_sha256": v3_artifact_sha256,
+                "corpus_sha256": v3.get("frozen_corpus_sha256"),
+                "schema": V3_SCHEMA,
+            },
+            "company_physics_vertical": {
+                "artifact_sha256": vertical_artifact_sha256,
+                "objective_sha256": vertical.get("objective_sha256"),
+                "schema": VERTICAL_SCHEMA,
+            },
+        },
+        "extraction": extraction.model_dump(mode="json"),
+        "pipeline": pipeline.model_dump(mode="json"),
+        "per_type_extraction": {
+            name: value.model_dump(mode="json") for name, value in per_type.items()
+        },
+        "negative_cleanliness": negative_population.model_dump(mode="json"),
+        "readiness": readiness.model_dump(mode="json"),
+        "proof_gaps": proof_gaps,
+    }
+    output["composition_sha256"] = sha256_bytes(canonical_json_bytes(output))
+    return output
+
+
+def write_atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _verify_vertical_objective_digest(vertical: Mapping[str, Any]) -> None:
+    expected = vertical.get("objective_sha256")
+    if not isinstance(expected, str) or len(expected) != 64:
+        raise ValueError("vertical objective_sha256 is missing")
+    body = dict(vertical)
+    body.pop("objective_sha256", None)
+    actual = sha256_bytes(canonical_json_bytes(body))
+    if actual != expected:
+        raise ValueError("vertical objective_sha256 mismatch")
+
+
+def _verify_population_rates(
+    pipeline: GoldEntityPipelineReport,
+    populations: Mapping[str, ExactRatePopulation],
+) -> None:
+    metrics = pipeline.overall
+    values = {
+        "pipeline.candidate_recall_at_3": metrics.candidate_recall_at_k.get(3),
+        "pipeline.canonical_link_coverage": metrics.canonical_link_coverage,
+        "pipeline.canonical_link_accuracy": metrics.canonical_link_accuracy,
+        "pipeline.no_admission_no_model_safety_rate": (
+            metrics.no_admission_no_model_safety_rate
+        ),
+        "pipeline.harmful_semantic_propagation_rate": (
+            metrics.harmful_semantic_propagation_rate
+        ),
+        "pipeline.relation_lineage_integrity": metrics.relation_lineage_integrity,
+    }
+    for name, value in values.items():
+        population_rate = populations[name].rate
+        if value is None and population_rate is None:
+            continue
+        if value is None or population_rate is None or abs(value - population_rate) > 1e-12:
+            raise ValueError(f"{name} disagrees with its exact population")
+
+
+def _require_exact_keys(values: Mapping[str, Any], required: frozenset[str], label: str) -> None:
+    if set(values) != required:
+        raise ValueError(
+            f"{label} must contain exactly {sorted(required)}; got {sorted(values)}"
+        )
+
+
+def _object(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    return value
+
+
+def _integer(value: Any, label: str) -> int:
+    if not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label} must be a nonnegative integer")
+    return value
+
+
+__all__ = [
+    "compose_objective_entity_evidence", "load_bound_json", "write_atomic_json",
+]
