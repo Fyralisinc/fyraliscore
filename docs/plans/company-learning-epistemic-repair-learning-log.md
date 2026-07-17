@@ -790,6 +790,106 @@ not. Absolute latencies are small, yet the preregistered concurrency ratio may
 not be waived or diluted. Queue-family, projector-refresh, and exact token
 measurement also remain fail-closed until their real pipelines execute.
 
+### 2026-07-18 — LOG-027 — Gold must not contradict authenticated runtime evidence
+
+**Type:** observed + corrected
+
+The first 1,200-observation Slack boundary characterization scored 49 false
+merges because topic-drift gold silently moved messages into episode N+1 while
+their visible text and authenticated thread/object metadata still identified
+episode N. A label-blind production system could only satisfy that gold by
+ignoring stronger runtime evidence or learning the evaluator's hidden labels.
+
+**Evidence:** `/tmp/p8-component-characterization-invalid-runtime-gold-contradiction.json`;
+`/tmp/p8-component-characterization-db-v2.json`; commit `baf821ac`.
+
+**Effect:** the contradictory run remains historical falsifying evaluator
+evidence. Population v2 adds ordinary explicit topic/object cues and a generic
+production projection in which topology is strong evidence but not an
+unbreakable boundary. The corrected sealed run scores 1.0 B-cubed F1 over all
+1,200 observations and every registered slice, with zero false merges. Future
+gold changes require runtime/gold consistency and gold-mutation-invariance
+tests before they can qualify production behavior.
+
+### 2026-07-18 — LOG-028 — One configured model does not imply one executed model
+
+**Type:** observed + corrected
+
+P6 and P7 were configured with Codex `gpt-5.4`, but production question
+planning independently selected `gpt-5.3-codex-spark`. A provider preflight
+and a manifest that named only the main model therefore described a mixed-model
+run as single-configuration evidence.
+
+**Evidence:** `/tmp/epistemic-repair-p7-production-mixed-model-invalid-v1.json`;
+P6 physical attempt receipts; commit `092f4843`.
+
+**Effect:** mixed attempts are preserved but invalid for semantic comparison.
+P6/P7 now pin question planning and fallback to the main provider, reconcile
+every logical receipt to every physical attempt after execution, and fail on
+missing or mismatched provider/model/purpose identity. Configuration equality
+is not evidence; the durable attempt ledger is.
+
+### 2026-07-18 — LOG-029 — Codex CLI exposes exact terminal token usage
+
+**Type:** observed + corrected
+
+The P8 provider runner previously wrote zero token counts with
+`usage_exactness=unavailable`. Raw Codex JSONL includes exact usage on the
+`turn.completed` event, including total input, cached input, output, and
+reasoning output tokens.
+
+**Evidence:** `/tmp/p8-codex-canary.jsonl` SHA-256
+`f5a7f8626b186a1ea5f5aa887b3c6311ded663e477826ecd7362365b04eb819d`;
+commits `2d4713e4` and `acab46ab`.
+
+**Effect:** successful terminal attempts persist only provider-reported usage;
+timeouts without a terminal event remain explicitly unavailable. The observed
+canary reported 16,711 input, 16,256 cached input, 21 output, and 14 reasoning
+output tokens. Evaluators must parse the provider's terminal event rather than
+infer cost from prompts or substitute zeros.
+
+### 2026-07-18 — LOG-030 — Admission cut-over exposes every stale accepted reader
+
+**Type:** observed + corrected
+
+After Think began admitting canonical Models, batch-two retrieval found both
+accepted heads, but downstream dynamics failed because it queried legacy
+payload columns directly from the membership-oriented
+`accepted_current_models` view. Earlier SAGE, deterministic, retrieval-action,
+and reconciler readers had the same shape assumption.
+
+**Evidence:** `/tmp/p6-think-2batch-governed.json`;
+`services/domain/models/read_shapes.py`;
+`services/reasoning/dynamics/detectors.py`; commit `12a70d85`.
+
+**Effect:** accepted membership and compatibility payload are distinct read
+concerns. Consumers requiring the ModelRow shape must use the canonical
+accepted-row adapter, while membership/lifecycle checks may use truth heads or
+views directly. Each newly admitted production batch is also a cut-over probe
+for stale readers; a passing insert test alone cannot prove the reader graph.
+
+### 2026-07-18 — LOG-031 — Confidence is guarded as truth but absent from truth versions
+
+**Type:** observed + decided
+
+The first single-model two-batch P6 run admitted two Models and then retrieved
+and referenced both in batch two. Apply failed when a confidence update reached
+legacy SQL: migration 0225 correctly guards confidence as accepted semantics,
+but immutable `ModelVersion` does not contain confidence. Smuggling it into a
+reserved proposition metadata block would hide the mismatch and corrupt the
+claim representation.
+
+**Evidence:** `/tmp/p6-think-2batch-single-model.json`; migration
+`0225_epistemic_truth_kernel.sql`; `lib/contracts/truth_admission.py`;
+commit `12a70d85`.
+
+**Effect:** accepted semantic updates must use a truth-kernel advance. Semantic
+confidence should become a first-class immutable version field with compatible
+projection, digest, fencing, and idempotency behavior. Retrieval counters and
+activation remain activity sidecars. The failed batch-two result proves
+model-first retrieval but is not terminal semantic evidence and cannot be
+scored as a successful batch.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
