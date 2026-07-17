@@ -405,6 +405,7 @@ async def test_think_t1_happy_path_inferential(
     } >= {"context_plan", "main_llm_reason", "apply_and_adjudication"}
 
 
+@pytest.mark.skip(reason="P1 removed the benchmark-aligned noise fast path")
 async def test_think_noise_only_t1_fast_path_skips_retrieval_and_llm(
     fresh_db, tenant, tenant_cleanup, monkeypatch,
 ):

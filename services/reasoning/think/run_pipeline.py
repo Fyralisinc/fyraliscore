@@ -493,8 +493,6 @@ async def build_raw_reasoning_output(
         maybe_inject_decision_revisit,
         maybe_inject_future_prediction,
     )
-    from .bridge_inference import maybe_inject_latent_bridge
-    from .capability_probes import maybe_inject_capability_probe_ops
     from .context_use import summarize_context_use
     from .deterministic import _trigger_ref  # type: ignore
     from .lifecycle_obligations import maybe_inject_lifecycle_obligations
@@ -509,8 +507,6 @@ async def build_raw_reasoning_output(
     raw_diff = maybe_inject_decision_pressure_recommendation(
         raw_diff, trigger, state.bundle
     )
-    raw_diff = maybe_inject_latent_bridge(raw_diff, trigger)
-    raw_diff = maybe_inject_capability_probe_ops(raw_diff, trigger, state.bundle)
     raw_diff = maybe_inject_lifecycle_obligations(raw_diff, trigger, state.bundle)
     raw_diff = _drop_event_batch_wrapper_claims(raw_diff, trigger)
     raw_diff = enrich_raw_diff_representation(raw_diff, trigger, state.bundle)

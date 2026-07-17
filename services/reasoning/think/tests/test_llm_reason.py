@@ -54,7 +54,6 @@ from services.reasoning.think import applier as applier_module
 from services.reasoning.think.applier import (
     _emit_question_policy_valid_diff_feedback,
     _emit_valid_diff_outcome_events,
-    _record_noise_noop_negative_memory,
     _upsert_question_policy_valid_diff_stats,
 )
 from services.reasoning.think.prompt import build_prompt
@@ -2718,8 +2717,8 @@ async def test_llm_reason_broad_path_skips_mandatory_relations_for_noise_noop(
     assert "packet_obligations_skipped:explicit_noop" in (diff.reasoning_trace or "")
 
 
-async def test_llm_reason_noise_only_t1_returns_noop_without_llm(monkeypatch):
-    monkeypatch.setenv("THINK_COMPILED_BATCH_MEMORY_REASONING", "1")
+async def test_llm_reason_fixture_noise_phrases_do_not_bypass_llm(monkeypatch):
+    monkeypatch.setenv("THINK_COMPILED_BATCH_MEMORY_REASONING", "0")
     tid = uuid7()
     trig_id = uuid7()
     obs_id = uuid7()
@@ -2786,14 +2785,10 @@ async def test_llm_reason_noise_only_t1_returns_noop_without_llm(monkeypatch):
 
     diff, latency_ms = await llm_reason(trigger, bundle, provider, max_tokens=2048)
 
-    assert latency_ms == 0
-    assert provider.calls == []
-    assert diff.claim_ops == []
-    assert diff.relation_claim_ops == []
-    assert diff.relation_frame_ops == []
-    assert diff.edge_ops == []
-    assert "discard_as_noise" in (diff.reasoning_trace or "")
-    assert "packet_obligations_skipped:explicit_noop" in (diff.reasoning_trace or "")
+    assert latency_ms >= 0
+    assert len(provider.calls) == 1
+    assert len(diff.claim_ops) == 1
+    assert "discard_as_noise" not in (diff.reasoning_trace or "")
 
 
 async def test_llm_reason_noise_word_with_actionable_signal_still_uses_llm():
@@ -2838,80 +2833,6 @@ async def test_llm_reason_noise_word_with_actionable_signal_still_uses_llm():
     await llm_reason(trigger, ContextBundle(), provider, max_tokens=2048)
 
     assert len(provider.calls) == 1
-
-
-async def test_noise_noop_apply_records_negative_memory(monkeypatch):
-    tid = uuid7()
-    trig_id = uuid7()
-    obs_id = uuid7()
-    inserted = []
-
-    class FakeSavepoint:
-        async def __aenter__(self):
-            return None
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    class FakeConn:
-        def transaction(self):
-            return FakeSavepoint()
-
-        async def fetch(self, *args):
-            del args
-            return [
-                {
-                    "id": obs_id,
-                    "source_channel": "slack:storyline-noise",
-                    "content_text": (
-                        "General operational chatter: lunch logistics, "
-                        "duplicated dashboard links, and a non-actionable "
-                        "reminder. This should not dominate memory."
-                    ),
-                }
-            ]
-
-    class FakeNegativeMemoryRepo:
-        def __init__(self, pool, *, tenant_id):
-            del pool
-            self.tenant_id = tenant_id
-
-        async def insert(self, memory, *, conn=None):
-            del conn
-            inserted.append(memory)
-            return memory
-
-    monkeypatch.setattr(
-        applier_module,
-        "NegativeMemoryRepo",
-        FakeNegativeMemoryRepo,
-    )
-    ops_summary = {}
-    diff = ValidatedDiff(
-        trigger_ref=trig_id,
-        tenant_id=tid,
-        reasoning_trace=(
-            "discard_as_noise: noise-only T1 trigger; empty diff, "
-            "no durable diff, no durable write."
-        ),
-    )
-
-    count = await _record_noise_noop_negative_memory(
-        diff,
-        FakeConn(),
-        trigger_evidence_ids=[obs_id],
-        ops_summary=ops_summary,
-    )
-
-    assert count == 1
-    assert len(inserted) == 1
-    memory = inserted[0]
-    assert memory.tenant_id == tid
-    assert memory.memory_type == "noisy_path"
-    assert memory.signature["signal_type"] == "noise_noop"
-    assert memory.signature["question_primitive"] == "NOISE_SUPPRESSION"
-    assert memory.reason == "noise_only_trigger_discarded_without_durable_write"
-    assert ops_summary["negative_memory_ops"][0]["memory_type"] == "noisy_path"
 
 
 async def test_question_policy_feedback_upserts_policy_stats_without_optimizer():

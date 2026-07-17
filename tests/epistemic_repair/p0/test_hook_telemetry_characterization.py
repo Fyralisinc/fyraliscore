@@ -26,7 +26,7 @@ def _source(ref: str) -> tuple[Path, int]:
     return path, line
 
 
-def test_benchmark_hook_inventory_characterizes_reachable_hooks() -> None:
+def test_benchmark_hook_inventory_preserves_p0_findings() -> None:
     inventory = _load("benchmark-hook-inventory.json")
     hooks = {item["id"]: item for item in inventory["hooks"]}
 
@@ -38,24 +38,17 @@ def test_benchmark_hook_inventory_characterizes_reachable_hooks() -> None:
     assert hooks["BH-002"]["benchmark_specific"] is True
 
     for item in hooks.values():
-        source_text = "\n".join(
-            _source(ref)[0].read_text(encoding="utf-8")
-            for ref in item["source"].values()
-        )
-        for anchor in item["evidence_anchors"]:
-            assert anchor in source_text, (item["id"], anchor)
+        for ref in item["source"].values():
+            raw_path, _raw_line = ref.rsplit(":", 1)
+            assert (ROOT / raw_path).is_file(), ref
 
 
-def test_production_pipeline_still_calls_semantic_injectors_unconditionally() -> None:
+def test_p1_removed_semantic_injectors_from_production_pipeline() -> None:
     pipeline = (ROOT / "services/reasoning/think/run_pipeline.py").read_text(
         encoding="utf-8"
     )
-    assert "raw_diff = maybe_inject_latent_bridge(raw_diff, trigger)" in pipeline
-    assert (
-        "raw_diff = maybe_inject_capability_probe_ops(raw_diff, trigger, state.bundle)"
-        in pipeline
-    )
-    assert "if benchmark" not in pipeline
+    assert "maybe_inject_latent_bridge" not in pipeline
+    assert "maybe_inject_capability_probe_ops" not in pipeline
 
 
 def test_telemetry_inventory_exposes_nonreconcilable_levels() -> None:
@@ -77,7 +70,7 @@ def test_telemetry_inventory_exposes_nonreconcilable_levels() -> None:
             _source(ref)
 
 
-def test_usage_counter_is_response_recording_not_attempt_recording() -> None:
+def test_p0_usage_inventory_preserves_original_aggregation_evidence() -> None:
     provider = (ROOT / "lib/llm/provider.py").read_text(encoding="utf-8")
     reason = (ROOT / "services/reasoning/think/reason.py").read_text(
         encoding="utf-8"
@@ -85,8 +78,6 @@ def test_usage_counter_is_response_recording_not_attempt_recording() -> None:
 
     assert "agg.record(" in provider
     assert "outcome.llm_calls_count = agg.call_count" in reason
-    assert "physical_attempt_id" not in provider
-    assert "logical_call_id" not in provider
 
 
 def test_inventory_reports_have_matching_machine_readable_sources() -> None:

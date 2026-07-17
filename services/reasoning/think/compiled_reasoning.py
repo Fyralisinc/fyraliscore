@@ -2612,45 +2612,24 @@ _RELATION_LIFECYCLE_EXPLICIT_NOOP_MARKERS = (
     "no world model mutation",
 )
 
-_RELATION_LIFECYCLE_NOISE_MARKERS = (
-    "background noise",
-    "general operational chatter",
-    "lunch logistics",
-    "duplicated dashboard links",
-    "duplicate dashboard links",
-    "non-actionable reminder",
-    "non actionable reminder",
-    "raw bodies suppressed",
-)
-
-
 def _relation_lifecycle_should_skip_packet_obligations(
     diff: RawDiff,
     *,
     packet: dict[str, Any],
 ) -> bool:
-    """Honor explicit no-op/noise decisions before deterministic relation repair.
+    """Honor an explicit no-op decision before deterministic relation repair.
 
     The lifecycle kernel exists to prevent relation-bearing facts from vanishing
-    when an LLM under-emits. It should not convert an explicit "this batch is
-    background chatter" decision into accepted edges just because retrieved
-    context contains relation-looking old memories.
+    when an LLM under-emits. It must not override a reasoner's explicit decision
+    that the current evidence supports no durable mutation. This rule is based
+    only on the returned decision, never fixture labels or input phrases.
     """
 
+    del packet
     if _raw_diff_has_write_intent(diff):
         return False
     trace = (diff.reasoning_trace or "").lower()
-    if not any(marker in trace for marker in _RELATION_LIFECYCLE_EXPLICIT_NOOP_MARKERS):
-        return False
-    packet_text = _jsonish(
-        {
-            "signal_summary": packet.get("signal_summary"),
-            "sufficiency_verdict": packet.get("sufficiency_verdict"),
-            "important_unknowns": packet.get("important_unknowns"),
-        }
-    ).lower()
-    probe = f"{trace}\n{packet_text}"
-    return any(marker in probe for marker in _RELATION_LIFECYCLE_NOISE_MARKERS)
+    return any(marker in trace for marker in _RELATION_LIFECYCLE_EXPLICIT_NOOP_MARKERS)
 
 
 def _raw_diff_has_write_intent(diff: RawDiff) -> bool:

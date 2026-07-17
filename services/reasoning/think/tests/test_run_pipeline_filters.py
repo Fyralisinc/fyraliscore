@@ -61,6 +61,7 @@ def test_drop_event_batch_wrapper_claims_drops_batch_subject_insert():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="P1 removed the benchmark-aligned noise fast path")
 async def test_noise_only_run_once_skips_retrieval_and_llm(monkeypatch):
     tenant_id = uuid7()
     trigger_id = uuid7()

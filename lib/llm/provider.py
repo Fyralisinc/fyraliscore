@@ -26,9 +26,9 @@ The provider picks up config from env:
 
 Implements retry-on-parse-failure per Prompt 0.2 + TK-5. After
 strict mode, parse errors are rare; the default `max_retries=1` yields
-one repair attempt (2 total calls) rather than the legacy 3. Callers
-that need different retry budgets per error class consult
-`RETRY_POLICIES` below and drive the loop themselves.
+one repair attempt (2 total calls) rather than the legacy 3. The provider
+is the sole retry owner: parse and retryable transport failures share a
+hard ceiling of 3 physical attempts and a 240-second logical deadline.
 
 If the model returns invalid JSON or JSON that doesn't validate
 against the supplied Pydantic schema, the prompt is augmented
@@ -47,7 +47,9 @@ import enum
 import json
 import os
 import tempfile
+import time
 import tomllib
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +58,13 @@ from typing import Any, Callable, Iterator, TypeVar
 import structlog
 from pydantic import BaseModel, ValidationError as PydanticValidationError
 
+from lib.contracts.kernel import canonical_sha256
+from lib.llm.telemetry import (
+    LLMReceiptSink,
+    LogicalCallReceipt,
+    PhysicalAttemptReceipt,
+    utc_now,
+)
 from lib.shared.errors import CompanyOSError
 
 _log = structlog.get_logger(__name__)
@@ -233,6 +242,8 @@ class LLMUsage:
     # 'main_reasoning' (default), 'question_planning', or 'parse_repair'.
     # Set from the `_CURRENT_USAGE_PURPOSE` contextvar at record time.
     purpose: str = "main_reasoning"
+    # Whether token counts came from the provider or a text estimate.
+    usage_exactness: str = "reported"
 
 
 @dataclass
@@ -291,6 +302,7 @@ class LLMUsageAggregator:
                     model_name=c.model_name,
                     cost_usd=c.cost_usd,
                     purpose=c.purpose,
+                    usage_exactness=c.usage_exactness,
                 )
             else:
                 agg.input_tokens += c.input_tokens
@@ -299,6 +311,8 @@ class LLMUsageAggregator:
                 agg.cache_creation_tokens += c.cache_creation_tokens
                 agg.cost_usd += c.cost_usd
                 agg.model_name = c.model_name or agg.model_name
+                if c.usage_exactness == "estimated":
+                    agg.usage_exactness = "estimated"
         return out
 
     def call_count_for(self, purpose: str) -> int:
@@ -335,6 +349,22 @@ _CURRENT_USAGE_PURPOSE: contextvars.ContextVar[str] = contextvars.ContextVar(
     "_CURRENT_USAGE_PURPOSE", default="main_reasoning"
 )
 
+_CURRENT_LOGICAL_CALL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_CURRENT_LOGICAL_CALL_ID", default=None
+)
+_CURRENT_PHYSICAL_ATTEMPT_COUNT: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "_CURRENT_PHYSICAL_ATTEMPT_COUNT", default=0
+)
+_CURRENT_ATTEMPT_LIMIT: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "llm_attempt_limit", default=3,
+)
+_CURRENT_LOGICAL_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "llm_logical_deadline", default=None,
+)
+_CURRENT_RECEIPT_SINK: contextvars.ContextVar[LLMReceiptSink | None] = (
+    contextvars.ContextVar("_CURRENT_RECEIPT_SINK", default=None)
+)
+
 
 @contextmanager
 def using_usage_purpose(purpose: str) -> Iterator[str]:
@@ -362,6 +392,17 @@ def using_usage_aggregator(agg: LLMUsageAggregator) -> Iterator[LLMUsageAggregat
         yield agg
     finally:
         _CURRENT_USAGE_AGG.reset(token)
+
+
+@contextmanager
+def using_receipt_sink(sink: LLMReceiptSink) -> Iterator[LLMReceiptSink]:
+    """Route receipts to one async-task-local collector."""
+
+    token = _CURRENT_RECEIPT_SINK.set(sink)
+    try:
+        yield sink
+    finally:
+        _CURRENT_RECEIPT_SINK.reset(token)
 
 
 def _usage_field(obj: Any, *names: str) -> Any:
@@ -633,6 +674,13 @@ RETRY_POLICIES: dict[LLMErrorClass, RetryPolicy] = {
 def retry_policy_for(exc: BaseException) -> RetryPolicy:
     """Convenience: classify + look up the policy in one call."""
     return RETRY_POLICIES[classify_error(exc)]
+
+
+def _is_retryable_transport_error(exc: BaseException) -> bool:
+    """Do not mistake arbitrary application bugs for provider failures."""
+    return isinstance(exc, (LLMError, TimeoutError, asyncio.TimeoutError)) or (
+        _status_code_of(exc) is not None
+    )
 
 
 # ---------------------------------------------------------------------
@@ -1020,6 +1068,7 @@ class LLMProvider(abc.ABC):
     def __init__(self, config: LLMConfig) -> None:
         self.config = config
         self._usage_aggregator: LLMUsageAggregator | None = None
+        self._receipt_sink: LLMReceiptSink | None = None
 
     # -----------------------------------------------------------------
     # Usage aggregator hook (OP-2) — callers install an aggregator for
@@ -1027,6 +1076,10 @@ class LLMProvider(abc.ABC):
     # -----------------------------------------------------------------
     def set_usage_aggregator(self, agg: LLMUsageAggregator | None) -> None:
         self._usage_aggregator = agg
+
+    def set_receipt_sink(self, sink: LLMReceiptSink | None) -> None:
+        """Install attempt/call telemetry without changing structured() callers."""
+        self._receipt_sink = sink
 
     @property
     def circuit_breaker_name(self) -> str:
@@ -1053,6 +1106,7 @@ class LLMProvider(abc.ABC):
         *,
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
+        usage_exactness: str = "reported",
     ) -> None:
         # Week 5: prefer a task-local aggregator (set via
         # `using_usage_aggregator`) over the instance-wide one so
@@ -1076,6 +1130,7 @@ class LLMProvider(abc.ABC):
                 model_name=self.config.model,
                 cost_usd=cost,
                 purpose=_CURRENT_USAGE_PURPOSE.get(),
+                usage_exactness=usage_exactness,
             )
         )
 
@@ -1091,6 +1146,7 @@ class LLMProvider(abc.ABC):
         self._record_usage(
             _estimate_tokens_from_text(system, user, schema_hint),
             _estimate_tokens_from_text(content),
+            usage_exactness="estimated",
         )
 
     @abc.abstractmethod
@@ -1122,6 +1178,9 @@ class LLMProvider(abc.ABC):
         schema: type[T],
         temperature: float = 0.0,
         max_tokens: int = 2048,
+        logical_call_id: str | None = None,
+        max_attempts: int | None = None,
+        deadline_s: float = 240.0,
     ) -> T:
         """
         Invoke the model and return a validated Pydantic instance.
@@ -1133,53 +1192,132 @@ class LLMProvider(abc.ABC):
         through it (keyed on inputs + schema name) and re-validated
         through the schema on hit.
         """
-        cache = get_response_cache()
-        if cache is not None:
-            async def _fetch() -> dict[str, Any]:
-                raw = await self._structured_raw(
+        logical_call_id = logical_call_id or str(uuid.uuid4())
+        requested_attempts = (
+            max_attempts if max_attempts is not None
+            else self.config.max_retries + 1
+        )
+        attempt_limit = min(3, requested_attempts)
+        if attempt_limit < 1:
+            raise ValueError("max_attempts must be at least 1")
+        if deadline_s <= 0:
+            raise ValueError("deadline_s must be positive")
+        logical_started = utc_now()
+        prompt_digest = canonical_sha256(
+            {
+                "system": system,
+                "user": user,
+                "schema": f"{schema.__module__}.{schema.__qualname__}",
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        )
+        physical_attempt_count = 0
+        logical_outcome = "success"
+        logical_error_class: str | None = None
+        logical_error_message: str | None = None
+        logical_token = _CURRENT_LOGICAL_CALL_ID.set(logical_call_id)
+        count_token = _CURRENT_PHYSICAL_ATTEMPT_COUNT.set(0)
+        limit_token = _CURRENT_ATTEMPT_LIMIT.set(attempt_limit)
+        deadline_token = _CURRENT_LOGICAL_DEADLINE.set(
+            time.monotonic() + min(240.0, deadline_s)
+        )
+        try:
+            cache = get_response_cache()
+            cache_fetched = False
+            if cache is not None:
+                async def _fetch() -> dict[str, Any]:
+                    nonlocal cache_fetched
+                    cache_fetched = True
+                    raw = await self._structured_raw(
+                        system=system,
+                        user=user,
+                        schema=schema,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    return {"raw": raw}
+
+                entry = await cache.get_or_fetch(
                     system=system,
                     user=user,
-                    schema=schema,
+                    model=self.config.model,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    schema_name=schema.__name__,
+                    fetch_fn=_fetch,
                 )
-                return {"raw": raw}
+                raw_cached = entry["raw"]
+                parsed, err = _try_parse(raw_cached, schema)
+                if err is not None:
+                    raise LLMParseError(
+                        f"cached LLM output failed re-validation against "
+                        f"{schema.__name__}: {err}",
+                        last_raw=raw_cached[:1000],
+                        schema=schema.__name__,
+                    ) from err
+                if not cache_fetched:
+                    logical_outcome = "cache_hit"
+                return parsed     # type: ignore[return-value]
 
-            entry = await cache.get_or_fetch(
+            raw = await self._structured_raw(
                 system=system,
                 user=user,
-                model=self.config.model,
+                schema=schema,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                schema_name=schema.__name__,
-                fetch_fn=_fetch,
             )
-            raw_cached = entry["raw"]
-            parsed, err = _try_parse(raw_cached, schema)
+            parsed, err = _try_parse(raw, schema)
             if err is not None:
                 raise LLMParseError(
-                    f"cached LLM output failed re-validation against "
-                    f"{schema.__name__}: {err}",
-                    last_raw=raw_cached[:1000],
+                    f"LLM output did not validate: {err}",
+                    last_raw=raw[:1000],
                     schema=schema.__name__,
                 ) from err
             return parsed     # type: ignore[return-value]
-
-        raw = await self._structured_raw(
-            system=system,
-            user=user,
-            schema=schema,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        parsed, err = _try_parse(raw, schema)
-        if err is not None:
-            raise LLMParseError(
-                f"LLM output did not validate: {err}",
-                last_raw=raw[:1000],
-                schema=schema.__name__,
-            ) from err
-        return parsed     # type: ignore[return-value]
+        except asyncio.CancelledError as exc:
+            logical_outcome = "timeout"
+            logical_error_class = "timeout"
+            logical_error_message = str(exc) or "cancelled"
+            raise
+        except LLMParseError as exc:
+            physical_attempt_count = _CURRENT_PHYSICAL_ATTEMPT_COUNT.get()
+            logical_outcome = "exhausted" if physical_attempt_count else "parse_failure"
+            logical_error_class = LLMErrorClass.PARSE_ERROR.value
+            logical_error_message = str(exc)
+            raise
+        except BaseException as exc:
+            error_class = classify_error(exc)
+            logical_outcome = (
+                "timeout" if error_class is LLMErrorClass.TIMEOUT else "provider_error"
+            )
+            logical_error_class = error_class.value
+            logical_error_message = str(exc)
+            raise
+        finally:
+            physical_attempt_count = _CURRENT_PHYSICAL_ATTEMPT_COUNT.get()
+            receipt_sink = _CURRENT_RECEIPT_SINK.get() or self._receipt_sink
+            if receipt_sink is not None:
+                receipt_sink.record_logical_call(
+                    LogicalCallReceipt(
+                        logical_call_id=logical_call_id,
+                        provider=self.config.provider,
+                        model=self.config.model,
+                        purpose=_CURRENT_USAGE_PURPOSE.get(),
+                        schema_name=schema.__name__,
+                        prompt_digest=prompt_digest,
+                        started_at=logical_started,
+                        ended_at=utc_now(),
+                        outcome=logical_outcome,  # type: ignore[arg-type]
+                        physical_attempt_count=physical_attempt_count,
+                        error_class=logical_error_class,
+                        error_message=logical_error_message,
+                    )
+                )
+            _CURRENT_PHYSICAL_ATTEMPT_COUNT.reset(count_token)
+            _CURRENT_LOGICAL_CALL_ID.reset(logical_token)
+            _CURRENT_ATTEMPT_LIMIT.reset(limit_token)
+            _CURRENT_LOGICAL_DEADLINE.reset(deadline_token)
 
     async def _structured_raw(
         self,
@@ -1201,7 +1339,20 @@ class LLMProvider(abc.ABC):
         repair_note: str | None = None
         schema_hint = _schema_hint(schema)
 
-        for attempt in range(self.config.max_retries + 1):
+        previous_attempt_id: str | None = None
+        logical_call_id = _CURRENT_LOGICAL_CALL_ID.get() or str(uuid.uuid4())
+        attempt_limit = _CURRENT_ATTEMPT_LIMIT.get()
+        deadline = _CURRENT_LOGICAL_DEADLINE.get()
+        attempts_already = _CURRENT_PHYSICAL_ATTEMPT_COUNT.get()
+        attempts_remaining = max(0, attempt_limit - attempts_already)
+        for attempt in range(attempts_remaining):
+            physical_attempt_id = str(uuid.uuid4())
+            _CURRENT_PHYSICAL_ATTEMPT_COUNT.set(
+                _CURRENT_PHYSICAL_ATTEMPT_COUNT.get() + 1
+            )
+            attempt_started = utc_now()
+            agg = _CURRENT_USAGE_AGG.get() or self._usage_aggregator
+            usage_offset = len(agg.calls) if agg is not None else 0
             user_msg = (
                 base_user if repair_note is None
                 else f"{base_user}\n\nPrior attempt failed validation. "
@@ -1210,34 +1361,130 @@ class LLMProvider(abc.ABC):
             # Cost-plan §0.1: attribute repair re-calls to the 'parse_repair'
             # purpose so they're distinguishable in the cost ledger from the
             # first (ambient-purpose) attempt.
-            if attempt == 0:
-                raw = await self._raw_call(
-                    system=system,
-                    user=user_msg,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    schema_hint=schema_hint,
-                )
-            else:
-                with using_usage_purpose("parse_repair"):
-                    raw = await self._raw_call(
-                        system=system,
-                        user=user_msg,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        schema_hint=schema_hint,
+            attempt_purpose = _CURRENT_USAGE_PURPOSE.get()
+            if repair_note is not None:
+                attempt_purpose = "parse_repair"
+            try:
+                if repair_note is None:
+                    remaining = (
+                        max(0.0, deadline - time.monotonic())
+                        if deadline is not None else 240.0
                     )
+                    async with asyncio.timeout(remaining):
+                        raw = await self._raw_call(
+                            system=system,
+                            user=user_msg,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            schema_hint=schema_hint,
+                        )
+                else:
+                    with using_usage_purpose("parse_repair"):
+                        remaining = (
+                            max(0.0, deadline - time.monotonic())
+                            if deadline is not None else 240.0
+                        )
+                        async with asyncio.timeout(remaining):
+                            raw = await self._raw_call(
+                                system=system,
+                                user=user_msg,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                schema_hint=schema_hint,
+                            )
+            except BaseException as exc:
+                error_class = (
+                    LLMErrorClass.TIMEOUT
+                    if isinstance(exc, asyncio.CancelledError)
+                    else classify_error(exc)
+                )
+                self._record_attempt_receipt(
+                    physical_attempt_id=physical_attempt_id,
+                    logical_call_id=logical_call_id,
+                    parent_attempt_id=previous_attempt_id,
+                    ordinal=attempts_already + attempt + 1,
+                    purpose=attempt_purpose,
+                    started_at=attempt_started,
+                    outcome=(
+                        "timeout"
+                        if error_class is LLMErrorClass.TIMEOUT
+                        else "provider_error"
+                    ),
+                    error_class=error_class.value,
+                    error_message=str(exc),
+                    retry_scheduled=(
+                        not isinstance(exc, asyncio.CancelledError)
+                        and attempt + 1 < attempts_remaining
+                        and _is_retryable_transport_error(exc)
+                        and retry_policy_for(exc).max_attempts > 0
+                    ),
+                    agg=agg,
+                    usage_offset=usage_offset,
+                )
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                policy = retry_policy_for(exc)
+                if (
+                    not _is_retryable_transport_error(exc)
+                    or policy.max_attempts == 0
+                    or attempt + 1 >= attempts_remaining
+                ):
+                    raise
+                previous_attempt_id = physical_attempt_id
+                delay = policy.delay_for(attempt + 1)
+                remaining = (
+                    max(0.0, deadline - time.monotonic())
+                    if deadline is not None else 240.0
+                )
+                if delay >= remaining:
+                    raise LLMTimeoutError(
+                        "logical LLM deadline exhausted before retry",
+                        attempts=attempt + 1,
+                    ) from exc
+                if delay:
+                    await asyncio.sleep(delay)
+                continue
 
             _, err = _try_parse(raw, schema)
             if err is None:
+                self._record_attempt_receipt(
+                    physical_attempt_id=physical_attempt_id,
+                    logical_call_id=logical_call_id,
+                    parent_attempt_id=previous_attempt_id,
+                    ordinal=attempts_already + attempt + 1,
+                    purpose=attempt_purpose,
+                    started_at=attempt_started,
+                    outcome="success",
+                    error_class=None,
+                    error_message=None,
+                    retry_scheduled=False,
+                    agg=agg,
+                    usage_offset=usage_offset,
+                )
                 return raw
 
             last_error = err
             repair_note = str(err)
-            if attempt == self.config.max_retries:
+            retry_scheduled = attempt + 1 < attempts_remaining
+            self._record_attempt_receipt(
+                physical_attempt_id=physical_attempt_id,
+                logical_call_id=logical_call_id,
+                parent_attempt_id=previous_attempt_id,
+                ordinal=attempts_already + attempt + 1,
+                purpose=attempt_purpose,
+                started_at=attempt_started,
+                outcome="parse_failure",
+                error_class=LLMErrorClass.PARSE_ERROR.value,
+                error_message=str(err),
+                retry_scheduled=retry_scheduled,
+                agg=agg,
+                usage_offset=usage_offset,
+            )
+            previous_attempt_id = physical_attempt_id
+            if attempt + 1 == attempts_remaining:
                 raise LLMParseError(
                     f"LLM output did not validate after "
-                    f"{self.config.max_retries + 1} attempts: {err}",
+                    f"{attempt_limit} total attempts: {err}",
                     last_raw=raw[:1000],
                     schema=schema.__name__,
                 ) from err
@@ -1246,6 +1493,58 @@ class LLMProvider(abc.ABC):
         raise LLMParseError(
             f"structured() exhausted retries: {last_error}"
         ) from last_error
+
+    def _record_attempt_receipt(
+        self,
+        *,
+        physical_attempt_id: str,
+        logical_call_id: str,
+        parent_attempt_id: str | None,
+        ordinal: int,
+        purpose: str,
+        started_at: Any,
+        outcome: str,
+        error_class: str | None,
+        error_message: str | None,
+        retry_scheduled: bool,
+        agg: LLMUsageAggregator | None,
+        usage_offset: int,
+    ) -> None:
+        receipt_sink = _CURRENT_RECEIPT_SINK.get() or self._receipt_sink
+        if receipt_sink is None:
+            return
+        usages = agg.calls[usage_offset:] if agg is not None else []
+        receipt_sink.record_attempt(
+            PhysicalAttemptReceipt(
+                physical_attempt_id=physical_attempt_id,
+                logical_call_id=logical_call_id,
+                parent_attempt_id=parent_attempt_id,
+                provider=self.config.provider,
+                model=self.config.model,
+                purpose=purpose,
+                ordinal=ordinal,
+                started_at=started_at,
+                ended_at=utc_now(),
+                outcome=outcome,  # type: ignore[arg-type]
+                error_class=error_class,
+                error_message=error_message,
+                retry_scheduled=retry_scheduled,
+                input_tokens=sum(item.input_tokens for item in usages),
+                output_tokens=sum(item.output_tokens for item in usages),
+                cache_tokens=sum(
+                    item.cache_read_tokens + item.cache_creation_tokens
+                    for item in usages
+                ),
+                cost_usd=sum(item.cost_usd for item in usages),
+                usage_exactness=(
+                    "unavailable"
+                    if not usages
+                    else "estimated"
+                    if any(item.usage_exactness == "estimated" for item in usages)
+                    else "reported"
+                ),
+            )
+        )
 
 
 def _schema_hint(schema: type[BaseModel]) -> str:
@@ -1328,6 +1627,7 @@ class AnthropicProvider(LLMProvider):
         client = anthropic.AsyncAnthropic(
             api_key=self.config.api_key,
             timeout=self.config.timeout_s,
+            max_retries=0,
         )
         system_full = (
             f"{system}\n\nYou MUST respond with a single JSON object "
@@ -1384,6 +1684,7 @@ class OpenAIProvider(LLMProvider):
         client_kwargs: dict[str, Any] = {
             "api_key": self.config.api_key,
             "timeout": self.config.timeout_s,
+            "max_retries": 0,
         }
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
@@ -1497,6 +1798,7 @@ class CodexProvider(LLMProvider):
         client_kwargs: dict[str, Any] = {
             "api_key": self.config.api_key,
             "timeout": self.config.timeout_s,
+            "max_retries": 0,
         }
         account_id = _codex_account_id_from_env()
         if account_id:
@@ -2107,12 +2409,30 @@ class DeepSeekProvider(OpenAIProvider):
             api_key=self.config.api_key,
             timeout=self.config.timeout_s,
             base_url=self.strict_base_url,
+            max_retries=0,
         )
 
         last_error: Exception | None = None
         repair_note: str | None = None
         base_user = user
-        for attempt in range(self.config.max_retries + 1):
+        logical_call_id = _CURRENT_LOGICAL_CALL_ID.get() or str(uuid.uuid4())
+        previous_attempt_id: str | None = None
+        attempt_limit = _CURRENT_ATTEMPT_LIMIT.get()
+        # Reserve the final physical slot for ordinary JSON mode when strict
+        # decoding itself is what fails. The fallback consumes the same shared
+        # counter; it is not an additional retry domain.
+        strict_attempt_limit = attempt_limit if attempt_limit == 1 else attempt_limit - 1
+        for attempt in range(strict_attempt_limit):
+            physical_attempt_id = str(uuid.uuid4())
+            _CURRENT_PHYSICAL_ATTEMPT_COUNT.set(
+                _CURRENT_PHYSICAL_ATTEMPT_COUNT.get() + 1
+            )
+            attempt_started = utc_now()
+            agg = _CURRENT_USAGE_AGG.get() or self._usage_aggregator
+            usage_offset = len(agg.calls) if agg is not None else 0
+            attempt_purpose = (
+                _CURRENT_USAGE_PURPOSE.get() if attempt == 0 else "parse_repair"
+            )
             user_msg = (
                 base_user if repair_note is None
                 else f"{base_user}\n\nPrior attempt failed validation. "
@@ -2141,10 +2461,91 @@ class DeepSeekProvider(OpenAIProvider):
 
             # OP-3: circuit breaker on the DeepSeek endpoint.
             # FU-2: `LLM_CIRCUIT_BREAKER_DISABLED=1` bypasses the wrap.
-            response = await _through_breaker(self.circuit_breaker_name, _do_call)
+            try:
+                deadline = _CURRENT_LOGICAL_DEADLINE.get()
+                remaining = (
+                    max(0.0, deadline - time.monotonic())
+                    if deadline is not None else 240.0
+                )
+                async with asyncio.timeout(remaining):
+                    response = await _through_breaker(self.circuit_breaker_name, _do_call)
+            except BaseException as exc:
+                error_class = (
+                    LLMErrorClass.TIMEOUT
+                    if isinstance(exc, asyncio.CancelledError)
+                    else classify_error(exc)
+                )
+                self._record_attempt_receipt(
+                    physical_attempt_id=physical_attempt_id,
+                    logical_call_id=logical_call_id,
+                    parent_attempt_id=previous_attempt_id,
+                    ordinal=attempt + 1,
+                    purpose=attempt_purpose,
+                    started_at=attempt_started,
+                    outcome=(
+                        "timeout"
+                        if error_class is LLMErrorClass.TIMEOUT
+                        else "provider_error"
+                    ),
+                    error_class=error_class.value,
+                    error_message=str(exc),
+                    retry_scheduled=(
+                        not isinstance(exc, asyncio.CancelledError)
+                        and _is_retryable_transport_error(exc)
+                        and retry_policy_for(exc).max_attempts > 0
+                        and attempt + 1 < strict_attempt_limit
+                    ),
+                    agg=agg,
+                    usage_offset=usage_offset,
+                )
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                policy = retry_policy_for(exc)
+                if (
+                    not _is_retryable_transport_error(exc)
+                    or policy.max_attempts == 0
+                    or attempt + 1 >= strict_attempt_limit
+                ):
+                    raise
+                previous_attempt_id = physical_attempt_id
+                delay = policy.delay_for(attempt + 1)
+                deadline = _CURRENT_LOGICAL_DEADLINE.get()
+                remaining = (
+                    max(0.0, deadline - time.monotonic())
+                    if deadline is not None else 240.0
+                )
+                if delay >= remaining:
+                    raise LLMTimeoutError(
+                        "logical LLM deadline exhausted before strict retry",
+                        attempts=attempt + 1,
+                    ) from exc
+                if delay:
+                    await asyncio.sleep(delay)
+                continue
             choice = response.choices[0]
             tool_calls = getattr(choice.message, "tool_calls", None) or []
             if not tool_calls:
+                retry_scheduled = attempt + 1 < strict_attempt_limit
+                self._record_attempt_receipt(
+                    physical_attempt_id=physical_attempt_id,
+                    logical_call_id=logical_call_id,
+                    parent_attempt_id=previous_attempt_id,
+                    ordinal=attempt + 1,
+                    purpose=attempt_purpose,
+                    started_at=attempt_started,
+                    outcome="provider_error",
+                    error_class=LLMErrorClass.TRANSIENT.value,
+                    error_message="deepseek strict mode returned no tool_calls",
+                    retry_scheduled=retry_scheduled,
+                    agg=agg,
+                    usage_offset=usage_offset,
+                )
+                if retry_scheduled:
+                    previous_attempt_id = physical_attempt_id
+                    await asyncio.sleep(
+                        RETRY_POLICIES[LLMErrorClass.TRANSIENT].delay_for(attempt + 1)
+                    )
+                    continue
                 raise LLMError(
                     "deepseek strict mode returned no tool_calls",
                     model=self.config.model,
@@ -2163,10 +2564,39 @@ class DeepSeekProvider(OpenAIProvider):
             repaired = _repair_deepseek_strict_json(raw)
             _, err = _try_parse(repaired, schema)
             if err is None:
+                self._record_attempt_receipt(
+                    physical_attempt_id=physical_attempt_id,
+                    logical_call_id=logical_call_id,
+                    parent_attempt_id=previous_attempt_id,
+                    ordinal=attempt + 1,
+                    purpose=attempt_purpose,
+                    started_at=attempt_started,
+                    outcome="success",
+                    error_class=None,
+                    error_message=None,
+                    retry_scheduled=False,
+                    agg=agg,
+                    usage_offset=usage_offset,
+                )
                 return repaired
             last_error = err
             repair_note = str(err)
-            if attempt == self.config.max_retries:
+            self._record_attempt_receipt(
+                physical_attempt_id=physical_attempt_id,
+                logical_call_id=logical_call_id,
+                parent_attempt_id=previous_attempt_id,
+                ordinal=attempt + 1,
+                purpose=attempt_purpose,
+                started_at=attempt_started,
+                outcome="parse_failure",
+                error_class=LLMErrorClass.PARSE_ERROR.value,
+                error_message=str(err),
+                retry_scheduled=True,
+                agg=agg,
+                usage_offset=usage_offset,
+            )
+            previous_attempt_id = physical_attempt_id
+            if attempt + 1 == strict_attempt_limit:
                 # Strict function-calling is usually tighter, but live
                 # DeepSeek-chat can still return syntactically malformed
                 # tool arguments after repair. Use ordinary JSON mode as
@@ -2176,13 +2606,20 @@ class DeepSeekProvider(OpenAIProvider):
                     f"validation. Return ordinary JSON matching the schema. "
                     f"Validation error: {err}."
                 )
-                return await super()._structured_raw(
-                    system=system,
-                    user=fallback_user,
-                    schema=schema,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
+                if attempt_limit > 1:
+                    return await super()._structured_raw(
+                        system=system,
+                        user=fallback_user,
+                        schema=schema,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                raise LLMParseError(
+                    "DeepSeek strict output failed validation and exhausted "
+                    "the one-attempt budget",
+                    last_raw=repaired[:1000],
+                    schema=schema.__name__,
+                ) from err
 
         raise LLMParseError(
             f"DeepSeek strict-mode exhausted retries: {last_error}"
@@ -2306,6 +2743,7 @@ __all__ = [
     "compute_cost_usd",
     # Week 5: task-local aggregator.
     "using_usage_aggregator",
+    "using_receipt_sink",
     # Cost-plan §0.1: per-call purpose attribution.
     "using_usage_purpose",
 ]

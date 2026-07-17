@@ -2,9 +2,8 @@
 
 Spec §7 "LLM reasoning". BUILD-PLAN §4 Prompt 3.B item 3.
 
-Wraps `LLMProvider.structured(schema=RawDiff)` with exponential
-backoff on transport failures. Parse-failure retry (up to 2) is built
-into the provider itself.
+Delegates the single physical-attempt budget to `LLMProvider.structured`.
+Parse and retryable transport failures consume the same budget.
 
 Note: we ask the LLM to return a RawDiff (which has the same shape as
 ValidatedDiff but hasn't been validated yet). The validator rejects
@@ -12,21 +11,16 @@ ops that fail; the retry-at-apply path is a Wave-5 enhancement.
 """
 from __future__ import annotations
 
-import asyncio
 import os
-import random
 import time
 from typing import TYPE_CHECKING, Any
 
-import structlog
 from pydantic import BaseModel
 
 from lib.llm.provider import (
     LLMError,
     LLMParseError,
     LLMProvider,
-    classify_error,
-    retry_policy_for,
 )
 from lib.shared.errors import CompanyOSError
 
@@ -52,42 +46,7 @@ if TYPE_CHECKING:
     from .reasoning_frame import ReasoningFrame
 
 
-_log = structlog.get_logger(__name__)
 _CLAIMS_ONLY_MAX_TOKENS_DEFAULT = 1024
-_NOISE_ONLY_CHANNEL_MARKERS = (
-    "noise",
-    "chatter",
-)
-_NOISE_ONLY_TEXT_MARKERS = (
-    "general operational chatter",
-    "lunch logistics",
-    "duplicated dashboard links",
-    "duplicate dashboard links",
-    "non-actionable reminder",
-    "non actionable reminder",
-    "should not dominate memory",
-)
-_ACTIONABLE_TEXT_MARKERS = (
-    "approval",
-    "blocked",
-    "blocker",
-    "capacity",
-    "churn",
-    "customer",
-    "deadline",
-    "decision",
-    "exception",
-    "implementation",
-    "incident",
-    "launch",
-    "procurement",
-    "renewal",
-    "risk",
-    "security",
-    "slip",
-)
-
-
 class ReasoningFailure(CompanyOSError):
     default_code = "reasoning_failure"
 
@@ -108,21 +67,10 @@ async def llm_reason(
     """
     Return (raw_diff, elapsed_ms).
 
-    Exponential backoff on transport failures (LLMError) — up to
-    `max_attempts` total calls. LLMParseError from the provider is
-    already retried internally; if it escapes, we bubble as terminal.
+    The provider owns all retries and permits at most `max_attempts`
+    physical calls under a 240-second logical deadline.
     """
     feedback = _validation_feedback(trigger)
-    noise_noop = build_noise_only_raw_diff(trigger)
-    if noise_noop is not None:
-        return (
-            apply_relation_lifecycle_kernel(
-                noise_noop,
-                trigger=trigger,
-                bundle=bundle,
-            ),
-            0,
-        )
     if compiled_relationship_candidate_enabled():
         compiled = build_compiled_relationship_candidate_request(trigger, bundle)
         if compiled is not None:
@@ -243,55 +191,34 @@ async def _structured_with_reasoning_retries(
     max_tokens: int,
     max_attempts: int,
 ) -> tuple[Any, int]:
-    last_err: Exception | None = None
     started = time.monotonic()
-
-    for attempt in range(max_attempts):
-        try:
-            parsed = await provider.structured(
-                system=system,
-                user=user,
-                schema=schema,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            elapsed_ms = int((time.monotonic() - started) * 1000)
-            return parsed, elapsed_ms
-        except LLMParseError as e:
-            # Terminal — provider already exhausted its own retries.
-            raise ReasoningFailure(
-                f"LLM output failed to parse after provider retries: {e}",
-                attempt=attempt,
-            ) from e
-        except LLMError as e:
-            last_err = e
-            policy = retry_policy_for(e)
-            total_allowed = min(max_attempts, 1 + policy.max_attempts)
-            if attempt < total_allowed - 1:
-                base_backoff_s = policy.delay_for(attempt + 1)
-                # Jitter ±25% to avoid thundering herd when many
-                # concurrent triggers hit a provider rate-limit at once.
-                jittered = base_backoff_s * random.uniform(0.75, 1.25)
-                backoff_s = max(base_backoff_s, jittered)
-                _log.warning(
-                    "think.llm_retryable_failure",
-                    attempt=attempt,
-                    backoff_s=backoff_s,
-                    error_class=classify_error(e).value,
-                    error=str(e),
-                )
-                if backoff_s > 0:
-                    await asyncio.sleep(backoff_s)
-                continue
-            break
-        except Exception as e:
-            last_err = e
-            break
-
-    raise ReasoningFailure(
-        f"llm_reason exhausted {max_attempts} attempts: {last_err}",
-        attempts=max_attempts,
-    ) from last_err
+    try:
+        parsed = await provider.structured(
+            system=system,
+            user=user,
+            schema=schema,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_attempts=max_attempts,
+            deadline_s=240.0,
+        )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return parsed, elapsed_ms
+    except LLMParseError as exc:
+        raise ReasoningFailure(
+            f"LLM output failed to parse after provider retries: {exc}",
+            attempts=min(3, max_attempts),
+        ) from exc
+    except LLMError as exc:
+        raise ReasoningFailure(
+            f"llm_reason exhausted its provider attempt budget: {exc}",
+            attempts=min(3, max_attempts),
+        ) from exc
+    except Exception as exc:
+        raise ReasoningFailure(
+            f"llm_reason failed inside the provider attempt budget: {exc}",
+            attempts=min(3, max_attempts),
+        ) from exc
 
 
 def _validation_feedback(trigger: TriggerContext) -> str | None:
@@ -340,77 +267,6 @@ def _effective_max_tokens(
         minimum=256,
     )
     return min(max_tokens, cap)
-
-
-def build_noise_only_raw_diff(trigger: TriggerContext) -> RawDiff | None:
-    """Return a deterministic no-op diff for T1 triggers that are pure noise."""
-    if trigger.kind != "T1":
-        return None
-    if not _trigger_is_noise_only(trigger):
-        return None
-    from .deterministic import _trigger_ref  # type: ignore
-
-    return RawDiff(
-        trigger_ref=_trigger_ref(trigger),
-        tenant_id=trigger.tenant_id,
-        reasoning_trace=(
-            "discard_as_noise: noise-only T1 trigger; empty diff, "
-            "no model or projection write."
-        ),
-    )
-
-
-def _trigger_is_noise_only(trigger: TriggerContext) -> bool:
-    signature = (
-        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
-    )
-    text = _trigger_noise_probe_text(trigger, signature)
-    if not text:
-        return False
-    lower_text = text.lower()
-    if any(marker in lower_text for marker in _ACTIONABLE_TEXT_MARKERS):
-        return False
-    marker_hits = sum(
-        1 for marker in _NOISE_ONLY_TEXT_MARKERS if marker in lower_text
-    )
-    channels = _trigger_source_channels(signature)
-    if channels and all(_is_noise_channel(channel) for channel in channels):
-        return marker_hits >= 1
-    return marker_hits >= 3
-
-
-def _trigger_source_channels(signature: dict[str, Any]) -> list[str]:
-    channels: list[str] = []
-    raw_channels = signature.get("source_channels")
-    if isinstance(raw_channels, list):
-        channels.extend(str(channel) for channel in raw_channels if channel)
-    raw_channel = signature.get("source_channel")
-    if raw_channel:
-        channels.append(str(raw_channel))
-    return list(dict.fromkeys(channels))
-
-
-def _is_noise_channel(channel: str) -> bool:
-    lower = channel.lower()
-    return any(marker in lower for marker in _NOISE_ONLY_CHANNEL_MARKERS)
-
-
-def _trigger_noise_probe_text(
-    trigger: TriggerContext,
-    signature: dict[str, Any],
-) -> str:
-    parts: list[str] = []
-    if trigger.seed_natural_text:
-        parts.append(trigger.seed_natural_text)
-    fragments = signature.get("batch_signal_fragments")
-    if isinstance(fragments, list):
-        for fragment in fragments:
-            if not isinstance(fragment, dict):
-                continue
-            text = fragment.get("text")
-            if isinstance(text, str) and text.strip():
-                parts.append(text)
-    return "\n".join(parts)
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -465,4 +321,4 @@ def _coerce_raw_diff(diff: RawDiff | RawDiffClaimsOnly) -> RawDiff:
     )
 
 
-__all__ = ["llm_reason", "ReasoningFailure", "build_noise_only_raw_diff"]
+__all__ = ["llm_reason", "ReasoningFailure"]

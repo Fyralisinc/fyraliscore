@@ -39,12 +39,8 @@ from lib.shared.errors import (
 from lib.shared.ids import uuid7
 from services.domain.triggers import enqueue_trigger
 
-from services.reasoning.retrieval.assembler import (
-    AccessContext,
-    ContextBundle,
-)
+from services.reasoning.retrieval.assembler import AccessContext
 from services.reasoning.retrieval.primary import (
-    RetrievalResult,
     TriggerContext,
 )
 from services.reasoning.sage.inquiry_traces.emitter import (
@@ -61,7 +57,6 @@ from .debug_capture import capture as debug_capture
 from .debug_capture import capture_with_pool as debug_capture_with_pool
 from .deterministic import is_authoritative
 from .lanes import classify_trigger_lane
-from .llm_reason import build_noise_only_raw_diff
 from .observability import (
     METRICS,
     ThinkRunRecord,
@@ -86,7 +81,6 @@ from .coherence_repair import (
     enqueue_residual_repair_triggers_for_sources,
     resolve_residual_repair_outcome,
 )
-from .reasoning_frame import ReasoningFrame
 from .residuals import (
     ThinkResidualContext,
     absorb_think_residuals,
@@ -1839,73 +1833,6 @@ def _payload_int(payload: dict[str, Any], key: str) -> int | None:
         return None
 
 
-def _trigger_fast_noop_region(trigger: TriggerContext) -> list[tuple[str, str]]:
-    entities: set[tuple[str, str]] = set()
-    for ent in trigger.seed_entity_ids or []:
-        if not isinstance(ent, dict):
-            continue
-        ent_type = ent.get("type") or ent.get("kind")
-        ent_id = ent.get("id")
-        if ent_type is None or ent_id is None:
-            continue
-        entities.add((str(ent_type), str(ent_id)))
-    for actor_id in trigger.scope_actors or []:
-        entities.add(("actor", str(actor_id)))
-    return sorted(entities)
-
-
-def _build_noise_noop_fast_path(
-    trigger: TriggerContext,
-) -> tuple[ReasoningRunState, RawReasoningOutput] | None:
-    if is_authoritative(trigger):
-        return None
-    raw_diff = build_noise_only_raw_diff(trigger)
-    if raw_diff is None:
-        return None
-
-    retrieval_result = RetrievalResult(
-        trigger=trigger,
-        notes={
-            "fast_path": "noise_noop",
-            "retrieval_skipped": True,
-        },
-    )
-    reasoning_frame = ReasoningFrame.from_trigger(
-        trigger,
-        retrieval_result=retrieval_result,
-    )
-    bundle = ContextBundle(
-        notes={
-            "fast_path": "noise_noop",
-            "retrieval_skipped": True,
-            "reason": "noise_only_t1",
-        }
-    )
-    allowed_region = _trigger_fast_noop_region(trigger)
-
-    from .context_use import summarize_context_use
-
-    state = ReasoningRunState(
-        context_plan=None,
-        retrieval_result=retrieval_result,
-        reasoning_frame=reasoning_frame,
-        bundle=bundle,
-        allowed_region=allowed_region,
-        actor_operating_summary=None,
-        region_tenant_hash=None,
-        region_entity_hash=None,
-        acquisition=None,
-        mutation_row_inserted=False,
-    )
-    raw = RawReasoningOutput(
-        raw_diff=raw_diff,
-        raw_context_use=summarize_context_use(bundle, raw_diff),
-        allowed_region=allowed_region,
-        llm_latency_ms=0,
-    )
-    return state, raw
-
-
 async def _prepare_attempt_reasoning_output(
     *,
     conn: asyncpg.Connection,
@@ -1922,20 +1849,6 @@ async def _prepare_attempt_reasoning_output(
     reason_cache: dict[str, Any] | None,
     stage_timings: list[dict[str, Any]] | None,
 ) -> tuple[ReasoningRunState, RawReasoningOutput]:
-    started = time.perf_counter()
-    fast_path = _build_noise_noop_fast_path(trigger)
-    if fast_path is not None:
-        record_stage_timing(stage_timings, "noise_noop_fast_path", started)
-        state, raw = fast_path
-        emit(
-            "think.noise_noop_fast_path",
-            run_id=str(record.id),
-            trigger_ref=str(raw.raw_diff.trigger_ref),
-            observation_count=len(trigger.observation_ids or [])
-            + int(trigger.observation_id is not None),
-        )
-        return state, raw
-
     state = await prepare_reasoning_run_state(
         conn=conn,
         trigger=trigger,

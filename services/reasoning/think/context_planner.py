@@ -40,7 +40,6 @@ from services.reasoning.retrieval.assembler import (
 )
 from services.reasoning.retrieval.config import CONFIG as RETRIEVAL_CONFIG
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
-from services.reasoning.think.hooks import augment_context
 from services.reasoning.retrieval.second_pass import (
     log_second_pass_decision,
     second_pass_expand,
@@ -719,20 +718,16 @@ async def _augment_active_acts(
     *,
     allowed_region: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
-    """Expand the allowed mutation region via the installable context-augmentor
-    seam (``services.reasoning.think.hooks.augment_context``).
+    """Keep production context and mutation authority retrieval-governed.
 
-    main governs structure: rather than hard-coding the active commitment/
-    decision ledger fetch here (dev's pre-relayer approach), delegate to the
-    overlay seam. Core ships no augmentor (strict-retrieval default → no-op);
-    the demo overlay attaches the full active ledger and extends the region.
+    External package entry points are intentionally not executed here. A future
+    augmentation mechanism must be a registered production contract with an
+    authenticated principal, declared read/write authority, provenance, and a
+    receipt included in the coherent run manifest. Until that contract exists,
+    strict retrieval is the only production context owner.
     """
-    return await augment_context(
-        conn=conn,
-        trigger=trigger,
-        bundle=bundle,
-        allowed_region=allowed_region,
-    )
+    del conn, trigger, bundle
+    return allowed_region
 
 
 def _substrate_candidate_kind_counts(candidates: list[dict[str, Any]]) -> dict[str, int]:

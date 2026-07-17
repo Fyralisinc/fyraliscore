@@ -2019,7 +2019,7 @@ async def test_question_policy_probe_feedback_reaches_policy_stats(
     assert stats["utility_score"] > 0
 
 
-async def test_noise_noop_negative_memory_emits_sage_experience_event(
+async def test_explicit_noop_does_not_manufacture_noise_learning_credit(
     fresh_db,
     tenant,
     tenant_cleanup,
@@ -2097,16 +2097,9 @@ async def test_noise_noop_negative_memory_emits_sage_experience_event(
             conn=conn,
         )
 
-    assert result["negative_memory_inserts"] == 1
-    assert len(experience_events) == 1
-    assert experience_events[0].payload["policy_effects"] == {
-        "negative_memory_inserts": 1
-    }
-    assert report.experience_loop is not None
-    assert report.experience_loop["status"] == "metabolized"
-    assert report.metrics["experience_loop_closed"] == 1.0
-    assert report.metrics["experience_policy_effects"] >= 1.0
-    assert report.metrics["experience_future_behavior_levers"] >= 1.0
+    assert "negative_memory_inserts" not in result
+    assert experience_events == []
+    assert not report.experience_loop
 
 
 async def test_capability_probe_wave_survives_validate_apply_and_feedback(
