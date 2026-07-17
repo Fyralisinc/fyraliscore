@@ -178,23 +178,34 @@ class CompanyLearningBarrierService:
                 "cannot complete while truth-critical work remains",
                 pending=truth_critical_pending_count,
             )
-        replay = await self._lock_and_find(
-            tx=tx, tenant_id=tenant_id, batch_id=batch_id,
-        )
-        if replay is not None:
-            return replay
-        await self._assert_visibility(
-            tx=tx,
-            tenant_id=tenant_id,
-            model_versions=expected_model_version_ids,
-            relation_versions=expected_relation_version_ids,
-            invalidated_versions=invalidated_model_version_ids,
-        )
-        prior = await tx.fetchrow(
-            """SELECT barrier_id, barrier_version FROM company_learning_barriers
-               WHERE tenant_id=$1 ORDER BY barrier_version DESC LIMIT 1 FOR UPDATE""",
-            tenant_id,
-        )
+        if not expected_relation_version_ids and not invalidated_model_version_ids:
+            replay = await self._lock_and_find(
+                tx=tx, tenant_id=tenant_id, batch_id=batch_id,
+            )
+            if replay is not None:
+                return replay
+            prior = await self._assert_models_and_select_prior(
+                tx=tx, tenant_id=tenant_id,
+                model_versions=expected_model_version_ids,
+            )
+        else:
+            replay = await self._lock_and_find(
+                tx=tx, tenant_id=tenant_id, batch_id=batch_id,
+            )
+            if replay is not None:
+                return replay
+            await self._assert_visibility(
+                tx=tx,
+                tenant_id=tenant_id,
+                model_versions=expected_model_version_ids,
+                relation_versions=expected_relation_version_ids,
+                invalidated_versions=invalidated_model_version_ids,
+            )
+            prior = await tx.fetchrow(
+                """SELECT barrier_id, barrier_version FROM company_learning_barriers
+                   WHERE tenant_id=$1 ORDER BY barrier_version DESC LIMIT 1 FOR UPDATE""",
+                tenant_id,
+            )
         version = int(prior["barrier_version"]) + 1 if prior else 1
         prior_id = prior["barrier_id"] if prior else None
         payload = {
@@ -253,6 +264,36 @@ class CompanyLearningBarrierService:
             )
             if stale:
                 raise InvariantViolation("BARRIER_STALE_VISIBILITY", "invalidated Model remains current")
+
+    @staticmethod
+    async def _assert_models_and_select_prior(
+        *, tx: Any, tenant_id: UUID, model_versions: tuple[UUID, ...],
+    ) -> Any:
+        """Validate common-case model visibility and select prior in one call."""
+        row = await tx.fetchrow(
+            """WITH visible AS (
+                 SELECT array_agg(truth_version_id)::uuid[] AS ids
+                 FROM accepted_current_models
+                 WHERE tenant_id=$1 AND truth_version_id=ANY($2::uuid[])
+               ), prior AS (
+                 SELECT barrier_id, barrier_version
+                 FROM company_learning_barriers
+                 WHERE tenant_id=$1 ORDER BY barrier_version DESC
+                 LIMIT 1 FOR UPDATE
+               )
+               SELECT COALESCE(visible.ids, '{}'::uuid[]) AS visible_ids,
+                      prior.barrier_id, prior.barrier_version
+               FROM visible LEFT JOIN prior ON true""",
+            tenant_id, list(model_versions),
+        )
+        if set(row["visible_ids"]) != set(model_versions):
+            raise InvariantViolation(
+                "BARRIER_MODEL_VISIBILITY", "expected Models are not current",
+            )
+        if row["barrier_id"] is None:
+            return None
+        return row
+
 
     @staticmethod
     async def _find(*, tx: Any, tenant_id: UUID, batch_id: str) -> BarrierReceipt | None:

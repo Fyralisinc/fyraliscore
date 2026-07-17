@@ -17,6 +17,21 @@ class _NoReplayTx:
         return {"barrier_id": None}
 
 
+class _VisiblePriorTx:
+    def __init__(self, visible_ids, barrier_id=None, barrier_version=None):
+        self.visible_ids = visible_ids
+        self.barrier_id = barrier_id
+        self.barrier_version = barrier_version
+        self.calls = []
+
+    async def fetchrow(self, sql, *args):
+        self.calls.append((sql, args))
+        return {"visible_ids": self.visible_ids, "barrier_id": self.barrier_id,
+                "barrier_version": self.barrier_version}
+
+
+
+
 async def test_lock_and_replay_lookup_share_one_round_trip() -> None:
     from uuid import uuid4
 
@@ -27,6 +42,28 @@ async def test_lock_and_replay_lookup_share_one_round_trip() -> None:
     assert len(tx.calls) == 1
     assert "pg_advisory_xact_lock" in tx.calls[0][0]
     assert "company_learning_barriers" in tx.calls[0][0]
+
+
+async def test_model_visibility_and_prior_selection_share_one_round_trip() -> None:
+    version_id = uuid4()
+    tx = _VisiblePriorTx([version_id])
+    prior = await CompanyLearningBarrierService()._assert_models_and_select_prior(
+        tx=tx, tenant_id=uuid4(), model_versions=(version_id,),
+    )
+    assert prior is None
+    assert len(tx.calls) == 1
+    assert "accepted_current_models" in tx.calls[0][0]
+    assert "FOR UPDATE" in tx.calls[0][0]
+
+
+async def test_fused_visibility_rejects_missing_current_model() -> None:
+    with pytest.raises(InvariantViolation, match="expected Models are not current"):
+        await CompanyLearningBarrierService()._assert_models_and_select_prior(
+            tx=_VisiblePriorTx([]), tenant_id=uuid4(),
+            model_versions=(uuid4(),),
+        )
+
+
 
 
 class _VisibilityTx:
