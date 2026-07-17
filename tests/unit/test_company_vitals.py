@@ -558,9 +558,13 @@ def test_valid_corrective_memory_experiment_is_non_scoring_and_credits_scenarios
     assert scorecard["vitals"].keys() == baseline["vitals"].keys()
     assert experiment["available"] is True
     assert experiment["status"] == "observed"
+    assert experiment["learning_effect_status"] == "improved"
     assert experiment["metrics"]["adaptive_correctness_rate"] == 1.0
     assert experiment["metrics"]["frozen_correctness_rate"] == 0.0
     assert experiment["metrics"]["adaptive_minus_frozen_correctness"] == 1.0
+    assert experiment["metrics"]["adaptive_win_rate"] == 1.0
+    assert experiment["metrics"]["frozen_win_rate"] == 0.0
+    assert experiment["metrics"]["paired_net_benefit_rate"] == 1.0
     assert experiment["hard_safety_incident_count"] == 0
     bundle = _load_artifact_bundle(report_dir)
     assert _executed_scenario_ids(bundle) == frozenset(

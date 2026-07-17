@@ -1121,6 +1121,10 @@ def _corrective_memory_experiment_summary(
     return {
         "available": True,
         "status": report.get("status"),
+        "learning_effect_status": (
+            report.get("learning_effect_status")
+            or _derived_learning_effect_status(_json_obj(report.get("metrics")))
+        ),
         "source_path": experiment.get("source_path"),
         "experiment_id": report.get("experiment_id"),
         "run_id": report.get("run_id"),
@@ -1139,6 +1143,31 @@ def _corrective_memory_experiment_summary(
         "proof_gaps": _json_list(report.get("proof_gaps")),
         "artifact_refs": _json_list(report.get("artifact_refs")),
     }
+
+
+def _derived_learning_effect_status(metrics: dict[str, Any]) -> str:
+    """Backfill the causal direction for valid pre-field v1 artifacts."""
+
+    net_benefit = metrics.get("paired_net_benefit_rate")
+    if net_benefit is None:
+        adaptive_only = _as_int(metrics.get("adaptive_only_correct_count"))
+        frozen_only = _as_int(metrics.get("frozen_only_correct_count"))
+        pair_count = _as_int(metrics.get("pair_count"))
+        net_benefit = (
+            (adaptive_only - frozen_only) / pair_count if pair_count else 0.0
+        )
+    adaptive_unsafe = metrics.get("adaptive_unsafe_rate")
+    frozen_unsafe = metrics.get("frozen_unsafe_rate")
+    if float(net_benefit) < 0.0 or (
+        float(net_benefit) > 0.0
+        and adaptive_unsafe is not None
+        and frozen_unsafe is not None
+        and float(adaptive_unsafe) > float(frozen_unsafe)
+    ):
+        return "regressed"
+    if float(net_benefit) > 0.0:
+        return "improved"
+    return "neutral"
 
 
 def render_vitals_markdown(scorecard: dict[str, Any]) -> str:

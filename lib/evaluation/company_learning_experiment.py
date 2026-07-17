@@ -25,6 +25,14 @@ class CorrectiveMemoryArm(StrEnum):
     FROZEN = "frozen"
 
 
+class LearningEffectStatus(StrEnum):
+    """Causal direction observed in the matched adaptive/frozen population."""
+
+    IMPROVED = "improved"
+    NEUTRAL = "neutral"
+    REGRESSED = "regressed"
+
+
 class RecurrenceCaseKind(StrEnum):
     EXACT_ALIAS_POSITIVE = "exact_alias_positive"
     VARIANT_ALIAS_POSITIVE = "variant_alias_positive"
@@ -323,6 +331,9 @@ class PairedCorrectiveMemoryMetrics(_ExperimentModel):
     adaptive_only_correct_count: int = Field(ge=0)
     frozen_only_correct_count: int = Field(ge=0)
     neither_correct_count: int = Field(ge=0)
+    adaptive_win_rate: float | None
+    frozen_win_rate: float | None
+    paired_net_benefit_rate: float | None
     case_kind_metrics: dict[str, dict[str, int | float | None]]
 
 
@@ -364,6 +375,9 @@ class CorrectiveMemoryExperimentReport(_ExperimentModel):
     arm_assignment_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     pair_results_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: str
+    # Optional preserves artifact-only rerender compatibility with v1 reports
+    # written before the causal-direction summary was added.
+    learning_effect_status: LearningEffectStatus | None = None
     metrics: PairedCorrectiveMemoryMetrics
     incidents: tuple[HardSafetyIncident, ...]
     pairs: tuple[PairedRecurrenceResult, ...]
@@ -455,6 +469,7 @@ def evaluate_corrective_memory_experiment(
         if not pairs
         else "observed"
     )
+    learning_effect_status = _learning_effect_status(metrics=metrics)
     return CorrectiveMemoryExperimentReport(
         experiment_id=spec.experiment_id,
         run_id=spec.run_id,
@@ -469,6 +484,7 @@ def evaluate_corrective_memory_experiment(
             [pair.model_dump(mode="json") for pair in pairs]
         ),
         status=status,
+        learning_effect_status=learning_effect_status,
         metrics=metrics,
         incidents=tuple(incidents),
         pairs=pairs,
@@ -636,8 +652,37 @@ def _metrics(
         adaptive_only_correct_count=adaptive_only,
         frozen_only_correct_count=frozen_only,
         neither_correct_count=pair_count - both_correct - adaptive_only - frozen_only,
+        adaptive_win_rate=_rate(adaptive_only, pair_count),
+        frozen_win_rate=_rate(frozen_only, pair_count),
+        paired_net_benefit_rate=_difference(
+            adaptive_only,
+            frozen_only,
+            pair_count,
+        ),
         case_kind_metrics=case_kind_metrics,
     )
+
+
+def _learning_effect_status(
+    *,
+    metrics: PairedCorrectiveMemoryMetrics,
+) -> LearningEffectStatus:
+    """Classify direction without turning the continuous effect into a pass gate."""
+
+    net_benefit = metrics.paired_net_benefit_rate
+    if net_benefit is None or net_benefit == 0.0:
+        return LearningEffectStatus.NEUTRAL
+    if net_benefit < 0.0:
+        return LearningEffectStatus.REGRESSED
+    # Correctness lift does not count as improvement when the adaptive arm
+    # introduces more observed hard-safety incidents than the frozen control.
+    if (
+        metrics.adaptive_unsafe_rate is not None
+        and metrics.frozen_unsafe_rate is not None
+        and metrics.adaptive_unsafe_rate > metrics.frozen_unsafe_rate
+    ):
+        return LearningEffectStatus.REGRESSED
+    return LearningEffectStatus.IMPROVED
 
 
 def _case(
@@ -777,6 +822,7 @@ __all__ = [
     "CorrectiveMemoryExperimentSpec",
     "HardSafetyIncident",
     "HardSafetyIncidentClass",
+    "LearningEffectStatus",
     "PairedCorrectiveMemoryMetrics",
     "PairedRecurrenceResult",
     "RecurrenceCaseKind",
