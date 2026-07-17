@@ -23,7 +23,8 @@
 - DB-backed Company Vitals:
   `/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/vitals/vitals_scorecard.json`
 - Authoritative aggregate:
-  `/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_synthesis_boundaries_v1/large_company_simulation_evaluation.json`
+  `/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_entity_v5/large_company_simulation_evaluation.json`
+  (SHA-256 `cae61794…dfa77`)
 - Assurance v7:
   `/tmp/fyralis-company-learning-assurance-be401f25/company_learning_assurance_summary.json`
 
@@ -663,11 +664,15 @@ The most likely structural causes are:
 This section updates the remediation state; it does not alter the run above or
 its `not_credible` verdict.
 
-- Entity physics now has a positive DB vertical plus adversarial v2. The latter
-  rejects four harmful graph writes without mutation, exercises a two-hop
-  chain and immediate correction propagation. Objective entity v2 scores
-  `0.9901315789` with clear blockers; workstream F1 `0.5` remains below budget.
-  Four graph attempts and two open-world cases are bounded evidence only.
+- Entity physics now has objective entity v5. It binds audited broad-v4
+  extraction (40 signals in four genuine batches, exact F1 `0.970588`, type
+  accuracy `1.0`, negative cleanliness `1.0`, workstream `6/6`) independently
+  from the positive DB vertical and adversarial v2. The latter rejects four
+  harmful graph writes without mutation, exercises a two-hop chain and
+  immediate correction propagation. V5's broad component scores `0.990196`
+  and readiness is clear. The missing pre-call runtime-source digest,
+  post-holdout current-runtime generalization, and wider graph populations
+  remain explicit gaps.
 - The first real company-model ablation v2 and postfix v3 are preserved as
   failures. Each runs matched three-by-six batches; both arms recover `0/3`,
   lift is zero, learned ECE is `0.5725`, score `0.7 below_policy`. V3 proves the
@@ -685,9 +690,11 @@ its `not_credible` verdict.
 - Correction homeostasis passes its real-Postgres bounded proof at `1.0`: two
   corrections, eight fenced Models, eight reevaluation pairs, two cycle-write
   rejections, idempotent replay and exact restart stability.
-- The final SHA-bound bounded objective artifact observes all five components.
-  Coverage, observed-component score and coverage-adjusted score are `1.0`,
-  with no below-policy component or blocker; verdict
+- The governing SHA-bound bounded objective artifact observes all eight
+  independently mandatory components, including joined runtime, matched
+  feedback quality and strict single-Model synthesis. Coverage,
+  observed-component score and coverage-adjusted score are `1.0`, with no
+  below-policy component or blocker; verdict
   `meets_bounded_policy`. Its proof gaps explicitly retain non-open-world,
   non-customer, no-connector and unbounded-recovery limits. It does not alter
   this historical large-run verdict.
@@ -747,9 +754,10 @@ current objective evidence portfolio. This is new bounded capability evidence,
 not a rerun of the 45-batch simulation and not grounds to change this
 postmortem's `not_credible` verdict. The current failure-fate-corrected and
 proof-boundary-aware rerender is
-`/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_synthesis_boundaries_v1/large_company_simulation_evaluation.json`.
-It includes Assurance v7, objective entity v4 and objective company learning
-v8; intermediate rerenders are not the current aggregate truth.
+`/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_entity_v5/large_company_simulation_evaluation.json`
+(SHA-256 `cae61794…dfa77`). It includes objective entity v5 and objective
+company learning v8; intermediate rerenders are historical, not the current
+aggregate truth.
 
 The later matched feedback-quality DB proof is also now mandatory and distinct
 from the older SAGE salience-effect evidence. In two matched arms it applies one
@@ -764,7 +772,7 @@ eight-component composition is
 saved 45-batch artifact was rerendered with this evidence in the aggregate
 lineage above. The current rerender score is
 `0.8883`, coverage is `1.0`, and its verdict remains `not_credible` because the
-two company-physics hard failures remain. It reports 68 aggregate proof gaps
+two company-physics hard failures remain. It reports 73 aggregate proof gaps
 and 16 successful scope limitations separately as proof boundaries. The
 simulation was
 not rerun: it remains the sole 45-batch, 1,125-signal, zero-semantic-seed,

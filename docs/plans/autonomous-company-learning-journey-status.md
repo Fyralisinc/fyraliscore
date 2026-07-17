@@ -304,8 +304,8 @@ flowchart LR
 | Adversarial company physics | Positive v1 plus adversarial v2 cover canonical links, semantic fates, exact relation lineage, four rejected harmful writes, a two-hop chain and immediate correction propagation | DB-backed bounded pass; four relation attempts and two open-world cases do not establish broad topology quality or completed transitive repair |
 | Source equivalence | Two semantic cases across eight normalized Slack/email/Jira/document-meeting batches preserve outcomes, authority, coordinates and boundaries | Bounded score `1.0`; connectors, open-world discourse and drift excluded |
 | Correction homeostasis | Two DB corrections fence eight Models, create eight reevaluation pairs, reject cycles, replay idempotently and survive restart | Bounded score `1.0`; unbounded recovery and infrastructure loss excluded |
-| Objective company learning | Five-component SHA-bound composer separates observed quality, coverage and blockers | All five observed; coverage/observed/adjusted scores `1.0`, no blocker, `meets_bounded_policy`; open-world/customer/connector/unbounded recovery excluded |
-| Entity extraction and company physics | Gold span/type evaluation and pipeline-v4 separate discovery, typing, resolver handoff, canonical linking, semantic disposition and relation lineage | V3 populates untouched extraction; the separate sealed DB vertical populates canonical/link/semantic/topology outcomes for exact authored cases. Broader generalization remains open |
+| Objective company learning | Eight-component SHA-bound v8 composer separates observed quality, coverage, blockers and successful proof boundaries; joined runtime, feedback quality and strict synthesis are independently mandatory | All eight observed at score/coverage `1.0`, no blocker, `meets_bounded_policy`; open-world/customer/connector/unbounded recovery excluded |
+| Entity extraction and company physics | Objective entity v5 separates broad-v4 span/type extraction from resolver handoff, canonical linking, semantic disposition and relation lineage | Broad-v4 exact F1 `0.970588`, type `1.0`, negative cleanliness `1.0`, workstream `6/6`; the separate sealed DB vertical populates canonical/link/semantic/topology outcomes for exact authored cases. Protocol and broader-generalization gaps remain explicit |
 | Learned batched discovery | Persisted signals are discovered as batches through a learned provider path, with typed candidates committed into the existing mention-fate ledger and handed to the existing resolver; deterministic discovery remains an availability fallback | Implemented with focused tests and provider readiness preflight; learned quality is promising but not exceptional |
 | Learned discovery provider readiness | Worker startup preflights the configured learned-discovery provider/model so a missing or incompatible provider is an explicit incident instead of silently becoming the normal mode | Implemented after a real provider/model configuration incident |
 | Resolver poll isolation | Tenant-specific simulations and worker runs can bound unresolved-observation polling by tenant; omitted scope preserves the production global poll | Implemented and focused-test proven at `b5cb50b8`; this is isolation evidence, not extraction or canonical-link quality |
@@ -1766,7 +1766,7 @@ matched feedback quality and objective entity v5.
   (SHA-256 `cae61794…dfa77`).
   It exposes all eight bounded components at `1.0`, but the immutable large-run
   verdict remains `not_credible`, score `0.8883`, coverage `1.0`, with two
-  noncompensatory company-physics hard failures, 68 aggregate proof gaps and
+  noncompensatory company-physics hard failures, 73 aggregate proof gaps and
   16 separately reported proof boundaries. The historical Think failure is
   classified as a recovered operational degradation, not terminal workload
   loss. This was an evaluator-only rerender; no simulation was rerun and no
