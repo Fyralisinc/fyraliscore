@@ -26,12 +26,14 @@ def compose_objective_company_learning_evidence(
     *, retrieval_evolution: BoundArtifact | None = None,
     retrieval_evolution_postfix: BoundArtifact | None = None,
     company_model_ablation: BoundArtifact | None = None,
+    company_model_ablation_legacy: BoundArtifact | None = None,
+    company_model_ablation_active_failure: BoundArtifact | None = None,
+    company_model_ablation_active_predecessor: BoundArtifact | None = None,
     feedback_learning: BoundArtifact | None = None,
     source_equivalence: BoundArtifact | None = None,
     correction_homeostasis: BoundArtifact | None = None,
 ) -> dict[str, Any]:
     inputs = {
-        "company_model_ablation": company_model_ablation,
         "feedback_learning": feedback_learning,
         "source_equivalence": source_equivalence,
         "correction_homeostasis": correction_homeostasis,
@@ -48,6 +50,17 @@ def compose_objective_company_learning_evidence(
     gaps.extend(retrieval_gaps)
     if retrieval_component["status"] == "observed":
         blockers.extend(_blockers("retrieval_evolution", retrieval_component["report"]))
+    ablation_component, ablation_bindings, ablation_gaps = _compose_ablation_evidence(
+        legacy=company_model_ablation_legacy,
+        active_failure=company_model_ablation_active_failure,
+        active_predecessor=company_model_ablation_active_predecessor,
+        active=company_model_ablation,
+    )
+    components["company_model_ablation"] = ablation_component
+    bindings["company_model_ablation"] = ablation_bindings
+    gaps.extend(ablation_gaps)
+    if ablation_component["status"] == "observed":
+        blockers.extend(_blockers("company_model_ablation", ablation_component["report"]))
     for name, bound in inputs.items():
         if bound is None:
             components[name] = {"status": "unknown", "continuous_score": None,
@@ -114,6 +127,135 @@ def compose_objective_company_learning_evidence(
     }
     output["composition_sha256"] = canonical_sha256(output)
     return output
+
+
+def _compose_ablation_evidence(
+    *, legacy: BoundArtifact | None, active_failure: BoundArtifact | None,
+    active_predecessor: BoundArtifact | None, active: BoundArtifact | None,
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Preserve ablation history while letting only the current active lane decide."""
+    bindings: dict[str, Any] = {}
+    gaps: list[str] = []
+    legacy_component = None
+    failure_report = None
+    predecessor_component = None
+
+    # A pre-active artifact passed through the old argument is history, not a
+    # current result. This compatibility rule prevents old callers from
+    # accidentally restoring the v4 development pass as the governing verdict.
+    if (
+        active is not None
+        and active.payload.get("schema_version") == "bounded-company-model-ablation-artifact-v1"
+    ):
+        if legacy is not None:
+            raise ValueError("legacy company-model ablation supplied twice")
+        legacy, active = active, None
+
+    if legacy is not None:
+        _require_sha(legacy.artifact_sha256, "legacy company-model ablation")
+        legacy_component = _normalize_component("company_model_ablation", legacy.payload)
+        bindings["legacy_v4_development"] = {
+            "status": "observed", "artifact_sha256": legacy.artifact_sha256,
+            "schema_version": legacy_component["schema_version"],
+            "verdict": legacy_component["verdict"],
+        }
+        gaps.append(
+            "company_model_ablation:legacy_v4_development_is_not_active_lane_evidence"
+        )
+    else:
+        bindings["legacy_v4_development"] = {
+            "status": "unavailable", "artifact_sha256": None,
+        }
+
+    if active_failure is not None:
+        _require_sha(active_failure.artifact_sha256, "active ablation contract failure")
+        _schema(
+            active_failure.payload,
+            "bounded-company-model-holdout-v5-failure-artifact-v1",
+        )
+        _verify_objective(active_failure.payload, "active ablation contract failure")
+        failure_report = dict(active_failure.payload)
+        bindings["active_v5_contract_failure"] = {
+            "status": "observed",
+            "artifact_sha256": active_failure.artifact_sha256,
+            "schema_version": active_failure.payload["schema_version"],
+            "internal_digest": active_failure.payload.get("objective_sha256"),
+            "verdict": active_failure.payload.get("verdict"),
+        }
+        gaps.append(
+            "company_model_ablation:active_v5_inconclusive_runtime_contract_failure"
+        )
+    else:
+        bindings["active_v5_contract_failure"] = {
+            "status": "unavailable", "artifact_sha256": None,
+        }
+
+    if active_predecessor is not None:
+        _require_sha(
+            active_predecessor.artifact_sha256,
+            "superseded active company-model ablation",
+        )
+        predecessor_schema = str(
+            active_predecessor.payload.get("schema_version") or ""
+        )
+        if not (
+            predecessor_schema.startswith("bounded-company-model-holdout-v")
+            and predecessor_schema.endswith("-artifact-v1")
+        ):
+            raise ValueError("active ablation predecessor must be a versioned holdout")
+        predecessor_component = _normalize_ablation_artifact(
+            active_predecessor.payload
+        )
+        bindings["superseded_active_holdout"] = {
+            "status": "observed",
+            "artifact_sha256": active_predecessor.artifact_sha256,
+            "schema_version": predecessor_schema,
+            "verdict": predecessor_component["verdict"],
+        }
+        gaps.append(
+            "company_model_ablation:superseded_active_holdout_is_historical_not_governing"
+        )
+    else:
+        bindings["superseded_active_holdout"] = {
+            "status": "unavailable", "artifact_sha256": None,
+        }
+
+    if active is None:
+        bindings["current_active_holdout"] = {
+            "status": "unavailable", "artifact_sha256": None,
+        }
+        gaps.append("component_unavailable:company_model_ablation.current_active_holdout")
+        return ({
+            "status": "unknown", "continuous_score": None, "population": None,
+            "verdict": "unknown", "active_lane_verdict": "unknown",
+            "legacy_v4_development": legacy_component,
+            "active_v5_contract_failure": failure_report,
+            "superseded_active_holdout": predecessor_component,
+        }, bindings, gaps)
+
+    _require_sha(active.artifact_sha256, "current active company-model ablation")
+    schema = str(active.payload.get("schema_version") or "")
+    if not (
+        schema.startswith("bounded-company-model-holdout-v")
+        and schema.endswith("-artifact-v1")
+    ):
+        raise ValueError("current active ablation must be a versioned holdout artifact")
+    active_component = _normalize_ablation_artifact(active.payload)
+    gaps.extend(_proof_gaps("company_model_ablation", active_component["report"]))
+    bindings["current_active_holdout"] = {
+        "status": "observed", "artifact_sha256": active.artifact_sha256,
+        "schema_version": schema, "verdict": active_component["verdict"],
+    }
+    return ({
+        **active_component,
+        "active_lane_verdict": active_component["verdict"],
+        "legacy_v4_development": legacy_component,
+        "active_v5_contract_failure": failure_report,
+        "superseded_active_holdout": predecessor_component,
+        "governing_era": schema.removeprefix("bounded-company-model-holdout-").removesuffix(
+            "-artifact-v1"
+        ),
+    }, bindings, gaps)
 
 
 def _compose_retrieval_evidence(
@@ -189,21 +331,7 @@ def _normalize_component(name: str, payload: Mapping[str, Any]) -> dict[str, Any
                       "phase_batches": payload.get("phase_batch_counts")}
     elif name == "company_model_ablation":
         _schema(payload, "bounded-company-model-ablation-artifact-v1")
-        report = _object(payload.get("evaluation"), "ablation evaluation")
-        recomputed = evaluate_company_model_ablation(
-            manifest=_object(payload.get("manifest"), "ablation manifest"),
-            learned=_object(payload.get("learned_arm"), "learned arm"),
-            frozen=_object(payload.get("frozen_arm"), "frozen arm"),
-        )
-        if dict(report) != recomputed:
-            raise ValueError("company-model ablation evaluation does not recompute")
-        population = {"batches": report.get("batch_count"),
-                      "signals": report.get("signal_count"),
-                      "hidden_theses": report.get("hidden_thesis_count"),
-                      "calibration_samples_per_arm": {
-                          key: value.get("calibration_n")
-                          for key, value in _object(report.get("arms"), "arms").items()
-                      }}
+        return _normalize_ablation_artifact(payload)
     elif name == "feedback_learning":
         validated = validate_feedback_learning_effect_artifact(dict(payload))
         report = validated.report.model_dump(mode="json")
@@ -257,6 +385,37 @@ def _normalize_component(name: str, payload: Mapping[str, Any]) -> dict[str, Any
             "continuous_score": float(score), "population": population,
             "verdict": str(report.get("verdict") or report.get("status") or "unknown"),
             "internal_digest": internal_digest, "report": dict(report)}
+
+
+def _normalize_ablation_artifact(payload: Mapping[str, Any]) -> dict[str, Any]:
+    report = _object(payload.get("evaluation"), "ablation evaluation")
+    recomputed = evaluate_company_model_ablation(
+        manifest=_object(payload.get("manifest"), "ablation manifest"),
+        learned=_object(payload.get("learned_arm"), "learned arm"),
+        frozen=_object(payload.get("frozen_arm"), "frozen arm"),
+    )
+    if dict(report) != recomputed:
+        raise ValueError("company-model ablation evaluation does not recompute")
+    score = report.get("continuous_score")
+    if not isinstance(score, (int, float)) or not 0 <= float(score) <= 1:
+        raise ValueError("company_model_ablation continuous score must be in [0,1]")
+    arms = _object(report.get("arms"), "arms")
+    return {
+        "status": "observed",
+        "schema_version": str(payload["schema_version"]),
+        "continuous_score": float(score),
+        "population": {
+            "batches": report.get("batch_count"),
+            "signals": report.get("signal_count"),
+            "hidden_theses": report.get("hidden_thesis_count"),
+            "calibration_samples_per_arm": {
+                key: value.get("calibration_n") for key, value in arms.items()
+            },
+        },
+        "verdict": str(report.get("verdict") or "unknown"),
+        "internal_digest": None,
+        "report": dict(report),
+    }
 
 
 def _blockers(name: str, report: Mapping[str, Any]) -> list[str]:

@@ -47,6 +47,34 @@ def _ablation():
                 manifest=manifest, learned=learned, frozen=frozen)}
 
 
+def _active_ablation(*, learned_lift: bool = True, version: str = "v6"):
+    payload = deepcopy(_ablation())
+    payload["schema_version"] = (
+        f"bounded-company-model-holdout-{version}-artifact-v1"
+    )
+    if not learned_lift:
+        payload["learned_arm"]["predictions"] = deepcopy(
+            payload["frozen_arm"]["predictions"]
+        )
+        payload["evaluation"] = evaluate_company_model_ablation(
+            manifest=payload["manifest"],
+            learned=payload["learned_arm"],
+            frozen=payload["frozen_arm"],
+        )
+    return payload
+
+
+def _active_failure():
+    payload = {
+        "schema_version": "bounded-company-model-holdout-v5-failure-artifact-v1",
+        "population": {"actual_think_runs": 1, "completed_batches": 0},
+        "verdict": "inconclusive_runtime_contract_failure",
+        "proof_boundary": "failed before semantic judging",
+    }
+    payload["objective_sha256"] = canonical_sha256(payload)
+    return payload
+
+
 def _feedback():
     effect = MatchedSalienceEffect(case_id="settled_useful", expected_effect="increase",
         frozen_salience=1.0, adaptive_salience=1.1, adaptive_minus_frozen=.1,
@@ -109,7 +137,12 @@ def test_composes_all_sha_bound_components_with_exact_populations():
         retrieval_evolution=BoundArtifact(_retrieval(), SHA),
         retrieval_evolution_postfix=BoundArtifact(
             run_bounded_retrieval_evolution_postfix(), SHA),
-        company_model_ablation=BoundArtifact(_ablation(), SHA),
+        company_model_ablation=BoundArtifact(_active_ablation(), SHA),
+        company_model_ablation_legacy=BoundArtifact(_ablation(), SHA),
+        company_model_ablation_active_failure=BoundArtifact(_active_failure(), SHA),
+        company_model_ablation_active_predecessor=BoundArtifact(
+            _active_ablation(learned_lift=False), SHA
+        ),
         feedback_learning=BoundArtifact(_feedback(), SHA),
         source_equivalence=BoundArtifact(_source_db(relations_exposed=True), SHA),
         correction_homeostasis=BoundArtifact(_correction(), SHA),
@@ -122,6 +155,64 @@ def test_composes_all_sha_bound_components_with_exact_populations():
     assert result["exact_populations"]["company_model_ablation"]["signals"] == 6
     assert result["exact_populations"]["feedback_learning"]["matched_pairs"] == 1
     assert len(result["composition_sha256"]) == 64
+
+
+def test_current_active_ablation_overrides_legacy_development_pass():
+    result = compose_objective_company_learning_evidence(
+        company_model_ablation=BoundArtifact(
+            _active_ablation(learned_lift=False), SHA
+        ),
+        company_model_ablation_legacy=BoundArtifact(_ablation(), SHA),
+        company_model_ablation_active_failure=BoundArtifact(_active_failure(), SHA),
+        company_model_ablation_active_predecessor=BoundArtifact(
+            _active_ablation(learned_lift=False), SHA
+        ),
+    )
+
+    component = result["components"]["company_model_ablation"]
+    assert component["legacy_v4_development"]["verdict"] == "meets_policy"
+    assert component["active_v5_contract_failure"]["verdict"] == (
+        "inconclusive_runtime_contract_failure"
+    )
+    assert component["active_lane_verdict"] == "below_policy"
+    assert component["verdict"] == "below_policy"
+    assert result["verdict"] == "partial_evidence"
+    assert result["artifact_bindings"]["company_model_ablation"][
+        "current_active_holdout"
+    ]["verdict"] == "below_policy"
+
+
+def test_future_active_holdout_replaces_v6_without_erasing_history():
+    result = compose_objective_company_learning_evidence(
+        company_model_ablation=BoundArtifact(
+            _active_ablation(version="v7"), SHA
+        ),
+        company_model_ablation_legacy=BoundArtifact(_ablation(), SHA),
+        company_model_ablation_active_failure=BoundArtifact(_active_failure(), SHA),
+        company_model_ablation_active_predecessor=BoundArtifact(
+            _active_ablation(learned_lift=False), SHA
+        ),
+    )
+
+    component = result["components"]["company_model_ablation"]
+    assert component["governing_era"] == "v7"
+    assert component["active_lane_verdict"] == "meets_policy"
+    assert component["legacy_v4_development"]["verdict"] == "meets_policy"
+    assert component["active_v5_contract_failure"] is not None
+    assert component["superseded_active_holdout"]["verdict"] == "below_policy"
+
+
+def test_legacy_ablation_without_active_holdout_remains_unknown():
+    result = compose_objective_company_learning_evidence(
+        company_model_ablation=BoundArtifact(_ablation(), SHA),
+    )
+
+    component = result["components"]["company_model_ablation"]
+    assert component["status"] == "unknown"
+    assert component["legacy_v4_development"]["verdict"] == "meets_policy"
+    assert "component_unavailable:company_model_ablation.current_active_holdout" in (
+        result["proof_gaps"]
+    )
 
 
 def test_preserves_historical_retrieval_failure_beside_current_postfix_pass():

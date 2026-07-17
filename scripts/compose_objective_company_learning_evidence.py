@@ -30,6 +30,9 @@ def main() -> int:
     parser.add_argument("--retrieval-evolution", type=Path)
     parser.add_argument("--retrieval-evolution-postfix", type=Path)
     parser.add_argument("--company-model-ablation", type=Path)
+    parser.add_argument("--company-model-ablation-legacy", type=Path)
+    parser.add_argument("--company-model-ablation-active-failure", type=Path)
+    parser.add_argument("--company-model-ablation-active-predecessor", type=Path)
     parser.add_argument("--feedback-learning", type=Path)
     parser.add_argument("--source-equivalence", type=Path)
     parser.add_argument("--correction-homeostasis", type=Path)
@@ -39,6 +42,13 @@ def main() -> int:
         retrieval_evolution=_load(args.retrieval_evolution),
         retrieval_evolution_postfix=_load(args.retrieval_evolution_postfix),
         company_model_ablation=_load(args.company_model_ablation),
+        company_model_ablation_legacy=_load(args.company_model_ablation_legacy),
+        company_model_ablation_active_failure=_load(
+            args.company_model_ablation_active_failure
+        ),
+        company_model_ablation_active_predecessor=_load(
+            args.company_model_ablation_active_predecessor
+        ),
         feedback_learning=_load(args.feedback_learning),
         source_equivalence=_load(args.source_equivalence),
         correction_homeostasis=_load(args.correction_homeostasis),
