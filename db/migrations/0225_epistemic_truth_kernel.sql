@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS truth_candidates (
     'control_language', 'processing_wrapper'
   )),
   review_state TEXT NOT NULL CHECK (review_state IN ('proposed', 'in_review')),
-  natural TEXT NOT NULL CHECK (btrim(natural) <> ''),
+  natural_text TEXT NOT NULL CHECK (btrim(natural_text) <> ''),
   proposition JSONB NOT NULL CHECK (
     jsonb_typeof(proposition) = 'object' AND proposition <> '{}'::jsonb
   ),
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS model_truth_versions (
   admission_decision_id UUID NOT NULL,
   source_candidate_id UUID NOT NULL,
   source_candidate_version INTEGER NOT NULL CHECK (source_candidate_version >= 1),
-  natural TEXT NOT NULL CHECK (btrim(natural) <> ''),
+  natural_text TEXT NOT NULL CHECK (btrim(natural_text) <> ''),
   proposition JSONB NOT NULL CHECK (
     jsonb_typeof(proposition) = 'object' AND proposition <> '{}'::jsonb
   ),
@@ -406,7 +406,7 @@ SELECT
   v.model_id AS id,
   v.tenant_id,
   v.proposition,
-  v.natural,
+  v.natural_text,
   v.created_at,
   h.version_id AS truth_version_id,
   h.version AS truth_version,

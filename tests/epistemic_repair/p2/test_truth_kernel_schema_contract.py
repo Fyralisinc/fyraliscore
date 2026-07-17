@@ -64,7 +64,7 @@ def test_admission_is_immutable_and_cannot_target_truth_when_nonaccepted() -> No
 def test_model_version_binds_representation_lifecycle_and_exact_head() -> None:
     sql = _sql()
 
-    for token in ("natural TEXT NOT NULL", "proposition JSONB NOT NULL", "semantic_digest TEXT NOT NULL"):
+    for token in ("natural_text TEXT NOT NULL", "proposition JSONB NOT NULL", "semantic_digest TEXT NOT NULL"):
         assert token in sql
     assert "lifecycle IN ('active', 'disputed', 'falsified', 'superseded', 'archived')" in sql
     assert "FOREIGN KEY (tenant_id, model_id, version_id, version, semantic_digest, lifecycle)" in sql
