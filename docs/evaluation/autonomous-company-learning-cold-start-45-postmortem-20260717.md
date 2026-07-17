@@ -692,8 +692,11 @@ checks on six bounded batches, including exact relation-ID correction fencing
 and material prior-Model synthesis with an ablation. It is required in the
 current objective evidence portfolio. This is new bounded capability evidence,
 not a rerun of the 45-batch simulation and not grounds to change this
-postmortem's `not_credible` verdict. The current rerender remains at
-`/private/tmp/large-simulation-gate-joined-v2`.
+postmortem's `not_credible` verdict. The current assurance-backed rerender is
+`/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_joined_v2/large_company_simulation_evaluation.json`.
+It includes Assurance v7, objective entity v4 and the current objective
+company-learning portfolio; intermediate joined-only rerenders are not the
+current aggregate truth.
 
 The later matched feedback-quality DB proof is also now mandatory and distinct
 from the older SAGE salience-effect evidence. In two matched arms it applies one
@@ -703,6 +706,16 @@ frozen `0.0`, with exact Model/relation lineage, immutable matched source truth,
 tenant isolation, and all 17 objective checks passing. The seven-component
 composition is `/private/tmp/objective_company_learning_evidence_v7.json`
 (`785ec239…f30911d7`). The saved 45-batch artifact was rerendered with this
-evidence at `/private/tmp/large-simulation-gate-feedback-quality-v7`; its score
-remains `0.8859` and its verdict remains `not_credible` because the same three
-historical vitals failures remain.
+evidence in the assurance-backed aggregate path above; its score remains
+`0.8859`, coverage remains `1.0`, and its verdict remains `not_credible`
+because the same three historical vitals failures remain. The simulation was
+not rerun: it remains the sole 45-batch, 1,125-signal, zero-semantic-seed,
+batch-only large run.
+
+The active v7 holdout establishes collective cross-batch facet availability,
+not strict synthesis into one learned Model. A strict single-Model claim must
+be supported by a separate frozen holdout in which exactly one persisted Model
+per thesis contains all required facets and eligible prior-Model lineage, while
+the frozen arm contains none. Distributed facets across several Models do not
+count. That evidence is pending and is not part of the seven-component
+portfolio described here.

@@ -1726,7 +1726,25 @@ The next sequence is validation and remaining pipeline closure:
   `/private/tmp/objective_company_learning_evidence_v7.json`, composition SHA
   `785ec239…f30911d7`, coverage and adjusted score `1.0`, with no blocker.
 - The existing 45-batch run was evaluator-rerendered, not rerun, at
-  `/private/tmp/large-simulation-gate-feedback-quality-v7`. Feedback quality is
-  visible as the seventh component, but the authoritative result remains
-  `not_credible`, score `0.8859`, because its original Think failure and two
-  entity-grounding incidents remain unchanged.
+  `/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_joined_v2/large_company_simulation_evaluation.json`.
+  This is the current assurance-backed rerender: it includes Assurance v7,
+  objective entity v4 and the seven-component objective company-learning
+  portfolio. Feedback quality is visible as the seventh component, but the
+  authoritative result remains `not_credible`, score `0.8859`, coverage `1.0`,
+  because its original Think failure and two historical entity-grounding
+  incidents remain unchanged. The simulation itself was not rerun.
+
+### Current execution constraints and synthesis boundary
+
+- The only authoritative large simulation remains the 45-batch, 1,125-signal
+  cold start. It used 25-signal batches, no unbatched T1 processing and zero
+  seeded semantic Models. No second large simulation is authorized or needed
+  for this milestone.
+- The governing objective portfolio currently has seven mandatory SHA-bound
+  components. The strict single-Model synthesis evaluator is not yet an eighth
+  accepted component in this ledger.
+- Active v7 demonstrates cross-batch evidence accumulation and availability.
+  It does not demonstrate that one persisted Model contains every required
+  thesis facet with eligible prior-Model lineage. That stricter claim remains
+  pending the separate frozen single-Model synthesis holdout; distributed
+  facets across multiple Models must score zero.
