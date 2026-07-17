@@ -36,6 +36,7 @@ def main() -> int:
     parser.add_argument("--feedback-learning", type=Path)
     parser.add_argument("--source-equivalence", type=Path)
     parser.add_argument("--correction-homeostasis", type=Path)
+    parser.add_argument("--joined-runtime", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = compose_objective_company_learning_evidence(
@@ -52,6 +53,7 @@ def main() -> int:
         feedback_learning=_load(args.feedback_learning),
         source_equivalence=_load(args.source_equivalence),
         correction_homeostasis=_load(args.correction_homeostasis),
+        joined_runtime=_load(args.joined_runtime),
     )
     write_atomic_json(args.output, result)
     print(json.dumps({

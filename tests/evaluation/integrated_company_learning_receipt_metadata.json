@@ -5,5 +5,8 @@
   "receipt_sha256": "e27c1a4df48487acbdf2f46d10ceffac6770cd3ee0224dcbce7445c1496fea25",
   "run_attempts": 1,
   "status": "completed",
-  "verdict": "meets_policy"
+  "verdict": "meets_policy",
+  "evidence_status": "superseded_non_governing",
+  "limitation": "aggregate inactive-edge count did not prove exact correction fencing",
+  "superseded_by": "integrated-company-learning-vertical-v2"
 }

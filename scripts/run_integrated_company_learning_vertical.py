@@ -79,10 +79,10 @@ async def _insert_learning_batch(pool, tenant, actor, index, definitions):
 
 
 async def run_once(dsn: str, output: Path, receipt: Path):
-    if output.exists() or receipt.exists(): raise RuntimeError("integrated vertical is one-shot")
+    if output.exists() or receipt.exists(): raise RuntimeError("integrated v2 vertical is one-shot")
     os.environ["INQUIRY_LLM_QUESTION_PLANNING_ENABLED"]="0"
     os.environ["THINK_COMPILED_BATCH_MEMORY_REASONING"]="1"
-    meta={"schema_version":"integrated-company-learning-receipt-v1","run_attempts":1,
+    meta={"schema_version":"integrated-company-learning-receipt-v2","run_attempts":1,
           "started_at":datetime.now(timezone.utc).isoformat(),"status":"running"}
     receipt.write_text(json.dumps(meta,indent=2,sort_keys=True)+"\n")
     try:
@@ -157,12 +157,17 @@ async def run_once(dsn: str, output: Path, receipt: Path):
                   evidence_event_ids=[relation_event],evidence_model_ids=[predecessor["admitted_model_id"],learned_target],
                   evidence_text="The governed Venus state supports the learned Tundra model.",explanation="Cross-stage correction dependency." )]),
                   conn,"T1",relation_event,trigger_supporting_event_ids=[relation_event])
+                exact_edge_before=await conn.fetchrow("""SELECT id,status,source_model_id,target_model_id,metadata
+                  FROM model_edges WHERE tenant_id=$1 AND source_model_id=$2 AND target_model_id=$3
+                    AND edge_kind='supports' ORDER BY created_at DESC LIMIT 1""",
+                  tenant,predecessor["admitted_model_id"],learned_target)
                 atlas_active_before=await conn.fetchval("SELECT count(*) FROM models WHERE tenant_id=$1 AND id=$2 AND status='active'",tenant,unrelated_model_id)
                 async with conn.transaction():
                     correction=await CorrectionPropagationService().propagate_direct_correction(
                         conn,tenant_id=tenant,predecessor_grounding_trace_id=predecessor["id"],
                         successor_grounding_trace_id=successor["id"],cause_event_id=successor["source_observation_id"],
                         corrected_model_id=successor["admitted_model_id"])
+                exact_edge_after=await conn.fetchrow("SELECT id,status,source_model_id,target_model_id,metadata FROM model_edges WHERE tenant_id=$1 AND id=$2",tenant,exact_edge_before["id"])
                 atlas_active_after=await conn.fetchval("SELECT count(*) FROM models WHERE tenant_id=$1 AND id=$2 AND status='active'",tenant,unrelated_model_id)
                 populations={name:await conn.fetchval(f"SELECT count(*) FROM {name} WHERE tenant_id=$1",tenant)
                   for name in ("observations","models","model_edges","grounding_traces","entity_mention_detections",
@@ -181,7 +186,14 @@ async def run_once(dsn: str, output: Path, receipt: Path):
               "active_batch_memory_success":all(r["status"]=="success" for r in runtime),
               "relation_lineage_admitted":source_result["lineage_metrics"]["relation"]==1.0 and source_result["topology_metrics"]["relation_admission_accuracy"]==1.0,
               "correction_archived_wrong_models":len(correction.archived_model_ids)>=1,
-              "correction_fenced_relations":populations["model_edges"]>active_edges,
+              "correction_fenced_relations":(
+                  exact_edge_before["status"]=="active"
+                  and exact_edge_after["id"]==exact_edge_before["id"]
+                  and exact_edge_after["status"] in {"inert","retired","needs_review"}
+                  and exact_edge_after["source_model_id"] in correction.archived_model_ids
+                  and exact_edge_after["target_model_id"] in correction.dependent_model_ids
+                  and (exact_edge_after["target_model_id"],exact_edge_after["source_model_id"]) in correction.reeval_pairs
+              ),
               "correction_enqueued_reevaluation":populations["model_reeval_queue"]>=1,
               "unrelated_model_survives":atlas_active_before==atlas_active_after and atlas_active_after>=1,
               "late_model_first_context":len(runtime[-1]["selected_model_ids"])>0 and bool(runtime[-1]["referenced_model_ids"]),
@@ -192,7 +204,7 @@ async def run_once(dsn: str, output: Path, receipt: Path):
               "tenant_isolation_negative_control":cross_tenant==0,
             }
             score=sum(checks.values())/len(checks)
-            artifact={"schema_version":"integrated-company-learning-vertical-v1",
+            artifact={"schema_version":"integrated-company-learning-vertical-v2",
               "tenant_id":str(tenant),"batch_count":6,"signal_count":populations["observations"],
               "baseline":baseline,"populations":populations,"active_populations":{"models":active_models,"edges":active_edges},
               "entity_discovery":{"persisted_detection_count":populations["entity_mention_detections"],"structured_batch_calls":source_result["discovery"]["structured_calls"],"governed_fate_coverage":source_result["discovery"]["governed_fate_coverage"]},
@@ -202,7 +214,14 @@ async def run_once(dsn: str, output: Path, receipt: Path):
               "correction":{"old_model_ids":[str(x) for x in correction.old_model_ids],"archived_model_ids":[str(x) for x in correction.archived_model_ids],
                 "dependent_model_ids":[str(x) for x in correction.dependent_model_ids],"reeval_pairs":[[str(a),str(b)] for a,b in correction.reeval_pairs],
                 "fenced_relations":len(correction.relation_fence.retired_relation_ids)+len(correction.relation_fence.needs_review_relation_ids),
-                "inactive_edges_after_correction":populations["model_edges"]-active_edges},
+                "inactive_edges_after_correction":populations["model_edges"]-active_edges,
+                "exact_cross_stage_edge":{"id":str(exact_edge_before["id"]),
+                  "source_model_id":str(exact_edge_before["source_model_id"]),
+                  "target_model_id":str(exact_edge_before["target_model_id"]),
+                  "status_before":exact_edge_before["status"],"status_after":exact_edge_after["status"],
+                  "linked_archived_source":exact_edge_after["source_model_id"] in correction.archived_model_ids,
+                  "linked_dependent_target":exact_edge_after["target_model_id"] in correction.dependent_model_ids,
+                  "linked_reeval_pair":(exact_edge_after["target_model_id"],exact_edge_after["source_model_id"]) in correction.reeval_pairs}},
               "negative_controls":{"cross_tenant_selected_models":cross_tenant,"atlas_active_before":atlas_active_before,"atlas_active_after":atlas_active_after},
               "checks":checks,"continuous_score":score,"verdict":"meets_policy" if score==1 else "below_policy",
               "proof_boundary":["normalized persisted signals begin after connector transport","deterministic providers are limited to mention spans and closed-world batch-memory decisions","does not authorize task autonomy"]}

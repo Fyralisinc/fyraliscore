@@ -859,3 +859,12 @@ transport are excluded from this goal.
 - **Safe boundary:** Acceptable behavior until implementation.
 - **Return condition:** Exact milestone that brings the item back into scope.
 - **Evidence:** Tests, traces, reports, or source references.
+# Joined-runtime evidence integrity
+
+- **Aggregate edge-state false positive (resolved in v2):** integrated v1
+  treated `total_edges > active_edges` as proof that the intended correction
+  fenced its cross-stage relation, even though the correction report exposed
+  zero fenced relations. V2 captures the exact edge ID before correction and
+  requires its own state transition plus archived-source, dependent-target and
+  reevaluation-pair linkage. V1 remains historical and must not be used as the
+  governing joined-runtime artifact.

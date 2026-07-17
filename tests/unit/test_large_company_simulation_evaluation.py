@@ -46,7 +46,7 @@ def _objective_entity_evidence(*, complete: bool = True) -> dict:
 
 def _objective_company_learning_evidence(*, numeric: bool = True) -> dict:
     names = ("retrieval_evolution", "company_model_ablation", "feedback_learning",
-             "source_equivalence", "correction_homeostasis")
+             "source_equivalence", "correction_homeostasis", "joined_runtime")
     components = {
         name: {
             "status": "observed",
@@ -264,6 +264,7 @@ def test_objective_learning_evidence_adds_numeric_metrics_without_rewriting_hist
         "retrieval_evolution": 1.0, "company_model_ablation": 1.0,
         "feedback_learning": 1.0, "source_equivalence": 1.0,
         "correction_homeostasis": 1.0,
+        "joined_runtime": 1.0,
     }
     assert metrics["historical_retrieval_verdict"] == "below_policy"
     assert (

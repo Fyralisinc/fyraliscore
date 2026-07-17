@@ -132,6 +132,23 @@ def _correction():
     return payload
 
 
+def _joined_runtime():
+    checks = {f"joined_check_{index:02d}": True for index in range(17)}
+    payload = {
+        "schema_version": "integrated-company-learning-vertical-v2",
+        "continuous_score": 1.0, "verdict": "meets_policy",
+        "checks": checks, "populations": {"observations": 74, "models": 12},
+        "active_populations": {"models": 11, "edges": 0},
+        "material_use_ablation": {"with_prior": {}, "without_prior": {}},
+        "correction": {"exact_cross_stage_edge": {"status_before": "active", "status_after": "inert"}},
+        "negative_controls": {"cross_tenant_selected_models": 0},
+        "proof_boundary": ["bounded joined runtime"], "batch_count": 6,
+        "signal_count": 74,
+    }
+    payload["objective_sha256"] = canonical_sha256(payload)
+    return payload
+
+
 def test_composes_all_sha_bound_components_with_exact_populations():
     result = compose_objective_company_learning_evidence(
         retrieval_evolution=BoundArtifact(_retrieval(), SHA),
@@ -146,6 +163,7 @@ def test_composes_all_sha_bound_components_with_exact_populations():
         feedback_learning=BoundArtifact(_feedback(), SHA),
         source_equivalence=BoundArtifact(_source_db(relations_exposed=True), SHA),
         correction_homeostasis=BoundArtifact(_correction(), SHA),
+        joined_runtime=BoundArtifact(_joined_runtime(), SHA),
     )
 
     assert result["verdict"] == "meets_bounded_policy"
@@ -246,7 +264,7 @@ def test_missing_components_remain_unknown_and_reduce_coverage():
     )
 
     assert result["verdict"] == "partial_evidence"
-    assert result["evidence_coverage"] == 0.2
+    assert result["evidence_coverage"] == 1 / 6
     assert result["components"]["retrieval_evolution"]["status"] == "unknown"
     assert "component_unavailable:retrieval_evolution.current_bounded_postfix" in result[
         "proof_gaps"

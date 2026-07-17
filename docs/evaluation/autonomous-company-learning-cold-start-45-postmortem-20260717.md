@@ -684,3 +684,13 @@ pollute:
 
 Until those conditions hold, the system can learn—but we should not yet fully
 believe what it has learned.
+
+## Later bounded evidence does not revise this run
+
+The later integrated company-learning v2 vertical passed all 17 joined-runtime
+checks on six bounded batches, including exact relation-ID correction fencing
+and material prior-Model synthesis with an ablation. It is required in the
+current objective evidence portfolio. This is new bounded capability evidence,
+not a rerun of the 45-batch simulation and not grounds to change this
+postmortem's `not_credible` verdict. The current rerender remains at
+`/private/tmp/large-simulation-gate-joined-v2`.

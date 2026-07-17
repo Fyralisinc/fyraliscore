@@ -557,7 +557,7 @@ def _objective_company_learning_quality(
     rows = _object(evidence.get("components"))
     required = (
         "retrieval_evolution", "company_model_ablation", "feedback_learning",
-        "source_equivalence", "correction_homeostasis",
+        "source_equivalence", "correction_homeostasis", "joined_runtime",
     )
     components = {
         name: _optional_ratio(_object(rows.get(name)).get("continuous_score"))
@@ -575,6 +575,11 @@ def _objective_company_learning_quality(
         gaps.append("Objective company-learning aggregate score disagrees with numeric components.")
         return None, 0.0, {}
     blockers = _strings(evidence.get("noncompensable_blockers"))
+    joined = _object(rows.get("joined_runtime"))
+    if joined.get("status") != "observed" or joined.get("verdict") != "meets_policy":
+        hard_failures.append(
+            "objective company-learning: required joined runtime v2 evidence is missing or failing"
+        )
     hard_failures.extend(
         f"objective company-learning: {blocker}" for blocker in blockers
     )

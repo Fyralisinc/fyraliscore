@@ -1684,3 +1684,25 @@ The next sequence is validation and remaining pipeline closure:
   `meets_bounded_policy`; composition SHA `97d604a6…2863452`. It preserves
   explicit non-open-world, non-customer, no-connector and unbounded-recovery
   proof gaps and does not revise the large-run verdict.
+
+### 2026-07-17 — Exact joined-runtime v2 became mandatory evidence
+
+- The first integrated v1 artifact is preserved but superseded: its
+  `correction_fenced_relations` check inferred success from aggregate inactive
+  edge counts while the correction report exposed zero fenced relations.
+- Integrated v2 ran once on a fresh database and captured the exact cross-stage
+  `supports` edge before correction. The same edge changed from `active` to
+  `inert`; its source appears in `archived_model_ids`, its target in
+  `dependent_model_ids`, and the exact target/source pair in `reeval_pairs`.
+- The six-batch joined runtime passed all 17 checks at `1.0`. It includes one
+  batched company-physics discovery/resolution/semantic/relation batch plus five
+  active batch-memory batches, material same-subject synthesis, a no-prior
+  ablation, exact correction fencing, tenant isolation and late Model use.
+- Objective company-learning evidence now requires this joined-runtime v2 as a
+  sixth SHA-bound component. Component-level evidence cannot compensate for a
+  missing or failing joined artifact. The new composition is
+  `/private/tmp/objective_company_learning_evidence_v6.json`, digest
+  `d003aa88…e758c39`.
+- The saved 45-batch artifact was only rerendered. Its verdict remains
+  `not_credible`; the joined bounded proof does not rewrite historical runtime
+  failures.

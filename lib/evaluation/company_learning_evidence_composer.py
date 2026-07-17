@@ -12,7 +12,7 @@ from lib.evaluation.feedback_learning_effect import validate_feedback_learning_e
 
 COMPONENTS = (
     "retrieval_evolution", "company_model_ablation", "feedback_learning",
-    "source_equivalence", "correction_homeostasis",
+    "source_equivalence", "correction_homeostasis", "joined_runtime",
 )
 
 
@@ -32,11 +32,13 @@ def compose_objective_company_learning_evidence(
     feedback_learning: BoundArtifact | None = None,
     source_equivalence: BoundArtifact | None = None,
     correction_homeostasis: BoundArtifact | None = None,
+    joined_runtime: BoundArtifact | None = None,
 ) -> dict[str, Any]:
     inputs = {
         "feedback_learning": feedback_learning,
         "source_equivalence": source_equivalence,
         "correction_homeostasis": correction_homeostasis,
+        "joined_runtime": joined_runtime,
     }
     components: dict[str, Any] = {}
     bindings: dict[str, Any] = {}
@@ -388,6 +390,19 @@ def _normalize_component(name: str, payload: Mapping[str, Any]) -> dict[str, Any
         internal_digest = str(expected)
         report = _object(payload.get("evaluation"), "homeostasis evaluation")
         population = dict(_object(report.get("population"), "homeostasis population"))
+    elif name == "joined_runtime":
+        _schema(payload, "integrated-company-learning-vertical-v2")
+        _verify_objective(payload, "joined company-learning runtime")
+        internal_digest = str(payload.get("objective_sha256"))
+        checks = dict(_object(payload.get("checks"), "joined runtime checks"))
+        if len(checks) != 17:
+            raise ValueError("joined runtime must expose exactly 17 objective checks")
+        population = dict(_object(payload.get("populations"), "joined runtime populations"))
+        report = {key: payload.get(key) for key in (
+            "schema_version", "continuous_score", "verdict", "checks",
+            "active_populations", "material_use_ablation", "correction",
+            "negative_controls", "proof_boundary", "batch_count", "signal_count",
+        )}
     else:  # pragma: no cover
         raise ValueError(f"unknown component {name}")
     score = report.get("continuous_score")
@@ -442,6 +457,7 @@ def _blockers(name: str, report: Mapping[str, Any]) -> list[str]:
         ),
         "correction_homeostasis": ("unsafe_reads_contained", "replay_is_idempotent",
                                    "restart_preserves_state", "deep_cascade_is_complete_and_cycle_safe"),
+        "joined_runtime": tuple(report.get("checks", {}).keys()),
     }.get(name, ())
     blockers = [f"{name}:{key}" for key in names if checks.get(key) is False]
     if name == "feedback_learning":
