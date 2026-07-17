@@ -82,7 +82,7 @@ async def run_db_characterization(conn) -> dict[str, object]:
         )
         decision = ContextDecision(
             decision_id=uuid4(), tenant_id=tenant_id, batch_id=f"retrieval-{index // 50}",
-            route_id=f"p8-characterization:{case.maturity}", context_item_kind=kind,
+            route_id="p8-characterization:retrieval", context_item_kind=kind,
             context_item_id=context_item_id, context_item_version="1",
             retrieved=True, selected=True, included=True, referenced=referenced,
             counterevidence_retained="contradiction_lifecycle" in labels,

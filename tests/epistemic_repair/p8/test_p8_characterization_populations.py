@@ -38,6 +38,7 @@ def test_runtime_payloads_never_contain_evaluator_labels() -> None:
             payload = case.runtime_payload()
             assert "evaluator_labels" not in payload
             assert "gold" not in payload
+            assert "maturity" not in payload
 
 
 def test_boundary_discovery_executes_full_frozen_population_and_registered_slices() -> None:

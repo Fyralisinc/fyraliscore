@@ -20,7 +20,7 @@ class CharacterizationCase:
     def runtime_payload(self) -> dict[str, object]:
         # This is the only payload production adapters receive.
         return {"case_id": self.case_id, "text": self.runtime_text,
-                "source_kind": self.source_kind, "maturity": self.maturity,
+                "source_kind": self.source_kind,
                 "candidate_refs": self.runtime_candidate_refs,
                 "source_metadata": self.runtime_source_metadata}
 
