@@ -464,8 +464,7 @@ Code location:
 Responsibilities:
 
 - Provide structured-output LLM calls.
-- Use the subscription-backed Codex CLI provider for autonomous company-learning
-  qualification runs; pin and verify the model through durable call receipts.
+- Support configured providers such as Codex/OpenAI/Anthropic/DeepSeek.
 - Track usage, tokens, model names, and cost attribution.
 - Return Pydantic-shaped reasoning outputs for validation.
 
