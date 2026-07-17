@@ -1663,6 +1663,12 @@ The next sequence is validation and remaining pipeline closure:
   `0.1925` versus `0.5725`, Brier `0.037056` versus `0.327756`, score `1.0`.
   Artifact SHA is `b76ed8ca…6e43fe99`; it is development evidence, not an
   untouched holdout.
+- The later active v7 judge measures tenant-level collective facet availability:
+  it unions evidence across multiple persisted Models. Its pass therefore
+  establishes cross-batch accumulation/availability, not one synthesized
+  hidden-pattern Model. The remaining synthesis proof must require one complete
+  persisted Model per thesis with eligible prior-Model lineage; distributed
+  partial Models do not satisfy that evaluator.
 - Adversarial entity v2 passed its bounded DB vertical. Objective entity v2 at
   `/tmp/objective_entity_evidence_v2.json` scores `0.9901315789`, all blockers
   clear; workstream F1 `0.5` is the only below-budget measurement. Four graph

@@ -196,6 +196,13 @@ def test_future_active_holdout_replaces_v6_without_erasing_history():
 
     component = result["components"]["company_model_ablation"]
     assert component["governing_era"] == "v7"
+    assert component["capability_claim"] == (
+        "cross_batch_evidence_accumulation_and_availability"
+    )
+    assert component["synthesis_claim"] == "not_established"
+    assert "v7_collective_facet_union_is_not_single_model_synthesis" in " ".join(
+        result["proof_gaps"]
+    )
     assert component["active_lane_verdict"] == "meets_policy"
     assert component["legacy_v4_development"]["verdict"] == "meets_policy"
     assert component["active_v5_contract_failure"] is not None

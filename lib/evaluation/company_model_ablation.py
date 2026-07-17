@@ -136,6 +136,69 @@ def manifest_digest(manifest: JsonObject) -> str:
     return _digest(manifest)
 
 
+def evaluate_single_model_synthesis(
+    *, manifest: JsonObject, learned: JsonObject, frozen: JsonObject,
+) -> dict[str, Any]:
+    """Require one complete persisted synthesis Model with prior-Model lineage.
+
+    This is intentionally stricter than collective facet availability: facets
+    spread across multiple Models never count as synthesized recovery.
+    """
+
+    _require_schema(manifest, "company-model-synthesis-manifest-v1")
+    truth = manifest.get("hidden_patterns")
+    if not isinstance(truth, list) or not truth:
+        raise ValueError("synthesis manifest requires hidden_patterns")
+    thesis_ids = {str(row.get("thesis_id")) for row in truth if isinstance(row, Mapping)}
+    if len(thesis_ids) != len(truth) or "None" in thesis_ids:
+        raise ValueError("synthesis thesis ids must be unique and complete")
+    results = {}
+    for arm_name, arm in (("learned_memory", learned), ("frozen_memory", frozen)):
+        _require_schema(arm, "company-model-synthesis-arm-v1")
+        if arm.get("arm") != arm_name:
+            raise ValueError(f"synthesis arm must be named {arm_name}")
+        prior_ids = {str(value) for value in arm.get("prior_model_ids") or []}
+        models = arm.get("models")
+        if not isinstance(models, list):
+            raise ValueError("synthesis arm requires models")
+        recovered = []
+        rows = []
+        for pattern in truth:
+            thesis_id = str(pattern["thesis_id"])
+            required = {str(value) for value in pattern.get("required_facets") or []}
+            if not required:
+                raise ValueError("each synthesis pattern requires facets")
+            eligible = []
+            for model in models:
+                if not isinstance(model, Mapping) or str(model.get("thesis_id")) != thesis_id:
+                    continue
+                facets = {str(value) for value in model.get("facets") or []}
+                lineage = {str(value) for value in model.get("evidence_model_ids") or []}
+                complete = required <= facets
+                lineaged = bool(lineage) and lineage <= prior_ids
+                persisted = model.get("persisted") is True and bool(model.get("model_id"))
+                if complete and lineaged and persisted:
+                    eligible.append(model)
+            is_recovered = len(eligible) == 1
+            recovered.append(is_recovered)
+            rows.append({"thesis_id": thesis_id, "recovered": is_recovered,
+                "qualifying_model_count": len(eligible)})
+        results[arm_name] = {"recovered_count": sum(recovered),
+            "thesis_count": len(recovered), "recovery_rate": sum(recovered) / len(recovered),
+            "theses": rows}
+    learned_rate = results["learned_memory"]["recovery_rate"]
+    frozen_rate = results["frozen_memory"]["recovery_rate"]
+    checks = {"learned_has_single_complete_lineaged_model": learned_rate == 1.0,
+        "frozen_has_no_single_complete_lineaged_model": frozen_rate == 0.0,
+        "positive_synthesis_lift": learned_rate > frozen_rate}
+    return {"schema_version": "single-model-synthesis-evaluation-v1",
+        "capability": "single_persisted_cross_batch_pattern_synthesis",
+        "arms": results, "synthesis_lift": learned_rate - frozen_rate,
+        "checks": checks, "continuous_score": sum(checks.values()) / len(checks),
+        "verdict": "meets_policy" if all(checks.values()) else "below_policy",
+        "proof_boundary": "one complete persisted Model per thesis with prior-Model lineage"}
+
+
 def _require_schema(value: JsonObject, expected: str) -> None:
     if value.get("schema_version") != expected:
         raise ValueError(f"expected {expected}")

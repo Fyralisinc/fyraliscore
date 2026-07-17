@@ -4,6 +4,7 @@ import pytest
 
 from lib.evaluation.company_model_ablation import (
     evaluate_company_model_ablation,
+    evaluate_single_model_synthesis,
     manifest_digest,
 )
 
@@ -104,3 +105,44 @@ def test_ablation_rejects_non_genuine_duplicate_signal_batches() -> None:
         evaluate_company_model_ablation(
             manifest=manifest, learned=learned, frozen=frozen
         )
+
+
+def test_synthesis_requires_one_complete_persisted_model_with_prior_lineage() -> None:
+    manifest = {"schema_version": "company-model-synthesis-manifest-v1",
+        "hidden_patterns": [{"thesis_id": "renewal",
+            "required_facets": ["usage_drop", "security_hold"]}]}
+    learned = {"schema_version": "company-model-synthesis-arm-v1",
+        "arm": "learned_memory", "prior_model_ids": ["prior-a", "prior-b"],
+        "models": [{"model_id": "synthesis-1", "thesis_id": "renewal",
+            "facets": ["usage_drop", "security_hold"],
+            "evidence_model_ids": ["prior-a", "prior-b"], "persisted": True}]}
+    frozen = {"schema_version": "company-model-synthesis-arm-v1",
+        "arm": "frozen_memory", "prior_model_ids": [], "models": []}
+
+    report = evaluate_single_model_synthesis(
+        manifest=manifest, learned=learned, frozen=frozen)
+
+    assert report["verdict"] == "meets_policy"
+    assert report["synthesis_lift"] == 1.0
+
+
+def test_collective_facets_across_models_do_not_count_as_synthesis() -> None:
+    manifest = {"schema_version": "company-model-synthesis-manifest-v1",
+        "hidden_patterns": [{"thesis_id": "renewal",
+            "required_facets": ["usage_drop", "security_hold"]}]}
+    learned = {"schema_version": "company-model-synthesis-arm-v1",
+        "arm": "learned_memory", "prior_model_ids": ["prior-a", "prior-b"],
+        "models": [
+            {"model_id": "m1", "thesis_id": "renewal", "facets": ["usage_drop"],
+             "evidence_model_ids": ["prior-a"], "persisted": True},
+            {"model_id": "m2", "thesis_id": "renewal", "facets": ["security_hold"],
+             "evidence_model_ids": ["prior-b"], "persisted": True},
+        ]}
+    frozen = {"schema_version": "company-model-synthesis-arm-v1",
+        "arm": "frozen_memory", "prior_model_ids": [], "models": []}
+
+    report = evaluate_single_model_synthesis(
+        manifest=manifest, learned=learned, frozen=frozen)
+
+    assert report["verdict"] == "below_policy"
+    assert report["arms"]["learned_memory"]["recovered_count"] == 0

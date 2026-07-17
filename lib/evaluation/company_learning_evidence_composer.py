@@ -241,6 +241,18 @@ def _compose_ablation_evidence(
     ):
         raise ValueError("current active ablation must be a versioned holdout artifact")
     active_component = _normalize_ablation_artifact(active.payload)
+    if schema == "bounded-company-model-holdout-v7-artifact-v1":
+        active_component.update({
+            "capability_claim": "cross_batch_evidence_accumulation_and_availability",
+            "synthesis_claim": "not_established",
+            "does_not_prove": (
+                "one persisted Model contains the complete cross-batch hidden pattern "
+                "with prior-Model lineage"
+            ),
+        })
+        gaps.append(
+            "company_model_ablation:v7_collective_facet_union_is_not_single_model_synthesis"
+        )
     gaps.extend(_proof_gaps("company_model_ablation", active_component["report"]))
     bindings["current_active_holdout"] = {
         "status": "observed", "artifact_sha256": active.artifact_sha256,
