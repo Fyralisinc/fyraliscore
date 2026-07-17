@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
@@ -22,6 +23,7 @@ from lib.llm.provider import (
     LLMParseError,
     LLMProvider,
 )
+from lib.contracts.kernel import canonical_sha256
 from lib.shared.errors import CompanyOSError
 
 from services.reasoning.retrieval.assembler import ContextBundle
@@ -171,6 +173,7 @@ async def llm_reason(
         temperature=temperature,
         max_tokens=effective_max_tokens,
         max_attempts=max_attempts,
+        context_digest=canonical_sha256(asdict(bundle)),
     )
     raw_diff = _coerce_raw_diff(diff_like)
     raw_diff = apply_relation_lifecycle_kernel(
@@ -190,6 +193,7 @@ async def _structured_with_reasoning_retries(
     temperature: float,
     max_tokens: int,
     max_attempts: int,
+    context_digest: str | None = None,
 ) -> tuple[Any, int]:
     started = time.monotonic()
     try:
@@ -201,6 +205,7 @@ async def _structured_with_reasoning_retries(
             max_tokens=max_tokens,
             max_attempts=max_attempts,
             deadline_s=240.0,
+            context_digest=context_digest,
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
         return parsed, elapsed_ms

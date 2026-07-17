@@ -61,6 +61,7 @@ class LogicalCallReceipt:
     physical_attempt_count: int
     error_class: str | None = None
     error_message: str | None = None
+    context_digest: str | None = None
 
 
 class LLMReceiptSink(Protocol):

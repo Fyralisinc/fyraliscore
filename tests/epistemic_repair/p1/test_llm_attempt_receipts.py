@@ -47,7 +47,12 @@ def _provider(
 async def test_success_has_one_logical_call_and_one_physical_attempt() -> None:
     provider, sink = _provider(['{"answer":"yes"}'])
 
-    result = await provider.structured(system="s", user="u", schema=Answer)
+    result = await provider.structured(
+        system="s",
+        user="u",
+        schema=Answer,
+        context_digest="c" * 64,
+    )
 
     assert result.answer == "yes"
     assert len(sink.logical_calls) == 1
@@ -56,6 +61,7 @@ async def test_success_has_one_logical_call_and_one_physical_attempt() -> None:
     attempt = sink.attempts[0]
     assert logical.outcome == "success"
     assert logical.physical_attempt_count == 1
+    assert logical.context_digest == "c" * 64
     assert attempt.outcome == "success"
     assert attempt.logical_call_id == logical.logical_call_id
     assert attempt.ordinal == 1

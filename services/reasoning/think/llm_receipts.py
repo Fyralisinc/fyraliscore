@@ -80,7 +80,7 @@ class ThinkLLMReceiptCollector(LLMReceiptSink):
                     receipt.purpose,
                     receipt.schema_name,
                     receipt.prompt_digest,
-                    self.context_digest,
+                    receipt.context_digest or self.context_digest,
                     receipt.started_at,
                     receipt.ended_at,
                     receipt.outcome,

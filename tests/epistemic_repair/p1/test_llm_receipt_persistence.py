@@ -50,6 +50,7 @@ def _receipts():
         ended_at=now,
         outcome="success",
         physical_attempt_count=1,
+        context_digest="c" * 64,
     )
     attempt = PhysicalAttemptReceipt(
         physical_attempt_id="attempt-1",
@@ -102,7 +103,7 @@ async def test_persists_logical_before_attempt_in_one_transaction():
         run_id,
         "batch-7",
     )
-    assert logical_args[10] == "b" * 64
+    assert logical_args[10] == "c" * 64
     assert logical_args[15:17] == ("accepted", "committed")
 
 

@@ -1179,6 +1179,7 @@ class LLMProvider(abc.ABC):
         temperature: float = 0.0,
         max_tokens: int = 2048,
         logical_call_id: str | None = None,
+        context_digest: str | None = None,
         max_attempts: int | None = None,
         deadline_s: float = 240.0,
     ) -> T:
@@ -1312,6 +1313,7 @@ class LLMProvider(abc.ABC):
                         physical_attempt_count=physical_attempt_count,
                         error_class=logical_error_class,
                         error_message=logical_error_message,
+                        context_digest=context_digest,
                     )
                 )
             _CURRENT_PHYSICAL_ATTEMPT_COUNT.reset(count_token)
