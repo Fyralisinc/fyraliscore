@@ -1621,14 +1621,35 @@ distinct:
    This population governs current bounded extraction quality, while v3 remains
 historical evidence and the separate DB vertical governs canonical linking.
 
-Objective entity v5 (`ad47a1c0`) now SHA-binds broad v4 with the historical
-and downstream populations. `/tmp/objective_entity_evidence_v5.json` has file
-SHA-256 `83d6a51f9d61d3dd3c219b8882174c89e7bc85e2fb5ef622365cc40ef24b2128`
-and composition SHA-256
-`46bd421e273519c311a5deb44dd81b2fc40ddcd800b1396c76ad1bea372593af`.
-Its broad component scores `0.990196` and readiness is clear, while the missing
-pre-call runtime-source digest and lack of post-holdout current-runtime
-generalization remain explicit proof gaps.
+Objective entity v5 (`ad47a1c0`) historically SHA-bound broad v4 with the
+earlier and downstream populations. Its broad component scored `0.990196`, but
+its missing pre-call runtime-source digest and lack of post-holdout
+current-runtime evidence were explicit proof gaps at that checkpoint.
+
+Governing objective entity v6 (`8fd4e72f`) closes those two gaps with a genuinely
+disjoint current-runtime one-shot holdout precommitted in `e6d4b4cd`. The run
+processed 24 normalized signals in three genuine eight-signal batches: 35 gold
+mentions, 35 predictions, 34 exact matches, all 35 overlap matches, exact F1
+`0.971429`, mean boundary IoU `0.985714`, type accuracy `1.0`, 12/12 hard
+negatives clean and 37/37 raw proposals with terminal fates. Slack is `17/17`,
+project `6/6` and system `6/6`. The immutable report SHA-256 is
+`030346c5…854040`.
+
+Before the single execution, receipt `dd3f07eb…55b6ea` bound the exact corpus,
+six runtime-source digests, prompt, commit and zero-retry provider configuration.
+The one residual exact-span disagreement is a frozen annotation conflict: the
+runtime emitted prompt-compliant `Engineer Pavel Ito`, while gold contains
+`Pavel Ito`. Person exact F1 is therefore `0.8` (4/5), type accuracy `1.0` and
+mean IoU `0.9`; no rerun or post-result corpus edit occurred. This is governing
+bounded current-runtime literal extraction evidence, not proof of canonical
+alias linking, implicit resolution, connectors, open-world behavior or company
+scale.
+
+`/tmp/objective_entity_evidence_v6.json` SHA-binds all v5 populations plus the
+current-runtime report, immutable pre-call receipt and completed receipt. Its
+current component score is `0.992857`, file SHA-256 `a0f9dc80…f79281` and
+composition SHA-256 `98fdb546…745f1`. It preserves historical v3/v4 outcomes
+and the frozen person-title disagreement rather than averaging them away.
 
 Wrong-type consequential admission is a noncompensatory failure class: an exact
 span with high confidence must not silently create or update a Model, relation,
@@ -1770,6 +1791,15 @@ the frozen strict-synthesis holdout proves learned `3/3` versus frozen `0/3`
 with exactly one complete prior-Model-lineaged Model per thesis. These results
 do not erase the immutable 45-batch verdict, establish open-world behavior or
 prove customer value.
+
+The latest evaluator-only rerender of the sole 45-batch simulation uses
+objective entity v6 at
+`/private/tmp/fyralis-authoritative-45-be401f25/autonomous-learning-cold-start-45-be401f25/authoritative_evaluation_postfix_entity_v6/large_company_simulation_evaluation.json`
+(SHA-256 `08969dca…302a5`). It remains `not_credible` at score `0.8883` and
+coverage `1.0`, with two noncompensatory historical company-physics failures
+and 75 proof gaps. Entity evidence observes 22/22 continuous measurements and
+scores `0.994513`; the eight bounded learning components remain `1.0`. This was
+not a simulation rerun, and no second large run is authorized.
 
 ## 8.3 Anomaly processor
 
