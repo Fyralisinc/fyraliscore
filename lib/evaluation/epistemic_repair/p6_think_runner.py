@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import subprocess
 import time
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -203,6 +204,26 @@ def _write_checkpoint(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _run_provenance() -> dict[str, Any]:
+    """Seal the exact clean source tree used by a costly production run."""
+
+    root = Path(__file__).resolve().parents[3]
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=root, check=True, capture_output=True, text=True,
+    ).stdout
+    if status:
+        raise RuntimeError("P6 production proof requires a clean pinned worktree")
+    return {
+        "git_commit": commit, "worktree_clean": True,
+        "worktree_path": str(root),
+    }
+
+
 async def run_p6_production_think(
     *, database_url: str, population: P6Population, checkpoint_path: Path,
     tenant_id: UUID | None = None, per_batch_timeout_s: float = 180.0,
@@ -211,6 +232,7 @@ async def run_p6_production_think(
     """Run 12 intact transport batches through the real T1 Think worker."""
 
     tenant_id = tenant_id or uuid4()
+    run_provenance = _run_provenance()
     pool = await asyncpg.create_pool(database_url, min_size=1, max_size=4,
                                      init=_init_p6_connection)
     embedder = OllamaClient(OllamaConfig.from_env())
@@ -308,6 +330,7 @@ async def run_p6_production_think(
                 "tenant_id": str(tenant_id), "completed_batches": len(waves),
                 "waves": waves, "terminal_reason": terminal_reason,
                 "elapsed_s": round(time.monotonic() - started, 3),
+                "run_provenance": run_provenance,
             }
             _write_checkpoint(checkpoint_path, checkpoint)
             print(f"p6_think_batch={batch.batch_number}/12 status={run.get('status')} models={len(snapshot['accepted_models'])} elapsed_s={waves[-1]['elapsed_s']}", flush=True)
@@ -340,6 +363,7 @@ async def run_p6_production_think(
             "mixed_llm_attempt_count": len(mixed_attempts),
             "provider_mode": "production ThinkWorker; every role pinned to one configuration",
             "gold_visible_during_execution": False,
+            "run_provenance": run_provenance,
             "elapsed_s": round(time.monotonic() - started, 3),
             "proof_boundary": (
                 "Production outputs are frozen before independent gold evaluation.",
