@@ -311,9 +311,10 @@ the 50 row receipts needed to independently recompute that distribution. This
 is a second observability defect, but it does not erase the serialized mutation
 count or make direct resolver promotion safe.
 
-The resolver is bypassing the intended candidate/adjudication boundary. This is
-especially serious because grounding traces simultaneously report
-`identity_registry_mutated=false`.
+The resolver is bypassing the intended candidate/adjudication boundary. The
+evaluator's generic `identity_registry_mutation_count=0` alongside
+`resolver_created_alias_count=50` shows why resolver-originated promotions need
+their own immutable receipts instead of relying on governed-trace counters.
 
 ### Required correction
 
