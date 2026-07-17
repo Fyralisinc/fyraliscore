@@ -8,6 +8,8 @@ from lib.evaluation.company_model_ablation import evaluate_company_model_ablatio
 from lib.evaluation.feedback_learning_effect import (
     FeedbackLearningEffectEvidence, FeedbackLearningEffectReport, MatchedSalienceEffect,
 )
+from services.retrieval_evolution_postfix_vertical import run_bounded_retrieval_evolution_postfix
+from services.source_equivalence_vertical import run_bounded_source_equivalence
 
 
 SHA = "a" * 64
@@ -90,9 +92,11 @@ def _correction():
 def test_composes_all_sha_bound_components_with_exact_populations():
     result = compose_objective_company_learning_evidence(
         retrieval_evolution=BoundArtifact(_retrieval(), SHA),
+        retrieval_evolution_postfix=BoundArtifact(
+            run_bounded_retrieval_evolution_postfix(), SHA),
         company_model_ablation=BoundArtifact(_ablation(), SHA),
         feedback_learning=BoundArtifact(_feedback(), SHA),
-        source_equivalence=BoundArtifact(_source(), SHA),
+        source_equivalence=BoundArtifact(run_bounded_source_equivalence(), SHA),
         correction_homeostasis=BoundArtifact(_correction(), SHA),
     )
 
@@ -105,6 +109,24 @@ def test_composes_all_sha_bound_components_with_exact_populations():
     assert len(result["composition_sha256"]) == 64
 
 
+def test_preserves_historical_retrieval_failure_beside_current_postfix_pass():
+    historical = _retrieval()
+    historical["verdict"] = "below_policy"
+    historical["continuous_score"] = 4 / 7
+    historical["checks"]["late_is_model_preferred"] = False
+    result = compose_objective_company_learning_evidence(
+        retrieval_evolution=BoundArtifact(historical, SHA),
+        retrieval_evolution_postfix=BoundArtifact(
+            run_bounded_retrieval_evolution_postfix(), SHA),
+    )
+
+    retrieval = result["components"]["retrieval_evolution"]
+    assert retrieval["historical_verdict"] == "below_policy"
+    assert retrieval["current_bounded_verdict"] == "meets_preregistered_policy"
+    assert retrieval["verdict"] == "current_meets_bounded_policy_historical_below_policy"
+    assert result["historical_below_policy_components"] == ["retrieval_evolution"]
+
+
 def test_missing_components_remain_unknown_and_reduce_coverage():
     result = compose_objective_company_learning_evidence(
         correction_homeostasis=BoundArtifact(_correction(), SHA)
@@ -113,7 +135,9 @@ def test_missing_components_remain_unknown_and_reduce_coverage():
     assert result["verdict"] == "partial_evidence"
     assert result["evidence_coverage"] == 0.2
     assert result["components"]["retrieval_evolution"]["status"] == "unknown"
-    assert "component_unavailable:retrieval_evolution" in result["proof_gaps"]
+    assert "component_unavailable:retrieval_evolution.current_bounded_postfix" in result[
+        "proof_gaps"
+    ]
 
 
 def test_noncompensable_safety_failure_overrides_high_scores():

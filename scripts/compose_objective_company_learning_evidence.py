@@ -28,6 +28,7 @@ def _load(path: Path | None) -> BoundArtifact | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--retrieval-evolution", type=Path)
+    parser.add_argument("--retrieval-evolution-postfix", type=Path)
     parser.add_argument("--company-model-ablation", type=Path)
     parser.add_argument("--feedback-learning", type=Path)
     parser.add_argument("--source-equivalence", type=Path)
@@ -36,6 +37,7 @@ def main() -> int:
     args = parser.parse_args()
     result = compose_objective_company_learning_evidence(
         retrieval_evolution=_load(args.retrieval_evolution),
+        retrieval_evolution_postfix=_load(args.retrieval_evolution_postfix),
         company_model_ablation=_load(args.company_model_ablation),
         feedback_learning=_load(args.feedback_learning),
         source_equivalence=_load(args.source_equivalence),

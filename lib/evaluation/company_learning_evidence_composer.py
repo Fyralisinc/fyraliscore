@@ -24,13 +24,13 @@ class BoundArtifact:
 
 def compose_objective_company_learning_evidence(
     *, retrieval_evolution: BoundArtifact | None = None,
+    retrieval_evolution_postfix: BoundArtifact | None = None,
     company_model_ablation: BoundArtifact | None = None,
     feedback_learning: BoundArtifact | None = None,
     source_equivalence: BoundArtifact | None = None,
     correction_homeostasis: BoundArtifact | None = None,
 ) -> dict[str, Any]:
     inputs = {
-        "retrieval_evolution": retrieval_evolution,
         "company_model_ablation": company_model_ablation,
         "feedback_learning": feedback_learning,
         "source_equivalence": source_equivalence,
@@ -40,6 +40,14 @@ def compose_objective_company_learning_evidence(
     bindings: dict[str, Any] = {}
     blockers: list[str] = []
     gaps: list[str] = []
+    retrieval_component, retrieval_bindings, retrieval_gaps = _compose_retrieval_evidence(
+        retrieval_evolution, retrieval_evolution_postfix
+    )
+    components["retrieval_evolution"] = retrieval_component
+    bindings["retrieval_evolution"] = retrieval_bindings
+    gaps.extend(retrieval_gaps)
+    if retrieval_component["status"] == "observed":
+        blockers.extend(_blockers("retrieval_evolution", retrieval_component["report"]))
     for name, bound in inputs.items():
         if bound is None:
             components[name] = {"status": "unknown", "continuous_score": None,
@@ -67,8 +75,14 @@ def compose_objective_company_learning_evidence(
     coverage_adjusted = None if observed_score is None else observed_score * coverage
     below = [name for name, row in components.items()
              if row["status"] == "observed" and row["verdict"] not in {
-                 "meets_policy", "meets_preregistered_policy", "observed"
+                 "meets_policy", "meets_preregistered_policy", "observed",
+                 "current_meets_bounded_policy_historical_below_policy",
              }]
+    historical_below = [
+        "retrieval_evolution"
+        for row in (components.get("retrieval_evolution"),)
+        if row and row.get("historical_verdict") == "below_policy"
+    ]
     if blockers:
         verdict = "not_credible"
     elif coverage < 1.0:
@@ -88,6 +102,7 @@ def compose_objective_company_learning_evidence(
         "observed_component_score": observed_score,
         "coverage_adjusted_score": coverage_adjusted,
         "below_policy_components": below,
+        "historical_below_policy_components": historical_below,
         "noncompensable_blockers": sorted(set(blockers)),
         "proof_gaps": sorted(set(gaps)),
         "verdict": verdict,
@@ -99,6 +114,69 @@ def compose_objective_company_learning_evidence(
     }
     output["composition_sha256"] = canonical_sha256(output)
     return output
+
+
+def _compose_retrieval_evidence(
+    historical: BoundArtifact | None,
+    postfix: BoundArtifact | None,
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    gaps: list[str] = []
+    bindings: dict[str, Any] = {}
+    historical_report = None
+    postfix_report = None
+    if historical is not None:
+        _require_sha(historical.artifact_sha256, "historical retrieval")
+        _schema(historical.payload, "retrieval-evolution-evaluation-v1")
+        historical_report = dict(historical.payload)
+        bindings["immutable_historical"] = {
+            "status": "observed", "artifact_sha256": historical.artifact_sha256,
+            "schema_version": historical.payload["schema_version"],
+        }
+    else:
+        bindings["immutable_historical"] = {"status": "unavailable", "artifact_sha256": None}
+        gaps.append("component_unavailable:retrieval_evolution.immutable_historical")
+    if postfix is not None:
+        _require_sha(postfix.artifact_sha256, "postfix retrieval")
+        _schema(postfix.payload, "bounded-retrieval-evolution-postfix-objective-v1")
+        _verify_objective(postfix.payload, "postfix retrieval")
+        postfix_report = dict(_object(postfix.payload.get("evaluation"), "postfix retrieval evaluation"))
+        bindings["current_bounded_postfix"] = {
+            "status": "observed", "artifact_sha256": postfix.artifact_sha256,
+            "schema_version": postfix.payload["schema_version"],
+            "internal_digest": postfix.payload.get("objective_sha256"),
+        }
+        gaps.append(f"retrieval_evolution:{postfix.payload.get('proof_boundary')}")
+    else:
+        bindings["current_bounded_postfix"] = {"status": "unavailable", "artifact_sha256": None}
+        gaps.append("component_unavailable:retrieval_evolution.current_bounded_postfix")
+    active = postfix_report or historical_report
+    if active is None:
+        return ({"status": "unknown", "continuous_score": None, "population": None,
+                 "verdict": "unknown"}, bindings, gaps)
+    score = float(active.get("continuous_score") or 0.0)
+    historical_verdict = str(historical_report.get("verdict")) if historical_report else "unknown"
+    current_verdict = str(postfix_report.get("verdict")) if postfix_report else "unknown"
+    verdict = (
+        "current_meets_bounded_policy_historical_below_policy"
+        if postfix_report and current_verdict == "meets_preregistered_policy"
+        and historical_verdict == "below_policy"
+        else current_verdict if postfix_report else historical_verdict
+    )
+    return ({
+        "status": "observed", "schema_version": "retrieval-evolution-two-era-v1",
+        "continuous_score": score,
+        "population": {
+            "immutable_historical_batches": historical_report.get("batch_count")
+            if historical_report else None,
+            "current_bounded_batches": postfix_report.get("batch_count")
+            if postfix_report else None,
+        },
+        "verdict": verdict, "historical_verdict": historical_verdict,
+        "current_bounded_verdict": current_verdict,
+        "report": postfix_report or historical_report,
+        "immutable_historical": historical_report,
+        "current_bounded_postfix": postfix_report,
+    }, bindings, gaps)
 
 
 def _normalize_component(name: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -134,16 +212,18 @@ def _normalize_component(name: str, payload: Mapping[str, Any]) -> dict[str, Any
                       "useful_pairs": validated.report.useful_pair_count,
                       "safety_pairs": validated.report.safety_pair_count}
     elif name == "source_equivalence":
-        _schema(payload, "normalized-source-equivalence-evaluation-v1")
-        report = payload
+        if payload.get("schema_version") == "bounded-source-equivalence-objective-v1":
+            _verify_objective(payload, "source equivalence")
+            internal_digest = str(payload.get("objective_sha256"))
+            report = _object(payload.get("evaluation"), "source equivalence evaluation")
+        else:
+            _schema(payload, "normalized-source-equivalence-evaluation-v1")
+            report = payload
         population = dict(_object(payload.get("population"), "source population"))
     elif name == "correction_homeostasis":
         _schema(payload, "correction-homeostasis-db-objective-v1")
+        _verify_objective(payload, "correction-homeostasis")
         expected = payload.get("objective_sha256")
-        body = dict(payload)
-        body.pop("objective_sha256", None)
-        if expected != canonical_sha256(body):
-            raise ValueError("correction-homeostasis objective digest mismatch")
         internal_digest = str(expected)
         report = _object(payload.get("evaluation"), "homeostasis evaluation")
         population = dict(_object(report.get("population"), "homeostasis population"))
@@ -191,6 +271,14 @@ def _proof_gaps(name: str, report: Mapping[str, Any]) -> list[str]:
 def _schema(payload: Mapping[str, Any], expected: str) -> None:
     if payload.get("schema_version") != expected:
         raise ValueError(f"expected {expected}")
+
+
+def _verify_objective(payload: Mapping[str, Any], label: str) -> None:
+    expected = payload.get("objective_sha256")
+    body = dict(payload)
+    body.pop("objective_sha256", None)
+    if expected != canonical_sha256(body):
+        raise ValueError(f"{label} objective digest mismatch")
 
 
 def _object(value: Any, label: str) -> Mapping[str, Any]:
