@@ -24,6 +24,9 @@ from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p2_runner import _admission
 from lib.evaluation.epistemic_repair.p8_population import ScaleCell, build_scale_matrix
 from services.domain.company_learning.barrier import CompanyLearningBarrierService
+
+
+SCALE_EXECUTION_VERSION = "p8-scale-production-transactions-v2"
 from services.domain.truth_kernel import build_default_truth_kernel
 
 
@@ -216,8 +219,6 @@ async def _run_tenant(
     wait_started = time.perf_counter()
     conn = await pool.acquire() if pool is not None else await asyncpg.connect(dsn)
     pool_wait_ms = (time.perf_counter() - wait_started) * 1000
-    tx = conn.transaction()
-    await tx.start()
     retrieval: list[float] = []
     observation_writes: list[float] = []
     barriers: list[float] = []
@@ -226,12 +227,22 @@ async def _run_tenant(
     queue_depth: list[int] = []
     hits = leakage = 0
     try:
-        await conn.execute("INSERT INTO tenants (id,name) VALUES ($1,$2)", tenant_id, f"p8-scale-{cell.cell_id}-{ordinal}")
-        admission = _admission(tenant_id, 1)
-        admitted = await build_default_truth_kernel().admit(tx=conn, command=admission)
+        bootstrap = conn.transaction()
+        await bootstrap.start()
+        try:
+            await conn.execute("INSERT INTO tenants (id,name) VALUES ($1,$2)", tenant_id, f"p8-scale-{cell.cell_id}-{ordinal}")
+            admission = _admission(tenant_id, 1)
+            admitted = await build_default_truth_kernel().admit(tx=conn, command=admission)
+        except BaseException:
+            await bootstrap.rollback()
+            raise
+        else:
+            await bootstrap.commit()
         barrier_service = CompanyLearningBarrierService()
         base = datetime(2026, 7, 18, tzinfo=timezone.utc)
         for batch in range(1, cell.memory_horizon_batches + 1):
+            batch_tx = conn.transaction()
+            await batch_tx.start()
             rows = []
             for position in range(cell.batch_size):
                 observation_id = uuid4()
@@ -240,8 +251,9 @@ async def _run_tenant(
                     observation_id, tenant_id, base + timedelta(minutes=batch, seconds=position),
                     "synthetic:normalized", json.dumps({"text": text}), text,
                 ))
-            before = time.perf_counter()
-            await conn.execute(
+            try:
+                before = time.perf_counter()
+                await conn.execute(
                 """INSERT INTO observations (
                      id, tenant_id, occurred_at, kind, source_channel, content,
                      content_text, embedding_pending, trust_tier, entities_mentioned
@@ -257,39 +269,45 @@ async def _run_tenant(
                 [row[2] for row in rows], [row[3] for row in rows],
                 [row[4] for row in rows], [row[5] for row in rows],
             )
-            observation_writes.append((time.perf_counter() - before) * 1000)
-            before = time.perf_counter()
-            found = await conn.fetch(
+                observation_writes.append((time.perf_counter() - before) * 1000)
+                before = time.perf_counter()
+                found = await conn.fetch(
                 """SELECT tenant_id, truth_version_id, proposition
                    FROM accepted_current_models WHERE tenant_id=$1""",
                 tenant_id,
             )
-            retrieval.append((time.perf_counter() - before) * 1000)
-            hits += int(any(row["truth_version_id"] == admitted.version_id for row in found))
-            leakage += sum(row["tenant_id"] != tenant_id for row in found)
-            context = {
+                retrieval.append((time.perf_counter() - before) * 1000)
+                hits += int(any(row["truth_version_id"] == admitted.version_id for row in found))
+                leakage += sum(row["tenant_id"] != tenant_id for row in found)
+                context = {
                 "signals": [row[5] for row in rows],
                 "accepted_models": [row["proposition"] for row in found],
             }
-            prompt_tokens.append(ceil(len(json.dumps(context, sort_keys=True).encode("utf-8")) / 4))
-            before = time.perf_counter()
-            counting_tx = _CountingTx(conn)
-            await barrier_service.complete(
+                prompt_tokens.append(ceil(len(json.dumps(context, sort_keys=True).encode("utf-8")) / 4))
+                before = time.perf_counter()
+                counting_tx = _CountingTx(conn)
+                await barrier_service.complete(
                 tx=counting_tx, barrier_id=uuid4(), tenant_id=tenant_id,
                 batch_id=f"{cell.cell_id}:tenant-{ordinal}:batch-{batch}",
                 expected_model_version_ids=(admitted.version_id,),
                 truth_critical_pending_count=0, completed_at=base + timedelta(minutes=batch, seconds=59),
             )
-            barriers.append((time.perf_counter() - before) * 1000)
-            barrier_sql_calls.append(counting_tx.calls)
-            queue_depth.append(await conn.fetchval(
+                barriers.append((time.perf_counter() - before) * 1000)
+                barrier_sql_calls.append(counting_tx.calls)
+                queue_depth.append(await conn.fetchval(
                 """SELECT count(*)::int FROM company_learning_barriers
                    WHERE tenant_id=$1 AND truth_critical_pending_count > 0""", tenant_id,
-            ))
+                ))
+            except BaseException:
+                await batch_tx.rollback()
+                raise
+            else:
+                await batch_tx.commit()
         model_count = await conn.fetchval("SELECT count(*)::int FROM models WHERE tenant_id=$1", tenant_id)
         version_count = await conn.fetchval("SELECT count(*)::int FROM model_truth_versions WHERE tenant_id=$1", tenant_id)
         barrier_count = await conn.fetchval("SELECT count(*)::int FROM company_learning_barriers WHERE tenant_id=$1", tenant_id)
         state = {
+            "execution_version": SCALE_EXECUTION_VERSION,
             "tenant_id": str(tenant_id), "cell_id": cell.cell_id,
             "observations": cell.batch_size * cell.memory_horizon_batches,
             "models": model_count, "versions": version_count, "barriers": barrier_count,
@@ -305,7 +323,10 @@ async def _run_tenant(
             canonical_sha256(state),
         )
     finally:
-        await tx.rollback()
+        try:
+            await conn.execute("DELETE FROM tenants WHERE id=$1", tenant_id)
+        except Exception:
+            pass
         if pool is not None:
             await pool.release(conn)
         else:
@@ -345,7 +366,7 @@ async def run_scale_cell(
         sum(row.observations for row in receipts),
         sum(row.canonical_models + row.canonical_versions + row.barriers for row in receipts),
         0, max(before_rss, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss),
-        wall_ms, True, False, canonical_sha256(payload),
+        wall_ms, False, False, canonical_sha256(payload),
     )
 
 
