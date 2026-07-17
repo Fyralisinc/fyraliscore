@@ -401,6 +401,37 @@ def test_v2_adversarial_components_are_visible_but_weight_capped() -> None:
     )
 
 
+def test_v6_current_runtime_entity_component_is_continuous_and_visible() -> None:
+    benchmark, run_summary, vitals, assurance, run_config = _artifacts()
+    evidence = _objective_entity_evidence()
+    evidence.update({
+        "schema_version": "objective-entity-evidence-v6",
+        "readiness": {"component_scores": {
+            "adversarial_topology": 1.0, "correction_safety": 1.0,
+            "consequence_safety": 1.0, "open_world_safety": 1.0,
+        }},
+        "adversarial_company_physics": {
+            "population": {"adversarial_relation_attempts": 4}
+        },
+        "boundary_type_exceptional": {"continuous_score": 0.98},
+        "boundary_type_protocol_closure": {"continuous_score": 1.0},
+        "broad_extraction_generalization": {"continuous_score": 0.99},
+        "current_runtime_generalization": {"continuous_score": 0.9928571428571429},
+    })
+    report = evaluate_large_company_simulation(
+        benchmark=benchmark, run_summary=run_summary, vitals=vitals,
+        assurance=assurance, run_config=run_config,
+        profile_name="authoritative-45", entity_evidence=evidence,
+    )
+    objective = report["dimensions"]["entity_model_quality"]["metrics"][
+        "entity_identity_metrics"
+    ]
+    assert objective["components"]["current_runtime_generalization"] == (
+        0.9928571428571429
+    )
+    assert objective["components"]["broad_extraction_generalization"] == 0.99
+
+
 def test_scale_shortfall_is_precise_instead_of_binary() -> None:
     benchmark, run_summary, vitals, assurance, run_config = _artifacts(
         batches=1,

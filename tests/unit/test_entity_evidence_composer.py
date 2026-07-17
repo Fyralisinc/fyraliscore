@@ -232,6 +232,69 @@ def _broad_extraction() -> tuple[dict, dict]:
     return report, receipt
 
 
+def _current_runtime() -> tuple[dict, dict, dict]:
+    runtime_sources = {f"runtime-{index}.py": str(index) * 64 for index in range(1, 7)}
+    config = {
+        "LLM_PROVIDER": "codex", "CODEX_TRANSPORT": "app-server",
+        "CODEX_MODEL": "gpt-5.4", "LLM_MAX_RETRIES": "0",
+        "response_cache": None, "temperature": 0.0,
+        "max_tokens_formula": "bounded",
+    }
+    precall = {
+        "schema_version": "entity-current-runtime-precall-receipt-v1",
+        "status": "sealed_before_first_provider_call",
+        "provider_execution_count_before_seal": 0,
+        "prior_execution_artifacts": [], "allowed_execution_count": 1,
+        "reruns_allowed": 0, "git_commit": "e6d4b4cd",
+        "corpus_sha256": "5" * 64, "runtime_source_sha256": runtime_sources,
+        "prompt_contract_sha256": "6" * 64, "provider_config": config,
+    }
+    type_strata = {
+        name: {"gold_count": count, "span_f1": f1,
+               "mean_boundary_iou": iou, "type_accuracy": 1.0}
+        for name, count, f1, iou in (
+            ("person", 5, 0.8, 0.9), ("project", 6, 1.0, 1.0),
+            ("system", 6, 1.0, 1.0),
+        )
+    }
+    runs = [{
+        "structured_calls_observed": 1, "error": None,
+        "raw_structured_output": {"mentions": []},
+        "raw_proposal_count": count, "terminal_fate_count": count,
+    } for count in (12, 12, 13)]
+    report = {
+        "schema_version": "learned-entity-current-runtime-holdout-v5",
+        "evidence_class": "precommitted_disjoint_current_runtime_one_shot",
+        "precall_receipt_sha256": "7" * 64,
+        "precommit_commit": "e6d4b4cd", "frozen_corpus_sha256": "5" * 64,
+        "runtime_source_sha256": runtime_sources,
+        "prompt_contract_sha256": "6" * 64, "provider_config": config,
+        "batch_only": True, "batch_count": 3, "batch_runs": runs,
+        "metrics": {"overall": {
+            "signal_count": 24, "batch_count": 3, "gold_count": 35,
+            "prediction_count": 35, "exact_match_count": 34,
+            "matched_count": 35, "span_f1": 34 / 35,
+            "mean_boundary_iou": 0.9857142857142858, "type_accuracy": 1.0,
+        }, "by_entity_type": type_strata,
+            "by_source_type": {"slack": {"gold_count": 17, "span_f1": 1.0}}},
+        "negative_cleanliness": {"negative_signal_count": 12,
+            "clean_negative_signals": 12, "rate": 1.0},
+        "fate_coverage": {"raw_proposal_count": 37,
+            "terminal_candidate_fate_count": 37,
+            "terminal_candidate_fate_rate": 1.0},
+        "protocol": {"execution_attempts": 1, "per_batch_checkpoints": True,
+            "precall_prompt_contract_bound": True,
+            "precall_runtime_sources_bound": True, "raw_outputs_preserved": True,
+            "retries": 0},
+    }
+    execution = {
+        "schema_version": "entity-current-runtime-execution-receipt-v1",
+        "status": "completed", "attempt": 1,
+        "precall_receipt_sha256": "7" * 64, "report_sha256": "8" * 64,
+    }
+    return report, precall, execution
+
+
 def test_composes_normalized_reports_readiness_bindings_and_gaps() -> None:
     output = compose_objective_entity_evidence(
         v3=_v3(), vertical=_vertical(),
@@ -326,6 +389,53 @@ def test_broad_receipt_must_bind_exact_report_digest() -> None:
             broad_extraction_artifact_sha256="3" * 64,
             broad_extraction_receipt=receipt,
             broad_extraction_receipt_sha256="4" * 64,
+        )
+
+
+def test_composes_current_runtime_and_closes_v4_protocol_currentness_gaps() -> None:
+    broad, broad_receipt = _broad_extraction()
+    current, precall, execution = _current_runtime()
+    output = compose_objective_entity_evidence(
+        v3=_v3(), vertical=_vertical(), v3_artifact_sha256="b" * 64,
+        vertical_artifact_sha256="c" * 64, adversarial=_adversarial(),
+        adversarial_artifact_sha256="d" * 64,
+        broad_extraction=broad, broad_extraction_artifact_sha256="3" * 64,
+        broad_extraction_receipt=broad_receipt,
+        broad_extraction_receipt_sha256="4" * 64,
+        current_runtime=current, current_runtime_artifact_sha256="8" * 64,
+        current_runtime_precall_receipt=precall,
+        current_runtime_precall_receipt_sha256="7" * 64,
+        current_runtime_execution_receipt=execution,
+        current_runtime_execution_receipt_sha256="9" * 64,
+    )
+
+    assert output["schema_version"] == "objective-entity-evidence-v6"
+    component = output["current_runtime_generalization"]
+    assert component["overall_span_f1"] == 34 / 35
+    assert component["type_accuracy"] == 1.0
+    assert component["terminal_candidate_fate_coverage"] == 1.0
+    assert component["slack_span_f1"] == 1.0
+    assert component["weak_slices"]["person"]["exact_span_f1"] == 0.8
+    assert component["protocol"]["runtime_source_digests_prebound"] is True
+    gaps = " ".join(output["proof_gaps"])
+    assert "pre_call_receipt_did_not_bind_runtime_source_digest" not in gaps
+    assert "post_holdout_runtime_changes_require_new_disjoint_evidence" not in gaps
+    assert "person_exact_span_slice_is_4_of_5" in gaps
+
+
+def test_current_runtime_execution_receipt_must_bind_report() -> None:
+    current, precall, execution = _current_runtime()
+    execution["report_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="does not bind report"):
+        compose_objective_entity_evidence(
+            v3=_v3(), vertical=_vertical(), v3_artifact_sha256="b" * 64,
+            vertical_artifact_sha256="c" * 64, adversarial=_adversarial(),
+            adversarial_artifact_sha256="d" * 64,
+            current_runtime=current, current_runtime_artifact_sha256="8" * 64,
+            current_runtime_precall_receipt=precall,
+            current_runtime_precall_receipt_sha256="7" * 64,
+            current_runtime_execution_receipt=execution,
+            current_runtime_execution_receipt_sha256="9" * 64,
         )
 
 

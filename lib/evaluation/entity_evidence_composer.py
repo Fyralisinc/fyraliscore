@@ -30,6 +30,7 @@ OUTPUT_SCHEMA = "objective-entity-evidence-v2"
 BOUNDARY_TYPE_SCHEMA = "objective-boundary-type-supplement-v1"
 BOUNDARY_TYPE_CLOSURE_SCHEMA = "boundary-type-untouched-holdout-v3"
 BROAD_EXTRACTION_SCHEMA = "learned-entity-discovery-quality-v4"
+CURRENT_RUNTIME_SCHEMA = "learned-entity-current-runtime-holdout-v5"
 _REQUIRED_POPULATIONS = frozenset({
     "pipeline.candidate_recall_at_3",
     "pipeline.canonical_link_coverage",
@@ -92,6 +93,12 @@ def compose_objective_entity_evidence(
     broad_extraction_artifact_sha256: str | None = None,
     broad_extraction_receipt: Mapping[str, Any] | None = None,
     broad_extraction_receipt_sha256: str | None = None,
+    current_runtime: Mapping[str, Any] | None = None,
+    current_runtime_artifact_sha256: str | None = None,
+    current_runtime_precall_receipt: Mapping[str, Any] | None = None,
+    current_runtime_precall_receipt_sha256: str | None = None,
+    current_runtime_execution_receipt: Mapping[str, Any] | None = None,
+    current_runtime_execution_receipt_sha256: str | None = None,
     thresholds: EntityReadinessThresholds | None = None,
 ) -> dict[str, Any]:
     """Validate, normalize and compose two already SHA-bound artifact objects."""
@@ -208,9 +215,29 @@ def compose_objective_entity_evidence(
             broad_extraction, broad_extraction_receipt,
             report_sha256=broad_extraction_artifact_sha256,
         )
+    current_component = None
+    current_values = (
+        current_runtime, current_runtime_artifact_sha256,
+        current_runtime_precall_receipt, current_runtime_precall_receipt_sha256,
+        current_runtime_execution_receipt, current_runtime_execution_receipt_sha256,
+    )
+    if any(current_values):
+        if not all(current_values):
+            raise ValueError(
+                "current runtime extraction requires report, pre-call receipt, "
+                "execution receipt, and all three SHAs"
+            )
+        current_component = _current_runtime_component(
+            current_runtime,
+            current_runtime_precall_receipt,
+            current_runtime_execution_receipt,
+            report_sha256=current_runtime_artifact_sha256,
+            precall_receipt_sha256=current_runtime_precall_receipt_sha256,
+        )
     output: dict[str, Any] = {
         "schema_version": (
-            "objective-entity-evidence-v5" if broad_component
+            "objective-entity-evidence-v6" if current_component
+            else "objective-entity-evidence-v5" if broad_component
             else "objective-entity-evidence-v4" if closure_component
             else "objective-entity-evidence-v3" if boundary_component else OUTPUT_SCHEMA
         ),
@@ -267,8 +294,193 @@ def compose_objective_entity_evidence(
         output["broad_extraction_generalization"] = broad_component
         output["proof_gaps"].extend(broad_component["proof_gaps"])
         output["proof_gaps"] = sorted(set(output["proof_gaps"]))
+    if current_component is not None:
+        output["artifact_bindings"]["current_runtime_holdout_v5"] = {
+            "artifact_sha256": current_runtime_artifact_sha256,
+            "precall_receipt_sha256": current_runtime_precall_receipt_sha256,
+            "execution_receipt_sha256": current_runtime_execution_receipt_sha256,
+            "corpus_sha256": current_runtime.get("frozen_corpus_sha256"),
+            "runtime_source_sha256": current_runtime.get("runtime_source_sha256"),
+            "prompt_contract_sha256": current_runtime.get("prompt_contract_sha256"),
+            "schema": CURRENT_RUNTIME_SCHEMA,
+        }
+        output["current_runtime_generalization"] = current_component
+        # These v4 protocol/currentness gaps are now directly closed by v5.
+        output["proof_gaps"] = sorted(
+            gap for gap in set(output["proof_gaps"])
+            if gap not in {
+                "broad_extraction_v4:post_holdout_runtime_changes_require_new_disjoint_evidence",
+                "broad_extraction_v4:pre_call_receipt_did_not_bind_runtime_source_digest",
+            }
+        )
+        output["proof_gaps"].extend(current_component["proof_gaps"])
+        output["proof_gaps"] = sorted(set(output["proof_gaps"]))
     output["composition_sha256"] = sha256_bytes(canonical_json_bytes(output))
     return output
+
+
+def _current_runtime_component(
+    report: Mapping[str, Any],
+    precall: Mapping[str, Any],
+    execution: Mapping[str, Any],
+    *,
+    report_sha256: str,
+    precall_receipt_sha256: str,
+) -> dict[str, Any]:
+    """Validate the post-v4, exact-runtime, one-shot extraction evidence."""
+
+    if report.get("schema_version") != CURRENT_RUNTIME_SCHEMA:
+        raise ValueError("unsupported current-runtime extraction schema")
+    if report.get("evidence_class") != "precommitted_disjoint_current_runtime_one_shot":
+        raise ValueError("current-runtime extraction is not precommitted one-shot evidence")
+    if precall.get("schema_version") != "entity-current-runtime-precall-receipt-v1":
+        raise ValueError("unsupported current-runtime pre-call receipt")
+    if precall.get("status") != "sealed_before_first_provider_call":
+        raise ValueError("current-runtime receipt was not sealed before provider calls")
+    if precall.get("provider_execution_count_before_seal") != 0:
+        raise ValueError("current-runtime receipt does not prove zero prior executions")
+    if precall.get("prior_execution_artifacts") != []:
+        raise ValueError("current-runtime receipt records prior execution artifacts")
+    if precall.get("allowed_execution_count") != 1 or precall.get("reruns_allowed") != 0:
+        raise ValueError("current-runtime receipt is not a strict one-shot contract")
+    if execution.get("schema_version") != "entity-current-runtime-execution-receipt-v1":
+        raise ValueError("unsupported current-runtime execution receipt")
+    if execution.get("status") != "completed" or execution.get("attempt") != 1:
+        raise ValueError("current-runtime execution is not one-shot completed")
+    if execution.get("report_sha256") != report_sha256:
+        raise ValueError("current-runtime execution receipt does not bind report")
+    if execution.get("precall_receipt_sha256") != precall_receipt_sha256:
+        raise ValueError("current-runtime execution does not bind pre-call receipt")
+    if report.get("precall_receipt_sha256") != precall_receipt_sha256:
+        raise ValueError("current-runtime report does not bind pre-call receipt")
+    for report_key, receipt_key in (
+        ("frozen_corpus_sha256", "corpus_sha256"),
+        ("runtime_source_sha256", "runtime_source_sha256"),
+        ("prompt_contract_sha256", "prompt_contract_sha256"),
+        ("provider_config", "provider_config"),
+        ("precommit_commit", "git_commit"),
+    ):
+        if report.get(report_key) != precall.get(receipt_key):
+            raise ValueError(f"current-runtime report/receipt mismatch: {report_key}")
+    sources = precall.get("runtime_source_sha256")
+    if not isinstance(sources, Mapping) or len(sources) < 6 or any(
+        not isinstance(value, str) or len(value) != 64 for value in sources.values()
+    ):
+        raise ValueError("current-runtime receipt lacks exact runtime-source digests")
+    prompt_sha = precall.get("prompt_contract_sha256")
+    if not isinstance(prompt_sha, str) or len(prompt_sha) != 64:
+        raise ValueError("current-runtime receipt lacks prompt-contract digest")
+    config = _object(precall.get("provider_config"), "current-runtime provider config")
+    if config.get("LLM_MAX_RETRIES") != "0" or config.get("response_cache") is not None:
+        raise ValueError("current-runtime provider config permits retries or caching")
+    if report.get("batch_only") is not True or report.get("batch_count") != 3:
+        raise ValueError("current-runtime report violates three-batch contract")
+    runs = report.get("batch_runs")
+    if not isinstance(runs, list) or len(runs) != 3 or any(
+        row.get("structured_calls_observed") != 1
+        or row.get("error") is not None
+        or row.get("raw_structured_output") is None
+        or row.get("raw_proposal_count") != row.get("terminal_fate_count")
+        for row in runs
+    ):
+        raise ValueError("current-runtime batch/raw-output/fate contract mismatch")
+    overall = _object(_object(report.get("metrics"), "current metrics").get("overall"),
+                      "current overall")
+    expected = {
+        "signal_count": 24, "batch_count": 3, "gold_count": 35,
+        "prediction_count": 35, "exact_match_count": 34, "matched_count": 35,
+    }
+    if any(overall.get(key) != value for key, value in expected.items()):
+        raise ValueError("current-runtime exact populations disagree")
+    if abs(float(overall.get("span_f1", -1)) - 34 / 35) > 1e-12:
+        raise ValueError("current-runtime span F1 mismatch")
+    if overall.get("type_accuracy") != 1.0:
+        raise ValueError("current-runtime type accuracy mismatch")
+    negative = _object(report.get("negative_cleanliness"), "current negatives")
+    if negative.get("negative_signal_count") != 12 or negative.get(
+        "clean_negative_signals") != 12 or negative.get("rate") != 1.0:
+        raise ValueError("current-runtime negative population mismatch")
+    fate = _object(report.get("fate_coverage"), "current fate coverage")
+    if fate.get("raw_proposal_count") != 37 or fate.get(
+        "terminal_candidate_fate_count") != 37 or fate.get(
+            "terminal_candidate_fate_rate") != 1.0:
+        raise ValueError("current-runtime proposal fate coverage mismatch")
+    strata = _object(_object(report.get("metrics"), "current metrics").get(
+        "by_entity_type"), "current type strata")
+    source_strata = _object(_object(report.get("metrics"), "current metrics").get(
+        "by_source_type"), "current source strata")
+    for name, count in (("person", 5), ("project", 6), ("system", 6)):
+        stratum = _object(strata.get(name), f"current {name} stratum")
+        if stratum.get("gold_count") != count or stratum.get("type_accuracy") != 1.0:
+            raise ValueError(f"current-runtime weak slice mismatch: {name}")
+    slack = _object(source_strata.get("slack"), "current Slack stratum")
+    if slack.get("gold_count") != 17 or slack.get("span_f1") != 1.0:
+        raise ValueError("current-runtime Slack slice mismatch")
+    protocol = _object(report.get("protocol"), "current protocol")
+    if protocol != {
+        "execution_attempts": 1,
+        "per_batch_checkpoints": True,
+        "precall_prompt_contract_bound": True,
+        "precall_runtime_sources_bound": True,
+        "raw_outputs_preserved": True,
+        "retries": 0,
+    }:
+        raise ValueError("current-runtime protocol assertions mismatch")
+    return {
+        "scope": "current_runtime_literal_mentions_role_types_and_semantic_isolation",
+        "does_not_erase": [
+            "historical_sealed_v3_workstream_f1_0.5",
+            "broad_v4_exact_f1_0.970588",
+        ],
+        "exact_populations": {
+            **expected, "negative_signals": 12, "clean_negative_signals": 12,
+            "raw_proposals": 37, "terminal_candidate_fates": 37,
+            "slack_gold_mentions": 17, "person_gold_mentions": 5,
+            "project_gold_mentions": 6, "system_gold_mentions": 6,
+        },
+        "overall_span_f1": overall["span_f1"],
+        "mean_boundary_iou": overall["mean_boundary_iou"],
+        "type_accuracy": overall["type_accuracy"],
+        "negative_cleanliness": negative["rate"],
+        "terminal_candidate_fate_coverage": fate["terminal_candidate_fate_rate"],
+        "slack_span_f1": slack["span_f1"],
+        "weak_slices": {
+            name: {
+                "gold_count": strata[name]["gold_count"],
+                "exact_span_f1": strata[name]["span_f1"],
+                "mean_boundary_iou": strata[name]["mean_boundary_iou"],
+                "type_accuracy": strata[name]["type_accuracy"],
+            } for name in ("person", "project", "system")
+        },
+        "continuous_score": (
+            overall["span_f1"] + overall["type_accuracy"]
+            + negative["rate"] + fate["terminal_candidate_fate_rate"]
+        ) / 4,
+        "protocol": {
+            "pre_call_zero_executions": True,
+            "committed_corpus_and_runtime": True,
+            "runtime_source_digests_prebound": True,
+            "prompt_contract_digest_prebound": True,
+            "provider_model_config_prebound": True,
+            "raw_outputs_and_checkpoints": True,
+            "execution_attempts": 1,
+            "retries": 0,
+        },
+        "known_frozen_annotation_disagreement": {
+            "gold": "Pavel Ito",
+            "runtime": "Engineer Pavel Ito",
+            "interpretation": "runtime_included_attached_person_title_as_prompt_requires",
+            "effect": "one_non_exact_person_boundary; corpus_and_score_preserved",
+        },
+        "blocker_verdict": "clear",
+        "blockers": [],
+        "proof_gaps": [
+            "current_runtime_v5:no_canonical_alias_link_claim",
+            "current_runtime_v5:no_implicit_reference_resolution_claim",
+            "current_runtime_v5:bounded_synthetic_normalized_signals_not_open_world",
+            "current_runtime_v5:person_exact_span_slice_is_4_of_5_due_frozen_title_annotation_disagreement",
+        ],
+    }
 
 
 def _broad_extraction_component(

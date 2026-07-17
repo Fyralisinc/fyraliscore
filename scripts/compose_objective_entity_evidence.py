@@ -34,6 +34,12 @@ def main() -> int:
     parser.add_argument("--broad-extraction-sha256")
     parser.add_argument("--broad-extraction-receipt", type=Path)
     parser.add_argument("--broad-extraction-receipt-sha256")
+    parser.add_argument("--current-runtime", type=Path)
+    parser.add_argument("--current-runtime-sha256")
+    parser.add_argument("--current-runtime-precall-receipt", type=Path)
+    parser.add_argument("--current-runtime-precall-receipt-sha256")
+    parser.add_argument("--current-runtime-execution-receipt", type=Path)
+    parser.add_argument("--current-runtime-execution-receipt-sha256")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     v3 = load_bound_json(args.v3_report, expected_sha256=args.v3_sha256)
@@ -75,6 +81,33 @@ def main() -> int:
                     args.broad_extraction_receipt,
                     args.broad_extraction_receipt_sha256)):
         raise SystemExit("broad extraction report/receipt paths and SHAs must all be supplied")
+    current_args = (
+        args.current_runtime, args.current_runtime_sha256,
+        args.current_runtime_precall_receipt,
+        args.current_runtime_precall_receipt_sha256,
+        args.current_runtime_execution_receipt,
+        args.current_runtime_execution_receipt_sha256,
+    )
+    if any(current_args) and not all(current_args):
+        raise SystemExit(
+            "current runtime report/pre-call/execution paths and SHAs must all be supplied"
+        )
+    current_runtime = (
+        load_bound_json(args.current_runtime, expected_sha256=args.current_runtime_sha256)
+        if all(current_args) else None
+    )
+    current_precall = (
+        load_bound_json(
+            args.current_runtime_precall_receipt,
+            expected_sha256=args.current_runtime_precall_receipt_sha256,
+        ) if all(current_args) else None
+    )
+    current_execution = (
+        load_bound_json(
+            args.current_runtime_execution_receipt,
+            expected_sha256=args.current_runtime_execution_receipt_sha256,
+        ) if all(current_args) else None
+    )
     result = compose_objective_entity_evidence(
         v3=v3, vertical=vertical,
         v3_artifact_sha256=args.v3_sha256,
@@ -89,6 +122,16 @@ def main() -> int:
         broad_extraction_artifact_sha256=args.broad_extraction_sha256,
         broad_extraction_receipt=broad_receipt,
         broad_extraction_receipt_sha256=args.broad_extraction_receipt_sha256,
+        current_runtime=current_runtime,
+        current_runtime_artifact_sha256=args.current_runtime_sha256,
+        current_runtime_precall_receipt=current_precall,
+        current_runtime_precall_receipt_sha256=(
+            args.current_runtime_precall_receipt_sha256
+        ),
+        current_runtime_execution_receipt=current_execution,
+        current_runtime_execution_receipt_sha256=(
+            args.current_runtime_execution_receipt_sha256
+        ),
     )
     write_atomic_json(args.output, result)
     return 0
