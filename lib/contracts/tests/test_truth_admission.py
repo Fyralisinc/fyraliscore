@@ -14,6 +14,7 @@ from lib.contracts.truth_admission import (
     CandidateReviewState,
     ModelHeadExpectation,
     ModelTruthLifecycle,
+    ModelTruthTransition,
     ModelVersion,
     TruthCandidate,
     TruthCandidateKind,
@@ -350,10 +351,57 @@ def test_head_command_is_exact_cas_and_one_version_advance() -> None:
         tenant_id=TENANT,
         expectation=expectation,
         next_version=next_version,
+        transition=ModelTruthTransition.CONTEST,
+        reason_codes=("counterevidence",),
         issued_at=NOW + timedelta(minutes=1),
     )
     assert command.next_version.version == 2
     assert len(command.request_digest) == 64
+
+
+def test_head_command_binds_transition_and_unique_reasons_to_lifecycle() -> None:
+    admitted = _command()
+    expectation = ModelHeadExpectation(
+        tenant_id=TENANT,
+        model_id=MODEL_ID,
+        expected_version_id=VERSION_ID,
+        expected_version=1,
+        expected_semantic_digest=admitted.version.semantic_digest,
+        expected_lifecycle=ModelTruthLifecycle.ACTIVE,
+    )
+    disputed = _version(
+        admitted.candidate,
+        admitted.decision,
+        version_id=uuid4(),
+        version=2,
+        lifecycle=ModelTruthLifecycle.DISPUTED,
+    )
+    base = {
+        "command_id": uuid4(),
+        "idempotency_key": "contest:reasons",
+        "tenant_id": TENANT,
+        "expectation": expectation,
+        "next_version": disputed,
+        "issued_at": NOW + timedelta(minutes=1),
+    }
+    with pytest.raises(ValidationError, match="does not match"):
+        AdvanceModelHeadCommand(
+            **base,
+            transition=ModelTruthTransition.FALSIFY,
+            reason_codes=("counterevidence",),
+        )
+    with pytest.raises(ValidationError, match="at least 1"):
+        AdvanceModelHeadCommand(
+            **base,
+            transition=ModelTruthTransition.CONTEST,
+            reason_codes=(),
+        )
+    with pytest.raises(ValidationError, match="must be unique"):
+        AdvanceModelHeadCommand(
+            **base,
+            transition=ModelTruthTransition.CONTEST,
+            reason_codes=("counterevidence", "counterevidence"),
+        )
 
 
 @pytest.mark.parametrize(
@@ -384,6 +432,8 @@ def test_terminal_head_cannot_advance_or_resurrect(expected_lifecycle) -> None:
             tenant_id=TENANT,
             expectation=expectation,
             next_version=next_version,
+            transition=ModelTruthTransition.CONFIRM,
+            reason_codes=("illegal_resurrection",),
             issued_at=NOW,
         )
 
@@ -408,6 +458,8 @@ def test_head_command_rejects_skipped_version_and_cross_tenant() -> None:
             tenant_id=TENANT,
             expectation=expectation,
             next_version=skipped,
+            transition=ModelTruthTransition.CONFIRM,
+            reason_codes=("skip",),
             issued_at=NOW,
         )
     with pytest.raises(ValidationError, match="tenant"):
@@ -419,5 +471,7 @@ def test_head_command_rejects_skipped_version_and_cross_tenant() -> None:
             next_version=_version(
                 valid.candidate, valid.decision, version_id=uuid4(), version=2
             ),
+            transition=ModelTruthTransition.CONFIRM,
+            reason_codes=("cross_tenant",),
             issued_at=NOW,
         )

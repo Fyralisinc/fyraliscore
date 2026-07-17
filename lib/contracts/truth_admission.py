@@ -67,6 +67,24 @@ class ModelTruthLifecycle(StrEnum):
         return self in {self.FALSIFIED, self.SUPERSEDED, self.ARCHIVED}
 
 
+class ModelTruthTransition(StrEnum):
+    CONFIRM = "confirm"
+    CONTEST = "contest"
+    FALSIFY = "falsify"
+    SUPERSEDE = "supersede"
+    ARCHIVE = "archive"
+
+    @property
+    def resulting_lifecycle(self) -> ModelTruthLifecycle:
+        return {
+            self.CONFIRM: ModelTruthLifecycle.ACTIVE,
+            self.CONTEST: ModelTruthLifecycle.DISPUTED,
+            self.FALSIFY: ModelTruthLifecycle.FALSIFIED,
+            self.SUPERSEDE: ModelTruthLifecycle.SUPERSEDED,
+            self.ARCHIVE: ModelTruthLifecycle.ARCHIVED,
+        }[self]
+
+
 class TruthCandidate(_TruthAdmissionContract):
     candidate_id: UUID
     candidate_version: int = Field(default=1, ge=1)
@@ -120,7 +138,10 @@ class AdmissionDecision(_TruthAdmissionContract):
 
     @model_validator(mode="after")
     def canonical_target_exists_only_when_accepted(self) -> Self:
-        has_target = self.admitted_model_id is not None or self.admitted_version_id is not None
+        has_target = (
+            self.admitted_model_id is not None
+            or self.admitted_version_id is not None
+        )
         if self.disposition is AdmissionDisposition.ACCEPTED:
             if self.admitted_model_id is None or self.admitted_version_id is None:
                 raise ValueError("accepted admission must identify its Model version")
@@ -284,6 +305,8 @@ class AdvanceModelHeadCommand(_TruthAdmissionContract):
     tenant_id: UUID
     expectation: ModelHeadExpectation
     next_version: ModelVersion
+    transition: ModelTruthTransition
+    reason_codes: tuple[str, ...] = Field(min_length=1)
     issued_at: datetime
 
     @field_validator("issued_at")
@@ -293,7 +316,10 @@ class AdvanceModelHeadCommand(_TruthAdmissionContract):
 
     @model_validator(mode="after")
     def transition_is_tenant_scoped_and_monotone(self) -> Self:
-        if self.expectation.tenant_id != self.tenant_id or self.next_version.tenant_id != self.tenant_id:
+        if (
+            self.expectation.tenant_id != self.tenant_id
+            or self.next_version.tenant_id != self.tenant_id
+        ):
             raise ValueError("head command crosses tenant boundaries")
         if self.expectation.model_id != self.next_version.model_id:
             raise ValueError("head command targets different Models")
@@ -301,6 +327,10 @@ class AdvanceModelHeadCommand(_TruthAdmissionContract):
             raise ValueError("head command must advance exactly one version")
         if self.expectation.expected_lifecycle.terminal:
             raise ValueError("terminal Model head cannot be advanced or resurrected")
+        if self.next_version.lifecycle is not self.transition.resulting_lifecycle:
+            raise ValueError("Model transition does not match the next lifecycle")
+        if len(set(self.reason_codes)) != len(self.reason_codes):
+            raise ValueError("Model transition reason codes must be unique")
         return self
 
     @property
@@ -317,6 +347,7 @@ __all__ = [
     "ModelHead",
     "ModelHeadExpectation",
     "ModelTruthLifecycle",
+    "ModelTruthTransition",
     "ModelVersion",
     "TruthCandidate",
     "TruthCandidateKind",
