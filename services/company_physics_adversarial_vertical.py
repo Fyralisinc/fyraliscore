@@ -17,6 +17,8 @@ from uuid import UUID
 
 import asyncpg
 
+from lib.shared.edge_registry import EdgeRegistryError
+from lib.shared.errors import ValidationError
 from lib.shared.types import ModelCreate
 from services.company_physics_vertical import run_company_physics_vertical
 from services.domain.models.edges_repo import EdgesRepo
@@ -227,7 +229,7 @@ async def _expect_rejection(
             detected_by="think_edge_op", confidence=0.99,
             metadata={"sealed_adversarial_attempt": case_id},
         )
-    except Exception as exc:  # exact class is preserved as evidence below
+    except (EdgeRegistryError, ValidationError) as exc:
         error_type = type(exc).__name__
     after = await conn.fetchval(
         "SELECT count(*) FROM model_edges WHERE tenant_id=$1", tenant_id
