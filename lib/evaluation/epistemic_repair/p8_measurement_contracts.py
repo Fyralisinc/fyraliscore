@@ -79,4 +79,7 @@ def queue_curve_is_usable(samples: dict[str, list[int]]) -> bool:
     """Every registered family must have a nonempty barrier-aligned curve."""
 
     expected = {item.family for item in QUEUE_FAMILIES}
-    return set(samples) == expected and all(values for values in samples.values())
+    return set(samples) == expected and all(
+        values and all(value >= 0 for value in values)
+        for values in samples.values()
+    )

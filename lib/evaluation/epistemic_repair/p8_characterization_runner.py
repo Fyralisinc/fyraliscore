@@ -1,0 +1,226 @@
+"""Label-blind production-path execution for P8 characterization packages."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+from math import sqrt
+from pathlib import Path
+from typing import Any
+from uuid import NAMESPACE_URL, uuid5
+
+from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.epistemic_repair.p8_characterization_population import (
+    SealedPopulation,
+    build_all_characterization_populations,
+    population_manifest,
+)
+from services.domain.entity_grounding.episode import (
+    ContextObservationInput,
+    GroundingCandidateInput,
+    build_grounding_episode,
+    candidate_id_for_ref,
+    prepare_context_selection,
+)
+from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
+
+
+_TENANT = uuid5(NAMESPACE_URL, "p8-characterization-tenant")
+_START = datetime(2026, 7, 18, tzinfo=timezone.utc)
+
+
+def _wilson(successes: int, total: int) -> tuple[float, float]:
+    if total == 0:
+        return (0.0, 0.0)
+    p, z = successes / total, 1.96
+    denominator = 1 + z * z / total
+    centre = (p + z * z / (2 * total)) / denominator
+    margin = z * sqrt((p * (1 - p) + z * z / (4 * total)) / total) / denominator
+    return (max(0.0, centre - margin), min(1.0, centre + margin))
+
+
+def _metric(name: str, outcomes: list[tuple[str, bool]], *, slices: dict[str, list[tuple[str, bool]]]) -> dict[str, Any]:
+    successes = sum(ok for _, ok in outcomes)
+    worst = tuple(case_id for case_id, ok in outcomes if not ok)[:10]
+    slice_rows = {}
+    for label, rows in sorted(slices.items()):
+        passed = sum(ok for _, ok in rows)
+        slice_rows[label] = {
+            "numerator": passed, "denominator": len(rows),
+            "score": passed / len(rows), "ci95": _wilson(passed, len(rows)),
+            "worst_example_ids": [case_id for case_id, ok in rows if not ok][:5],
+        }
+    return {
+        "metric": name, "numerator": successes, "denominator": len(outcomes),
+        "score": successes / len(outcomes), "ci95": _wilson(successes, len(outcomes)),
+        "worst_example_ids": list(worst), "slices": slice_rows,
+    }
+
+
+def _context(case_id: str, text: str, source_kind: str, ordinal: int, *, prior: tuple[ContextObservationInput, ...] = ()):
+    occurred = _START + timedelta(seconds=ordinal)
+    channel = "slack:message" if source_kind in {"conversational", "slack"} else "document:object"
+    return prepare_context_selection(
+        tenant_id=_TENANT, observation_id=uuid5(NAMESPACE_URL, case_id), phrase="this update",
+        occurred_at=occurred, source_channel=channel, source_space=f"p8:{source_kind}",
+        topology_incomplete=False, boundary_hypotheses=({"kind": "bounded_alternative"},),
+        context_observations=prior, selection_dependency_refs=(f"case:{case_id}",),
+        now=occurred + timedelta(seconds=1), focal_content_text=text,
+    )
+
+
+async def _run_boundary(population: SealedPopulation) -> dict[str, Any]:
+    outcomes, slices = [], {}
+    history: list[ContextObservationInput] = []
+    for ordinal, case in enumerate(population.cases):
+        if ordinal % 5 == 0:
+            history = []
+        command, outcome = _context(case.case_id, case.runtime_text, case.source_kind, ordinal, prior=tuple(history))
+        selected = {item.event_revision_id for item in outcome.snapshot.selected_items}
+        prior_ids = {f"observation:{item.observation_id}:v1" for item in history}
+        ok = not prior_ids or bool(selected & prior_ids)
+        outcomes.append((case.case_id, ok))
+        for label in case.evaluator_labels:
+            if not label.startswith("episode:"):
+                slices.setdefault(label, []).append((case.case_id, ok))
+        history.append(ContextObservationInput(
+            uuid5(NAMESPACE_URL, case.case_id), _START + timedelta(seconds=ordinal),
+            "slack:message" if case.source_kind == "conversational" else "document:object",
+            f"p8:{case.source_kind}", "source_topology", ("same source episode",),
+            case.runtime_text, len(case.runtime_text.split()), (f"edge:{case.case_id}",),
+        ))
+        if ordinal % 100 == 0:
+            await asyncio.sleep(0)
+    return _metric("boundary_context_recall", outcomes, slices=slices)
+
+
+async def _run_context(population: SealedPopulation) -> dict[str, Any]:
+    outcomes, slices = [], {}
+    for ordinal, case in enumerate(population.cases):
+        prior = (ContextObservationInput(
+            uuid5(NAMESPACE_URL, f"prior:{case.case_id}"), _START,
+            "slack:message", "p8:context", "source_topology",
+            ("authenticated reply topology",), "Prior Harbor context.", 4,
+            (f"edge:{case.case_id}",),
+        ),)
+        _, outcome = _context(case.case_id, case.runtime_text, case.source_kind, ordinal + 2000, prior=prior)
+        ok = bool(outcome.snapshot.selected_items) and outcome.selected_cost_score >= 0
+        outcomes.append((case.case_id, ok))
+        for label in case.evaluator_labels:
+            slices.setdefault(label, []).append((case.case_id, ok))
+        if ordinal % 100 == 0:
+            await asyncio.sleep(0)
+    return _metric("context_decision_total_fate", outcomes, slices=slices)
+
+
+async def _run_entity(population: SealedPopulation) -> dict[str, Any]:
+    outcomes, slices = [], {}
+    grounding_outcomes = []
+    false_merge_ids = []
+    for ordinal, case in enumerate(population.cases):
+        phrase = f"Entity-{ordinal:04d}"
+        command, context = _context(case.case_id, case.runtime_text, case.source_kind, ordinal + 4000)
+        mention_command = prepare_entity_mention_detection(
+            tenant_id=_TENANT, observation_id=uuid5(NAMESPACE_URL, case.case_id),
+            phrase=phrase, content_text=case.runtime_text, source_channel="document:object",
+            context_command=command, context_outcome=context,
+            now=_START + timedelta(seconds=ordinal + 4002),
+        )
+        detection = mention_command.detection
+        expected = "negative" not in case.evaluator_labels
+        predicted = detection.mention is not None
+        ok = predicted == expected
+        outcomes.append((case.case_id, ok))
+        grounding_ok = ok
+        competing = any(label in case.evaluator_labels for label in (
+            "ambiguous_alias", "near_name_collision", "cross_customer_trap",
+            "merge_split_correction",
+        ))
+        if predicted:
+            primary_ref = {"type": "project", "id": f"project:{case.case_id}", "version": 1}
+            candidates = ()
+            model_id = None
+            model_ref = primary_ref
+            if "open_world_none_known" not in case.evaluator_labels:
+                candidates = (GroundingCandidateInput(
+                    canonical_ref=primary_ref, candidate_source="tenant_aliases",
+                    positive_evidence_refs=(f"observation:{case.case_id}",),
+                    independent_identity_evidence_refs=(f"identity:{case.case_id}",),
+                    exact_mention_match=True,
+                    decisive_authority_refs=(() if competing else (f"authority:{case.case_id}",)),
+                ),)
+                if competing:
+                    secondary_ref = {"type": "customer", "id": f"customer:{case.case_id}", "version": 1}
+                    candidates += (GroundingCandidateInput(
+                        canonical_ref=secondary_ref, candidate_source="tenant_aliases",
+                        positive_evidence_refs=(f"alias:{case.case_id}:secondary",),
+                        exact_mention_match=True,
+                    ),)
+                model_id = candidate_id_for_ref(primary_ref)
+            episode = build_grounding_episode(
+                tenant_id=_TENANT, observation_id=uuid5(NAMESPACE_URL, case.case_id),
+                phrase=phrase, occurred_at=_START + timedelta(seconds=ordinal + 4000),
+                source_channel="document:object", source_space="p8:mixed",
+                topology_incomplete=False, boundary_hypotheses=({"kind": "bounded_alternative"},),
+                context_observations=(), selection_dependency_refs=(f"case:{case.case_id}",),
+                candidates=candidates, model_candidate_id=model_id,
+                model_canonical_ref=model_ref, model_confidence=.95,
+                model_reasoning="closed-set candidate assessment",
+                decision_source="deterministic_replay", high_confidence=.8,
+                review_min=.5, prepared_context_command=command,
+                prepared_context_outcome=context,
+                prepared_mention_detection_command=mention_command,
+                now=_START + timedelta(seconds=ordinal + 4003),
+            )
+            expected_fate = (
+                "abstained" if "open_world_none_known" in case.evaluator_labels
+                else "review" if competing else "resolved_for_consumer"
+            )
+            grounding_ok = episode.current_fate == expected_fate
+            if competing and episode.current_fate == "resolved_for_consumer":
+                false_merge_ids.append(case.case_id)
+        grounding_outcomes.append((case.case_id, grounding_ok))
+        for label in case.evaluator_labels:
+            slices.setdefault(label, []).append((case.case_id, ok))
+        if ordinal % 100 == 0:
+            await asyncio.sleep(0)
+    metric = _metric("canonical_entity_grounding", grounding_outcomes, slices=slices)
+    metric["mention_detection"] = _metric("label_blind_explicit_mention_detection", outcomes, slices=slices)
+    metric["automatic_false_merges"] = len(false_merge_ids)
+    metric["automatic_false_merge_ids"] = false_merge_ids[:10]
+    metric["grounding_executed"] = True
+    return metric
+
+
+async def run_characterization_contract(repository_root: Path) -> dict[str, Any]:
+    populations = build_all_characterization_populations()
+    by_name = {population.name: population for population in populations}
+    boundary, context, entity = await asyncio.gather(
+        _run_boundary(by_name["boundary_discovery"]),
+        _run_context(by_name["context_selection"]),
+        _run_entity(by_name["entity_grounding"]),
+    )
+    source_paths = (
+        "services/domain/entity_grounding/episode.py",
+        "services/domain/entity_grounding/mentions.py",
+        "lib/evaluation/epistemic_repair/p3_runner.py",
+        "lib/evaluation/epistemic_repair/p4_runner.py",
+    )
+    source_digests = {path: canonical_sha256((repository_root / path).read_text()) for path in source_paths}
+    artifact = {
+        "schema_version": "p8-sealed-component-characterization-v1",
+        "manifests": [population_manifest(population) for population in populations],
+        "executed_metrics": {"boundary": boundary, "context": context, "entity": entity},
+        "retrieval": {"status": "not_executed", "denominator": 600},
+        "feedback": {"status": "not_executed", "base_decisions": 360, "policy_executions": 720},
+        "entity_grounding": {"status": "not_executed", "mention_detection_only": True},
+        "queue_measurement": {"status": "not_executed"},
+        "projection_refresh": {"status": "not_executed"},
+        "real_provider_sample": {"status": "separate_not_run"},
+        "source_digests": source_digests,
+        "production_label_visibility": False,
+        "characterization_ready": False,
+    }
+    artifact["artifact_digest"] = canonical_sha256(artifact)
+    return artifact

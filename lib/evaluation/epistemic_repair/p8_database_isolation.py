@@ -12,7 +12,12 @@ import asyncpg
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p8_population import ScaleCell
-from lib.evaluation.epistemic_repair.p8_scale_runner import ActualScaleCell, run_scale_cell
+from lib.evaluation.epistemic_repair.p8_scale_runner import (
+    ActualScaleCell,
+    WarmPairDiagnostic,
+    run_scale_cell,
+    run_warm_pair_diagnostic,
+)
 from lib.shared.migrations import apply_migrations_dir
 
 
@@ -49,6 +54,17 @@ class ExistingTemplateIsolationProof:
     all_database_oids_distinct: bool
     all_cell_databases_dropped: bool
     template_preserved: bool
+    evidence_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class IsolatedWarmPairProof:
+    template_identity: DatabaseIdentity
+    clone_identity: DatabaseIdentity
+    template_active_sessions_before: int
+    clone_external_backends_before: int
+    diagnostic: WarmPairDiagnostic
+    clone_database_dropped: bool
     evidence_digest: str
 
 
@@ -200,4 +216,63 @@ async def prove_existing_template_cells(
         template_identity, active, tuple(proofs), all_distinct,
         all(proof.cell_database_dropped for proof in proofs), True,
         canonical_sha256(payload),
+    )
+
+
+async def run_isolated_warm_pair(
+    admin_dsn: str, *, template_name: str, migrations_dir: Path,
+    batch_size: int = 10, memory_horizon_batches: int = 50,
+    repetitions: int = 5, pool_size: int = 20,
+) -> IsolatedWarmPairProof:
+    if not _SAFE_DATABASE.fullmatch(template_name):
+        raise ValueError("unsafe template database name")
+    migration_count = len(tuple(migrations_dir.glob("*.sql")))
+    clone_name = f"p8_warm_{uuid4().hex[:10]}"
+    template_dsn = _dsn_for_database(admin_dsn, template_name)
+    clone_dsn = _dsn_for_database(admin_dsn, clone_name)
+    admin = await asyncpg.connect(admin_dsn)
+    dropped = False
+    try:
+        active = await admin.fetchval(
+            "SELECT count(*)::int FROM pg_stat_activity WHERE datname=$1",
+            template_name,
+        )
+        if active:
+            raise RuntimeError(f"template database has {active} active sessions")
+        template_identity = await _identity(template_dsn, migration_count=migration_count)
+        await admin.execute(f'CREATE DATABASE "{clone_name}" TEMPLATE "{template_name}"')
+        clone_identity = await _identity(clone_dsn, migration_count=migration_count)
+        baseline = await asyncpg.connect(clone_dsn)
+        try:
+            external = await baseline.fetchval(
+                """SELECT count(*)::int FROM pg_stat_activity
+                   WHERE datname=current_database() AND pid<>pg_backend_pid()"""
+            )
+        finally:
+            await baseline.close()
+        if external:
+            raise RuntimeError(f"disposable clone has {external} unexpected backends")
+        diagnostic = await run_warm_pair_diagnostic(
+            clone_dsn, batch_size=batch_size,
+            memory_horizon_batches=memory_horizon_batches,
+            repetitions=repetitions, pool_size=pool_size,
+        )
+        await admin.execute(f'DROP DATABASE "{clone_name}"')
+        dropped = True
+    finally:
+        if not dropped:
+            await admin.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()",
+                clone_name,
+            )
+            await admin.execute(f'DROP DATABASE IF EXISTS "{clone_name}"')
+        await admin.close()
+    payload = {
+        "template": asdict(template_identity), "clone": asdict(clone_identity),
+        "template_active": active, "clone_external": external,
+        "diagnostic": asdict(diagnostic), "clone_dropped": dropped,
+    }
+    return IsolatedWarmPairProof(
+        template_identity, clone_identity, active, external, diagnostic,
+        dropped, canonical_sha256(payload),
     )
