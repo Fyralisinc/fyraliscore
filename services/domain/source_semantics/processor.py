@@ -187,6 +187,10 @@ class GroundedBeliefProcessor:
                     occurred_at=grounding.occurred_at,
                     selected_scope_entity=grounding.selected_scope_entity,
                     embedding=embedding,
+                    grounding_admission=continuity_admission,
+                    source_channel=grounding.source_channel,
+                    source_content_text=grounding.content_text,
+                    admitted_at=now,
                 )
                 if applied_model.id != model_id:
                     raise InvariantViolation(

@@ -214,6 +214,22 @@ async def test_asserted_report_is_the_only_grounded_semantic_path_to_one_model(
             """,
             tenant_id,
         )
+        truth_rows = await conn.fetch(
+            """
+            SELECT h.model_id, h.version, h.lifecycle, v.proposition,
+                   e.evidence_id, e.source_object_id, e.span_start, e.span_end,
+                   d.decided_by, d.disposition
+            FROM model_truth_heads h
+            JOIN model_truth_versions v
+              ON v.tenant_id=h.tenant_id AND v.version_id=h.version_id
+            JOIN model_truth_evidence_references e
+              ON e.tenant_id=v.tenant_id AND e.model_version_id=v.version_id
+            JOIN truth_admission_decisions d
+              ON d.tenant_id=v.tenant_id AND d.decision_id=v.admission_decision_id
+            WHERE h.tenant_id=$1
+            """,
+            tenant_id,
+        )
         interpretations = await conn.fetch(
             """
             SELECT id, source_assertion, semantic_frame, speech_act,
@@ -278,6 +294,17 @@ async def test_asserted_report_is_the_only_grounded_semantic_path_to_one_model(
     assert _payload(model["scope_entities"]) == [
         {**CUSTOMER_REF, "version": 1}
     ]
+    assert len(truth_rows) == 1
+    truth = truth_rows[0]
+    assert truth["model_id"] == admitted.model_id
+    assert truth["version"] == 1
+    assert truth["lifecycle"] == "active"
+    assert truth["disposition"] == "accepted"
+    assert truth["decided_by"] == "EpistemicApplier"
+    assert truth["evidence_id"] == str(model["born_from_event_id"])
+    assert truth["source_object_id"] == str(model["born_from_event_id"])
+    assert truth["span_start"] == 0
+    assert truth["span_end"] == len(admitted_text)
 
     assert len(interpretations) == 4
     admitted_interpretation = next(

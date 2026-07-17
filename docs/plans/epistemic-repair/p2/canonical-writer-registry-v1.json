@@ -1,0 +1,50 @@
+{
+  "schema_version": "canonical-writer-registry-v1",
+  "status": "cutover_in_progress",
+  "canonical_truth_tables": [
+    "truth_candidates",
+    "truth_admission_decisions",
+    "model_truth_versions",
+    "model_truth_heads",
+    "model_truth_evidence_references",
+    "model_truth_scope_bindings",
+    "model_truth_scope_evidence",
+    "model_truth_lifecycle_events",
+    "truth_command_receipts",
+    "relation_truth_admission_decisions",
+    "relation_truth_versions",
+    "relation_truth_heads",
+    "relation_truth_evidence"
+  ],
+  "canonical_truth_writer_modules": [
+    "services/domain/truth_kernel/repository.py",
+    "services/domain/truth_kernel/relations/repository.py"
+  ],
+  "forbidden_direct_writer_roots": [
+    "services/reasoning/think",
+    "services/reasoning/sage",
+    "services/reasoning/topology",
+    "services/domain/projections"
+  ],
+  "legacy_models_projection_writer": {
+    "module": "services/domain/truth_kernel/repository.py",
+    "method": "_insert_legacy_read_projection",
+    "classification": "registered_compatibility_projector"
+  },
+  "frozen_legacy_models_bypasses": [
+    "services/domain/models/decay.py",
+    "services/domain/models/repo.py",
+    "services/domain/substrate_promotion.py",
+    "services/product/recommendations/feedback.py",
+    "services/product/recommendations/handlers.py",
+    "services/product/today/triage.py",
+    "services/reasoning/contestability/service.py",
+    "services/reasoning/think/applier.py"
+  ],
+  "rules": {
+    "new_canonical_truth_writer": "forbidden unless added by a reviewed registry version",
+    "reasoning_and_projection_canonical_writes": "forbidden",
+    "legacy_models_projection": "only the registered truth-kernel projector is an approved projection writer",
+    "legacy_models_bypasses": "frozen debt, not approved authority; no new module may be added and every entry must remain reported until removed"
+  }
+}

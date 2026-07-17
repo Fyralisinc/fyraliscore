@@ -135,6 +135,25 @@ class AsyncpgTruthKernelStorage:
         ]
         compatibility_proposition = dict(version.proposition)
         compatibility_proposition.setdefault("kind", "belief")
+        # The old ModelRow surface exposed the source canonical reference, not
+        # the kernel's UUID-normalized scope subject. Preserve that read shape
+        # when the admitted proposition carries grounding continuity. This is
+        # projection logic only; canonical scope remains the typed binding.
+        continuity = compatibility_proposition.get("grounding_continuity")
+        selected = (
+            continuity.get("selected_referent")
+            if isinstance(continuity, dict)
+            else None
+        )
+        if isinstance(selected, dict) and selected.get("referent_id"):
+            referent_id = str(selected["referent_id"])
+            scope_entities = [
+                {
+                    "type": referent_id.partition(":")[0] or "other",
+                    "id": referent_id,
+                    "version": int(selected.get("referent_version", 1)),
+                }
+            ]
         await tx.execute(
             """
             INSERT INTO models (
