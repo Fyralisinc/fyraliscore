@@ -21,6 +21,9 @@ P7RetrievalPolicy = Literal["normal", "hide_models"]
 _policy: ContextVar[P7RetrievalPolicy] = ContextVar(
     "p7_evaluator_retrieval_policy", default="normal"
 )
+_single_provider: ContextVar[bool] = ContextVar(
+    "p7_evaluator_single_provider", default=False
+)
 _installed = False
 
 
@@ -70,9 +73,25 @@ def install_production_retrieval_policy_dispatch() -> None:
     if _installed:
         return
     from services.reasoning.think import run_pipeline
+    from services.reasoning.think import context_planner
+    from services.platform.execution import question_planning
 
     original = run_pipeline.plan_context
     original_assemble = run_pipeline.assemble_reasoning_context
+    original_question_provider = context_planner.retrieval_question_planning_provider
+    original_fallback_provider = (
+        question_planning.select_question_planning_fallback_provider
+    )
+
+    def governed_question_provider(provider):
+        if _single_provider.get():
+            return provider
+        return original_question_provider(provider)
+
+    def governed_fallback_provider(*args, **kwargs):
+        if _single_provider.get():
+            return None
+        return original_fallback_provider(*args, **kwargs)
 
     async def governed_plan_context(*args, **kwargs):
         plan = await original(*args, **kwargs)
@@ -95,6 +114,11 @@ def install_production_retrieval_policy_dispatch() -> None:
 
     run_pipeline.plan_context = governed_plan_context
     run_pipeline.assemble_reasoning_context = governed_assemble_reasoning_context
+    context_planner.retrieval_question_planning_provider = governed_question_provider
+    question_planning.select_question_planning_fallback_provider = (
+        governed_fallback_provider
+    )
+    question_planning.select_question_planning_provider = governed_question_provider
     _installed = True
 
 
@@ -106,9 +130,11 @@ async def production_retrieval_policy(
 
     install_production_retrieval_policy_dispatch()
     token = _policy.set(policy)
+    provider_token = _single_provider.set(True)
     try:
         yield
     finally:
+        _single_provider.reset(provider_token)
         _policy.reset(token)
 
 

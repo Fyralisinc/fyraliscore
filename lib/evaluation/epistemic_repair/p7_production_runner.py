@@ -47,6 +47,114 @@ class P7ArmRuntime:
     worker: ThinkWorker | None
 
 
+def assess_provider_identity_receipts(
+    *,
+    logical_receipts: list[dict[str, Any]],
+    attempt_receipts: list[dict[str, Any]],
+    required_provider: str,
+    required_model: str,
+) -> dict[str, Any]:
+    """Reconcile every durable logical call and physical attempt identity."""
+
+    missing_identity = [
+        f"logical:{row.get('logical_call_id')}"
+        for row in logical_receipts
+        if not row.get("provider") or not row.get("model") or not row.get("purpose")
+    ] + [
+        f"attempt:{row.get('physical_attempt_id')}"
+        for row in attempt_receipts
+        if not row.get("provider") or not row.get("model") or not row.get("purpose")
+    ]
+    mismatches = [
+        {
+            "receipt_kind": "logical",
+            "receipt_id": str(row.get("logical_call_id")),
+            "provider": row.get("provider"),
+            "model": row.get("model"),
+            "purpose": row.get("purpose"),
+        }
+        for row in logical_receipts
+        if (row.get("provider"), row.get("model"))
+        != (required_provider, required_model)
+    ] + [
+        {
+            "receipt_kind": "physical_attempt",
+            "receipt_id": str(row.get("physical_attempt_id")),
+            "provider": row.get("provider"),
+            "model": row.get("model"),
+            "purpose": row.get("purpose"),
+        }
+        for row in attempt_receipts
+        if (row.get("provider"), row.get("model"))
+        != (required_provider, required_model)
+    ]
+    declared_attempts = sum(int(row.get("physical_attempt_count") or 0) for row in logical_receipts)
+    call_ids = {str(row.get("logical_call_id")) for row in logical_receipts}
+    orphan_attempts = [
+        str(row.get("physical_attempt_id"))
+        for row in attempt_receipts
+        if str(row.get("logical_call_id")) not in call_ids
+    ]
+    errors = []
+    if not logical_receipts or not attempt_receipts:
+        errors.append("missing durable logical or physical provider receipts")
+    if declared_attempts != len(attempt_receipts):
+        errors.append(
+            f"logical physical_attempt_count={declared_attempts} but attempts={len(attempt_receipts)}"
+        )
+    if missing_identity:
+        errors.append("receipts lack provider/model/purpose identity")
+    if mismatches:
+        errors.append("provider/model identity mismatch")
+    if orphan_attempts:
+        errors.append("physical attempts lack a matching logical receipt")
+    return {
+        "valid": not errors,
+        "required_provider": required_provider,
+        "required_model": required_model,
+        "logical_call_count": len(logical_receipts),
+        "physical_attempt_count": len(attempt_receipts),
+        "purposes": sorted({str(row.get("purpose")) for row in attempt_receipts}),
+        "missing_identity_receipts": missing_identity,
+        "identity_mismatches": mismatches,
+        "orphan_attempts": orphan_attempts,
+        "errors": errors,
+    }
+
+
+async def _validate_provider_identity_ledger(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    required_provider: str,
+    required_model: str,
+) -> dict[str, Any]:
+    logical = [dict(row) for row in await conn.fetch(
+        """SELECT logical_call_id,provider,model,purpose,physical_attempt_count
+           FROM llm_logical_call_receipts WHERE tenant_id=$1""",
+        tenant_id,
+    )]
+    attempts = [dict(row) for row in await conn.fetch(
+        """SELECT physical_attempt_id,logical_call_id,provider,model,purpose
+           FROM llm_provider_attempt_receipts WHERE tenant_id=$1""",
+        tenant_id,
+    )]
+    assessment = assess_provider_identity_receipts(
+        logical_receipts=logical,
+        attempt_receipts=attempts,
+        required_provider=required_provider,
+        required_model=required_model,
+    )
+    if not assessment["valid"]:
+        raise InvariantViolation(
+            "P7_PROVIDER_IDENTITY_LEDGER_INVALID",
+            "durable provider receipts do not prove a single preregistered model",
+            tenant_id=str(tenant_id),
+            assessment=assessment,
+        )
+    return assessment
+
+
 def _run_id(execution: dict[str, Any]) -> UUID:
     run = execution.get("run") or {}
     if run.get("status") != "success" or not run.get("id"):
@@ -78,6 +186,8 @@ async def _run_arm(
     runtime: P7ArmRuntime,
     population: P6Population,
     per_batch_timeout_s: float,
+    required_provider: str,
+    required_model: str,
 ) -> dict[str, Any]:
     from scripts.run_1000_signal_model_layer_probe import enqueue_t1_for_observations
     from scripts.run_storyline_batch_benchmark import _process_one_t1_batch
@@ -133,6 +243,14 @@ async def _run_arm(
                     if candidate is not None:
                         corruption_model_ids = frozenset({candidate})
                         corruption_injected_batch = batch.batch_number
+                provider_identity = await _validate_provider_identity_ledger(
+                    conn,
+                    tenant_id=runtime.tenant_id,
+                    required_provider=required_provider,
+                    required_model=required_model,
+                )
+        else:
+            provider_identity = None
         snapshot = await _snapshot(pool, runtime.tenant_id)
         waves.append({
             "batch_number": batch.batch_number,
@@ -142,6 +260,7 @@ async def _run_arm(
             ) if execution is not None else "not_executed",
             "think_run_id": str(_run_id(execution)) if execution else None,
             "lifecycle_receipts": [receipt.model_dump(mode="json") for receipt in receipts],
+            "provider_identity_ledger": provider_identity,
             "accepted_model_count": len(snapshot["accepted_models"]),
             "elapsed_s": round(time.monotonic() - started, 3),
         })
@@ -183,6 +302,8 @@ async def run_p7_production_staged(
     database_url: str,
     population: P6Population,
     per_batch_timeout_s: float = 180.0,
+    required_provider: str = "codex",
+    required_model: str = "gpt-5.4",
 ) -> dict[str, Any]:
     """Run five isolated production arms concurrently, each ordered 1 through 12."""
 
@@ -192,6 +313,20 @@ async def run_p7_production_staged(
     embedder = OllamaClient(OllamaConfig.from_env())
     set_response_cache(None)
     provider = build_provider()
+    provider_config = getattr(provider, "config", None)
+    observed_provider = str(getattr(provider_config, "provider", ""))
+    observed_model = str(getattr(provider_config, "model", ""))
+    if (observed_provider, observed_model) != (required_provider, required_model):
+        await embedder.close()
+        await pool.close()
+        raise InvariantViolation(
+            "P7_PROVIDER_IDENTITY_MISMATCH",
+            "every P7 LLM role must use the preregistered provider and model",
+            expected_provider=required_provider,
+            expected_model=required_model,
+            observed_provider=observed_provider,
+            observed_model=observed_model,
+        )
     runtimes: list[P7ArmRuntime] = []
     try:
         for arm in P7_ARMS:
@@ -228,6 +363,8 @@ async def run_p7_production_staged(
                 runtime=runtime,
                 population=population,
                 per_batch_timeout_s=per_batch_timeout_s,
+                required_provider=required_provider,
+                required_model=required_model,
             )
             for runtime in runtimes
         ))
@@ -236,6 +373,12 @@ async def run_p7_production_staged(
             "population_version": population.version,
             "population_digest": population.population_digest,
             "gold_visible_during_execution": False,
+            "provider_identity": {
+                "provider": observed_provider,
+                "model": observed_model,
+                "question_planner_uses_same_provider_instance": True,
+                "question_planner_fallback_disabled": True,
+            },
             "arm_results": results,
             "complete": all(result["arm_contract_satisfied"] for result in results),
         }
@@ -245,4 +388,9 @@ async def run_p7_production_staged(
         await pool.close()
 
 
-__all__ = ["P7_ARMS", "P7ArmRuntime", "run_p7_production_staged"]
+__all__ = [
+    "P7_ARMS",
+    "P7ArmRuntime",
+    "assess_provider_identity_receipts",
+    "run_p7_production_staged",
+]

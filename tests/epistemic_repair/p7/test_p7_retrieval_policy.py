@@ -7,6 +7,7 @@ import pytest
 from lib.evaluation.epistemic_repair.p7_retrieval_policy import (
     _strip_models,
     assert_no_model_context,
+    production_retrieval_policy,
 )
 from lib.shared.errors import InvariantViolation
 from services.reasoning.retrieval.pathways import PathwayResult
@@ -46,3 +47,17 @@ def test_hidden_policy_removes_models_from_every_prompt_facing_surface() -> None
 def test_hidden_policy_assertion_fails_closed_on_leak() -> None:
     with pytest.raises(InvariantViolation, match="allowed Models to enter"):
         assert_no_model_context(_plan())
+
+
+@pytest.mark.asyncio
+async def test_p7_scope_pins_question_planning_to_source_and_disables_fallback() -> None:
+    from services.platform.execution import question_planning
+
+    source = object()
+    failed = object()
+    async with production_retrieval_policy("normal"):
+        assert question_planning.select_question_planning_provider(source) is source
+        assert (
+            question_planning.select_question_planning_fallback_provider(source, failed)
+            is None
+        )
