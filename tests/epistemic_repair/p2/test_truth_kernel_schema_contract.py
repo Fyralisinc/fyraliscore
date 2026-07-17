@@ -238,3 +238,12 @@ def test_every_tenant_table_has_rls_and_all_history_tables_are_immutable() -> No
     assert "ENABLE ROW LEVEL SECURITY" in sql
     assert "FORCE ROW LEVEL SECURITY" in sql
     assert "reject_consequential_immutable_mutation()" in sql
+
+
+def test_accepted_legacy_payload_and_edge_projection_are_database_guarded() -> None:
+    sql = _sql()
+    assert "guard_accepted_model_legacy_payload" in sql
+    assert "accepted_model_legacy_payload_guard" in sql
+    assert "accepted Model semantics require a truth-kernel command" in sql
+    assert "guard_accepted_relation_edge_projection" in sql
+    assert "accepted_relation_edge_projection_guard" in sql

@@ -123,6 +123,13 @@ async def test_admission_replay_and_terminal_fence_on_postgres():
             """,
             tenant_id,
         ) == 1
+        with pytest.raises(asyncpg.RaiseError, match="truth-kernel command"):
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE models SET confidence=0.9 WHERE tenant_id=$1 AND id=$2",
+                    tenant_id,
+                    admitted.model_id,
+                )
 
         falsify = _falsify(admitted, command.version)
         terminal = await service.advance(tx=conn, command=falsify)

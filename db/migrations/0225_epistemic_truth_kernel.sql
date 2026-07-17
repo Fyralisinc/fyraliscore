@@ -611,6 +611,63 @@ CREATE TRIGGER relation_truth_heads_transition_guard
   BEFORE UPDATE ON relation_truth_heads
   FOR EACH ROW EXECUTE FUNCTION enforce_relation_truth_head_transition();
 
+CREATE OR REPLACE FUNCTION guard_accepted_model_legacy_payload()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM model_truth_heads head
+    WHERE head.tenant_id = OLD.tenant_id AND head.model_id = OLD.id
+  ) THEN
+    IF TG_OP = 'DELETE' THEN
+      RAISE EXCEPTION 'accepted Model compatibility payload is immutable';
+    END IF;
+    IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.proposition IS DISTINCT FROM OLD.proposition
+       OR NEW."natural" IS DISTINCT FROM OLD."natural"
+       OR NEW.scope_actors IS DISTINCT FROM OLD.scope_actors
+       OR NEW.scope_entities IS DISTINCT FROM OLD.scope_entities
+       OR NEW.scope_temporal IS DISTINCT FROM OLD.scope_temporal
+       OR NEW.confidence IS DISTINCT FROM OLD.confidence
+       OR NEW.falsifier IS DISTINCT FROM OLD.falsifier
+       OR NEW.supporting_event_ids IS DISTINCT FROM OLD.supporting_event_ids
+       OR NEW.supporting_model_ids IS DISTINCT FROM OLD.supporting_model_ids
+       OR NEW.evidential_weight IS DISTINCT FROM OLD.evidential_weight
+       OR NEW.status IS DISTINCT FROM OLD.status
+       OR NEW.archived_at IS DISTINCT FROM OLD.archived_at
+       OR NEW.archive_reason IS DISTINCT FROM OLD.archive_reason THEN
+      RAISE EXCEPTION 'accepted Model semantics require a truth-kernel command';
+    END IF;
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+
+DROP TRIGGER IF EXISTS accepted_model_legacy_payload_guard ON models;
+CREATE TRIGGER accepted_model_legacy_payload_guard
+  BEFORE UPDATE OR DELETE ON models
+  FOR EACH ROW EXECUTE FUNCTION guard_accepted_model_legacy_payload();
+
+CREATE OR REPLACE FUNCTION guard_accepted_relation_edge_projection()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM relation_edge_projections projection
+    JOIN relation_truth_heads head
+      ON head.tenant_id = projection.tenant_id
+     AND head.relation_id = projection.relation_id
+    WHERE projection.tenant_id = OLD.tenant_id
+      AND projection.edge_id = OLD.id
+  ) THEN
+    RAISE EXCEPTION 'accepted relation edge is an immutable projection';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+
+DROP TRIGGER IF EXISTS accepted_relation_edge_projection_guard ON model_edges;
+CREATE TRIGGER accepted_relation_edge_projection_guard
+  BEFORE UPDATE OR DELETE ON model_edges
+  FOR EACH ROW EXECUTE FUNCTION guard_accepted_relation_edge_projection();
+
 DO $$
 DECLARE
   tenant_table TEXT;
