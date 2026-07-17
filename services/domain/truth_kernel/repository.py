@@ -99,6 +99,65 @@ class AsyncpgTruthKernelStorage:
             decision.admitted_version_id,
         )
         await self._insert_version_rows(tx=tx, version=version, supersedes=None)
+        await self._insert_legacy_read_projection(tx=tx, version=version)
+
+    async def _insert_legacy_read_projection(
+        self, *, tx: Any, version: ModelVersion
+    ) -> None:
+        """Materialize the temporary full-ModelRow compatibility payload.
+
+        Canonical membership and lifecycle come exclusively from truth heads;
+        this row supplies legacy retrieval fields until their derived sidecars
+        are rebuilt directly from immutable truth versions.
+        """
+
+        observations = [
+            item for item in version.evidence if item.kind.value == "observation"
+        ]
+        born_from_event_id = (
+            _uuid_or_reference(observations[0].evidence_id, observations[0].reference_id)
+            if observations
+            else version.evidence[0].reference_id
+        )
+        scope_actors = [
+            binding.subject_id
+            for binding in version.scope
+            if binding.subject_kind.value == "person"
+            or binding.role.value == "actor"
+        ]
+        scope_entities = [
+            {
+                "type": binding.subject_kind.value,
+                "id": str(binding.subject_id),
+                "role": binding.role.value,
+            }
+            for binding in version.scope
+        ]
+        compatibility_proposition = dict(version.proposition)
+        compatibility_proposition.setdefault("kind", "belief")
+        await tx.execute(
+            """
+            INSERT INTO models (
+              id, tenant_id, born_from_event_id, proposition, "natural",
+              embedding, scope_actors, scope_entities, scope_temporal,
+              confidence, confidence_at_assertion, activation,
+              evidential_weight, status, created_at
+            ) VALUES (
+              $1,$2,$3,$4::jsonb,$5,
+              array_fill(0.0::real, ARRAY[768])::vector,
+              $6,$7::jsonb,'{}'::jsonb,0.5,0.5,1.0,0.5,'active',$8
+            )
+            ON CONFLICT (id) DO NOTHING
+            """,
+            version.model_id,
+            version.tenant_id,
+            born_from_event_id,
+            json.dumps(compatibility_proposition),
+            version.natural,
+            scope_actors,
+            json.dumps(scope_entities),
+            version.created_at,
+        )
 
     async def lock_head(
         self, *, tx: Any, tenant_id: UUID, model_id: UUID
@@ -332,3 +391,10 @@ class AsyncpgTruthKernelStorage:
 
 
 __all__ = ["AsyncpgTruthKernelStorage"]
+
+
+def _uuid_or_reference(value: str, fallback: UUID) -> UUID:
+    try:
+        return UUID(value)
+    except (TypeError, ValueError):
+        return fallback

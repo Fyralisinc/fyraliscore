@@ -113,6 +113,16 @@ async def test_admission_replay_and_terminal_fence_on_postgres():
             "SELECT count(*) FROM accepted_current_models WHERE tenant_id=$1",
             tenant_id,
         ) == 1
+        assert await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM accepted_current_models accepted
+            JOIN models legacy
+              ON legacy.tenant_id=accepted.tenant_id AND legacy.id=accepted.id
+            WHERE accepted.tenant_id=$1
+            """,
+            tenant_id,
+        ) == 1
 
         falsify = _falsify(admitted, command.version)
         terminal = await service.advance(tx=conn, command=falsify)

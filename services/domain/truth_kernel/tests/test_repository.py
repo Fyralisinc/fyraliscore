@@ -44,6 +44,9 @@ async def test_admission_adapter_persists_version_bound_evidence_and_scope() -> 
     assert "INSERT INTO model_truth_evidence_references" in sql
     assert "INSERT INTO model_truth_scope_bindings" in sql
     assert "INSERT INTO model_truth_scope_evidence" in sql
+    assert "INSERT INTO models" in sql
+    assert "array_fill(0.0::real, ARRAY[768])::vector" in sql
+    assert "ON CONFLICT (id) DO NOTHING" in sql
     evidence_args = next(
         args
         for statement, args in tx.statements
