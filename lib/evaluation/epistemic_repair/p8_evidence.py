@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p8_oracles import ProductionExecutionEvidence
-from lib.evaluation.epistemic_repair.p8_population import build_fault_schedule
+from lib.evaluation.epistemic_repair.p8_population import build_fault_schedule, build_scale_matrix
 from lib.evaluation.epistemic_repair.p8_postgres_runner import PostgresFaultSlice
 from lib.evaluation.epistemic_repair.p8_provider_runner import ProviderFaultSlice
+from lib.evaluation.epistemic_repair.p8_scale_runner import ScaleExecution
 
 
 def bind_fault_execution_evidence(
@@ -59,4 +60,30 @@ def bind_fault_execution_evidence(
         attempt_receipts_persisted=True,
         canonical_digests_queried_after_restart=True,
         isolated_database_per_scale_cell=False,
+    )
+
+
+def bind_scale_execution_evidence(
+    *, prior: ProductionExecutionEvidence, scale: ScaleExecution,
+) -> ProductionExecutionEvidence:
+    """Bind exact measured cell IDs without overstating isolation strength."""
+
+    expected = {cell.cell_id for cell in build_scale_matrix()}
+    observed = {cell.cell_id for cell in scale.cells}
+    if observed != expected or not scale.exact_matrix_coverage:
+        raise ValueError("scale execution evidence is not exact 27-cell coverage")
+    return ProductionExecutionEvidence(
+        database_run_id=prior.database_run_id,
+        commit_sha=prior.commit_sha,
+        database_evidence_digest=canonical_sha256({
+            "prior": prior.database_evidence_digest,
+            "scale": scale.evidence_digest,
+            "cells": sorted(observed),
+        }),
+        fault_execution_keys=prior.fault_execution_keys,
+        scale_execution_cell_ids=tuple(sorted(observed)),
+        characterization_population_digests=prior.characterization_population_digests,
+        attempt_receipts_persisted=prior.attempt_receipts_persisted,
+        canonical_digests_queried_after_restart=prior.canonical_digests_queried_after_restart,
+        isolated_database_per_scale_cell=scale.physically_isolated_databases,
     )
