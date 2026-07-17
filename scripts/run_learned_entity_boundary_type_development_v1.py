@@ -73,6 +73,7 @@ async def main(*, provider_kind: str) -> None:
     gold = [GoldMention(mention_id=m["mention_id"], signal_id=r["signal_id"], start=m["start"], end=m["end"], entity_type=m["entity_type"], canonical_referent=None) for r in DEVELOPMENT_CORPUS for m in r["gold"]]
     predictions = []
     type_caps = []
+    verified_candidates = []
     if provider_kind == "codex":
         os.environ.update({"LLM_PROVIDER": "codex", "CODEX_TRANSPORT": "app-server", "CODEX_MODEL": "gpt-5.4", "LLM_MAX_RETRIES": "0"})
         set_response_cache(None)
@@ -84,6 +85,13 @@ async def main(*, provider_kind: str) -> None:
             rows = [r for r in DEVELOPMENT_CORPUS if r["batch_id"] == batch_id]
             result = await discover_batch_mentions(provider=provider, signals=tuple(PersistedSignalText(UUID(r["signal_id"]), r["source_type"], r["text"]) for r in rows))
             for c in result.candidates:
+                verified_candidates.append({
+                    "signal_id": str(c.signal_id), "surface": c.surface,
+                    "start": c.span_start, "end": c.span_end,
+                    "entity_type": c.entity_type, "confidence": c.confidence,
+                    "type_confidence": c.type_confidence, "fate": c.fate.value,
+                    "reason_codes": list(c.reason_codes),
+                })
                 if c.fate is EntityMentionDetectionFate.DETECTED:
                     predictions.append(PredictedMention(prediction_id=f"p-{len(predictions)+1}", signal_id=str(c.signal_id), start=c.span_start, end=c.span_end, entity_type=c.entity_type, confidence=c.confidence, canonical_referent=None, candidate_fate=c.fate.value))
                 if c.type_confidence != c.confidence:
@@ -92,7 +100,7 @@ async def main(*, provider_kind: str) -> None:
         if provider_kind == "codex":
             await close_codex_app_server_client()
     metrics = evaluate_gold_entity_extraction(signals=signals, gold_mentions=gold, predictions=predictions).model_dump(mode="json")
-    artifact = {"schema_version": VERSION, "evidence_class": EVIDENCE_CLASS, "development_only": True, "generalization_claim_permitted": False, "provider": provider_kind, "signal_count": len(signals), "batch_count": 2, "metrics": metrics, "ambiguous_code_type_caps": type_caps}
+    artifact = {"schema_version": VERSION, "evidence_class": EVIDENCE_CLASS, "development_only": True, "generalization_claim_permitted": False, "provider": provider_kind, "signal_count": len(signals), "batch_count": 2, "metrics": metrics, "verified_candidates": verified_candidates, "ambiguous_code_type_caps": type_caps}
     output = OUTPUT.with_name(f"{OUTPUT.stem}_{provider_kind}.json")
     output.write_text(json.dumps(artifact, indent=2) + "\n")
     print(output)
