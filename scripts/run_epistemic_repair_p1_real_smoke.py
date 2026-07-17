@@ -76,6 +76,17 @@ async def _run() -> dict[str, object]:
         "logical_call_count": len(sink.logical_calls),
         "physical_attempt_count": len(sink.attempts),
         "logical_outcome": logical.outcome if logical else "missing_receipt",
+        "logical_history": (
+            []
+            if logical is None
+            else [
+                {
+                    **asdict(logical),
+                    "started_at": logical.started_at.isoformat(),
+                    "ended_at": logical.ended_at.isoformat(),
+                }
+            ]
+        ),
         "attempt_outcomes": [attempt.outcome for attempt in sink.attempts],
         "context_digest_present": bool(logical and logical.context_digest),
         "referenced_signal_count": (
