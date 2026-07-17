@@ -1,0 +1,17 @@
+{
+  "artifact_committed": false,
+  "completed_batches": 0,
+  "corpus_digest": "06ba50a6da39175acb9715efe00acf7a660f3e30df396ec588a300d6033f09ba",
+  "failure_contract": "BatchMemoryDecisionSet rejected legacy Think diff fields",
+  "failure_stage": "first_learned_arm_batch_before_model_admission",
+  "generalization_claim": "unproven",
+  "judge_predictions": 0,
+  "launcher_bootstrap_failures_before_experiment": 1,
+  "manifest_digest": "4711a6e32c7be432e3baecbe64548839c65143b9b1f0ad37f953c40fb5e74928",
+  "producer_tuned_after_result": false,
+  "receipt_sha256": "bf4165476d97ace0dd0f9b18c27f4544ad35f52d76894de79729e1489fc4e51b",
+  "rerun_performed": false,
+  "run_attempts": 1,
+  "schema_version": "company-model-holdout-v5-receipt-metadata-v1",
+  "status": "inconclusive_runtime_contract_failure"
+}
