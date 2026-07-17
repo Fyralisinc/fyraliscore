@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from lib.observability.metrics import counter, gauge
-DISCOVERY_VERSION = "learned-persisted-batch-entity-discovery-v2"
+DISCOVERY_VERSION = "learned-persisted-batch-entity-discovery-v3"
 # Below this point the candidate remains a governed non-entity fate. Identity
 # resolution still has its own stricter authority/selection gates.
 MIN_ACCEPTED_CONFIDENCE = 0.75
@@ -39,6 +39,12 @@ _TYPE_CUES: dict[str, tuple[str, ...]] = {
     "decision": ("decision",),
     "resource": ("resource", "ticket", "incident", "risk", "document", "dataset", "contract", "gate", "case"),
 }
+_TRAILING_TYPE_DESIGNATORS: dict[str, tuple[str, ...]] = {
+    # Literal ``workstream`` is an unambiguous ontology designator. The other
+    # work forms can be generic nouns ("migration plan", "launch notes") and
+    # therefore remain model boundary decisions rather than verifier rewrites.
+    "workstream": ("workstream",),
+}
 
 _DISCOVERY_SYSTEM_PROMPT = """\
 Extract every explicit named company-entity mention from this persisted signal batch.
@@ -58,8 +64,11 @@ smallest *complete written designation*, not merely the shortest unique token:
   object is (for example a written Project/Initiative, Goal/Objective,
   Decision, Commitment, Contract, Gate, Dataset, or Resource designation);
 - include a person's written title when it is attached to their name;
+- include a directly attached trailing type designator when it completes the
+  proper designation (for example "Obsidian Meadow workstream" or "Cinder
+  Atlas rollout"); do not return only "Obsidian Meadow" or "Cinder Atlas";
 - exclude surrounding punctuation, quoting syntax, verbs, articles, and merely
-  descriptive trailing nouns such as "the X project" or "the Y workstream";
+  descriptive trailing nouns that are not part of the written designation;
 - preserve every character inside names and identifiers, including Unicode,
   whitespace, hyphens, slashes, #, @, colons, and code punctuation.
 Do not strip a type-bearing prefix from a code, but do not invent one when only
@@ -84,6 +93,10 @@ TYPES -- choose by the referent's role in this signal, not by capitalization:
 Prefer the stated relationship and explicit designator over name morphology. If
 an organization's internal/external role or a product-like name's referent is not
 actually established, use other or abstain rather than guessing confidently.
+For a bare code-like identifier, do not infer a specific type from its prefix,
+capitalization, or shape. Use a specific type only when an attached designator
+or the sentence explicitly states its role; otherwise mark the type uncertain
+and abstain rather than presenting morphology as ontology evidence.
 
 Do not treat conversational or transport coordinates (channel names, thread
 numbers, timestamps, message IDs), ordinary language, unnamed roles, pronouns,
@@ -204,16 +217,37 @@ def _type_confidence_for_candidate(
 
     if not _IDENTIFIER_CODE_RE.fullmatch(surface.strip()):
         return learned_confidence, "learned_type_confidence_inherited_named_surface"
-    window_start = max(0, span_start - 40)
-    window_end = min(len(signal_text), span_end + 40)
-    nearby = signal_text[window_start:window_end].casefold()
+    # Only syntactically attached cues support a code's ontology type. A loose
+    # cue elsewhere in the sentence may refer to a different entity.
+    before = signal_text[max(0, span_start - 28):span_start].casefold()
+    after = signal_text[span_end:min(len(signal_text), span_end + 28)].casefold()
     cues = _TYPE_CUES.get(learned_type, ())
-    if any(re.search(rf"(?<!\w){re.escape(cue)}(?!\w)", nearby) for cue in cues):
+    if any(
+        re.search(rf"(?:^|\b){re.escape(cue)}\s*(?:[:#-]\s*)?$", before)
+        or re.match(rf"^\s*(?:[-:,(]\s*)?{re.escape(cue)}\b", after)
+        for cue in cues
+    ):
         return learned_confidence, "learned_type_supported_by_nearby_role_cue"
     return (
         min(learned_confidence, AMBIGUOUS_IDENTIFIER_TYPE_CONFIDENCE_CAP),
         "learned_type_confidence_capped_ambiguous_identifier",
     )
+
+
+def _expand_complete_designation(
+    *, signal_text: str, span_start: int, span_end: int, entity_type: str,
+) -> tuple[int, int, bool]:
+    """Expand only an immediately attached, type-bearing suffix."""
+
+    for designator in _TRAILING_TYPE_DESIGNATORS.get(entity_type, ()):
+        match = re.match(
+            rf"\s+{re.escape(designator)}\b",
+            signal_text[span_end:],
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return span_start, span_end + match.end(), True
+    return span_start, span_end, False
 
 
 @dataclass(frozen=True)
@@ -354,6 +388,7 @@ def _verify_candidates(
         )
         span_start = item.span_start
         span_end = item.span_end
+        surface = item.surface
         repaired = False
         if not exact:
             occurrences: list[int] = []
@@ -369,6 +404,16 @@ def _verify_candidates(
                 span_end = span_start + len(item.surface)
                 exact = True
                 repaired = True
+        expanded = False
+        if exact:
+            span_start, span_end, expanded = _expand_complete_designation(
+                signal_text=signal.content_text,
+                span_start=span_start,
+                span_end=span_end,
+                entity_type=item.entity_type,
+            )
+            if expanded:
+                surface = signal.content_text[span_start:span_end]
         if not exact:
             fate = EntityMentionDetectionFate.REJECTED_NOT_ANCHORED
             reasons = ("learned_span_failed_exact_source_verification",)
@@ -393,7 +438,13 @@ def _verify_candidates(
                 (
                     "learned_span_repaired_unique_exact_surface"
                     if repaired
+                    else "learned_span_expanded_attached_type_designator"
+                    if expanded
                     else "learned_high_confidence_exact_source_span"
+                ),
+                *(
+                    ("learned_span_expanded_attached_type_designator",)
+                    if expanded and repaired else ()
                 ),
                 f"learned_type:{item.entity_type}",
                 f"learned_type_hypothesis:{item.entity_type}",
@@ -401,13 +452,13 @@ def _verify_candidates(
             )
         if fate is not EntityMentionDetectionFate.DETECTED:
             type_confidence = item.confidence
-        key = (item.signal_id, span_start, span_end, item.surface.casefold())
+        key = (item.signal_id, span_start, span_end, surface.casefold())
         if key in seen:
             continue
         seen.add(key)
         candidates.append(VerifiedMentionCandidate(
             signal_id=item.signal_id,
-            surface=item.surface,
+            surface=surface,
             span_start=span_start,
             span_end=span_end,
             entity_type=item.entity_type,

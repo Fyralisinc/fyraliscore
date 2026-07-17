@@ -128,6 +128,50 @@ async def test_type_confidence_caps_only_ambiguous_bare_identifiers() -> None:
 
 
 @pytest.mark.asyncio
+async def test_expands_attached_workstream_suffix_to_complete_designation() -> None:
+    signal_id = uuid4()
+    provider = ScriptedProvider({"mentions": [{
+        "signal_id": str(signal_id), "surface": "Cinder Atlas",
+        "span_start": 11, "span_end": 23, "entity_type": "workstream",
+        "confidence": .95, "abstain": False,
+    }]})
+
+    result = await discover_batch_mentions(
+        provider=provider,
+        signals=(PersistedSignalText(
+            signal_id, "slack:message", "We paused Cinder Atlas workstream yesterday."
+        ),),
+    )
+
+    candidate = result.candidates[0]
+    assert candidate.surface == "Cinder Atlas workstream"
+    assert candidate.span_start == 10
+    assert candidate.span_end == 33
+    assert "learned_span_expanded_attached_type_designator" in candidate.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_unattached_type_word_does_not_validate_bare_code_type() -> None:
+    signal_id = uuid4()
+    text = "Goal review moved; RUNE-310 blocked delivery."
+    start = text.index("RUNE-310")
+    provider = ScriptedProvider({"mentions": [{
+        "signal_id": str(signal_id), "surface": "RUNE-310",
+        "span_start": start, "span_end": start + 8, "entity_type": "goal",
+        "confidence": .94, "abstain": False,
+    }]})
+
+    result = await discover_batch_mentions(
+        provider=provider,
+        signals=(PersistedSignalText(signal_id, "jira:issue", text),),
+    )
+
+    candidate = result.candidates[0]
+    assert candidate.type_confidence == AMBIGUOUS_IDENTIFIER_TYPE_CONFIDENCE_CAP
+    assert "learned_type_confidence_capped_ambiguous_identifier" in candidate.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_provider_failure_falls_back_without_partial_learned_output() -> None:
     provider = ScriptedProvider(RuntimeError("provider unavailable"))
     signal = PersistedSignalText(uuid4(), "jira:issue", "Nimbus migration blocked")

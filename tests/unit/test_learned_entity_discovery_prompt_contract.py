@@ -38,6 +38,7 @@ async def test_prompt_defines_complete_designator_boundary_policy() -> None:
     assert "descriptive trailing nouns" in prompt
     assert "preserve every character inside names and identifiers" in prompt
     assert "repeat the\nper-signal completeness pass" in prompt
+    assert "Obsidian Meadow workstream" in prompt
 
 
 @pytest.mark.asyncio
@@ -65,6 +66,7 @@ async def test_prompt_defines_closed_types_by_role_and_transport_negatives() -> 
         assert expected in prompt
     assert "channel names, thread\nnumbers, timestamps, message IDs" in prompt
     assert "use other or abstain rather than guessing confidently" in prompt
+    assert "do not infer a specific type from its prefix" in prompt
 
 
 def test_structured_schema_repeats_boundary_and_type_contract() -> None:
