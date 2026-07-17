@@ -9,6 +9,7 @@ from lib.evaluation.epistemic_repair.p8_scale_runner import (
     ScaleExecution,
     evaluate_scale_execution,
     run_scale_cell,
+    run_scale_matrix,
 )
 
 
@@ -45,3 +46,16 @@ async def test_scale_evaluator_does_not_equate_rollback_with_database_isolation(
     evaluation = evaluate_scale_execution(ScaleExecution((cell,), None, False, False, "a" * 64))
     assert evaluation["scale_execution_ready"] is False
     assert evaluation["gates"]["physically_isolated_database_per_cell"] is False
+
+
+async def test_scale_evaluator_derives_barrier_measurement_gates_from_receipts() -> None:
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL is required")
+    execution = await run_scale_matrix(
+        dsn, cells=(ScaleCell("p8-measurement-proof", 2, 2, 1),),
+    )
+    evaluation = evaluate_scale_execution(execution)
+    assert evaluation["gates"]["all_production_queue_families_measured"] is True
+    assert evaluation["gates"]["resource_sample_every_durable_barrier"] is True
+    assert evaluation["gates"]["deterministic_token_status_explicit"] is True

@@ -57,7 +57,6 @@ async def run_db_characterization(conn) -> dict[str, object]:
     projection_attempts = projection_rows = projection_processed = 0
 
     for index, case in enumerate(retrieval_pop.cases):
-        labels = set(case.evaluator_labels)
         rows = await conn.fetch(
             "SELECT truth_version_id FROM accepted_current_models WHERE tenant_id=$1",
             tenant_id,
@@ -85,7 +84,9 @@ async def run_db_characterization(conn) -> dict[str, object]:
             route_id="p8-characterization:retrieval", context_item_kind=kind,
             context_item_id=context_item_id, context_item_version="1",
             retrieved=True, selected=True, included=True, referenced=referenced,
-            counterevidence_retained="contradiction_lifecycle" in labels,
+            # Production behavior is derived only from the runtime question.
+            # Evaluator labels are opened below solely to score the frozen fate.
+            counterevidence_retained="contradicts" in case.runtime_text,
             confidence_affecting=referenced, necessary_background=False,
             historical_reopen_reason=(HistoricalReopenReason.SPARSE_COVERAGE if kind == "historical_observation" else None),
             decision_fate="mutation" if referenced else "justified_noop",

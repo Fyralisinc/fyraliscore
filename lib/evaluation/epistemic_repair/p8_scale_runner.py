@@ -145,6 +145,31 @@ def evaluate_scale_execution(execution: ScaleExecution) -> dict[str, object]:
             for horizon in (12, 50, 100):
                 one, twenty = cells[(batch, horizon, 1)], cells[(batch, horizon, 20)]
                 concurrency_ratios.append(twenty.latency_p95_ms / max(one.latency_p95_ms, .000001))
+    measurements = [
+        sample for cell in execution.cells for receipt in cell.tenant_receipts
+        for sample in receipt.barrier_measurements
+    ]
+    expected_measurements = sum(
+        receipt.barriers for cell in execution.cells for receipt in cell.tenant_receipts
+    )
+    queue_families = {item.family for item in QUEUE_FAMILIES}
+    complete_queues = bool(measurements) and len(measurements) == expected_measurements and all(
+        set(sample.get("queues", {})) == queue_families
+        and all(row.get("status") == "measured" for row in sample["queues"].values())
+        for sample in measurements
+    )
+    complete_resources = bool(measurements) and all(
+        isinstance(sample.get("resource", {}).get("process_peak_rss_kib"), int)
+        and sample["resource"]["process_peak_rss_kib"] > 0
+        for sample in measurements
+    )
+    deterministic_token_status = bool(measurements) and all(
+        sample.get("provider_tokens", {}).get("status") == "unavailable_deterministic_cell"
+        and sample["provider_tokens"].get("estimated") is False
+        and sample["provider_tokens"].get("input_tokens") is None
+        and sample["provider_tokens"].get("output_tokens") is None
+        for sample in measurements
+    )
     gates = {
         "exact_27_cell_coverage": execution.exact_matrix_coverage,
         "physically_isolated_database_per_cell": execution.physically_isolated_databases,
@@ -152,7 +177,9 @@ def evaluate_scale_execution(execution: ScaleExecution) -> dict[str, object]:
         # truth-barrier pending work, and no projector execution. Those are
         # useful diagnostics but cannot prove the stronger P8 requirements.
         "exact_provider_prompt_token_measurement": False,
-        "all_production_queue_families_measured": False,
+        "all_production_queue_families_measured": complete_queues,
+        "resource_sample_every_durable_barrier": complete_resources,
+        "deterministic_token_status_explicit": deterministic_token_status,
         "derived_refresh_pipeline_executed": False,
         "queue_depth_slope": bool(execution.cells) and all(x.queue_depth_slope_final_half <= 0 for x in execution.cells),
         "retrieval_horizon_ratio": bool(retrieval_ratios) and max(retrieval_ratios) <= 2,

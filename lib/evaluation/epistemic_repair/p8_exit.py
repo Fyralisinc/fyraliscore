@@ -70,14 +70,19 @@ def compose_p8_exit(
             and bool(artifacts["scale"].get("execution", {}).get("physically_isolated_databases")),
         "scale_latency": latency_green,
         "scale_queue_growth_resource_complete": all(scale_gates.get(key) is True for key in (
-            "all_production_queue_families_measured", "derived_refresh_pipeline_executed",
+            "all_production_queue_families_measured", "resource_sample_every_durable_barrier",
+            "deterministic_token_status_explicit", "derived_refresh_pipeline_executed",
         )),
         "deterministic_token_status_exact_not_estimated": scale_gates.get("exact_provider_prompt_token_measurement") is False,
         "shared_contention_separate": artifacts["contention"].get("schema_version") == "p8-shared-contention-v2",
         "characterization_reporting_complete": characterization_complete,
         "authorized_provider_canaries": False if not latency_green else False,
         "provider_usage_observability": isinstance(usage, dict) and usage.get("input_tokens", 0) > 0,
-        "hash_reopen_review": all(row["stable_on_reopen"] and row["nonempty"] for row in reviews),
+        "hash_reopen_review": all(
+            row["stable_on_reopen"] and row["nonempty"]
+            and row["canonical_digest_matches"] is not False
+            for row in reviews
+        ),
         "single_commit_evidence": False,
     }
     result = {
