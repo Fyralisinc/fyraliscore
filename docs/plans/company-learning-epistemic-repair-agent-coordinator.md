@@ -38,9 +38,14 @@
 The deterministic company-learning kernel now has one PostgreSQL-backed
 zero-seed vertical over three genuine 25-signal batches. That result proves
 production-seam mechanical coherence, not provider-semantic quality or release
-readiness. The former DeepSeek HTTP 402 is no longer a dependency: the bounded
+readiness. The former external-provider HTTP 402 is no longer a dependency: the bounded
 real-provider gate passed through subscription-backed Codex CLI using pinned
 model `gpt-5.4`. P6-P8 plus the coherent P9 release audit remain required.
+
+Every real-model phase, including P7 ablations, must use only the established
+Codex CLI provider and prove
+`provider=codex` plus the pinned model in durable logical and physical receipts.
+Deterministic providers are permitted only in unit and fault-injection tests.
 Codex subprocess transport still has no lower SDK retry knob, so its receipt
 completeness is at wrapper-invocation granularity.
 

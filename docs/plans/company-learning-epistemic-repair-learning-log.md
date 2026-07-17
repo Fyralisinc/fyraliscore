@@ -698,6 +698,10 @@ reopened through a new PostgreSQL connection, and replayed idempotently. The
 provider blocker is removed. Wrapper receipts still cannot claim visibility
 inside opaque Codex service retries.
 
+**Permanent policy:** all subsequent real-model qualification uses only the
+Codex CLI receipt path. The earlier provider is retained here solely as
+historical failure evidence and is not an allowed fallback.
+
 ### 2026-07-18 — LOG-022 — Reference vectors cannot qualify fault or scale behavior
 
 **Type:** observed + corrected

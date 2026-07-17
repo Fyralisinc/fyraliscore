@@ -1062,7 +1062,6 @@ Files:
 lib/llm/provider.py
 lib/llm/openai_provider.py
 lib/llm/anthropic_provider.py
-lib/llm/deepseek_provider.py
 lib/llm/codex_provider.py
 ```
 
