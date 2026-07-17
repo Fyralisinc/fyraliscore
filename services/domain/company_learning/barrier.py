@@ -9,7 +9,7 @@ continue against the declared barrier version.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 import json
 from typing import Any, Literal
@@ -178,10 +178,7 @@ class CompanyLearningBarrierService:
                 "cannot complete while truth-critical work remains",
                 pending=truth_critical_pending_count,
             )
-        await tx.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-            f"company-learning-barrier:{tenant_id}",
-        )
+        completed_at = completed_at.astimezone(timezone.utc)
         if not expected_relation_version_ids and not invalidated_model_version_ids:
             return await self._complete_common_atomic(
                 tx=tx, barrier_id=barrier_id, tenant_id=tenant_id,
@@ -189,6 +186,7 @@ class CompanyLearningBarrierService:
                 completed_at=completed_at,
             )
         else:
+            head = await self._lock_head(tx=tx, tenant_id=tenant_id)
             replay = await self._find(tx=tx, tenant_id=tenant_id, batch_id=batch_id)
             if replay is not None:
                 return replay
@@ -199,11 +197,7 @@ class CompanyLearningBarrierService:
                 relation_versions=expected_relation_version_ids,
                 invalidated_versions=invalidated_model_version_ids,
             )
-            prior = await tx.fetchrow(
-                """SELECT barrier_id, barrier_version FROM company_learning_barriers
-                   WHERE tenant_id=$1 ORDER BY barrier_version DESC LIMIT 1 FOR UPDATE""",
-                tenant_id,
-            )
+            prior = head
         version = int(prior["barrier_version"]) + 1 if prior else 1
         prior_id = prior["barrier_id"] if prior else None
         payload = {
@@ -230,6 +224,11 @@ class CompanyLearningBarrierService:
             list(expected_model_version_ids), list(expected_relation_version_ids),
             list(invalidated_model_version_ids), digest, completed_at,
         )
+        await tx.execute(
+            """UPDATE company_learning_barrier_heads
+               SET barrier_id=$2,barrier_version=$3 WHERE tenant_id=$1""",
+            tenant_id, barrier_id, version,
+        )
         return BarrierReceipt(
             barrier_id, tenant_id, batch_id, version, prior_id,
             expected_model_version_ids, expected_relation_version_ids,
@@ -241,52 +240,14 @@ class CompanyLearningBarrierService:
         *, tx: Any, barrier_id: UUID, tenant_id: UUID, batch_id: str,
         model_versions: tuple[UUID, ...], completed_at: datetime,
     ) -> BarrierReceipt:
-        models_json = json.dumps(sorted(map(str, model_versions)), separators=(",", ":"))
         row = await tx.fetchrow(
-            """WITH replay AS (
-                 SELECT * FROM company_learning_barriers
-                 WHERE tenant_id=$1 AND batch_id=$2
-               ), visible AS (
-                 SELECT count(*)::int AS n FROM accepted_current_models
-                 WHERE tenant_id=$1 AND truth_version_id=ANY($4::uuid[])
-               ), prior AS (
-                 SELECT barrier_id, barrier_version FROM company_learning_barriers
-                 WHERE tenant_id=$1 ORDER BY barrier_version DESC LIMIT 1 FOR UPDATE
-               ), candidate AS (
-                 SELECT COALESCE(prior.barrier_version,0)+1 AS barrier_version,
-                        prior.barrier_id AS prior_barrier_id
-                 FROM visible LEFT JOIN prior ON true
-                 WHERE visible.n=cardinality($4::uuid[]) AND NOT EXISTS (SELECT 1 FROM replay)
-               ), inserted AS (
-                 INSERT INTO company_learning_barriers (
-                   barrier_id,tenant_id,batch_id,barrier_version,prior_barrier_id,
-                   expected_model_version_ids,expected_relation_version_ids,
-                   invalidated_model_version_ids,truth_critical_pending_count,status,
-                   receipt_digest,completed_at
-                 )
-                 SELECT $3::uuid,$1::uuid,$2::text,c.barrier_version,c.prior_barrier_id,$4::uuid[],
-                        '{}'::uuid[],'{}'::uuid[],0,'complete',
-                        encode(sha256(convert_to(
-                          '{"barrier_id":'||to_jsonb($3::text)::text||
-                          ',"barrier_version":'||c.barrier_version::text||
-                          ',"batch_id":'||to_jsonb($2::text)::text||
-                          ',"completed_at":'||to_jsonb($5::text)::text||
-                          ',"expected_model_version_ids":'||$6||
-                          ',"expected_relation_version_ids":[]'||
-                          ',"invalidated_model_version_ids":[]'||
-                          ',"prior_barrier_id":'||COALESCE(to_jsonb(c.prior_barrier_id::text)::text,'null')||
-                          ',"tenant_id":'||to_jsonb($1::text)::text||
-                          ',"truth_critical_pending_count":0}', 'UTF8')), 'hex'), $7
-                 FROM candidate c
-                 ON CONFLICT (tenant_id,batch_id) DO NOTHING RETURNING *
-               ), chosen AS (
-                 SELECT * FROM replay UNION ALL SELECT * FROM inserted LIMIT 1
-               )
-               SELECT chosen.*, visible.n AS visible_count FROM visible LEFT JOIN chosen ON true""",
+            """SELECT * FROM complete_company_learning_barrier_common(
+                 $1,$2,$3,$4,$5
+               )""",
             tenant_id, batch_id, barrier_id, list(model_versions),
-            completed_at.isoformat(), models_json, completed_at,
+            completed_at,
         )
-        if row["barrier_id"] is None:
+        if row is None:
             raise InvariantViolation(
                 "BARRIER_MODEL_VISIBILITY", "expected Models are not current",
             )
@@ -315,6 +276,20 @@ class CompanyLearningBarrierService:
                 actual=receipt.receipt_digest, expected=expected_digest,
             )
         return receipt
+
+    @staticmethod
+    async def _lock_head(*, tx: Any, tenant_id: UUID) -> Any:
+        await tx.execute(
+            """INSERT INTO company_learning_barrier_heads(tenant_id)
+               VALUES($1) ON CONFLICT (tenant_id) DO NOTHING""",
+            tenant_id,
+        )
+        return await tx.fetchrow(
+            """SELECT barrier_id,barrier_version
+               FROM company_learning_barrier_heads
+               WHERE tenant_id=$1 FOR UPDATE""",
+            tenant_id,
+        )
 
     async def _assert_visibility(
         self, *, tx: Any, tenant_id: UUID,
