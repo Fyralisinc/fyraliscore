@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS model_truth_heads (
 );
 
 CREATE TABLE IF NOT EXISTS model_truth_evidence_references (
-  reference_id UUID PRIMARY KEY,
+  reference_id UUID NOT NULL,
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   model_version_id UUID NOT NULL,
   evidence_kind TEXT NOT NULL CHECK (
@@ -170,7 +170,7 @@ CREATE TABLE IF NOT EXISTS model_truth_evidence_references (
   recorded_at TIMESTAMPTZ NOT NULL,
   cutoff_at TIMESTAMPTZ NOT NULL,
   reference_digest TEXT NOT NULL CHECK (reference_digest ~ '^[0-9a-f]{64}$'),
-  UNIQUE (tenant_id, model_version_id, reference_id),
+  PRIMARY KEY (tenant_id, model_version_id, reference_id),
   UNIQUE (tenant_id, model_version_id, evidence_kind, evidence_id, evidence_version, evidence_role),
   FOREIGN KEY (tenant_id, model_version_id)
     REFERENCES model_truth_versions (tenant_id, version_id) ON DELETE RESTRICT,
@@ -182,6 +182,14 @@ CREATE TABLE IF NOT EXISTS model_truth_evidence_references (
   CHECK (authority_decided_at <= cutoff_at),
   CHECK (authority_expires_at IS NULL OR authority_expires_at > cutoff_at)
 );
+
+-- Citation identity is version-bound: an unchanged citation may legitimately
+-- be carried into a new immutable Model version.
+ALTER TABLE model_truth_evidence_references
+  DROP CONSTRAINT IF EXISTS model_truth_evidence_references_pkey;
+ALTER TABLE model_truth_evidence_references
+  ADD CONSTRAINT model_truth_evidence_references_pkey
+  PRIMARY KEY (tenant_id, model_version_id, reference_id);
 
 CREATE TABLE IF NOT EXISTS model_truth_scope_bindings (
   binding_id UUID PRIMARY KEY,
