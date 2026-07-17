@@ -771,6 +771,14 @@ transport are excluded from this goal.
   receipt. Objective readiness therefore records narrow exceptional quality,
   below-budget negative cleanliness (`14/15`) and unknown auditability blockers
   simultaneously.
+- **Protocol closure:** A generic source-verifiable guard now rejects a literal
+  only when the focal source explicitly labels it as syntax/example/schema
+  metadata; positive controls preserve genuine Request/Resource mentions. A
+  separate untouched ten-signal holdout produced 10/10 exact mentions, type
+  accuracy `1.0` and 5/5 clean negatives with the running receipt, raw output,
+  checkpoint and completed one-attempt receipt all present. Its scope is small;
+  it does not erase v2's historical false positive/audit gap or broader v3's
+  workstream tail.
 
 ### EDGE-035 — High-confidence wrong type can drive consequential admission
 

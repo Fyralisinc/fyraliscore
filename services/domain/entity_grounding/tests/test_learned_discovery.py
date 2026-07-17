@@ -172,6 +172,34 @@ async def test_unattached_type_word_does_not_validate_bare_code_type() -> None:
 
 
 @pytest.mark.asyncio
+async def test_explicit_syntax_example_is_rejected_but_real_request_survives() -> None:
+    negative_id, positive_id = uuid4(), uuid4()
+    negative = "`deploy(target_id)` and request AB-22 are syntax examples only."
+    positive = "Request AB-22 is an approved customer request awaiting fulfillment."
+    provider = ScriptedProvider({"mentions": [
+        {"signal_id": str(negative_id), "surface": "request AB-22",
+         "span_start": negative.index("request AB-22"),
+         "span_end": negative.index("request AB-22") + len("request AB-22"),
+         "entity_type": "resource", "confidence": .96, "abstain": False},
+        {"signal_id": str(positive_id), "surface": "Request AB-22",
+         "span_start": 0, "span_end": len("Request AB-22"),
+         "entity_type": "resource", "confidence": .96, "abstain": False},
+    ]})
+
+    result = await discover_batch_mentions(provider=provider, signals=(
+        PersistedSignalText(negative_id, "slack:message", negative),
+        PersistedSignalText(positive_id, "email:message", positive),
+    ))
+    by_surface = {item.surface: item for item in result.candidates}
+
+    assert by_surface["request AB-22"].fate is EntityMentionDetectionFate.REJECTED_NOT_ENTITY
+    assert "source_explicitly_marks_literal_as_syntax_or_schema_metadata" in (
+        by_surface["request AB-22"].reason_codes
+    )
+    assert by_surface["Request AB-22"].fate is EntityMentionDetectionFate.DETECTED
+
+
+@pytest.mark.asyncio
 async def test_provider_failure_falls_back_without_partial_learned_output() -> None:
     provider = ScriptedProvider(RuntimeError("provider unavailable"))
     signal = PersistedSignalText(uuid4(), "jira:issue", "Nimbus migration blocked")

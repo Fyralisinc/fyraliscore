@@ -28,6 +28,8 @@ def main() -> int:
     parser.add_argument("--company-physics-adversarial-sha256", required=True)
     parser.add_argument("--boundary-type", type=Path)
     parser.add_argument("--boundary-type-sha256")
+    parser.add_argument("--boundary-type-closure", type=Path)
+    parser.add_argument("--boundary-type-closure-sha256")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     v3 = load_bound_json(args.v3_report, expected_sha256=args.v3_sha256)
@@ -44,6 +46,13 @@ def main() -> int:
     )
     if bool(args.boundary_type) != bool(args.boundary_type_sha256):
         raise SystemExit("boundary type path and SHA must be supplied together")
+    closure = (
+        load_bound_json(args.boundary_type_closure,
+            expected_sha256=args.boundary_type_closure_sha256)
+        if args.boundary_type_closure and args.boundary_type_closure_sha256 else None
+    )
+    if bool(args.boundary_type_closure) != bool(args.boundary_type_closure_sha256):
+        raise SystemExit("boundary type closure path and SHA must be supplied together")
     result = compose_objective_entity_evidence(
         v3=v3, vertical=vertical,
         v3_artifact_sha256=args.v3_sha256,
@@ -52,6 +61,8 @@ def main() -> int:
         adversarial_artifact_sha256=args.company_physics_adversarial_sha256,
         boundary_type=boundary_type,
         boundary_type_artifact_sha256=args.boundary_type_sha256,
+        boundary_type_closure=closure,
+        boundary_type_closure_artifact_sha256=args.boundary_type_closure_sha256,
     )
     write_atomic_json(args.output, result)
     return 0

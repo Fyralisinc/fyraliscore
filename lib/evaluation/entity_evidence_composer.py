@@ -28,6 +28,7 @@ ADVERSARIAL_SCHEMA = "sealed-company-physics-adversarial-objective-v2"
 READINESS_INPUT_SCHEMA = "sealed-company-physics-readiness-evidence-v1"
 OUTPUT_SCHEMA = "objective-entity-evidence-v2"
 BOUNDARY_TYPE_SCHEMA = "objective-boundary-type-supplement-v1"
+BOUNDARY_TYPE_CLOSURE_SCHEMA = "boundary-type-untouched-holdout-v3"
 _REQUIRED_POPULATIONS = frozenset({
     "pipeline.candidate_recall_at_3",
     "pipeline.canonical_link_coverage",
@@ -84,6 +85,8 @@ def compose_objective_entity_evidence(
     adversarial_artifact_sha256: str,
     boundary_type: Mapping[str, Any] | None = None,
     boundary_type_artifact_sha256: str | None = None,
+    boundary_type_closure: Mapping[str, Any] | None = None,
+    boundary_type_closure_artifact_sha256: str | None = None,
     thresholds: EntityReadinessThresholds | None = None,
 ) -> dict[str, Any]:
     """Validate, normalize and compose two already SHA-bound artifact objects."""
@@ -185,9 +188,15 @@ def compose_objective_entity_evidence(
             raise ValueError("boundary/type supplement requires artifact SHA")
         boundary_component = _boundary_type_component(boundary_type)
         proof_gaps.extend(boundary_component["proof_gaps"])
+    closure_component = None
+    if boundary_type_closure is not None:
+        if boundary_type_closure_artifact_sha256 is None:
+            raise ValueError("boundary/type closure requires artifact SHA")
+        closure_component = _boundary_type_closure_component(boundary_type_closure)
     output: dict[str, Any] = {
         "schema_version": (
-            "objective-entity-evidence-v3" if boundary_component else OUTPUT_SCHEMA
+            "objective-entity-evidence-v4" if closure_component
+            else "objective-entity-evidence-v3" if boundary_component else OUTPUT_SCHEMA
         ),
         "artifact_bindings": {
             "sealed_v3": {
@@ -225,8 +234,43 @@ def compose_objective_entity_evidence(
             "schema": BOUNDARY_TYPE_SCHEMA,
         }
         output["boundary_type_exceptional"] = boundary_component
+    if closure_component is not None:
+        output["artifact_bindings"]["boundary_type_holdout_v3"] = {
+            "artifact_sha256": boundary_type_closure_artifact_sha256,
+            "corpus_sha256": boundary_type_closure.get("corpus_sha256"),
+            "schema": BOUNDARY_TYPE_CLOSURE_SCHEMA,
+        }
+        output["boundary_type_protocol_closure"] = closure_component
     output["composition_sha256"] = sha256_bytes(canonical_json_bytes(output))
     return output
+
+
+def _boundary_type_closure_component(value: Mapping[str, Any]) -> dict[str, Any]:
+    if value.get("schema_version") != BOUNDARY_TYPE_CLOSURE_SCHEMA:
+        raise ValueError("unsupported boundary/type closure schema")
+    if value.get("evidence_class") != "sealed_untouched_holdout":
+        raise ValueError("boundary/type closure is not untouched evidence")
+    metrics = _object(value.get("metrics"), "boundary/type closure metrics")
+    overall = _object(metrics.get("overall"), "boundary/type closure overall")
+    expected = {"signal_count": 10, "batch_count": 1, "gold_count": 10,
+        "prediction_count": 10, "exact_match_count": 10}
+    if any(overall.get(name) != expected_value for name, expected_value in expected.items()):
+        raise ValueError("boundary/type closure exact populations disagree")
+    if any(overall.get(name) != 1.0 for name in (
+        "span_precision", "span_recall", "span_f1", "type_accuracy"
+    )):
+        raise ValueError("boundary/type closure metric mismatch")
+    if value.get("raw_structured_output") is None:
+        raise ValueError("boundary/type closure lacks raw provider output")
+    return {"scope": "small_protocol_closure_not_broad_generalization",
+        "does_not_replace": ["sealed_v3_broader_extraction", "boundary_type_holdout_v2"],
+        "exact_populations": {**expected, "negative_signals": 5,
+            "clean_negative_signals": 5},
+        "overall_span_f1": 1.0, "type_accuracy": 1.0,
+        "negative_cleanliness": 1.0, "continuous_score": 1.0,
+        "protocol": {"pre_call_running_receipt": True, "raw_output": True,
+            "per_batch_checkpoint": True, "run_attempts": 1},
+        "blocker_verdict": "clear", "blockers": []}
 
 
 def _boundary_type_component(value: Mapping[str, Any]) -> dict[str, Any]:

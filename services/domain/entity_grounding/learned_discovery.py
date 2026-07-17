@@ -250,6 +250,33 @@ def _expand_complete_designation(
     return span_start, span_end, False
 
 
+def _explicit_meta_language_non_entity(
+    *, signal_text: str, span_start: int, span_end: int,
+) -> bool:
+    """Recognize only explicit source assertions that a literal is metadata."""
+
+    before = signal_text[max(0, span_start - 48):span_start].casefold()
+    after = signal_text[span_end:min(len(signal_text), span_end + 72)].casefold()
+    local = f"{before}<candidate>{after}"
+    return bool(
+        re.search(
+            r"<candidate>\s+(?:is|are)\s+(?:only\s+)?(?:a\s+|an\s+)?"
+            r"(?:syntax|code)\s+examples?\s+only\b",
+            local,
+        )
+        or re.search(
+            r"<candidate>\s+(?:is|are)\s+(?:only\s+)?(?:a\s+|an\s+)?"
+            r"schema\s+fields?\b",
+            local,
+        )
+        or re.search(
+            r"(?:string|field|example)\s+<candidate>.*\b"
+            r"(?:schema\s+field|not\s+(?:a|an)\s+(?:company|business)\s+entit)",
+            local,
+        )
+    )
+
+
 @dataclass(frozen=True)
 class LearnedDiscoveryResult:
     candidates: tuple[VerifiedMentionCandidate, ...]
@@ -417,6 +444,16 @@ def _verify_candidates(
         if not exact:
             fate = EntityMentionDetectionFate.REJECTED_NOT_ANCHORED
             reasons = ("learned_span_failed_exact_source_verification",)
+        elif _explicit_meta_language_non_entity(
+            signal_text=signal.content_text,
+            span_start=span_start,
+            span_end=span_end,
+        ):
+            fate = EntityMentionDetectionFate.REJECTED_NOT_ENTITY
+            reasons = (
+                "source_explicitly_marks_literal_as_syntax_or_schema_metadata",
+                f"learned_type:{item.entity_type}",
+            )
         elif item.abstain or item.confidence < MIN_ACCEPTED_CONFIDENCE:
             fate = EntityMentionDetectionFate.REJECTED_NOT_ENTITY
             reasons = (

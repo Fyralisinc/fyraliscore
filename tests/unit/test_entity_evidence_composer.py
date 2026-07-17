@@ -201,6 +201,16 @@ def _boundary_type() -> dict:
     }
 
 
+def _boundary_type_closure() -> dict:
+    return {"schema_version": "boundary-type-untouched-holdout-v3",
+        "evidence_class": "sealed_untouched_holdout", "corpus_sha256": "1" * 64,
+        "raw_structured_output": {"mentions": []},
+        "metrics": {"overall": {"signal_count": 10, "batch_count": 1,
+            "gold_count": 10, "prediction_count": 10, "exact_match_count": 10,
+            "span_precision": 1.0, "span_recall": 1.0, "span_f1": 1.0,
+            "type_accuracy": 1.0}}}
+
+
 def test_composes_normalized_reports_readiness_bindings_and_gaps() -> None:
     output = compose_objective_entity_evidence(
         v3=_v3(), vertical=_vertical(),
@@ -242,6 +252,22 @@ def test_composes_supplement_without_overwriting_broader_v3() -> None:
     assert supplement["blocker_verdict"] == "unknown"
     assert len(supplement["blockers"]) == 2
     assert output["per_type_extraction"]["customer"]["gold_count"] == 10
+
+
+def test_composes_protocol_closure_as_separate_small_component() -> None:
+    output = compose_objective_entity_evidence(
+        v3=_v3(), vertical=_vertical(), v3_artifact_sha256="b" * 64,
+        vertical_artifact_sha256="c" * 64, adversarial=_adversarial(),
+        adversarial_artifact_sha256="d" * 64,
+        boundary_type=_boundary_type(), boundary_type_artifact_sha256="e" * 64,
+        boundary_type_closure=_boundary_type_closure(),
+        boundary_type_closure_artifact_sha256="f" * 64,
+    )
+    assert output["schema_version"] == "objective-entity-evidence-v4"
+    closure = output["boundary_type_protocol_closure"]
+    assert closure["exact_populations"]["negative_signals"] == 5
+    assert closure["protocol"]["raw_output"] is True
+    assert closure["blocker_verdict"] == "clear"
 
 
 def test_fails_closed_when_vertical_lacks_exact_readiness_population() -> None:
