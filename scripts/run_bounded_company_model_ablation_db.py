@@ -160,8 +160,14 @@ async def run(*, dsn: str, output: Path) -> dict[str, Any]:
     try:
         learned_batches, learned_models, learned_runs = await _run_learned(pool)
         frozen_batches, frozen_models, frozen_runs = await _run_frozen(pool)
-        learned = _arm("learned_memory", learned_batches, learned_models, learned_runs)
-        frozen = _arm("frozen_memory", frozen_batches, frozen_models, frozen_runs)
+        learned = _arm(
+            "learned_memory", learned_batches, learned_models,
+            await _runtime_runs(pool, learned_runs),
+        )
+        frozen = _arm(
+            "frozen_memory", frozen_batches, frozen_models,
+            await _runtime_runs(pool, frozen_runs),
+        )
         report = evaluate_company_model_ablation(
             manifest=MANIFEST, learned=learned, frozen=frozen
         )
@@ -267,7 +273,31 @@ async def _models(pool, tenants):
     return [dict(row) for row in rows]
 
 
-def _arm(name, batches, models, run_ids):
+async def _runtime_runs(pool, run_ids):
+    ids = [UUID(value) for value in run_ids]
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id,status,ops_applied
+               FROM think_runs WHERE id=ANY($1::uuid[]) ORDER BY started_at""",
+            ids,
+        )
+    out = []
+    for row in rows:
+        ops = row["ops_applied"] or {}
+        if isinstance(ops, str):
+            ops = json.loads(ops)
+        context = ops.get("context_use") or {}
+        out.append({
+            "run_id": str(row["id"]), "status": row["status"],
+            "selected_model_ids": context.get("selected_model_ids") or [],
+            "referenced_model_ids": context.get("referenced_model_ids") or [],
+            "selected_observation_ids": context.get("selected_observation_ids") or [],
+            "referenced_observation_ids": context.get("referenced_observation_ids") or [],
+        })
+    return out
+
+
+def _arm(name, batches, models, runtime_runs):
     predictions = []
     for thesis in MANIFEST["hidden_theses"]:
         subject = thesis["thesis_id"]
@@ -294,7 +324,8 @@ def _arm(name, batches, models, run_ids):
             for i, signals in enumerate(batches, 1)
         ],
         "predictions": predictions, "safety_incidents": [],
-        "runtime_run_ids": run_ids,
+        "runtime_run_ids": [row["run_id"] for row in runtime_runs],
+        "runtime_context_use": runtime_runs,
         "runtime_model_count": len(models),
     }
 
