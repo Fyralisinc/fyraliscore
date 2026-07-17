@@ -1,0 +1,111 @@
+{
+  "schema_version": "epistemic-repair-evidence-inventory-v1",
+  "inventory_status": "p0_baseline",
+  "repository_baseline": {
+    "commit": "841f6f93e4de",
+    "branch": "codex/autonomous-company-learning",
+    "worktree_was_clean_before_p0": true
+  },
+  "evidence_items": [
+    {
+      "evidence_id": "historical-cold-start-45",
+      "evidence_class": "historical_integrated_real_provider",
+      "code_checkpoint": "be401f25",
+      "population": "45 batches x 25 normalized signals; zero semantic seed",
+      "result": "45/45 batches eventually completed; independent thesis recovery 5/9",
+      "verdict": "not_credible",
+      "proof_boundary": "mechanical metabolism and historical failure reproduction only",
+      "stable_summary": "docs/evaluation/autonomous-company-learning-cold-start-45-postmortem-20260717.md",
+      "raw_artifact_in_repository": false
+    },
+    {
+      "evidence_id": "historical-entity-discovery-v1",
+      "evidence_class": "historical_bounded_real_provider",
+      "code_checkpoint": "a46300aa",
+      "population": "60 signals in six batches",
+      "result": "exact span precision/recall/F1 0.8163/0.6452/0.7207; type accuracy 0.9556; negative cleanliness 1.0",
+      "verdict": "bounded_historical_evidence",
+      "proof_boundary": "mention extraction only; no canonical-link or company-scale claim",
+      "stable_summary": "docs/plans/autonomous-company-learning-journey-status.md",
+      "raw_artifact_in_repository": false
+    },
+    {
+      "evidence_id": "objective-entity-v6",
+      "evidence_class": "current_runtime_bounded_one_shot",
+      "code_checkpoint": "8fd4e72f",
+      "population": "3 batches; 24 signals; 35 gold mentions; 12 hard negatives",
+      "result": "34/35 exact spans; type accuracy 1.0; 12/12 hard negatives clean; 37/37 provider proposals terminal",
+      "verdict": "bounded_current_runtime_evidence",
+      "proof_boundary": "current-runtime mention extraction and fate closure; not canonical identity or open-world generalization",
+      "stable_summary": "docs/evaluation/autonomous-company-learning-cold-start-45-postmortem-20260717.md",
+      "raw_artifact_in_repository": false
+    },
+    {
+      "evidence_id": "company-model-ablation-v2-v3",
+      "evidence_class": "bounded_real_provider_negative_result",
+      "code_checkpoint": "historical_v2_v3_artifacts",
+      "population": "matched three-by-six batches",
+      "result": "both arms 0/3 thesis recovery; zero lift; learned ECE 0.5725; selected Models were not referenced",
+      "verdict": "below_policy_preserved_failure",
+      "proof_boundary": "localizes the Model-use seam; does not prove memory value",
+      "stable_summary": "docs/evaluation/autonomous-company-learning-cold-start-45-postmortem-20260717.md",
+      "raw_artifact_in_repository": false
+    },
+    {
+      "evidence_id": "company-model-development-v4",
+      "evidence_class": "bounded_development_real_provider",
+      "code_checkpoint": "ce6ea870",
+      "population": "same matched batches and hidden truth as earlier development population",
+      "result": "learned 3/3 versus frozen 0/3; Model references 0/0 then 3/3 then 6/6",
+      "verdict": "development_evidence_only",
+      "proof_boundary": "proves the repaired consumption seam on a seen development population; not untouched generalization",
+      "stable_summary": "docs/plans/autonomous-company-learning-journey-status.md",
+      "raw_artifact_in_repository": false
+    },
+    {
+      "evidence_id": "strict-single-model-synthesis-v1",
+      "evidence_class": "bounded_frozen_holdout",
+      "code_checkpoint": "historical_bound_v8_portfolio",
+      "population": "six batch-only zero-seed batches; three hidden theses",
+      "result": "learned 3/3; frozen 0/3; one complete prior-Model-lineaged Model required per thesis",
+      "verdict": "bounded_holdout_evidence",
+      "proof_boundary": "strict synthesis on the frozen population; no open-world or company-scale claim",
+      "stable_summary": "docs/plans/autonomous-company-learning-journey-status.md",
+      "raw_artifact_in_repository": false
+    },
+    {
+      "evidence_id": "matched-feedback-quality-v1",
+      "evidence_class": "bounded_database_paired_proof",
+      "code_checkpoint": "historical_bound_v7_portfolio",
+      "population": "two arms; one correction; three later batches; two signals",
+      "result": "adaptive later quality 1.0; frozen 0.0; lift 1.0; 17/17 registered checks",
+      "verdict": "bounded_paired_evidence",
+      "proof_boundary": "exact registered correction/relation lineage population only",
+      "stable_summary": "docs/plans/autonomous-company-learning-journey-status.md",
+      "raw_artifact_in_repository": false
+    },
+    {
+      "evidence_id": "joined-runtime-v2",
+      "evidence_class": "bounded_database_integrated",
+      "code_checkpoint": "historical_bound_v8_portfolio",
+      "population": "six batches; one company-physics batch plus five active memory batches",
+      "result": "17/17 checks including exact correction fence and late Model use",
+      "verdict": "bounded_integrated_evidence",
+      "proof_boundary": "one bounded joined path; cannot substitute for mixed-stream company-scale proof",
+      "stable_summary": "docs/plans/autonomous-company-learning-journey-status.md",
+      "raw_artifact_in_repository": false
+    }
+  ],
+  "missing_required_populations": [
+    "benchmark-blind mixed-source boundary discovery with interleaved Slack episodes",
+    "denominator-complete entity grounding with near-name and cross-customer traps",
+    "one-commit truth-invariant suite over all canonical readers and writers",
+    "claim-local evidence and typed-scope oracle",
+    "typed N-ary relation endpoint/direction/time oracle",
+    "three-batch online causal-barrier proof",
+    "12-batch mixed-stream decisive semantic run",
+    "paired adaptive/frozen/observation-only/hidden/corrupted memory ablation",
+    "fault-injection and deterministic scale characterization"
+  ],
+  "composition_rule": "Evidence from different commits or configurations is a portfolio and must not share one coherent-run headline score."
+}
