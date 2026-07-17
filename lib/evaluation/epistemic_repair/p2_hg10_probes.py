@@ -58,8 +58,8 @@ async def probe_derived_writer_rejection(
         tenant_id,
         model_id,
     )
-    error_type: str | None = None
-    rejected = False
+    errors: list[str] = []
+    legacy_rejected = False
     try:
         async with conn.transaction():
             await conn.execute(
@@ -73,8 +73,31 @@ async def probe_derived_writer_rejection(
                 f" [forbidden-derived-writer:{component}]",
             )
     except Exception as error:  # the database rejection is the evidence
-        rejected = True
-        error_type = type(error).__name__
+        legacy_rejected = True
+        errors.append(type(error).__name__)
+    candidates_before = await conn.fetchval(
+        "SELECT count(*) FROM truth_candidates WHERE tenant_id=$1", tenant_id
+    )
+    canonical_rejected = False
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO truth_candidates (
+                  candidate_id, candidate_version, tenant_id, kind,
+                  review_state, natural_text, proposition,
+                  candidate_digest, created_at
+                ) VALUES ($1,1,$2,'atomic_claim','proposed',$3,'{}'::jsonb,$4,now())
+                """,
+                uuid4(), tenant_id,
+                f"forbidden canonical insert from {component}", "f" * 64,
+            )
+    except Exception as error:
+        canonical_rejected = True
+        errors.append(type(error).__name__)
+    candidates_after = await conn.fetchval(
+        "SELECT count(*) FROM truth_candidates WHERE tenant_id=$1", tenant_id
+    )
     after = await conn.fetchrow(
         """
         SELECT id, tenant_id, proposition, "natural", scope_actors,
@@ -86,9 +109,12 @@ async def probe_derived_writer_rejection(
     )
     return DerivedWriterProbe(
         component=component,
-        rejected=rejected,
-        unchanged=stable_digest(dict(before)) == stable_digest(dict(after)),
-        error_type=error_type,
+        rejected=legacy_rejected and canonical_rejected,
+        unchanged=(
+            stable_digest(dict(before)) == stable_digest(dict(after))
+            and candidates_before == candidates_after
+        ),
+        error_type="+".join(errors) if errors else None,
     )
 
 

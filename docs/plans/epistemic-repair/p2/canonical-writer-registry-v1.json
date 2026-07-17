@@ -20,6 +20,12 @@
     "services/domain/truth_kernel/repository.py",
     "services/domain/truth_kernel/relations/repository.py"
   ],
+  "command_authority_minter": {
+    "module": "services/domain/truth_kernel/service.py",
+    "setting": "app.truth_kernel_command",
+    "scope": "transaction_local",
+    "same_role_security_boundary": false
+  },
   "forbidden_direct_writer_roots": [
     "services/reasoning/think",
     "services/reasoning/sage",

@@ -26,12 +26,15 @@ class RejectionConnection:
     async def fetchrow(self, *_args):
         return dict(self.row)
 
+    async def fetchval(self, *_args):
+        return 1
+
     @asynccontextmanager
     async def transaction(self):
         yield
 
     async def execute(self, sql, *_args):
-        assert "UPDATE models" in sql
+        assert "UPDATE models" in sql or "INSERT INTO truth_candidates" in sql
         raise RuntimeError("accepted Model semantics require a truth-kernel command")
 
 
@@ -46,7 +49,7 @@ async def test_derived_writer_probe_requires_rejection_and_unchanged_truth() -> 
     )
     assert result.conforms
     assert result.component == "sage"
-    assert result.error_type == "RuntimeError"
+    assert result.error_type == "RuntimeError+RuntimeError"
 
 
 def test_projection_probe_conformance_is_continuous_not_exception_based() -> None:

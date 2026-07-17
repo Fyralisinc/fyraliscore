@@ -9,6 +9,7 @@ together or not at all.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Literal, Protocol, Sequence
 from uuid import UUID
@@ -155,6 +156,12 @@ class TruthKernelService:
     async def admit(
         self, *, tx: Any, command: AdmitModelCommand
     ) -> TruthCommandReceipt:
+        async with self._command_authority(tx=tx, command_id=command.command_id):
+            return await self._admit_authorized(tx=tx, command=command)
+
+    async def _admit_authorized(
+        self, *, tx: Any, command: AdmitModelCommand
+    ) -> TruthCommandReceipt:
         replay = await self._idempotent_replay(tx=tx, command=command)
         if replay is not None:
             return replay
@@ -233,6 +240,12 @@ class TruthKernelService:
     async def advance(
         self, *, tx: Any, command: AdvanceModelHeadCommand
     ) -> TruthCommandReceipt:
+        async with self._command_authority(tx=tx, command_id=command.command_id):
+            return await self._advance_authorized(tx=tx, command=command)
+
+    async def _advance_authorized(
+        self, *, tx: Any, command: AdvanceModelHeadCommand
+    ) -> TruthCommandReceipt:
         replay = await self._idempotent_replay(tx=tx, command=command)
         if replay is not None:
             return replay
@@ -297,6 +310,40 @@ class TruthKernelService:
         )
         await self._storage.insert_receipt(tx=tx, receipt=receipt)
         return receipt
+
+    @staticmethod
+    @asynccontextmanager
+    async def _command_authority(*, tx: Any, command_id: UUID):
+        """Scope the one DB capability accepted by canonical Model triggers.
+
+        In-memory ports deliberately have no SQL executor. PostgreSQL callers
+        receive a transaction-local capability which is cleared even when a
+        fence, CAS, or constraint rejects the command.
+        """
+        execute = getattr(tx, "execute", None)
+        if execute is None:
+            yield
+            return
+        await execute(
+            "SELECT set_config('app.truth_kernel_command', $1, true)",
+            f"model:{command_id}",
+        )
+        try:
+            yield
+        except BaseException:
+            # A PostgreSQL statement error leaves the transaction aborted;
+            # rollback clears every LOCAL setting, so preserve the real error.
+            try:
+                await execute(
+                    "SELECT set_config('app.truth_kernel_command', '', true)"
+                )
+            except Exception:
+                pass
+            raise
+        else:
+            await execute(
+                "SELECT set_config('app.truth_kernel_command', '', true)"
+            )
 
     async def _idempotent_replay(
         self, *, tx: Any, command: Any

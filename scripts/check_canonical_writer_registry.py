@@ -57,6 +57,19 @@ def violations() -> list[str]:
     if stale:
         errors.append(f"stale canonical truth writers: {sorted(stale)}")
 
+    capability_setting = registry["command_authority_minter"]["setting"]
+    capability_minters = {
+        path.relative_to(ROOT).as_posix()
+        for path in production_files()
+        if capability_setting in path.read_text(errors="replace")
+    }
+    expected_minter = {registry["command_authority_minter"]["module"]}
+    if capability_minters != expected_minter:
+        errors.append(
+            "truth command authority minters differ from registry: "
+            f"actual={sorted(capability_minters)} expected={sorted(expected_minter)}"
+        )
+
     forbidden_roots = tuple(registry["forbidden_direct_writer_roots"])
     forbidden = sorted(
         module for module in actual_canonical if module.startswith(forbidden_roots)

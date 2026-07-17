@@ -30,6 +30,12 @@ def test_registry_is_versioned_and_explicit_about_frozen_debt() -> None:
     assert "services/reasoning/think/applier.py" in registry[
         "frozen_legacy_models_bypasses"
     ]
+    assert registry["command_authority_minter"] == {
+        "module": "services/domain/truth_kernel/service.py",
+        "setting": "app.truth_kernel_command",
+        "scope": "transaction_local",
+        "same_role_security_boundary": False,
+    }
 
 
 def test_no_unregistered_or_forbidden_canonical_writer_exists() -> None:

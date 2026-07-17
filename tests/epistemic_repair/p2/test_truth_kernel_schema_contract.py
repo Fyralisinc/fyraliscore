@@ -11,6 +11,9 @@ MIGRATION = MIGRATIONS / "0225_epistemic_truth_kernel.sql"
 SEMANTIC_DUPLICATE_MIGRATION = (
     MIGRATIONS / "0226_truth_semantic_duplicate_absorption.sql"
 )
+COMMAND_AUTHORITY_MIGRATION = (
+    MIGRATIONS / "0227_truth_kernel_command_authority.sql"
+)
 
 
 def _sql() -> str:
@@ -24,10 +27,25 @@ def test_truth_kernel_migrations_are_unique_and_follow_live_head() -> None:
     )
     matching = [name for number, name in numbered if number == 225]
     duplicate_matching = [name for number, name in numbered if number == 226]
+    authority_matching = [name for number, name in numbered if number == 227]
 
     assert matching == [MIGRATION.name]
     assert duplicate_matching == [SEMANTIC_DUPLICATE_MIGRATION.name]
-    assert numbered[-1] == (226, SEMANTIC_DUPLICATE_MIGRATION.name)
+    assert authority_matching == [COMMAND_AUTHORITY_MIGRATION.name]
+    assert numbered[-1] == (227, COMMAND_AUTHORITY_MIGRATION.name)
+
+
+def test_canonical_model_writes_require_transaction_local_command_authority() -> None:
+    sql = COMMAND_AUTHORITY_MIGRATION.read_text()
+    assert "current_setting('app.truth_kernel_command', true)" in sql
+    assert "require_truth_kernel_command_authority" in sql
+    for table in (
+        "truth_candidates", "truth_admission_decisions", "model_truth_versions",
+        "model_truth_lifecycle_events", "model_truth_heads",
+        "model_truth_evidence_references", "model_truth_scope_bindings",
+        "model_truth_scope_evidence",
+    ):
+        assert f"'{table}'" in sql
 
 
 def test_schema_defines_every_p2_truth_surface() -> None:
