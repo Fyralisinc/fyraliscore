@@ -26,10 +26,15 @@ async def test_measured_postgres_scale_cell_uses_truth_retrieval_and_barriers() 
     assert cell.semantic_quality == 1.0
     assert cell.cross_tenant_leakage == 0
     assert cell.queue_depth_slope_final_half <= 0
-    assert cell.rollback_isolated is True
+    assert cell.rollback_isolated is False
     assert cell.physically_isolated_database is False
     assert all(row.barriers == 3 for row in cell.tenant_receipts)
     assert all(row.accepted_model_hits == 3 for row in cell.tenant_receipts)
+    assert all(len(row.barrier_measurements) == 3 for row in cell.tenant_receipts)
+    sample = cell.tenant_receipts[0].barrier_measurements[0]
+    assert len(sample["queues"]) == 6
+    assert sample["provider_tokens"]["status"] == "unavailable_deterministic_cell"
+    assert sample["provider_tokens"]["estimated"] is False
 
 
 async def test_scale_evaluator_does_not_equate_rollback_with_database_isolation() -> None:

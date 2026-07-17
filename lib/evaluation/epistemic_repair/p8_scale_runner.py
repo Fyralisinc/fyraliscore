@@ -23,6 +23,7 @@ import asyncpg
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p2_runner import _admission
 from lib.evaluation.epistemic_repair.p8_population import ScaleCell, build_scale_matrix
+from lib.evaluation.epistemic_repair.p8_measurement_contracts import QUEUE_FAMILIES
 from services.domain.company_learning.barrier import CompanyLearningBarrierService
 
 
@@ -49,6 +50,7 @@ class TenantScaleReceipt:
     elapsed_ms: float
     pool_wait_ms: float
     queried_state_digest: str
+    barrier_measurements: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +214,45 @@ def _slope_final_half(values: list[int]) -> float:
     return 0.0 if denominator == 0 else sum((x - xbar) * (y - ybar) for x, y in zip(xs, tail)) / denominator
 
 
+async def _production_barrier_measurement(conn: asyncpg.Connection, tenant_id) -> dict[str, object]:
+    queues: dict[str, object] = {}
+    for item in QUEUE_FAMILIES:
+        exists = await conn.fetchval("SELECT to_regclass($1)::text", item.table)
+        if exists is None:
+            queues[item.family] = {"status": "missing", "pending": None, "terminal": None}
+            continue
+        tenant = f" AND {item.tenant_column}=$1" if item.tenant_column else ""
+        args = [tenant_id] if item.tenant_column else []
+        pending = await conn.fetchval(
+            f"SELECT count(*)::int FROM {item.table} WHERE ({item.pending_predicate}){tenant}", *args,
+        )
+        terminal = None
+        if item.terminal_failure_predicate:
+            terminal = await conn.fetchval(
+                f"SELECT count(*)::int FROM {item.table} WHERE ({item.terminal_failure_predicate}){tenant}", *args,
+            )
+        queues[item.family] = {"status": "measured", "pending": int(pending),
+                               "terminal": None if terminal is None else int(terminal)}
+    growth = {}
+    for family, table in (
+        ("candidate", "truth_candidates"), ("residual", "model_residual_evidence"),
+        ("review", "entity_review_queue"), ("negative_memory", "negative_memory"),
+    ):
+        exists = await conn.fetchval("SELECT to_regclass($1)::text", table)
+        growth[family] = (
+            {"status": "missing", "count": None} if exists is None else
+            {"status": "measured", "count": int(await conn.fetchval(
+                f"SELECT count(*)::int FROM {table} WHERE tenant_id=$1", tenant_id,
+            ))}
+        )
+    return {
+        "queues": queues, "growth": growth,
+        "resource": {"process_peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss},
+        "provider_tokens": {"status": "unavailable_deterministic_cell", "estimated": False,
+                            "input_tokens": None, "output_tokens": None},
+    }
+
+
 async def _run_tenant(
     dsn: str, cell: ScaleCell, ordinal: int, *, pool: asyncpg.Pool | None = None,
 ) -> TenantScaleReceipt:
@@ -225,6 +266,7 @@ async def _run_tenant(
     barrier_sql_calls: list[int] = []
     prompt_tokens: list[int] = []
     queue_depth: list[int] = []
+    barrier_measurements: list[dict[str, object]] = []
     hits = leakage = 0
     try:
         bootstrap = conn.transaction()
@@ -298,6 +340,9 @@ async def _run_tenant(
                 """SELECT count(*)::int FROM company_learning_barriers
                    WHERE tenant_id=$1 AND truth_critical_pending_count > 0""", tenant_id,
                 ))
+                barrier_measurements.append(
+                    await _production_barrier_measurement(conn, tenant_id)
+                )
             except BaseException:
                 await batch_tx.rollback()
                 raise
@@ -320,7 +365,7 @@ async def _run_tenant(
             tuple(prompt_tokens), tuple(queue_depth), hits,
             leakage, model_count, version_count, barrier_count,
             (time.perf_counter() - started) * 1000, pool_wait_ms,
-            canonical_sha256(state),
+            canonical_sha256(state), tuple(barrier_measurements),
         )
     finally:
         try:
