@@ -12,6 +12,7 @@ from uuid import UUID
 import asyncpg
 
 from lib.entity_mention_detection import extract_bootstrap_mention_opportunities
+from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from lib.shared.entity_phrases import phrase_requires_context
 from services.domain.conversation_context.slack_source_structure import (
     SlackSourceObservation,
@@ -21,12 +22,17 @@ from services.domain.conversation_context.repo import GroundingAnnotationAppende
 from services.domain.entity_aliases.repo import normalize_phrase
 from services.domain.entity_grounding.episode import (
     ContextObservationInput,
+    GroundingCandidateInput,
+    build_grounding_episode,
+    candidate_id_for_ref,
     prepare_context_selection,
 )
 from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
 from services.domain.entity_grounding.repo import (
+    EntityGroundingRepo,
     enqueue_detected_mention_grounding_work,
 )
+from services.domain.source_semantics.repo import SourceSemanticRepo
 from services.domain.entity_grounding.learned_discovery import (
     PersistedSignalText,
     MentionCandidateAdapter,
@@ -67,6 +73,83 @@ class MentionFateCoverage:
         if self.eligible_opportunities == 0:
             return None
         return self.covered_opportunities / self.eligible_opportunities
+
+
+@dataclass(frozen=True)
+class _FounderBootstrapAlias:
+    alias_id: UUID
+    canonical_ref: dict[str, Any]
+    identity_basis_ref: str
+
+
+async def _load_exact_founder_bootstrap_alias(
+    *,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    phrase: str,
+    valid_at: datetime,
+) -> _FounderBootstrapAlias | None:
+    """Return one explicitly governed founder-bootstrap identity, or abstain.
+
+    This is intentionally narrower than the ingestion alias fast path.  Only
+    aliases carrying the founder-bootstrap contract and source-authoritative
+    tenant-global scope may become a synchronous grounding decision.  Missing,
+    stale, malformed, or conflicting rows remain normal resolver work.
+    """
+
+    rows = await conn.fetch(
+        """
+        SELECT id, resolved_entity_ref,
+               entity_metadata ->> 'identity_basis_ref' AS identity_basis_ref
+        FROM entity_aliases
+        WHERE tenant_id=$1
+          AND regexp_replace(lower(alias_text), '\\s+', ' ', 'g')
+              = regexp_replace(lower($2::text), '\\s+', ' ', 'g')
+          AND valid_from <= $3
+          AND (valid_until IS NULL OR valid_until > $3)
+          AND entity_metadata ->> 'source' IN ('ingestion', 'manual')
+          AND entity_metadata ->> 'identity_basis_class' = 'source_authoritative'
+          AND entity_metadata ->> 'resolution_scope' = 'tenant_global_exact'
+          AND COALESCE(entity_metadata ->> 'adjudication_state', 'active') = 'active'
+          AND entity_metadata -> 'founder_bootstrap_contract' ->> 'version' = 'v1'
+          AND NULLIF(entity_metadata ->> 'identity_basis_ref', '') IS NOT NULL
+        ORDER BY confidence DESC, id
+        """,
+        tenant_id,
+        phrase,
+        valid_at,
+    )
+    by_ref: dict[str, tuple[dict[str, Any], asyncpg.Record]] = {}
+    for row in rows:
+        raw_ref = row["resolved_entity_ref"]
+        if isinstance(raw_ref, str):
+            try:
+                raw_ref = json.loads(raw_ref)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(raw_ref, dict):
+            continue
+        entity_type = str(raw_ref.get("type") or "").strip()
+        entity_id = str(raw_ref.get("id") or "").strip()
+        try:
+            version = int(raw_ref.get("version", 1))
+        except (TypeError, ValueError):
+            continue
+        if not entity_type or not entity_id or version != 1:
+            continue
+        canonical_ref = {"type": entity_type, "id": entity_id, "version": version}
+        by_ref.setdefault(
+            json.dumps(canonical_ref, sort_keys=True),
+            (canonical_ref, row),
+        )
+    if len(by_ref) != 1:
+        return None
+    canonical_ref, row = next(iter(by_ref.values()))
+    return _FounderBootstrapAlias(
+        alias_id=row["id"],
+        canonical_ref=canonical_ref,
+        identity_basis_ref=str(row["identity_basis_ref"]),
+    )
 
 
 def _unique_phrases(phrases: Iterable[str]) -> tuple[str, ...]:
@@ -127,6 +210,12 @@ async def ensure_observation_mention_fates(
     }
 
     for phrase in opportunities:
+        founder_alias = await _load_exact_founder_bootstrap_alias(
+            conn=conn,
+            tenant_id=tenant_id,
+            phrase=phrase,
+            valid_at=occurred_at,
+        )
         context_command, context_outcome = prepare_context_selection(
             tenant_id=tenant_id,
             observation_id=observation_id,
@@ -143,6 +232,7 @@ async def ensure_observation_mention_fates(
             ),
             now=prepared_at,
             focal_content_text=content_text,
+            governed_exact_alias_available=founder_alias is not None,
         )
         learned = learned_by_surface.get(normalize_phrase(phrase))
         detection_command = prepare_entity_mention_detection(
@@ -201,6 +291,83 @@ async def ensure_observation_mention_fates(
             conn,
             command=detection_command,
         )
+        if (
+            founder_alias is not None
+            and detection_command.detection.fate
+            is EntityMentionDetectionFate.DETECTED
+        ):
+            canonical_ref = founder_alias.canonical_ref
+            candidate_id = candidate_id_for_ref(canonical_ref)
+            episode = build_grounding_episode(
+                tenant_id=tenant_id,
+                observation_id=observation_id,
+                phrase=phrase,
+                occurred_at=occurred_at,
+                source_channel=source_channel,
+                source_space=source_space,
+                topology_incomplete=topology_incomplete,
+                boundary_hypotheses=boundary_hypotheses,
+                context_observations=context_observations,
+                selection_dependency_refs=tuple(
+                    f"observation:{item.observation_id}"
+                    for item in context_observations
+                ),
+                candidates=(
+                    GroundingCandidateInput(
+                        canonical_ref=canonical_ref,
+                        candidate_source="founder_bootstrap_alias",
+                        positive_evidence_refs=(
+                            f"entity-alias:{founder_alias.alias_id}",
+                        ),
+                        independent_identity_evidence_refs=(
+                            founder_alias.identity_basis_ref,
+                        ),
+                        exact_mention_match=True,
+                        decisive_authority_refs=(
+                            founder_alias.identity_basis_ref,
+                        ),
+                    ),
+                ),
+                model_candidate_id=candidate_id,
+                model_canonical_ref=canonical_ref,
+                model_confidence=1.0,
+                model_reasoning=(
+                    "exact mention matched one active, source-authoritative "
+                    "founder-bootstrap alias"
+                ),
+                decision_source="founder_bootstrap_exact_alias",
+                decision_metadata={
+                    "alias_id": str(founder_alias.alias_id),
+                    "identity_basis_ref": founder_alias.identity_basis_ref,
+                    "resolution_scope": "tenant_global_exact",
+                    "llm_invoked": False,
+                },
+                assessment_calibration_cohort=(
+                    "deterministic-founder-bootstrap-identity"
+                ),
+                assessment_scorer_version=(
+                    "founder-bootstrap-exact-alias-v1"
+                ),
+                high_confidence=0.8,
+                review_min=0.5,
+                prepared_context_command=context_command,
+                prepared_context_outcome=context_outcome,
+                prepared_mention_detection_command=detection_command,
+                now=prepared_at,
+            )
+            trace_id = await EntityGroundingRepo(None).append_episode(
+                episode=episode,
+                tenant_id=tenant_id,
+                source_observation_id=observation_id,
+                phrase=phrase,
+                conn=conn,
+            )
+            await SourceSemanticRepo().enqueue_work(
+                conn,
+                tenant_id=tenant_id,
+                grounding_trace_id=trace_id,
+                now=prepared_at,
+            )
         committed += 1
 
     return MentionFateCoverage(

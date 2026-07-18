@@ -292,6 +292,40 @@ async def _seed_candidate_alias(
     )
 
 
+async def _seed_founder_bootstrap_alias(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    *,
+    alias: str,
+    entity_type: str,
+    entity_id: str,
+    identity_basis_ref: str,
+    valid_from: datetime | None = None,
+    valid_until: datetime | None = None,
+) -> None:
+    await EntityAliasRepo(pool).insert_alias(
+        phrase=alias,
+        resolved_entity_ref={
+            "type": entity_type,
+            "id": entity_id,
+            "version": 1,
+        },
+        source="ingestion",
+        confidence=1.0,
+        tenant_id=tenant_id,
+        is_canonical=True,
+        extra_metadata={
+            "identity_basis_class": "source_authoritative",
+            "identity_basis_ref": identity_basis_ref,
+            "resolution_scope": "tenant_global_exact",
+            "adjudication_state": "active",
+            "founder_bootstrap_contract": {"version": "v1"},
+        },
+        valid_from=valid_from,
+        valid_until=valid_until,
+    )
+
+
 async def _fetch_grounding_traces(
     pool: asyncpg.Pool,
     tenant_id: UUID,
@@ -2122,6 +2156,195 @@ async def test_persisted_batch_detection_heads_feed_grounding_without_redetectio
     assert len(provider.calls) == 2
     assert annotation_counts_after == annotation_counts_before
     assert rejected not in by_observation
+
+
+async def test_persisted_mention_resolves_exact_founder_bootstrap_alias_before_think(
+    resolver_db: asyncpg.Pool,
+    tenant_id: UUID,
+) -> None:
+    base = datetime(2026, 7, 18, 9, 0, tzinfo=timezone.utc)
+    canonical_ref = {
+        "type": "workstream",
+        "id": "workstream:atlas-release",
+        "version": 1,
+    }
+    await _seed_founder_bootstrap_alias(
+        resolver_db,
+        tenant_id,
+        alias="Atlas release",
+        entity_type=canonical_ref["type"],
+        entity_id=canonical_ref["id"],
+        identity_basis_ref="founder-bootstrap:company-map-v1:atlas-release",
+        valid_from=base - timedelta(seconds=1),
+    )
+    observation_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="Atlas release is blocked by the security review.",
+        unresolved_phrases=["Atlas release"],
+        source_channel="slack:message",
+        occurred_at=base,
+        unresolved_location="top_level",
+    )
+
+    async with resolver_db.acquire() as conn, conn.transaction():
+        coverage = await ensure_persisted_observation_mention_fates(
+            conn=conn,
+            tenant_id=tenant_id,
+            observation_ids=(observation_id,),
+            now=base + timedelta(seconds=1),
+        )
+        trace = await conn.fetchrow(
+            """
+            SELECT grounding.current_fate, grounding.selected_referent,
+                   assessment.model_output,
+                   (SELECT status FROM entity_grounding_work_items work
+                    WHERE work.tenant_id=grounding.tenant_id
+                      AND work.current_trace_id=grounding.id) AS status
+            FROM grounding_traces grounding
+            JOIN resolution_assessments assessment
+              ON assessment.id=grounding.resolution_assessment_id
+            WHERE grounding.tenant_id=$1
+              AND grounding.source_observation_id=$2
+            """,
+            tenant_id,
+            observation_id,
+        )
+
+    assert coverage.committed_fates == coverage.eligible_opportunities
+    assert trace is not None
+    assert trace["current_fate"] == "resolved_for_consumer"
+    assert dict(trace["selected_referent"]) == canonical_ref
+    assert trace["status"] == "resolved_for_consumer"
+    model_output = trace["model_output"]
+    if isinstance(model_output, str):
+        model_output = json.loads(model_output)
+    assert model_output["decision_source"] == "founder_bootstrap_exact_alias"
+    assert model_output["llm_invoked"] is False
+
+
+async def test_persisted_mention_does_not_promote_ordinary_exact_alias(
+    resolver_db: asyncpg.Pool,
+    tenant_id: UUID,
+) -> None:
+    base = datetime(2026, 7, 18, 10, 0, tzinfo=timezone.utc)
+    await _seed_candidate_alias(
+        resolver_db,
+        tenant_id,
+        alias="Beacon migration",
+        entity_type="workstream",
+        entity_id="workstream:beacon-migration",
+        source="ingestion",
+    )
+    observation_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="Beacon migration is waiting on an owner.",
+        unresolved_phrases=["Beacon migration"],
+        source_channel="email",
+        occurred_at=base,
+        unresolved_location="top_level",
+    )
+
+    async with resolver_db.acquire() as conn, conn.transaction():
+        coverage = await ensure_persisted_observation_mention_fates(
+            conn=conn,
+            tenant_id=tenant_id,
+            observation_ids=(observation_id,),
+            now=base + timedelta(seconds=1),
+        )
+        trace_count = await conn.fetchval(
+            """
+            SELECT count(*) FROM grounding_traces
+            WHERE tenant_id=$1 AND source_observation_id=$2
+            """,
+            tenant_id,
+            observation_id,
+        )
+        work_status = await conn.fetchval(
+            """
+            SELECT status FROM entity_grounding_work_items
+            WHERE tenant_id=$1 AND source_observation_id=$2
+            """,
+            tenant_id,
+            observation_id,
+        )
+
+    assert coverage.committed_fates == coverage.eligible_opportunities
+    assert trace_count == 0
+    assert work_status == "pending"
+
+
+async def test_persisted_mention_abstains_on_conflicting_or_stale_founder_alias(
+    resolver_db: asyncpg.Pool,
+    tenant_id: UUID,
+) -> None:
+    base = datetime(2026, 7, 18, 11, 0, tzinfo=timezone.utc)
+    for alias, entity_id in (
+        ("Delta handoff", "workstream:delta-handoff"),
+        ("DELTA HANDOFF", "workstream:other-delta-handoff"),
+    ):
+        await _seed_founder_bootstrap_alias(
+            resolver_db,
+            tenant_id,
+            alias=alias,
+            entity_type="workstream",
+            entity_id=entity_id,
+            identity_basis_ref=f"founder-bootstrap:company-map-v1:{entity_id}",
+            valid_from=base - timedelta(minutes=1),
+        )
+    await _seed_founder_bootstrap_alias(
+        resolver_db,
+        tenant_id,
+        alias="Cobalt renewal",
+        entity_type="commitment",
+        entity_id="commitment:cobalt-renewal",
+        identity_basis_ref="founder-bootstrap:company-map-v1:cobalt-renewal",
+        valid_from=base - timedelta(hours=1),
+        valid_until=base - timedelta(minutes=1),
+    )
+    observation_ids = (
+        await _seed_observation(
+            resolver_db,
+            tenant_id,
+            content_text="Delta handoff is blocked.",
+            unresolved_phrases=["Delta handoff"],
+            source_channel="email",
+            occurred_at=base,
+            unresolved_location="top_level",
+        ),
+        await _seed_observation(
+            resolver_db,
+            tenant_id,
+            content_text="Cobalt renewal is delayed.",
+            unresolved_phrases=["Cobalt renewal"],
+            source_channel="email",
+            occurred_at=base,
+            unresolved_location="top_level",
+        ),
+    )
+
+    async with resolver_db.acquire() as conn, conn.transaction():
+        await ensure_persisted_observation_mention_fates(
+            conn=conn,
+            tenant_id=tenant_id,
+            observation_ids=observation_ids,
+            now=base + timedelta(seconds=1),
+        )
+        trace_count = await conn.fetchval(
+            "SELECT count(*) FROM grounding_traces WHERE tenant_id=$1",
+            tenant_id,
+        )
+        pending_count = await conn.fetchval(
+            """
+            SELECT count(*) FROM entity_grounding_work_items
+            WHERE tenant_id=$1 AND status='pending'
+            """,
+            tenant_id,
+        )
+
+    assert trace_count == 0
+    assert pending_count >= 2
 
 
 @pytest.mark.parametrize(

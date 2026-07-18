@@ -19,12 +19,18 @@ class _PersistedBatchConn:
         self.detections: set[str] = set()
 
     async def fetch(self, query, *_args):
+        if "FROM entity_aliases" in query:
+            return []
         assert "FROM observations" in query
         return self.rows
 
     async def fetchval(self, query, _tenant_id, detection_key):
         assert "entity_mention_detection_heads" in query
         return detection_key in self.heads
+
+    async def execute(self, query, *_args):
+        assert "entity_grounding_work_items" in query
+        return "INSERT 0 1"
 
 
 class _FailedStructuredProvider:
