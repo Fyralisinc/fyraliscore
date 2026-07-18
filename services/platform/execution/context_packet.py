@@ -1297,7 +1297,7 @@ def _governed_episode_candidates(
         return [], False
 
     tenant_id = str(trigger.tenant_id)
-    all_assertion_ids: set[str] = set()
+    scoped_assertion_ids: set[str] = set()
     resolved_ids: set[str] = set()
     candidates: list[MemoryDecisionCandidate] = []
     for episode in sorted(
@@ -1309,15 +1309,6 @@ def _governed_episode_candidates(
         assertions = episode.get("assertions")
         if not isinstance(assertions, list):
             continue
-        for assertion in assertions:
-            if not isinstance(assertion, Mapping):
-                continue
-            observation_id = str(assertion.get("observation_id") or "").strip()
-            if (
-                str(assertion.get("tenant_id") or "") == tenant_id
-                and observation_id in allowed_ids
-            ):
-                all_assertion_ids.add(observation_id)
         canonical_ref = _canonical_ref_or_empty(episode.get("canonical_ref"))
         if not canonical_ref:
             continue
@@ -1333,6 +1324,12 @@ def _governed_episode_candidates(
                 != canonical_ref
             ):
                 continue
+            # Unresolved singleton episodes are routed to the uncertainty
+            # plane and must not dilute coverage for an independent canonical
+            # scope. Keep malformed/provisional assertions within this scope
+            # in the denominator so partial canonical episodes still fail
+            # closed.
+            scoped_assertion_ids.add(observation_id)
             if str(assertion.get("coordinate_authority") or "") != "resolved":
                 continue
             body = str(assertion.get("assertion_text") or "").strip()
@@ -1409,7 +1406,7 @@ def _governed_episode_candidates(
                 ),
             ))
 
-    coverage = len(resolved_ids) / max(1, len(all_assertion_ids))
+    coverage = len(resolved_ids) / max(1, len(scoped_assertion_ids))
     material = len(candidates) >= 2 and coverage >= 0.60
     return candidates, material
 

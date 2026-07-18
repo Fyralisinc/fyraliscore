@@ -570,6 +570,83 @@ def test_governed_provisional_episode_cannot_fall_back_into_truth() -> None:
     assert len(context_packet.batch_fragment_uncertainty_signals(trigger)) == 2
 
 
+def test_unresolved_episodes_do_not_veto_resolved_canonical_atomics() -> None:
+    tenant_id = uuid4()
+    harbor_ids = [uuid4() for _ in range(5)]
+    delta_ids = [uuid4() for _ in range(5)]
+    unresolved_ids = [uuid4() for _ in range(15)]
+    resolved_episodes = [
+        _governed_episode(
+            tenant_id,
+            [
+                (
+                    observation_id,
+                    f"Harbor release, update 1: resolved assertion {index}.",
+                    "resolved",
+                )
+                for index, observation_id in enumerate(harbor_ids)
+            ],
+        ),
+        _governed_episode(
+            tenant_id,
+            [
+                (
+                    observation_id,
+                    f"Delta handoff, update 1: resolved assertion {index}.",
+                    "resolved",
+                )
+                for index, observation_id in enumerate(delta_ids)
+            ],
+            canonical_ref="workstream:delta-handoff",
+            surface="Delta handoff",
+        ),
+    ]
+    unresolved_episodes = []
+    for observation_id in unresolved_ids:
+        episode = _governed_episode(
+            tenant_id,
+            [(observation_id, "Unresolved signal.", "unresolved")],
+        )
+        episode["episode_id"] = f"GLE_unresolved_{observation_id}"
+        episode["canonical_ref"] = None
+        assertion = episode["assertions"][0]
+        assertion["canonical_ref"] = None
+        assertion["governed_surface"] = None
+        unresolved_episodes.append(episode)
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_ids=[*harbor_ids, *delta_ids, *unresolved_ids],
+        seed_signature={
+            "governed_learning_episodes": [
+                *resolved_episodes,
+                *unresolved_episodes,
+            ],
+        },
+    )
+
+    candidates, material = context_packet._batch_fragment_candidates(trigger)
+    compiled = context_packet.memory_decision_candidates(
+        trigger,
+        (),
+        [],
+        [],
+        [],
+        SufficiencyVerdict("sufficient_for_reasoning", "ready", 10, 0, ()),
+    )
+
+    assert material
+    assert len(candidates) == 10
+    assert len(compiled) == 10
+    assert all(
+        candidate.candidate_id.startswith("MDC_ATOM_") for candidate in compiled
+    )
+    assert not any(
+        candidate.candidate_id.startswith("MDC_H") for candidate in compiled
+    )
+
+
 @pytest.mark.asyncio
 async def test_synthesis_hydration_reads_by_canonical_ref_not_display_label() -> None:
     tenant_id = uuid4()
