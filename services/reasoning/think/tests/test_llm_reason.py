@@ -1396,6 +1396,77 @@ async def test_relation_obligations_ignore_write_preconditions_as_evidence():
     assert "blocks" not in obligations[0].matched_markers
 
 
+async def test_lifecycle_decision_cannot_authorize_accepted_relation_obligation():
+    source_model_id = uuid7()
+    target_model_id = uuid7()
+    observation_id = uuid7()
+    candidates = [{
+        "candidate_id": "MDC_LIFECYCLE_RELATION",
+        "op_family": "claim_update",
+        "proposed_text": "Certificate renewal blocks the Harbor release.",
+        "target_model_ids": [str(target_model_id)],
+        "evidence_model_ids": [str(source_model_id), str(target_model_id)],
+        "source_observation_ids": [str(observation_id)],
+        "suggested_edge_kinds": ["blocks"],
+        "confidence": 0.8,
+    }]
+    obligations = relation_obligations_from_packet({"tiers": {}}, candidates)
+
+    lifecycle_ops, _ = relation_claim_ops_from_obligations(
+        obligations,
+        decisions=BatchMemoryDecisionSet(decisions=[
+            BatchMemoryCandidateDecision(
+                candidate_id="MDC_LIFECYCLE_RELATION",
+                decision="accept",
+                operation="memory_lifecycle",
+                confidence=0.95,
+                model_id=target_model_id,
+                lifecycle_action="revise",
+                reason="Authoritative evidence revises the current situation.",
+            ),
+        ]),
+    )
+    claim_update_ops, _ = relation_claim_ops_from_obligations(
+        obligations,
+        decisions=BatchMemoryDecisionSet(decisions=[
+            BatchMemoryCandidateDecision(
+                candidate_id="MDC_LIFECYCLE_RELATION",
+                decision="accept",
+                operation="claim_update",
+                confidence=0.95,
+                model_id=target_model_id,
+                confidence_delta=0.1,
+                reason="The claim update does not independently decide an edge.",
+            ),
+        ]),
+    )
+    relation_ops, _ = relation_claim_ops_from_obligations(
+        obligations,
+        decisions=BatchMemoryDecisionSet(decisions=[
+            BatchMemoryCandidateDecision(
+                candidate_id="MDC_LIFECYCLE_RELATION",
+                decision="accept",
+                operation="situation_and_edge",
+                confidence=0.95,
+                source_model_id=source_model_id,
+                target_model_id=target_model_id,
+                reason="Exact evidence supports the relation-bearing situation.",
+            ),
+        ]),
+        claim_placeholders={"MDC_LIFECYCLE_RELATION": uuid7()},
+    )
+
+    assert len(lifecycle_ops) == 1
+    assert lifecycle_ops[0].write_policy == "needs_review"
+    assert lifecycle_ops[0].status == "needs_review"
+    assert len(claim_update_ops) == 1
+    assert claim_update_ops[0].write_policy == "needs_review"
+    assert claim_update_ops[0].status == "needs_review"
+    assert len(relation_ops) == 1
+    assert relation_ops[0].write_policy == "accepted_edge"
+    assert relation_ops[0].status == "accepted"
+
+
 async def test_relation_frame_obligations_compile_blocked_workstream():
     tid = uuid7()
     blocker_model_id = uuid7()

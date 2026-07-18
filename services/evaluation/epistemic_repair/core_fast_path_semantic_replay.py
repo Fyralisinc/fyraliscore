@@ -91,6 +91,8 @@ def semantic_replay_projection(receipt: Mapping[str, Any]) -> dict[str, Any]:
         descriptor = {
             "source_signal_id": model.get("source_signal_id"),
             "proposition": model.get("proposition"),
+            "abstraction_level": model.get("abstraction_level"),
+            "claim_role": model.get("claim_role"),
             "lifecycle": model.get("lifecycle"),
             "scope_refs": sorted(_strings(model.get("scope_refs"))),
             "evidence_signal_ids": sorted(_strings(model.get("evidence_signal_ids"))),

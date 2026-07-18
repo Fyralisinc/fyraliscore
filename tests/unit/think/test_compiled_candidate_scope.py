@@ -245,6 +245,81 @@ def test_closed_atomic_batch_is_not_truncated_to_six_candidates() -> None:
     )
 
 
+def test_closed_atomic_selects_only_claim_local_row_from_batch_manifest() -> None:
+    local_id = uuid4()
+    unrelated_id = uuid4()
+    claim = "Access review, update 1: the token review remains scheduled for Friday."
+    entry = {
+        "natural": claim,
+        "supporting_event_ids": [str(local_id)],
+        "evidence_observation_manifest": [
+            {
+                "observation_id": str(unrelated_id),
+                "body": "Harbor release, update 1: an unrelated gate moved.",
+            },
+            {"observation_id": str(local_id), "body": claim},
+        ],
+        "proposition": {
+            "kind": "belief",
+            "claim_role": "fact",
+            "abstraction_level": "atomic",
+            "assertion": claim,
+            "evidence_event_ids": [str(local_id)],
+            "closed_atomic_contract": {
+                "version": "v1",
+                "compiler_entails_exact_text": True,
+                "evidence_cardinality": "singleton",
+            },
+        },
+    }
+
+    split_ops = split_compound_claim_op(ClaimOp(op="insert", entry=entry))
+
+    assert len(split_ops) == 1
+    assert split_ops[0].entry is not None
+    assert split_ops[0].entry["supporting_event_ids"] == [str(local_id)]
+    assert split_ops[0].entry["evidence_observation_manifest"] == [
+        {"observation_id": str(local_id), "body": claim}
+    ]
+
+
+def test_closed_atomic_quarantines_missing_or_ambiguous_claim_local_coordinate() -> None:
+    claim = "Access review, update 1: the audit export is ready for review."
+    first_id = uuid4()
+    second_id = uuid4()
+
+    def entry(*, supporting_ids: list[str]) -> dict:
+        return {
+            "natural": claim,
+            "supporting_event_ids": supporting_ids,
+            "evidence_observation_manifest": [
+                {"observation_id": str(first_id), "body": claim},
+                {"observation_id": str(second_id), "body": claim},
+            ],
+            "proposition": {
+                "kind": "belief",
+                "claim_role": "fact",
+                "abstraction_level": "atomic",
+                "assertion": claim,
+                "evidence_event_ids": supporting_ids,
+                "closed_atomic_contract": {
+                    "version": "v1",
+                    "compiler_entails_exact_text": True,
+                    "evidence_cardinality": "singleton",
+                },
+            },
+        }
+
+    missing_id = str(uuid4())
+    assert split_compound_claim_op(
+        ClaimOp(op="insert", entry=entry(supporting_ids=[missing_id]))
+    ) == []
+    assert split_compound_claim_op(ClaimOp(
+        op="insert",
+        entry=entry(supporting_ids=[str(first_id), str(second_id)]),
+    )) == []
+
+
 def test_compiler_evidence_manifest_is_consumed_before_model_create() -> None:
     entry = _compiled_claim("Atlas release")
     observation_id = entry["supporting_event_ids"][0]

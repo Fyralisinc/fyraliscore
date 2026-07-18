@@ -52,6 +52,8 @@ def perfect_receipt() -> dict:
                 "version_id": "version:harbor-synthesis:1",
                 "source_signal_id": gold.synthesis_signal_id,
                 "proposition": gold.expected_thesis,
+                "abstraction_level": "composite",
+                "claim_role": "situation",
                 "lifecycle": "active",
                 "scope_refs": [gold.expected_scope_ref],
                 "evidence_signal_ids": [gold.synthesis_signal_id],
@@ -72,6 +74,8 @@ def perfect_receipt() -> dict:
                 "version_id": "version:harbor-synthesis:2",
                 "source_signal_id": gold.correction_signal_id,
                 "proposition": "Harbor release is unblocked after certificate renewal.",
+                "abstraction_level": "composite",
+                "claim_role": "situation",
                 "lifecycle": "active",
                 "scope_refs": [gold.expected_scope_ref],
                 "evidence_signal_ids": [gold.correction_signal_id],
@@ -149,6 +153,45 @@ def test_continuous_degradation_cannot_be_compensated_by_other_dimensions() -> N
     assert artifact["gates"]["barriers"] is False
     assert artifact["gates"]["contamination"] is False
     assert artifact["overall_pass"] is False
+
+
+def test_synthesis_and_relation_select_composite_not_same_source_atomic() -> None:
+    receipt = perfect_receipt()
+    gold = build_core_fast_path_gold()
+    receipt["batches"][2]["accepted_models"].insert(0, {
+        "model_id": "model:harbor-conclusion-atomic",
+        "version_id": "version:harbor-conclusion-atomic:1",
+        "source_signal_id": gold.synthesis_signal_id,
+        "proposition": gold.expected_thesis,
+        "abstraction_level": "atomic",
+        "claim_role": "fact",
+        "lifecycle": "active",
+        "scope_refs": [gold.expected_scope_ref],
+        "evidence_signal_ids": [gold.synthesis_signal_id],
+        "supporting_model_version_ids": [],
+        "commit_id": None,
+    })
+
+    artifact = score_core_fast_path(receipt, gold=gold)
+
+    assert artifact["metrics"]["batch_3_synthesis"]["score"] == 1.0
+    assert artifact["metrics"]["relation_atomicity"]["score"] == 1.0
+    assert artifact["gates"]["batch_3_synthesis"] is True
+    assert artifact["gates"]["relation_atomicity"] is True
+
+
+def test_synthesis_rejects_atomic_with_multiple_derivation_references() -> None:
+    receipt = perfect_receipt()
+    synthesis = receipt["batches"][2]["accepted_models"][0]
+    synthesis["abstraction_level"] = "atomic"
+    synthesis["claim_role"] = "fact"
+
+    artifact = score_core_fast_path(
+        receipt, gold=build_core_fast_path_gold(),
+    )
+
+    assert artifact["gates"]["batch_3_synthesis"] is False
+    assert artifact["gates"]["relation_atomicity"] is False
 
 
 def test_artifact_is_deterministic_and_contract_lists_runner_fields() -> None:

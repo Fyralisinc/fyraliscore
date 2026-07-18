@@ -926,6 +926,11 @@ transport are excluded from this goal.
   and both production-shaped PostgreSQL tests pass against it. This is focused
   evaluator and transaction-path evidence, not a completed CF2 replay or
   production-hardening claim.
+- **Final P0 tightening:** Receipt Models now expose canonical
+  `abstraction_level` and `claim_role`; synthesis credit requires the exact
+  `composite` + `situation` shape rather than support count alone. The repaired
+  seam subsequently passes `80` focused tests on the dedicated database. This
+  later evidence does not rewrite the earlier `34`-test checkpoint.
 - **Desired behavior:** Every reported coordinate must come from an exact
   durable row or signed artifact field. Missing transaction identity,
   per-signal processing fate, current-head match or correction provenance must
@@ -969,6 +974,45 @@ transport are excluded from this goal.
   revision contract, migration and retrieval-coherence proof.
 - **Evidence:** `_compile_memory_lifecycle_update`,
   `_apply_claim_update`, and `advance_validated_think_model` source audit.
+
+### EDGE-043 — Lifecycle-only revisions can accidentally re-authorize relations
+
+- **Status:** `bounded repair implemented; fresh-runtime validation pending`
+- **Trigger:** Frozen CF2 run 6 reached batch 4, then failed closed with
+  `RELATION_ENDPOINT_VERSION_MISMATCH` while attempting an accepted relation
+  whose endpoint versions did not match the exact current heads.
+- **Current behavior:** Lifecycle-only revision decisions no longer authorize an
+  accepted relation as a side effect; accepted relation admission requires an
+  explicit relation-bearing operation. Closed atomics also select exact
+  claim-local evidence from the batch-wide evidence manifest, preventing an
+  unrelated batch coordinate from becoming the mutation basis.
+- **Risk:** A valid correction wave can roll back before applying its lifecycle
+  update, causing correction, barrier and downstream evaluation failures.
+- **Safe boundary:** Keep the repair limited to authorization and exact local
+  evidence. Do not expand relation semantics, retry policy, latency work or
+  general repair behavior before the next core run.
+- **Return condition:** One fresh zero-seed four-wave CF2 execution applies the
+  batch-4 revision and closes its exact barrier.
+- **Evidence:** Frozen commit `48cb02741574`, tenant
+  `5dab01e7-38b0-4c61-b6ce-77e555f1f2bc`; batches 1–3 succeeded and batch 4
+  failed with the exact version-mismatch invariant. Focused repaired-seam
+  validation passes `80` tests on the dedicated database.
+
+### EDGE-044 — Splitter-empty telemetry and stale broad assertions obscure focus
+
+- **Status:** `backlog; not a CF2 blocker`
+- **Trigger:** Run 6 exposed splitter-empty telemetry, while broad-file testing
+  reported five known stale contract assertions: three in `test_llm_reason`
+  and two in `compiled_candidate_scope`.
+- **Current behavior:** Focused core-fast-path proofs remain authoritative for
+  the bounded repair. The broad failures are classified as existing test
+  contract drift, not evidence that the run-6 relation or evidence fixes fail.
+- **Risk:** Noisy telemetry and stale assertions can redirect work away from the
+  first executable company-learning loop.
+- **Safe boundary:** Record both without expanding the current runtime repair.
+- **Return condition:** Reconcile splitter-empty observability and refresh the
+  broad assertions in a dedicated test-contract cleanup after the core path.
+- **Evidence:** Run-6 postmortem and focused validation at the frozen checkpoint.
 
 ## Entry Template
 

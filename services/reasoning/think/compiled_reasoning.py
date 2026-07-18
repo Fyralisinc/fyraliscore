@@ -3420,6 +3420,13 @@ def _relation_claim_op_from_obligation(
         decision is not None
         and (decision.decision != "accept" or decision.operation == "no_op")
     )
+    # Only a relation-bearing decision can promote an inferred obligation into
+    # accepted truth. A claim/lifecycle/act decision may change a Model without
+    # deciding that the candidate relation remains true.
+    relation_authorized = (
+        decision is None
+        or decision.operation in {"edge", "claim_and_edge", "situation_and_edge"}
+    )
     confidence = obligation.confidence
     if decision is not None:
         confidence = max(confidence, float(decision.confidence))
@@ -3429,10 +3436,11 @@ def _relation_claim_op_from_obligation(
         and precise_kind
         and confidence >= 0.68
         and not decision_rejected
+        and relation_authorized
     ):
         write_policy = "accepted_edge"
         status = "accepted"
-    elif decision_rejected or not has_bound_endpoints:
+    elif decision_rejected or not has_bound_endpoints or not relation_authorized:
         write_policy = "needs_review"
         status = "needs_review"
     else:

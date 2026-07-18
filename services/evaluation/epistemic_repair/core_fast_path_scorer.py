@@ -69,6 +69,22 @@ def _batch_map(receipt: Mapping[str, Any]) -> dict[int, Mapping[str, Any]]:
     return result
 
 
+def _exact_synthesis_model(
+    models: Sequence[Mapping[str, Any]], *, signal_id: str, thesis: str,
+) -> Mapping[str, Any]:
+    """Select the unique composite, never an atomic conclusion sibling."""
+
+    matches = [
+        row for row in models
+        if row.get("source_signal_id") == signal_id
+        and row.get("proposition") == thesis
+        and row.get("abstraction_level") == "composite"
+        and row.get("claim_role") == "situation"
+        and len(_strings(row.get("supporting_model_version_ids"))) >= 2
+    ]
+    return matches[0] if len(matches) == 1 else {}
+
+
 def _metric(score: float, **details: Any) -> dict[str, Any]:
     return {"score": round(min(1.0, max(0.0, score)), 6), **details}
 
@@ -155,10 +171,10 @@ def score_core_fast_path(
     retrieval_score = _ratio(len(retrieved_models), max(1, retrieval_total))
 
     batch3_models = _items(batches.get(3, {}).get("accepted_models"))
-    synthesis = next(
-        (row for row in batch3_models
-         if row.get("source_signal_id") == gold.synthesis_signal_id),
-        {},
+    synthesis = _exact_synthesis_model(
+        batch3_models,
+        signal_id=gold.synthesis_signal_id,
+        thesis=gold.expected_thesis,
     )
     synthesis_checks = (
         synthesis.get("proposition") == gold.expected_thesis,

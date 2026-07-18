@@ -514,8 +514,14 @@ def _redistribute_atomic_evidence(entry: dict[str, Any], claim: str) -> bool:
         for row in manifest
         if isinstance(row, dict) and row.get("observation_id")
     }
-    if _closed_atomic_singleton_manifest(entry, claim, manifest_by_id):
-        matched = list(manifest_by_id.values())
+    closed_atomic_match = _closed_atomic_claim_local_manifest(
+        entry, claim, manifest_by_id,
+    )
+    if closed_atomic_match is not None:
+        # A compiler-certified closed atomic is authorized only by its exact
+        # claim-local coordinate.  An empty result is an explicit quarantine;
+        # do not fall through to fuzzy matching against unrelated batch rows.
+        matched = closed_atomic_match
     elif _is_causal_atomic(claim):
         matched = _derived_atomic_evidence(entry, claim, manifest_by_id)
     else:
@@ -536,36 +542,53 @@ def _redistribute_atomic_evidence(entry: dict[str, Any], claim: str) -> bool:
     return True
 
 
-def _closed_atomic_singleton_manifest(
+def _closed_atomic_claim_local_manifest(
     entry: dict[str, Any],
     claim: str,
     manifest_by_id: dict[str, dict[str, Any]],
-) -> bool:
-    """Preserve exact compiler-entailed singleton evidence through splitting.
+) -> list[dict[str, Any]] | None:
+    """Select exact claim-local evidence for a compiler-certified atomic.
 
-    The marker alone is insufficient: the claim must remain byte-semantically
-    identical after whitespace/case normalization. Split or derived atomics
-    therefore cannot borrow the parent's authorization.
+    ``None`` means the entry is not governed by the closed-atomic contract.
+    An empty list means it is governed but its singleton coordinate is missing,
+    ambiguous, or does not exactly entail the retained claim, so the caller
+    must quarantine it rather than borrow another row from the batch manifest.
     """
 
     proposition = entry.get("proposition")
     if not isinstance(proposition, dict):
-        return False
+        return None
     contract = proposition.get("closed_atomic_contract")
     if not isinstance(contract, dict) or contract != {
         "version": "v1",
         "compiler_entails_exact_text": True,
         "evidence_cardinality": "singleton",
     }:
-        return False
-    if len(manifest_by_id) != 1:
-        return False
-    body = str(next(iter(manifest_by_id.values())).get("body") or "")
+        return None
+
+    local_ids = {
+        str(value)
+        for values in (
+            entry.get("supporting_event_ids"),
+            proposition.get("evidence_event_ids"),
+        )
+        if isinstance(values, list)
+        for value in values
+        if value
+    }
+    if len(local_ids) != 1:
+        return []
+    row = manifest_by_id.get(next(iter(local_ids)))
+    if row is None:
+        return []
+    body = str(row.get("body") or "")
 
     def normalize(value: Any) -> str:
         return " ".join(str(value).casefold().split())
 
-    return bool(normalize(claim)) and normalize(claim) == normalize(body)
+    if not normalize(claim) or normalize(claim) != normalize(body):
+        return []
+    return [row]
 
 
 def _composite_is_necessary(entry: dict[str, Any]) -> bool:
@@ -623,6 +646,12 @@ def _is_unsplittable_proposition(prop: Any) -> bool:
     """Return True for proposition roles the splitter must preserve."""
     if not isinstance(prop, dict):
         return False
+    if prop.get("closed_atomic_contract") == {
+        "version": "v1",
+        "compiler_entails_exact_text": True,
+        "evidence_cardinality": "singleton",
+    }:
+        return True
     kind = prop.get("kind")
     claim_role = prop.get("claim_role")
     legacy_kind = prop.get("legacy_kind")

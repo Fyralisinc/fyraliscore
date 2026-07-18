@@ -1841,3 +1841,38 @@ but recorded as EDGE-042 instead of expanding the current change.
 then execute exactly one fresh zero-seed four-batch provider-free vertical.
 Build and score its receipt before deciding on any runtime repair or second
 replay.
+
+### 2026-07-18 — LOG-049 — Run 6 isolated one batch-4 authorization defect
+
+**Type:** frozen execution, postmortem, bounded repair, and reflection
+
+**Frozen evidence:** Commit `48cb02741574`; tenant
+`5dab01e7-38b0-4c61-b6ce-77e555f1f2bc`. The zero-seed provider-free run
+attempted four waves in `118.969s`; batch times were
+`45.491/21.731/25.300/26.277s`, with `14` provider-free calls. Batches 1–3
+succeeded and batch 4 failed closed with `RELATION_ENDPOINT_VERSION_MISMATCH`.
+The frozen receipt reports processed signals `25/25/25/0`, groundings
+`20/20/20/20`, atomics `16/16/16/0`, Model deltas `16/17/18/0`, relation
+deltas `0/0/1/0`, and exact barriers for the first three batches.
+
+**Root causes and bounded fixes:** A lifecycle-only revision could accidentally
+authorize an accepted relation; accepted relation admission now requires an
+explicit relation-bearing operation. Closed atomics select exact claim-local
+evidence from the batch-wide manifest. The evaluator receipt emits canonical
+`abstraction_level` and `claim_role`, and synthesis requires the exact
+`composite` + `situation` shape rather than choosing a same-source atomic.
+Blindness proof no longer depends on execution completion. Rebuilding and
+rescoring the frozen run makes synthesis, relation atomicity and contamination
+green. Focused repaired-seam validation passes `80` tests on the dedicated
+database. Remaining reds are the batch-4 cascade, the frozen pre-fix Access
+atomic omissions, and determinism, which still requires the independent replay
+deferred by user instruction.
+
+**Backlog, not blockers:** Splitter-empty telemetry remains observable but is
+not expanded on this critical path. Five known broad-file failures—three in
+`test_llm_reason` and two in `compiled_candidate_scope`—are classified as
+existing test-contract drift and recorded for later cleanup.
+
+**Reflection:** The run produced bounded defects, not a reason to open latency,
+repair-policy, noise-handling or broader architecture work. Preserve the
+core-fast framing and validate only the repaired batch-4 path next.

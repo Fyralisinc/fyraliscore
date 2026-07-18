@@ -440,6 +440,8 @@ async def build_core_fast_path_runtime_receipt(
                     or proposition.get("situation")
                     or row["natural_text"]
                 ),
+                "abstraction_level": proposition.get("abstraction_level"),
+                "claim_role": proposition.get("claim_role"),
                 "lifecycle": row["lifecycle"],
                 "scope_refs": (
                     [proposition.get("scope_ref")]
@@ -646,8 +648,7 @@ async def build_core_fast_path_runtime_receipt(
         provider_telemetry if isinstance(provider_telemetry, Mapping) else {}
     )
     blindness_proven = bool(
-        artifact.get("complete") is True
-        and artifact.get("gold_visible_during_execution") is False
+        artifact.get("gold_visible_during_execution") is False
         and provenance.get("gold_visible_during_execution") is False
         and provenance.get("population_digest") == artifact.get(
             "population_digest"

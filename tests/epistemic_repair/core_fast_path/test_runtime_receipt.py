@@ -243,6 +243,50 @@ async def test_runtime_receipt_is_json_safe_and_scorer_consumable(
     assert report["schema_version"] == "core-fast-path-score-v1"
 
 
+async def test_runtime_blindness_proof_does_not_require_completed_execution() -> None:
+    tenant_id = uuid4()
+    population = build_core_fast_path_population()
+    signal = population.batches[0].signals[0]
+    observation_id = uuid5(
+        NAMESPACE_URL, f"p6-think:{tenant_id}:{signal.signal_id}",
+    )
+    connection = _Connection(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        signal_id=signal.signal_id,
+    )
+    artifact = {
+        "tenant_id": str(tenant_id),
+        "population_digest": population.population_digest,
+        "complete": False,
+        "gold_visible_during_execution": False,
+        "mixed_llm_attempt_count": 0,
+        "run_provenance": {
+            "gold_visible_during_execution": False,
+            "population_digest": population.population_digest,
+            "runtime_identity": "cf2-provider-free-v1",
+        },
+        "expected_llm_configuration": {
+            "provider": "cf2_provider_free",
+            "model": "cf2-provider-free-v1",
+            "transport": "in_process_provider_free",
+        },
+        "provider_telemetry": {
+            "provider": "cf2_provider_free",
+            "model": "cf2-provider-free-v1",
+        },
+        "waves": [],
+    }
+
+    receipt = await build_core_fast_path_runtime_receipt(connection, artifact)
+
+    assert receipt["contamination"] == {
+        "gold_fields_seen": 0,
+        "cross_tenant_row_count": 0,
+        "oracle_imported": False,
+    }
+
+
 async def test_tampered_historical_artifact_receipt_fails_validation() -> None:
     tenant_id = uuid4()
     population = build_core_fast_path_population()
@@ -453,6 +497,7 @@ async def test_shared_commit_requires_exact_durable_run_envelope(
         "proposition": {
             "situation": "The workstream is blocked.",
             "abstraction_level": "composite",
+            "claim_role": "situation",
             "scope_ref": "workstream:delta-handoff",
             "member_model_ids": [str(connection.model_id)],
             "evidence_event_ids": [str(observation_id)],
@@ -577,5 +622,7 @@ async def test_shared_commit_requires_exact_durable_run_envelope(
         if model["model_id"] == str(composite_model_id)
     )
     admitted_relation = receipt["batches"][0]["accepted_relations"][0]
+    assert composite["abstraction_level"] == "composite"
+    assert composite["claim_role"] == "situation"
     assert composite["commit_id"] == str(run_id)
     assert admitted_relation["commit_id"] == str(run_id)

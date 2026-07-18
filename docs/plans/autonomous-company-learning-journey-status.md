@@ -1949,3 +1949,32 @@ matched feedback quality and objective entity v6.
   it will not delay the next core vertical.
 - Next action: commit and freeze this checkpoint, then run one fresh four-batch
   zero-seed provider-free CF2 execution and score it before editing.
+
+### 2026-07-18 — Run 6 reached batch 4 and failed at exact relation authority
+
+- Frozen commit `48cb02741574`, tenant
+  `5dab01e7-38b0-4c61-b6ce-77e555f1f2bc`: four zero-seed provider-free waves
+  took `118.969s`, with batch times `45.491/21.731/25.300/26.277s` and `14`
+  provider-free calls.
+- Batches 1–3 succeeded; batch 4 failed closed with
+  `RELATION_ENDPOINT_VERSION_MISMATCH`. The frozen receipt records processed
+  signals `25/25/25/0`, groundings `20/20/20/20`, atomics `16/16/16/0`, Model
+  deltas `16/17/18/0`, relation deltas `0/0/1/0`, and three exact barriers.
+- Three bounded fixes followed: accepted relation admission now requires an
+  explicit relation-bearing operation rather than lifecycle-only revision;
+  closed atomics bind exact claim-local evidence from the batch-wide manifest;
+  and the evaluator receipt emits canonical `abstraction_level` and
+  `claim_role`, requiring `composite` + `situation` for synthesis while keeping
+  blindness proof independent of runtime completion.
+- The rebuilt/rescored frozen run makes synthesis, relation atomicity and
+  contamination green. Remaining reds are the batch-4 cascade, Access atomics
+  omitted by the frozen pre-fix execution, and determinism, whose independent
+  second replay remains deferred by user instruction.
+- Focused repaired-seam validation passes `80` tests on the dedicated database.
+  The earlier `34`-test evaluator checkpoint remains historical evidence.
+- Splitter-empty telemetry and five known stale broad-file assertions—three in
+  `test_llm_reason` and two in `compiled_candidate_scope`—are
+  backlog/test-contract drift rather than core blockers.
+- Reflection verdict: the defects remain bounded. Do not expand into latency,
+  repair-policy, noise handling or broader architecture work before validating
+  the repaired core path.
