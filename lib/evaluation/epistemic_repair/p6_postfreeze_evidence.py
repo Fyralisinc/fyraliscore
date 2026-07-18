@@ -180,13 +180,22 @@ async def extract_p6_postfreeze_evidence(
                   context_item_id,retrieved,selected,included,referenced,
                   necessary_background,historical_reopen_reason,decision_fate,
                   result_object_kind,result_object_id,evidence_lineage,decided_at,
-                  trigger.payload AS trigger_payload
+                  trigger.payload AS trigger_payload,
+                  run.id AS think_run_id,
+                  artifact.payload -> 'context_use' AS context_use
            FROM company_learning_context_decisions decision
-           LEFT JOIN think_runs run
-             ON run.tenant_id=decision.tenant_id
-            AND run.id::text=decision.batch_id
            LEFT JOIN think_trigger_queue trigger
-             ON trigger.tenant_id=run.tenant_id AND trigger.id=run.trigger_id
+             ON trigger.tenant_id=decision.tenant_id
+            AND trigger.id::text=decision.batch_id
+           LEFT JOIN think_runs run
+             ON run.tenant_id=trigger.tenant_id AND run.trigger_id=trigger.id
+           LEFT JOIN LATERAL (
+             SELECT candidate.payload
+             FROM think_run_artifacts candidate
+             WHERE candidate.tenant_id=run.tenant_id
+               AND candidate.run_id=run.id AND candidate.stage='apply'
+             ORDER BY candidate.captured_at DESC,candidate.id DESC LIMIT 1
+           ) artifact ON TRUE
            WHERE decision.tenant_id=$1
            ORDER BY decision.decided_at,decision.decision_id""",
         tenant_id,
@@ -196,6 +205,9 @@ async def extract_p6_postfreeze_evidence(
         str(claim["id"]): list(claim.get("evidence_signal_ids") or ())
         for claim in claims
     }
+    expected_context_opportunities: set[tuple[str, str]] = set()
+    emitted_context_opportunities: set[tuple[str, str]] = set()
+    context_manifest_present = bool(decisions)
     for row in decisions:
         source_signal_id = observation_to_signal.get(str(row.get("context_item_id")))
         item_kind = (
@@ -209,15 +221,34 @@ async def extract_p6_postfreeze_evidence(
             else claim_sources.get(str(row.get("context_item_id")), [])
         )
         payload = row.pop("trigger_payload", None) or {}
+        context_use = row.pop("context_use", None) or {}
+        row.pop("think_run_id", None)
         if isinstance(payload, str):
             payload = json.loads(payload)
+        if isinstance(context_use, str):
+            context_use = json.loads(context_use)
         target_ids = [
             observation_to_signal[str(value)]
             for value in payload.get("observation_ids") or ()
             if str(value) in observation_to_signal
         ]
+        selected_ids = {
+            str(value)
+            for key in (
+                "selected_observation_ids", "selected_model_ids",
+                "graph_selected_model_ids",
+            )
+            for value in context_use.get(key) or ()
+        }
+        if not selected_ids:
+            context_manifest_present = False
+        for target_id in target_ids:
+            expected_context_opportunities.update(
+                (target_id, selected_id) for selected_id in selected_ids
+            )
         for target_id in target_ids:
             for source_id in source_ids:
+                emitted_context_opportunities.add((target_id, str(row["context_item_id"])))
                 context_items.append({
                     **row, "target_signal_id": target_id,
                     "source_signal_id": source_id,
@@ -333,10 +364,17 @@ async def extract_p6_postfreeze_evidence(
         "relations": relation_rows,
         "lifecycle_events": lifecycle,
         "context_items": context_items,
-        "context_opportunities_complete": bool(context_items) and all(
-            row.get("target_signal_id") and row.get("source_signal_id")
-            for row in context_items
+        "context_opportunities_complete": (
+            context_manifest_present
+            and bool(expected_context_opportunities)
+            and emitted_context_opportunities == expected_context_opportunities
         ),
+        "context_opportunity_counts": {
+            "expected": len(expected_context_opportunities),
+            "emitted": len(emitted_context_opportunities),
+            "missing": len(expected_context_opportunities - emitted_context_opportunities),
+            "unexpected": len(emitted_context_opportunities - expected_context_opportunities),
+        },
         "scope_coordinates_canonical": False,
         "refresh_events": refresh_events,
         "active_candidates": active_candidates,
