@@ -5332,6 +5332,97 @@ async def _apply_relation_claim_op(
         and op.target_model_id is not None
         and op.status != "retired"
     ):
+        existing_truth_head = await conn.fetchval(
+            """
+            SELECT relation_version_id
+            FROM relation_truth_heads
+            WHERE tenant_id=$1 AND relation_id=$2
+            """,
+            tenant_id,
+            row["id"],
+        )
+        if existing_truth_head is not None:
+            existing_edges = await conn.fetch(
+                """
+                SELECT edge.id
+                FROM relation_edge_projections projection
+                JOIN model_edges edge
+                  ON edge.tenant_id=projection.tenant_id
+                 AND edge.id=projection.edge_id
+                WHERE projection.tenant_id=$1
+                  AND projection.relation_id=$2
+                  AND projection.status='active'
+                  AND edge.source_model_id=$3
+                  AND edge.target_model_id=$4
+                  AND edge.edge_kind=$5
+                  AND edge.status='active'
+                  AND edge.review_status='accepted'
+                ORDER BY edge.id
+                """,
+                tenant_id,
+                row["id"],
+                op.source_model_id,
+                op.target_model_id,
+                op.edge_kind,
+            )
+            if not existing_edges:
+                raise InvariantViolation(
+                    "RELATION_PROJECTION_MISSING",
+                    "accepted canonical relation is missing its immutable edge projection",
+                    relation_claim_id=str(row["id"]),
+                )
+            edge_ids = [item["id"] for item in existing_edges]
+            canonical_relation_version_id = await _admit_canonical_relation_claim(
+                op,
+                conn,
+                tenant_id,
+                claim=row,
+            )
+            row = await repo.mark_relation_claim_decided(
+                conn,
+                claim_id=row["id"],
+                tenant_id=tenant_id,
+                status="accepted",
+                accepted_edge_ids=edge_ids,
+                decision_metadata={
+                    "reason": "accepted_relation_claim_replayed",
+                    "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
+                    "canonical_relation_version_id": str(
+                        canonical_relation_version_id
+                    ),
+                },
+            ) or row
+            edge_summary = {
+                "op": "reuse",
+                "edge_kind": op.edge_kind,
+                "source_model_id": str(op.source_model_id),
+                "target_model_id": str(op.target_model_id),
+                "edge_ids": [str(edge_id) for edge_id in edge_ids],
+                "review_status": "accepted",
+                "source": "relation_claim_op",
+            }
+            return {
+                "summary": {
+                    "op": op.op,
+                    "relation_claim_id": str(row["id"]),
+                    "edge_kind": op.edge_kind,
+                    "predicate": op.predicate,
+                    "source_model_id": str(op.source_model_id),
+                    "target_model_id": str(op.target_model_id),
+                    "endpoint_binding_status": row["endpoint_binding_status"],
+                    "write_policy": row["write_policy"],
+                    "status": row["status"],
+                    "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
+                    "relation_instance_id": str(row["id"]),
+                    "canonical_relation_version_id": str(
+                        canonical_relation_version_id
+                    ),
+                    "retired_relation_ids": [],
+                    "superseded_edge_count": 0,
+                },
+                "edge_summary": edge_summary,
+                "edge_summaries": [edge_summary],
+            }
         edge_metadata = {
             **dict(op.metadata or {}),
             "relation_claim_id": str(row["id"]),

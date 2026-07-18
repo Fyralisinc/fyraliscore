@@ -68,6 +68,7 @@ async def test_accepted_bound_claim_atomically_and_idempotently_advances_relatio
             second["relation_claim_ops"][0]["canonical_relation_version_id"]
             == first["relation_claim_ops"][0]["canonical_relation_version_id"]
         )
+        assert second["edge_ops"][0]["op"] == "reuse"
         relation = await conn.fetchrow(
             """
             SELECT id, truth_relation_version_id, truth_relation_kind
@@ -81,6 +82,11 @@ async def test_accepted_bound_claim_atomically_and_idempotently_advances_relatio
         assert relation["truth_relation_kind"] == "dependency_constraint"
         assert await conn.fetchval(
             "SELECT count(*) FROM relation_truth_versions WHERE tenant_id=$1 AND relation_id=$2",
+            tenant_id,
+            claim_id,
+        ) == 1
+        assert await conn.fetchval(
+            "SELECT count(*) FROM relation_edge_projections WHERE tenant_id=$1 AND relation_id=$2",
             tenant_id,
             claim_id,
         ) == 1
