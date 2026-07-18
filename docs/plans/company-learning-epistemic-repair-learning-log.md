@@ -65,16 +65,16 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | Run 12 tenant `fa3f367f-a95e-4ad4-a0ce-e664a56daac0` failed B4 after `26.631s` before the validator fix; exact pending B4 retry `019f75e5-f01f-7000-877c-edfaed6d009c` succeeded afterward |
-| Repair implementation | Validator preserves explicit `retired`/`no_edge` across semantic canonicalization; direct PostgreSQL regression green; compiler folds retained as defense-in-depth |
-| Current phase | Run one fresh clean zero-seed four-batch execution and canonical score; determinism replay remains deferred |
+| Latest verified coordination checkpoint | Run 13 at commit `27e37b5e`, tenant `2a14a6bf-fe59-4efd-a52d-ad7ffcfa7d30`, completed all four clean zero-seed batches with every authorized CF2 single-execution gate green |
+| Repair implementation | Validator preserves explicit retirement; the evaluator now reads the exact historical relation instance required to verify retirement instead of relying only on the current-instance surface; focused evaluator suite `14/14` green |
+| Current phase | M0 single-execution milestone complete with independent receipt and canonical DB audits; determinism remains explicitly deferred and unproven (`replay_count=1`) |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
 | Current execution boundary | Begins with normalized, source-attributed signals already persisted in PostgreSQL |
 | Explicitly excluded | Connectors/listeners, OAuth/webhooks, task autonomy, external consequential action, second 45-batch run |
 | P0-P5 evidence state | Strict raw-member P9 regeneration/sidecar paths ready; current-release artifacts still require clean regeneration |
-| P6 evidence state | Historical 300-signal failure preserved; Run 10 proves the repaired path through batch 3 and a correct transactional rollback in batch 4, not CF2 exit or the full twelve-batch P6 claim |
+| P6 evidence state | Historical 300-signal failure preserved; Run 13 closes the bounded four-batch CF2 single-execution proof, but does not establish the full twelve-batch P6 claim or determinism |
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
@@ -2007,3 +2007,20 @@ not the root repair.
 `019f75e5-f01f-7000-877c-edfaed6d009c` succeeded afterward. A direct PostgreSQL
 regression proves retirement status/policy survive validation and canonical
 apply. One fresh clean zero-seed run remains pending.
+
+### 2026-07-18 — LOG-055 — Run 13 closes CF2 single-execution evidence
+
+**Result:** Run 13 at commit `27e37b5e`, tenant
+`2a14a6bf-fe59-4efd-a52d-ad7ffcfa7d30`, completed all four clean zero-seed
+batches. Every authorized CF2 single-execution gate was green, including
+relation retirement and relation atomicity.
+
+**Evaluator lesson:** Retirement proof must resolve the exact historical
+relation instance advanced by the correction. Reading only the current-instance
+surface can hide a valid immutable lifecycle transition. The corrected focused
+evaluator suite passed `14/14`.
+
+**Boundary:** Independent receipt and canonical database audits passed, so M0
+is complete for the authorized single-execution scope. This run does not prove
+determinism; the replay count is one, so determinism remains explicitly deferred
+and unproven.

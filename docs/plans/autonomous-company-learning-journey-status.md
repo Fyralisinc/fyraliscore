@@ -6,12 +6,12 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** Run 12 tenant `fa3f367f-a95e-4ad4-a0ce-e664a56daac0`
-failed batch 4 after `26.631s` because validation transformed the explicit
-`retired`/`no_edge` operation into `accepted`/`accepted_edge`. The validator
-guard is now proven by exact pending batch-4 retry run
-`019f75e5-f01f-7000-877c-edfaed6d009c`; a fresh clean zero-seed run remains
-pending and determinism replay remains separately deferred.
+**Current checkpoint:** Run 13 at commit `27e37b5e`, tenant
+`2a14a6bf-fe59-4efd-a52d-ad7ffcfa7d30`, completed all four clean zero-seed
+batches. Every authorized CF2 single-execution gate is green, including
+relation retirement and relation atomicity. Independent receipt and canonical
+database audits passed. M0 is complete for the authorized single-execution
+scope. Determinism remains explicitly deferred and unproven (`replay_count=1`).
 
 **Last updated:** 2026-07-18
 
@@ -812,7 +812,7 @@ mere presence in the repository is not counted as completed company learning.
 
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
-| New M0 core fast path | 85–90% | The real four-batch worker path and focused correction-coherence repair are implemented and DB-tested. One fresh zero-seed four-batch run plus strengthened canonical score remains; independent replay is separately deferred |
+| New M0 core fast path | 100% single-execution | Run 13 and independent receipt/database audits prove the real four-batch zero-seed path and every authorized CF2 gate, including relation retirement and atomicity. Determinism is not claimed from `replay_count=1` |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
 | Scoped company-learning runtime implementation | 98–99% | Batched path, retrieval transition, adversarial company physics, source equivalence, restart-safe correction, exact joined runtime, matched feedback lift and strict single-Model synthesis execute in bounded populations |
 | Customer-free objective substantiation | 97–98% | Eight-component v8 scores `1.0`; strict synthesis is learned `3/3` versus frozen `0/3`; objective entity v6 adds exact-runtime F1 `0.971429`, type/fate/negative safety `1.0` with complete pre-call provenance. The immutable `not_credible` large run and open-world breadth prevent company-scale generalization |
@@ -2074,3 +2074,17 @@ matched feedback quality and objective entity v6.
 - Compiler conflict folds remain useful defense-in-depth, not the root fix. A
   fresh clean zero-seed four-batch execution and canonical score are still
   required.
+
+### 2026-07-18 — Run 13 closes the authorized M0 single-execution proof
+
+- At commit `27e37b5e`, tenant
+  `2a14a6bf-fe59-4efd-a52d-ad7ffcfa7d30` completed all four clean zero-seed
+  batches.
+- Every authorized CF2 single-execution gate was green, including canonical
+  relation retirement and relation atomicity. The evaluator was corrected to
+  inspect the exact historical relation instance needed to prove retirement;
+  its focused suite passed `14/14`.
+- Independent receipt/scorer and canonical PostgreSQL audits passed; the M0
+  implementation milestone is complete for the authorized single-execution scope.
+  Determinism is neither waived nor inferred: it remains deferred and unproven
+  because only one replay exists (`replay_count=1`).

@@ -951,7 +951,7 @@ transport are excluded from this goal.
 
 ### EDGE-042 — Canonical revision envelope contradicts its corrected proposition
 
-- **Status:** `active; bounded repair implemented, fresh CF2 proof pending`
+- **Status:** `resolved for CF2 by Run 13; broader revision-transition enum remains backlog`
 - **Trigger:** A compiled `revise` lifecycle operation supplies a changed
   proposition, but `advance_validated_think_model` retains the prior canonical
   `natural` text and records the active-head transition through the existing
@@ -976,8 +976,8 @@ transport are excluded from this goal.
   the evaluator require proposition summary, natural text and embedded relation
   mechanism to agree. Do not widen the transition enum, redesign relation
   lifecycle, or pull unrelated backlog items onto the CF2 critical path.
-- **Return condition:** Focused compiler/applier/truth tests pass and one fresh
-  four-batch receipt proves the corrected composite is coherent on all three
+- **Return condition:** Satisfied for CF2: focused compiler/applier/truth tests
+  pass and Run 13 proves the corrected composite is coherent on all three
   surfaces. The deferred independent determinism replay is not part of this
   return condition.
 - **Evidence:** Frozen Run 9 commit `f02df04f`, tenant
@@ -1051,7 +1051,7 @@ transport are excluded from this goal.
 
 ### EDGE-046 — Semantic canonicalization re-promotes explicit retirement
 
-- **Status:** `validator guard proven on exact B4 retry; fresh clean run pending`
+- **Status:** `resolved for CF2 by Run 13`
 - **Trigger:** Runs 10–12 failed at batch 4. Run 12 tenant
   `fa3f367f-a95e-4ad4-a0ce-e664a56daac0` failed after `26.631s` before the fix.
 - **Current behavior:** `_canonicalize_relation_claim_semantics` transformed the
@@ -1066,10 +1066,13 @@ transport are excluded from this goal.
 - **Safe boundary:** Guard explicit retirement in validation; retain compiler
   conflict folds only as defense-in-depth and preserve immutable-edge
   enforcement.
-- **Return condition:** Fresh clean zero-seed four-batch execution and canonical
-  score pass after the already-green exact pending B4 retry.
-- **Evidence:** Exact retry `019f75e5-f01f-7000-877c-edfaed6d009c` and direct
-  PostgreSQL regression. Fresh clean run remains pending.
+- **Return condition:** Satisfied: Run 13 completed a fresh clean zero-seed
+  four-batch execution with canonical score, relation retirement and relation
+  atomicity green.
+- **Evidence:** Run 13, commit `27e37b5e`, tenant
+  `2a14a6bf-fe59-4efd-a52d-ad7ffcfa7d30`; evaluator historical-instance fix;
+  focused evaluator suite `14/14` green. Determinism remains outside this
+  closure and unproven at `replay_count=1`.
 
 ## Entry Template
 

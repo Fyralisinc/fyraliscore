@@ -652,9 +652,7 @@ async def build_core_fast_path_runtime_receipt(
             if version_id in relation_row_by_version
             and str(relation_row_by_version[version_id]["id"]) == relation_id
             and str(relation_row_by_version[version_id]["think_run_id"]) == run_id
-            and relation_row_by_version[version_id]["instance_status"] in {
-                "accepted", "active",
-            }
+            and relation_row_by_version[version_id]["lifecycle"] == "active"
             and relation_row_by_version[version_id]["admission_disposition"]
             == "accepted"
         }

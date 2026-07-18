@@ -654,6 +654,9 @@ async def test_shared_commit_requires_exact_durable_run_envelope(
     run_id, trigger_id = uuid4(), uuid4()
     relation = connection.rows["relation_truth_versions"][0]
     relation["think_run_id"] = run_id
+    # A later batch may retire the mutable instance; immutable v1 admission
+    # must still retain its original shared-commit proof.
+    relation["instance_status"] = "retired"
     diff_hash = "a" * 64
     connection.rows["think_runs"] = [{
         "id": run_id, "trigger_id": trigger_id, "status": "success",
