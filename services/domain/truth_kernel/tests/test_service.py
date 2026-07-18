@@ -80,6 +80,8 @@ def admission() -> AdmitModelCommand:
             role=ClaimScopeRole.SUBJECT,
             canonical_ref="workstream:project-ember",
             display_label="Project Ember",
+            canonical_ref_status="provisional",
+            normalization_version=1,
             claim_local_evidence_refs=(item.reference_id,),
         ),
     )

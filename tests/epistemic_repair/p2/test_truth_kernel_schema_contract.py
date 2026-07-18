@@ -82,6 +82,9 @@ def test_scope_provenance_migration_is_idempotent() -> None:
     sql = SCOPE_PROVENANCE_MIGRATION.read_text()
     assert "ADD COLUMN IF NOT EXISTS canonical_ref TEXT" in sql
     assert "ADD COLUMN IF NOT EXISTS display_label TEXT" in sql
+    assert "ADD COLUMN IF NOT EXISTS canonical_ref_status TEXT" in sql
+    assert "ADD COLUMN IF NOT EXISTS normalization_version INTEGER" in sql
+    assert "canonical_ref NOT LIKE 'batch:%'" in sql
 
 
 def test_admission_is_immutable_and_cannot_target_truth_when_nonaccepted() -> None:

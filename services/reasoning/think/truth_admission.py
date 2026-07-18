@@ -157,6 +157,10 @@ async def build_think_admission_command(
             role=ClaimScopeRole.SUBJECT, claim_local_evidence_refs=evidence_refs,
             canonical_ref=_scope_canonical_ref(entity),
             display_label=_scope_display_label(entity, proposition),
+            canonical_ref_status=(
+                "provisional" if _scope_canonical_ref(entity) else None
+            ),
+            normalization_version=(1 if _scope_canonical_ref(entity) else None),
         )
     scope = tuple(sorted(scopes.values(), key=lambda item: (
         str(item.subject_id), item.subject_kind.value, item.role.value,
@@ -277,7 +281,8 @@ async def _current_truth_version(
     ) for x in evidence_rows)
     binding_rows = await conn.fetch("""
         SELECT binding_id,subject_id,subject_kind,scope_role,
-               canonical_ref,display_label
+               canonical_ref,display_label,canonical_ref_status,
+               normalization_version
         FROM model_truth_scope_bindings WHERE tenant_id=$1 AND model_version_id=$2
         ORDER BY subject_id,scope_role
     """, tenant_id, row["version_id"])
@@ -294,6 +299,8 @@ async def _current_truth_version(
             role=ClaimScopeRole(binding["scope_role"]),
             canonical_ref=binding["canonical_ref"],
             display_label=binding["display_label"],
+            canonical_ref_status=binding["canonical_ref_status"],
+            normalization_version=binding["normalization_version"],
             claim_local_evidence_refs=tuple(x["evidence_reference_id"] for x in refs),
         ))
     proposition = row["proposition"]

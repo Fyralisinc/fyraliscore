@@ -111,7 +111,10 @@ async def extract_p6_postfreeze_evidence(
                       WHEN actor.id IS NOT NULL THEN 'actor:' || actor.id::text
                       WHEN resource.id IS NOT NULL THEN 'resource:' || resource.id::text
                       ELSE NULL END),
-                    'display_label',binding.display_label) ORDER BY binding.binding_id)
+                    'display_label',binding.display_label,
+                    'canonical_ref_status',binding.canonical_ref_status,
+                    'normalization_version',binding.normalization_version)
+                    ORDER BY binding.binding_id)
                     FROM model_truth_scope_bindings binding
                     LEFT JOIN actors actor
                       ON actor.tenant_id=binding.tenant_id

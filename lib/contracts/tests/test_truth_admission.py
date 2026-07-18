@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import ValidationError
 
+from lib.contracts.kernel import canonical_sha256
 from lib.contracts.truth_admission import (
     AdmissionDecision,
     AdmissionDisposition,
@@ -310,6 +311,50 @@ def test_semantic_digest_is_deterministic_and_binds_all_semantics() -> None:
         payload.update(change)
         with pytest.raises(ValidationError, match="semantic digest"):
             ModelVersion(**payload)
+
+
+def test_legacy_scoped_digest_reconstructs_without_optional_provenance() -> None:
+    version = _command().version
+    legacy_scope = tuple(
+        item.model_copy(
+            update={
+                "canonical_ref": None,
+                "display_label": None,
+                "canonical_ref_status": None,
+                "normalization_version": None,
+            }
+        )
+        for item in version.scope
+    )
+    legacy_digest = canonical_sha256(
+        {
+            "proposition": version.proposition,
+            "natural": version.natural,
+            "evidence": [
+                item.model_dump(mode="json") for item in version.evidence
+            ],
+            "scope": [
+                {
+                    "subject_id": str(item.subject_id),
+                    "subject_kind": item.subject_kind.value,
+                    "role": item.role.value,
+                    "claim_local_evidence_refs": [
+                        str(ref) for ref in item.claim_local_evidence_refs
+                    ],
+                }
+                for item in legacy_scope
+            ],
+        }
+    )
+
+    reconstructed = ModelVersion(
+        **{
+            **version.model_dump(mode="python"),
+            "scope": legacy_scope,
+            "semantic_digest": legacy_digest,
+        }
+    )
+    assert reconstructed.semantic_digest == legacy_digest
 
 
 def test_initial_admission_requires_active_version_one() -> None:

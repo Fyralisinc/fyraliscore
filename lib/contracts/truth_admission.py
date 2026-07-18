@@ -212,7 +212,13 @@ class ModelVersion(_TruthAdmissionContract):
                 "proposition": proposition,
                 "natural": natural,
                 "evidence": [item.model_dump(mode="json") for item in evidence],
-                "scope": [item.model_dump(mode="json") for item in scope],
+                # Optional scope-provenance fields were added after digest v1.
+                # Excluding absent values preserves validation of historical
+                # versions while still binding all provenance when present.
+                "scope": [
+                    item.model_dump(mode="json", exclude_none=True)
+                    for item in scope
+                ],
         }
         if confidence is not None:
             payload["confidence"] = confidence

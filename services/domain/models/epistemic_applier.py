@@ -276,6 +276,8 @@ class EpistemicApplier:
                     str(selected_scope_entity.get("display_label") or "").strip()
                     or None
                 ),
+                canonical_ref_status=("provisional" if ":" in raw_id else None),
+                normalization_version=(1 if ":" in raw_id else None),
                 claim_local_evidence_refs=(evidence_reference_id,),
             )
         ]

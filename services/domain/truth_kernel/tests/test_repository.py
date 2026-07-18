@@ -61,6 +61,8 @@ async def test_admission_adapter_persists_version_bound_evidence_and_scope() -> 
     )
     assert scope_args[6] == command.version.scope[0].canonical_ref
     assert scope_args[7] == command.version.scope[0].display_label
+    assert scope_args[9] == command.version.scope[0].canonical_ref_status
+    assert scope_args[10] == command.version.scope[0].normalization_version
 
 
 @pytest.mark.asyncio

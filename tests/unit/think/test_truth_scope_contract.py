@@ -16,6 +16,8 @@ def _binding(*, kind: ScopeSubjectKind, canonical_ref: str) -> ClaimScopeBinding
         subject_kind=kind,
         role=ClaimScopeRole.SUBJECT,
         canonical_ref=canonical_ref,
+        canonical_ref_status="provisional",
+        normalization_version=1,
         claim_local_evidence_refs=(uuid4(),),
     )
 

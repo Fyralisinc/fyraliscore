@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Self
+from typing import Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -174,6 +174,8 @@ class ClaimScopeBinding(_TruthEvidenceContract):
     role: ClaimScopeRole
     canonical_ref: str | None = Field(default=None, min_length=3, max_length=300)
     display_label: str | None = Field(default=None, min_length=1, max_length=300)
+    canonical_ref_status: Literal["provisional", "resolved"] | None = None
+    normalization_version: int | None = Field(default=None, ge=1)
     claim_local_evidence_refs: tuple[UUID, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -204,6 +206,12 @@ class ClaimScopeBinding(_TruthEvidenceContract):
                 raise ValueError(
                     "canonical_ref type must agree with subject_kind"
                 )
+            if self.canonical_ref_status is None or self.normalization_version is None:
+                raise ValueError(
+                    "canonical_ref requires provenance status and normalization version"
+                )
+        elif self.canonical_ref_status is not None or self.normalization_version is not None:
+            raise ValueError("canonical provenance metadata requires canonical_ref")
         return self
 
 
