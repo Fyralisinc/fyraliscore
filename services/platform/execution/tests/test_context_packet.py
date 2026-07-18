@@ -391,6 +391,118 @@ def test_compile_context_packet_emits_memory_decision_candidates() -> None:
     assert by_family["no_op"]["reason"].startswith("Batch may contain")
 
 
+def test_batch_fragments_compile_four_local_candidates_without_distractors() -> None:
+    storylines = {
+        "Atlas release": (
+            "The release certificate still has no clearly recorded owner.",
+            "A late reply asks whether the certificate ownership handoff happened.",
+            "The release dashboard remains optimistic while its record is incomplete.",
+            "Someone says they have it now without naming the infrastructure owner.",
+            "The rollout window moved after the ownership question resurfaced.",
+        ),
+        "Beacon migration": (
+            "The privileged access review still has no clearly recorded owner.",
+            "A late reply asks whether the security approval transition happened.",
+            "The deployment dashboard remains optimistic while its record is incomplete.",
+            "Someone says they have it now without naming the identity reviewer.",
+            "Migration completion moved after the ownership question resurfaced.",
+        ),
+        "Cobalt renewal": (
+            "The customer approval email still has no clearly recorded owner.",
+            "A late reply asks whether the renewal approval transition happened.",
+            "The CRM health field remains optimistic while its record is incomplete.",
+            "Someone says they have it now without naming the procurement lead.",
+            "The renewal signature moved after the ownership question resurfaced.",
+        ),
+        "Delta handoff": (
+            "The named support owner still has no clearly recorded owner.",
+            "A late reply asks whether the support-to-operations handoff happened.",
+            "The handoff checklist remains optimistic while its record is incomplete.",
+            "Someone says they have it now without naming the incident commander.",
+            "The repeat incident rate moved after the ownership question resurfaced.",
+        ),
+    }
+    fragments = []
+    expected: dict[str, set[str]] = {}
+    for scope, bodies in storylines.items():
+        expected[scope] = set()
+        for body in bodies:
+            observation_id = str(uuid4())
+            expected[scope].add(observation_id)
+            fragments.append(
+                {
+                    "observation_id": observation_id,
+                    "source_channel": "slack:message",
+                    "text": f"{scope}, update 1: {body}",
+                }
+            )
+    distractors = (
+        "Week 1: Facilities changed the lunch delivery entrance.",
+        "Week 1: The book club moved its informal discussion.",
+        "Week 1: A test calendar received a new color label.",
+        "Week 1: The Atlas certificate training example uses a handoff checklist.",
+        "Week 1: Cobalt paint approval is listed in the Beacon office ticket.",
+    )
+    distractor_ids = set()
+    for text in distractors:
+        observation_id = str(uuid4())
+        distractor_ids.add(observation_id)
+        fragments.append(
+            {
+                "observation_id": observation_id,
+                "source_channel": "slack:message",
+                "text": text,
+            }
+        )
+    all_ids = [uuid4() for _ in fragments]
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=uuid4(),
+        observation_id=all_ids[0],
+        observation_ids=all_ids,
+        seed_natural_text="Evidence window containing 25 source signals.",
+        seed_signature={"batch_signal_fragments": fragments},
+    )
+
+    candidates = context_packet.memory_decision_candidates(
+        trigger,
+        (
+            Hypothesis(
+                "H2",
+                "An active commitment, owner, or promised outcome is affected by the batch.",
+                0.7,
+                "high",
+                affected_entities=("batch",),
+            ),
+        ),
+        [],
+        [],
+        [],
+        SufficiencyVerdict("sufficient_for_reasoning", "ready", 0, 0, ()),
+    )
+
+    assert len(candidates) == 4
+    assert {candidate.semantic_scope[0] for candidate in candidates} == set(storylines)
+    for candidate in candidates:
+        scope = candidate.semantic_scope[0]
+        assert set(candidate.member_observation_ids) == expected[scope]
+        assert candidate.source_observation_ids == candidate.member_observation_ids
+        assert {
+            row["observation_id"] for row in candidate.observation_evidence
+        } == expected[scope]
+        assert all(
+            row["body"].startswith(f"{scope}, update 1:")
+            for row in candidate.observation_evidence
+        )
+        assert all(
+            row["source_channel"] == "slack:message"
+            for row in candidate.observation_evidence
+        )
+        assert not (set(candidate.member_observation_ids) & distractor_ids)
+    assert all(candidate.candidate_id != "MDC_H2" for candidate in candidates)
+
+
 def test_compile_context_packet_carries_bounded_residual_spine() -> None:
     trigger = _trigger()
     residuals = [

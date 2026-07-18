@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import asdict, is_dataclass
 from typing import Any, Callable, Literal, Mapping
 
@@ -730,6 +731,10 @@ def memory_decision_candidates(
     }:
         return []
 
+    local_candidates, material_local_coverage = _batch_fragment_candidates(trigger)
+    if material_local_coverage:
+        return local_candidates[:max_candidates]
+
     candidates: list[MemoryDecisionCandidate] = []
     used_ids: set[str] = set()
     hypotheses_by_id = {hypothesis.id: hypothesis for hypothesis in hypotheses}
@@ -825,6 +830,111 @@ def memory_decision_candidates(
         add(_noop_candidate(trigger, noop, evidence))
 
     return candidates[:max_candidates]
+
+
+_BATCH_SCOPE_PREFIX_RE = re.compile(
+    r"^\s*(?P<scope>[A-Za-z][A-Za-z0-9_-]*(?:\s+[A-Za-z][A-Za-z0-9_-]*){1,3})"
+    r"\s*,\s*update\s+\d+\s*:\s*(?P<body>.+)$",
+    re.IGNORECASE,
+)
+_NON_BUSINESS_SCOPE_WORDS = {
+    "batch",
+    "evidence window",
+    "signal batch",
+    "this signal",
+    "week update",
+}
+
+
+def _batch_fragment_candidates(
+    trigger: TriggerContext,
+) -> tuple[list[MemoryDecisionCandidate], bool]:
+    """Compile provider-blind, workstream-local candidates from batch members.
+
+    The repeated prefix is used only as a grouping coordinate. Candidate
+    evidence always retains the exact persisted observation id and full body.
+    """
+    if not trigger.is_batch or not isinstance(trigger.seed_signature, dict):
+        return [], False
+    fragments = trigger.seed_signature.get("batch_signal_fragments")
+    if not isinstance(fragments, list):
+        return [], False
+
+    groups: dict[str, list[dict[str, str]]] = {}
+    scope_labels: dict[str, str] = {}
+    for raw in fragments:
+        if not isinstance(raw, dict):
+            continue
+        observation_id = str(raw.get("observation_id") or "").strip()
+        text = str(raw.get("text") or "").strip()
+        if not observation_id or not text:
+            continue
+        match = _BATCH_SCOPE_PREFIX_RE.match(text)
+        if match is None:
+            continue
+        scope = " ".join(match.group("scope").split())
+        scope_key = scope.casefold()
+        if scope_key in _NON_BUSINESS_SCOPE_WORDS:
+            continue
+        row = {
+            "observation_id": observation_id,
+            "body": text,
+            "source_channel": str(raw.get("source_channel") or ""),
+        }
+        groups.setdefault(scope_key, []).append(row)
+        scope_labels.setdefault(scope_key, scope)
+
+    candidates: list[MemoryDecisionCandidate] = []
+    covered_ids: set[str] = set()
+    for scope_key in sorted(groups):
+        members = groups[scope_key]
+        # Repetition plus distinct payloads prevents a duplicated wrapper from
+        # manufacturing a durable workstream hypothesis.
+        payloads = {
+            _BATCH_SCOPE_PREFIX_RE.match(member["body"]).group("body").casefold()  # type: ignore[union-attr]
+            for member in members
+        }
+        if len(members) < 2 or len(payloads) < 2:
+            continue
+        scope = scope_labels[scope_key]
+        member_ids = tuple(dict.fromkeys(row["observation_id"] for row in members))[:12]
+        member_evidence = tuple(
+            row for row in members if row["observation_id"] in set(member_ids)
+        )[:12]
+        covered_ids.update(member_ids)
+        candidates.append(
+            MemoryDecisionCandidate(
+                candidate_id=_candidate_id("MDC_WS", scope_key),
+                op_family="claim_insert",
+                proposed_text=(
+                    "Workstream-local signals may indicate a material change in "
+                    f"{scope}; adjudicate the exact durable claim from only the "
+                    "listed member observations."
+                ),
+                source_observation_ids=member_ids,
+                member_observation_ids=member_ids,
+                semantic_scope=(scope,),
+                observation_evidence=member_evidence,
+                uncertainty_slots=(
+                    f"which claim about {scope} is supported by these observations",
+                    "whether the repeated signals are material rather than background",
+                ),
+                confidence=0.58,
+                reason=(
+                    f"Provider-blind semantic partition found {len(member_ids)} "
+                    f"distinct observations for {scope}"
+                ),
+            )
+        )
+
+    eligible_count = sum(
+        1
+        for raw in fragments
+        if isinstance(raw, dict) and raw.get("observation_id") and raw.get("text")
+    )
+    coverage = len(covered_ids) / max(1, eligible_count)
+    material = len(candidates) >= 2 and coverage >= 0.60
+    return candidates, material
 
 
 _RELATION_SLOT_PRIORITY = {
