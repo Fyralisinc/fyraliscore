@@ -69,6 +69,12 @@ _P6_LOCAL_WORK_ITEMS_RE = re.compile(
 )
 
 
+def p6_runtime_start() -> datetime:
+    """Return the public event-time floor used by the P6 runtime replay."""
+
+    return _P6_RUNTIME_START
+
+
 @dataclass(frozen=True, slots=True)
 class P6ThinkExecutionDependencies:
     """Gold-blind runtime dependencies for one P6-shaped execution.
@@ -904,6 +910,9 @@ async def run_p6_production_think(
     tenant_id: UUID | None = None, per_batch_timeout_s: float = 650.0,
     attempt_timeout_s: float = 300.0,
     total_timeout_s: float = 1800.0, max_batches: int = 12,
+    prepare_persisted_batch: Callable[
+        [asyncpg.Connection, UUID, Any, dict[str, UUID]], Awaitable[None]
+    ] | None = None,
 ) -> dict[str, Any]:
     """Run production P6 with a clean worktree and strict Codex CLI identity."""
 
@@ -925,6 +934,7 @@ async def run_p6_production_think(
         embedder=embedder,
         run_provenance=run_provenance,
         transport=expected_transport,
+        prepare_persisted_batch=prepare_persisted_batch,
         pin_planner_model=True,
         execution_mode=(
             "production ThinkWorker; every role pinned to one configuration"
@@ -949,6 +959,7 @@ async def run_p6_production_think(
 
 __all__ = [
     "P6ThinkExecutionDependencies",
+    "p6_runtime_start",
     "run_p6_production_think",
     "run_p6_think_with_dependencies",
 ]

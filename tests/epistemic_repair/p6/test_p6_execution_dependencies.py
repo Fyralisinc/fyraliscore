@@ -158,3 +158,51 @@ async def test_production_wrapper_rejects_non_codex_identity(
             checkpoint_path=tmp_path / "checkpoint.json",
             max_batches=1,
         )
+
+
+async def test_production_wrapper_forwards_optional_batch_preparer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    provider = SimpleNamespace(
+        config=SimpleNamespace(provider="codex", model="gpt-test")
+    )
+    captured = {}
+
+    class Embedder:
+        async def close(self) -> None:
+            return None
+
+    async def close_provider() -> None:
+        return None
+
+    async def prepare(*_args) -> None:
+        return None
+
+    async def fake_execute(**kwargs):
+        captured.update(kwargs)
+        return {"complete": True}
+
+    monkeypatch.setattr(p6_think_runner, "require_codex_cli_environment", lambda: None)
+    monkeypatch.setattr(
+        p6_think_runner, "_run_provenance",
+        lambda: {"git_commit": "a" * 40, "worktree_clean": True},
+    )
+    monkeypatch.setattr(p6_think_runner, "build_provider", lambda: provider)
+    monkeypatch.setattr(p6_think_runner, "_codex_transport", lambda: "cli")
+    monkeypatch.setattr(p6_think_runner, "OllamaClient", lambda _config: Embedder())
+    monkeypatch.setattr(p6_think_runner.OllamaConfig, "from_env", lambda: object())
+    monkeypatch.setattr(
+        p6_think_runner, "close_codex_app_server_client", close_provider
+    )
+    monkeypatch.setattr(p6_think_runner, "_execute_p6_think", fake_execute)
+
+    result = await p6_think_runner.run_p6_production_think(
+        database_url="postgresql://unused",
+        population=build_p6_population(),
+        checkpoint_path=tmp_path / "checkpoint.json",
+        max_batches=1,
+        prepare_persisted_batch=prepare,
+    )
+
+    assert result == {"complete": True}
+    assert captured["dependencies"].prepare_persisted_batch is prepare
