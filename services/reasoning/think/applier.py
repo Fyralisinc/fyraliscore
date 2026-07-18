@@ -167,6 +167,7 @@ async def _record_apply_drop(
     op_kind: str,
     reason: str,
     message: str,
+    payload: dict[str, Any] | None = None,
 ) -> None:
     try:
         from services.domain.feedback_stats import record_feedback_stat
@@ -179,7 +180,7 @@ async def _record_apply_drop(
             op_kind=op_kind,
             outcome="dropped",
             reason=reason,
-            payload={"message": message[:500]},
+            payload={"message": message[:500], **(payload or {})},
         )
     except asyncpg.PostgresError:
         raise
@@ -839,6 +840,40 @@ async def _apply_one_expanded_claim_op(
             trigger_supporting_event_ids=trigger_evidence_ids,
             audit_cause_override=("reconciliation_merge" if is_recon_merge else None),
         )
+    except InvariantViolation as exc:
+        invariant = str(
+            (getattr(exc, "context", None) or {}).get("invariant") or ""
+        )
+        if op.op != "insert" or invariant != "THINK_TRUTH_EVIDENCE_MISSING":
+            raise
+        receipt = _unsupported_claim_receipt(op)
+        message = getattr(exc, "message", str(exc))
+        await _record_apply_drop(
+            conn,
+            tenant_id=diff.tenant_id,
+            op_type="claim",
+            op_kind=op.op,
+            reason="needs_claim_local_evidence",
+            message=message,
+            payload=receipt,
+        )
+        ops_summary["apply_dropped_op_count"] += 1
+        ops_summary["apply_dropped_op_errors"].append(message)
+        summary = {
+            "op": "skip",
+            "claim_op": op.op,
+            "reason": "needs_claim_local_evidence",
+            "decision": "rejected",
+            **receipt,
+        }
+        _annotate_claim_result_summary(
+            summary,
+            recon_result=recon_result,
+            verdict=verdict,
+            split_group_id=split_group_id,
+        )
+        ops_summary["claim_ops"].append(summary)
+        return
     except ValidationError as exc:
         if op.op != "insert":
             raise
@@ -892,6 +927,42 @@ async def _apply_one_expanded_claim_op(
         ops_summary=ops_summary,
         result=result,
     )
+
+
+def _unsupported_claim_receipt(op: ClaimOp) -> dict[str, Any]:
+    entry = dict(op.entry or {})
+    proposition = dict(entry.get("proposition") or {})
+    proposed_ids = [
+        str(uid)
+        for uid in _merge_event_ids(
+            entry.get("supporting_event_ids"),
+            proposition.get("evidence_event_ids"),
+        )
+    ]
+    scope = {
+        "actors": sorted(str(value) for value in entry.get("scope_actors") or ()),
+        "entities": sorted(
+            (
+                str(item.get("type") or "other"),
+                str(item.get("id") or item.get("referent_id") or ""),
+            )
+            for item in entry.get("scope_entities") or ()
+            if isinstance(item, dict) and (item.get("id") or item.get("referent_id"))
+        ),
+    }
+    payload = {
+        "natural": str(entry.get("natural") or ""),
+        "proposition": proposition,
+        "proposed_evidence_ids": proposed_ids,
+        "proposed_scope": scope,
+    }
+    return {
+        "payload_digest": hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest(),
+        "proposed_evidence_ids": proposed_ids,
+        "proposed_scope": scope,
+    }
 
 
 def _patch_pending_situation_members(
