@@ -269,8 +269,9 @@ async def _persist_runtime_batch(
     ids = [row[0] for row in rows]
     existing = await conn.fetch(
         """SELECT id,tenant_id,occurred_at,source_channel,content,content_text
-           FROM observations WHERE id=ANY($1::uuid[])""",
-        ids,
+           FROM observations
+           WHERE id=ANY($1::uuid[]) AND tenant_id=$2""",
+        ids, tenant_id,
     )
     expected = {
         row[0]: {
@@ -297,7 +298,7 @@ async def _persist_runtime_batch(
           id,tenant_id,occurred_at,kind,source_channel,content,content_text,
           embedding_pending,trust_tier,entities_mentioned
         ) VALUES ($1,$2,$3,'signal',$4,$5::jsonb,$6,TRUE,'unvetted','[]'::jsonb)
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (id, occurred_at) DO NOTHING
     """, rows)
     return result
 

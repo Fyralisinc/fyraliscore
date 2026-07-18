@@ -50,7 +50,8 @@ def test_production_think_runner_requires_real_batch_worker() -> None:
     assert "process_background_triggers=True" in source
     assert 'expected_transport != "cli"' in source
     assert "P6_OBSERVATION_IDEMPOTENCY_CONFLICT" in source
-    assert "ON CONFLICT (id) DO NOTHING" in source
+    assert "ON CONFLICT (id, occurred_at) DO NOTHING" in source
+    assert "id=ANY($1::uuid[]) AND tenant_id=$2" in source
 
 
 def test_all_twelve_p6_batches_are_past_dated_before_execution() -> None:
