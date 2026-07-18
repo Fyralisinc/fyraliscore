@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import asyncpg
 import pytest
+from pgvector.asyncpg import register_vector
 
+from lib.shared.types import ModelCreate
+from services.domain.models.repo import ModelsRepo
 from services.platform.execution import context_packet, inquiry
 from services.platform.execution.types import (
     EvidenceCard,
@@ -21,6 +26,7 @@ from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.think.compiled_reasoning import (
     build_compiled_batch_memory_decision_request,
 )
+from services.reasoning.think.truth_admission import admit_validated_think_claim
 
 
 def _trigger() -> TriggerContext:
@@ -860,6 +866,105 @@ async def test_conclusion_hydrates_scope_complete_memory_outside_selected_retrie
     assert synthesis[0].semantic_scope == ("Delta handoff",)
     assert synthesis[0].evidence_model_ids == tuple(map(str, delta_ids))
     assert synthesis[0].member_observation_ids == (conclusion_id,)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_conclusion_hydrates_nonempty_accepted_current_models(
+) -> None:
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL is required for the PostgreSQL hydration proof")
+    tenant_id = uuid4()
+    scope_label = "Orion delivery"
+    scope_ref = "workstream:orion-delivery"
+    model_ids = []
+    conn = await asyncpg.connect(dsn)
+    await register_vector(conn)
+    transaction = conn.transaction()
+    await transaction.start()
+    try:
+        await conn.execute(
+            "INSERT INTO tenants (id,name) VALUES ($1,$2)",
+            tenant_id,
+            "scope-hydration-proof",
+        )
+        for index in range(3):
+            observation_id = uuid4()
+            await conn.execute(
+                """
+                INSERT INTO observations
+                  (id,tenant_id,occurred_at,kind,source_channel,content,content_text,
+                   embedding,embedding_pending,trust_tier)
+                VALUES ($1,$2,now(),'signal','test','{}'::jsonb,$3,$4,FALSE,'authoritative')
+                """,
+                observation_id,
+                tenant_id,
+                f"Orion delivery accepted evidence {index}",
+                [0.0] * 768,
+            )
+            row = await admit_validated_think_claim(
+                conn,
+                proposed=ModelCreate(
+                    tenant_id=tenant_id,
+                    born_from_event_id=observation_id,
+                    proposition={
+                        "kind": "state",
+                        "subject": "Orion delivery",
+                        "assertion": f"accepted state {index}",
+                        "scope_label": scope_label,
+                        "scope_ref": scope_ref,
+                    },
+                    natural=f"Orion delivery accepted state {index}",
+                    embedding=[0.0] * 768,
+                    scope_entities=[{
+                        "type": "workstream",
+                        "id": scope_ref,
+                        "canonical_ref": scope_ref,
+                        "display_label": scope_label,
+                    }],
+                    scope_temporal={},
+                    confidence=0.7,
+                    confidence_at_assertion=0.7,
+                    supporting_event_ids=[observation_id],
+                ),
+                evidence_observation_ids=(observation_id,),
+                models_repo=ModelsRepo(None, embedder=None),
+            )
+            model_ids.append(row.id)
+
+        conclusion_id = uuid4()
+        trigger = TriggerContext(
+            kind="T1",
+            subkind="event_batch",
+            tenant_id=tenant_id,
+            observation_ids=[uuid4(), uuid4(), conclusion_id],
+            seed_natural_text="Orion delivery batch",
+            seed_signature={"batch_signal_fragments": [
+                {"observation_id": str(uuid4()), "source_channel": "test",
+                 "text": "Orion delivery, update 4: Ownership remains unclear."},
+                {"observation_id": str(uuid4()), "source_channel": "test",
+                 "text": "Orion delivery, update 4: Completion moved again."},
+                {"observation_id": str(conclusion_id), "source_channel": "test",
+                 "text": "Orion delivery is blocked."},
+            ]},
+        )
+        hydrated, receipt = await context_packet.hydrate_synthesis_scope_models(
+            conn, trigger,
+        )
+    finally:
+        await transaction.rollback()
+        await conn.close()
+
+    assert set(hydrated[scope_label]) == {str(model_id) for model_id in model_ids}
+    assert receipt == {
+        "queried": True,
+        "scope_count": 1,
+        "limit_per_scope": 8,
+        "returned_model_count": 3,
+        "ambiguous_scope_count": 0,
+        "scopes": [scope_label],
+    }
 
 
 @pytest.mark.asyncio

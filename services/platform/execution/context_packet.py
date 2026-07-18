@@ -967,15 +967,22 @@ async def hydrate_synthesis_scope_models(
         return {}, {"queried": False, "reason": "no_scope_level_conclusion"}
     rows = await conn.fetch("""
         SELECT scope_label,scope_ref,id FROM (
-            SELECT proposition->>'scope_label' AS scope_label,
-                   proposition->>'scope_ref' AS scope_ref,id,activation,created_at,
+            SELECT binding.display_label AS scope_label,
+                   binding.canonical_ref AS scope_ref,model.id,
+                   model.truth_advanced_at,model.created_at,
                    row_number() OVER (
-                       PARTITION BY proposition->>'scope_label',proposition->>'scope_ref'
-                       ORDER BY activation DESC,created_at DESC,id
+                       PARTITION BY binding.display_label,binding.canonical_ref
+                       ORDER BY model.truth_advanced_at DESC,
+                                model.created_at DESC,model.id
                    ) AS scope_rank
-            FROM accepted_current_models
-            WHERE tenant_id=$1 AND status='active'
-              AND proposition->>'scope_label'=ANY($2::text[])
+            FROM accepted_current_models model
+            JOIN model_truth_scope_bindings binding
+              ON binding.tenant_id=model.tenant_id
+             AND binding.model_version_id=model.truth_version_id
+             AND binding.scope_role='subject'
+            WHERE model.tenant_id=$1
+              AND binding.display_label=ANY($2::text[])
+              AND binding.canonical_ref IS NOT NULL
         ) scoped
         WHERE scope_rank <= $3
         ORDER BY scope_label,scope_ref,scope_rank
