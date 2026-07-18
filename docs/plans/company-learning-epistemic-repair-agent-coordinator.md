@@ -1761,3 +1761,63 @@ when any of the following occurs:
 The learning log is a scratchpad and evidence index, not canonical
 architecture. Findings become normative only after validation and an explicit
 coordinator decision.
+
+## 27. Final Pre-Freeze Checkpoint — Decisive P6 Failure and Repair Set
+
+The completed zero-seed, 12 x 25 P6 execution pinned to `bf26d622` is preserved
+as immutable failed integrated evidence:
+
+- execution: `/tmp/p6-think-12batch-bf26d622.json`;
+- post-freeze evidence: `/tmp/p6-think-12batch-bf26d622-evidence.json`; and
+- score: `/tmp/p6-think-12batch-bf26d622-score.json`.
+
+The run completed all 12 batches and 300 signals. Atomic claim F1, uncertainty
+fate coverage, scope precision, scope recall, and evidence-lineage coverage
+were each `1.0`. Those results prove the lower claim-local substrate for this
+run; they do not prove company-level learning. Direct thesis accuracy was
+`0/4`, lifecycle expected-transition accuracy was `0/4`, and canonical
+relations created were `0`. Relation joint precision/recall and refresh-key
+duplicate processing remained unmeasured. P6 therefore failed semantic exit
+despite clean execution and green truth-critical barriers.
+
+The exact failure was not a post-freeze scorer mismatch. Frozen truth contained
+only one canonical composite: a Beacon situation created at batch 6. Atlas,
+Cobalt, and Delta had no synthesis Model. Beacon cited only its conclusion
+observation directly; the four member Model IDs were decorative proposition
+JSON rather than canonical Model-version truth evidence, so transitive lineage
+was empty. Its prose described co-occurrence but omitted the explicit supported
+dependency relation required by the semantic oracle. Later batches attempted
+to attach broad, multi-scope evidence to this first Beacon composite instead of
+creating scope-local composites. Consequently no synthesis covered the five
+required lifecycle phases, lifecycle transitions had no coherent thesis to
+advance, and relation admission had no correctly structured endpoints.
+
+The production-general repair set now on the branch is:
+
+- `77796e77`: synthesis admission requires identical canonical scope, active
+  exact member versions, canonical `MODEL_VERSION` derivation evidence, one
+  direct conclusion opener, and an explicit supported mechanism;
+- `45b0bbad`: coherent synthesis evolves through later evidence phases without
+  replacing its identity with unrelated prose;
+- `3a903aa8`: exact governed semantic relations enter canonical relation truth;
+- `39ea688a`: explicit synthesis lifecycle phases are classified without
+  benchmark identifiers;
+- `b01e8290`: a scope-level conclusion performs one bounded, receipted,
+  canonical-scope accepted-memory hydration, independent of the arbitrary
+  selected retrieval subset; and
+- P7 repairs `bf268c99` and `9771c083` freeze matched arm populations at the
+  bootstrap checkpoint, while P8 repairs `6828d168`, `940851a7`, and
+  `32f3ea9e` gate provider canaries on deterministic proof, exercise restart
+  faults over production-shaped batches, and scale the deterministic semantic
+  kernel.
+
+Focused validation for these repairs is readiness evidence only. The failed P6
+artifact is not retroactively repaired, and P6 remains open until a new complete
+run on the final frozen commit proves all four theses, lifecycle, and governed
+relations. P7/P8 artifacts must likewise be regenerated on that same release
+commit before P9 sealing.
+
+Efficiency optimization and refresh-key behavior remain deferred. They must be
+reported as unmeasured rather than silently treated as passing, and they must
+not delay the immediate semantic rerun unless they become a direct correctness
+blocker.

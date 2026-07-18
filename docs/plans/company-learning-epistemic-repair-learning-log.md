@@ -1430,3 +1430,55 @@ Copy this section for every new learning:
 
 **Edge cases added:** IDs or none
 ```
+
+### 2026-07-18 — LOG-042 — Decisive P6 preserved as semantic failure before freeze
+
+**Type:** observed and corrected
+
+**Work package / commit:** Full P6 artifact at `bf26d622`; focused production
+repairs `77796e77`, `45b0bbad`, `3a903aa8`, `39ea688a`, and `b01e8290`; P7/P8
+repairs `bf268c99`, `9771c083`, `6828d168`, `940851a7`, and `32f3ea9e`.
+
+**What happened:** The zero-seed 12-batch run completed all 300 signals and
+kept its atomic, uncertainty, scope, and direct-lineage boundaries exact, but
+it failed to form an autonomous company model. It produced only one canonical
+synthesis Model, for Beacon, rather than one for each of Atlas, Beacon, Cobalt,
+and Delta. Lifecycle transitions and canonical semantic relations therefore
+did not materialize.
+
+**Evidence:** `/tmp/p6-think-12batch-bf26d622.json`,
+`/tmp/p6-think-12batch-bf26d622-evidence.json`, and
+`/tmp/p6-think-12batch-bf26d622-score.json`. Complete execution was true.
+Atomic claim F1, uncertainty-fate coverage, scope precision, scope recall, and
+evidence-lineage coverage were all `1.0`. Direct thesis accuracy was `0/4`;
+lifecycle expected-transition accuracy was `0/4`; canonical relation count was
+zero. Relation joint precision/recall and refresh duplicate-processing ratio
+were unmeasured.
+
+**Interpretation:** This was a production synthesis failure, not an evaluator
+or evidence-extraction artifact. Beacon's direct conclusion evidence was
+correct, but its member IDs were not persisted as exact Model-version truth
+evidence, leaving no transitive phase lineage. Its natural text expressed a
+recurring co-occurrence without an explicit dependency marker. The other three
+scope conclusions depended on whichever Models ordinary retrieval happened to
+select; after Beacon existed, later multi-scope evidence could be reconciled
+into it instead of opening separate canonical-scope synthesis. A generic prose
+composite cannot anchor lifecycle or governed relations.
+
+**Decision or next test:** Preserve this run permanently as falsifying
+evidence. The next expensive P6 execution must start from zero seed on one final
+clean commit and reopen exact member-version lineage. It must produce four
+scope-local structured theses with explicit supported mechanisms, advance each
+through the expected phases, and admit only governed semantic relations. Do not
+patch the scorer or relabel the failed artifact.
+
+**Coordinator impact:** The focused repair set is complete enough to justify a
+new semantic run, but it is not integrated proof. P7/P8 repair artifacts also
+require regeneration on the exact release commit before P9. Efficiency and
+refresh behavior remain deliberately deferred and unmeasured.
+
+**Edge cases added:** conclusion scope omitted by selected retrieval; same
+display label mapping to multiple canonical refs; cross-scope composite merge;
+inactive or stale member head; proposition member ID without immutable
+Model-version evidence; vague co-occurrence presented as a mechanism; direct
+observation siblings substituted for transitive prior phases.
