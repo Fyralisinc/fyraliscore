@@ -20,9 +20,15 @@ import asyncpg
 
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from lib.evaluation.epistemic_repair.p6_population import P6Batch, P6Population
-from lib.llm.provider import build_provider, close_codex_app_server_client, set_response_cache
+from lib.llm.provider import (
+    _codex_transport, build_provider, close_codex_app_server_client,
+    set_response_cache,
+)
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.domain.company_learning.barrier import CompanyLearningBarrierService
+from services.domain.conversation_context.episode_boundaries import (
+    ConversationBoundaryObservation, project_conversation_episode_boundaries,
+)
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
 
@@ -237,6 +243,25 @@ async def _persist_runtime_batch(
     return result
 
 
+def _project_boundaries(
+    observations: list[ConversationBoundaryObservation],
+    observation_to_signal: dict[str, str],
+) -> list[dict[str, str]]:
+    """Freeze production boundary decisions without evaluator labels."""
+
+    decisions: list[dict[str, str]] = []
+    for group in project_conversation_episode_boundaries(tuple(observations)):
+        boundary_id = min(group)
+        for observation_id in group:
+            decisions.append({
+                "signal_id": observation_to_signal[observation_id],
+                "observation_id": observation_id,
+                "predicted_boundary_id": boundary_id,
+                "projector_version": "conversation-episode-boundaries-v1",
+            })
+    return sorted(decisions, key=lambda row: row["signal_id"])
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, UUID):
         return str(value)
@@ -293,6 +318,11 @@ async def run_p6_production_think(
     provider = build_provider()
     expected_provider = str(provider.config.provider)
     expected_model = str(provider.config.model)
+    expected_transport = _codex_transport()
+    if expected_provider != "codex" or expected_transport != "cli":
+        raise RuntimeError(
+            "P6 production proof requires provider=codex and CODEX_TRANSPORT=cli"
+        )
     # P6 is a one-configuration proof.  Inquiry planning normally selects a
     # faster Codex model; pin both planner roles to the exact main model here.
     pin_names = (
@@ -320,6 +350,9 @@ async def run_p6_production_think(
     started = time.monotonic()
     waves: list[dict[str, Any]] = []
     previous_model_versions: set[UUID] = set()
+    boundary_inputs: list[ConversationBoundaryObservation] = []
+    observation_to_signal: dict[str, str] = {}
+    boundary_decisions: list[dict[str, str]] = []
     terminal_reason: str | None = None
     try:
         async with pool.acquire() as conn:
@@ -342,6 +375,22 @@ async def run_p6_production_think(
                 observation_ids = await _persist_runtime_batch(
                     conn, tenant_id=tenant_id, batch=batch,
                 )
+            for signal in batch.signals:
+                observation_id = str(observation_ids[signal.signal_id])
+                observation_to_signal[observation_id] = signal.signal_id
+                boundary_inputs.append(ConversationBoundaryObservation(
+                    observation_id=observation_id,
+                    occurred_at=(
+                        datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
+                        + timedelta(days=signal.batch_number - 1,
+                                    minutes=signal.position)
+                    ),
+                    content_text=signal.text,
+                    source_container_id=signal.source_space,
+                ))
+            boundary_decisions = _project_boundaries(
+                boundary_inputs, observation_to_signal,
+            )
             await enqueue_t1_for_observations(
                 pool, tenant_id=tenant_id,
                 observation_ids=list(observation_ids.values()), limit=25,
@@ -391,6 +440,7 @@ async def run_p6_production_think(
                 "status": run.get("status") or "missing_run",
                 "execution": execution,
                 "truth_critical_drain": truth_drain,
+                "boundary_decisions": boundary_decisions,
                 "barrier_receipt": barrier_receipt,
                 "snapshot": snapshot,
                 "elapsed_s": round(time.monotonic() - batch_started, 3),
@@ -436,10 +486,12 @@ async def run_p6_production_think(
             "llm_attempt_receipts": llm_receipts,
             "expected_llm_configuration": {
                 "provider": expected_provider, "model": expected_model,
+                "transport": expected_transport,
             },
             "mixed_llm_attempt_count": len(mixed_attempts),
             "provider_mode": "production ThinkWorker; every role pinned to one configuration",
             "gold_visible_during_execution": False,
+            "boundary_decisions": boundary_decisions,
             "run_provenance": run_provenance,
             "timeout_budget": {
                 "attempt_timeout_s": attempt_timeout_s, "max_attempts": 2,

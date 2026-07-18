@@ -39,6 +39,7 @@ def _json_list(value: Any) -> list[dict[str, Any]]:
 
 async def extract_p6_postfreeze_evidence(
     conn: Any, *, tenant_id: UUID, signal_ids: tuple[str, ...],
+    boundary_decisions: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, Any]:
     """Extract evaluation facts without importing sealed P6 gold."""
 
@@ -174,27 +175,55 @@ async def extract_p6_postfreeze_evidence(
         ]
 
     decisions = _rows(await conn.fetch(
-        """SELECT decision_id,batch_id,route_id,context_item_kind,
+        """SELECT decision.decision_id,decision.batch_id,decision.route_id,
+                  decision.context_item_kind,
                   context_item_id,retrieved,selected,included,referenced,
                   necessary_background,historical_reopen_reason,decision_fate,
-                  result_object_kind,result_object_id,evidence_lineage,decided_at
-           FROM company_learning_context_decisions WHERE tenant_id=$1
-           ORDER BY decided_at,decision_id""",
+                  result_object_kind,result_object_id,evidence_lineage,decided_at,
+                  trigger.payload AS trigger_payload
+           FROM company_learning_context_decisions decision
+           LEFT JOIN think_runs run
+             ON run.tenant_id=decision.tenant_id
+            AND run.id::text=decision.batch_id
+           LEFT JOIN think_trigger_queue trigger
+             ON trigger.tenant_id=run.tenant_id AND trigger.id=run.trigger_id
+           WHERE decision.tenant_id=$1
+           ORDER BY decision.decided_at,decision.decision_id""",
         tenant_id,
     ))
     context_items = []
+    claim_sources = {
+        str(claim["id"]): list(claim.get("evidence_signal_ids") or ())
+        for claim in claims
+    }
     for row in decisions:
         source_signal_id = observation_to_signal.get(str(row.get("context_item_id")))
-        context_items.append({
-            **row,
-            "source_signal_id": source_signal_id,
-            "context_item_kind": (
-                "observation" if "observation" in str(row["context_item_kind"])
-                or row["context_item_kind"] == "current_episode"
-                else "model" if row["context_item_kind"] == "accepted_model"
-                else row["context_item_kind"]
-            ),
-        })
+        item_kind = (
+            "observation" if "observation" in str(row["context_item_kind"])
+            or row["context_item_kind"] == "current_episode"
+            else "model" if row["context_item_kind"] == "accepted_model"
+            else row["context_item_kind"]
+        )
+        source_ids = (
+            [source_signal_id] if source_signal_id
+            else claim_sources.get(str(row.get("context_item_id")), [])
+        )
+        payload = row.pop("trigger_payload", None) or {}
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        target_ids = [
+            observation_to_signal[str(value)]
+            for value in payload.get("observation_ids") or ()
+            if str(value) in observation_to_signal
+        ]
+        for target_id in target_ids:
+            for source_id in source_ids:
+                context_items.append({
+                    **row, "target_signal_id": target_id,
+                    "source_signal_id": source_id,
+                    "batch_number": int(target_id.split("-")[1][1:]),
+                    "context_item_kind": item_kind,
+                })
 
     refresh_events = _rows(await conn.fetch(
         """SELECT id,projection_name,projection_version,subject_key,status,
@@ -277,6 +306,10 @@ async def extract_p6_postfreeze_evidence(
         tenant_id,
     ))
 
+    boundary_by_signal = {
+        str(row.get("signal_id")): dict(row) for row in boundary_decisions
+        if row.get("signal_id")
+    }
     evidence = {
         "schema_version": "epistemic-repair-p6-postfreeze-evidence-v1",
         "tenant_id": str(tenant_id),
@@ -285,22 +318,26 @@ async def extract_p6_postfreeze_evidence(
         "signal_fates": [{
             "signal_id": signal_id,
             "observation_id": observation_id,
-            "boundary_fate": "persisted" if observation_id in observed_ids else None,
-            "mention_fate": "recorded" if any(
+            "boundary_fate": "assigned" if signal_id in boundary_by_signal else None,
+            "mention_fate": "mention" if any(
                 str(row.get("source_observation_id")) == observation_id
                 for row in mention_rows
-            ) else None,
+            ) else "no_mention" if observation_id in observed_ids else None,
             "mutation_fate": "canonical_mutation" if any(
                 signal_id in claim.get("evidence_signal_ids", ()) for claim in claims
-            ) else "no_mutation" if any(
-                row.get("context_item_id") == observation_id for row in decisions
-            ) else None,
+            ) else "no_mutation" if observation_id in observed_ids else None,
         } for observation_id, signal_id in observation_to_signal.items()],
+        "boundaries": list(boundary_by_signal.values()),
         "mentions": mentions,
         "claims": claims,
         "relations": relation_rows,
         "lifecycle_events": lifecycle,
         "context_items": context_items,
+        "context_opportunities_complete": bool(context_items) and all(
+            row.get("target_signal_id") and row.get("source_signal_id")
+            for row in context_items
+        ),
+        "scope_coordinates_canonical": False,
         "refresh_events": refresh_events,
         "active_candidates": active_candidates,
         "active_reviews": active_reviews,
