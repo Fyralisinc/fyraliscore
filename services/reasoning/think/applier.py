@@ -5069,6 +5069,24 @@ async def _apply_model_update_side_effects(
             changed_fields_for_summary.add("model_predictions")
 
 
+def _governed_relation_kind(edge_kind: str) -> tuple[str, bool] | None:
+    aliases = {
+        "blocks": ("dependency_constraint", True),
+        "depends_on": ("dependency_constraint", False),
+        "enables": ("enablement", False),
+        "supports": ("enablement", False),
+        "causes": ("causal_influence", False),
+        "influences": ("causal_influence", False),
+        "predicts": ("predictive_indicator", False),
+    }
+    if edge_kind in {
+        "causal_influence", "dependency_constraint", "enablement",
+        "predictive_indicator",
+    }:
+        return edge_kind, False
+    return aliases.get(edge_kind)
+
+
 async def _admit_canonical_relation_claim(
     op: RelationClaimOp,
     conn: asyncpg.Connection,
@@ -5126,22 +5144,11 @@ async def _admit_canonical_relation_claim(
 
     # Normalize the high-cardinality edge vocabulary into the deliberately
     # small admitted relation vocabulary. Unknown semantics remain legacy/pre-truth.
-    aliases: dict[str, tuple[RelationKind, bool]] = {
-        "blocks": (RelationKind.DEPENDENCY_CONSTRAINT, True),
-        "depends_on": (RelationKind.DEPENDENCY_CONSTRAINT, False),
-        "enables": (RelationKind.ENABLEMENT, False),
-        "supports": (RelationKind.ENABLEMENT, False),
-        "causes": (RelationKind.CAUSAL_INFLUENCE, False),
-        "influences": (RelationKind.CAUSAL_INFLUENCE, False),
-        "predicts": (RelationKind.PREDICTIVE_INDICATOR, False),
-    }
-    try:
-        kind, reverse_roles = RelationKind(op.edge_kind), False
-    except ValueError:
-        mapped = aliases.get(op.edge_kind)
-        if mapped is None:
-            return None
-        kind, reverse_roles = mapped
+    governed = _governed_relation_kind(op.edge_kind)
+    if governed is None:
+        return None
+    kind = RelationKind(governed[0])
+    reverse_roles = governed[1]
 
     left_id, right_id = source_id, target_id
     if op.direction == "target_to_source":
@@ -6026,6 +6033,61 @@ async def _apply_edge_op(
             op.evidence_event_ids,
             (cause_event_id,) if cause_event_id is not None else (),
         )
+        if (
+            op.review_status == "accepted"
+            and _governed_relation_kind(op.edge_kind) is not None
+        ):
+            from uuid import uuid5
+
+            relation_result = await _apply_relation_claim_op(
+                RelationClaimOp(
+                    id=uuid5(
+                        tenant_id,
+                        "direct-edge:"
+                        f"{op.source_model_id}:{op.edge_kind}:{op.target_model_id}",
+                    ),
+                    source_model_id=op.source_model_id,
+                    target_model_id=op.target_model_id,
+                    subject_ref={
+                        "kind": "model", "model_id": str(op.source_model_id),
+                    },
+                    object_ref={
+                        "kind": "model", "model_id": str(op.target_model_id),
+                    },
+                    predicate=op.edge_kind,
+                    edge_kind=op.edge_kind,
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=op.confidence,
+                    weight=op.weight,
+                    binding_confidence=op.confidence,
+                    evidence_event_ids=evidence_event_ids,
+                    evidence_model_ids=op.evidence_model_ids,
+                    evidence_text=op.explanation,
+                    explanation=op.explanation,
+                    metadata={
+                        **op.metadata,
+                        "source": "accepted_direct_edge_op",
+                    },
+                ),
+                conn,
+                tenant_id,
+                cause_event_id=cause_event_id,
+                think_run_id=None,
+            )
+            return {
+                "summary": {
+                    **relation_result["edge_summary"],
+                    "canonical_relation_version_id": relation_result["summary"].get(
+                        "canonical_relation_version_id"
+                    ),
+                    "relation_instance_id": relation_result["summary"].get(
+                        "relation_instance_id"
+                    ),
+                },
+                "state_changes": 0,
+            }
         ids = await repo.link(
             conn,
             source=op.source_model_id,

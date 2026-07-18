@@ -1256,9 +1256,13 @@ def score_p6_frozen_execution(
         ):
             semantic_evidence_metadata_coherent = False
             break
+    zero_seed_preflight = raw_execution.get("zero_seed_preflight") or {}
     hard_gates = {
         "immutable_inputs_match": digest_match,
         "complete_execution": raw_execution.get("complete") is True,
+        "zero_seed_canonical_truth": bool(zero_seed_preflight)
+        and zero_seed_preflight.get("accepted_model_count") == 0
+        and zero_seed_preflight.get("accepted_relation_count") == 0,
         "exact_300_signals_12_batches": (
             exact_batches and exact_batch_members and signal_count == P6_SIGNAL_COUNT
         ),
@@ -1330,6 +1334,7 @@ def score_p6_frozen_execution(
             "signals": len(sealed_population.signals),
             "batches": len(sealed_population.batches),
         },
+        "zero_seed_preflight": zero_seed_preflight,
         "hard_gates": hard_gates,
         "continuous_metrics": metrics,
         "missing_evidence": sorted(

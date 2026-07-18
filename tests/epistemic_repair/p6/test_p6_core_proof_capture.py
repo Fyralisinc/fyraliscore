@@ -9,6 +9,8 @@ from lib.evaluation.epistemic_repair import p6_postfreeze_evidence
 from services.evaluation.epistemic_repair.p6_think_runner import (
     _freeze_zero_seed_preflight,
 )
+from services.reasoning.think import applier
+from services.reasoning.think.diff_schema import EdgeOp
 
 
 class _PreflightConnection:
@@ -75,3 +77,51 @@ def test_postfreeze_query_captures_signed_relation_truth_evidence() -> None:
     assert "evidence_digest" in source
     assert "polarity" in source
     assert "truth_candidate_kind" in source
+
+
+@pytest.mark.asyncio
+async def test_accepted_governed_direct_edge_routes_through_relation_truth(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    async def apply_relation(op, _conn, _tenant_id, **_kwargs):
+        captured["op"] = op
+        return {
+            "summary": {
+                "canonical_relation_version_id": "relation-version",
+                "relation_instance_id": "relation",
+            },
+            "edge_summary": {
+                "op": "add", "edge_kind": op.edge_kind,
+                "source_model_id": str(op.source_model_id),
+                "target_model_id": str(op.target_model_id),
+                "edge_ids": ["edge"], "review_status": "accepted",
+            },
+        }
+
+    monkeypatch.setattr(applier, "_apply_relation_claim_op", apply_relation)
+    source, target, tenant = uuid4(), uuid4(), uuid4()
+
+    result = await applier._apply_edge_op(
+        EdgeOp(
+            op="add", source_model_id=source, target_model_id=target,
+            edge_kind="blocks", review_status="accepted", confidence=0.9,
+            evidence_model_ids=[source, target],
+        ),
+        object(),
+        tenant,
+        cause_event_id=None,
+    )
+
+    assert captured["op"].write_policy == "accepted_edge"
+    assert captured["op"].status == "accepted"
+    assert result["summary"]["canonical_relation_version_id"] == "relation-version"
+
+
+def test_zero_seed_receipt_is_a_reported_hard_gate() -> None:
+    from lib.evaluation.epistemic_repair import p6_postfreeze_scorer
+
+    source = inspect.getsource(p6_postfreeze_scorer.score_p6_frozen_execution)
+    assert '"zero_seed_canonical_truth"' in source
+    assert '"zero_seed_preflight": zero_seed_preflight' in source
