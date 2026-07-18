@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID, NAMESPACE_URL, uuid5
@@ -3382,6 +3383,7 @@ def _batch_claim_proposition(
     if role == "situation":
         members = _situation_member_ids(candidate, decision)
         scope = _claim_about(candidate)
+        scope_coordinate = _candidate_scope_coordinate(candidate)
         return {
             "kind": "belief",
             "claim_role": "situation",
@@ -3389,6 +3391,8 @@ def _batch_claim_proposition(
             "situation": _trunc(text, 180),
             "summary": text,
             "subject": scope,
+            "scope_label": scope,
+            "scope_ref": scope_coordinate[1] if scope_coordinate else None,
             "member_model_ids": [str(member) for member in members],
             "relationship_summary": _trunc(decision.reason, 360),
             "status": "forming",
@@ -3414,6 +3418,14 @@ def _batch_claim_proposition(
         "polarity": "negative" if role == "concern" else "neutral",
         "compiled_memory_candidate_id": str(candidate.get("candidate_id") or ""),
     }
+    scope_coordinate = _candidate_scope_coordinate(candidate)
+    if scope_coordinate:
+        base.update(
+            {
+                "scope_label": _claim_about(candidate),
+                "scope_ref": scope_coordinate[1],
+            }
+        )
     if role == "concern":
         base.update({"about": _claim_about(candidate), "nature": text})
     elif role == "pattern":
@@ -3525,12 +3537,40 @@ def _claim_about(candidate: dict[str, Any]) -> str:
 def _candidate_scope_entities(candidate: dict[str, Any]) -> list[dict[str, str]]:
     """Translate the compiled candidate coordinate into canonical Model scope."""
 
+    coordinate = _candidate_scope_coordinate(candidate)
+    if coordinate is None:
+        return []
+    scope_type, scope_ref = coordinate
+    return [{"type": scope_type, "id": scope_ref}]
+
+
+def _candidate_scope_coordinate(
+    candidate: dict[str, Any],
+) -> tuple[str, str] | None:
     values = [
         str(value).strip()
         for value in (candidate.get("semantic_scope") or [])
         if str(value).strip()
     ]
-    return [{"type": "workstream", "id": value} for value in values[:1]]
+    if not values:
+        return None
+    label = values[0]
+    words = set(re.findall(r"[a-z0-9]+", label.casefold()))
+    if words.intersection({"renewal", "contract", "commitment"}):
+        scope_type = "commitment"
+    elif words.intersection({"customer", "account"}):
+        scope_type = "customer"
+    elif words.intersection({"actor", "owner", "person"}):
+        scope_type = "actor"
+    else:
+        # Releases, migrations, handoffs, projects, and unnamed operational
+        # episodes are workstreams until the entity substrate promotes a more
+        # specific typed coordinate.
+        scope_type = "workstream"
+    slug = "-".join(re.findall(r"[a-z0-9]+", label.casefold()))
+    if not slug:
+        return None
+    return scope_type, f"{scope_type}:{slug}"
 
 
 def _edge_op_from_batch_decision(
