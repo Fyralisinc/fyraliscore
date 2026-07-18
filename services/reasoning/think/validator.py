@@ -886,6 +886,9 @@ async def _validate_diff_op_groups(
     relation_claim_ops = await _validate_relation_claim_ops(
         diff, conn, errors, pending_model_event_ids=pending_event_ids
     )
+    relation_claim_ops = _resolve_authoritative_relation_retirements(
+        relation_claim_ops
+    )
     relation_frame_ops = await _validate_relation_frame_ops(
         diff, conn, errors, pending_model_event_ids=pending_event_ids
     )
@@ -1162,6 +1165,54 @@ async def _validate_relation_claim_ops(
             continue
         validated.append(v_op)
     return validated
+
+
+def _resolve_authoritative_relation_retirements(
+    ops: list[RelationClaimOp],
+) -> list[RelationClaimOp]:
+    """Prevent any producer from reasserting a relation retired in this diff."""
+
+    retirement_keys = {
+        key
+        for op in ops
+        if op.status == "retired"
+        and op.write_policy == "no_edge"
+        and (op.metadata or {}).get("relation_claim_origin")
+        == "composite_correction_retirement"
+        if (key := _validated_relation_identity(op)) is not None
+    }
+    if not retirement_keys:
+        return ops
+    return [
+        op
+        for op in ops
+        if (
+            _validated_relation_identity(op) not in retirement_keys
+            or (
+                op.status == "retired"
+                and op.write_policy == "no_edge"
+                and (op.metadata or {}).get("relation_claim_origin")
+                == "composite_correction_retirement"
+            )
+        )
+    ]
+
+
+def _validated_relation_identity(
+    op: RelationClaimOp,
+) -> tuple[str, UUID, UUID] | None:
+    if op.source_model_id is None or op.target_model_id is None:
+        return None
+    kind = {
+        "dependency_constraint": "blocks",
+        "enablement": "enables",
+        "causal_influence": "causes",
+        "predictive_indicator": "predicts",
+    }.get(op.edge_kind, op.edge_kind)
+    source, target = op.source_model_id, op.target_model_id
+    if op.direction == "target_to_source":
+        source, target = target, source
+    return kind, source, target
 
 
 async def _validate_relation_frame_ops(
@@ -2232,6 +2283,8 @@ async def _canonicalize_relation_claim_semantics(
         update["metadata"] = refined.metadata
     if (
         refined.review_status == "accepted"
+        and op.status != "retired"
+        and op.write_policy != "no_edge"
         and op.write_policy != "accepted_edge"
         and not _relation_claim_forced_review(op)
     ):

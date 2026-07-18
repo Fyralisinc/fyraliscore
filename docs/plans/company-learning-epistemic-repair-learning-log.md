@@ -65,9 +65,9 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | Run 11 tenant `7cb7ae59-5954-44b1-8c0c-e944525616a5`: same batch-4 immutable-projection rollback after `26.483s`; obligation-local suppression was too narrow |
-| Repair implementation | Final compiler-wide authoritative-retirement fold after all relation operations, with normalized alias/direction identity; focused `14`-test proof green |
-| Current phase | Validate the compiler-wide fold on the bounded four-batch path; determinism replay remains deferred |
+| Latest verified coordination checkpoint | Run 12 tenant `fa3f367f-a95e-4ad4-a0ce-e664a56daac0` failed B4 after `26.631s` before the validator fix; exact pending B4 retry `019f75e5-f01f-7000-877c-edfaed6d009c` succeeded afterward |
+| Repair implementation | Validator preserves explicit `retired`/`no_edge` across semantic canonicalization; direct PostgreSQL regression green; compiler folds retained as defense-in-depth |
+| Current phase | Run one fresh clean zero-seed four-batch execution and canonical score; determinism replay remains deferred |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
@@ -78,7 +78,7 @@ Rules:
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
-| Highest-priority outcome | Suppress the duplicate inferred relation behind authoritative retirement and revalidate the bounded batch-4 path; do not reopen the full P6 loop |
+| Highest-priority outcome | Prove the validator retirement guard in one fresh clean zero-seed four-batch run and canonical score; do not reopen the full P6 loop |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -1988,31 +1988,22 @@ The next action is a checkpoint commit followed by exactly one fresh zero-seed
 four-batch run and strengthened score. Do not open CF3 or chase unrelated debt
 before that proof.
 
-### 2026-07-18 — LOG-054 — Run 10 exposed duplicate relation intent after retirement
+### 2026-07-18 — LOG-054 — Runs 10–12 isolated validator transformation of retirement
 
 **Frozen evidence:** Tenant `43e56d9c-faf2-4896-9d61-7fca4e84e34b` completed
 batches 1–3. Batch 4 failed after `27.310s` with `accepted relation edge is an
 immutable projection`. The transaction rolled back, leaving no partial
-revision, retirement, inferred reassertion or completed barrier.
+revision, retirement, unrelated relation mutation or completed barrier.
 
-**Root cause:** The corrected composite emitted an explicit authoritative
-retirement for its accepted `blocks` relation. Mandatory packet-relation
-compilation then inferred and accepted the same direction-aware relation
-identity under another candidate origin. Candidate-aware deduplication treated
-the two intents as independent. The immutable accepted-edge projection trigger
-correctly rejected the conflicting second mutation.
+**Corrected root cause:** Diagnostics proved the explicit retirement itself was
+transformed by `_canonicalize_relation_claim_semantics` from
+`retired`/`no_edge` to `accepted`/`accepted_edge`. The other operation was an
+unrelated `weakens`/`needs_review` relation on different endpoints; it did not
+reassert the retired identity. Compiler conflict-fold work is defense-in-depth,
+not the root repair.
 
-**Superseded repair hypothesis:** Obligation-local suppression did not cover all
-compiler relation paths. Run 11 tenant `7cb7ae59-5954-44b1-8c0c-e944525616a5`
-repeated the same batch-4 failure after `26.483s`.
-
-**Replacement:** Fold all assembled compiler relation operations once, using
-normalized alias and direction identity. An authoritative correction retirement
-dominates every same-identity inferred reassertion. A focused `14`-test proof is
-green; validator-wide and apply-time defenses remain backlog.
-
-**Reflection:** This is compiler normalization, not permission for validator or
-applier redesign. Validator-wide normalization and apply-time defense remain
-backlog unless a non-compiler producer reproduces the collision. Retry policy,
-immutable projection enforcement, broader relation lifecycle and unrelated
-edge cases remain outside the current repair.
+**Proof:** Run 12 tenant `fa3f367f-a95e-4ad4-a0ce-e664a56daac0` failed B4 after
+`26.631s` before the validator guard. Exact pending B4 retry run
+`019f75e5-f01f-7000-877c-edfaed6d009c` succeeded afterward. A direct PostgreSQL
+regression proves retirement status/policy survive validation and canonical
+apply. One fresh clean zero-seed run remains pending.

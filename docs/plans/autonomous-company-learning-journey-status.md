@@ -6,11 +6,12 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** Run 11 tenant `7cb7ae59-5954-44b1-8c0c-e944525616a5`
-repeated Run 10's batch-4 immutable-projection rollback after `26.483s`, proving
-obligation-local suppression was too narrow. The replacement is one final
-compiler-wide authoritative-retirement fold after all relation operations are
-assembled; determinism replay remains separately deferred.
+**Current checkpoint:** Run 12 tenant `fa3f367f-a95e-4ad4-a0ce-e664a56daac0`
+failed batch 4 after `26.631s` because validation transformed the explicit
+`retired`/`no_edge` operation into `accepted`/`accepted_edge`. The validator
+guard is now proven by exact pending batch-4 retry run
+`019f75e5-f01f-7000-877c-edfaed6d009c`; a fresh clean zero-seed run remains
+pending and determinism replay remains separately deferred.
 
 **Last updated:** 2026-07-18
 
@@ -2047,35 +2048,29 @@ matched feedback quality and objective entity v6.
   explicitly deferred. That is separate from this observed single-execution
   semantic defect.
 
-### 2026-07-18 — Run 10 rolled back a duplicate inferred relation after retirement
+### 2026-07-18 — Runs 10–12 isolated validator re-promotion of retirement
 
 - Tenant `43e56d9c-faf2-4896-9d61-7fca4e84e34b` completed batches 1–3. Batch 4
   ran for `27.310s` and failed closed with `accepted relation edge is an
   immutable projection`.
-- Composite correction emitted an explicit authoritative retirement of the
-  accepted `blocks` relation. Packet obligation compilation then inferred an
-  accepted operation for the same direction-aware relation identity under a
-  different candidate origin, escaping candidate-scoped deduplication.
-- The immutable projection trigger correctly rejected the second mutation and
-  rolled back the transaction. No partial correction, retirement, inferred
-  reassertion or barrier committed.
-- The initial obligation-local suppression hypothesis was too narrow; Run 11
-  reproduced the failure through another compiler relation path.
-- Add one focused compiled-synthesis regression with distinct candidate IDs
-  that requires exactly one `retired`/`no_edge` operation and no inferred
-  accepted or candidate duplicate. Validator-wide normalization and apply-time
-  defense remain backlog unless a non-compiler producer reproduces the case.
+- Diagnostics falsified the duplicate-reassertion explanation. The explicit
+  correction retirement itself entered semantic canonicalization as
+  `retired`/`no_edge` and emerged as `accepted`/`accepted_edge`. The other
+  operation was an unrelated `weakens`/`needs_review` relation on different
+  endpoints.
+- The immutable projection trigger correctly rejected the transformed
+  retirement and rolled back each failed batch transaction.
 - Do not expand this repair into immutable-edge redesign, retry policy,
   relation-lifecycle generalization or unrelated edge cases.
 
-### 2026-07-18 — Run 11 requires one final compiler-wide retirement fold
+### 2026-07-18 — Run 12 validator guard passes the exact pending batch-4 retry
 
-- Tenant `7cb7ae59-5954-44b1-8c0c-e944525616a5` repeated the same batch-4
-  immutable-projection failure after `26.483s`; obligation-local suppression
-  did not see every relation operation assembled by the compiler.
-- The replacement fold runs once after all relation operations exist. It
-  normalizes relation aliases and direction, then lets an authoritative
-  correction retirement dominate every same-identity inferred reassertion.
-- A focused `14`-test compiler proof covers alias/direction normalization,
-  ordering independence and preservation of unrelated relations. Validator and
-  apply defenses remain backlog.
+- Tenant `fa3f367f-a95e-4ad4-a0ce-e664a56daac0` failed batch 4 after `26.631s`
+  before the fix. The validator now preserves explicit retirement status and
+  no-edge policy across semantic canonicalization.
+- Exact pending batch-4 retry run `019f75e5-f01f-7000-877c-edfaed6d009c`
+  succeeded after the guard. A direct PostgreSQL regression proves the
+  retirement reaches canonical apply without promotion.
+- Compiler conflict folds remain useful defense-in-depth, not the root fix. A
+  fresh clean zero-seed four-batch execution and canonical score are still
+  required.

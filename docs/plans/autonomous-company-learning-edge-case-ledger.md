@@ -1049,35 +1049,27 @@ transport are excluded from this goal.
 - **Evidence:** Frozen Run 7 tenant
   `c907278e-0ef4-42be-a462-9c9f2a359b33`; focused repaired seam `47/47` green.
 
-### EDGE-046 — Inferred relation obligation reasserts an explicitly retired identity
+### EDGE-046 — Semantic canonicalization re-promotes explicit retirement
 
-- **Status:** `compiler-wide fold implemented; bounded rerun pending`
-- **Trigger:** Run 10 first exposed the collision. Run 11 tenant
-  `7cb7ae59-5954-44b1-8c0c-e944525616a5` repeated the batch-4 immutable
-  projection failure after `26.483s`, proving obligation-local suppression was
-  too narrow.
-- **Current behavior:** Composite correction emits an authoritative
-  `retired`/`no_edge` operation for the accepted `blocks` relation. Mandatory
-  relation-obligation compilation can then infer an accepted operation for the
-  same direction-aware kind/source/target under a different candidate ID.
-  Candidate-scoped deduplication treats them as distinct. The immutable
-  projection trigger rejects the conflict and rolls the transaction back.
-- **Desired behavior:** Authoritative correction retirement dominates inferred
-  intent for the same normalized relation identity. Exactly one unchanged
-  retirement reaches validation and apply.
+- **Status:** `validator guard proven on exact B4 retry; fresh clean run pending`
+- **Trigger:** Runs 10–12 failed at batch 4. Run 12 tenant
+  `fa3f367f-a95e-4ad4-a0ce-e664a56daac0` failed after `26.631s` before the fix.
+- **Current behavior:** `_canonicalize_relation_claim_semantics` transformed the
+  explicit correction retirement from `retired`/`no_edge` into
+  `accepted`/`accepted_edge`. The concurrent `weakens`/`needs_review` operation
+  used different endpoints and was unrelated.
+- **Desired behavior:** Explicit retirement status and no-edge policy survive
+  semantic canonicalization unchanged and reach canonical retirement apply.
 - **Risk:** A valid correction cannot commit, although canonical truth remains
   protected. Weakening the immutable projection trigger would risk partial or
   contradictory relation truth.
-- **Safe boundary:** After every compiler relation path has assembled its
-  operations, perform one authoritative-retirement fold using normalized
-  relation aliases and direction identity. Preserve unrelated relations and do
-  not alter immutable-edge enforcement.
-- **Return condition:** A focused compiled-synthesis regression with distinct
-  candidate IDs yields exactly one `retired`/`no_edge` operation with exact
-  correction evidence, followed by green bounded batch-4 validation.
-- **Evidence:** Run 10 and Run 11 rollback artifacts; focused compiler fold
-  `14/14` green. Validator-wide normalization and apply-time defense remain
-  backlog and activate only for a non-compiler reproduction.
+- **Safe boundary:** Guard explicit retirement in validation; retain compiler
+  conflict folds only as defense-in-depth and preserve immutable-edge
+  enforcement.
+- **Return condition:** Fresh clean zero-seed four-batch execution and canonical
+  score pass after the already-green exact pending B4 retry.
+- **Evidence:** Exact retry `019f75e5-f01f-7000-877c-edfaed6d009c` and direct
+  PostgreSQL regression. Fresh clean run remains pending.
 
 ## Entry Template
 

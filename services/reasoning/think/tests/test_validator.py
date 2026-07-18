@@ -1519,6 +1519,45 @@ async def test_validate_promotes_bound_relation_claim_to_accepted_edge_policy(
     assert relation.status == "accepted"
 
 
+async def test_validate_preserves_authoritative_relation_retirement(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    a, obs_id = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[RelationClaimOp(
+                op="upsert",
+                source_model_id=a,
+                target_model_id=b,
+                subject_ref={"kind": "model", "model_id": str(a)},
+                object_ref={"kind": "model", "model_id": str(b)},
+                predicate="blocks",
+                edge_kind="blocks",
+                endpoint_binding_status="bound",
+                write_policy="no_edge",
+                status="retired",
+                confidence=0.95,
+                binding_confidence=1.0,
+                evidence_event_ids=[obs_id],
+                explanation="Authoritative correction clears the dependency.",
+                metadata={
+                    "relation_claim_origin": "composite_correction_retirement",
+                },
+            )],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.relation_claim_ops) == 1
+    retirement = validated.relation_claim_ops[0]
+    assert retirement.write_policy == "no_edge"
+    assert retirement.status == "retired"
+
+
 async def test_validate_promotes_relation_claim_endpoint_ids_from_model_refs(
     fresh_db,
     tenant,

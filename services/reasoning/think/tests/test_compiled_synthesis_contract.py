@@ -10,6 +10,9 @@ from services.reasoning.think.compiled_reasoning import (
     RelationObligation,
     _bind_synthesis_endpoint_versions,
 )
+from services.reasoning.think.validator import (
+    _resolve_authoritative_relation_retirements,
+)
 
 
 def test_scoped_hydration_receipt_binds_exact_synthesis_head_versions() -> None:
@@ -358,3 +361,12 @@ def test_authoritative_reconciliation_builds_revision_proposition() -> None:
         "composite_correction_retirement"
     )
     assert "authoritative_relation_retirement_suppressed=1" in diff.reasoning_trace
+
+    reassertion = retirement.model_copy(update={
+        "status": "accepted",
+        "write_policy": "accepted_edge",
+        "metadata": {"relation_claim_origin": "late_relation_producer"},
+    })
+    assert _resolve_authoritative_relation_retirements([
+        retirement, reassertion,
+    ]) == [retirement]
