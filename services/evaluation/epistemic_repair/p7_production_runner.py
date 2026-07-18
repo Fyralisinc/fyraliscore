@@ -76,6 +76,24 @@ def _validate_deadlines(*, attempt_timeout_s: float, batch_deadline_s: float) ->
         )
 
 
+def _canonical_counts_unchanged_after_bootstrap(
+    waves: list[dict[str, Any]],
+) -> bool:
+    snapshots = {
+        wave["batch_number"]: wave.get("stage_snapshot")
+        for wave in waves
+        if wave["batch_number"] in {3, 12}
+    }
+    if not all(isinstance(snapshots.get(batch), dict) for batch in (3, 12)):
+        return False
+    keys = ("canonical_model_versions", "canonical_relation_versions")
+    return all(
+        snapshots[3]["write_counts"].get(key)
+        == snapshots[12]["write_counts"].get(key)
+        for key in keys
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class P7ArmRuntime:
     arm: P7EvolutionArm
@@ -444,6 +462,10 @@ async def _run_arm(
         len(waves) == 12
         and reasoning_batch_count == expected_reasoning_batches
         and (runtime.arm != "corrupted" or recovered)
+        and (
+            runtime.arm not in {"frozen", "observation_only"}
+            or _canonical_counts_unchanged_after_bootstrap(waves)
+        )
     )
     return {
         "arm": runtime.arm,

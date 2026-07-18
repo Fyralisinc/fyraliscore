@@ -10,6 +10,7 @@ from services.evaluation.epistemic_repair.p7_production_runner import (
     P7_BATCH_DEADLINE_S,
     P7_MAX_ATTEMPTS,
     _arm_tenant_id,
+    _canonical_counts_unchanged_after_bootstrap,
     _run_id,
     _validate_deadlines,
     assess_provider_identity_receipts,
@@ -213,6 +214,21 @@ def test_restart_from_zero_gets_new_isolated_tenant_membership() -> None:
     first = _arm_tenant_id(execution_id=first_execution, **kwargs)
     assert first == _arm_tenant_id(execution_id=first_execution, **kwargs)
     assert first != _arm_tenant_id(execution_id=second_execution, **kwargs)
+
+
+def test_post_bootstrap_mutation_guard_compares_canonical_versions() -> None:
+    def waves(final_models: int) -> list[dict[str, object]]:
+        return [{
+            "batch_number": batch,
+            "stage_snapshot": {"write_counts": {
+                "canonical_model_versions": models,
+                "canonical_relation_versions": 2,
+            }},
+        } for batch, models in ((3, 4), (12, final_models))]
+
+    assert _canonical_counts_unchanged_after_bootstrap(waves(4))
+    assert not _canonical_counts_unchanged_after_bootstrap(waves(5))
+    assert not _canonical_counts_unchanged_after_bootstrap(waves(4)[:1])
 
 
 def test_receipt_guard_rejects_duplicate_or_over_budget_attempts() -> None:
