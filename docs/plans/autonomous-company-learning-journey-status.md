@@ -6,8 +6,8 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** CF0 core fast-path baseline established; runtime candidate
-`a34533b8`, coordinator starting point `9f8bdad0`
+**Current checkpoint:** CF1 authority seam integrated at `62080642`; CF2
+provider-free four-batch vertical active
 
 **Last updated:** 2026-07-18
 
@@ -55,6 +55,25 @@ CF0 established the following current baseline:
   `think_runs.validation_result` as unexpected even though they are introduced
   by current migrations. This tooling mismatch is deferred and does not
   authorize bypassing database tests.
+
+CF1 then established the runtime seam required to begin the vertical:
+
+- governed learning episodes now preserve tenant, canonical reference, exact
+  observation evidence, mention coordinates, temporal bounds, and entity
+  authority independently of transport batches;
+- only resolved entity coordinates can become truth candidates; provisional
+  and unresolved coordinates remain explicit uncertainty;
+- synthesis hydration reads accepted Models by canonical reference rather than
+  display label;
+- accepted-memory snapshot, typed evidence, atomic composite/relation, injected
+  Think, provider-free provider, and source-authenticated grounding contracts
+  exist as reuse adapters over current production components;
+- the joined CF1 slice passed `55/55` focused tests and the worker authority
+  slice passed `16/16` against the fresh CF0 database.
+
+This is an implementation checkpoint, not an M0 claim. CF2 must still run all
+100 signals through four actual worker batches and prove retrieval reuse,
+synthesis, correction, PostgreSQL truth behavior, and barriers end to end.
 
 The parallel CF0 reuse audit found no reason to replace observations, mention
 grounding, entity resolution, Slack context, batching, SAGE/retrieval, the Model
@@ -781,6 +800,7 @@ mere presence in the repository is not counted as completed company learning.
 
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
+| New M0 core fast path | 55–60% | CF0 is complete and the CF1 authority/contracts needed by the vertical are integrated; the actual four-batch CF2 run, scorer, lifecycle correction and atomic failure proof remain |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
 | Scoped company-learning runtime implementation | 98–99% | Batched path, retrieval transition, adversarial company physics, source equivalence, restart-safe correction, exact joined runtime, matched feedback lift and strict single-Model synthesis execute in bounded populations |
 | Customer-free objective substantiation | 97–98% | Eight-component v8 scores `1.0`; strict synthesis is learned `3/3` versus frozen `0/3`; objective entity v6 adds exact-runtime F1 `0.971429`, type/fate/negative safety `1.0` with complete pre-call provenance. The immutable `not_credible` large run and open-world breadth prevent company-scale generalization |
@@ -1840,3 +1860,19 @@ matched feedback quality and objective entity v6.
   classified as a recovered operational degradation, not terminal workload
   loss. This was an evaluator-only rerender; no simulation was rerun and no
   second large simulation is authorized.
+
+### 2026-07-18 — CF1 governed authority checkpoint committed
+
+- Parallel commits added immutable learning contracts, governed episodes,
+  tenant-scoped batch reads, injected Think dependencies, a provider-blind CF2
+  population, provider-free structured responses, source-authenticated
+  grounding, and accepted-memory snapshots.
+- Integration commit `62080642` made governed episodes authoritative for truth
+  eligibility and canonical references authoritative for synthesis hydration.
+- Joined focused validation passed `55/55`; no live provider or full P6 run was
+  started.
+- Reflection verdict: aligned with the core end-to-end goal. Further contract
+  breadth is frozen unless CF2 exposes a hard blocker. The next authorized
+  action is the single four-batch provider-free actual-worker vertical.
+- Deferred: schema-drift tool synchronization, real-provider P8 faults, and
+  local Git object cleanup.

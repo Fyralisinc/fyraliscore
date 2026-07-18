@@ -2,7 +2,7 @@
 
 **Document type:** Executable multi-agent implementation and evaluation plan
 
-**Status:** Ready for agent dispatch
+**Status:** CF1 integration checkpoint reached; CF2 active
 
 **Active branch:** `codex/autonomous-company-learning`
 

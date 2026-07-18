@@ -1615,3 +1615,68 @@ twelve-batch execution.
 - Revisit trigger: CF8 bounded robustness or an explicit provider-fault phase.
 - Recommended future phase: CF8
 - Status: open
+
+### 2026-07-18 — LOG-045 — CF1 authority seam closed without reopening P6
+
+**Type:** implemented, validated, reflected, and decided
+
+**Work package / commits:** `23e39d73`, `235a86b6`, `7d5404c1`,
+`daab7975`, `e2fc0b06`, `8040feff`, `abd235ef`, and `62080642`.
+
+**What happened:** Three disjoint lanes added immutable company-learning
+contracts, governed semantic episodes, tenant-scoped batch reads, an injected
+actual-Think execution seam, a provider-blind four-batch population, a
+provider-free structured-call adapter, source-authenticated grounding, and an
+accepted-memory snapshot adapter. Integration then made governed episodes the
+authoritative candidate source whenever present. Only assertions whose entity
+coordinate reached `resolved_for_consumer` may become truth candidates;
+provisional and unresolved assertions remain uncertainty signals. Synthesis
+hydration now reads accepted Models by canonical reference instead of mutable
+display label.
+
+**Evidence:** The joined contract/episode/context/snapshot/grounding/provider
+slice passed `55/55` tests, including `31/31` context-packet tests against the
+fresh CF0 PostgreSQL database. The earlier focused worker join passed `16/16`.
+No live provider or full P6 execution ran.
+
+**Reflection:** This checkpoint still advances the shortest loop: signal batch
+to governed entity scope to accepted-memory reasoning. It did not add connector
+transport, task autonomy, broad ontology behavior, deployment hardening, or a
+second truth store. The largest implementation risk was accidentally treating
+provisional mention detection as entity authority. Investigation showed that a
+mention adapter cannot legitimately admit identity; the CF2 fixture must pass
+through the existing source-binding and grounding admission rules. The main
+drift risk is now further contract polishing before the worker runs.
+
+**Decision or next test:** Freeze further CF1 breadth. Build and execute the
+single CF2 four-batch provider-free runner. Integrate accepted-memory snapshot
+and composite/relation transaction behavior only to the extent the actual
+vertical requires. Any optional abstraction, style issue, provider realism,
+or legacy compatibility defect is deferred rather than allowed to delay the
+first executable loop.
+
+**Coordinator impact:** CF2 is active. CF1 contracts are available and the
+entity/retrieval authority path is integrated, but CF1 is not independently
+claimed complete until the CF2 runtime proves snapshot reuse, stale-head
+rejection, and composite/relation atomicity through PostgreSQL.
+
+**Deferred behaviors:**
+
+### DEFER-003 — Worktree Git automatic cleanup is disabled by stale objects
+
+- Date: 2026-07-18
+- Discovered in phase/run: CF1 checkpoint commits
+- Artifact or reproduction: every `git commit` prints the existing worktree
+  `gc.log` warning and reports too many unreachable loose objects.
+- Category: `DEVELOPER_OPERATIONS`
+- Observed behavior: automatic repository packing does not run.
+- Affected component: local Git object maintenance
+- Core invariant affected: no
+- Severity: low for M0
+- Why deferred: commits succeed and this does not affect runtime semantics or
+  evaluation evidence; pruning shared repository objects during active work is
+  unnecessary risk.
+- Revisit trigger: after the core branch is backed up/pushed or if Git commands
+  become materially slow or fail.
+- Recommended future phase: CF8/repository maintenance
+- Status: open
