@@ -26,6 +26,10 @@ _EXPLICIT_SCOPE_RE = re.compile(
     r"^(?P<surface>[A-Z][A-Za-z0-9-]+(?: [A-Za-z0-9-]+){1,3})"
     r"(?:(?:, update \d+:)|(?:\s+(?:is|are|was|were)\b))"
 )
+_SOURCE_THREAD_SCOPE_RE = re.compile(
+    r"^In the (?P<surface>[A-Z][A-Za-z0-9-]+(?: [A-Za-z0-9-]+){1,3})"
+    r" thread\b"
+)
 _SOURCE_TYPES = {
     "release": "workstream",
     "migration": "workstream",
@@ -54,7 +58,10 @@ def build_source_authenticated_grounding_episode(
     is accepted as input.
     """
 
-    match = _EXPLICIT_SCOPE_RE.search(signal.content_text)
+    match = (
+        _EXPLICIT_SCOPE_RE.search(signal.content_text)
+        or _SOURCE_THREAD_SCOPE_RE.search(signal.content_text)
+    )
     if match is None:
         return None
     surface = match.group("surface")

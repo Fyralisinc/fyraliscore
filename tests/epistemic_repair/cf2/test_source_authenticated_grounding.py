@@ -56,3 +56,28 @@ def test_fixture_abstains_without_explicit_supported_source_subject() -> None:
             content_text="Atlas release is ready.",
         )
     ) is None
+
+
+def test_authenticated_named_thread_subject_resolves_without_fuzzy_pronouns() -> None:
+    text = "In the Harbor release thread, it is still waiting on the owner handoff."
+    episode = build_source_authenticated_grounding_episode(
+        SourceAuthenticatedSignal(
+            tenant_id=uuid4(), observation_id=uuid4(),
+            occurred_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            source_channel="slack:message",
+            source_container_id="slack:harbor-release",
+            content_text=text,
+        )
+    )
+
+    assert episode is not None
+    assert episode.current_fate == "resolved_for_consumer"
+    assert episode.mention_detection_command.detection.candidate_surface == (
+        "Harbor release"
+    )
+    coordinate = (
+        episode.mention_detection_command.detection.mention.primary_anchor.coordinate
+    )
+    start = coordinate.span_start
+    end = coordinate.span_end
+    assert text[start:end] == "Harbor release"
