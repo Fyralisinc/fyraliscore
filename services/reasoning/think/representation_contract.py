@@ -168,7 +168,14 @@ def _enrich_claim_insert(
 
     prop["coverage_roles"] = _merge_strings(prop.get("coverage_roles"), coverage_roles)
     prop["retrieval_tags"] = _merge_strings(prop.get("retrieval_tags"), retrieval_tags)
-    prop["contextual_frame"] = _merge_frame(prop.get("contextual_frame"), frame)
+    if _is_manifest_bound_closed_atomic(entry, prop):
+        # Compiler candidates may carry a workstream-wide contextual frame.
+        # Once a closed atomic has an authorization manifest, every semantic
+        # evidence coordinate must be re-derived from those exact observations.
+        prop["contextual_frame"] = frame
+        prop["evidence_event_ids"] = [str(value) for value in evidence_event_ids]
+    else:
+        prop["contextual_frame"] = _merge_frame(prop.get("contextual_frame"), frame)
     prop["domain_tags"] = _merge_strings(prop.get("domain_tags"), _domain_tags_for_entry(entry, retrieval_tags))
 
     entry["proposition"] = prop
@@ -189,6 +196,16 @@ def _enrich_claim_insert(
     entry["proposition"] = prop
     op.entry = entry
     return True
+
+
+def _is_manifest_bound_closed_atomic(
+    entry: dict[str, Any], prop: dict[str, Any],
+) -> bool:
+    candidate_id = str(prop.get("compiled_memory_candidate_id") or "")
+    manifest = entry.get("evidence_observation_manifest")
+    if not isinstance(manifest, list):
+        manifest = prop.get("evidence_observation_manifest")
+    return candidate_id.startswith("MDC_ATOM_") and bool(manifest)
 
 
 def _maybe_add_source_digest_claims(raw_diff: Any, trigger: TriggerContext, bundle: Any) -> None:
@@ -989,7 +1006,10 @@ def _apply_living_claim_contract(
         evidence_contract["source_channels"] = source_channels[:8]
     prop["evidence_contract"] = evidence_contract
     prop.setdefault("staleness_horizon", staleness_horizon)
-    prop.setdefault("watch_selectors", _claim_watch_selectors(entry, frame))
+    if _is_manifest_bound_closed_atomic(entry, prop):
+        prop["watch_selectors"] = _claim_watch_selectors(entry, frame)
+    else:
+        prop.setdefault("watch_selectors", _claim_watch_selectors(entry, frame))
     prop.setdefault("test_conditions", _claim_test_conditions(entry, prop, frame))
     prop.setdefault("lifecycle_state", "watchable")
 

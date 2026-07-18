@@ -96,6 +96,73 @@ def test_representation_enrichment_binds_repeated_wording_to_context() -> None:
     assert "progress_signal" in raw.claim_ops[0].entry["domain_tags"]
 
 
+def test_closed_atomic_rebuilds_all_semantic_evidence_from_singleton_manifest() -> None:
+    tenant_id = uuid4()
+    local = _obs(source_channel="email:message", text="Cobalt CRM is incomplete")
+    siblings = [
+        _obs(source_channel="slack:message", text=f"Cobalt sibling {index}")
+        for index in range(3)
+    ]
+    all_ids = [local.id, *(obs.id for obs in siblings)]
+    manifest = [{
+        "observation_id": str(local.id),
+        "body": local.content_text,
+        "source_channel": local.source_channel,
+    }]
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_ids=all_ids,
+    )
+    raw = RawDiff(
+        trigger_ref=uuid4(),
+        tenant_id=tenant_id,
+        claim_ops=[ClaimOp(op="insert", entry={
+            "born_from_event_id": uuid4(),
+            "supporting_event_ids": [local.id],
+            "evidence_observation_manifest": manifest,
+            "proposition": {
+                "kind": "belief",
+                "subject": "Cobalt renewal",
+                "assertion": local.content_text,
+                "claim_role": "fact",
+                "abstraction_level": "atomic",
+                "compiled_memory_candidate_id": f"MDC_ATOM_cobalt_{local.id}",
+                "evidence_event_ids": [str(value) for value in all_ids],
+                "evidence_observation_manifest": manifest,
+                "contextual_frame": {
+                    "observation_ids": [str(value) for value in all_ids],
+                    "source_channels": ["email:message", "slack:message"],
+                },
+                "evidence_contract": {
+                    "supporting_event_count": 4,
+                    "source_channels": ["email:message", "slack:message"],
+                },
+                "watch_selectors": {
+                    "source_channels": ["email:message", "slack:message"],
+                },
+            },
+            "natural": local.content_text,
+            "confidence": 0.58,
+            "scope_actors": [],
+            "scope_entities": [{"type": "commitment", "id": "commitment:cobalt"}],
+            "scope_temporal": {},
+        })],
+    )
+
+    enrich_raw_diff_representation(
+        raw, trigger, SimpleNamespace(observations=[local, *siblings]),
+    )
+
+    prop = raw.claim_ops[0].entry["proposition"]
+    assert prop["evidence_event_ids"] == [str(local.id)]
+    assert prop["contextual_frame"]["observation_ids"] == [str(local.id)]
+    assert prop["contextual_frame"]["source_channels"] == ["email_message"]
+    assert prop["evidence_contract"]["supporting_event_count"] == 1
+    assert prop["evidence_contract"]["source_channels"] == ["email_message"]
+    assert prop["watch_selectors"]["source_channels"] == ["email_message"]
+
+
 def test_representation_enrichment_adds_source_bound_default_falsifier() -> None:
     tenant_id = uuid4()
     obs = _obs(
