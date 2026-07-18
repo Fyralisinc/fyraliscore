@@ -65,20 +65,20 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | CF2 provider-free Run 9 at `f02df04f`: four-batch mechanics complete, but the old evaluator produced a semantic false-green because revised proposition, natural text and supported-relation mechanism disagree |
-| Repair implementation | Exact atomic evidence, scope, synthesis, relation authority, correction lineage and barriers reach batch four; canonical revision-envelope coherence remains open |
-| Current phase | Repair and rescore only the bounded Run-9 canonical coherence defect before claiming CF2 complete; independent determinism replay remains deferred |
+| Latest verified coordination checkpoint | CF2 Run 10 tenant `43e56d9c-faf2-4896-9d61-7fca4e84e34b`: batches 1–3 succeeded; batch 4 correctly rolled back when explicit relation retirement collided with an inferred accepted reassertion of the same identity |
+| Repair implementation | Run-9 correction coherence is repaired; authoritative-retirement precedence in compiler obligation normalization remains open |
+| Current phase | Suppress only the duplicate inferred relation in compiler normalization and validate the focused regression before another bounded four-batch proof; determinism replay remains deferred |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
 | Current execution boundary | Begins with normalized, source-attributed signals already persisted in PostgreSQL |
 | Explicitly excluded | Connectors/listeners, OAuth/webhooks, task autonomy, external consequential action, second 45-batch run |
 | P0-P5 evidence state | Strict raw-member P9 regeneration/sidecar paths ready; current-release artifacts still require clean regeneration |
-| P6 evidence state | Historical 300-signal failure preserved; CF2 Run 9 proves one mechanically complete zero-seed four-batch execution, not a semantically coherent CF2 exit or the full twelve-batch P6 claim |
+| P6 evidence state | Historical 300-signal failure preserved; Run 10 proves the repaired path through batch 3 and a correct transactional rollback in batch 4, not CF2 exit or the full twelve-batch P6 claim |
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
-| Highest-priority outcome | Keep the working four-batch loop green while proving the next smallest company-model learning behavior; do not reopen the full P6 loop |
+| Highest-priority outcome | Suppress the duplicate inferred relation behind authoritative retirement and revalidate the bounded batch-4 path; do not reopen the full P6 loop |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -1987,3 +1987,31 @@ this patch.
 The next action is a checkpoint commit followed by exactly one fresh zero-seed
 four-batch run and strengthened score. Do not open CF3 or chase unrelated debt
 before that proof.
+
+### 2026-07-18 — LOG-054 — Run 10 exposed duplicate relation intent after retirement
+
+**Frozen evidence:** Tenant `43e56d9c-faf2-4896-9d61-7fca4e84e34b` completed
+batches 1–3. Batch 4 failed after `27.310s` with `accepted relation edge is an
+immutable projection`. The transaction rolled back, leaving no partial
+revision, retirement, inferred reassertion or completed barrier.
+
+**Root cause:** The corrected composite emitted an explicit authoritative
+retirement for its accepted `blocks` relation. Mandatory packet-relation
+compilation then inferred and accepted the same direction-aware relation
+identity under another candidate origin. Candidate-aware deduplication treated
+the two intents as independent. The immutable accepted-edge projection trigger
+correctly rejected the conflicting second mutation.
+
+**Bounded fix and test:** In `relation_claim_ops_from_obligations`, after the
+inferred operation is formed and before ordinary candidate-scoped deduplication,
+suppress it when an existing `composite_correction_retirement` has the same
+normalized kind, source and target. Keep the retirement unchanged. A focused
+compiled-synthesis test uses distinct candidate IDs and requires exactly one
+`retired`/`no_edge` operation with exact correction evidence and no inferred
+accepted or candidate duplicate.
+
+**Reflection:** This is compiler normalization, not permission for validator or
+applier redesign. Validator-wide normalization and apply-time defense remain
+backlog unless a non-compiler producer reproduces the collision. Retry policy,
+immutable projection enforcement, broader relation lifecycle and unrelated
+edge cases remain outside the current repair.

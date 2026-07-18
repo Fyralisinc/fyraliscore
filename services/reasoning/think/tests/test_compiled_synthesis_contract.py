@@ -77,7 +77,9 @@ def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None
         "confidence": 0.7,
     }
     request = CompiledBatchMemoryDecisionRequest(
-        system="system", user="user", candidates=(candidate,),
+        system="system",
+        user="user",
+        candidates=(candidate,),
         relation_obligations=(RelationObligation(
             candidate_id="MDC_SYNTH_scope", edge_kind="blocks", confidence=0.72,
             source_model_id=prior_models[0], target_model_id=prior_models[1],
@@ -293,7 +295,21 @@ def test_authoritative_reconciliation_builds_revision_proposition() -> None:
         "lifecycle_phase": "correction",
     }
     request = CompiledBatchMemoryDecisionRequest(
-        system="system", user="user", candidates=(candidate,),
+        system="system",
+        user="user",
+        candidates=(candidate,),
+        relation_obligations=(RelationObligation(
+            candidate_id="MDC_INFERRED_harbor_blocker",
+            edge_kind="blocks",
+            confidence=0.91,
+            source_model_id=member_ids[0],
+            target_model_id=member_ids[1],
+            evidence_event_ids=(observation_id,),
+            evidence_model_ids=tuple(member_ids),
+            evidence_text="The superseded certificate state blocks release.",
+            explanation="Stale inferred dependency",
+            matched_markers=("blocks",),
+        ),),
     )
     decision = BatchMemoryCandidateDecision(
         candidate_id="MDC_RECON_harbor",
@@ -338,3 +354,8 @@ def test_authoritative_reconciliation_builds_revision_proposition() -> None:
     assert retirement.status == "retired"
     assert retirement.write_policy == "no_edge"
     assert retirement.evidence_event_ids == [observation_id]
+    assert retirement.metadata["relation_claim_origin"] == (
+        "composite_correction_retirement"
+    )
+    assert "emitted:0" in diff.reasoning_trace
+    assert "deduped:1" in diff.reasoning_trace

@@ -6,11 +6,11 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** Run 9 at `f02df04f` exposed a semantic false-positive.
-The bounded correction-coherence repair and strengthened evaluator now pass a
-55-test focused slice against PostgreSQL. One fresh zero-seed four-batch run and
-canonical score remain before CF2 single-execution M0 can close; the independent
-determinism replay remains separately deferred.
+**Current checkpoint:** Run 10 repaired Run 9's semantic false-positive and
+completed batches 1–3, but batch 4 rolled back correctly after an explicit
+correction retirement was followed by an inferred accepted reassertion of the
+same `blocks` identity. CF2 remains open for one compiler-local obligation
+suppression fix; the independent determinism replay remains separately deferred.
 
 **Last updated:** 2026-07-18
 
@@ -2046,3 +2046,26 @@ matched feedback quality and objective entity v6.
 - Determinism remains red (`replay_count=1`) because the independent replay is
   explicitly deferred. That is separate from this observed single-execution
   semantic defect.
+
+### 2026-07-18 — Run 10 rolled back a duplicate inferred relation after retirement
+
+- Tenant `43e56d9c-faf2-4896-9d61-7fca4e84e34b` completed batches 1–3. Batch 4
+  ran for `27.310s` and failed closed with `accepted relation edge is an
+  immutable projection`.
+- Composite correction emitted an explicit authoritative retirement of the
+  accepted `blocks` relation. Packet obligation compilation then inferred an
+  accepted operation for the same direction-aware relation identity under a
+  different candidate origin, escaping candidate-scoped deduplication.
+- The immutable projection trigger correctly rejected the second mutation and
+  rolled back the transaction. No partial correction, retirement, inferred
+  reassertion or barrier committed.
+- The bounded fix is compiler-local: when an existing
+  `composite_correction_retirement` has the same normalized kind, source and
+  target, suppress the inferred obligation regardless of candidate ID,
+  evidence wording, confidence or list order, preserving the retirement.
+- Add one focused compiled-synthesis regression with distinct candidate IDs
+  that requires exactly one `retired`/`no_edge` operation and no inferred
+  accepted or candidate duplicate. Validator-wide normalization and apply-time
+  defense remain backlog unless a non-compiler producer reproduces the case.
+- Do not expand this repair into immutable-edge redesign, retry policy,
+  relation-lifecycle generalization or unrelated edge cases.

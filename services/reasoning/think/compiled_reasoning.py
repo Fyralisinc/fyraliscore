@@ -1993,6 +1993,12 @@ def relation_claim_ops_from_obligations(
             decision=decision,
             claim_placeholder=claim_placeholders.get(obligation.candidate_id),
         )
+        if any(
+            _authoritative_retirement_dominates(existing, op)
+            for existing in existing_ops
+        ):
+            blocked += 1
+            continue
         if (
             op.source_model_id is not None
             and op.target_model_id is not None
@@ -2019,6 +2025,27 @@ def relation_claim_ops_from_obligations(
         f"review_intent:{review_intent},deduped:{blocked}"
     )
     return emitted, summary
+
+
+def _authoritative_retirement_dominates(
+    existing: RelationClaimOp,
+    inferred: RelationClaimOp,
+) -> bool:
+    """Keep an explicit correction from being reasserted by stale inference."""
+
+    metadata = existing.metadata or {}
+    return bool(
+        existing.status == "retired"
+        and existing.write_policy == "no_edge"
+        and metadata.get("relation_claim_origin")
+        == "composite_correction_retirement"
+        and existing.edge_kind == inferred.edge_kind
+        and existing.direction == inferred.direction
+        and existing.source_model_id is not None
+        and existing.source_model_id == inferred.source_model_id
+        and existing.target_model_id is not None
+        and existing.target_model_id == inferred.target_model_id
+    )
 
 
 def relation_frame_obligations_from_obligations(

@@ -1049,6 +1049,36 @@ transport are excluded from this goal.
 - **Evidence:** Frozen Run 7 tenant
   `c907278e-0ef4-42be-a462-9c9f2a359b33`; focused repaired seam `47/47` green.
 
+### EDGE-046 — Inferred relation obligation reasserts an explicitly retired identity
+
+- **Status:** `open; bounded CF2 compiler blocker from Run 10`
+- **Trigger:** Run 10 tenant `43e56d9c-faf2-4896-9d61-7fca4e84e34b`
+  completed batches 1–3; batch 4 failed after `27.310s` with `accepted relation
+  edge is an immutable projection`.
+- **Current behavior:** Composite correction emits an authoritative
+  `retired`/`no_edge` operation for the accepted `blocks` relation. Mandatory
+  relation-obligation compilation can then infer an accepted operation for the
+  same direction-aware kind/source/target under a different candidate ID.
+  Candidate-scoped deduplication treats them as distinct. The immutable
+  projection trigger rejects the conflict and rolls the transaction back.
+- **Desired behavior:** Authoritative correction retirement dominates inferred
+  intent for the same normalized relation identity. Exactly one unchanged
+  retirement reaches validation and apply.
+- **Risk:** A valid correction cannot commit, although canonical truth remains
+  protected. Weakening the immutable projection trigger would risk partial or
+  contradictory relation truth.
+- **Safe boundary:** Suppress the inferred obligation in
+  `relation_claim_ops_from_obligations` after forming its normalized identity
+  and before ordinary candidate-scoped deduplication. Require an existing
+  `composite_correction_retirement` with exact kind, source and target. Do not
+  globally collapse independent evidence or alter immutable-edge enforcement.
+- **Return condition:** A focused compiled-synthesis regression with distinct
+  candidate IDs yields exactly one `retired`/`no_edge` operation with exact
+  correction evidence, followed by green bounded batch-4 validation.
+- **Evidence:** Run 10 artifact and correct immutable-projection rollback.
+  Validator-wide normalization and apply-time defense remain backlog and become
+  active only if a non-compiler producer reproduces the same conflict.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title
