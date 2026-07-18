@@ -37,6 +37,7 @@ from services.reasoning.think.execution_policy import (
     NORMAL_EXECUTION_POLICY,
     issue_evaluation_validate_only_policy,
 )
+from services.reasoning.retrieval.config import CONFIG as RETRIEVAL_CONFIG
 
 
 P7_ARMS: tuple[P7EvolutionArm, ...] = (
@@ -324,11 +325,30 @@ async def _run_arm(
                        ORDER BY started_at,id""",
                     runtime.tenant_id,
                 )
+                write_counts = {
+                    "canonical_model_versions": int(await conn.fetchval(
+                        "SELECT count(*) FROM model_truth_versions WHERE tenant_id=$1",
+                        runtime.tenant_id,
+                    )),
+                    "canonical_relation_versions": int(await conn.fetchval(
+                        "SELECT count(*) FROM relation_truth_versions WHERE tenant_id=$1",
+                        runtime.tenant_id,
+                    )),
+                    "derived_relation_projections": int(await conn.fetchval(
+                        "SELECT count(*) FROM relation_edge_projections WHERE tenant_id=$1",
+                        runtime.tenant_id,
+                    )),
+                    "derived_projection_snapshots": int(await conn.fetchval(
+                        "SELECT count(*) FROM projection_snapshots WHERE tenant_id=$1",
+                        runtime.tenant_id,
+                    )),
+                }
             stage_snapshot = {
                 **snapshot,
                 "accepted_models": [dict(row) for row in model_rows],
                 "accepted_relations": [dict(row) for row in relation_rows],
                 "validated_only_runs": [dict(row) for row in validate_only_rows],
+                "write_counts": write_counts,
             }
         else:
             stage_snapshot = None
@@ -370,6 +390,16 @@ async def _run_arm(
         "reasoning_batch_count": reasoning_batch_count,
         "expected_reasoning_batches": expected_reasoning_batches,
         "arm_contract_satisfied": arm_contract_satisfied,
+        "budget_contract": {
+            "provider": required_provider,
+            "model": required_model,
+            "context_budget_tokens": int(RETRIEVAL_CONFIG.context_budget_tokens),
+            "provider_max_retries": int(
+                getattr(getattr(runtime.worker, "llm_provider", None), "config", None).max_retries
+            ),
+            "batch_signal_count": 25,
+            "per_batch_timeout_s": float(per_batch_timeout_s),
+        },
         "waves": waves,
         "corruption_model_ids": tuple(map(str, corruption_model_ids)),
         "corruption_injected_batch": corruption_injected_batch,
