@@ -17,7 +17,12 @@ if __package__ in {None, ""}:
 from lib.contracts.kernel import canonical_sha256
 
 
-def build_plan(*, repository: Path, output_dir: Path, expected_head: str | None) -> dict[str, object]:
+def build_plan(
+    *, repository: Path, output_dir: Path, expected_head: str | None,
+    canary_authorization_id: str,
+) -> dict[str, object]:
+    if not canary_authorization_id.strip():
+        raise ValueError("P8 provider canary requires a nonempty authorization ID")
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
     if expected_head is not None and head != expected_head:
         raise ValueError(f"HEAD mismatch: expected {expected_head}, observed {head}")
@@ -31,6 +36,8 @@ def build_plan(*, repository: Path, output_dir: Path, expected_head: str | None)
     scale = output_dir / "p8-postgres-scale-matrix.json"
     contention = output_dir / "p8-shared-contention.json"
     exit_artifact = output_dir / "epistemic-repair-p8-fault-scale.json"
+    canary = output_dir / "p8-provider-canary.jsonl"
+    normalized = output_dir / "p8.normalized.json"
     # Commands are intentionally data, not subprocess calls. The coordinator
     # launches them only after exclusive database ownership is confirmed.
     commands = [
@@ -43,10 +50,13 @@ def build_plan(*, repository: Path, output_dir: Path, expected_head: str | None)
          "--template-database", "${P8_TEMPLATE_DATABASE}",
          "--expected-head", "${P8_EXPECTED_HEAD}", "--output", str(scale),
          "--contention-output", str(contention)],
+        [".venv/bin/python", "scripts/run_epistemic_repair_p8_provider_canary.py",
+         "--authorization-id", canary_authorization_id, "--output", str(canary)],
         [".venv/bin/python", "scripts/build_epistemic_repair_p8_exit.py",
          "--fault", str(fault), "--scale", str(scale),
          "--characterization", str(characterization), "--contention", str(contention),
-         "--output", str(exit_artifact)],
+         "--provider-canary", str(canary), "--output", str(exit_artifact),
+         "--p9-output", str(normalized)],
     ]
     plan: dict[str, object] = {
         "schema_version": "p8-coherent-rerun-plan-v1",
@@ -57,12 +67,13 @@ def build_plan(*, repository: Path, output_dir: Path, expected_head: str | None)
             "clean_tracked_worktree": True,
             "same_head_for_every_stage": True,
             "provider": "codex-cli-only",
-            "separate_provider_canary_authorized": False,
+            "separate_provider_canary_authorized": True,
+            "provider_canary_authorization_id": canary_authorization_id,
             "commands_are_not_executed_by_this_script": True,
         },
         "commands": commands,
         "expected_artifacts": [str(fault), str(characterization), str(scale),
-                               str(contention), str(exit_artifact)],
+                               str(contention), str(canary), str(exit_artifact), str(normalized)],
     }
     plan["plan_digest"] = canonical_sha256(plan)
     return plan
@@ -73,11 +84,13 @@ def main() -> int:
     parser.add_argument("--repository", type=Path, default=Path.cwd())
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--expected-head")
+    parser.add_argument("--canary-authorization-id", required=True)
     parser.add_argument("--plan-output", type=Path, required=True)
     args = parser.parse_args()
     plan = build_plan(
         repository=args.repository.resolve(), output_dir=args.output_dir.resolve(),
         expected_head=args.expected_head,
+        canary_authorization_id=args.canary_authorization_id,
     )
     args.plan_output.parent.mkdir(parents=True, exist_ok=True)
     args.plan_output.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")

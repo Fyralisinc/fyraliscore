@@ -93,6 +93,7 @@ def compose_p8_exit(
         "source": "scheduled_provider_fault_receipt",
     }
     canary_usage = None
+    canary_authorization = None
     if provider_canary_path is not None:
         canary_rows = [
             json.loads(line) for line in provider_canary_path.read_bytes().splitlines() if line.strip()
@@ -100,6 +101,14 @@ def compose_p8_exit(
         canary_usage = next((
             {**row["usage"], "source": "separately_authorized_provider_canary"}
             for row in reversed(canary_rows) if row.get("type") == "turn.completed"
+        ), None)
+        canary_authorization = next((
+            row for row in canary_rows
+            if row.get("type") == "p8.canary.authorization"
+            and row.get("authorization_id")
+            and row.get("provider") == "codex"
+            and row.get("model") == "gpt-5.4"
+            and row.get("transport") == "cli"
         ), None)
         if usage is None:
             usage = canary_usage
@@ -114,6 +123,8 @@ def compose_p8_exit(
         provider_canary_path is not None
         and canary_usage is not None
         and canary_usage.get("input_tokens", 0) > 0
+        and canary_authorization is not None
+        and canary_authorization.get("commit") == coherent_commit
     )
     gates = {
         "fault_schedule_12x2": len(artifacts["fault"].get("bound_execution_evidence", {}).get("fault_execution_keys", [])) == 24,
@@ -154,6 +165,10 @@ def compose_p8_exit(
                 else "authorized_canary_receipt_missing"
             ),
             "authorized_points": ["p8-bs25-h12-t1", "largest_deterministic_passing_cell"],
+            "authorization_id": (
+                canary_authorization.get("authorization_id")
+                if canary_authorization is not None else None
+            ),
         },
         "gates": gates,
         "exit_ready": all(gates.values()),
