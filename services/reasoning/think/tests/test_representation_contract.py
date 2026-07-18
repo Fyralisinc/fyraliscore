@@ -367,6 +367,55 @@ def test_batch_fragments_without_scope_do_not_create_source_digest() -> None:
     assert "evidence is not entity/episode coherent" in raw.reasoning_trace
 
 
+def test_one_25_signal_transport_batch_forms_claim_local_evidence_groups() -> None:
+    tenant_id = uuid4()
+    atlas = [
+        _obs(text=f"Atlas release remains blocked by certificate owner {i}")
+        for i in range(10)
+    ]
+    beacon = [
+        _obs(text=f"Beacon migration remains blocked by access review {i}")
+        for i in range(10)
+    ]
+    noise = [_obs(text=f"Unrelated team lunch note {i}") for i in range(5)]
+    observations = [*atlas, *beacon, *noise]
+    trigger = TriggerContext(
+        kind="T1", subkind="event_batch", tenant_id=tenant_id,
+        observation_id=observations[0].id,
+        observation_ids=[row.id for row in observations],
+        seed_signature={"batch": True, "signal_type": "event_batch"},
+    )
+    raw = RawDiff(
+        trigger_ref=uuid4(), tenant_id=tenant_id,
+        claim_ops=[
+            ClaimOp(op="insert", entry={
+                "born_from_event_id": uuid4(),
+                "natural": "Atlas release remains blocked by certificate ownership.",
+                "proposition": {"kind": "belief", "claim_role": "concern"},
+                "confidence": 0.7,
+            }),
+            ClaimOp(op="insert", entry={
+                "natural": "Beacon migration remains blocked by access review.",
+                "proposition": {"kind": "belief", "claim_role": "concern"},
+                "confidence": 0.7,
+            }),
+        ],
+    )
+
+    enrich_raw_diff_representation(
+        raw, trigger, SimpleNamespace(observations=observations),
+    )
+
+    assert len(trigger.observation_ids) == 25
+    atlas_ids = set(raw.claim_ops[0].entry["supporting_event_ids"])
+    beacon_ids = set(raw.claim_ops[1].entry["supporting_event_ids"])
+    assert atlas_ids == {row.id for row in atlas}
+    assert beacon_ids == {row.id for row in beacon}
+    assert atlas_ids.isdisjoint(beacon_ids)
+    assert not atlas_ids & {row.id for row in noise}
+    assert not beacon_ids & {row.id for row in noise}
+
+
 def test_diverse_source_volume_does_not_become_canonical_pattern() -> None:
     tenant_id = uuid4()
     texts = [

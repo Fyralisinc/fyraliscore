@@ -2036,7 +2036,7 @@ class ThinkWorker:
         channels: set[str] = set()
         trust_tiers: set[str] = set()
         kinds: set[str] = set()
-        signal_fragments: list[dict[str, str]] = []
+        signal_fragments: list[dict[str, Any]] = []
         for row in rows:
             occurred_at = row["occurred_at"]
             if earliest is None or occurred_at < earliest:
@@ -2077,6 +2077,7 @@ class ThinkWorker:
                         "source_channel": str(row["source_channel"]),
                         "kind": str(row["kind"]),
                         "text": compact_full[:900],
+                        "entities_mentioned": entities,
                     }
                 )
                 compact = compact_full

@@ -805,7 +805,16 @@ def _bind_claim_evidence(
     born_from = entry.get("born_from_event_id")
     if born_from is not None:
         values.append(born_from)
-    if not values and trigger.observation_id is not None:
+    if _is_event_batch_trigger(trigger):
+        allowed = {
+            getattr(obs, "id", None) for obs in observations
+            if getattr(obs, "id", None) is not None
+        }
+        values = [value for value in values if _coerce_uuid(value) in allowed]
+    if (
+        not values and trigger.observation_id is not None
+        and not _is_event_batch_trigger(trigger)
+    ):
         values.append(trigger.observation_id)
     if not values:
         values.extend(getattr(obs, "id", None) for obs in observations[:12])
@@ -1743,11 +1752,70 @@ def _observations_for_entry(
             *list(entry.get("supporting_event_ids") or []),
         ]
     )
+    if not ids and _is_event_batch_trigger(trigger):
+        return _semantic_observation_partition(
+            entry, list(observation_index.values()),
+        )
     if not ids:
         ids = _dedupe_uuid_values(
             [*list(trigger.observation_ids or []), trigger.observation_id]
         )
-    return [observation_index[uid] for uid in ids if uid in observation_index]
+    resolved = [observation_index[uid] for uid in ids if uid in observation_index]
+    if not resolved and _is_event_batch_trigger(trigger):
+        return _semantic_observation_partition(
+            entry, list(observation_index.values()),
+        )
+    return resolved
+
+
+_BUSINESS_PHRASE_RE = re.compile(
+    r"\b(?:[A-Z][A-Za-z0-9_-]+)(?:\s+[A-Z]?[a-z][A-Za-z0-9_-]+){1,3}\b"
+)
+
+
+def _semantic_observation_partition(
+    entry: dict[str, Any], observations: list[Any],
+) -> list[Any]:
+    """Select one claim-local entity/episode group inside a transport batch."""
+
+    prop = entry.get("proposition") or {}
+    claim_parts = [str(entry.get("natural") or "")]
+    if isinstance(prop, dict):
+        claim_parts.extend(
+            str(prop.get(key) or "")
+            for key in ("assertion", "assessment", "hypothesis_text", "subject", "summary")
+        )
+    claim_text = " ".join(claim_parts)
+    phrases = {
+        match.group(0).strip().casefold()
+        for match in _BUSINESS_PHRASE_RE.finditer(claim_text)
+        if len(match.group(0).strip()) >= 5
+    }
+    scoped_refs = {
+        (str(item.get("type") or ""), str(item.get("id") or ""))
+        for item in entry.get("scope_entities") or ()
+        if isinstance(item, dict) and item.get("id")
+    }
+    frame = prop.get("contextual_frame") if isinstance(prop, dict) else {}
+    wanted_threads = set(
+        _string_list((frame or {}).get("source_threads"))
+        if isinstance(frame, dict) else ()
+    )
+    selected: list[Any] = []
+    for observation in observations:
+        text = str(getattr(observation, "content_text", "") or "").casefold()
+        entity_refs = {
+            (str(item.get("type") or ""), str(item.get("id") or ""))
+            for item in getattr(observation, "entities_mentioned", None) or ()
+            if isinstance(item, dict) and item.get("id")
+        }
+        if (
+            (phrases and any(phrase in text for phrase in phrases))
+            or (scoped_refs and bool(scoped_refs & entity_refs))
+            or (wanted_threads and bool(wanted_threads & set(_source_thread_refs(observation))))
+        ):
+            selected.append(observation)
+    return selected[:12]
 
 
 def trigger_observations_for_representation(trigger: TriggerContext, bundle: Any) -> list[Any]:
@@ -1793,7 +1861,7 @@ def _batch_fragment_observations(trigger: TriggerContext) -> list[Any]:
                 actor_id=None,
                 content_text=str(fragment.get("text") or ""),
                 content={"batch_fragment": True},
-                entities_mentioned=[],
+                entities_mentioned=_json_list(fragment.get("entities_mentioned")),
                 occurred_at=_coerce_datetime(fragment.get("occurred_at")),
             )
         )
