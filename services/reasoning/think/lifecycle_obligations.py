@@ -113,18 +113,18 @@ def maybe_inject_lifecycle_obligations(
     now = _seed_time(trigger)
     event_ids = _fragment_event_ids(fragments)
     cause_event_id = event_ids[0] if event_ids else trigger.observation_id
-    evidence_event_ids = [str(event_id) for event_id in event_ids]
     models = _active_models(bundle)
     anchor_model = models[0] if models else None
 
     injected: list[str] = []
     prediction = _first_matching_fragment(fragments, _PREDICTION_RE)
     if prediction and cause_event_id and not _has_prediction(raw_diff):
+        prediction_ids = _fragment_event_ids([prediction])
         _inject_prediction(
             raw_diff,
             prediction,
-            cause_event_id,
-            evidence_event_ids,
+            prediction_ids[0] if prediction_ids else cause_event_id,
+            [str(event_id) for event_id in prediction_ids],
             trigger,
             now,
         )
@@ -132,16 +132,22 @@ def maybe_inject_lifecycle_obligations(
 
     resource = _first_matching_fragment(fragments, _RESOURCE_RE)
     if resource and cause_event_id and not raw_diff.resource_ops:
-        _inject_resource(raw_diff, resource, cause_event_id, evidence_event_ids)
+        resource_ids = _fragment_event_ids([resource])
+        _inject_resource(
+            raw_diff, resource,
+            resource_ids[0] if resource_ids else cause_event_id,
+            [str(event_id) for event_id in resource_ids],
+        )
         injected.append("resource")
 
     question_policy = _first_matching_fragment(fragments, _QUESTION_POLICY_RE)
     if question_policy and cause_event_id and not _has_question_policy(raw_diff):
+        question_ids = _fragment_event_ids([question_policy])
         _inject_question_policy_marker(
             raw_diff,
             question_policy,
-            cause_event_id,
-            evidence_event_ids,
+            question_ids[0] if question_ids else cause_event_id,
+            [str(event_id) for event_id in question_ids],
             trigger,
             now,
         )
@@ -154,12 +160,13 @@ def maybe_inject_lifecycle_obligations(
         and cause_event_id
         and not _has_evidence_attachment_candidate(raw_diff)
     ):
+        evidence_ids = _fragment_event_ids([evidence])
         _inject_evidence_attachment(
             raw_diff,
             evidence,
             anchor_model,
-            cause_event_id,
-            event_ids,
+            evidence_ids[0] if evidence_ids else cause_event_id,
+            evidence_ids,
             now,
         )
         injected.append("evidence_attachment")
@@ -168,13 +175,14 @@ def maybe_inject_lifecycle_obligations(
     if stale and anchor_model is not None and not _has_open_question(
         raw_diff, "temporal_status"
     ):
+        stale_ids = _fragment_event_ids([stale])
         if _inject_open_question(
             raw_diff,
             stale,
             anchor_model,
             "temporal_status",
             "Is this memory still current, or should it be revised or archived?",
-            event_ids,
+            stale_ids,
         ):
             injected.append("staleness_review")
 
@@ -182,13 +190,14 @@ def maybe_inject_lifecycle_obligations(
     if ambiguity and anchor_model is not None and not _has_open_question(
         raw_diff, "contradiction_check"
     ):
+        ambiguity_ids = _fragment_event_ids([ambiguity])
         if _inject_open_question(
             raw_diff,
             ambiguity,
             anchor_model,
             "contradiction_check",
             "Does this evidence refer to the same memory/entity or a distinct case?",
-            event_ids,
+            ambiguity_ids,
         ):
             injected.append("ambiguity_review")
 
@@ -383,20 +392,24 @@ def _inject_question_policy_marker(
 
 def _inject_evidence_attachment(
     raw_diff: RawDiff,
-    _fragment: dict[str, Any],
+    fragment: dict[str, Any],
     model: Any,
     cause_event_id: UUID,
     event_ids: list[UUID],
     now: datetime,
 ) -> None:
-    anchor_natural = _clip(str(getattr(model, "natural", "") or "active memory"), 120)
-    natural = f"Yesterday's review felt rough around {anchor_natural}."
+    observation_id = _uuid_or_none(fragment.get("observation_id"))
+    if observation_id is None:
+        return
+    natural = _clip(str(fragment.get("text") or ""), 500)
+    if not natural:
+        return
     raw_diff.claim_ops.append(
         ClaimOp(
             op="insert",
             entry={
                 "born_from_event_id": str(cause_event_id),
-                "supporting_event_ids": [str(event_id) for event_id in event_ids],
+                "supporting_event_ids": [str(observation_id)],
                 "proposition": {
                     "kind": "belief",
                     "claim_role": "fact",

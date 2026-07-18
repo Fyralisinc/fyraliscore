@@ -148,22 +148,32 @@ def test_lifecycle_obligations_injects_batch_lifecycle_surfaces() -> None:
         "lifecycle_obligation"
     )
     assert "2026-06-19" in prediction_entries[0]["evaluate_at"]
+    assert prediction_entries[0]["supporting_event_ids"] == [
+        fragments[0]["observation_id"]
+    ]
     assert len(out.resource_ops) == 1
     assert out.resource_ops[0].op == "create"
     assert out.resource_ops[0].payload["kind"] == "capacity"
     assert out.resource_ops[0].payload["metadata"]["source"] == (
         "lifecycle_obligation"
     )
+    assert out.resource_ops[0].payload["metadata"]["evidence_event_ids"] == [
+        fragments[1]["observation_id"]
+    ]
     assert any(
         "question_policy" in set(entry.get("domain_tags") or [])
         and "lifecycle_obligation" in set(entry.get("domain_tags") or [])
         for entry in inserted_entries
     )
-    assert any(
-        "memory_quality" in set(entry.get("domain_tags") or [])
-        and "Yesterday" in str(entry.get("natural") or "")
-        for entry in inserted_entries
-    )
+    sidecar_entries = [
+        entry for entry in inserted_entries
+        if "memory_quality" in set(entry.get("domain_tags") or [])
+    ]
+    assert len(sidecar_entries) == 1
+    assert sidecar_entries[0]["supporting_event_ids"] == [
+        fragments[2]["observation_id"]
+    ]
+    assert sidecar_entries[0]["natural"] == fragments[2]["text"]
     assert {op.question_type for op in out.open_question_ops} == {
         "temporal_status",
         "contradiction_check",
@@ -441,6 +451,14 @@ async def test_lifecycle_obligations_survive_validate_apply_and_feedback(
             anchor_model,
             ["temporal_status", "contradiction_check"],
         )
+        lifecycle_review_truth_count = await conn.fetchval(
+            """
+            SELECT count(*) FROM models
+            WHERE tenant_id=$1
+              AND proposition->>'subject'='lifecycle review evidence'
+            """,
+            tenant,
+        )
 
     aggregation = result["memory_aggregation"]
     claim_summaries = result["claim_ops"]
@@ -450,6 +468,7 @@ async def test_lifecycle_obligations_survive_validate_apply_and_feedback(
     assert prediction_count >= 1
     assert open_question_count == 2
     assert aggregation["evidence_attachments"] == 1
+    assert lifecycle_review_truth_count == 0
     assert any(summary.get("model_prediction_id") for summary in claim_summaries)
     assert any(
         {"question_policy", "lifecycle_obligation"}

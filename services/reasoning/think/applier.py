@@ -778,6 +778,22 @@ async def _apply_one_expanded_claim_op(
                     tenant_id=diff.tenant_id,
                 ),
             )
+            entry_tags = {
+                str(tag) for tag in (op.entry or {}).get("domain_tags") or ()
+            }
+            if {"memory_quality", "lifecycle_obligation"} <= entry_tags:
+                verdict = QualityVerdict(
+                    decision="downgrade_to_evidence",
+                    atomicity_score=verdict.atomicity_score,
+                    durability_score=verdict.durability_score,
+                    kind_fit_score=verdict.kind_fit_score,
+                    overall_score=verdict.overall_score,
+                    rejection_reasons=[
+                        *verdict.rejection_reasons,
+                        "explicit_sidecar_only_write_policy",
+                    ],
+                    downgrade_target="evidence",
+                )
             quality_summary[verdict.decision] = (
                 quality_summary.get(verdict.decision, 0) + 1
             )
