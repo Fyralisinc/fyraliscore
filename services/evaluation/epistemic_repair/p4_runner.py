@@ -269,9 +269,9 @@ async def run_p4_online_loop(conn: Any, *, repo_root: Path | None = None) -> dic
         tenant_id,
     )]
     raw_refresh_rows = [dict(row) for row in await conn.fetch(
-        """SELECT job_id,projection_name,projection_version,subject_key,status,attempts
+        """SELECT id AS job_id,projection_name,projection_version,subject_key,status,attempts
            FROM projection_refresh_jobs WHERE tenant_id=$1 AND projection_name='p4-evaluator'
-           ORDER BY job_id""",
+           ORDER BY id""",
         tenant_id,
     )]
     hard_gates = {

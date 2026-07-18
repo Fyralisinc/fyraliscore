@@ -334,7 +334,9 @@ async def _load_model_version(
     )
     binding_rows = await conn.fetch(
         """
-        SELECT binding_id, subject_id, subject_kind, scope_role
+        SELECT binding_id, subject_id, subject_kind, scope_role,
+               canonical_ref, display_label, canonical_ref_status,
+               normalization_version
         FROM model_truth_scope_bindings
         WHERE tenant_id=$1 AND model_version_id=$2
         ORDER BY subject_id, scope_role
@@ -360,6 +362,10 @@ async def _load_model_version(
                 subject_id=binding["subject_id"],
                 subject_kind=ScopeSubjectKind(binding["subject_kind"]),
                 role=ClaimScopeRole(binding["scope_role"]),
+                canonical_ref=binding["canonical_ref"],
+                display_label=binding["display_label"],
+                canonical_ref_status=binding["canonical_ref_status"],
+                normalization_version=binding["normalization_version"],
                 claim_local_evidence_refs=tuple(
                     item["evidence_reference_id"] for item in evidence_ids
                 ),
@@ -375,6 +381,15 @@ async def _load_model_version(
         source_candidate_version=int(row["source_candidate_version"]),
         natural=row["natural_text"],
         proposition=_json(row["proposition"]),
+        confidence=float(row["confidence"]),
+        semantic_digest_version=int(row["semantic_digest_version"]),
+        falsifier=_json(row["falsifier"]) if row["falsifier"] is not None else None,
+        evidential_weight=float(row["evidential_weight"]),
+        supporting_model_ids=tuple(row["supporting_model_ids"]),
+        visible_to_subjects=bool(row["visible_to_subjects"]),
+        resolution_outcome=row["resolution_outcome"],
+        resolved_at=row["resolved_at"],
+        temporal_scope=_json(row["temporal_scope"]),
         evidence=evidence,
         scope=tuple(scope),
         lifecycle=ModelTruthLifecycle(row["lifecycle"]),

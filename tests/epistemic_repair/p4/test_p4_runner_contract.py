@@ -30,3 +30,10 @@ def test_late_historical_use_metric_is_database_derived() -> None:
     assert "late_unnecessary_historical / late_historical" in runner
     assert "late_unnecessary_historical_observation_count" in runner
     assert '"late_unnecessary_historical_observation_use": 0.0' not in runner
+
+
+def test_refresh_evidence_uses_canonical_job_primary_key() -> None:
+    runner = Path("services/evaluation/epistemic_repair/p4_runner.py").read_text()
+    assert "SELECT id AS job_id,projection_name" in runner
+    assert "ORDER BY id" in runner
+    assert "SELECT job_id,projection_name" not in runner

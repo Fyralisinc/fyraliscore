@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from pathlib import Path
 
 from lib.evaluation.epistemic_repair.p5_population import (
     P5_EPISODE_IDS,
@@ -49,3 +50,26 @@ def test_population_digest_and_vertical_oracle_are_stable() -> None:
         first.oracle.correction_signal_id,
     } == {"p5-b1-s13", "p5-b2-s10", "p5-b3-s16"}
     assert first.oracle.expected_relation_kind == "dependency_constraint"
+
+
+def test_model_version_loader_reconstructs_digest_v2_fields() -> None:
+    runner = Path("services/evaluation/epistemic_repair/p5_runner.py").read_text()
+    for field in (
+        "confidence",
+        "semantic_digest_version",
+        "falsifier",
+        "evidential_weight",
+        "supporting_model_ids",
+        "visible_to_subjects",
+        "resolution_outcome",
+        "resolved_at",
+        "temporal_scope",
+    ):
+        assert f'{field}=' in runner
+    for scope_field in (
+        "canonical_ref",
+        "display_label",
+        "canonical_ref_status",
+        "normalization_version",
+    ):
+        assert f'{scope_field}=binding["{scope_field}"]' in runner
