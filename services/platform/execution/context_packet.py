@@ -972,11 +972,31 @@ def _group_batch_fragments(
 
 def _batch_fragment_uncertainty_kind(body: str) -> str | None:
     normalized = " ".join(body.casefold().split())
-    if re.search(r"\basks? whether\b|\bwhether\b[^.?!]*[?]", normalized):
+    # Questions are inquiry coordinates, never declarative truth candidates.
+    # Cover ordinary question forms rather than only the population's
+    # ``asks whether`` wording so paraphrases cannot cross this boundary.
+    if (
+        "?" in normalized
+        or re.search(
+            r"\basks?\s+(?:if|whether|who|what|when|where|why|how)\b",
+            normalized,
+        )
+        or re.match(
+            r"(?:who|what|when|where|why|how|is|are|was|were|do|does|did|"
+            r"can|could|will|would|should|has|have|had)\b",
+            normalized,
+        )
+    ):
         return "open_question"
     if (
         "without naming" in normalized
         and re.search(r"\b(someone|they|them|their|it)\b", normalized)
+    ):
+        return "clarification_required"
+    if re.search(
+        r"\b(?:unclear|ambiguous|unconfirmed|unsure|not sure|cannot tell|"
+        r"can't tell|may have|might have|possibly|perhaps)\b",
+        normalized,
     ):
         return "clarification_required"
     return None

@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
+
 from services.platform.execution import context_packet, inquiry
 from services.platform.execution.types import (
     EvidenceCard,
@@ -393,6 +395,24 @@ def test_compile_context_packet_emits_memory_decision_candidates() -> None:
     )
     assert str(commitment_id) in by_family["act_update"]["target_act_ids"]
     assert by_family["no_op"]["reason"].startswith("Batch may contain")
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("Who owns the release certificate?", "open_question"),
+        ("A reviewer asks if approval happened", "open_question"),
+        ("Is the migration complete", "open_question"),
+        ("The approval status is still unclear", "clarification_required"),
+        ("The handoff might have happened", "clarification_required"),
+        ("The dashboard remains incomplete", None),
+    ],
+)
+def test_batch_uncertainty_boundary_covers_question_and_ambiguity_paraphrases(
+    body: str,
+    expected: str | None,
+) -> None:
+    assert context_packet._batch_fragment_uncertainty_kind(body) == expected
 
 
 def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> None:
