@@ -471,6 +471,29 @@ async def test_codex_provider_reuses_app_server_transport(monkeypatch):
                     },
                 })
                 self.stdout.push({
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "threadId": f"thread-{request_id - 1}",
+                        "turnId": f"turn-{request_id}",
+                        "tokenUsage": {
+                            "last": {
+                                "inputTokens": 123,
+                                "outputTokens": 17,
+                                "cachedInputTokens": 41,
+                                "reasoningOutputTokens": 4,
+                                "totalTokens": 140,
+                            },
+                            "total": {
+                                "inputTokens": 123,
+                                "outputTokens": 17,
+                                "cachedInputTokens": 41,
+                                "reasoningOutputTokens": 4,
+                                "totalTokens": 140,
+                            },
+                        },
+                    },
+                })
+                self.stdout.push({
                     "method": "turn/completed",
                     "params": {
                         "turn": {
@@ -538,6 +561,8 @@ async def test_codex_provider_reuses_app_server_transport(monkeypatch):
     assert usage.call_count == 2
     assert usage.total_input_tokens > 0
     assert usage.total_output_tokens > 0
+    assert usage.total_cache_read_tokens == 82
+    assert all(call.usage_exactness == "reported" for call in usage.calls)
 
     if provider_module._CODEX_APP_SERVER_CLIENT is not None:
         await provider_module._CODEX_APP_SERVER_CLIENT._restart()

@@ -1223,6 +1223,14 @@ class LLMProvider(abc.ABC):
         deadline_token = _CURRENT_LOGICAL_DEADLINE.set(
             time.monotonic() + min(240.0, deadline_s)
         )
+        usage_token = None
+        if (
+            (_CURRENT_RECEIPT_SINK.get() or self._receipt_sink) is not None
+            and (_CURRENT_USAGE_AGG.get() or self._usage_aggregator) is None
+        ):
+            # Receipt-only callers still need a call-local aggregator so exact
+            # transport usage reaches their physical-attempt receipts.
+            usage_token = _CURRENT_USAGE_AGG.set(LLMUsageAggregator())
         try:
             cache = get_response_cache()
             cache_fetched = False
@@ -1320,6 +1328,8 @@ class LLMProvider(abc.ABC):
             _CURRENT_LOGICAL_CALL_ID.reset(logical_token)
             _CURRENT_ATTEMPT_LIMIT.reset(limit_token)
             _CURRENT_LOGICAL_DEADLINE.reset(deadline_token)
+            if usage_token is not None:
+                _CURRENT_USAGE_AGG.reset(usage_token)
 
     async def _structured_raw(
         self,
@@ -1866,7 +1876,7 @@ class CodexProvider(LLMProvider):
         del temperature, max_tokens  # The app-server turn owns these controls.
 
         client = _codex_app_server_client()
-        content = await _through_breaker(
+        content, usage = await _through_breaker(
             self.circuit_breaker_name,
             lambda: client.call(
                 model=self.config.model,
@@ -1877,12 +1887,19 @@ class CodexProvider(LLMProvider):
                 reasoning_effort=self.config.reasoning_effort,
             ),
         )
-        self._record_estimated_text_usage(
-            system=system,
-            user=user,
-            schema_hint=schema_hint,
-            content=content,
-        )
+        if usage:
+            self._record_usage(
+                usage["input_tokens"], usage["output_tokens"],
+                cache_read_tokens=usage.get("cached_input_tokens", 0),
+                usage_exactness="reported",
+            )
+        else:
+            self._record_estimated_text_usage(
+                system=system,
+                user=user,
+                schema_hint=schema_hint,
+                content=content,
+            )
         return content
 
     async def _raw_call_cli(
@@ -2054,7 +2071,7 @@ class _CodexAppServerClient:
         schema_hint: str,
         timeout_s: float,
         reasoning_effort: str | None,
-    ) -> str:
+    ) -> tuple[str, dict[str, int]]:
         async with self._lock:
             try:
                 return await asyncio.wait_for(
@@ -2086,7 +2103,7 @@ class _CodexAppServerClient:
         user: str,
         schema_hint: str,
         reasoning_effort: str | None,
-    ) -> str:
+    ) -> tuple[str, dict[str, int]]:
         await self._ensure_started()
         assert self._proc is not None
 
@@ -2133,10 +2150,10 @@ class _CodexAppServerClient:
                 model=model,
             )
 
-        content = await self._wait_for_turn(turn_id=turn_id, model=model)
+        content, usage = await self._wait_for_turn(turn_id=turn_id, model=model)
         if not content:
             raise LLMError("empty response from codex app-server", model=model)
-        return content
+        return content, usage
 
     async def _ensure_started(self) -> None:
         if self._proc is not None and self._proc.returncode is None:
@@ -2236,8 +2253,11 @@ class _CodexAppServerClient:
             ) from exc
         return message if isinstance(message, dict) else {}
 
-    async def _wait_for_turn(self, *, turn_id: str, model: str) -> str:
+    async def _wait_for_turn(
+        self, *, turn_id: str, model: str,
+    ) -> tuple[str, dict[str, int]]:
         final_text = ""
+        usage: dict[str, int] = {}
         while True:
             message = await self._read_message()
             if "id" in message:
@@ -2251,6 +2271,20 @@ class _CodexAppServerClient:
                     text = item.get("text")
                     if isinstance(text, str) and text:
                         final_text = text
+            elif method == "thread/tokenUsage/updated":
+                if params.get("turnId") not in {None, turn_id}:
+                    continue
+                token_usage = params.get("tokenUsage")
+                last = token_usage.get("last") if isinstance(token_usage, dict) else None
+                if isinstance(last, dict):
+                    usage = {
+                        "input_tokens": int(last["inputTokens"]),
+                        "output_tokens": int(last["outputTokens"]),
+                        "cached_input_tokens": int(last["cachedInputTokens"]),
+                    } if all(
+                        isinstance(last.get(key), int)
+                        for key in ("inputTokens", "outputTokens", "cachedInputTokens")
+                    ) else {}
             elif method == "turn/completed":
                 turn = params.get("turn") if isinstance(params, dict) else None
                 if isinstance(turn, dict) and turn.get("id") not in {None, turn_id}:
@@ -2261,7 +2295,7 @@ class _CodexAppServerClient:
                         f"codex app-server turn ended with status {status!r}",
                         model=model,
                     )
-                return final_text.strip()
+                return final_text.strip(), usage
 
     async def _drain_stderr(self) -> None:
         proc = self._proc

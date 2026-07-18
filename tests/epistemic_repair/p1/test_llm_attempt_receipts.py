@@ -34,6 +34,13 @@ class ScriptedProvider(LLMProvider):
         return response
 
 
+class UsageReportingProvider(ScriptedProvider):
+    async def _raw_call(self, **kwargs: object) -> str:
+        response = await super()._raw_call(**kwargs)
+        self._record_usage(120, 15, cache_read_tokens=40, usage_exactness="reported")
+        return response
+
+
 def _provider(
     responses: list[str | BaseException], *, retries: int = 0
 ) -> tuple[ScriptedProvider, InMemoryLLMReceiptSink]:
@@ -67,6 +74,21 @@ async def test_success_has_one_logical_call_and_one_physical_attempt() -> None:
     assert attempt.ordinal == 1
     assert attempt.physical_attempt_id != logical.logical_call_id
     assert attempt.ended_at >= attempt.started_at
+
+
+@pytest.mark.asyncio
+async def test_receipt_only_caller_captures_provider_reported_usage() -> None:
+    provider = UsageReportingProvider(['{"answer":"yes"}'])
+    sink = InMemoryLLMReceiptSink()
+    provider.set_receipt_sink(sink)
+
+    await provider.structured(system="s", user="u", schema=Answer)
+
+    attempt = sink.attempts[0]
+    assert attempt.input_tokens == 120
+    assert attempt.output_tokens == 15
+    assert attempt.cache_tokens == 40
+    assert attempt.usage_exactness == "reported"
 
 
 @pytest.mark.asyncio
