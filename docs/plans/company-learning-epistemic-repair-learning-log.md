@@ -65,9 +65,9 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | CF3-A green at commit `e7de1c3a`, tenant `08d19975-2c39-4fef-a820-27d29c30fd9b`: exactly 25 signals, 24/24 trace fates, drain `27 -> 3 -> 0`, barrier zero, 28 logical/29 physical attempts with exact reported usage, elapsed `269.295s` |
-| Repair implementation | Validator preserves explicit retirement; the evaluator now reads the exact historical relation instance required to verify retirement instead of relying only on the current-instance surface; focused evaluator suite `14/14` green |
-| Current phase | CF3-A is green. Founder-assisted CF3-B is mechanically green but red on its sole remaining material prior-Model-use gate; CF3-C is locked |
+| Latest verified coordination checkpoint | CF3-B green for tenant `e188354c-4a88-406d-bf25-f005cf9af275`: two batches in `227.633s`, B1 `14/14`, B2 selected 14 with 12 authorized/material trace-and-durable effects, two barriers, 12 receipts, no failed gates |
+| Repair implementation | Provenance-bound exact semantic scope bridges substrate-normalized entity scope; arbitrary proposition scope strings remain unauthorized; strict CF3-B evaluator is green |
+| Current phase | CF3-A and CF3-B are green; the provenance-bound exact-scope join produced 12 authorized/material applied effects in a fresh provider run; CF3-C is unlocked |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
@@ -78,7 +78,7 @@ Rules:
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
-| Highest-priority outcome | Close the exact-scope join/prompt/application effect contract, then rerun the strict CF3-B canary; do not widen to CF3-C unless material use is green |
+| Highest-priority outcome | Execute CF3-C without broadening the now-green CF3-B seam; preserve strict provenance and keep temporal deduplication deferred |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -2320,3 +2320,21 @@ rerun is still required. Do not broaden matching by label or similarity, and do
 not reopen the deferred temporal-deduplication work. Legacy/composite semantic
 scope authorization remains deferred until it has its own explicit authority
 contract.
+
+### 2026-07-19 — LOG-068 — Provenance-bound exact scope closes CF3-B
+
+**Execution:** Tenant `e188354c-4a88-406d-bf25-f005cf9af275` completed the
+fresh two-batch run in `227.633s` (`113.399s` / `114.124s`). Batch 1 admitted
+`14/14` Models. Batch 2 selected all 14 prior Models and recorded 12 authorized
+and material effects; all 12 were reasoning-trace referenced, durably applied,
+and receipted. Both barriers closed. Usage was 204,011 input, 42,466 output,
+and 121,856 cache tokens.
+
+**Verdict:** The strict CF3-B report has no failed gates. The exact semantic
+scope fallback succeeds only when bound to compiler-owned provenance, bridging
+substrate-normalized `scope_entities` without treating arbitrary proposition
+scope strings as authority. CF3-B is green and CF3-C is unlocked.
+
+**Artifacts:** `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1.json`
+and `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1-cf3b-v1.json`.
+Temporal exact-envelope deduplication remains deferred under EDGE-058.

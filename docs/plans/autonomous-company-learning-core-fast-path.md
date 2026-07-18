@@ -2,7 +2,7 @@
 
 **Document type:** Executable multi-agent implementation and evaluation plan
 
-**Status:** M0 and CF3-A complete; CF3-B repair active after batch-1 zero-Model failure
+**Status:** M0, CF3-A, and CF3-B complete; CF3-C unlocked
 
 **Active branch:** `codex/autonomous-company-learning`
 
@@ -596,6 +596,17 @@ Prove that accepted memory is available and actually used on the next batch.
 - Entity/scope contamination remains zero.
 - Projected call rate and latency are reported, not used to block semantics
   unless a budget makes the next rung mechanically impossible.
+
+#### Verified result — 2026-07-19
+
+CF3-B is green for tenant `e188354c-4a88-406d-bf25-f005cf9af275`. The two
+batches completed in `227.633s` (`113.399s` / `114.124s`); batch 1 admitted
+`14/14`, and batch 2 selected 14 prior Models with 12 authorized/material,
+trace-referenced, durably applied, receipted effects. Both barriers closed and
+the strict report had no failed gates. Usage was 204,011 input, 42,466 output,
+and 121,856 cache tokens. Evidence lives at
+`/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1.json` and its
+`-cf3b-v1.json` report. CF3-C is unlocked; EDGE-058 remains deferred.
 
 ### CF3-C — Four-batch synthesis canary
 

@@ -6,40 +6,16 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** M0 and CF3-A are green. The exact-scope prior-memory
-effect contract is implemented and deterministically proven through production
-compile, validate, and PostgreSQL apply boundaries. A fresh provider CF3-B run
-for tenant `feb50ba5-d87f-42d3-b77c-6fe3bd55936e` then completed in `282.745s`:
-batch 1 admitted 14/14 evidence-backed Models; batch 2 selected all 14 exact
-batch-1 versions, trace-referenced eight, and submitted eight explicit semantic
-effects. All eight were safely blocked because production representation had
-normalized `scope_entities` into substrate entity UUIDs while the exact
-semantic coordinate remained in `proposition.scope_ref`. The strict verdict is
-therefore still red only on material prior-Model use. A minimal exact
-type-plus-ref fallback is green in unit and real-PostgreSQL vertical tests; one
-fresh provider rerun remains required before CF3-B can close. The earlier
-founder-assisted tenant
-`cb3a8a53-5222-4b31-90ee-f86bf1b68589` completed two production ThinkWorker
-Codex batches in `414.720s` (`259.934s` and `154.671s`). Its receipted founder
-bootstrap established four exact aliases before enqueue, seeded zero semantic
-truth, and matched manifest digest
-`ce1aff1ed00777432f872ac88778c3f5745e76181aeb0d54a6f2a0c7f1b50187`.
-Batch 1 admitted 14/14 evidence-backed Models; batch 2 selected all 14 exact
-batch-1 versions and durably referenced two, but its reasoning trace referenced
-zero and materially used zero. Both barriers closed complete with zero pending
-work. All other CF3-B gates are green. The run carried 26 matching provider
-receipts totaling 376,056 input, 38,852 output, and 248,064 cache tokens.
-Retrieval and founder grounding are therefore healthy. The former missing
-exact-scope join/prompt/application effect contract now binds exact same-scope
-prior Models, requires an explicit supports/weakens/contradicts/none decision,
-authorizes only claim-local evidence, compiles that decision into the existing
-lifecycle boundary, and reports material use only when the provider trace and
-applied effect agree. A PostgreSQL proof advances the exact prior truth head,
-attaches the new evidence, and preserves the new singleton atomic Model. The
-fresh two-wave run must now prove the real provider uses this contract.
-Exact-envelope deduplication is deferred
-because collapsing repeated evidence requires explicit temporal semantics.
-CF3-C remains locked.
+**Current checkpoint:** M0, CF3-A, and CF3-B are green. The provenance-bound
+exact-scope join is proven in a fresh provider run for tenant
+`e188354c-4a88-406d-bf25-f005cf9af275`. Two batches completed in `227.633s`
+(`113.399s` / `114.124s`): batch 1 admitted `14/14` evidence-backed Models;
+batch 2 selected all 14 exact batch-1 Models and produced 12 authorized and
+material effects, all 12 trace-referenced, durably applied, and receipted. Both
+barriers closed and the strict CF3-B report had no failed gates. Usage was
+204,011 input, 42,466 output, and 121,856 cache tokens. CF3-C is unlocked.
+Exact-envelope deduplication remains deferred because recurrence and
+corroboration require explicit temporal semantics.
 
 **Last updated:** 2026-07-19
 
@@ -2168,3 +2144,17 @@ matched feedback quality and objective entity v6.
 - Artifacts: `/tmp/fyralis-cf3a-codex-one-batch-spark-receipted.json`,
   `/tmp/fyralis-cf3a-codex-one-batch-spark-receipted-evidence.json`, and
   `/tmp/fyralis-cf3a-codex-one-batch-spark-receipted-score.json`.
+
+### 2026-07-19 — Provenance-bound CF3-B rerun is green
+
+- Tenant `e188354c-4a88-406d-bf25-f005cf9af275` completed two 25-signal
+  batches in `227.633s` (`113.399s` and `114.124s`).
+- Batch 1 admitted `14/14` evidence-backed Models. Batch 2 selected all 14
+  batch-1 Models; 12 effects were authorized and material, trace-referenced,
+  durably applied, and receipted.
+- Both barriers closed and the strict evaluator reported no failed gates.
+  Provider usage was 204,011 input, 42,466 output, and 121,856 cache tokens.
+- The provenance-bound exact-scope join closes CF3-B without trusting arbitrary
+  proposition strings. CF3-C is unlocked; EDGE-058 remains deferred.
+- Artifacts: `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1.json` and
+  `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1-cf3b-v1.json`.

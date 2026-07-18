@@ -1276,22 +1276,19 @@ transport are excluded from this goal.
 - **Return condition:** After the fresh CF3-B core proof, reproduce and triage
   the three failures independently; promote only a causally related failure.
 
-### EDGE-057 — Retrieved exact Models do not yet have a required semantic effect
+### EDGE-057 — Retrieved exact Models require a provenance-bound semantic effect
 
-- **Status:** `P0 scope-coordinate repair locally tested; fresh CF3-B proof pending`
+- **Status:** `resolved by provenance-bound exact-scope join; CF3-B green`
 - **Trigger:** Founder-assisted CF3-B tenant
   `cb3a8a53-5222-4b31-90ee-f86bf1b68589` selected all 14 exact batch-1 Model
   versions in batch 2 and referenced two durably, while its provider trace
   referenced and materially used zero.
-- **Current behavior:** A second fresh run for tenant
-  `feb50ba5-d87f-42d3-b77c-6fe3bd55936e` completed in `282.745s`: batch 1
-  admitted `14/14`, and batch 2 selected 14 prior Models, trace-referenced eight,
-  and attempted eight explicit effects. Every effect was compiler-blocked
-  because production `scope_entities` were substrate-normalized while semantic
-  `proposition.scope_ref` retained the exact candidate coordinate. A minimal
-  provenance-bound exact type-plus-ref fallback is locally tested; fresh
-  provider proof remains pending. Arbitrary proposition scope strings cannot
-  authorize an effect.
+- **Current behavior:** Fresh tenant `e188354c-4a88-406d-bf25-f005cf9af275`
+  completed CF3-B in `227.633s`. Batch 1 admitted `14/14`; batch 2 selected all
+  14 prior Models and produced 12 authorized/material effects, all 12
+  trace-referenced, durably applied, and receipted. The semantic `scope_ref`
+  fallback is accepted only with compiler-owned provenance, so arbitrary
+  proposition scope strings still cannot authorize an effect.
 - **Desired behavior:** For a scope with relevant prior truth, the runtime
   records the exact selected version, exposes a scope-matched comparison to the
   provider, and validates a decision-level effect on conclusion, confidence,
@@ -1299,15 +1296,15 @@ transport are excluded from this goal.
 - **Risk:** The system can look memory-aware while independently re-deriving
   each batch from observations, so it stores company facts without learning
   across time.
-- **Safe boundary:** Keep evaluator v2 strict and CF3-C locked. Do not inflate
-  retrieval, add identity seeds, or count durable references as material use.
-- **Return condition:** A fresh two-batch run has a non-empty trace reference
-  and evaluator-accepted material effect tied to an exact batch-1 Model
-  version, with both barriers still complete and pending zero.
-- **Evidence:** LOG-065 through LOG-067, commits `a1a62edd`, `d3172185`,
-  `1a3f9734`, `/tmp/fyralis-cf3b-founder-two-batch-spark-r1-cf3b-v1.json`, and
-  `/tmp/fyralis-cf3b-prior-effect-two-batch-spark-r1-cf3b-v1.json` for tenant
-  `feb50ba5-d87f-42d3-b77c-6fe3bd55936e`.
+- **Safe boundary:** Keep evaluator v2 strict. Do not inflate retrieval, add
+  identity seeds, count durable references alone, or authorize unprovenanced
+  semantic scope strings as material use. CF3-C is unlocked.
+- **Return condition:** Reopen if an effect is authorized without exact
+  provenance-bound scope, or material-use credit lacks matching trace, durable
+  application, and receipt evidence.
+- **Evidence:** LOG-065 through LOG-068,
+  `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1.json`, and
+  `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1-cf3b-v1.json`.
 
 ### EDGE-058 — Exact-envelope deduplication has unresolved temporal semantics
 
@@ -1329,6 +1326,30 @@ transport are excluded from this goal.
   add evaluator cases for duplicate, corroborating, continuing, and recurring
   observations before changing runtime compaction.
 - **Evidence:** LOG-065 and the founder-assisted CF3-B run artifacts.
+
+### EDGE-059 — CF3-B effect receipts do not yet bind every evaluator join
+
+- **Status:** `backlog after CF3-C and core semantics; not observed in the green run`
+- **Current behavior:** CF3-B requires a compiler-marked, reasoning-accounted
+  prior-memory effect plus durable selected/referenced context. The audited
+  green run also had one matching non-skip applied lifecycle summary per
+  counted effect, and every durable transition started from the selected exact
+  batch-1 version. The evaluator does not yet enforce either join directly.
+  Lifecycle-event `reason_codes` preserve the batch trigger UUID rather than
+  each operation's claim-local UUID, although applied summaries and canonical
+  Model support contain the correct claim-local evidence.
+- **Risk:** A future apply-skipped effect or intervening Model version could be
+  credited from pre-apply telemetry; lifecycle-event rows alone cannot prove
+  per-operation evidence provenance.
+- **Safe boundary:** The current strict green remains substantively valid. Do
+  not reopen CF3-B or delay core semantics for this unrealized risk.
+- **Return condition:** After CF3-C/core semantics, require one matching
+  non-skip applied summary per counted effect and a durable
+  `from_version_id == selected batch-1 truth_version_id`; then preserve or bind
+  claim-local evidence in the lifecycle receipt/event.
+- **Evidence:** Tenant `e188354c-4a88-406d-bf25-f005cf9af275`,
+  `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1.json`, and its strict
+  CF3-B report.
 
 ## Entry Template
 
