@@ -255,6 +255,25 @@ async def run_p4_online_loop(conn: Any, *, repo_root: Path | None = None) -> dic
         and reconciliation["refresh_rows"] == reconciliation["expected_refresh_rows"]
         and all(count == 0 for count in queue_counts)
     )
+    raw_context_rows = [dict(row) for row in await conn.fetch(
+        """SELECT decision_id,batch_id,context_item_kind,context_item_id,selected,
+                  referenced,historical_reopen_reason,decision_fate,result_object_kind,
+                  result_object_id,evidence_lineage
+           FROM company_learning_context_decisions WHERE tenant_id=$1 ORDER BY decided_at,decision_id""",
+        tenant_id,
+    )]
+    raw_outcome_rows = [dict(row) for row in await conn.fetch(
+        """SELECT outcome_link_id,decision_id,outcome_kind,outcome_object_kind,
+                  outcome_object_id,attribution_basis,evidence_lineage
+           FROM company_learning_outcome_links WHERE tenant_id=$1 ORDER BY observed_at,outcome_link_id""",
+        tenant_id,
+    )]
+    raw_refresh_rows = [dict(row) for row in await conn.fetch(
+        """SELECT job_id,projection_name,projection_version,subject_key,status,attempts
+           FROM projection_refresh_jobs WHERE tenant_id=$1 AND projection_name='p4-evaluator'
+           ORDER BY job_id""",
+        tenant_id,
+    )]
     hard_gates = {
         "HG-10": component_checks["sage_no_direct_truth_write"],
         "HG-11": all(
@@ -290,6 +309,13 @@ async def run_p4_online_loop(conn: Any, *, repo_root: Path | None = None) -> dic
         "continuous_metrics": metrics,
         "sage_direct_truth_write_findings": sage_writes,
         "missing_evidence": [],
+        "raw_p9_evidence": {
+            "context_decisions": raw_context_rows,
+            "outcomes": raw_outcome_rows,
+            "refresh_jobs": raw_refresh_rows,
+            "barrier_latencies_seconds": barrier_latencies,
+            "queue_counts": queue_counts,
+        },
     }
     thresholds = (
         metrics["selected_context_utilization"] >= 0.80
