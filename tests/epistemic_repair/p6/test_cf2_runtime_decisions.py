@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import json
+from uuid import uuid4
+
+from services.evaluation.epistemic_repair.cf2_decisions import (
+    compiled_batch_memory_decisions,
+)
+from services.evaluation.epistemic_repair.cf2_provider import CF2StructuredRequest
+from services.reasoning.think.compiled_reasoning import BatchMemoryDecisionSet
+
+
+def _request(*candidates: dict) -> CF2StructuredRequest:
+    lines = ["<memory_decision_candidates>"]
+    for candidate in candidates:
+        lines.append("  <candidate>")
+        for key, value in candidate.items():
+            if key == "endpoint_model_cards":
+                lines.append("    endpoint_model_cards:")
+                lines.extend(f"      - {json.dumps(card)}" for card in value)
+            else:
+                lines.append(f"    {key}: {json.dumps(value)}")
+        lines.append("  </candidate>")
+    lines.append("</memory_decision_candidates>")
+    return CF2StructuredRequest(
+        schema_name="BatchMemoryDecisionSet",
+        system="compiled closed-world task",
+        user="\n".join(lines),
+        schema=BatchMemoryDecisionSet.model_json_schema(),
+    )
+
+
+def _validated(*candidates: dict) -> BatchMemoryDecisionSet:
+    return BatchMemoryDecisionSet.model_validate(
+        compiled_batch_memory_decisions(_request(*candidates))
+    )
+
+
+def test_accepts_only_grounded_closed_resolved_atomics() -> None:
+    observation_id = uuid4()
+    grounded = {
+        "candidate_id": "atomic-grounded",
+        "candidate_kind": "atomic",
+        "allowed_operations": ["claim", "no_op"],
+        "entailed_claim_text": "The renewal approval is complete.",
+        "canonical_scope_ref": "commitment:renewal",
+        "source_observation_ids": [str(observation_id)],
+    }
+    ungrounded = {
+        **grounded,
+        "candidate_id": "atomic-no-scope",
+        "canonical_scope_ref": "",
+    }
+
+    result = _validated(grounded, ungrounded)
+
+    assert result.decisions[0].decision == "accept"
+    assert result.decisions[0].operation == "claim"
+    assert result.decisions[0].claim_text == grounded["entailed_claim_text"]
+    assert result.decisions[0].claim_local_evidence_event_ids == [observation_id]
+    assert result.decisions[1].decision == "reject"
+    assert result.decisions[1].operation == "no_op"
+
+
+def test_exact_closed_atomic_confirms_single_bound_target() -> None:
+    target_id, observation_id = uuid4(), uuid4()
+    result = _validated({
+        "candidate_id": "atomic-confirm",
+        "candidate_kind": "atomic",
+        "allowed_operations": ["memory_lifecycle"],
+        "entailed_claim_text": "The renewal approval is complete.",
+        "canonical_scope_ref": "commitment:renewal",
+        "source_observation_ids": [str(observation_id)],
+        "target_model_ids": [str(target_id)],
+    })
+
+    decision = result.decisions[0]
+    assert decision.operation == "memory_lifecycle"
+    assert decision.lifecycle_action == "confirm"
+    assert decision.model_id == target_id
+
+
+def test_admits_at_most_one_exact_evidenced_mechanistic_synthesis() -> None:
+    model_ids = [uuid4(), uuid4()]
+    version_ids = [uuid4(), uuid4()]
+    observation_ids = [uuid4(), uuid4()]
+    candidate = {
+        "candidate_id": "synthesis-one",
+        "candidate_kind": "synthesis",
+        "allowed_operations": ["situation", "situation_and_edge", "no_op"],
+        "confidence": 0.82,
+        "proposed_text": "Missing ownership blocks renewal approval.",
+        "canonical_scope_ref": "commitment:renewal",
+        "member_observation_ids": [str(value) for value in observation_ids],
+        "evidence_model_ids": [str(value) for value in model_ids],
+        "endpoint_model_cards": [
+            {"id": str(model_id), "version_id": str(version_id)}
+            for model_id, version_id in zip(model_ids, version_ids, strict=True)
+        ],
+    }
+
+    result = _validated(candidate, {**candidate, "candidate_id": "synthesis-two"})
+
+    accepted, rejected = result.decisions
+    assert accepted.decision == "accept"
+    assert accepted.operation == "situation"
+    assert set(accepted.situation_member_model_ids) == set(model_ids)
+    assert rejected.decision == "reject"
+
+
+def test_synthesis_fails_closed_without_exact_heads_evidence_or_mechanism() -> None:
+    model_ids = [uuid4(), uuid4()]
+    common = {
+        "candidate_kind": "synthesis",
+        "allowed_operations": ["situation", "no_op"],
+        "canonical_scope_ref": "project:beacon",
+        "evidence_model_ids": [str(value) for value in model_ids],
+        "endpoint_model_cards": [
+            {"id": str(value), "version_id": str(uuid4())} for value in model_ids
+        ],
+        "member_observation_ids": [str(uuid4())],
+    }
+    result = _validated(
+        {**common, "candidate_id": "no-mechanism", "proposed_text": "Status is mixed."},
+        {
+            **common,
+            "candidate_id": "missing-head",
+            "proposed_text": "Missing ownership blocks launch.",
+            "endpoint_model_cards": common["endpoint_model_cards"][:1],
+        },
+        {
+            **common,
+            "candidate_id": "missing-evidence",
+            "proposed_text": "Missing ownership blocks launch.",
+            "member_observation_ids": [],
+        },
+    )
+
+    assert {decision.decision for decision in result.decisions} == {"reject"}
+
+
+def test_explicit_higher_authority_contradiction_supersedes_bound_head() -> None:
+    model_id, observation_id = uuid4(), uuid4()
+    result = _validated({
+        "candidate_id": "authority-correction",
+        "candidate_kind": "reconciliation",
+        "allowed_operations": ["memory_lifecycle", "no_op"],
+        "target_model_ids": [str(model_id)],
+        "source_observation_ids": [str(observation_id)],
+        "counterevidence_ids": ["counter-1"],
+        "observation_evidence": {
+            "text": "The official system of record contradicts and supersedes the prior status."
+        },
+    })
+
+    decision = result.decisions[0]
+    assert decision.decision == "accept"
+    assert decision.operation == "memory_lifecycle"
+    assert decision.lifecycle_action == "supersede"
+    assert decision.model_id == model_id
+    assert decision.claim_local_evidence_event_ids == [observation_id]
+
+
+def test_generic_contradiction_without_explicit_authority_fails_closed() -> None:
+    result = _validated({
+        "candidate_id": "weak-correction",
+        "candidate_kind": "reconciliation",
+        "allowed_operations": ["memory_lifecycle", "no_op"],
+        "target_model_ids": [str(uuid4())],
+        "source_observation_ids": [str(uuid4())],
+        "counterevidence_ids": ["counter-1"],
+        "observation_evidence": {"text": "A message contradicts the prior status."},
+    })
+
+    assert result.decisions[0].decision == "reject"
+    assert result.decisions[0].operation == "no_op"
