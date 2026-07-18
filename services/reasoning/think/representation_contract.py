@@ -1766,6 +1766,24 @@ def _observations_for_entry(
     # An event batch is a delivery envelope, not the semantic scope of each
     # claim. Prefer claim-declared evidence and only fall back to the batch when
     # the claim has no source binding of its own.
+    prop = entry.get("proposition")
+    prop = prop if isinstance(prop, dict) else {}
+    manifest = entry.get("evidence_observation_manifest")
+    if not isinstance(manifest, list):
+        manifest = prop.get("evidence_observation_manifest")
+    manifest_ids = _dedupe_uuid_values(
+        row.get("observation_id")
+        for row in manifest or ()
+        if isinstance(row, dict)
+    )
+    if _is_manifest_bound_closed_atomic(entry, prop) and manifest_ids:
+        # Resolve the authorization boundary before semantic partitioning.
+        # Synthetic placeholders cannot justify widening a closed atomic to
+        # every same-scope observation in its delivery batch.
+        return [
+            observation_index[uid] for uid in manifest_ids
+            if uid in observation_index
+        ]
     ids = _dedupe_uuid_values(
         [
             entry.get("born_from_event_id"),

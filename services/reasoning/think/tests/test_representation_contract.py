@@ -119,7 +119,9 @@ def test_closed_atomic_rebuilds_all_semantic_evidence_from_singleton_manifest() 
         tenant_id=tenant_id,
         claim_ops=[ClaimOp(op="insert", entry={
             "born_from_event_id": uuid4(),
-            "supporting_event_ids": [local.id],
+            # Compiled claims initially carry a synthetic placeholder. The
+            # manifest must resolve before same-scope semantic partitioning.
+            "supporting_event_ids": [uuid4()],
             "evidence_observation_manifest": manifest,
             "proposition": {
                 "kind": "belief",
