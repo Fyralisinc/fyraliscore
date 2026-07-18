@@ -9,6 +9,7 @@ from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p6_population import build_p6_population
 from lib.evaluation.epistemic_repair.p6_postfreeze_scorer import (
     _score_boundaries,
+    _score_claims_and_theses,
     _score_context,
     score_p6_frozen_execution,
 )
@@ -125,6 +126,80 @@ def test_boundary_b_cubed_uses_all_exact_source_ids() -> None:
     assert score["value"] == 1.0
     assert score["denominator"] == 1
     assert len(score["source_ids"]) == 300
+
+
+def test_atomic_source_oracle_accepts_exact_ownership_one_ref() -> None:
+    population = build_p6_population()
+    evidence = {
+        "claims": [
+            {
+                "id": "atlas-owner",
+                "natural_text": (
+                    "Atlas release certificate has no clearly recorded owner."
+                ),
+                "proposition": {
+                    "kind": "belief",
+                    "claim_role": "fact",
+                    "subject": "Atlas release certificate",
+                    "assertion": "Ownership remains unresolved.",
+                },
+                "evidence_signal_ids": ["p6-b01-s01"],
+                "scope_entities": [
+                    {"canonical_ref": "workstream:atlas-release"}
+                ],
+            }
+        ]
+    }
+
+    scores = _score_claims_and_theses(
+        {"postfreeze_evidence": evidence}, population
+    )
+
+    assert scores["atomic_claim_precision"]["value"] == 1.0
+    assert scores["atomic_claim_recall"]["numerator"] == 1
+    assert scores["atomic_claim_recall"]["denominator"] == 92
+    assert scores["atomic_claim_recall"]["value"] > 0
+    assert scores["direct_thesis_accuracy"]["value"] == 0
+
+
+def test_broad_causal_claim_with_all_five_refs_fails_atomic_precision() -> None:
+    population = build_p6_population()
+    evidence = {
+        "claims": [
+            {
+                "id": "atlas-broad-causal",
+                "natural_text": (
+                    "Atlas release slips recur because certificate ownership "
+                    "changes during handoff."
+                ),
+                "proposition": {
+                    "kind": "belief",
+                    "claim_role": "fact",
+                    "assertion": (
+                        "Certificate ownership handoff causes release delay."
+                    ),
+                },
+                "evidence_signal_ids": [
+                    "p6-b01-s01",
+                    "p6-b01-s05",
+                    "p6-b01-s09",
+                    "p6-b01-s13",
+                    "p6-b01-s17",
+                ],
+                "scope_entities": [
+                    {"canonical_ref": "workstream:atlas-release"}
+                ],
+            }
+        ]
+    }
+
+    scores = _score_claims_and_theses(
+        {"postfreeze_evidence": evidence}, population
+    )
+
+    assert scores["atomic_claim_precision"]["value"] == 0
+    assert scores["atomic_claim_recall"]["value"] == 0
+    assert scores["mean_thesis_facet_completeness"]["value"] > 0
 
 
 def test_calibration_under_twenty_is_insufficient_not_passed() -> None:

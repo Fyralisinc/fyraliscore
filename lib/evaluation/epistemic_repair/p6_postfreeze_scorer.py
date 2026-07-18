@@ -375,6 +375,110 @@ def _scope_refs(value: Any) -> set[str]:
     return refs
 
 
+_WEAK_INITIAL_OBJECTS = {
+    "atlas": {
+        1: (("certificate",), ("owner", "ownership")),
+        3: (("dashboard",), ("record", "incomplete", "optimistic")),
+        5: (("rollout", "window"), ("moved", "delay", "slip")),
+    },
+    "beacon": {
+        1: (("access review", "access"), ("owner", "ownership")),
+        3: (("dashboard",), ("record", "incomplete", "optimistic")),
+        5: (("completion",), ("moved", "delay", "slip")),
+    },
+    "cobalt": {
+        1: (("customer approval", "approval email"), ("owner", "ownership")),
+        3: (("crm",), ("record", "incomplete", "optimistic")),
+        5: (("renewal", "signature"), ("moved", "delay", "slip")),
+    },
+    "delta": {
+        1: (("support owner", "support"), ("owner", "ownership")),
+        3: (("checklist",), ("record", "incomplete", "optimistic")),
+        5: (("incident", "rate"), ("moved", "delay", "slip")),
+    },
+}
+_ABSENCE_TERMS = (
+    "no owner", "no clearly recorded", "missing", "unresolved", "unclear",
+    "lacks", "lacking", "unowned",
+)
+_RELATION_CLAIM_RE = re.compile(
+    r"\b(?:cause|causes|caused|causing|lead|leads|depends?|requires?|"
+    r"blocked by|predicts?|indicator|due to|resulting in)\b"
+)
+_ATOMIC_STOPWORDS = {
+    "after", "again", "before", "from", "into", "remains", "signal",
+    "still", "that", "their", "there", "these", "this", "underlying",
+    "update", "while", "with",
+}
+
+
+def _claim_coordinate(item: Any) -> tuple[str, str, int] | None:
+    parts = str(item.claim_id or "").split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        return parts[0], parts[1], int(parts[2])
+    except ValueError:
+        return None
+
+
+def _directly_assertable_source(item: Any) -> bool:
+    if item.role in {"noise", "high_similarity_distractor"} or not item.claim_id:
+        return False
+    coordinate = _claim_coordinate(item)
+    if coordinate is None:
+        return False
+    _storyline, phase, ordinal = coordinate
+    # Questions and unresolved pronoun references are valid candidate-plane
+    # coordinates, but are not accepted-fact atomic recall obligations.
+    return not (phase == "weak_initial" and ordinal in {2, 4})
+
+
+def _row_semantic_text(row: dict[str, Any]) -> str:
+    return f"{row.get('natural_text') or ''} {row.get('proposition') or ''}".casefold()
+
+
+def _material_words(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", text.casefold())
+        if len(token) >= 4 and token not in _ATOMIC_STOPWORDS
+    }
+
+
+def _source_signal_entails_atomic(
+    row: dict[str, Any],
+    *,
+    signal_text: str,
+    gold_item: Any,
+) -> bool:
+    if not _directly_assertable_source(gold_item):
+        return False
+    model_text = _row_semantic_text(row)
+    source_text = signal_text.casefold()
+    subject = str(gold_item.entity_surface or "").casefold()
+    if subject and subject not in model_text and subject.split()[0] not in model_text:
+        return False
+    # A source-level atomic cannot introduce a causal/dependency/predictive
+    # relation absent from the cited source sentence.
+    if _RELATION_CLAIM_RE.search(model_text) and not _RELATION_CLAIM_RE.search(source_text):
+        return False
+    coordinate = _claim_coordinate(gold_item)
+    if coordinate is None:
+        return False
+    storyline, phase, ordinal = coordinate
+    if phase == "weak_initial":
+        groups = _WEAK_INITIAL_OBJECTS.get(storyline, {}).get(ordinal)
+        if groups is None:
+            return False
+        if ordinal == 1 and not any(term in model_text for term in _ABSENCE_TERMS):
+            return False
+        return all(any(term in model_text for term in group) for group in groups)
+    # Later-phase source claims remain independently scored. Require the Model
+    # to retain the storyline subject and at least two material source facets.
+    return len(_material_words(model_text) & _material_words(source_text)) >= 2
+
+
 def _score_claims_and_theses(
     raw: dict[str, Any], population: P6Population,
 ) -> dict[str, dict[str, Any]]:
@@ -387,7 +491,11 @@ def _score_claims_and_theses(
     if not rows:
         return {name: _metric(name, None, None) for name in names}
     gold = {item.signal_id: item for item in population.gold}
-    expected_claims = {item.claim_id for item in population.gold if item.claim_id}
+    signals = {item.signal_id: item for item in population.signals}
+    expected_claims = {
+        item.claim_id for item in population.gold
+        if _directly_assertable_source(item)
+    }
     oracle = build_p7_semantic_oracles(population)
     represented_claims: set[str] = set()
     coherent_model_phases: dict[str, list[set[str]]] = {
@@ -415,27 +523,40 @@ def _score_claims_and_theses(
                     for item in evidence)
         )
         storyline = next(iter(storylines)) if len(storylines) == 1 else None
-        semantic = False
+        atomic_semantic = False
+        thesis_semantic = False
         if pure and storyline:
             claim_oracle = next(
                 item for item in oracle.claims if item.storyline_id == storyline
             )
-            semantic = entails_structured_claim(row, claim_oracle)
-        if pure and semantic and storyline:
+            thesis_semantic = entails_structured_claim(row, claim_oracle)
+            atomic_semantic = all(
+                signal_id in signals
+                and _source_signal_entails_atomic(
+                    row,
+                    signal_text=signals[signal_id].text,
+                    gold_item=gold[signal_id],
+                )
+                for signal_id in evidence_ids
+            )
+        if pure and atomic_semantic and storyline:
             precise_claims += 1
             represented_claims.update(
-                item.claim_id for item in evidence if item.claim_id
+                item.claim_id
+                for item in evidence
+                if _directly_assertable_source(item)
             )
-            coherent_model_phases[storyline].append({
-                item.lifecycle_phase for item in evidence
-            })
         else:
             worst.append({
                 "source_id": str(row.get("id") or ""),
-                "reason": "impure_lineage_or_semantic_nonentailment",
+                "reason": "impure_lineage_or_atomic_source_nonentailment",
+            })
+        if pure and thesis_semantic and storyline:
+            coherent_model_phases[storyline].append({
+                item.lifecycle_phase for item in evidence
             })
         predicted_refs = _scope_refs(row.get("scope_entities"))
-        if pure and semantic:
+        if pure and atomic_semantic:
             predicted_scope_refs.update(predicted_refs)
     precision, recall, f1 = _f1(
         precise_claims, len(rows), len(expected_claims)
@@ -462,11 +583,14 @@ def _score_claims_and_theses(
     )
     return {
         "atomic_claim_precision": _metric(
-            "atomic_claim_precision", precision, 1, source_ids=source_ids,
+            "atomic_claim_precision", precise_claims, len(rows), source_ids=source_ids,
             worst_cases=worst[:10],
         ),
         "atomic_claim_recall": _metric(
-            "atomic_claim_recall", recall, 1, source_ids=source_ids,
+            "atomic_claim_recall",
+            len(represented_claims & expected_claims),
+            len(expected_claims),
+            source_ids=source_ids,
         ),
         "atomic_claim_f1": _metric("atomic_claim_f1", f1, 1, source_ids=source_ids),
         "evidence_lineage_coverage": _metric(
