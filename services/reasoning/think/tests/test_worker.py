@@ -1031,12 +1031,74 @@ async def test_t1_batch_attaches_current_governed_scope_coordinates(
     assert {fragment["canonical_ref"] for fragment in fragments} == {
         "workstream:atlas-release"
     }
-    assert all(fragment["grounded_mentions"] == [{
-        "surface": "Atlas release",
-        "canonical_ref": "workstream:atlas-release",
-        "authority": "provisional_detection",
-        "detection_id": fragment["grounded_mentions"][0]["detection_id"],
-    }] for fragment in fragments)
+    assert all(len(fragment["grounded_mentions"]) == 1 for fragment in fragments)
+    assert all(
+        fragment["grounded_mentions"][0]["surface"] == "Atlas release"
+        and fragment["grounded_mentions"][0]["canonical_ref"]
+        == "workstream:atlas-release"
+        and fragment["grounded_mentions"][0]["authority"]
+        == "provisional_detection"
+        and fragment["grounded_mentions"][0]["field_path"] == "content_text"
+        and fragment["grounded_mentions"][0]["span_start"] is not None
+        and fragment["grounded_mentions"][0]["span_end"] is not None
+        for fragment in fragments
+    )
+    episodes = dispatched[0]["payload"]["governed_learning_episodes"]
+    assert len(episodes) == 1
+    assert episodes[0]["canonical_ref"] == "workstream:atlas-release"
+    assert {item["observation_id"] for item in episodes[0]["assertions"]} == {
+        str(observation_id) for observation_id in observations
+    }
+    assert {item["coordinate_authority"] for item in episodes[0]["assertions"]} == {
+        "provisional"
+    }
+
+
+async def test_t1_batch_payload_cannot_read_foreign_tenant_observation(
+    fresh_db, tenant, tenant_cleanup,
+):
+    foreign_tenant = uuid7()
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO tenants (id,name,is_demo) VALUES ($1,$2,FALSE)",
+            foreign_tenant, "foreign-batch-payload-tenant",
+        )
+    try:
+        own_observation = await _seed_signal_observation(
+            fresh_db, tenant, text="Atlas release is ready.",
+        )
+        foreign_observation = await _seed_signal_observation(
+            fresh_db, foreign_tenant, text="Foreign confidential signal.",
+        )
+        worker = ThinkWorker(fresh_db, config=WorkerConfig(tenant_filter=tenant))
+        async with fresh_db.acquire() as conn:
+            payload = await worker._build_t1_batch_payload(
+                conn,
+                tenant_id=tenant,
+                batch_id=uuid7(),
+                members=[],
+                observation_ids=[own_observation, foreign_observation],
+            )
+
+        assert {item["observation_id"] for item in payload["batch_signal_fragments"]} == {
+            str(own_observation)
+        }
+        assertions = [
+            item
+            for episode in payload["governed_learning_episodes"]
+            for item in episode["assertions"]
+        ]
+        assert {item["observation_id"] for item in assertions} == {
+            str(own_observation)
+        }
+        assert "Foreign confidential signal" not in payload["seed_natural_text"]
+    finally:
+        async with fresh_db.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM observations WHERE tenant_id=$1", foreign_tenant,
+            )
+            await conn.execute("DELETE FROM actors WHERE tenant_id=$1", foreign_tenant)
+            await conn.execute("DELETE FROM tenants WHERE id=$1", foreign_tenant)
 
 
 async def test_t1_batch_dispatch_cycle_does_not_lease_singleton_tail(

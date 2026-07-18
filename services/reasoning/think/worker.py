@@ -55,6 +55,9 @@ from services.domain.entity_grounding import (
 from services.domain.entity_grounding.learned_discovery import MentionCandidateAdapter
 from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 from services.domain.triggers import enqueue_trigger
+from services.platform.execution.governed_learning_episode import (
+    build_governed_learning_episodes,
+)
 
 from services.reasoning.retrieval.primary import TriggerContext
 
@@ -2055,9 +2058,10 @@ class ThinkWorker:
             SELECT id, occurred_at, source_channel, kind, trust_tier,
                    actor_id, content_text, entities_mentioned
             FROM observations
-            WHERE id = ANY($1::uuid[])
+            WHERE tenant_id = $1 AND id = ANY($2::uuid[])
             ORDER BY occurred_at ASC
             """,
+            tenant_id,
             observation_ids,
         )
         mention_rows = await conn.fetch(
@@ -2089,7 +2093,7 @@ class ThinkWorker:
             tenant_id,
             observation_ids,
         )
-        governed_mentions: dict[UUID, list[dict[str, str]]] = {}
+        governed_mentions: dict[UUID, list[dict[str, Any]]] = {}
         for mention_row in mention_rows:
             mention = _payload_dict(mention_row["mention"])
             referent = _payload_dict(mention_row["selected_referent"])
@@ -2101,6 +2105,8 @@ class ThinkWorker:
             surface = str(mention_row["candidate_surface"] or "").strip()
             if not surface or canonical_ref is None:
                 continue
+            primary_anchor = _payload_dict(mention.get("primary_anchor"))
+            coordinate = _payload_dict(primary_anchor.get("coordinate"))
             governed_mentions.setdefault(
                 mention_row["source_observation_id"], []
             ).append({
@@ -2110,6 +2116,9 @@ class ThinkWorker:
                     "resolved_for_consumer" if resolved else "provisional_detection"
                 ),
                 "detection_id": str(mention_row["detection_id"]),
+                "field_path": coordinate.get("field_path"),
+                "span_start": coordinate.get("span_start"),
+                "span_end": coordinate.get("span_end"),
             })
         seed_entities: list[dict[str, Any]] = []
         seen_entities: set[tuple[str, str]] = set()
@@ -2182,6 +2191,11 @@ class ThinkWorker:
             summary = f"{summary}:\n" + "\n".join(signal_lines)
         if len(summary) > 2000:
             summary = summary[:1997].rstrip() + "..."
+        governed_learning_episodes = build_governed_learning_episodes(
+            tenant_id=tenant_id,
+            observations=rows,
+            governed_mentions=governed_mentions,
+        )
         return {
             "trigger_id": str(batch_id),
             "batch": True,
@@ -2190,6 +2204,9 @@ class ThinkWorker:
             "batch_observation_ids": [str(oid) for oid in observation_ids],
             "observation_ids": [str(oid) for oid in observation_ids],
             "batch_signal_fragments": signal_fragments,
+            "governed_learning_episodes": [
+                episode.as_payload() for episode in governed_learning_episodes
+            ],
             "member_trigger_ids": [str(m["id"]) for m in members],
             "source_channel": "batch",
             "kind": "signal_batch",
