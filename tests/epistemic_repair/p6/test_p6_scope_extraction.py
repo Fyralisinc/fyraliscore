@@ -24,3 +24,6 @@ def test_p6_scope_extraction_does_not_promote_provisional_coordinates() -> None:
     assert 'resolved_scope_statuses = {"resolved", "accepted"}' in source
     assert '"provisional": len(provisional_scope_coordinates)' in source
     assert "len(resolved_scope_coordinates) == len(scope_coordinates)" in source
+    assert '"extracted_scope_coordinates_complete"' in source
+    assert '"extracted_scope_coordinates_status"' in source
+    assert '"extracted_scope_coordinate_counts"' in source

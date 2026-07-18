@@ -162,6 +162,70 @@ def test_atomic_source_oracle_accepts_exact_ownership_one_ref() -> None:
     assert scores["direct_thesis_accuracy"]["value"] == 0
 
 
+def test_atomic_recall_denominator_is_limited_to_observed_one_batch() -> None:
+    population = build_p6_population()
+    signal_by_id = {signal.signal_id: signal for signal in population.signals}
+    batch_one_gold = [
+        item for item in population.gold
+        if signal_by_id[item.signal_id].batch_number == 1
+        and item.claim_id
+        and item.role not in {"noise", "high_similarity_distractor"}
+        and not (
+            item.lifecycle_phase == "weak_initial"
+            and item.claim_id.rsplit(":", 1)[-1] in {"2", "4"}
+        )
+    ]
+    # Batch one has twelve directly assertable atomic coordinates. Represent
+    # eleven to exercise the real one-batch smoke's 11/12 recall contract.
+    represented = batch_one_gold[:11]
+    observed_map = {
+        f"observation-{index}": signal.signal_id
+        for index, signal in enumerate(population.signals[:25])
+    }
+    evidence = {
+        "observed_source_ids": list(observed_map),
+        "observation_signal_map": observed_map,
+        "claims": [
+            {
+                "id": f"model-{item.signal_id}",
+                "natural_text": signal_by_id[item.signal_id].text,
+                "proposition": {},
+                "evidence_signal_ids": [item.signal_id],
+                "scope_entities": [{"canonical_ref": item.canonical_ref}],
+            }
+            for item in represented
+        ],
+    }
+    raw = _raw(population, evidence=evidence)
+    raw["waves"] = raw["waves"][:1]
+
+    recall = _score_claims_and_theses(raw, population)["atomic_claim_recall"]
+
+    assert recall["numerator"] == 11
+    assert recall["denominator"] == 12
+    assert recall["value"] == pytest.approx(11 / 12)
+    assert recall["status"] == "pass"
+
+
+def test_atomic_recall_full_run_denominator_remains_sealed_population() -> None:
+    population = build_p6_population()
+    evidence = {
+        "claims": [{
+            "id": "atlas-owner",
+            "natural_text": "Atlas release certificate has no clearly recorded owner.",
+            "proposition": {},
+            "evidence_signal_ids": ["p6-b01-s01"],
+            "scope_entities": [{"canonical_ref": "workstream:atlas-release"}],
+        }]
+    }
+
+    recall = _score_claims_and_theses(
+        _raw(population, evidence=evidence), population,
+    )["atomic_claim_recall"]
+
+    assert recall["denominator"] == 92
+
+
 def test_broad_causal_claim_with_all_five_refs_fails_atomic_precision() -> None:
     population = build_p6_population()
     evidence = {
@@ -200,6 +264,75 @@ def test_broad_causal_claim_with_all_five_refs_fails_atomic_precision() -> None:
     assert scores["atomic_claim_precision"]["value"] == 0
     assert scores["atomic_claim_recall"]["value"] == 0
     assert scores["mean_thesis_facet_completeness"]["value"] > 0
+
+
+def test_provisional_typed_scope_scores_without_claiming_canonical_resolution() -> None:
+    population = build_p6_population()
+    scopes = (
+        ("workstream", "workstream:atlas-release"),
+        ("workstream", "workstream:beacon-migration"),
+        ("commitment", "commitment:cobalt-renewal"),
+        ("workstream", "workstream:delta-handoff"),
+    )
+    evidence = {
+        "claims": [{
+            "id": f"scope-{index}",
+            "natural_text": "A scoped observation was extracted.",
+            "proposition": {"kind": "belief", "claim_role": "fact"},
+            "evidence_signal_ids": [],
+            "scope_entities": [{
+                "canonical_ref": canonical_ref,
+                "canonical_ref_status": "provisional",
+                "type": entity_type,
+            }],
+        } for index, (entity_type, canonical_ref) in enumerate(scopes)],
+        "extracted_scope_coordinates_complete": True,
+        "extracted_scope_coordinates_status": "complete",
+        "extracted_scope_coordinate_counts": {
+            "total": 4, "typed": 4, "resolved": 0,
+            "provisional": 4, "incomplete": 0,
+        },
+        "scope_coordinates_canonical": False,
+    }
+
+    scores = _score_claims_and_theses(
+        {"postfreeze_evidence": evidence}, population
+    )
+    report = score_p6_frozen_execution(
+        raw_execution=_raw(population, evidence=evidence),
+        sealed_population=population,
+    )
+
+    assert scores["scope_precision"]["value"] == 1.0
+    assert scores["scope_recall"]["value"] == 1.0
+    assert evidence["scope_coordinates_canonical"] is False
+    assert report["continuous_metrics"]["canonical_link_precision"]["status"] == "unmeasured"
+    assert report["continuous_metrics"]["canonical_link_recall"]["status"] == "unmeasured"
+
+
+def test_scope_metrics_fail_closed_without_complete_typed_extraction() -> None:
+    population = build_p6_population()
+    evidence = {
+        "claims": [{
+            "id": "untyped-scope", "natural_text": "Atlas changed.",
+            "proposition": {"kind": "belief", "claim_role": "fact"},
+            "evidence_signal_ids": [],
+            "scope_entities": [{
+                "canonical_ref": "workstream:atlas-release",
+                "canonical_ref_status": "provisional",
+            }],
+        }],
+        "extracted_scope_coordinates_complete": False,
+        "extracted_scope_coordinates_status": "partial",
+        "scope_coordinates_canonical": False,
+    }
+
+    scores = _score_claims_and_theses(
+        {"postfreeze_evidence": evidence}, population
+    )
+
+    assert scores["scope_precision"]["status"] == "unmeasured"
+    assert scores["scope_recall"]["status"] == "unmeasured"
 
 
 def test_calibration_under_twenty_is_insufficient_not_passed() -> None:

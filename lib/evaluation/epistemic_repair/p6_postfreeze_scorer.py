@@ -479,6 +479,43 @@ def _source_signal_entails_atomic(
     return len(_material_words(model_text) & _material_words(source_text)) >= 2
 
 
+def _executed_source_signal_ids(
+    raw: dict[str, Any], population: P6Population,
+) -> set[str] | None:
+    """Return the sealed source coordinates actually executed by this run.
+
+    Post-freeze extraction records database observation UUIDs, so translate
+    those through its immutable observation-to-signal map.  Older artifacts do
+    not carry that receipt; for them, successful wave numbers are an exact
+    fallback.  ``None`` deliberately preserves the historical full-population
+    denominator when neither proof is present.
+    """
+
+    evidence = raw.get("postfreeze_evidence") or {}
+    observed = {str(value) for value in evidence.get("observed_source_ids") or ()}
+    observation_map = evidence.get("observation_signal_map") or {}
+    if observed and isinstance(observation_map, dict):
+        translated = {
+            str(observation_map[value])
+            for value in observed
+            if value in observation_map and observation_map[value]
+        }
+        if translated:
+            return translated
+
+    completed_batches = {
+        int(wave.get("batch_number"))
+        for wave in raw.get("waves") or ()
+        if wave.get("status") == "success" and wave.get("batch_number") is not None
+    }
+    if completed_batches:
+        return {
+            signal.signal_id for signal in population.signals
+            if signal.batch_number in completed_batches
+        }
+    return None
+
+
 def _score_claims_and_theses(
     raw: dict[str, Any], population: P6Population,
 ) -> dict[str, dict[str, Any]]:
@@ -492,9 +529,11 @@ def _score_claims_and_theses(
         return {name: _metric(name, None, None) for name in names}
     gold = {item.signal_id: item for item in population.gold}
     signals = {item.signal_id: item for item in population.signals}
+    executed_source_ids = _executed_source_signal_ids(raw, population)
     expected_claims = {
         item.claim_id for item in population.gold
         if _directly_assertable_source(item)
+        and (executed_source_ids is None or item.signal_id in executed_source_ids)
     }
     oracle = build_p7_semantic_oracles(population)
     represented_claims: set[str] = set()
@@ -555,9 +594,7 @@ def _score_claims_and_theses(
             coherent_model_phases[storyline].append({
                 item.lifecycle_phase for item in evidence
             })
-        predicted_refs = _scope_refs(row.get("scope_entities"))
-        if pure and atomic_semantic:
-            predicted_scope_refs.update(predicted_refs)
+        predicted_scope_refs.update(_scope_refs(row.get("scope_entities")))
     precision, recall, f1 = _f1(
         precise_claims, len(rows), len(expected_claims)
     )
@@ -578,8 +615,10 @@ def _score_claims_and_theses(
     thesis_direct = sum(value == 1.0 for value in completeness.values())
     scope_tp = len(expected_scope_refs & predicted_scope_refs)
     scope_predicted = len(predicted_scope_refs)
-    scope_coordinates_canonical = (
-        (raw.get("postfreeze_evidence") or {}).get("scope_coordinates_canonical") is True
+    extracted_scope_coordinates_complete = (
+        (raw.get("postfreeze_evidence") or {}).get(
+            "extracted_scope_coordinates_complete"
+        ) is True
     )
     return {
         "atomic_claim_precision": _metric(
@@ -598,14 +637,14 @@ def _score_claims_and_theses(
         ),
         "scope_precision": _metric(
             "scope_precision",
-            scope_tp if scope_coordinates_canonical else None,
-            scope_predicted if scope_coordinates_canonical else None,
+            scope_tp if extracted_scope_coordinates_complete else None,
+            scope_predicted if extracted_scope_coordinates_complete else None,
             source_ids=source_ids,
         ),
         "scope_recall": _metric(
             "scope_recall",
-            scope_tp if scope_coordinates_canonical else None,
-            len(expected_scope_refs) if scope_coordinates_canonical else None,
+            scope_tp if extracted_scope_coordinates_complete else None,
+            len(expected_scope_refs) if extracted_scope_coordinates_complete else None,
             source_ids=source_ids,
         ),
         "direct_thesis_accuracy": _metric(

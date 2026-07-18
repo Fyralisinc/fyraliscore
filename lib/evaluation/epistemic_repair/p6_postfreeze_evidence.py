@@ -382,6 +382,21 @@ async def extract_p6_postfreeze_evidence(
         and str(entity.get("canonical_ref_status") or "").lower()
         == "provisional"
     ]
+    typed_scope_coordinates = [
+        entity for entity in scope_coordinates
+        if entity.get("canonical_ref")
+        and entity.get("type")
+        and str(entity.get("canonical_ref_status") or "").lower()
+        in (resolved_scope_statuses | {"provisional"})
+    ]
+    extracted_scope_complete = bool(scope_coordinates) and (
+        len(typed_scope_coordinates) == len(scope_coordinates)
+    )
+    extracted_scope_status = (
+        "complete" if extracted_scope_complete
+        else "partial" if typed_scope_coordinates
+        else "missing"
+    )
     evidence = {
         "schema_version": "epistemic-repair-p6-postfreeze-evidence-v1",
         "tenant_id": str(tenant_id),
@@ -419,6 +434,15 @@ async def extract_p6_postfreeze_evidence(
         "scope_coordinates_canonical": bool(scope_coordinates) and (
             len(resolved_scope_coordinates) == len(scope_coordinates)
         ),
+        "extracted_scope_coordinates_complete": extracted_scope_complete,
+        "extracted_scope_coordinates_status": extracted_scope_status,
+        "extracted_scope_coordinate_counts": {
+            "total": len(scope_coordinates),
+            "typed": len(typed_scope_coordinates),
+            "resolved": len(resolved_scope_coordinates),
+            "provisional": len(provisional_scope_coordinates),
+            "incomplete": len(scope_coordinates) - len(typed_scope_coordinates),
+        },
         "scope_coordinate_counts": {
             "total": len(scope_coordinates),
             "resolved": len(resolved_scope_coordinates),
