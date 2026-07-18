@@ -1794,3 +1794,50 @@ durable lifecycle provenance; unavailable coordinates must remain unavailable.
 **Decision or next test:** Finish the gold-blind receipt and coupled rollback
 test, commit the focused checkpoint, then run one fresh four-batch CF2 vertical.
 Score it before any deterministic replay or CF3 work.
+
+### 2026-07-18 — LOG-048 — Evidence-faithful scoring before another replay
+
+**Type:** bounded implementation, evaluator audit, and pre-run reflection
+
+**What changed:** The gold-blind runtime receipt now derives processing from
+the exact successful T1 batch parent and its 25 completed member triggers;
+derives accepted outputs as changes between digest-valid chained barrier
+receipts; maps selected Model IDs to exact prior barrier versions; reads exact
+canonical relation participants; and assigns a shared Think transaction
+envelope only when the applied diff, accepted composite, admitted relation and
+immediate barrier all agree. Cross-run determinism now hashes a semantic
+projection instead of tenant-bound UUIDs.
+
+**Evaluator correction:** The sealed gold required 80 named storyline
+groundings and evidence-bound atomics, while the source-authenticated fixture
+recognized only `release` and `handoff`. Exact `pilot` and `review` workstream
+suffixes are now supported. A full-batch unit proof resolves all 20 named
+signals and abstains on all five noise/distractor signals; gold was not
+weakened.
+
+**Evidence:** The focused adapter/source/queue/replay suite passes `34` tests.
+A dedicated PostgreSQL database has all `218` repository migrations applied,
+and `2/2` production-shaped PostgreSQL tests pass against that exact schema.
+The database checks exercise the receipt queries and coupled transaction path;
+they do not substitute for the next fresh four-batch CF2 execution. The first
+canary also exposed and removed a unit-only query for nonexistent canonical
+`supporting_model_ids` rather than papering over it.
+
+**Final integrity audit:** Barrier head IDs receive credit only when they
+resolve to canonical truth versions for the exact tenant. Observation evidence
+receives credit only when the exact tenant, observation ID and `occurred_at`
+revision resolve together and its digest and coordinates validate. Two focused
+regressions protect these fail-closed rules. Determinism intentionally remains
+red with only one execution digest; an independent second replay is required
+and is deferred by user instruction.
+
+**Reflection:** This remained on the CF2 critical path: it prevented a known
+false-green report and an unattainable score before spending another full-run
+cycle. No connector, live provider, task autonomy, broad ontology, deployment
+or later phase was opened. Canonical revise/natural-text coherence was found
+but recorded as EDGE-042 instead of expanding the current change.
+
+**Decision or next test:** Commit this evaluator checkpoint, freeze the SHA,
+then execute exactly one fresh zero-seed four-batch provider-free vertical.
+Build and score its receipt before deciding on any runtime repair or second
+replay.

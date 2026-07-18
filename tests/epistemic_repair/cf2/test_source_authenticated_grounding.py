@@ -4,6 +4,9 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
+from lib.evaluation.epistemic_repair.core_fast_path_population import (
+    build_core_fast_path_population,
+)
 from services.domain.entity_grounding.episode import prepare_context_selection
 from services.domain.entity_grounding.learned_discovery import DISCOVERY_VERSION
 from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
@@ -142,3 +145,52 @@ def test_authenticated_named_thread_subject_resolves_without_fuzzy_pronouns() ->
     start = coordinate.span_start
     end = coordinate.span_end
     assert text[start:end] == "Harbor release"
+
+
+def test_complete_batch_grounds_all_named_storylines_and_abstains_elsewhere() -> None:
+    batch = build_core_fast_path_population().batches[0]
+    expected_refs = {
+        "harbor": "workstream:harbor-release",
+        "northstar": "workstream:northstar-pilot",
+        "access": "workstream:access-review",
+        "delta": "workstream:delta-handoff",
+    }
+    resolved: dict[str, str] = {}
+    abstained: list[str] = []
+    for signal in batch.signals:
+        episode = build_source_authenticated_grounding_episode(
+            SourceAuthenticatedSignal(
+                tenant_id=uuid4(),
+                observation_id=uuid4(),
+                occurred_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+                source_channel=signal.source_channel,
+                source_container_id=signal.source_space,
+                content_text=signal.text,
+            )
+        )
+        storyline = next(
+            (
+                name for name in expected_refs
+                if signal.signal_id.startswith(f"cf2-{name}-")
+            ),
+            None,
+        )
+        if storyline is None:
+            assert episode is None
+            abstained.append(signal.signal_id)
+            continue
+        assert episode is not None
+        assert episode.current_fate == "resolved_for_consumer"
+        assert episode.admitted_canonical_ref == {
+            "type": "workstream",
+            "id": expected_refs[storyline],
+            "version": 1,
+        }
+        resolved[signal.signal_id] = episode.admitted_canonical_ref["id"]
+
+    assert len(resolved) == 20
+    assert len(abstained) == 5
+    assert all(
+        signal_id.startswith(("cf2-noise-", "cf2-distractor-"))
+        for signal_id in abstained
+    )

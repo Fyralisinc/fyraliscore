@@ -54,9 +54,7 @@ def perfect_receipt() -> dict:
                 "proposition": gold.expected_thesis,
                 "lifecycle": "active",
                 "scope_refs": [gold.expected_scope_ref],
-                "evidence_signal_ids": [
-                    "cf2-harbor-b03-o01", "cf2-harbor-b03-o02",
-                ],
+                "evidence_signal_ids": [gold.synthesis_signal_id],
                 "supporting_model_version_ids": ["atomic:1", "atomic:2"],
                 "commit_id": "commit:synthesis-relation",
             })

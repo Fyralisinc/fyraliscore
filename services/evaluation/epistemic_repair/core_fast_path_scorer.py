@@ -164,7 +164,9 @@ def score_core_fast_path(
         synthesis.get("proposition") == gold.expected_thesis,
         synthesis.get("lifecycle") == "active",
         gold.expected_scope_ref in _strings(synthesis.get("scope_refs")),
-        len(_strings(synthesis.get("evidence_signal_ids"))) >= 2,
+        _strings(synthesis.get("evidence_signal_ids")) == (
+            gold.synthesis_signal_id,
+        ),
         len(_strings(synthesis.get("supporting_model_version_ids"))) >= 2,
         bool(synthesis.get("model_id")) and bool(synthesis.get("version_id")),
     )

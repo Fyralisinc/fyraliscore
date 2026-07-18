@@ -905,24 +905,70 @@ transport are excluded from this goal.
 
 ### EDGE-041 — Evaluator adapters can manufacture proof from correlation
 
-- **Status:** `P0 open until runtime receipt audit is green`
+- **Status:** `bounded P0 repair implemented; fresh-runtime validation pending`
 - **Trigger:** A report adapter labels model IDs as version IDs, treats Think
   run correlation as commit identity, assumes successful batches processed
   every signal, or declares stored barrier expectations matched without
   comparing actual heads.
-- **Current behavior:** The first adapter draft was rejected before commit. Its
-  focused tests proved only schema consumption, not evidence integrity.
+- **Current behavior:** The rejected draft has been replaced. The adapter now
+  requires exact completed queue membership for every observation, a
+  digest-valid stored barrier matching the saved artifact and prior chain,
+  per-batch truth-version deltas, exact relation participants and admission,
+  and a successful applied-diff envelope before assigning shared transaction
+  identity. Its replay digest removes tenant/run UUIDs while preserving
+  semantic multiplicity, support/predecessor topology, relation endpoints and
+  commit equivalence. Focused negative tests fail closed on queue, barrier and
+  envelope mismatches. Barrier heads must resolve to canonical truth versions
+  owned by the exact tenant. Observation evidence must resolve to the exact
+  tenant, observation ID and `occurred_at` revision, with digest and coordinate
+  validation. The current checkpoint passes `34` focused tests. A
+  dedicated PostgreSQL database has all `218` repository migrations applied,
+  and both production-shaped PostgreSQL tests pass against it. This is focused
+  evaluator and transaction-path evidence, not a completed CF2 replay or
+  production-hardening claim.
 - **Desired behavior:** Every reported coordinate must come from an exact
   durable row or signed artifact field. Missing transaction identity,
   per-signal processing fate, current-head match or correction provenance must
   lower coverage/score instead of being inferred.
 - **Risk:** The evaluator can award synthesis, relation atomicity, barrier or
   correction credit while the product behavior is actually broken.
-- **Safe boundary:** Do not use or publish a CF2 score from the draft adapter.
+- **Safe boundary:** Do not use the rejected draft or claim determinism from one
+  replay digest. The new adapter remains provisional until it scores a fresh
+  retained CF2 tenant. Determinism intentionally remains red after one run and
+  requires an independent second replay; that replay is deferred by user
+  instruction.
 - **Return condition:** Independent field-by-field review plus a negative test
   reproducing run 5 and showing that the stale composite receives zero current
   synthesis credit.
-- **Evidence:** LOG-047 and the P0 receipt review performed after run 5.
+- **Evidence:** LOG-047, LOG-048, the P0 receipt review performed after run 5,
+  `34` focused tests, and `2/2` production-shaped PostgreSQL tests on the
+  dedicated fully migrated database.
+
+### EDGE-042 — Canonical revision keeps stale natural text and confirm labeling
+
+- **Status:** `open; deferred beyond the next CF2 vertical`
+- **Trigger:** A compiled `revise` lifecycle operation supplies a changed
+  proposition, but `advance_validated_think_model` retains the prior canonical
+  `natural` text and records the active-head transition through the existing
+  `confirm` enum because canonical truth has no distinct `revise` transition.
+- **Current behavior:** Version lineage, changed proposition, exact correction
+  evidence and active successor head are durable. The compatibility lifecycle
+  summary still says `revise`, but canonical natural text can describe the old
+  thesis and the canonical lifecycle event cannot distinguish revision from
+  confirmation without inspecting proposition/reason evidence.
+- **Desired behavior:** One canonical successor version should keep natural
+  text and proposition coherent and expose a durable revision transition or
+  equivalent typed revision receipt without inventing a second truth source.
+- **Risk:** Retrieval or reporting that privileges natural text can repeat a
+  corrected belief, and lifecycle analytics can undercount genuine revisions.
+- **Safe boundary:** The immediate CF2 evaluator must score the immutable
+  proposition, predecessor, correction evidence and history rather than stale
+  compatibility text. Do not widen the truth-transition enum or migration on
+  the critical path before the current four-batch semantic loop is proven.
+- **Return condition:** CF4 lifecycle hardening adds one narrow canonical
+  revision contract, migration and retrieval-coherence proof.
+- **Evidence:** `_compile_memory_lifecycle_update`,
+  `_apply_claim_update`, and `advance_validated_think_model` source audit.
 
 ## Entry Template
 

@@ -33,6 +33,8 @@ _SOURCE_THREAD_SCOPE_RE = re.compile(
 )
 _SOURCE_TYPES = {
     "release": "workstream",
+    "pilot": "workstream",
+    "review": "workstream",
     "migration": "workstream",
     "handoff": "workstream",
     "renewal": "commitment",

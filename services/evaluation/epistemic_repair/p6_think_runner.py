@@ -191,6 +191,12 @@ async def _snapshot(pool: asyncpg.Pool, tenant_id: UUID) -> dict[str, Any]:
             FROM accepted_current_models WHERE tenant_id=$1
             ORDER BY truth_advanced_at,id
         """, tenant_id)
+        relations = await conn.fetch("""
+            SELECT id, truth_relation_version_id, truth_relation_kind,
+                   truth_lifecycle
+            FROM accepted_current_relations WHERE tenant_id=$1
+            ORDER BY truth_relation_version_id,id
+        """, tenant_id)
         decisions = await conn.fetch("""
             SELECT batch_id, context_item_kind, context_item_id, retrieved,
                    selected, included, referenced, historical_reopen_reason,
@@ -213,8 +219,8 @@ async def _snapshot(pool: asyncpg.Pool, tenant_id: UUID) -> dict[str, Any]:
         }
         return {
             "accepted_models": [dict(row) for row in models],
-            "accepted_relation_count": int(await conn.fetchval(
-                "SELECT count(*) FROM accepted_current_relations WHERE tenant_id=$1", tenant_id)),
+            "accepted_relations": [dict(row) for row in relations],
+            "accepted_relation_count": len(relations),
             "context_decisions": [dict(row) for row in decisions],
             "pending_work": {
                 # Incomplete Think triggers can still change accepted truth and

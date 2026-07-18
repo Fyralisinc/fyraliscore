@@ -1920,3 +1920,32 @@ matched feedback quality and objective entity v6.
 - Current CF2 status: operational batching/retrieval/apply/barriers are proven;
   current composite visibility, batch-4 revision, independent scoring and
   deterministic replay remain open. CF3 is not authorized yet.
+
+### 2026-07-18 — CF2 evaluator-integrity checkpoint ready to freeze
+
+- The rejected correlation-based adapter was replaced by exact durable proof:
+  completed 25-member T1 batches, artifact-bound barrier chains, version
+  deltas, prior-head retrieval mapping, canonical relation participants and a
+  validated shared apply envelope.
+- Tenant-bound runtime UUIDs no longer make deterministic replay impossible;
+  a gold-blind semantic projection preserves multiplicity, lifecycle/support
+  topology, retrieval behavior, relation endpoints and shared-commit shape.
+- The source-authenticated fixture now matches its unchanged gold contract:
+  all 20 named storyline signals per batch resolve exactly, while the five
+  noise/distractor signals abstain.
+- Focused validation passes `34` tests. Barrier heads must resolve to canonical
+  truth versions for the exact tenant. Observation evidence must resolve to the
+  exact tenant, observation ID and `occurred_at` revision with valid digest and
+  coordinates. A dedicated PostgreSQL database has all
+  `218` repository migrations applied, and both production-shaped PostgreSQL
+  tests pass against it, including the coupled rollback path. This proves the
+  focused evaluator/transaction checkpoint, not the still-pending fresh CF2
+  replay or deferred production-hardening surface.
+- Determinism intentionally remains red after one run. It requires an
+  independent second replay, which is deferred by user instruction rather than
+  inferred from the first execution.
+- Reflection verdict: still on the shortest end-to-end path. EDGE-042 records
+  canonical revision text/transition coherence for later lifecycle hardening;
+  it will not delay the next core vertical.
+- Next action: commit and freeze this checkpoint, then run one fresh four-batch
+  zero-seed provider-free CF2 execution and score it before editing.
