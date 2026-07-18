@@ -872,6 +872,18 @@ def _score_relations(
 ) -> dict[str, dict[str, Any]]:
     rows = _record_index(raw, "relations")
     if not rows:
+        executed = _executed_source_signal_ids(raw, population)
+        synthesis_signals = dict(population.synthesis_signal_by_storyline)
+        eligible = {
+            storyline
+            for storyline, signal_id in synthesis_signals.items()
+            if executed is None or signal_id in executed
+        }
+        if eligible:
+            return {
+                name: _metric(name, 0, len(eligible), source_ids=sorted(eligible))
+                for name in ("relation_joint_precision", "relation_joint_recall")
+            }
         return {
             name: _metric(name, None, None)
             for name in ("relation_joint_precision", "relation_joint_recall")

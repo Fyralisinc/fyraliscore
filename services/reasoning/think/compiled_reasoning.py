@@ -3634,6 +3634,7 @@ def _batch_claim_proposition(
         members = _situation_member_ids(candidate, decision)
         scope = _claim_about(candidate)
         scope_coordinate = _candidate_scope_coordinate(candidate)
+        supported_relation = _supported_synthesis_relation(candidate, decision)
         return {
             "kind": "belief",
             "claim_role": "situation",
@@ -3645,6 +3646,7 @@ def _batch_claim_proposition(
             "scope_label": scope,
             "scope_ref": scope_coordinate[1] if scope_coordinate else None,
             "member_model_ids": [str(member) for member in members],
+            "supported_relation": supported_relation,
             "relationship_summary": _trunc(decision.reason, 360),
             "status": "forming",
             "pressure_type": _pressure_type(decision.pressure_type, text),
@@ -3659,6 +3661,7 @@ def _batch_claim_proposition(
             "evidence_event_ids": evidence_event_ids,
             "open_falsifier": _situation_falsifier(text),
             "compiled_memory_candidate_id": str(candidate.get("candidate_id") or ""),
+            "lifecycle_phase": candidate.get("lifecycle_phase"),
         }
     base = {
         "kind": "belief",
@@ -3668,6 +3671,7 @@ def _batch_claim_proposition(
         "modality": "inferred",
         "polarity": "negative" if role == "concern" else "neutral",
         "compiled_memory_candidate_id": str(candidate.get("candidate_id") or ""),
+        "lifecycle_phase": candidate.get("lifecycle_phase"),
     }
     if (
         str(candidate.get("entailed_claim_text") or "").strip()
@@ -3716,6 +3720,36 @@ def _batch_claim_proposition(
     else:
         base.update({"subject": _claim_about(candidate), "assertion": text})
     return base
+
+
+def _supported_synthesis_relation(
+    candidate: dict[str, Any], decision: BatchMemoryCandidateDecision,
+) -> dict[str, Any] | None:
+    edge_kind = _default_batch_edge_kind(decision, candidate)
+    kind = {
+        "blocks": "dependency", "depends_on": "dependency",
+        "dependency_constraint": "dependency",
+        "causes": "causal", "influences": "causal", "causal_influence": "causal",
+        "predicts": "predictive", "predictive_indicator": "predictive",
+    }.get(edge_kind)
+    source_id = decision.source_model_id
+    target_id = decision.target_model_id
+    if kind is None or source_id is None or target_id is None:
+        return None
+    source_version_id, target_version_id = _candidate_relation_endpoint_versions(
+        candidate, source_id, target_id,
+    )
+    return {
+        "kind": kind,
+        "mechanism": _trunc(
+            str(candidate.get("reason") or decision.reason or candidate.get("proposed_text") or ""),
+            280,
+        ),
+        "source_model_id": str(source_id),
+        "target_model_id": str(target_id),
+        "source_model_version_id": str(source_version_id) if source_version_id else None,
+        "target_model_version_id": str(target_version_id) if target_version_id else None,
+    }
 
 
 def _candidate_event_ids(candidate: dict[str, Any]) -> list[UUID]:
@@ -3917,7 +3951,26 @@ def _relation_claim_op_from_edge_op(
     candidate: dict[str, Any],
     origin: str,
 ) -> RelationClaimOp:
-    accepted = edge_op.review_status == "accepted"
+    source_version_id, target_version_id = _candidate_relation_endpoint_versions(
+        candidate, edge_op.source_model_id, edge_op.target_model_id,
+    )
+    semantic_scope = _relation_semantic_scope(candidate)
+    evidence_events = _dedupe_uuids([
+        *edge_op.evidence_event_ids,
+        *_uuid_values(candidate.get("member_observation_ids")),
+        *_uuid_values(candidate.get("source_observation_ids")),
+    ])
+    evidence_models = _dedupe_uuids(edge_op.evidence_model_ids)
+    accepted = bool(
+        edge_op.review_status == "accepted"
+        and _is_governed_batch_relation(edge_op.edge_kind)
+        and source_version_id is not None
+        and target_version_id is not None
+        and semantic_scope
+        and evidence_events
+        and edge_op.source_model_id in evidence_models
+        and edge_op.target_model_id in evidence_models
+    )
     subject_ref = {
         "kind": "model",
         "model_id": str(edge_op.source_model_id),
@@ -3944,6 +3997,8 @@ def _relation_claim_op_from_edge_op(
         op="upsert",
         source_model_id=edge_op.source_model_id,
         target_model_id=edge_op.target_model_id,
+        source_model_version_id=source_version_id,
+        target_model_version_id=target_version_id,
         subject_ref={k: v for k, v in subject_ref.items() if v is not None},
         object_ref={k: v for k, v in object_ref.items() if v is not None},
         predicate=edge_op.edge_kind,
@@ -3957,12 +4012,51 @@ def _relation_claim_op_from_edge_op(
         if edge_op.weight is not None
         else _relation_claim_weight(edge_op.edge_kind, edge_op.confidence),
         binding_confidence=0.9,
-        evidence_event_ids=edge_op.evidence_event_ids,
-        evidence_model_ids=edge_op.evidence_model_ids,
+        evidence_event_ids=evidence_events,
+        evidence_model_ids=evidence_models,
         evidence_text=_trunc(proposed_text, 1000) or edge_op.explanation,
         explanation=edge_op.explanation,
+        semantic_scope=semantic_scope,
         metadata={k: v for k, v in metadata.items() if v not in (None, [], {})},
     )
+
+
+_GOVERNED_BATCH_RELATIONS = {
+    "blocks", "depends_on", "enables", "supports", "causes", "influences",
+    "predicts", "causal_influence", "dependency_constraint", "enablement",
+    "predictive_indicator",
+}
+
+
+def _is_governed_batch_relation(edge_kind: str) -> bool:
+    return edge_kind in _GOVERNED_BATCH_RELATIONS
+
+
+def _relation_semantic_scope(candidate: dict[str, Any]) -> list[str]:
+    return list(dict.fromkeys(
+        str(value).strip()
+        for value in candidate.get("semantic_scope") or ()
+        if str(value).strip()
+    ))
+
+
+def _candidate_relation_endpoint_versions(
+    candidate: dict[str, Any],
+    source_model_id: UUID,
+    target_model_id: UUID,
+) -> tuple[UUID | None, UUID | None]:
+    versions = candidate.get("endpoint_model_versions") or {}
+    if not isinstance(versions, dict):
+        versions = {}
+    source = _first_uuid([
+        candidate.get("source_model_version_id"),
+        versions.get(str(source_model_id)),
+    ])
+    target = _first_uuid([
+        candidate.get("target_model_version_id"),
+        versions.get(str(target_model_id)),
+    ])
+    return source, target
 
 
 def _relation_claim_op_from_relation_hinted_batch_decision(

@@ -16,6 +16,7 @@ from lib.evaluation.epistemic_repair.p6_postfreeze_scorer import (
     _score_context,
     _score_lifecycle,
     _score_mentions,
+    _score_relations,
     _score_uncertainty_fates,
     score_p6_frozen_execution,
 )
@@ -98,6 +99,17 @@ def test_current_raw_shape_fails_closed_on_unpreserved_member_evidence() -> None
     assert not report["phase_exit_ready"]
     assert len(report["input_digests"]["raw_execution"]) == 64
     assert len(report["content_digest"]) == 64
+
+
+def test_executed_relation_opportunities_with_no_relations_score_zero() -> None:
+    population = build_p6_population()
+    scores = _score_relations(_raw(population), population)
+
+    for score in scores.values():
+        assert score["value"] == 0.0
+        assert score["numerator"] == 0
+        assert score["denominator"] == 4
+        assert set(score["source_ids"]) == set(P6_STORYLINES)
 
 
 def test_missing_batch_member_count_cannot_infer_exact_300() -> None:

@@ -236,6 +236,8 @@ class RelationClaimOp(BaseModel):
     id: UUID | None = None
     source_model_id: UUID | None = None
     target_model_id: UUID | None = None
+    source_model_version_id: UUID | None = None
+    target_model_version_id: UUID | None = None
     subject_ref: dict[str, Any] = Field(default_factory=dict)
     object_ref: dict[str, Any] = Field(default_factory=dict)
     predicate: str
@@ -273,6 +275,7 @@ class RelationClaimOp(BaseModel):
     evidence_model_ids: list[UUID] = Field(default_factory=list)
     evidence_text: str | None = None
     explanation: str | None = None
+    semantic_scope: list[str] = Field(default_factory=list)
     temporal_bounds: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

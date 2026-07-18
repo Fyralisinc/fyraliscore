@@ -5151,6 +5151,26 @@ async def _admit_canonical_relation_claim(
             "accepted relation endpoints must both bind accepted canonical Models",
             relation_claim_id=str(claim["id"]),
         )
+    expected_versions = {
+        source_id: op.source_model_version_id,
+        target_id: op.target_model_version_id,
+    }
+    if any(expected_versions[model_id] != versions[model_id] for model_id in versions):
+        raise InvariantViolation(
+            "RELATION_ENDPOINT_VERSION_MISMATCH",
+            "accepted relation must name both exact current Model versions",
+            relation_claim_id=str(claim["id"]),
+        )
+    if (
+        not op.semantic_scope
+        or not op.evidence_event_ids
+        or not {source_id, target_id}.issubset(op.evidence_model_ids)
+    ):
+        raise InvariantViolation(
+            "RELATION_ADMISSION_CONTEXT_INCOMPLETE",
+            "accepted relation requires scope plus observation and Model evidence",
+            relation_claim_id=str(claim["id"]),
+        )
 
     # Normalize the high-cardinality edge vocabulary into the deliberately
     # small admitted relation vocabulary. Unknown semantics remain legacy/pre-truth.
@@ -5191,7 +5211,8 @@ async def _admit_canonical_relation_claim(
         tenant_id,
         [versions[left_id], versions[right_id]],
     )
-    if not evidence_rows:
+    evidenced_versions = {row["model_version_id"] for row in evidence_rows}
+    if evidenced_versions != {versions[left_id], versions[right_id]}:
         raise InvariantViolation(
             "RELATION_EVIDENCE_MISSING",
             "accepted canonical relation requires version-bound evidence",

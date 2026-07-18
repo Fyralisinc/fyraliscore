@@ -45,6 +45,8 @@ async def test_accepted_bound_claim_atomically_and_idempotently_advances_relatio
                         op="upsert",
                         source_model_id=blocker.model_id,
                         target_model_id=blocked.model_id,
+                        source_model_version_id=blocker.version_id,
+                        target_model_version_id=blocked.version_id,
                         subject_ref={"kind": "model", "model_id": str(blocker.model_id)},
                         object_ref={"kind": "model", "model_id": str(blocked.model_id)},
                         predicate="blocks",
@@ -55,6 +57,8 @@ async def test_accepted_bound_claim_atomically_and_idempotently_advances_relatio
                         confidence=0.86,
                         binding_confidence=0.92,
                         evidence_model_ids=[blocker.model_id, blocked.model_id],
+                        evidence_event_ids=[uuid7(), uuid7()],
+                        semantic_scope=["workstream:test-relation"],
                         explanation="The first accepted model blocks the second.",
                     )
                 ],
