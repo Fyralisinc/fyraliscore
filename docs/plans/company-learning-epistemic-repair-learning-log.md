@@ -894,6 +894,57 @@ activation remain activity sidecars. The failed batch-two result proves
 model-first retrieval but is not terminal semantic evidence and cannot be
 scored as a successful batch.
 
+### 2026-07-18 — LOG-032 — P8 latency red mixes cold statements with real concurrent tail spikes
+
+**Type:** observed + hypothesized
+
+**Work package / commit:** P8 saved scale artifact
+`/tmp/p8-isolated-27-matrix-head-v3.json`; no runtime change made.
+
+**What happened:** The declared concurrency gate compared the per-cell p95 of
+`CompanyLearningBarrierService.complete` at tenant concurrency 20 versus 1.
+Its maximum was 3.829790 for batch size 10, horizon 12: 16.1965 ms versus
+4.2291 ms. In both arms, batch one was the slowest/cold barrier. Because a
+12-sample t1 cell puts one sample inside the p95 denominator, cold latency
+becomes the t1 p95; longer horizons dilute that same cold sample below p95.
+
+**Evidence:** The 10×12×1 first barrier was 4.2291 ms and its steady barriers
+were at most 0.7500 ms. Across 10×12×20 tenants, batch-one median/max were
+16.9344/21.9045 ms; excluding batch one reduced p95 to 1.8469 ms. However,
+exclusion is not a valid fix: 25×12×20 had later batch-4 through batch-9 tail
+spikes of 10.6308–14.4785 ms. Excluding one, two, or three initial batches made
+the maximum concurrency ratio 12.6094, 12.6275, and 12.7081 respectively.
+Every recorded barrier used exactly one counted SQL call. Retrieval and write
+timings also rose under concurrency, and pool acquisition was outside the
+barrier timer.
+
+**Interpretation:** The exact reported 3.83 value is denominator-sensitive and
+substantially cold-start-shaped, but the red state is not merely cold-start
+noise. Later t20 outliers show shared PostgreSQL execution, index/page, or host
+scheduling contention. The saved one-pass matrix cannot distinguish these.
+Changing p95 to median, dropping batch one, or relaxing the 2× threshold would
+hide observed tail behavior and is not justified.
+
+**Decision or next test:** Keep the gate red and preserve both cold and steady
+latency. In the next exclusively locked rerun, execute at least five warm
+paired repetitions per selected t1/t20 comparison, alternate arm order, and
+report separately: connection/pool wait; tenant bootstrap/admission; first
+barrier; steady barrier p50/p95/p99 after an explicit unscored warmup; write
+and retrieval latency; SQL-call count; cell wall time; and server-side
+`pg_stat_statements` execution time if available. First diagnose the 25×12
+pair, then one long-horizon control. A structural optimization is authorized
+only if the repeated server-side measurements localize a stable operation;
+otherwise classify the threshold as an environment-capacity SLO rather than
+an algorithmic-complexity result.
+
+**Coordinator impact:** The safe P8 coordinator must retain exclusive DB
+ownership for this diagnostic and must not run it beside P6/P7 or provider
+work. The 27-cell exit remains fail-closed.
+
+**Edge cases added:** short-horizon percentile denominator; cold prepared
+statement/table-page path; later concurrent barrier tail spikes; arm-order and
+host-load confounding.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
