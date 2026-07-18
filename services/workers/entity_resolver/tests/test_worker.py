@@ -2034,9 +2034,31 @@ async def test_persisted_batch_detection_heads_feed_grounding_without_redetectio
             """,
             tenant_id,
         )
+        pending_work = await conn.fetch(
+            """
+            SELECT source_observation_id, phrase, status, attempt_count,
+                   current_trace_id, useful_safe_fate
+            FROM entity_grounding_work_items
+            WHERE tenant_id=$1
+            ORDER BY source_observation_id, phrase
+            """,
+            tenant_id,
+        )
     assert coverage.eligible_opportunities == 2
     assert coverage.committed_fates == 2
     assert rejected_coverage.committed_fates == 1
+    assert len(pending_work) == 2
+    assert {row["source_observation_id"] for row in pending_work} == {known, unknown}
+    assert all(row["status"] == "pending" for row in pending_work)
+    assert all(row["attempt_count"] == 0 for row in pending_work)
+    assert all(row["current_trace_id"] is None for row in pending_work)
+    assert all(row["useful_safe_fate"]["terminal"] is False for row in pending_work)
+    assert all(
+        row["useful_safe_fate"]["fate_kind"] == "pending_grounding"
+        for row in pending_work
+    )
+    assert all(row["useful_safe_fate"]["mention_detection_id"] for row in pending_work)
+    assert all(row["useful_safe_fate"]["mention_detection_digest"] for row in pending_work)
 
     # Poll order is newest first: unknown safely abstains, known resolves.
     provider = ScriptedProvider(

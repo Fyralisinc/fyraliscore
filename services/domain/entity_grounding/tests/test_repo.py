@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -15,7 +16,10 @@ from services.domain.entity_grounding.episode import (
     prepare_context_selection,
 )
 from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
-from services.domain.entity_grounding.repo import EntityGroundingRepo
+from services.domain.entity_grounding.repo import (
+    EntityGroundingRepo,
+    enqueue_detected_mention_grounding_work,
+)
 
 
 class _Transaction:
@@ -50,6 +54,98 @@ class _Connection:
     async def execute(self, sql: str, *args):
         self.statements.append((sql, args))
         return "INSERT 0 1"
+
+
+@pytest.mark.asyncio
+async def test_detected_mention_without_safe_coordinate_enqueues_pending_work() -> None:
+    now = datetime(2026, 7, 18, 10, 0, tzinfo=timezone.utc)
+    tenant_id, observation_id = uuid4(), uuid4()
+    context_command, context_outcome = prepare_context_selection(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Facilities",
+        occurred_at=now,
+        source_channel="slack:message",
+        source_space="C-general",
+        topology_incomplete=False,
+        boundary_hypotheses=(),
+        context_observations=(),
+        selection_dependency_refs=(),
+        now=now,
+    )
+    command = prepare_entity_mention_detection(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Facilities",
+        content_text="Facilities changed the entrance.",
+        source_channel="slack:message",
+        context_command=context_command,
+        context_outcome=context_outcome,
+        now=now,
+    )
+    conn = _Connection()
+
+    assert await enqueue_detected_mention_grounding_work(
+        conn,  # type: ignore[arg-type]
+        command=command,
+    ) is True
+
+    assert len(conn.statements) == 1
+    sql, args = conn.statements[0]
+    assert "'pending'" in sql
+    assert "ON CONFLICT" in sql and "DO NOTHING" in sql
+    assert args[1] == tenant_id
+    assert args[2] == observation_id
+    assert args[3] == "Facilities"
+    fate = json.loads(args[4])
+    assert fate == {
+        "fate_kind": "pending_grounding",
+        "terminal": False,
+        "mention_detection_id": str(command.detection.detection_id),
+        "mention_detection_version": command.detection.detection_version,
+        "mention_detection_digest": command.detection.detection_digest,
+        "mention_id": command.detection.mention.mention_id,
+        "contract_version": "grounding-work-fate-v2",
+    }
+
+
+@pytest.mark.asyncio
+async def test_detected_mention_with_provisional_safe_coordinate_is_not_enqueued() -> None:
+    now = datetime(2026, 7, 18, 10, 0, tzinfo=timezone.utc)
+    tenant_id, observation_id = uuid4(), uuid4()
+    context_command, context_outcome = prepare_context_selection(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Atlas release",
+        occurred_at=now,
+        source_channel="slack:message",
+        source_space="C-general",
+        topology_incomplete=False,
+        boundary_hypotheses=(),
+        context_observations=(),
+        selection_dependency_refs=(),
+        now=now,
+    )
+    command = prepare_entity_mention_detection(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Atlas release",
+        content_text="Atlas release is blocked.",
+        source_channel="slack:message",
+        context_command=context_command,
+        context_outcome=context_outcome,
+        now=now,
+        discovered_entity_type="workstream",
+        provisional_canonical_ref="workstream:atlas-release",
+        normalization_version=1,
+    )
+    conn = _Connection()
+
+    assert await enqueue_detected_mention_grounding_work(
+        conn,  # type: ignore[arg-type]
+        command=command,
+    ) is False
+    assert conn.statements == []
 
 
 def _build_episode(

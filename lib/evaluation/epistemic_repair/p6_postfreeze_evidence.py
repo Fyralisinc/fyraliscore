@@ -125,6 +125,70 @@ def _signal_fate_rows(
     return fates, list(dispositions.values())
 
 
+def _detected_mention_evidence(row: dict[str, Any], *, signal_id: str | None) -> dict[str, Any]:
+    """Keep detection fate distinct from optional downstream grounding fate."""
+    mention = row.get("mention") or {}
+    if isinstance(mention, str):
+        mention = json.loads(mention)
+    referent = row.get("selected_referent") or {}
+    if isinstance(referent, str):
+        referent = json.loads(referent)
+    anchor = mention.get("primary_anchor") or {}
+    coordinate = anchor.get("coordinate") or {}
+    trace_fate = row.get("grounding_fate")
+    grounding_fate = trace_fate or mention.get("grounding_fate")
+    grounding_stage = (
+        "trace_recorded" if trace_fate
+        else "provisional_detection" if grounding_fate
+        else "not_started"
+    )
+    resolved = grounding_fate in {"resolved", "resolved_for_consumer"}
+    resolved_ref = (
+        referent.get("canonical_ref")
+        or referent.get("id")
+        or referent.get("canonical_referent_id")
+    ) if resolved else None
+    return {
+        "id": row["id"],
+        "signal_id": signal_id,
+        "surface": mention.get("surface") or row.get("candidate_surface"),
+        "span_start": coordinate.get("span_start"),
+        "span_end": coordinate.get("span_end"),
+        "entity_type": mention.get("provisional_entity_type"),
+        "canonical_ref": resolved_ref or mention.get("provisional_canonical_ref"),
+        "canonical_ref_status": (
+            "resolved" if resolved_ref else mention.get("canonical_ref_status")
+        ),
+        "normalization_version": mention.get("normalization_version"),
+        "detection_fate": row.get("fate"),
+        "grounding_fate": grounding_fate,
+        "grounding_stage": grounding_stage,
+    }
+
+
+def _mention_grounding_continuity(
+    mentions: list[dict[str, Any]],
+) -> tuple[bool, dict[str, Any]]:
+    incomplete = [
+        mention for mention in mentions
+        if mention.get("detection_fate") == "detected"
+        and mention.get("grounding_stage") == "not_started"
+    ]
+    return not incomplete, {
+        "detected": len(mentions),
+        "complete": len(mentions) - len(incomplete),
+        "incomplete": len(incomplete),
+        "incomplete_mentions": [
+            {
+                "id": mention.get("id"),
+                "signal_id": mention.get("signal_id"),
+                "surface": mention.get("surface"),
+            }
+            for mention in incomplete
+        ],
+    }
+
+
 async def extract_p6_postfreeze_evidence(
     conn: Any, *, tenant_id: UUID, signal_ids: tuple[str, ...],
     boundary_decisions: tuple[dict[str, Any], ...] = (),
@@ -167,36 +231,13 @@ async def extract_p6_postfreeze_evidence(
     ))
     mentions = []
     for row in mention_rows:
-        mention = row.get("mention") or {}
-        if isinstance(mention, str):
-            mention = json.loads(mention)
-        referent = row.get("selected_referent") or {}
-        if isinstance(referent, str):
-            referent = json.loads(referent)
         if row.get("fate") == "detected":
-            anchor = mention.get("primary_anchor") or {}
-            coordinate = anchor.get("coordinate") or {}
-            grounding_fate = row.get("grounding_fate") or mention.get("grounding_fate")
-            resolved = grounding_fate in {"resolved", "resolved_for_consumer"}
-            resolved_ref = (
-                referent.get("canonical_ref")
-                or referent.get("id")
-                or referent.get("canonical_referent_id")
-            ) if resolved else None
-            mentions.append({
-                "id": row["id"],
-                "signal_id": observation_to_signal.get(str(row["source_observation_id"])),
-                "surface": mention.get("surface") or row.get("candidate_surface"),
-                "span_start": coordinate.get("span_start"),
-                "span_end": coordinate.get("span_end"),
-                "entity_type": mention.get("provisional_entity_type"),
-                "canonical_ref": resolved_ref
-                or mention.get("provisional_canonical_ref"),
-                "canonical_ref_status": "resolved" if resolved_ref
-                else mention.get("canonical_ref_status"),
-                "normalization_version": mention.get("normalization_version"),
-                "grounding_fate": grounding_fate,
-            })
+            mentions.append(_detected_mention_evidence(
+                row,
+                signal_id=observation_to_signal.get(
+                    str(row["source_observation_id"])
+                ),
+            ))
 
     claim_rows = _rows(await conn.fetch(
         """SELECT model.id,model.truth_version_id,model.natural_text,
@@ -472,6 +513,10 @@ async def extract_p6_postfreeze_evidence(
         tenant_id,
     ))
     hg_gates = {key: int(value) == 0 for key, value in hg_counts.items()}
+    grounding_complete, grounding_continuity = _mention_grounding_continuity(
+        mentions
+    )
+    hg_gates["complete_detected_mention_grounding_continuity"] = grounding_complete
 
     active_candidates = _rows(await conn.fetch(
         """SELECT id,proposed_at FROM pattern_candidates
@@ -545,6 +590,7 @@ async def extract_p6_postfreeze_evidence(
         "uncertainty_dispositions": uncertainty_dispositions,
         "boundaries": list(boundary_by_signal.values()),
         "mentions": mentions,
+        "mention_grounding_continuity": grounding_continuity,
         "claims": claims,
         "relations": relation_rows,
         "lifecycle_events": lifecycle,

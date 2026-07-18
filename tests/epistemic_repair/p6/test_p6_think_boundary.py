@@ -12,6 +12,7 @@ from lib.evaluation.epistemic_repair.p6_population import build_p6_population
 from services.evaluation.epistemic_repair.p6_think_runner import (
     _P6_RUNTIME_START, _assert_population_clock_safe,
     _complete_and_reopen_barrier, _signal_occurred_at, _snapshot,
+    _truth_critical_pending_counts,
 )
 from services.reasoning.think.lanes import ThinkLane
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
@@ -105,7 +106,11 @@ async def test_p6_barrier_separates_eventual_work_and_rejects_truth_pending() ->
         snapshot = await _snapshot(pool, tenant_id)
         assert snapshot["pending_work"] == {
             "truth_critical": {
-                "total": 0, "by_queue": {"think_trigger_queue": 0},
+                "total": 0,
+                "by_queue": {
+                    "think_trigger_queue": 0,
+                    "entity_grounding_work_items": 0,
+                },
             },
             "eventual_derived": {
                 "total": 1,
@@ -122,10 +127,36 @@ async def test_p6_barrier_separates_eventual_work_and_rejects_truth_pending() ->
         assert receipt["truth_critical_pending_count"] == 0
         assert receipt["reopened_exactly"] is True
         async with pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO entity_grounding_work_items
+                  (id,tenant_id,source_observation_id,phrase,status,
+                   useful_safe_fate)
+                VALUES ($1,$2,$3,$4,$5,$6::jsonb)
+            """, [
+                (
+                    uuid4(), tenant_id, uuid4(), "pending mention", "pending",
+                    '{"fate_kind":"pending","terminal":false}',
+                ),
+                (
+                    uuid4(), tenant_id, uuid4(), "retry mention",
+                    "retry_scheduled",
+                    '{"fate_kind":"retry_scheduled","terminal":false}',
+                ),
+            ])
             await conn.execute("""
                 INSERT INTO think_trigger_queue(id,tenant_id,trigger_kind,payload)
                 VALUES ($1,$2,'observation','{}'::jsonb)
             """, pending_trigger, tenant_id)
+            pending = await _truth_critical_pending_counts(conn, tenant_id)
+            assert pending == {
+                "think_trigger_queue": 1,
+                "entity_grounding_work_items": 2,
+            }
+            snapshot = await _snapshot(pool, tenant_id)
+            assert snapshot["pending_work"]["truth_critical"] == {
+                "total": 3,
+                "by_queue": pending,
+            }
             async with conn.transaction():
                 with pytest.raises(InvariantViolation, match="truth-critical"):
                     await _complete_and_reopen_barrier(
@@ -143,6 +174,74 @@ async def test_p6_barrier_separates_eventual_work_and_rejects_truth_pending() ->
             )
             await conn.execute("DELETE FROM tenants WHERE id=$1", tenant_id)
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_truth_pending_counts_unowned_detected_mentions_and_retry_work() -> None:
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL is required for the P6 barrier DB proof")
+    conn = await asyncpg.connect(dsn)
+    tenant_id = uuid4()
+    try:
+        async with conn.transaction():
+            await conn.execute("""
+                CREATE TEMP TABLE think_trigger_queue (
+                  tenant_id uuid, completed_at timestamptz
+                ) ON COMMIT DROP;
+                CREATE TEMP TABLE entity_grounding_work_items (
+                  tenant_id uuid, source_observation_id uuid, phrase text,
+                  status text
+                ) ON COMMIT DROP;
+                CREATE TEMP TABLE entity_mention_detections (
+                  id uuid, tenant_id uuid, fate text
+                ) ON COMMIT DROP;
+                CREATE TEMP TABLE entity_mention_detection_heads (
+                  tenant_id uuid, source_observation_id uuid,
+                  candidate_surface text, current_detection_id uuid
+                ) ON COMMIT DROP;
+            """)
+            missing_id, pending_id, terminal_id, rejected_id = (
+                uuid4(), uuid4(), uuid4(), uuid4(),
+            )
+            await conn.executemany("""
+                INSERT INTO entity_mention_detections(id,tenant_id,fate)
+                VALUES($1,$2,$3)
+            """, [
+                (missing_id, tenant_id, "detected"),
+                (pending_id, tenant_id, "detected"),
+                (terminal_id, tenant_id, "detected"),
+                (rejected_id, tenant_id, "rejected_not_entity"),
+            ])
+            observations = [uuid4() for _ in range(4)]
+            await conn.executemany("""
+                INSERT INTO entity_mention_detection_heads
+                  (tenant_id,source_observation_id,candidate_surface,
+                   current_detection_id)
+                VALUES($1,$2,$3,$4)
+            """, [
+                (tenant_id, observations[0], "missing", missing_id),
+                (tenant_id, observations[1], "pending", pending_id),
+                (tenant_id, observations[2], "terminal", terminal_id),
+                (tenant_id, observations[3], "rejected", rejected_id),
+            ])
+            await conn.executemany("""
+                INSERT INTO entity_grounding_work_items
+                  (tenant_id,source_observation_id,phrase,status)
+                VALUES($1,$2,$3,$4)
+            """, [
+                (tenant_id, observations[1], "pending", "retry_scheduled"),
+                (tenant_id, observations[2], "terminal", "abstained"),
+                (tenant_id, uuid4(), "orphan pending", "pending"),
+            ])
+
+            assert await _truth_critical_pending_counts(conn, tenant_id) == {
+                "think_trigger_queue": 0,
+                # Missing detected fate, retry work, and orphan pending work.
+                "entity_grounding_work_items": 3,
+            }
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio

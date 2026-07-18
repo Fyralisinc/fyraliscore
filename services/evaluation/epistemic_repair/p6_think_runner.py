@@ -204,10 +204,7 @@ async def _snapshot(pool: asyncpg.Pool, tenant_id: UUID) -> dict[str, Any]:
             FROM company_learning_context_decisions WHERE tenant_id=$1
             ORDER BY decided_at,decision_id
         """, tenant_id)
-        trigger_pending = int(await conn.fetchval("""
-            SELECT count(*) FROM think_trigger_queue
-            WHERE tenant_id=$1 AND completed_at IS NULL
-        """, tenant_id))
+        truth_pending = await _truth_critical_pending_counts(conn, tenant_id)
         eventual_rows = await conn.fetch("""
             SELECT action_kind,count(*)::int AS pending
             FROM pending_post_commit_actions
@@ -226,8 +223,8 @@ async def _snapshot(pool: asyncpg.Pool, tenant_id: UUID) -> dict[str, Any]:
                 # Incomplete Think triggers can still change accepted truth and
                 # therefore fence barrier completion.
                 "truth_critical": {
-                    "total": trigger_pending,
-                    "by_queue": {"think_trigger_queue": trigger_pending},
+                    "total": sum(truth_pending.values()),
+                    "by_queue": truth_pending,
                 },
                 # Post-commit actions materialize projections, invalidate
                 # caches/metrics, broadcast, or discover *candidate* edges.
@@ -238,6 +235,44 @@ async def _snapshot(pool: asyncpg.Pool, tenant_id: UUID) -> dict[str, Any]:
                 },
             },
         }
+
+
+async def _truth_critical_pending_counts(
+    conn: asyncpg.Connection, tenant_id: UUID,
+) -> dict[str, int]:
+    """Count work that can still change the company truth visible at a barrier."""
+
+    row = await conn.fetchrow("""
+        SELECT
+          (SELECT count(*) FROM think_trigger_queue trigger
+            WHERE trigger.tenant_id=$1 AND trigger.completed_at IS NULL)::int
+            AS think_trigger_queue,
+          (WITH pending_grounding AS (
+             SELECT work.source_observation_id, work.phrase
+               FROM entity_grounding_work_items work
+              WHERE work.tenant_id=$1
+                AND work.status IN ('pending', 'retry_scheduled')
+             UNION
+             SELECT head.source_observation_id, head.candidate_surface
+               FROM entity_mention_detection_heads head
+               JOIN entity_mention_detections detection
+                 ON detection.id=head.current_detection_id
+                AND detection.tenant_id=head.tenant_id
+              WHERE head.tenant_id=$1
+                AND detection.fate='detected'
+                AND NOT EXISTS (
+                  SELECT 1 FROM entity_grounding_work_items work
+                   WHERE work.tenant_id=head.tenant_id
+                     AND work.source_observation_id=head.source_observation_id
+                     AND work.phrase=head.candidate_surface
+                )
+           ) SELECT count(*) FROM pending_grounding)::int
+            AS entity_grounding_work_items
+    """, tenant_id)
+    return {
+        "think_trigger_queue": int(row["think_trigger_queue"]),
+        "entity_grounding_work_items": int(row["entity_grounding_work_items"]),
+    }
 
 
 async def _freeze_zero_seed_preflight(
@@ -279,10 +314,9 @@ async def _complete_and_reopen_barrier(
     """, tenant_id))
     current_models = set(model_versions)
     invalidated = tuple(sorted(previous_model_versions - current_models, key=str))
-    truth_pending = int(await conn.fetchval("""
-        SELECT count(*) FROM think_trigger_queue
-        WHERE tenant_id=$1 AND completed_at IS NULL
-    """, tenant_id))
+    truth_pending = sum((await _truth_critical_pending_counts(
+        conn, tenant_id,
+    )).values())
     service = CompanyLearningBarrierService()
     receipt = await service.complete(
         tx=conn,
@@ -323,10 +357,9 @@ async def _drain_truth_critical_work(
     cycle_receipts: list[dict[str, int]] = []
     for cycle in range(1, max_cycles + 1):
         async with pool.acquire() as conn:
-            pending_before = int(await conn.fetchval("""
-                SELECT count(*) FROM think_trigger_queue
-                WHERE tenant_id=$1 AND completed_at IS NULL
-            """, tenant_id))
+            pending_before = sum((await _truth_critical_pending_counts(
+                conn, tenant_id,
+            )).values())
             if pending_before == 0:
                 return {
                     "complete": True, "cycles": cycle - 1,
@@ -344,10 +377,9 @@ async def _drain_truth_critical_work(
         if tasks:
             await asyncio.gather(*tasks)
         async with pool.acquire() as conn:
-            pending_after = int(await conn.fetchval("""
-                SELECT count(*) FROM think_trigger_queue
-                WHERE tenant_id=$1 AND completed_at IS NULL
-            """, tenant_id))
+            pending_after = sum((await _truth_critical_pending_counts(
+                conn, tenant_id,
+            )).values())
         cycle_receipts.append({
             "cycle": cycle, "pending_before": pending_before,
             "dispatched_batches": len(tasks), "pending_after": pending_after,

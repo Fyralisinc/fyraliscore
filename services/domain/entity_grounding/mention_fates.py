@@ -24,6 +24,9 @@ from services.domain.entity_grounding.episode import (
     prepare_context_selection,
 )
 from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
+from services.domain.entity_grounding.repo import (
+    enqueue_detected_mention_grounding_work,
+)
 from services.domain.entity_grounding.learned_discovery import (
     PersistedSignalText,
     MentionCandidateAdapter,
@@ -193,6 +196,10 @@ async def ensure_observation_mention_fates(
             conn=conn,
             command=detection_command,
             now=prepared_at,
+        )
+        await enqueue_detected_mention_grounding_work(
+            conn,
+            command=detection_command,
         )
         committed += 1
 

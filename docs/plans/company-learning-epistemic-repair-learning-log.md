@@ -65,9 +65,9 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | CF3-A one-batch attempt at commit `f869dd82`, tenant `50270994-753d-465f-b87e-7d794cf2d3a7`, failed at the provider boundary after `124.181s`; installed Codex CLI rejected `gpt-5.6-terra` as requiring a newer version, with no semantic output and zero accepted Models |
+| Latest verified coordination checkpoint | CF3-A supported-model attempt at commit `8b027197`, tenant `97b210f5-28c9-4206-b8a1-9c1f25335809`, mechanically completed one batch with four successful exact-usage LLM attempts and 25 signal fates; barrier 0 remains pending |
 | Repair implementation | Validator preserves explicit retirement; the evaluator now reads the exact historical relation instance required to verify retirement instead of relying only on the current-instance surface; focused evaluator suite `14/14` green |
-| Current phase | CF3-A remains red due to infrastructure/configuration, not a scored semantic failure. Retry the same one-batch rung with an explicitly supported model; M0/CF2 evidence remains intact |
+| Current phase | CF3-A remains red pending rerun: both affected mentions have explicit detection fate, but no downstream grounding continuity. Evidence now separates `detection_fate`, nullable `grounding_fate`, and `grounding_stage`, with an explicit continuity gate. Hold CF3-B |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
@@ -78,7 +78,7 @@ Rules:
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
-| Highest-priority outcome | Retry the identical CF3-A one-batch rung with an explicitly supported Codex model; do not widen the run or diagnose semantic quality until a provider call produces semantic output |
+| Highest-priority outcome | Rerun the one-batch CF3-A rung and require `complete_detected_mention_grounding_continuity`; do not start CF3-B. Missing full-P6 scorer evidence remains expected on a partial prefix and is not the verdict |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -2041,3 +2041,45 @@ supported model, keeping the population fixed so compatibility is the only
 intended variable.
 
 **Artifact:** `/tmp/fyralis-cf3a-codex-one-batch.json`.
+
+### 2026-07-18 — LOG-057 — Supported model reaches semantics; grounding fate is incomplete
+
+**Observed:** Commit `8b027197`, tenant
+`97b210f5-28c9-4206-b8a1-9c1f25335809`, ran one batch with
+`gpt-5.3-codex-spark` at low reasoning effort. The batch was mechanically
+complete and emitted 25 signal fates; barrier 0 remains pending. All four
+physical attempts succeeded with exact input/output/cache tokens:
+
+- question planning: `13,314 / 4,769 / 4,224`;
+- main reasoning: `20,874 / 9,858 / 9,856`;
+- main reasoning: `16,825 / 3,567 / 4,352`;
+- main reasoning: `16,902 / 1,306 / 11,264`.
+
+**CF3-A verdict:** Red. Two of 24 mentions have no grounding fate:
+`Atlas certificate training example` on `p6-b01-s24`, and `Facilities` on
+`p6-b01-s21`. This is the governing defect; CF3-B is held.
+
+**Scorer boundary:** The full P6 scorer reports missing evidence because one
+batch is only a partial prefix. Those fields are expected to be absent and do
+not determine the CF3-A verdict.
+
+**Artifacts:** `/tmp/fyralis-cf3a-codex-one-batch-spark.json`,
+`/tmp/fyralis-cf3a-codex-one-batch-spark-evidence.json`, and
+`/tmp/fyralis-cf3a-codex-one-batch-spark-score.json`.
+
+### 2026-07-18 — LOG-058 — Detection fate and grounding continuity are separate contracts
+
+**Finding:** `detection.fate=detected` is already the durable mention-detection
+fate. The post-freeze mention row omitted it and exposed only optional
+downstream grounding fate, conflating a completed detection stage with missing
+grounding continuity.
+
+**Evaluator repair:** Mention evidence now carries `detection_fate`, nullable
+`grounding_fate`, and `grounding_stage`. A detected mention without a trace or
+provisional grounding disposition is `not_started`; the new
+`complete_detected_mention_grounding_continuity` HG gate fails and lists exact
+incomplete members.
+
+**Boundary and proof:** No runtime enqueue or barrier behavior changed in this
+evaluator slice. Focused evidence and scorer tests passed `42/42`. CF3-A remains red until a fresh
+one-batch run proves the gate; CF3-B remains held.

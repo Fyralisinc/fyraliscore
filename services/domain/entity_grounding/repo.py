@@ -33,6 +33,52 @@ from services.domain.entity_grounding.episode import (
 )
 
 
+async def enqueue_detected_mention_grounding_work(
+    conn: asyncpg.Connection,
+    *,
+    command: CommitEntityMentionDetectionCommand,
+) -> bool:
+    """Durably schedule a detected mention that has no safe grounding coordinate."""
+
+    detection = command.detection
+    mention = detection.mention
+    if (
+        detection.fate is not EntityMentionDetectionFate.DETECTED
+        or mention is None
+        or mention.grounding_fate is not None
+    ):
+        return False
+    useful_safe_fate = {
+        "fate_kind": "pending_grounding",
+        "terminal": False,
+        "mention_detection_id": str(detection.detection_id),
+        "mention_detection_version": detection.detection_version,
+        "mention_detection_digest": detection.detection_digest,
+        "mention_id": mention.mention_id,
+        "contract_version": "grounding-work-fate-v2",
+    }
+    result = await conn.execute(
+        """
+        INSERT INTO entity_grounding_work_items (
+            id, tenant_id, source_observation_id, phrase,
+            processing_generation, status, processing_class,
+            attempt_count, current_trace_id, useful_safe_fate
+        ) VALUES (
+            $1, $2, $3, $4, 1, 'pending', 'R2', 0, NULL, $5::jsonb
+        )
+        ON CONFLICT (
+            tenant_id, source_observation_id, phrase, processing_generation
+        ) DO NOTHING
+        """,
+        uuid7(),
+        command.context.tenant_id,
+        detection.source_observation_id,
+        detection.candidate_surface,
+        json.dumps(useful_safe_fate),
+    )
+    return result == "INSERT 0 1"
+
+
 class EntityGroundingRepo:
     """Atomically append every stage and one explicit downstream fate."""
 

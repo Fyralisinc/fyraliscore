@@ -6,13 +6,17 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** CF3-A one-batch attempt at commit `f869dd82`, tenant
-`50270994-753d-465f-b87e-7d794cf2d3a7`, failed at the provider boundary after
-`124.181s`: the installed Codex CLI reported that `gpt-5.6-terra` requires a
-newer version. No semantic output was produced and zero Models were accepted.
-This is an infrastructure/configuration failure, so CF3-A remains red. Run 13
-continues to govern the completed CF2 single-execution proof; determinism
-remains deferred and unproven (`replay_count=1`).
+**Current checkpoint:** CF3-A supported-model attempt at commit `8b027197`,
+tenant `97b210f5-28c9-4206-b8a1-9c1f25335809`, completed one batch mechanically
+with `gpt-5.3-codex-spark` at low reasoning effort: four physical LLM attempts
+succeeded with exact usage and all 25 signal fates were emitted. Barrier 0
+remains pending and CF3-A remains red because 2 of 24 extracted mentions have
+no downstream grounding continuity: `Atlas certificate training example` on
+`p6-b01-s24` and `Facilities` on `p6-b01-s21`. Detection fate is separately
+durable for both; evaluator evidence now exposes `detection_fate`, nullable
+`grounding_fate`, and `grounding_stage`, and fails an explicit continuity gate.
+CF3-A remains red pending a runtime rerun; hold CF3-B. Full-P6 scorer missing
+fields are expected for this partial prefix and are not the CF3-A verdict.
 
 **Last updated:** 2026-07-18
 
@@ -2098,3 +2102,30 @@ matched feedback quality and objective entity v6.
   newer version. No semantic output was produced and zero Models were accepted.
 - This is infrastructure/configuration evidence, not a semantic-quality result.
   CF3-A stays red. Next, repeat the same rung with an explicitly supported model.
+
+### 2026-07-18 — Supported-model CF3-A exposes missing grounding fates
+
+- At commit `8b027197`, tenant `97b210f5-28c9-4206-b8a1-9c1f25335809`,
+  `gpt-5.3-codex-spark` at low effort mechanically completed the one-batch rung.
+  Four physical calls succeeded with exact input/output/cache tokens:
+  question planning `13,314/4,769/4,224`; main reasoning
+  `20,874/9,858/9,856`, `16,825/3,567/4,352`, and
+  `16,902/1,306/11,264`.
+- The run emitted all 25 signal fates, but barrier 0 remains pending. Of 24
+  mentions, `Atlas certificate training example` (`p6-b01-s24`) and
+  `Facilities` (`p6-b01-s21`) have null grounding fate.
+- CF3-A therefore remains red and CF3-B is held. Missing evidence reported by
+  the full P6 scorer is expected for a one-batch prefix and is not this verdict.
+
+### 2026-07-18 — CF3-A evidence separates detection from grounding continuity
+
+- The two affected mentions did have durable detection fate `detected`; the
+  post-freeze schema had omitted that field and exposed only nullable downstream
+  grounding fate, making the stages ambiguous.
+- Evidence now reports `detection_fate`, `grounding_fate`, and
+  `grounding_stage` separately. A detected mention with no trace or provisional
+  grounding disposition is reported as `not_started` and fails
+  `complete_detected_mention_grounding_continuity`.
+- Focused evidence/scorer validation passed `42/42`. Runtime enqueue/barrier
+  behavior was not changed. CF3-A stays red until a fresh one-batch rerun proves
+  complete continuity; CF3-B remains held.

@@ -1076,7 +1076,7 @@ transport are excluded from this goal.
 
 ### EDGE-047 — Provider model requires a newer Codex CLI
 
-- **Status:** `active infrastructure/configuration blocker; CF3-A red`
+- **Status:** `resolved by supported-model attempt; superseded by EDGE-048`
 - **Trigger:** CF3-A one-batch attempt at commit `f869dd82`, tenant
   `50270994-753d-465f-b87e-7d794cf2d3a7`, used `gpt-5.6-terra`.
 - **Current behavior:** The installed Codex CLI rejected every provider attempt
@@ -1091,6 +1091,32 @@ transport are excluded from this goal.
 - **Return condition:** Retry the same one-batch rung with an explicitly
   supported model and obtain semantic output suitable for evaluation.
 - **Evidence:** `/tmp/fyralis-cf3a-codex-one-batch.json`.
+
+### EDGE-048 — Extracted mentions can lack a grounding fate
+
+- **Status:** `active; CF3-A red and CF3-B held`
+- **Trigger:** Supported-model CF3-A attempt at commit `8b027197`, tenant
+  `97b210f5-28c9-4206-b8a1-9c1f25335809`.
+- **Current behavior:** The batch completed mechanically and emitted 25 signal
+  fates. Both affected mentions have durable detection fate `detected`, but 2
+  of 24 extracted mentions have no downstream grounding disposition:
+  `Atlas certificate training example` on `p6-b01-s24` and `Facilities` on
+  `p6-b01-s21`.
+- **Desired behavior:** Every extracted mention receives an explicit governed
+  fate, including unresolved, rejected or intentionally ignored outcomes.
+- **Risk:** A mention can disappear between extraction and grounding without an
+  auditable disposition, making company-physics coverage unknowable.
+- **Safe boundary:** Evidence must expose detection fate separately from
+  nullable grounding fate and explicitly fail incomplete grounding continuity.
+  Keep CF3-A red and hold CF3-B. Do not treat missing
+  full-P6 scorer fields from the one-batch partial prefix as the CF3-A verdict.
+- **Return condition:** A fresh bounded rung passes
+  `complete_detected_mention_grounding_continuity`: both exact mentions receive
+  durable explicit grounding dispositions, with no regression across all 24.
+- **Evidence:** `/tmp/fyralis-cf3a-codex-one-batch-spark-evidence.json` and
+  `/tmp/fyralis-cf3a-codex-one-batch-spark-score.json`.
+  Evaluator separation and continuity gate are focused-test green `42/42`;
+  runtime rerun remains pending.
 
 ## Entry Template
 
