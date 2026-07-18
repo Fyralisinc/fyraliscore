@@ -68,7 +68,7 @@ def _contention_complete(artifact: dict[str, Any]) -> bool:
 
 def compose_p8_exit(
     *, fault_path: Path, scale_path: Path, characterization_path: Path,
-    contention_path: Path, provider_canary_path: Path,
+    contention_path: Path, provider_canary_path: Path | None = None,
 ) -> dict[str, Any]:
     artifacts, reviews = {}, []
     for name, path in (
@@ -77,9 +77,25 @@ def compose_p8_exit(
     ):
         artifacts[name], review = _read_reopened(path)
         reviews.append(review)
-    canary_bytes = provider_canary_path.read_bytes()
-    canary_rows = [json.loads(line) for line in canary_bytes.splitlines() if line.strip()]
-    usage = next((row["usage"] for row in reversed(canary_rows) if row.get("type") == "turn.completed"), None)
+    provider_receipts = artifacts["fault"].get("provider_fault_slice", {}).get("receipts", [])
+    exact_receipt = next((
+        row for row in provider_receipts
+        if row.get("usage_exactness") == "reported" and row.get("input_tokens", 0) > 0
+    ), None)
+    usage = None if exact_receipt is None else {
+        "input_tokens": exact_receipt["input_tokens"],
+        "output_tokens": exact_receipt["output_tokens"],
+        "cached_input_tokens": exact_receipt.get("cache_tokens", 0),
+        "source": "scheduled_provider_fault_receipt",
+    }
+    if usage is None and provider_canary_path is not None:
+        canary_rows = [
+            json.loads(line) for line in provider_canary_path.read_bytes().splitlines() if line.strip()
+        ]
+        usage = next((
+            {**row["usage"], "source": "separately_authorized_provider_canary"}
+            for row in reversed(canary_rows) if row.get("type") == "turn.completed"
+        ), None)
     scale_gates = artifacts["scale"].get("evaluation", {}).get("gates", {})
     latency_green = bool(scale_gates.get("concurrency_latency_ratio"))
     characterization_complete = _metrics_complete(artifacts["characterization"])

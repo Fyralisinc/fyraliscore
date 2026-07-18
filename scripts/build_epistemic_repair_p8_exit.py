@@ -21,7 +21,7 @@ def main() -> int:
     parser.add_argument("--scale", type=Path, required=True)
     parser.add_argument("--characterization", type=Path, required=True)
     parser.add_argument("--contention", type=Path, required=True)
-    parser.add_argument("--provider-canary", type=Path, required=True)
+    parser.add_argument("--provider-canary", type=Path)
     parser.add_argument("--output", type=Path, default=Path("docs/plans/epistemic-repair/p8/epistemic-repair-p8-fault-scale-v1.json"))
     args = parser.parse_args()
     artifact = compose_p8_exit(

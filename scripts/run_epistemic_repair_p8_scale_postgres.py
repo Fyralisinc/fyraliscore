@@ -26,6 +26,18 @@ async def _run(args: argparse.Namespace) -> int:
         raise SystemExit("DATABASE_URL or --database-url is required")
     execution = await run_scale_matrix(args.database_url)
     contention = await run_shared_contention(args.database_url)
+    if args.contention_output is not None:
+        contention_artifact = {
+            "schema_version": "p8-shared-contention-v2",
+            "scale_execution_version": "p8-scale-production-transactions-v2",
+            "result": asdict(contention),
+        }
+        from lib.contracts.kernel import canonical_sha256
+        contention_artifact["artifact_digest"] = canonical_sha256(contention_artifact)
+        args.contention_output.parent.mkdir(parents=True, exist_ok=True)
+        args.contention_output.write_text(
+            json.dumps(contention_artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        )
     execution = replace(execution, shared_contention=contention)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     evaluation = evaluate_scale_execution(execution)
@@ -44,6 +56,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database-url", default=os.environ.get("DATABASE_URL"))
     parser.add_argument("--output", type=Path, default=Path("docs/plans/epistemic-repair/p8/p8-postgres-scale-matrix.json"))
+    parser.add_argument("--contention-output", type=Path)
     return asyncio.run(_run(parser.parse_args()))
 
 
