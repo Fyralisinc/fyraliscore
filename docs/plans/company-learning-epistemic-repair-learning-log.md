@@ -1034,6 +1034,46 @@ large open-world semantic guarantee follows from these harnesses. Reported
 Codex usage is required for economics; estimated or unavailable usage remains
 visible but cannot qualify it.
 
+### 2026-07-18 — LOG-035 — Transport batches are not semantic scope
+
+**Type:** observed + corrected
+
+**Work package / commit:** P6 semantic repair; `4cf00cd2`, `3c968f03`,
+`d919a9d6`, and `add17c4c`.
+
+**What happened:** The first mixed-stream diagnostic mechanically learned and
+retrieved Models, but its early Models described source cadence, generic
+curiosity, and the 25-signal batch wrapper instead of company mechanisms.
+Those Models then became attractive retrieval anchors and could merge across
+unrelated workstreams. The failure originated before truth admission: batch-
+wide deterministic fallbacks and missing claim-local coordinates supplied
+formally valid but semantically incoherent evidence.
+
+**Evidence:** the immutable incomplete diagnostic
+`/tmp/p6-think-12batch-fdb6796d.json`; focused representation, reconciliation,
+quality, and admission regressions; 34 combined representation/reconciliation
+tests passing with eight database integrations skipped because this worktree
+has no exported `DATABASE_URL`.
+
+**Interpretation:** A scheduling batch must never become an epistemic unit.
+Canonical claims need exact local evidence and positive business or episode
+coordinates. Source identity, arrival proximity, and wrapper-wide curiosity
+are not sufficient evidence of a shared company mechanism.
+
+**Decision or next test:** Preserve exactly one 25-signal T1 transport batch,
+but partition claim evidence internally by typed entity, episode/thread, or a
+named business phrase. Reject generic/source-only and high-entropy claims at
+representation, reconciliation, quality, and truth-admission boundaries. Run
+one clean 25-signal Codex smoke before paying for another 12-batch proof.
+
+**Coordinator impact:** P6 cannot advance merely because retrieval shifts
+from Observations to Models. The retrieved Models must be business-scoped,
+claim-local, and independently entailed by their recorded evidence.
+
+**Edge cases added:** mixed workstreams in one transport batch; noise sharing a
+source system; hallucinated batch event IDs; source-only merge keys; wrapper
+primary observation used as evidence.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
