@@ -106,8 +106,19 @@ async def extract_p6_postfreeze_evidence(
                     AS evidence,
                   COALESCE((SELECT jsonb_agg(jsonb_build_object(
                     'id',binding.subject_id,'type',binding.subject_kind,
-                    'role',binding.scope_role) ORDER BY binding.binding_id)
+                    'role',binding.scope_role,
+                    'canonical_ref',CASE
+                      WHEN actor.id IS NOT NULL THEN 'actor:' || actor.id::text
+                      WHEN resource.id IS NOT NULL THEN 'resource:' || resource.id::text
+                      ELSE NULL END) ORDER BY binding.binding_id)
                     FROM model_truth_scope_bindings binding
+                    LEFT JOIN actors actor
+                      ON actor.tenant_id=binding.tenant_id
+                     AND actor.id=binding.subject_id
+                     AND binding.subject_kind='person'
+                    LEFT JOIN resources resource
+                      ON resource.tenant_id=binding.tenant_id
+                     AND resource.id=binding.subject_id
                     WHERE binding.tenant_id=model.tenant_id
                       AND binding.model_version_id=model.truth_version_id),'[]'::jsonb)
                     AS scope_entities
@@ -341,6 +352,11 @@ async def extract_p6_postfreeze_evidence(
         str(row.get("signal_id")): dict(row) for row in boundary_decisions
         if row.get("signal_id")
     }
+    scope_coordinates = [
+        entity
+        for claim in claims
+        for entity in claim.get("scope_entities") or ()
+    ]
     evidence = {
         "schema_version": "epistemic-repair-p6-postfreeze-evidence-v1",
         "tenant_id": str(tenant_id),
@@ -375,7 +391,18 @@ async def extract_p6_postfreeze_evidence(
             "missing": len(expected_context_opportunities - emitted_context_opportunities),
             "unexpected": len(emitted_context_opportunities - expected_context_opportunities),
         },
-        "scope_coordinates_canonical": False,
+        "scope_coordinates_canonical": bool(scope_coordinates) and all(
+            entity.get("canonical_ref") for entity in scope_coordinates
+        ),
+        "scope_coordinate_counts": {
+            "total": len(scope_coordinates),
+            "resolved": sum(
+                bool(entity.get("canonical_ref")) for entity in scope_coordinates
+            ),
+            "unresolved": sum(
+                not entity.get("canonical_ref") for entity in scope_coordinates
+            ),
+        },
         "refresh_events": refresh_events,
         "active_candidates": active_candidates,
         "active_reviews": active_reviews,
