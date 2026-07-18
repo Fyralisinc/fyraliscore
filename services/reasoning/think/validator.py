@@ -2246,6 +2246,7 @@ def _relation_claim_forced_review(op: RelationClaimOp) -> bool:
     return op.metadata.get("review_status_downgraded_by") in {
         "edge_specificity_guard",
         "mutation_compiler_cycle_guard",
+        "relation_authorization_guard",
     } or bool(op.metadata.get("mutation_compiler_cycle_guard"))
 
 

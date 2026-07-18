@@ -1907,3 +1907,23 @@ transaction and evaluator slice passes `47/47` tests on the dedicated database.
 three independent workstreams. Do not open general lifecycle policy, latency,
 provider, connector or stale broad-test cleanup. Commit this repair and rerun
 the exact four-batch vertical once.
+
+### 2026-07-18 — LOG-051 — Run 8 proved synthesis and exposed validator re-promotion
+
+**Frozen evidence:** Commit `df55e849`; tenant
+`25b27238-5822-4292-a96f-63f6704f8165`. Batch 3 retained 61 accepted Model
+heads and canonical scoring made both synthesis and composite/relation
+atomicity `1.0`. Batch 4 failed closed with
+`RELATION_ENDPOINT_VERSION_MISMATCH` while applying the correction.
+
+**Root cause and repair:** The compiler correctly marked a relation inferred
+beside a non-relation lifecycle decision as `needs_review`, but validator
+auto-admission promoted it back to `accepted_edge`. The authorization guard is
+now durable metadata recognized by validation, so a lifecycle or claim-only
+decision cannot indirectly authorize relation truth. The focused core slice
+passes `48/48` tests.
+
+**Reflection:** Run 8 falsified the assumption that compiler disposition alone
+survived the full pipeline. This is the same relation-authorization invariant
+at the next consumer, not permission to broaden relation semantics. Validate
+once more on the exact four-batch path.

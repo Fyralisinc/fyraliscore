@@ -977,13 +977,14 @@ transport are excluded from this goal.
 
 ### EDGE-043 — Lifecycle-only revisions can accidentally re-authorize relations
 
-- **Status:** `bounded repair implemented; fresh-runtime validation pending`
+- **Status:** `compiler and validator repair implemented; fresh-runtime validation pending`
 - **Trigger:** Frozen CF2 run 6 reached batch 4, then failed closed with
   `RELATION_ENDPOINT_VERSION_MISMATCH` while attempting an accepted relation
   whose endpoint versions did not match the exact current heads.
 - **Current behavior:** Lifecycle-only revision decisions no longer authorize an
-  accepted relation as a side effect; accepted relation admission requires an
-  explicit relation-bearing operation. Closed atomics also select exact
+  accepted relation as a side effect. The compiler's forced-review disposition
+  is now durable through validator auto-admission; accepted relation admission
+  requires an explicit relation-bearing operation. Closed atomics also select exact
   claim-local evidence from the batch-wide evidence manifest, preventing an
   unrelated batch coordinate from becoming the mutation basis.
 - **Risk:** A valid correction wave can roll back before applying its lifecycle
@@ -995,8 +996,10 @@ transport are excluded from this goal.
   batch-4 revision and closes its exact barrier.
 - **Evidence:** Frozen commit `48cb02741574`, tenant
   `5dab01e7-38b0-4c61-b6ce-77e555f1f2bc`; batches 1–3 succeeded and batch 4
-  failed with the exact version-mismatch invariant. Focused repaired-seam
-  validation passes `80` tests on the dedicated database.
+  failed with the exact version-mismatch invariant. Run 8 at `df55e849` proved
+  synthesis and relation atomicity, then exposed validator re-promotion in
+  batch 4. Focused repaired-seam validation passes `48` tests on the dedicated
+  database.
 
 ### EDGE-044 — Splitter-empty telemetry and stale broad assertions obscure focus
 

@@ -3457,6 +3457,10 @@ def _relation_claim_op_from_obligation(
         "compiled_decision_confidence": (
             decision.confidence if decision is not None else None
         ),
+        **({
+            "review_status_downgraded_by": "relation_authorization_guard",
+            "relation_authorization_guard": True,
+        } if not relation_authorized else {}),
     }
     return RelationClaimOp(
         op="upsert",

@@ -1997,3 +1997,14 @@ matched feedback quality and objective entity v6.
 - Determinism remains unproven with one complete replay; this is not an
   observed disagreement. The next action is one fresh four-batch validation of
   the bounded repair, followed by canonical scoring before any wider phase.
+
+### 2026-07-18 — Run 8 retained synthesis; batch-4 authorization still leaked through validation
+
+- Frozen commit `df55e849`, tenant
+  `25b27238-5822-4292-a96f-63f6704f8165`: batch 3 retained 61 accepted Model
+  heads. Canonical synthesis and relation-atomicity scores are both `1.0`.
+- Batch 4 failed closed because validator auto-admission re-promoted a
+  compiler-downgraded relation obligation beside a lifecycle-only correction.
+- The authorization downgrade now carries a forced-review marker through
+  validation. Focused validation passes `48/48`; the next action remains one
+  fresh four-batch run and canonical score, with broader work still deferred.

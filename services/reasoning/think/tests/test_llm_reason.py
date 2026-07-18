@@ -58,6 +58,7 @@ from services.reasoning.think.applier import (
 )
 from services.reasoning.think.prompt import build_prompt
 from services.reasoning.think.tests.conftest import ScriptedProvider
+from services.reasoning.think.validator import _relation_claim_forced_review
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -1459,9 +1460,15 @@ async def test_lifecycle_decision_cannot_authorize_accepted_relation_obligation(
     assert len(lifecycle_ops) == 1
     assert lifecycle_ops[0].write_policy == "needs_review"
     assert lifecycle_ops[0].status == "needs_review"
+    assert lifecycle_ops[0].metadata["review_status_downgraded_by"] == (
+        "relation_authorization_guard"
+    )
+    assert _relation_claim_forced_review(lifecycle_ops[0]) is True
     assert len(claim_update_ops) == 1
     assert claim_update_ops[0].write_policy == "needs_review"
     assert claim_update_ops[0].status == "needs_review"
+    assert claim_update_ops[0].metadata["relation_authorization_guard"] is True
+    assert _relation_claim_forced_review(claim_update_ops[0]) is True
     assert len(relation_ops) == 1
     assert relation_ops[0].write_policy == "accepted_edge"
     assert relation_ops[0].status == "accepted"
