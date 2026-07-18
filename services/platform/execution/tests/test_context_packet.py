@@ -670,6 +670,7 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
         "observation_id": atlas_fragment["observation_id"],
         "source_channel": atlas_fragment["source_channel"],
         "body": atlas_fragment["text"],
+        "canonical_ref": "",
     },)
     assert len(with_synthesis_opportunity) == 14
     synthesis_request = build_compiled_batch_memory_decision_request(
@@ -851,6 +852,23 @@ def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None
     assert candidates[0].allowed_operations == ("situation_and_edge", "no_op")
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ({"kind": "belief", "subject": "Atlas"},
+         {"kind": "belief", "subject": "Atlas"}),
+        ('{"kind":"belief","subject":"Atlas"}',
+         {"kind": "belief", "subject": "Atlas"}),
+        ('["not", "an", "object"]', None),
+        ("not-json", None),
+    ],
+)
+def test_hydrated_model_proposition_accepts_only_json_objects(
+    raw: object, expected: dict[str, object] | None,
+) -> None:
+    assert context_packet._json_object_or_none(raw) == expected
+
+
 def test_actual_p6_batch4_opens_grounded_synthesis_without_seed_components() -> None:
     batch = build_p6_population().batches[3]
     observation_ids = {
@@ -924,6 +942,19 @@ def test_actual_p6_batch4_opens_grounded_synthesis_without_seed_components() -> 
     }
     assert obligation.source_model_id is None
     assert obligation.target_model_id is None
+    compiled = request.to_raw_diff(
+        BatchMemoryDecisionSet(decisions=[BatchMemoryCandidateDecision(
+            candidate_id=candidate.candidate_id, decision="accept",
+            operation="situation_and_edge", confidence=0.8,
+            source_model_id=model_ids[0], target_model_id=model_ids[1],
+            situation_member_model_ids=list(model_ids),
+            claim_text="Atlas readiness is blocked by certificate ownership.",
+            reason="The exact auxiliary evidence establishes the dependency.",
+        )]),
+        trigger=trigger, trigger_ref=uuid4(),
+    )
+    assert len(compiled.relation_claim_ops) == 1
+    assert compiled.relation_claim_ops[0].metadata["atomic_with_synthesis"] is True
 
 
 @pytest.mark.asyncio
@@ -1065,7 +1096,7 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
         conclusion_id, link_id, state_id = uuid4(), uuid4(), uuid4()
         signal_rows = (
             (link_id, "Orion delivery, update 4: A record links the open ownership handoff to delayed completion."),
-            (state_id, "Orion delivery, update 4: The rollout moved after ownership became unclear."),
+            (state_id, "Orion delivery, update 4: Ownership remains pending while rollout completion is delayed."),
             (conclusion_id, "Orion delivery is blocked."),
         )
         for observation_id, text in signal_rows:
@@ -1102,6 +1133,11 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
             SufficiencyVerdict("sufficient_for_reasoning", "ready", 0, 0, ()),
             synthesis_scope_models=hydrated,
         )
+        assert any(item.candidate_kind == "synthesis" for item in candidates), (
+            hydrated, receipt, [
+                (item.entailed_claim_text, item.semantic_scope) for item in candidates
+            ]
+        )
         packet = {
             "memory_decision_candidates": [asdict(item) for item in candidates],
             "signal_summary": "Orion delivery batch",
@@ -1128,7 +1164,10 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
             trigger=trigger,
             trigger_ref=uuid4(),
         )
-        assert len(compiled.claim_ops) == 1
+        assert sum(
+            (op.entry or {}).get("proposition", {}).get("claim_role") == "situation"
+            for op in compiled.claim_ops
+        ) == 1
         assert len(compiled.relation_claim_ops) == 1
         validated = ValidatedDiff(**compiled.model_dump())
         apply_result = await apply_diff(
@@ -1155,6 +1194,7 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
               ON head.tenant_id=evidence.tenant_id
              AND head.version_id=evidence.model_version_id
             WHERE head.tenant_id=$1 AND head.model_id=$2
+              AND evidence.evidence_kind='observation'
             """,
             tenant_id,
             synthesis_id,
@@ -1186,6 +1226,9 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
     assert projected_edge_count == 1
     assert set(relation_evidence) == {link_id, state_id}
     assert set(receipt.pop("endpoint_model_versions")) == {
+        str(model_id) for model_id in model_ids[1:]
+    }
+    assert set(receipt.pop("endpoint_model_cards")) == {
         str(model_id) for model_id in model_ids[1:]
     }
     assert receipt == {

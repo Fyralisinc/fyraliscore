@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 from dataclasses import asdict, is_dataclass
 from typing import Any, Callable, Literal, Mapping
@@ -914,6 +915,10 @@ def _scoped_synthesis_candidates(
         auxiliary_candidates = [
             candidate for candidate in current_scope_candidates
             if candidate is not conclusion
+            and (
+                not conclusion.canonical_scope_ref
+                or candidate.canonical_scope_ref == conclusion.canonical_scope_ref
+            )
         ]
         relation_candidates = _relation_evidence_candidates(auxiliary_candidates)
         relation_evidence_ids = tuple(dict.fromkeys(
@@ -944,6 +949,7 @@ def _scoped_synthesis_candidates(
             member_observation_ids=current_ids,
             relation_evidence_observation_ids=relation_evidence_ids,
             semantic_scope=(scope,),
+            canonical_scope_ref=conclusion.canonical_scope_ref,
             evidence_model_ids=tuple(model_ids),
             observation_evidence=tuple(dict(
                 (row.get("observation_id"), row)
@@ -1093,14 +1099,15 @@ async def hydrate_synthesis_scope_models(
     for row in rows:
         scope = str(row["scope_label"])
         canonical_ref = str(row["scope_ref"] or "").strip()
-        if scope in grouped and canonical_ref:
+        proposition = _json_object_or_none(row["proposition"])
+        if scope in grouped and canonical_ref and proposition is not None:
             grouped[scope].setdefault(canonical_ref, []).append(str(row["id"]))
             endpoint_versions[str(row["id"])] = str(row["truth_version_id"])
             semantic_cards[str(row["id"])] = {
                 "id": str(row["id"]),
                 "version_id": str(row["truth_version_id"]),
                 "natural": str(row["natural_text"] or ""),
-                "proposition": dict(row["proposition"] or {}),
+                "proposition": proposition,
                 "canonical_scope": {
                     "label": scope, "ref": canonical_ref,
                 },
@@ -1119,6 +1126,20 @@ async def hydrate_synthesis_scope_models(
         "ambiguous_scope_count": sum(len(by_ref) > 1 for by_ref in grouped.values()),
         "scopes": list(scopes),
     }
+
+
+def _json_object_or_none(value: Any) -> dict[str, Any] | None:
+    """Decode an asyncpg JSON/JSONB value, accepting objects only."""
+
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return dict(decoded) if isinstance(decoded, Mapping) else None
+    return None
 
 
 def _is_scope_level_synthesis_assertion(
@@ -1207,6 +1228,7 @@ def _batch_fragment_candidates(
                     source_observation_ids=(observation_id,),
                     member_observation_ids=(observation_id,),
                     semantic_scope=(scope,),
+                    canonical_scope_ref=str(member.get("canonical_ref") or "") or None,
                     observation_evidence=(member,),
                     confidence=0.58,
                     reason=(
@@ -1258,6 +1280,7 @@ def _group_batch_fragments(
                 "observation_id": observation_id,
                 "body": text,
                 "source_channel": str(raw.get("source_channel") or ""),
+                "canonical_ref": str(raw.get("canonical_ref") or ""),
             })
             continue
         scope = " ".join(match.group("scope").split())
@@ -1269,6 +1292,7 @@ def _group_batch_fragments(
                 "observation_id": observation_id,
                 "body": text,
                 "source_channel": str(raw.get("source_channel") or ""),
+                "canonical_ref": str(raw.get("canonical_ref") or ""),
             }
         )
         scope_labels.setdefault(scope_key, scope)

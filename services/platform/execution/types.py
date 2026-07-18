@@ -129,6 +129,7 @@ class MemoryDecisionCandidate:
     relation_evidence_observation_ids: tuple[str, ...] = ()
     relation_observation_evidence: tuple[dict[str, Any], ...] = ()
     semantic_scope: tuple[str, ...] = ()
+    canonical_scope_ref: str | None = None
     observation_evidence: tuple[dict[str, str], ...] = ()
     evidence_model_ids: tuple[str, ...] = ()
     supporting_evidence_ids: tuple[str, ...] = ()

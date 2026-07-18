@@ -1145,6 +1145,8 @@ async def _validate_relation_claim_ops(
                 pending_model_event_ids=pending_model_event_ids,
             )
         except (ValidationError, EdgeRegistryError) as e:
+            if bool((op.metadata or {}).get("atomic_with_synthesis")):
+                raise
             reason = _classify_relation_claim_drop_reason(e)
             msg = getattr(e, "message", None) or str(e)
             errors.append(f"relation_claim_op {op.op}: {msg}")

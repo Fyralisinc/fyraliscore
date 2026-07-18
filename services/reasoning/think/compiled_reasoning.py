@@ -871,6 +871,20 @@ def _bind_synthesis_endpoint_versions(
             cards[str(model_id)] for model_id in member_ids
             if isinstance(cards, dict) and isinstance(cards.get(str(model_id)), dict)
         ]
+        card_scope_refs = {
+            str((card.get("canonical_scope") or {}).get("ref") or "")
+            for card in enriched["endpoint_model_cards"]
+            if isinstance(card, dict)
+        }
+        card_scope_refs.discard("")
+        candidate_ref = str(candidate.get("canonical_scope_ref") or "")
+        if len(card_scope_refs) != 1 or (
+            candidate_ref and candidate_ref not in card_scope_refs
+        ):
+            enriched["endpoint_model_versions"] = {}
+            enriched["endpoint_model_cards"] = []
+        elif not candidate_ref:
+            enriched["canonical_scope_ref"] = next(iter(card_scope_refs))
         bound.append(enriched)
     return bound
 
@@ -1233,6 +1247,7 @@ def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
         "relation_observation_evidence",
         "endpoint_model_cards",
         "semantic_scope",
+        "canonical_scope_ref",
         "observation_evidence",
         "supporting_evidence_ids",
         "counterevidence_ids",
@@ -1251,6 +1266,11 @@ def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
             continue
         value = candidate.get(key)
         if value in (None, [], {}, ""):
+            continue
+        if key == "endpoint_model_cards" and isinstance(value, list):
+            lines.append("    endpoint_model_cards:")
+            for card in value[:8]:
+                lines.append(f"      - {_trunc(_jsonish(card), 900)}")
             continue
         lines.append(f"    {key}: {_trunc(_jsonish(value), 900)}")
     lines.append("  </candidate>")
@@ -1854,6 +1874,15 @@ def relation_claim_ops_from_obligations(
     review_intent = 0
     for obligation in obligations:
         decision = decisions_by_id.get(obligation.candidate_id)
+        if any(
+            str((existing.metadata or {}).get("memory_decision_candidate_id") or "")
+            == obligation.candidate_id
+            and existing.edge_kind == obligation.edge_kind
+            and set(existing.evidence_event_ids) == set(obligation.evidence_event_ids)
+            for existing in existing_ops
+        ):
+            blocked += 1
+            continue
         if (
             decision is not None
             and decision.operation == "situation_and_edge"
@@ -3918,13 +3947,14 @@ def _situation_member_ids(
     candidate: dict[str, Any],
     decision: BatchMemoryCandidateDecision,
 ) -> list[UUID]:
-    members = list(decision.situation_member_model_ids or [])
-    if len(members) < 2:
-        members.extend(_uuid_values(candidate.get("target_model_ids")))
-    if len(members) < 2:
-        members.extend(_uuid_values(candidate.get("evidence_model_ids")))
-    deduped = _dedupe_uuids(members)
-    return deduped[:8]
+    closed = _dedupe_uuids([
+        *_uuid_values(candidate.get("evidence_model_ids")),
+        *_uuid_values(candidate.get("target_model_ids")),
+    ])[:8]
+    selected = _dedupe_uuids(decision.situation_member_model_ids or [])
+    if len(selected) >= 2 and set(selected).issubset(closed):
+        return selected[:8]
+    return closed
 
 
 def _pressure_type(raw: str | None, text: str) -> str:

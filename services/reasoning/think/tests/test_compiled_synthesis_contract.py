@@ -27,6 +27,17 @@ def test_scoped_hydration_receipt_binds_exact_synthesis_head_versions() -> None:
                 str(model_id): str(version_id)
                 for model_id, version_id in zip(models, versions, strict=True)
             },
+            "endpoint_model_cards": {
+                str(model_id): {
+                    "id": str(model_id), "version_id": str(version_id),
+                    "natural": f"Scoped model {index}",
+                    "proposition": {"kind": "belief"},
+                    "canonical_scope": {"label": "Scope", "ref": "scope:one"},
+                }
+                for index, (model_id, version_id) in enumerate(
+                    zip(models, versions, strict=True), start=1,
+                )
+            },
         },
     })
 
