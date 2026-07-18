@@ -61,6 +61,7 @@ from .context_packet import (
     evidence_sort_key as _evidence_sort_key,  # noqa: F401
     evidence_value as _evidence_value,  # noqa: F401
     filter_context_packet_evidence as _filter_context_packet_evidence,  # noqa: F401
+    hydrate_synthesis_scope_models as _hydrate_synthesis_scope_models,
     marginal_evidence_value as _marginal_evidence_value,  # noqa: F401
     memory_decision_candidates as _memory_decision_candidates,  # noqa: F401
     minimal_evidence_target as _minimal_evidence_target,  # noqa: F401
@@ -457,6 +458,10 @@ async def run_inquiry_retrieval(
         read_pool=read_pool,
     )
 
+    synthesis_scope_models, synthesis_hydration_receipt = (
+        await _hydrate_synthesis_scope_models(conn, trigger, limit_per_scope=8)
+    )
+
     result = _finalize_inquiry_run(
         trigger=trigger,
         cfg=bootstrap.cfg,
@@ -487,6 +492,8 @@ async def run_inquiry_retrieval(
         baseline_action_cache_notes=bootstrap.baseline_action_cache_notes,
         sage_reader_notes=bootstrap.sage_reader_notes,
         total_started=total_started,
+        synthesis_scope_models=synthesis_scope_models,
+        synthesis_hydration_receipt=synthesis_hydration_receipt,
     )
     if bootstrap.cfg.persist:
         stage_started = time.perf_counter()

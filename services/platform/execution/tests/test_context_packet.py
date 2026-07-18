@@ -804,6 +804,87 @@ def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None
     )
 
 
+@pytest.mark.asyncio
+async def test_conclusion_hydrates_scope_complete_memory_outside_selected_retrieval() -> None:
+    scopes = ("Atlas release", "Beacon migration", "Cobalt renewal", "Delta handoff")
+    fragments = []
+    for scope in scopes:
+        fragments.extend([
+            {"observation_id": str(uuid4()), "source_channel": "test",
+             "text": f"{scope}, update 4: Ownership remains unclear."},
+            {"observation_id": str(uuid4()), "source_channel": "test",
+             "text": f"{scope}, update 4: Completion moved again."},
+        ])
+    conclusion_id = str(uuid4())
+    fragments.append({
+        "observation_id": conclusion_id, "source_channel": "test",
+        "text": "Delta handoff is blocked.",
+    })
+    trigger = TriggerContext(
+        kind="T1", subkind="event_batch", tenant_id=uuid4(),
+        observation_ids=[uuid4() for _ in fragments],
+        seed_natural_text="Four independent company scopes",
+        seed_signature={"batch_signal_fragments": fragments},
+    )
+    delta_ids = [uuid4(), uuid4(), uuid4()]
+
+    class Connection:
+        calls = 0
+
+        async def fetch(self, _query, tenant_id, labels, limit):
+            self.calls += 1
+            assert tenant_id == trigger.tenant_id
+            assert labels == ["Delta handoff"]
+            assert limit == 8
+            return [
+                {"scope_label": "Delta handoff",
+                 "scope_ref": "workstream:delta-handoff", "id": model_id}
+                for model_id in delta_ids
+            ]
+
+    conn = Connection()
+    hydrated, receipt = await context_packet.hydrate_synthesis_scope_models(
+        conn, trigger
+    )
+    # Arbitrary selected retrieval contains three other scopes and omits Delta.
+    selected = [_card(f"Accepted Model for {scope}") for scope in scopes[:3]]
+    candidates = context_packet.memory_decision_candidates(
+        trigger, (), [], [], selected,
+        SufficiencyVerdict("sufficient_for_reasoning", "ready", 0, 0, ()),
+        synthesis_scope_models=hydrated,
+    )
+    synthesis = [item for item in candidates if item.candidate_kind == "synthesis"]
+    assert conn.calls == 1
+    assert receipt["returned_model_count"] == 3
+    assert len(synthesis) == 1
+    assert synthesis[0].semantic_scope == ("Delta handoff",)
+    assert synthesis[0].evidence_model_ids == tuple(map(str, delta_ids))
+    assert synthesis[0].member_observation_ids == (conclusion_id,)
+
+
+@pytest.mark.asyncio
+async def test_no_conclusion_performs_no_scope_memory_query() -> None:
+    trigger = TriggerContext(
+        kind="T1", subkind="event_batch", tenant_id=uuid4(),
+        observation_ids=[uuid4()],
+        seed_natural_text="ordinary update",
+        seed_signature={"batch_signal_fragments": [{
+            "observation_id": str(uuid4()), "source_channel": "test",
+            "text": "Atlas release, update 3: Ownership remains unclear.",
+        }]},
+    )
+
+    class Connection:
+        async def fetch(self, *_args):
+            raise AssertionError("no conclusion must not query accepted memory")
+
+    hydrated, receipt = await context_packet.hydrate_synthesis_scope_models(
+        Connection(), trigger
+    )
+    assert hydrated == {}
+    assert receipt == {"queried": False, "reason": "no_scope_level_conclusion"}
+
+
 def test_compile_context_packet_carries_bounded_residual_spine() -> None:
     trigger = _trigger()
     residuals = [

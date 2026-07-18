@@ -199,6 +199,8 @@ def _finalize_inquiry_run(
     baseline_action_cache_notes: Any,
     sage_reader_notes: dict[str, Any],
     total_started: float,
+    synthesis_scope_models: dict[str, tuple[str, ...]] | None = None,
+    synthesis_hydration_receipt: dict[str, Any] | None = None,
 ) -> InquiryResult:
     evidence_before_rank = len(evidence_by_key)
     sage_controller_notes = _sage_reader_controller_summary(
@@ -301,6 +303,8 @@ def _finalize_inquiry_run(
         verdict,
         token_budget=cfg.reasoning_packet_token_budget,
         evidence_mode=cfg.context_packet_evidence_mode,
+        synthesis_scope_models=synthesis_scope_models,
+        synthesis_hydration_receipt=synthesis_hydration_receipt,
     )
     _append_stage_timing(
         stage_timing_notes,

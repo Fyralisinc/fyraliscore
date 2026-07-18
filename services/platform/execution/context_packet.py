@@ -7,6 +7,8 @@ import re
 from dataclasses import asdict, is_dataclass
 from typing import Any, Callable, Literal, Mapping
 
+import asyncpg
+
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.synthesis.state_contract import (
     StateSource,
@@ -530,6 +532,8 @@ def compile_context_packet(
     token_budget: int,
     evidence_mode: str = "model_first",
     residuals: list[ResidualDebtCard | Mapping[str, Any]] | None = None,
+    synthesis_scope_models: Mapping[str, tuple[str, ...]] | None = None,
+    synthesis_hydration_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     packet_evidence, evidence_policy, answer_required_ids = (
         filter_context_packet_evidence(
@@ -654,10 +658,12 @@ def compile_context_packet(
         answers,
         packet_evidence,
         sufficiency,
+        synthesis_scope_models=synthesis_scope_models,
     )
     uncertainty_signals = batch_fragment_uncertainty_signals(trigger)
     return {
         "signal_summary": compact(trigger_text(trigger), 1000),
+        "synthesis_scope_hydration": dict(synthesis_hydration_receipt or {}),
         "source_metadata": {
             "trigger_kind": trigger.kind,
             "observation_id": str(trigger.observation_id)
@@ -719,6 +725,7 @@ def memory_decision_candidates(
     sufficiency: SufficiencyVerdict,
     *,
     max_candidates: int = 6,
+    synthesis_scope_models: Mapping[str, tuple[str, ...]] | None = None,
 ) -> list[MemoryDecisionCandidate]:
     """Compile inquiry output into Think-facing memory decision candidates.
 
@@ -744,6 +751,7 @@ def memory_decision_candidates(
         synthesis_candidates = _scoped_synthesis_candidates(
             local_candidates,
             evidence,
+            scope_models=synthesis_scope_models,
         )
         return [
             *local_candidates[: max(max_candidates, 24)],
@@ -850,6 +858,8 @@ def memory_decision_candidates(
 def _scoped_synthesis_candidates(
     atomic_candidates: list[MemoryDecisionCandidate],
     evidence: list[EvidenceCard],
+    *,
+    scope_models: Mapping[str, tuple[str, ...]] | None = None,
 ) -> list[MemoryDecisionCandidate]:
     """Reserve one bounded synthesis decision per entity-backed episode.
 
@@ -883,11 +893,16 @@ def _scoped_synthesis_candidates(
             card for card in evidence
             if card.source_type == "model" and scope_text in card.summary.casefold()
         ]
-        model_ids = _evidence_model_ids(model_cards, limit=8)
+        hydrated_ids = tuple(dict.fromkeys(
+            str(value) for value in (scope_models or {}).get(scope, ())
+        ))[:8]
+        model_ids = list(hydrated_ids) or _evidence_model_ids(model_cards, limit=8)
         distinct_model_summaries = {
             " ".join(card.summary.casefold().split()) for card in model_cards
         }
-        if len(model_ids) < 2 or len(distinct_model_summaries) < 2:
+        if len(model_ids) < 2 or (
+            not hydrated_ids and len(distinct_model_summaries) < 2
+        ):
             continue
         conclusion_candidates = [
             candidate for candidate in current_scope_candidates
@@ -926,6 +941,63 @@ def _scoped_synthesis_candidates(
             ),
         ))
     return out
+
+
+def synthesis_conclusion_scopes(trigger: TriggerContext) -> tuple[str, ...]:
+    """Return only scopes whose current batch asserts a scope-level conclusion."""
+
+    candidates, material = _batch_fragment_candidates(trigger)
+    if not material:
+        return ()
+    return tuple(sorted({
+        scope
+        for candidate in candidates
+        for scope in candidate.semantic_scope
+        if _is_scope_level_synthesis_assertion(candidate, scope)
+    }))
+
+
+async def hydrate_synthesis_scope_models(
+    conn: asyncpg.Connection, trigger: TriggerContext, *, limit_per_scope: int = 8,
+) -> tuple[dict[str, tuple[str, ...]], dict[str, Any]]:
+    """Bounded accepted-memory read used only to open synthesis decisions."""
+
+    scopes = synthesis_conclusion_scopes(trigger)
+    if not scopes:
+        return {}, {"queried": False, "reason": "no_scope_level_conclusion"}
+    rows = await conn.fetch("""
+        SELECT scope_label,scope_ref,id FROM (
+            SELECT proposition->>'scope_label' AS scope_label,
+                   proposition->>'scope_ref' AS scope_ref,id,activation,created_at,
+                   row_number() OVER (
+                       PARTITION BY proposition->>'scope_label',proposition->>'scope_ref'
+                       ORDER BY activation DESC,created_at DESC,id
+                   ) AS scope_rank
+            FROM accepted_current_models
+            WHERE tenant_id=$1 AND status='active'
+              AND proposition->>'scope_label'=ANY($2::text[])
+        ) scoped
+        WHERE scope_rank <= $3
+        ORDER BY scope_label,scope_ref,scope_rank
+    """, trigger.tenant_id, list(scopes), max(2, min(int(limit_per_scope), 8)))
+    grouped: dict[str, dict[str, list[str]]] = {scope: {} for scope in scopes}
+    for row in rows:
+        scope = str(row["scope_label"])
+        canonical_ref = str(row["scope_ref"] or "").strip()
+        if scope in grouped and canonical_ref:
+            grouped[scope].setdefault(canonical_ref, []).append(str(row["id"]))
+    result = {
+        scope: tuple(dict.fromkeys(next(iter(by_ref.values()))))
+        if len(by_ref) == 1 else ()
+        for scope, by_ref in grouped.items()
+    }
+    return result, {
+        "queried": True, "scope_count": len(scopes),
+        "limit_per_scope": max(2, min(int(limit_per_scope), 8)),
+        "returned_model_count": sum(len(values) for values in result.values()),
+        "ambiguous_scope_count": sum(len(by_ref) > 1 for by_ref in grouped.values()),
+        "scopes": list(scopes),
+    }
 
 
 def _is_scope_level_synthesis_assertion(
@@ -2253,6 +2325,7 @@ __all__ = [
     "evidence_sort_key",
     "evidence_value",
     "filter_context_packet_evidence",
+    "hydrate_synthesis_scope_models",
     "marginal_evidence_value",
     "memory_decision_candidates",
     "minimal_evidence_target",
@@ -2263,4 +2336,5 @@ __all__ = [
     "residual_spine_for_packet",
     "select_minimal_sufficient_evidence",
     "state_contract_for_context_packet",
+    "synthesis_conclusion_scopes",
 ]
