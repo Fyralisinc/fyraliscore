@@ -23,7 +23,7 @@ def test_p2_runner_cli_exposes_dsn_and_output() -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_p2_runner_reports_missing_as_missing_on_postgres() -> None:
+async def test_p2_runner_normalizes_gates_and_preserves_missing_race_on_postgres() -> None:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("DATABASE_URL is required for the PostgreSQL P2 evaluator")
@@ -34,9 +34,24 @@ async def test_full_p2_runner_reports_missing_as_missing_on_postgres() -> None:
         report = await run_p2_truth_kernel(conn)
         assert report["schema_version"] == "epistemic-repair-p2-truth-kernel-v1"
         assert len(report["case_results"]) == report["population"]["case_count"]
-        assert all(item["status"] != "pass" for item in report["hard_gates"].values() if item["coverage"] < 1.0)
-        assert report["missing_evidence"]
-        assert not report["phase_exit_ready"]
+        # The P9 member-evidence normalizer is the public exit boundary. It
+        # deliberately replaces internal per-gate diagnostic objects with one
+        # boolean per preregistered gate while preserving raw denominators in
+        # ``p9_member_contributions``.
+        assert set(report["hard_gates"]) == {
+            f"HG-{index:02d}" for index in range(4, 11)
+        }
+        assert all(value is True for value in report["hard_gates"].values())
+        assert set(report["p9_member_contributions"]["gate_members"]) == set(
+            report["hard_gates"]
+        )
+        # This direct-connection test intentionally supplies no independent
+        # concurrency DSN, so the race probe must remain explicit missing
+        # evidence even though every executed gate member passed.
+        assert report["missing_evidence"] == [
+            "race:p2-race-confirm-vs-falsify"
+        ]
+        assert report["phase_exit_ready"] is False
     finally:
         await transaction.rollback()
         await conn.close()
