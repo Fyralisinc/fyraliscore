@@ -26,6 +26,8 @@ from lib.shared.types import ModelCreate, ModelRow
 from services.domain.models.repo import ModelsRepo
 from services.domain.truth_kernel import build_default_truth_kernel
 
+from .evidence_manifest import authorize_compiler_evidence_manifest
+
 
 _COMMAND_VERSION = "think-validated-claim-admission-v1"
 
@@ -85,6 +87,8 @@ async def build_think_admission_command(
 ) -> AdmitModelCommand:
     """Compile one already-validated claim into an immutable truth command."""
 
+    proposition = dict(proposed.proposition)
+    compiler_manifest = proposition.pop("evidence_observation_manifest", None)
     if not evidence_observation_ids:
         raise InvariantViolation(
             "THINK_TRUTH_EVIDENCE_MISSING",
@@ -108,6 +112,12 @@ async def build_think_admission_command(
             missing=missing_ids,
             found=found_ids,
             claimed_count=len(evidence_observation_ids),
+        )
+    if compiler_manifest is not None:
+        authorize_compiler_evidence_manifest(
+            selected_observation_ids=evidence_observation_ids,
+            manifest=compiler_manifest,
+            persisted_observations=rows,
         )
     evidence: list[TruthEvidenceReference] = []
     for row in rows:
@@ -136,7 +146,6 @@ async def build_think_admission_command(
         ))
     evidence_tuple = tuple(evidence)
     evidence_refs = tuple(sorted((item.reference_id for item in evidence), key=str))
-    proposition = dict(proposed.proposition)
     scopes: dict[tuple[UUID, ScopeSubjectKind, ClaimScopeRole], ClaimScopeBinding] = {}
     for actor in proposed.scope_actors:
         key = (actor, ScopeSubjectKind.PERSON, ClaimScopeRole.ACTOR)

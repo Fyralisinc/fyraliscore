@@ -3243,6 +3243,10 @@ def _claim_op_from_batch_decision(
     )
     if observation_manifest:
         entry["evidence_observation_manifest"] = observation_manifest
+        # Preserve the compiler-authorized superset through splitter/applier
+        # transformations. Canonical admission reopens these exact observation
+        # bodies before allowing any redistributed support ID into truth.
+        proposition["evidence_observation_manifest"] = observation_manifest
     return ClaimOp(op="insert", entry=entry), born_event, ""
 
 
