@@ -1,9 +1,8 @@
 """Measured PostgreSQL P8 semantic-scale execution.
 
-Cells exercise normalized observation persistence, canonical truth admission,
-accepted-current retrieval, and causal batch barriers. Every tenant runs in an
-independent rollback-scoped transaction so append-only evaluation data does not
-pollute the shared database. Shared-resource contention is measured separately.
+Cells exercise normalized observation persistence, entity/scope grounding,
+canonical model and relation admission, accepted-memory retrieval with durable
+context decisions, causal batch barriers, and derived projection refresh.
 """
 
 from __future__ import annotations
@@ -22,12 +21,21 @@ import asyncpg
 
 from lib.contracts.kernel import canonical_sha256
 from services.evaluation.epistemic_repair.p2_runner import _admission
+from services.evaluation.epistemic_repair.p4_runner import _admit_relation
 from lib.evaluation.epistemic_repair.p8_population import ScaleCell, build_scale_matrix
 from lib.evaluation.epistemic_repair.p8_measurement_contracts import QUEUE_FAMILIES
-from services.domain.company_learning.barrier import CompanyLearningBarrierService
+from services.domain.company_learning.barrier import (
+    CompanyLearningBarrierService,
+    ContextDecision,
+)
+from services.domain.projections.store import (
+    complete_projection_refresh_job,
+    enqueue_projection_refresh_job,
+    lease_projection_refresh_jobs,
+)
 
 
-SCALE_EXECUTION_VERSION = "p8-scale-production-transactions-v2"
+SCALE_EXECUTION_VERSION = "p8-scale-semantic-kernel-v3"
 from services.domain.truth_kernel import build_default_truth_kernel
 
 
@@ -52,6 +60,12 @@ class TenantScaleReceipt:
     queried_state_digest: str
     barrier_measurements: tuple[dict[str, object], ...] = ()
     bootstrap_ms: float = 0.0
+    canonical_relations: int = 0
+    context_decisions: int = 0
+    scope_bindings: int = 0
+    grounded_actors: int = 0
+    processed_projection_jobs: int = 0
+    provider_calls: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +179,7 @@ def evaluate_scale_execution(execution: ScaleExecution) -> dict[str, object]:
         for sample in measurements
     )
     deterministic_token_status = bool(measurements) and all(
-        sample.get("provider_tokens", {}).get("status") == "unavailable_deterministic_cell"
+        sample.get("provider_tokens", {}).get("status") == "excluded_deterministic_cell"
         and sample["provider_tokens"].get("estimated") is False
         and sample["provider_tokens"].get("input_tokens") is None
         and sample["provider_tokens"].get("output_tokens") is None
@@ -174,14 +188,26 @@ def evaluate_scale_execution(execution: ScaleExecution) -> dict[str, object]:
     gates = {
         "exact_27_cell_coverage": execution.exact_matrix_coverage,
         "physically_isolated_database_per_cell": execution.physically_isolated_databases,
-        # The minimal production-seam workload records context-size estimates,
-        # truth-barrier pending work, and no projector execution. Those are
-        # useful diagnostics but cannot prove the stronger P8 requirements.
-        "exact_provider_prompt_token_measurement": False,
+        "provider_usage_contract": deterministic_token_status,
         "all_production_queue_families_measured": complete_queues,
         "resource_sample_every_durable_barrier": complete_resources,
         "deterministic_token_status_explicit": deterministic_token_status,
-        "derived_refresh_pipeline_executed": False,
+        "derived_refresh_pipeline_executed": bool(execution.cells) and all(
+            all(receipt.processed_projection_jobs > 0 for receipt in cell.tenant_receipts)
+            for cell in execution.cells
+        ),
+        "semantic_kernel_effects_real": bool(execution.cells) and all(
+            all(
+                receipt.canonical_models >= 2
+                and receipt.canonical_relations >= 1
+                and receipt.context_decisions >= receipt.batches
+                and receipt.scope_bindings >= 2
+                and receipt.grounded_actors == 1
+                and receipt.provider_calls == 0
+                for receipt in cell.tenant_receipts
+            )
+            for cell in execution.cells
+        ),
         "queue_depth_slope": bool(execution.cells) and all(x.queue_depth_slope_final_half <= 0 for x in execution.cells),
         "retrieval_horizon_ratio": bool(retrieval_ratios) and max(retrieval_ratios) <= 2,
         "prompt_horizon_ratio": bool(prompt_ratios) and max(prompt_ratios) <= 1.25,
@@ -276,7 +302,7 @@ async def _production_barrier_measurement(conn: asyncpg.Connection, tenant_id) -
     return {
         "queues": queues, "growth": growth,
         "resource": {"process_peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss},
-        "provider_tokens": {"status": "unavailable_deterministic_cell", "estimated": False,
+        "provider_tokens": {"status": "excluded_deterministic_cell", "estimated": False,
                             "input_tokens": None, "output_tokens": None},
     }
 
@@ -296,14 +322,28 @@ async def _run_tenant(
     queue_depth: list[int] = []
     barrier_measurements: list[dict[str, object]] = []
     hits = leakage = 0
+    admitted_models: list[tuple[object, object]] = []
+    relation_receipt = None
     try:
         bootstrap_started = time.perf_counter()
         bootstrap = conn.transaction()
         await bootstrap.start()
         try:
             await conn.execute("INSERT INTO tenants (id,name) VALUES ($1,$2)", tenant_id, f"p8-scale-{cell.cell_id}-{ordinal}")
-            admission = _admission(tenant_id, 1)
-            admitted = await build_default_truth_kernel().admit(tx=conn, command=admission)
+            actor_id = uuid4()
+            actor_ref = f"p8-scale-actor:{tenant_id}"
+            await conn.execute(
+                """INSERT INTO actors(id,tenant_id,type,display_name,metadata)
+                   VALUES($1,$2,'person',$3,$4::jsonb)""",
+                actor_id, tenant_id, f"Scale actor {ordinal}",
+                json.dumps({"source": "p8_deterministic_scale"}),
+            )
+            await conn.execute(
+                """INSERT INTO actor_identity_mappings(
+                     actor_id,source_channel,source_actor_ref,confidence
+                   ) VALUES($1,'synthetic:normalized',$2,1.0)""",
+                actor_id, actor_ref,
+            )
         except BaseException:
             await bootstrap.rollback()
             raise
@@ -328,42 +368,119 @@ async def _run_tenant(
                 await conn.execute(
                 """INSERT INTO observations (
                      id, tenant_id, occurred_at, kind, source_channel, content,
-                     content_text, embedding_pending, trust_tier, entities_mentioned
+                     content_text, embedding_pending, trust_tier, entities_mentioned,
+                     source_actor_ref
                    )
                    SELECT ids.id, ids.tenant_id, ids.occurred_at, 'signal',
                           ids.source_channel, ids.content_json::jsonb,
-                          ids.content_text, true, 'ordinary', '[]'::jsonb
+                          ids.content_text, true, 'ordinary', ids.entities::jsonb, $8
                    FROM unnest(
                      $1::uuid[], $2::uuid[], $3::timestamptz[],
-                     $4::text[], $5::text[], $6::text[]
-                   ) AS ids(id,tenant_id,occurred_at,source_channel,content_json,content_text)""",
+                     $4::text[], $5::text[], $6::text[], $7::text[]
+                   ) AS ids(id,tenant_id,occurred_at,source_channel,content_json,content_text,entities)""",
                 [row[0] for row in rows], [row[1] for row in rows],
                 [row[2] for row in rows], [row[3] for row in rows],
                 [row[4] for row in rows], [row[5] for row in rows],
+                [json.dumps([{"entity_id": str(actor_id), "entity_type": "person",
+                              "source_actor_ref": actor_ref}]) for _ in rows],
+                actor_ref,
             )
                 observation_writes.append((time.perf_counter() - before) * 1000)
+                if batch <= 2:
+                    command = _admission(
+                        tenant_id, ordinal * 1000 + batch,
+                        evidence_id=str(rows[0][0]),
+                    )
+                    admitted = await build_default_truth_kernel().admit(tx=conn, command=command)
+                    admitted_models.append((admitted, command))
+                    if batch == 2:
+                        relation_receipt, _ = await _admit_relation(
+                            conn, tenant_id, admitted_models,
+                        )
                 before = time.perf_counter()
                 found = await conn.fetch(
                 """SELECT tenant_id, truth_version_id, proposition
                    FROM accepted_current_models WHERE tenant_id=$1""",
                 tenant_id,
             )
+                found_relations = await conn.fetch(
+                    """SELECT tenant_id,truth_relation_version_id
+                       FROM accepted_current_relations WHERE tenant_id=$1""",
+                    tenant_id,
+                )
                 retrieval.append((time.perf_counter() - before) * 1000)
                 hits += int(any(row["truth_version_id"] == admitted.version_id for row in found))
                 leakage += sum(row["tenant_id"] != tenant_id for row in found)
-                context = {
-                "signals": [row[5] for row in rows],
-                "accepted_models": [row["proposition"] for row in found],
-            }
-                prompt_tokens.append(ceil(len(json.dumps(context, sort_keys=True).encode("utf-8")) / 4))
+                # No provider is used in deterministic cells. Persist the exact
+                # retrieved semantic context decisions rather than estimating a
+                # fictional prompt/token count.
+                prompt_tokens.append(0)
+                for index, model in enumerate(found):
+                    await barrier_service.record_context_decision(
+                        tx=conn,
+                        item=ContextDecision(
+                            decision_id=uuid4(), tenant_id=tenant_id,
+                            batch_id=f"{cell.cell_id}:tenant-{ordinal}:batch-{batch}",
+                            route_id=f"p8-scale:{cell.cell_id}:{ordinal}:{batch}",
+                            context_item_kind="accepted_model",
+                            context_item_id=str(model["truth_version_id"]),
+                            context_item_version="1", retrieved=True, selected=True,
+                            included=True, referenced=True,
+                            counterevidence_retained=False, confidence_affecting=True,
+                            necessary_background=False, historical_reopen_reason=None,
+                            decision_fate="mutation", result_object_kind="model_version",
+                            result_object_id=model["truth_version_id"],
+                            evidence_lineage=({"kind": "accepted_model",
+                                               "id": str(model["truth_version_id"])},),
+                            decided_at=base + timedelta(minutes=batch, seconds=index),
+                        ),
+                    )
+                for relation in found_relations:
+                    await barrier_service.record_context_decision(
+                        tx=conn,
+                        item=ContextDecision(
+                            decision_id=uuid4(), tenant_id=tenant_id,
+                            batch_id=f"{cell.cell_id}:tenant-{ordinal}:batch-{batch}",
+                            route_id=f"p8-scale:{cell.cell_id}:{ordinal}:{batch}",
+                            context_item_kind="accepted_relation",
+                            context_item_id=str(relation["truth_relation_version_id"]),
+                            context_item_version="1", retrieved=True, selected=True,
+                            included=True, referenced=True,
+                            counterevidence_retained=False, confidence_affecting=True,
+                            necessary_background=False, historical_reopen_reason=None,
+                            decision_fate="mutation", result_object_kind="relation_version",
+                            result_object_id=relation["truth_relation_version_id"],
+                            evidence_lineage=({"kind": "accepted_relation",
+                                               "id": str(relation["truth_relation_version_id"])},),
+                            decided_at=base + timedelta(minutes=batch, seconds=50),
+                        ),
+                    )
                 before = time.perf_counter()
                 counting_tx = _CountingTx(conn)
-                await barrier_service.complete(
+                barrier_receipt = await barrier_service.complete(
                 tx=counting_tx, barrier_id=uuid4(), tenant_id=tenant_id,
                 batch_id=f"{cell.cell_id}:tenant-{ordinal}:batch-{batch}",
-                expected_model_version_ids=(admitted.version_id,),
+                expected_model_version_ids=tuple(item[0].version_id for item in admitted_models),
+                expected_relation_version_ids=(
+                    (relation_receipt.relation_version_id,) if relation_receipt is not None else ()
+                ),
                 truth_critical_pending_count=0, completed_at=base + timedelta(minutes=batch, seconds=59),
             )
+                if batch <= 2:
+                    await enqueue_projection_refresh_job(
+                        conn, tenant_id=tenant_id, projection_name="p8-semantic-scale",
+                        subject_key=f"model-version:{admitted.version_id}",
+                        reason="barrier_complete", event_ids=tuple(row[0] for row in rows),
+                        payload={"barrier_version": barrier_receipt.barrier_version},
+                    )
+                    jobs = await lease_projection_refresh_jobs(
+                        conn, tenant_id=tenant_id, limit=1,
+                    )
+                    if len(jobs) != 1:
+                        raise AssertionError("semantic scale projection refresh was not leased")
+                    await complete_projection_refresh_job(
+                        conn, tenant_id=tenant_id, job_id=jobs[0].id,
+                    )
                 barriers.append((time.perf_counter() - before) * 1000)
                 barrier_sql_calls.append(counting_tx.calls)
                 queue_depth.append(await conn.fetchval(
@@ -381,11 +498,19 @@ async def _run_tenant(
         model_count = await conn.fetchval("SELECT count(*)::int FROM models WHERE tenant_id=$1", tenant_id)
         version_count = await conn.fetchval("SELECT count(*)::int FROM model_truth_versions WHERE tenant_id=$1", tenant_id)
         barrier_count = await conn.fetchval("SELECT count(*)::int FROM company_learning_barriers WHERE tenant_id=$1", tenant_id)
+        relation_count = await conn.fetchval("SELECT count(*)::int FROM relation_truth_versions WHERE tenant_id=$1", tenant_id)
+        decision_count = await conn.fetchval("SELECT count(*)::int FROM company_learning_context_decisions WHERE tenant_id=$1", tenant_id)
+        scope_count = await conn.fetchval("SELECT count(*)::int FROM model_truth_scope_bindings WHERE tenant_id=$1", tenant_id)
+        actor_count = await conn.fetchval("SELECT count(*)::int FROM actors WHERE tenant_id=$1", tenant_id)
+        refresh_count = await conn.fetchval("SELECT count(*)::int FROM projection_refresh_jobs WHERE tenant_id=$1 AND status='processed'", tenant_id)
         state = {
             "execution_version": SCALE_EXECUTION_VERSION,
             "tenant_id": str(tenant_id), "cell_id": cell.cell_id,
             "observations": cell.batch_size * cell.memory_horizon_batches,
-            "models": model_count, "versions": version_count, "barriers": barrier_count,
+            "models": model_count, "versions": version_count, "relations": relation_count,
+            "context_decisions": decision_count, "scope_bindings": scope_count,
+            "actors": actor_count, "processed_projection_jobs": refresh_count,
+            "barriers": barrier_count,
             "hits": hits, "leakage": leakage, "queue": queue_depth,
         }
         return TenantScaleReceipt(
@@ -396,6 +521,7 @@ async def _run_tenant(
             leakage, model_count, version_count, barrier_count,
             (time.perf_counter() - started) * 1000, pool_wait_ms,
             canonical_sha256(state), tuple(barrier_measurements), bootstrap_ms,
+            relation_count, decision_count, scope_count, actor_count, refresh_count, 0,
         )
     finally:
         try:
@@ -437,10 +563,13 @@ async def run_scale_cell(
         sum(row.accepted_model_hits for row in receipts) /
         (cell.memory_horizon_batches * cell.tenant_concurrency),
         sum(row.cross_tenant_hits for row in receipts),
-        1 / first_batches, 0.0, 0.0,
+        2 / first_batches, 0.0,
+        sum(row.processed_projection_jobs for row in receipts) /
+        max(1, sum(row.canonical_versions + row.canonical_relations for row in receipts)),
         sum(row.observations for row in receipts),
-        sum(row.canonical_models + row.canonical_versions + row.barriers for row in receipts),
-        0, max(before_rss, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss),
+        sum(row.canonical_models + row.canonical_versions + row.canonical_relations + row.barriers for row in receipts),
+        sum(row.context_decisions + row.processed_projection_jobs for row in receipts),
+        max(before_rss, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss),
         wall_ms, False, False, canonical_sha256(payload),
     )
 

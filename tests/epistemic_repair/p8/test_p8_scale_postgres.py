@@ -23,7 +23,8 @@ async def test_measured_postgres_scale_cell_uses_truth_retrieval_and_barriers() 
     cell = await run_scale_cell(dsn, ScaleCell("p8-test-bs10-h3-t2", 10, 3, 2))
     assert len(cell.tenant_receipts) == 2
     assert cell.observation_rows == 60
-    assert cell.canonical_rows == 10  # two tenants x (model + version + three barriers)
+    assert cell.canonical_rows == 16  # two tenants x (2 models + 2 versions + relation + 3 barriers)
+    assert cell.derived_rows >= 10
     assert cell.semantic_quality == 1.0
     assert cell.cross_tenant_leakage == 0
     assert cell.queue_depth_slope_final_half <= 0
@@ -34,8 +35,15 @@ async def test_measured_postgres_scale_cell_uses_truth_retrieval_and_barriers() 
     assert all(len(row.barrier_measurements) == 3 for row in cell.tenant_receipts)
     sample = cell.tenant_receipts[0].barrier_measurements[0]
     assert len(sample["queues"]) == 6
-    assert sample["provider_tokens"]["status"] == "unavailable_deterministic_cell"
+    assert sample["provider_tokens"]["status"] == "excluded_deterministic_cell"
     assert sample["provider_tokens"]["estimated"] is False
+    assert all(row.canonical_models == 2 for row in cell.tenant_receipts)
+    assert all(row.canonical_relations == 1 for row in cell.tenant_receipts)
+    assert all(row.scope_bindings == 2 for row in cell.tenant_receipts)
+    assert all(row.grounded_actors == 1 for row in cell.tenant_receipts)
+    assert all(row.context_decisions >= 3 for row in cell.tenant_receipts)
+    assert all(row.processed_projection_jobs == 2 for row in cell.tenant_receipts)
+    assert all(row.provider_calls == 0 for row in cell.tenant_receipts)
 
 
 async def test_scale_evaluator_does_not_equate_rollback_with_database_isolation() -> None:

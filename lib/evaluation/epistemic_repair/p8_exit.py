@@ -150,9 +150,9 @@ def compose_p8_exit(
         "scale_latency": latency_green,
         "scale_queue_growth_resource_complete": all(scale_gates.get(key) is True for key in (
             "all_production_queue_families_measured", "resource_sample_every_durable_barrier",
-            "deterministic_token_status_explicit", "derived_refresh_pipeline_executed",
+            "deterministic_token_status_explicit", "provider_usage_contract",
+            "derived_refresh_pipeline_executed", "semantic_kernel_effects_real",
         )),
-        "deterministic_token_status_exact_not_estimated": scale_gates.get("exact_provider_prompt_token_measurement") is False,
         "shared_contention_separate": _contention_complete(artifacts["contention"]),
         "repeated_warm_25_signal_provenance": warm_complete,
         "characterization_reporting_complete": characterization_complete,

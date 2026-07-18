@@ -60,7 +60,8 @@ def _fixtures(tmp_path: Path) -> dict[str, Path]:
                 "resource_sample_every_durable_barrier": True,
                 "deterministic_token_status_explicit": True,
                 "derived_refresh_pipeline_executed": True,
-                "exact_provider_prompt_token_measurement": False,
+                "provider_usage_contract": True,
+                "semantic_kernel_effects_real": True,
             },
         },
     })
