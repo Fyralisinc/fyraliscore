@@ -67,7 +67,7 @@ Rules:
 | --- | --- |
 | Latest verified coordination checkpoint | CF3-A green at commit `e7de1c3a`, tenant `08d19975-2c39-4fef-a820-27d29c30fd9b`: exactly 25 signals, 24/24 trace fates, drain `27 -> 3 -> 0`, barrier zero, 28 logical/29 physical attempts with exact reported usage, elapsed `269.295s` |
 | Repair implementation | Validator preserves explicit retirement; the evaluator now reads the exact historical relation instance required to verify retirement instead of relying only on the current-instance surface; focused evaluator suite `14/14` green |
-| Current phase | CF3-A receipted rerun is green. No active reviews, candidates, Models, or relations remain; CF3-B is unlocked |
+| Current phase | CF3-A is green. Founder-assisted CF3-B is mechanically green but red on its sole remaining material prior-Model-use gate; CF3-C is locked |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
@@ -78,7 +78,7 @@ Rules:
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
-| Highest-priority outcome | Launch CF3-B under its preregistered two-batch memory-canary contract; do not widen to CF3-C unless CF3-B is green |
+| Highest-priority outcome | Close the exact-scope join/prompt/application effect contract, then rerun the strict CF3-B canary; do not widen to CF3-C unless material use is green |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -2225,3 +2225,41 @@ than expanded into the core repair. Three failures found only in the wider
 worker lane are also kept separate because they do not exercise the new exact
 founder-grounding path. They were not investigated, so any preexisting/flaky
 classification remains provisional rather than evidence.
+
+### 2026-07-19 — LOG-065 — Canonical identity and retrieval do not guarantee a learning effect
+
+**Execution:** The fresh founder-assisted CF3-B run at
+`/tmp/fyralis-cf3b-founder-two-batch-spark-r1.json` completed for tenant
+`cb3a8a53-5222-4b31-90ee-f86bf1b68589` in `414.720s`: batch 1 took `259.934s`
+and batch 2 took `154.671s`. Both exact barriers were complete with zero
+pending work. The founder receipt was valid for four aliases, its manifest
+digest was
+`ce1aff1ed00777432f872ac88778c3f5745e76181aeb0d54a6f2a0c7f1b50187`,
+and its semantic deltas were all zero. The run recorded 26 matching LLM
+attempt receipts totaling 376,056 input tokens, 38,852 output tokens, and
+248,064 cache tokens.
+
+**Result:** Batch 1 produced 14/14 evidence-backed accepted Models. Batch 2
+selected all 14 exact batch-1 versions and durably referenced two, but the
+provider reasoning trace referenced zero and materially used zero. The CF3-B
+evaluator therefore reports every gate green except
+`b2_materially_uses_exact_b1_model_version`; its verdict is correctly red.
+
+**Root cause:** Independent dataflow audits found retrieval healthy. The
+remaining gap is between retrieved prior truth and semantic application: the
+runtime lacks a sufficiently explicit exact-scope join, prompt obligation, and
+validated output effect requiring the provider to compare new evidence with
+the relevant prior Model and expose how that comparison changed its decision.
+Increasing retrieval volume, weakening the evaluator, or adding more founder
+aliases would not repair this boundary.
+
+**P0 decision:** Implement one broader, observable effect contract spanning
+exact prior-version selection, scope-matched prompt context, provider decision
+provenance, and validated application. The proof must show a concrete
+conclusion, confidence, correction, or lifecycle decision that differs because
+of an exact prior Model version. Keep CF3-C locked until that contract passes.
+
+**Deferred observation:** Some repeated exact envelopes may eventually be
+deduplicated before reasoning, but repetition can mean corroboration, continued
+state, or a later recurrence. Exact-envelope deduplication is therefore not the
+current fix and remains deferred until its temporal semantics are specified.

@@ -1211,7 +1211,7 @@ transport are excluded from this goal.
 
 ### EDGE-053 — Mechanical Model references can overstate semantic memory use
 
-- **Status:** `bounded by evaluator v2; fresh CF3-B proof still required`
+- **Status:** `resolved as evaluator-integrity defect; fresh run correctly red`
 - **Trigger:** The completed real two-batch run at commit `e8bbe033`.
 - **Current behavior:** Context-use telemetry reports `model_context_used` when
   a generic lifecycle obligation references a selected Model, even when the
@@ -1222,13 +1222,14 @@ transport are excluded from this goal.
   separately.
 - **Risk:** Retrieval presence and generic lifecycle maintenance can create a
   false-green autonomous-learning claim.
-- **Safe boundary:** Evaluator v2 rejects lifecycle-only references; CF3-B and
-  CF3-C remain red/locked until a fresh run demonstrates traceable prior-Model
-  influence.
-- **Return condition:** A fresh run satisfies the v2 decision-level semantic-use
-  contract.
-- **Evidence:** LOG-063 and
-  `/tmp/fyralis-cf3b-codex-two-batch-spark-r2.json`.
+- **Safe boundary:** Evaluator v2 rejects lifecycle-only references. The fresh
+  founder-assisted run selected 14 prior versions and referenced two but still
+  received zero material-use credit because its trace referenced none.
+- **Return condition:** Reopen only if a future evaluator awards material-use
+  credit without decision-level evidence.
+- **Evidence:** LOG-063, LOG-065,
+  `/tmp/fyralis-cf3b-codex-two-batch-spark-r2.json`, and
+  `/tmp/fyralis-cf3b-founder-two-batch-spark-r1-cf3b-v1.json`.
 
 ### EDGE-054 — Founder alias lookup is query-per-phrase
 
@@ -1274,6 +1275,53 @@ transport are excluded from this goal.
   repair until a failure is shown to share its cause.
 - **Return condition:** After the fresh CF3-B core proof, reproduce and triage
   the three failures independently; promote only a causally related failure.
+
+### EDGE-057 — Retrieved exact Models do not yet have a required semantic effect
+
+- **Status:** `P0; current CF3-B blocker`
+- **Trigger:** Founder-assisted CF3-B tenant
+  `cb3a8a53-5222-4b31-90ee-f86bf1b68589` selected all 14 exact batch-1 Model
+  versions in batch 2 and referenced two durably, while its provider trace
+  referenced and materially used zero.
+- **Current behavior:** Founder grounding and retrieval establish the right
+  canonical scope and deliver prior Models, but the join from exact scope into
+  prompt obligations and validated application does not require those Models
+  to affect a decision.
+- **Desired behavior:** For a scope with relevant prior truth, the runtime
+  records the exact selected version, exposes a scope-matched comparison to the
+  provider, and validates a decision-level effect on conclusion, confidence,
+  correction, or lifecycle action.
+- **Risk:** The system can look memory-aware while independently re-deriving
+  each batch from observations, so it stores company facts without learning
+  across time.
+- **Safe boundary:** Keep evaluator v2 strict and CF3-C locked. Do not inflate
+  retrieval, add identity seeds, or count durable references as material use.
+- **Return condition:** A fresh two-batch run has a non-empty trace reference
+  and evaluator-accepted material effect tied to an exact batch-1 Model
+  version, with both barriers still complete and pending zero.
+- **Evidence:** LOG-065 and
+  `/tmp/fyralis-cf3b-founder-two-batch-spark-r1-cf3b-v1.json`.
+
+### EDGE-058 — Exact-envelope deduplication has unresolved temporal semantics
+
+- **Status:** `backlog; explicitly deferred from the CF3-B fix`
+- **Trigger:** Audit observed repeated exact evidence envelopes while tracing
+  why batch 2 did not materially use prior Models.
+- **Current behavior:** Repeated exact envelopes can reach reasoning as distinct
+  observations; no general temporal dedup rule decides whether they are
+  duplicates, corroboration, continued state, or a later recurrence.
+- **Desired behavior:** Any future compaction preserves event time, validity,
+  recurrence, source independence, and evidence multiplicity while removing
+  only semantically redundant envelopes.
+- **Risk:** Eager string/envelope dedup can erase corroboration or temporal
+  change; retaining everything can increase prompt cost and obscure the most
+  useful prior/new evidence comparison.
+- **Safe boundary:** Retain the evidence and solve the exact-scope effect
+  contract first. Do not use deduplication to manufacture CF3-B material use.
+- **Return condition:** After CF3-B is green, define temporal equivalence and
+  add evaluator cases for duplicate, corroborating, continuing, and recurring
+  observations before changing runtime compaction.
+- **Evidence:** LOG-065 and the founder-assisted CF3-B run artifacts.
 
 ## Entry Template
 

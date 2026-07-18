@@ -6,26 +6,25 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** M0 and CF3-A are green; the original CF3-B run remains
-red on semantic memory use. At commit `e8bbe033`, tenant
-`fd1588ed-1379-49c6-b6da-ac69b5f25b79` completed two real Codex batches in
-`481.491s`. Batch 1 safely admitted 14 exact mention-scoped atomics; batch 2
-retrieved all 14 and ended with 28 accepted Models. Both barriers closed at
-zero truth-critical pending. Independent audit rejected the apparent
-`model_context_used` grade: the provider trace based decisions on direct
-observations, while the sole batch-1 Model reference came from generic
-lifecycle bookkeeping. Founder-assisted identity bootstrap is now the chosen
-primary cold start: `1fc88737` writes only governed exact aliases, and
-`9af2275a` resolves a unique active founder alias synchronously before Think.
-Zero-seed mention memory remains the safe fallback. Evaluator v2 at `9650c846`
-requires decision-level semantic dependence and rejects lifecycle-only Model
-references. Commit `58688b8c` proves the joined pre-reasoning dataflow: two
-separate signals naming one founder-known workstream become one resolved
-governed episode, while a novel name remains an unresolved singleton. A fresh
-CF3-B run has not yet proved genuine prior-Model influence, so CF3-C remains
-locked.
+**Current checkpoint:** M0 and CF3-A are green; the fresh founder-assisted
+CF3-B rerun is red only on material prior-Model use. Tenant
+`cb3a8a53-5222-4b31-90ee-f86bf1b68589` completed two production ThinkWorker
+Codex batches in `414.720s` (`259.934s` and `154.671s`). Its receipted founder
+bootstrap established four exact aliases before enqueue, seeded zero semantic
+truth, and matched manifest digest
+`ce1aff1ed00777432f872ac88778c3f5745e76181aeb0d54a6f2a0c7f1b50187`.
+Batch 1 admitted 14/14 evidence-backed Models; batch 2 selected all 14 exact
+batch-1 versions and durably referenced two, but its reasoning trace referenced
+zero and materially used zero. Both barriers closed complete with zero pending
+work. All other CF3-B gates are green. The run carried 26 matching provider
+receipts totaling 376,056 input, 38,852 output, and 248,064 cache tokens.
+Retrieval and founder grounding are therefore healthy; the active P0 is the
+missing exact-scope join/prompt/application effect contract that makes prior
+truth change a batch-2 decision. Exact-envelope deduplication is deferred
+because collapsing repeated evidence requires explicit temporal semantics.
+CF3-C remains locked.
 
-**Last updated:** 2026-07-18
+**Last updated:** 2026-07-19
 
 ## Purpose
 
