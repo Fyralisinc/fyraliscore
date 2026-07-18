@@ -1076,7 +1076,7 @@ class ThinkWorker:
                       'auto_completed_by',
                       $1::text
                     )
-                FROM accepted_current_models m
+                FROM {ACCEPTED_MODEL_ROWS_SQL} m
                 WHERE q.completed_at IS NULL
                   AND q.batch_parent_id IS NULL
                   AND q.trigger_kind = 'T2'
@@ -1584,9 +1584,9 @@ class ThinkWorker:
         if not model_ids:
             return {}
         model_rows = await conn.fetch(
-            """
+            f"""
             SELECT id, scope_actors, scope_entities
-            FROM accepted_current_models
+            FROM {ACCEPTED_MODEL_ROWS_SQL}
             WHERE id = ANY($1::uuid[])
             """,
             model_ids,
@@ -1724,9 +1724,9 @@ class ThinkWorker:
             trigger_to_models[row["id"]] = deduped_models
         model_scope_rows = (
             await conn.fetch(
-                """
+                f"""
                 SELECT id, scope_actors, scope_entities
-                FROM accepted_current_models
+                FROM {ACCEPTED_MODEL_ROWS_SQL}
                 WHERE id = ANY($1::uuid[])
                 """,
                 model_ids,
