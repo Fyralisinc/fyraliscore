@@ -24,6 +24,9 @@ from services.platform.execution.types import (
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.think.compiled_reasoning import (
+    BatchMemoryCandidateDecision,
+    BatchMemoryDecisionSet,
+    CompiledBatchMemoryDecisionRequest,
     build_compiled_batch_memory_decision_request,
 )
 from services.reasoning.think.truth_admission import admit_validated_think_claim
@@ -833,6 +836,7 @@ async def test_conclusion_hydrates_scope_complete_memory_outside_selected_retrie
         seed_signature={"batch_signal_fragments": fragments},
     )
     delta_ids = [uuid4(), uuid4(), uuid4()]
+    delta_versions = [uuid4(), uuid4(), uuid4()]
 
     class Connection:
         calls = 0
@@ -844,8 +848,9 @@ async def test_conclusion_hydrates_scope_complete_memory_outside_selected_retrie
             assert limit == 8
             return [
                 {"scope_label": "Delta handoff",
-                 "scope_ref": "workstream:delta-handoff", "id": model_id}
-                for model_id in delta_ids
+                 "scope_ref": "workstream:delta-handoff", "id": model_id,
+                 "truth_version_id": version_id}
+                for model_id, version_id in zip(delta_ids, delta_versions, strict=True)
             ]
 
     conn = Connection()
@@ -862,6 +867,10 @@ async def test_conclusion_hydrates_scope_complete_memory_outside_selected_retrie
     synthesis = [item for item in candidates if item.candidate_kind == "synthesis"]
     assert conn.calls == 1
     assert receipt["returned_model_count"] == 3
+    assert receipt["endpoint_model_versions"] == {
+        str(model_id): str(version_id)
+        for model_id, version_id in zip(delta_ids, delta_versions, strict=True)
+    }
     assert len(synthesis) == 1
     assert synthesis[0].semantic_scope == ("Delta handoff",)
     assert synthesis[0].evidence_model_ids == tuple(map(str, delta_ids))
@@ -934,6 +943,18 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
             model_ids.append(row.id)
 
         conclusion_id = uuid4()
+        await conn.execute(
+            """
+            INSERT INTO observations
+              (id,tenant_id,occurred_at,kind,source_channel,content,content_text,
+               embedding,embedding_pending,trust_tier)
+            VALUES ($1,$2,now(),'signal','test','{}'::jsonb,$3,$4,FALSE,'authoritative')
+            """,
+            conclusion_id,
+            tenant_id,
+            "Orion delivery is blocked.",
+            [0.0] * 768,
+        )
         trigger = TriggerContext(
             kind="T1",
             subkind="event_batch",
@@ -952,11 +973,77 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
         hydrated, receipt = await context_packet.hydrate_synthesis_scope_models(
             conn, trigger,
         )
+        candidate = {
+            "candidate_id": "MDC_SYNTH_orion",
+            "candidate_kind": "synthesis",
+            "allowed_operations": ["situation", "situation_and_edge", "no_op"],
+            "op_family": "claim_insert",
+            "proposed_text": "Orion delivery is blocked by a persistent ownership gap.",
+            "semantic_scope": [scope_label],
+            "member_observation_ids": [str(conclusion_id)],
+            "evidence_model_ids": [str(model_id) for model_id in model_ids],
+            "endpoint_model_versions": receipt["endpoint_model_versions"],
+            "suggested_edge_kinds": ["blocks"],
+            "reason": "Ownership ambiguity repeatedly delays Orion delivery completion.",
+        }
+        compiled = CompiledBatchMemoryDecisionRequest(
+            system="system", user="user", candidates=(candidate,),
+        ).to_raw_diff(
+            BatchMemoryDecisionSet(decisions=[BatchMemoryCandidateDecision(
+                candidate_id="MDC_SYNTH_orion", decision="accept",
+                operation="situation", confidence=0.78,
+                claim_text="Orion delivery is blocked by a persistent ownership gap.",
+                reason="Ownership ambiguity repeatedly delays delivery completion.",
+            )]),
+            trigger=trigger,
+            trigger_ref=uuid4(),
+        )
+        assert len(compiled.claim_ops) == 1
+        assert len(compiled.relation_claim_ops) == 1
+        entry = compiled.claim_ops[0].entry
+        assert entry is not None
+        synthesis = await admit_validated_think_claim(
+            conn,
+            proposed=ModelCreate(
+                tenant_id=tenant_id,
+                born_from_event_id=conclusion_id,
+                proposition=entry["proposition"],
+                natural=entry["natural"],
+                embedding=[0.0] * 768,
+                scope_entities=[{
+                    "type": "workstream", "id": scope_ref,
+                    "canonical_ref": scope_ref, "display_label": scope_label,
+                }],
+                scope_temporal={},
+                confidence=0.69,
+                confidence_at_assertion=0.69,
+                supporting_event_ids=[conclusion_id],
+                supporting_model_ids=model_ids,
+            ),
+            evidence_observation_ids=(conclusion_id,),
+            models_repo=ModelsRepo(None, embedder=None),
+        )
+        synthesis_evidence_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM model_truth_evidence_references evidence
+            JOIN model_truth_heads head
+              ON head.tenant_id=evidence.tenant_id
+             AND head.version_id=evidence.model_version_id
+            WHERE head.tenant_id=$1 AND head.model_id=$2
+            """,
+            tenant_id,
+            synthesis.id,
+        )
     finally:
         await transaction.rollback()
         await conn.close()
 
     assert set(hydrated[scope_label]) == {str(model_id) for model_id in model_ids}
+    assert synthesis_evidence_count == 4
+    assert set(receipt.pop("endpoint_model_versions")) == {
+        str(model_id) for model_id in model_ids
+    }
     assert receipt == {
         "queried": True,
         "scope_count": 1,

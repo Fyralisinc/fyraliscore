@@ -7,12 +7,37 @@ from services.reasoning.think.compiled_reasoning import (
     BatchMemoryCandidateDecision,
     BatchMemoryDecisionSet,
     CompiledBatchMemoryDecisionRequest,
+    _bind_synthesis_endpoint_versions,
 )
+
+
+def test_scoped_hydration_receipt_binds_exact_synthesis_head_versions() -> None:
+    models = [uuid4(), uuid4()]
+    versions = [uuid4(), uuid4()]
+    candidates = [{
+        "candidate_id": "MDC_SYNTH_scope",
+        "candidate_kind": "synthesis",
+        "evidence_model_ids": [str(value) for value in models],
+    }]
+
+    bound = _bind_synthesis_endpoint_versions(candidates, packet={
+        "synthesis_scope_hydration": {
+            "endpoint_model_versions": {
+                str(model_id): str(version_id)
+                for model_id, version_id in zip(models, versions, strict=True)
+            },
+        },
+    })
+
+    assert bound[0]["endpoint_model_versions"] == {
+        str(model_id): str(version_id)
+        for model_id, version_id in zip(models, versions, strict=True)
+    }
 
 
 def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None:
     tenant_id, trigger_id = uuid4(), uuid4()
-    observation_ids = [uuid4(), uuid4()]
+    observation_ids = [uuid4()]
     prior_models = [uuid4(), uuid4()]
     prior_versions = [uuid4(), uuid4()]
     trigger = TriggerContext(
@@ -41,13 +66,11 @@ def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None
     decisions = BatchMemoryDecisionSet(decisions=[
         BatchMemoryCandidateDecision(
             candidate_id="MDC_SYNTH_scope", decision="accept",
-            operation="edge", confidence=0.72,
+            operation="situation", confidence=0.72,
             claim_text=(
                 "Harbor renewal shows a persistent ownership gap whose status "
                 "signals have repeatedly overstated readiness."
             ),
-            edge_kind="blocks", source_model_id=prior_models[0],
-            target_model_id=prior_models[1],
             reason="The scope warrants both a thesis and a weakens relation.",
         )
     ])
@@ -76,16 +99,16 @@ def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None
     assert set(relation.evidence_event_ids) == set(observation_ids)
     assert set(relation.evidence_model_ids) == set(prior_models)
     supported = proposition["supported_relation"]
-    assert supported["kind"] == "dependency"
+    assert supported["kind"] == "dependency_constraint"
     assert supported["source_model_id"] == str(relation.source_model_id)
     assert supported["target_model_id"] == str(relation.target_model_id)
     assert supported["source_model_version_id"] == str(prior_versions[0])
     assert supported["target_model_version_id"] == str(prior_versions[1])
 
 
-def test_ambiguous_relation_stays_pretruth_without_exact_endpoint_versions() -> None:
+def test_ambiguous_synthesis_stays_pretruth_without_exact_endpoint_versions() -> None:
     tenant_id, trigger_id = uuid4(), uuid4()
-    observations = [uuid4(), uuid4()]
+    observations = [uuid4()]
     models = [uuid4(), uuid4()]
     candidate = {
         "candidate_id": "MDC_SYNTH_candidate",
@@ -119,12 +142,9 @@ def test_ambiguous_relation_stays_pretruth_without_exact_endpoint_versions() -> 
         trigger_ref=trigger_id,
     )
 
-    assert diff.relation_claim_ops, diff.model_dump()
-    relation = diff.relation_claim_ops[0]
-    assert relation.write_policy == "candidate"
-    assert relation.status == "candidate"
-    assert relation.source_model_version_id is None
-    assert relation.target_model_version_id is None
+    assert diff.claim_ops == []
+    assert diff.relation_claim_ops == []
+    assert "lacks exact accepted endpoints" in diff.reasoning_trace
 
 
 def test_rejected_synthesis_emits_neither_model_nor_relation() -> None:

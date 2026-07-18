@@ -84,9 +84,14 @@ def test_synthesis_requires_uuid_members_and_structured_mechanism() -> None:
         "member_model_ids": [str(value) for value in members]
     }) == tuple(members)
     _validate_synthesis_relation({
+        "member_model_ids": [str(value) for value in members],
         "supported_relation": {
             "kind": "dependency_constraint",
             "mechanism": "approval gates downstream completion",
+            "source_model_id": str(members[0]),
+            "target_model_id": str(members[1]),
+            "source_model_version_id": str(uuid4()),
+            "target_model_version_id": str(uuid4()),
         }
     })
     with pytest.raises(InvariantViolation, match="supported_relation"):
@@ -118,6 +123,10 @@ async def test_synthesis_members_resolve_exact_active_versions_as_lineage() -> N
             "supported_relation": {
                 "kind": "causal_influence",
                 "mechanism": "ownership churn delays completion",
+                "source_model_id": str(members[0]),
+                "target_model_id": str(members[1]),
+                "source_model_version_id": str(versions[0]),
+                "target_model_version_id": str(versions[1]),
             },
         },
         scope_refs=frozenset({"workstream:atlas"}),
@@ -126,6 +135,23 @@ async def test_synthesis_members_resolve_exact_active_versions_as_lineage() -> N
     assert [ref.evidence_id for ref in refs] == list(map(str, versions))
     assert [ref.evidence_version for ref in refs] == [2, 3]
     assert all(ref.kind.value == "model_version" for ref in refs)
+    with pytest.raises(InvariantViolation, match="exact active member heads"):
+        await _synthesis_member_evidence(
+            Connection(), tenant_id=tenant_id,
+            proposition={
+                "member_model_ids": [str(value) for value in members],
+                "supported_relation": {
+                    "kind": "causal_influence",
+                    "mechanism": "ownership churn delays completion",
+                    "source_model_id": str(members[0]),
+                    "target_model_id": str(members[1]),
+                    "source_model_version_id": str(uuid4()),
+                    "target_model_version_id": str(versions[1]),
+                },
+            },
+            scope_refs=frozenset({"workstream:atlas"}),
+            model_id=synthesis_id, admitted_at=now,
+        )
 
 
 def _claim(*, supporting_event_ids=(), born_from_event_id=None) -> ClaimOp:

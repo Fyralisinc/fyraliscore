@@ -124,6 +124,22 @@ def _validate_synthesis_relation(proposition: dict[str, Any]) -> None:
             "relation and its evidence-backed mechanism",
             relation_kind=kind or None,
         )
+    members = set(_synthesis_member_ids(proposition))
+    try:
+        source_id = UUID(str(relation["source_model_id"]))
+        target_id = UUID(str(relation["target_model_id"]))
+        UUID(str(relation["source_model_version_id"]))
+        UUID(str(relation["target_model_version_id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvariantViolation(
+            "THINK_SYNTHESIS_RELATION_ENDPOINT_INVALID",
+            "synthesis relation requires canonical Model and version endpoints",
+        ) from exc
+    if source_id == target_id or not {source_id, target_id}.issubset(members):
+        raise InvariantViolation(
+            "THINK_SYNTHESIS_RELATION_MEMBER_MISMATCH",
+            "synthesis relation endpoints must be distinct declared member Models",
+        )
 
 
 async def _synthesis_member_evidence(
@@ -160,6 +176,21 @@ async def _synthesis_member_evidence(
             "THINK_SYNTHESIS_MEMBER_HEAD_MISSING",
             "every synthesis member must resolve to its active exact Model version",
             unresolved_model_ids=sorted(map(str, set(member_ids) - set(by_id))),
+        )
+    relation = proposition["supported_relation"]
+    expected_versions = {
+        UUID(str(relation["source_model_id"])): UUID(
+            str(relation["source_model_version_id"])
+        ),
+        UUID(str(relation["target_model_id"])): UUID(
+            str(relation["target_model_version_id"])
+        ),
+    }
+    if any(by_id[model_id]["version_id"] != version_id
+           for model_id, version_id in expected_versions.items()):
+        raise InvariantViolation(
+            "THINK_SYNTHESIS_RELATION_VERSION_MISMATCH",
+            "synthesis relation endpoints must name the exact active member heads",
         )
     references: list[TruthEvidenceReference] = []
     for member_id in member_ids:

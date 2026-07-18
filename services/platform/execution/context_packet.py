@@ -966,9 +966,10 @@ async def hydrate_synthesis_scope_models(
     if not scopes:
         return {}, {"queried": False, "reason": "no_scope_level_conclusion"}
     rows = await conn.fetch("""
-        SELECT scope_label,scope_ref,id FROM (
+        SELECT scope_label,scope_ref,id,truth_version_id FROM (
             SELECT binding.display_label AS scope_label,
                    binding.canonical_ref AS scope_ref,model.id,
+                   model.truth_version_id,
                    model.truth_advanced_at,model.created_at,
                    row_number() OVER (
                        PARTITION BY binding.display_label,binding.canonical_ref
@@ -988,11 +989,13 @@ async def hydrate_synthesis_scope_models(
         ORDER BY scope_label,scope_ref,scope_rank
     """, trigger.tenant_id, list(scopes), max(2, min(int(limit_per_scope), 8)))
     grouped: dict[str, dict[str, list[str]]] = {scope: {} for scope in scopes}
+    endpoint_versions: dict[str, str] = {}
     for row in rows:
         scope = str(row["scope_label"])
         canonical_ref = str(row["scope_ref"] or "").strip()
         if scope in grouped and canonical_ref:
             grouped[scope].setdefault(canonical_ref, []).append(str(row["id"]))
+            endpoint_versions[str(row["id"])] = str(row["truth_version_id"])
     result = {
         scope: tuple(dict.fromkeys(next(iter(by_ref.values()))))
         if len(by_ref) == 1 else ()
@@ -1002,6 +1005,7 @@ async def hydrate_synthesis_scope_models(
         "queried": True, "scope_count": len(scopes),
         "limit_per_scope": max(2, min(int(limit_per_scope), 8)),
         "returned_model_count": sum(len(values) for values in result.values()),
+        "endpoint_model_versions": endpoint_versions,
         "ambiguous_scope_count": sum(len(by_ref) > 1 for by_ref in grouped.values()),
         "scopes": list(scopes),
     }

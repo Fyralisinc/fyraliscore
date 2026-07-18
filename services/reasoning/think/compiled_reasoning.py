@@ -514,7 +514,10 @@ class CompiledBatchMemoryDecisionRequest:
                 candidate_claim_placeholders[decision.candidate_id] = claim_placeholder
 
             emitted_relation_for_decision = False
-            if decision.operation in {"edge", "claim_and_edge", "situation_and_edge"}:
+            if (
+                not synthesis_candidate
+                and decision.operation in {"edge", "claim_and_edge", "situation_and_edge"}
+            ):
                 edge_op, block_reason = _edge_op_from_batch_decision(
                     candidate,
                     decision,
@@ -723,6 +726,7 @@ def build_compiled_batch_memory_decision_request(
     candidates = _memory_candidates_from_packet(packet)
     if not candidates:
         return None
+    candidates = _bind_synthesis_endpoint_versions(candidates, packet=packet)
     candidates = _bind_exact_closed_atomic_targets(
         candidates,
         models=bundle.models,
@@ -794,6 +798,34 @@ def build_compiled_batch_memory_decision_request(
             "important_unknowns": packet.get("important_unknowns"),
         },
     )
+
+
+def _bind_synthesis_endpoint_versions(
+    candidates: list[dict[str, Any]], *, packet: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Bind scoped synthesis members to the exact accepted heads hydrated upstream."""
+
+    receipt = packet.get("synthesis_scope_hydration") or {}
+    versions = receipt.get("endpoint_model_versions") or {}
+    if not isinstance(versions, dict):
+        versions = {}
+    bound: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if candidate.get("candidate_kind") != "synthesis":
+            bound.append(candidate)
+            continue
+        member_ids = _dedupe_uuids(
+            _uuid_values(candidate.get("evidence_model_ids"))
+        )
+        exact = {
+            str(model_id): str(version_id)
+            for model_id in member_ids
+            if (version_id := _coerce_uuid(versions.get(str(model_id)))) is not None
+        }
+        enriched = dict(candidate)
+        enriched["endpoint_model_versions"] = exact
+        bound.append(enriched)
+    return bound
 
 
 def _bind_exact_closed_atomic_targets(
@@ -3388,6 +3420,11 @@ def _claim_op_from_batch_decision(
     role = force_role or decision.claim_role
     proposition = _batch_claim_proposition(role, text, candidate, decision)
     evidence_event_ids = [str(value) for value in _candidate_event_ids(candidate)]
+    if role == "situation":
+        if len(evidence_event_ids) != 1:
+            return None, None, "synthesis requires exactly one conclusion opener"
+        if proposition.get("supported_relation") is None:
+            return None, None, "synthesis relation lacks exact accepted endpoints"
     if evidence_event_ids:
         proposition["evidence_event_ids"] = evidence_event_ids
     evidence_model_ids = (
@@ -3725,20 +3762,41 @@ def _batch_claim_proposition(
 def _supported_synthesis_relation(
     candidate: dict[str, Any], decision: BatchMemoryCandidateDecision,
 ) -> dict[str, Any] | None:
-    edge_kind = _default_batch_edge_kind(decision, candidate)
+    edge_kind = str(decision.edge_kind or "").strip()
+    if not edge_kind:
+        edge_kind = next(
+            (
+                str(value).strip()
+                for value in candidate.get("suggested_edge_kinds") or ()
+                if str(value).strip() in _GOVERNED_BATCH_RELATIONS
+            ),
+            _default_batch_edge_kind(decision, candidate),
+        )
     kind = {
-        "blocks": "dependency", "depends_on": "dependency",
-        "dependency_constraint": "dependency",
-        "causes": "causal", "influences": "causal", "causal_influence": "causal",
-        "predicts": "predictive", "predictive_indicator": "predictive",
+        "blocks": "dependency_constraint", "depends_on": "dependency_constraint",
+        "dependency_constraint": "dependency_constraint",
+        "causes": "causal_influence", "influences": "causal_influence",
+        "causal_influence": "causal_influence",
+        "predicts": "predictive_indicator",
+        "predictive_indicator": "predictive_indicator",
     }.get(edge_kind)
-    source_id = decision.source_model_id
-    target_id = decision.target_model_id
-    if kind is None or source_id is None or target_id is None:
+    members = _situation_member_ids(candidate, decision)
+    source_id = decision.source_model_id or (members[0] if len(members) >= 2 else None)
+    target_id = decision.target_model_id or (members[1] if len(members) >= 2 else None)
+    if (
+        kind is None
+        or source_id is None
+        or target_id is None
+        or source_id == target_id
+        or source_id not in members
+        or target_id not in members
+    ):
         return None
     source_version_id, target_version_id = _candidate_relation_endpoint_versions(
         candidate, source_id, target_id,
     )
+    if source_version_id is None or target_version_id is None:
+        return None
     return {
         "kind": kind,
         "mechanism": _trunc(
@@ -3747,8 +3805,8 @@ def _supported_synthesis_relation(
         ),
         "source_model_id": str(source_id),
         "target_model_id": str(target_id),
-        "source_model_version_id": str(source_version_id) if source_version_id else None,
-        "target_model_version_id": str(target_version_id) if target_version_id else None,
+        "source_model_version_id": str(source_version_id),
+        "target_model_version_id": str(target_version_id),
     }
 
 
@@ -4067,6 +4125,47 @@ def _relation_claim_op_from_relation_hinted_batch_decision(
 ) -> tuple[RelationClaimOp | None, str]:
     if decision.operation in {"act", "no_op"}:
         return None, ""
+    if candidate.get("candidate_kind") == "synthesis":
+        relation = _supported_synthesis_relation(candidate, decision)
+        if relation is None:
+            return None, "synthesis relation lacks exact accepted endpoints"
+        source_id = UUID(relation["source_model_id"])
+        target_id = UUID(relation["target_model_id"])
+        evidence_events = _candidate_event_ids(candidate)
+        members = _situation_member_ids(candidate, decision)
+        if len(evidence_events) != 1 or not {source_id, target_id}.issubset(members):
+            return None, "synthesis relation is not coupled to its opener and members"
+        confidence = min(1.0, max(0.05, float(decision.confidence)))
+        return RelationClaimOp(
+            op="upsert",
+            source_model_id=source_id,
+            target_model_id=target_id,
+            source_model_version_id=UUID(relation["source_model_version_id"]),
+            target_model_version_id=UUID(relation["target_model_version_id"]),
+            subject_ref={"kind": "model", "model_id": str(source_id),
+                         "candidate_id": decision.candidate_id},
+            object_ref={"kind": "model", "model_id": str(target_id),
+                        "candidate_id": decision.candidate_id},
+            predicate=str(relation["kind"]),
+            edge_kind=str(relation["kind"]),
+            direction="source_to_target",
+            endpoint_binding_status="bound",
+            write_policy="accepted_edge",
+            status="accepted",
+            confidence=confidence,
+            weight=_relation_claim_weight(str(relation["kind"]), confidence),
+            binding_confidence=1.0,
+            evidence_event_ids=evidence_events,
+            evidence_model_ids=members,
+            evidence_text=str(candidate.get("proposed_text") or ""),
+            explanation=str(relation["mechanism"]),
+            semantic_scope=_relation_semantic_scope(candidate),
+            metadata={
+                "memory_decision_candidate_id": decision.candidate_id,
+                "relation_claim_origin": "accepted_composite_synthesis",
+                "synthesis_contract": True,
+            },
+        ), ""
     if not _candidate_has_relation_hint(candidate):
         return None, ""
 
