@@ -12,6 +12,10 @@ from pgvector.asyncpg import register_vector
 from lib.shared.types import ModelCreate
 from lib.evaluation.epistemic_repair.p6_population import build_p6_population
 from services.domain.models.repo import ModelsRepo
+from services.domain.entity_grounding.learned_discovery import PersistedSignalText
+from services.evaluation.epistemic_repair.p6_think_runner import (
+    _p6_simulation_mention_adapter,
+)
 from services.platform.execution import context_packet, inquiry
 from services.platform.execution.types import (
     EvidenceCard,
@@ -808,6 +812,7 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
 
 def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None:
     scope = "Orion rollout"
+    scope_ref = "workstream:orion-rollout"
     ordinary_id = str(uuid4())
     adverse_id = str(uuid4())
     ordinary = MemoryDecisionCandidate(
@@ -815,6 +820,7 @@ def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None
         proposed_text="A record links the open owner handoff to the delayed rollout.",
         entailed_claim_text="A record links the open owner handoff to the delayed rollout.",
         member_observation_ids=(ordinary_id,), semantic_scope=(scope,),
+        canonical_scope_ref=scope_ref,
         observation_evidence=({"observation_id": ordinary_id, "body":
             "A record links the open owner handoff to the delayed rollout."},),
     )
@@ -823,6 +829,7 @@ def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None
         proposed_text="The rollout window moved after ownership became unclear.",
         entailed_claim_text="The rollout window moved after ownership became unclear.",
         member_observation_ids=(adverse_id,), semantic_scope=(scope,),
+        canonical_scope_ref=scope_ref,
         observation_evidence=({"observation_id": adverse_id, "body":
             "The rollout window moved after ownership became unclear."},),
     )
@@ -831,6 +838,7 @@ def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None
         proposed_text=f"{scope} is blocked.",
         entailed_claim_text=f"{scope} is blocked.",
         member_observation_ids=(str(uuid4()),), semantic_scope=(scope,),
+        canonical_scope_ref=scope_ref,
     )
     diverse_memory = [
         _card(f"{scope} previously lacked an owner."),
@@ -850,6 +858,33 @@ def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None
     assert candidates[0].semantic_scope == (scope,)
     assert len(candidates[0].evidence_model_ids) == 2
     assert candidates[0].allowed_operations == ("situation_and_edge", "no_op")
+
+
+def test_scoped_synthesis_rejects_missing_or_colliding_scope_refs() -> None:
+    scope = "Orion rollout"
+    evidence = [_card(f"{scope} model one"), _card(f"{scope} model two")]
+
+    def candidates(refs: tuple[str | None, str | None, str | None]):
+        texts = (
+            "A record links the open owner handoff to the delayed rollout.",
+            "The rollout moved after ownership became unclear.",
+            f"{scope} is blocked.",
+        )
+        return [MemoryDecisionCandidate(
+            candidate_id=f"c-{index}", op_family="claim_insert",
+            candidate_kind="atomic", proposed_text=text,
+            entailed_claim_text=text, member_observation_ids=(str(uuid4()),),
+            semantic_scope=(scope,), canonical_scope_ref=ref,
+            observation_evidence=({"observation_id": str(uuid4()), "body": text},),
+        ) for index, (text, ref) in enumerate(zip(texts, refs, strict=True))]
+
+    assert context_packet._scoped_synthesis_candidates(
+        candidates((None, None, None)), evidence,
+    ) == []
+    assert context_packet._scoped_synthesis_candidates(
+        candidates(("workstream:orion-rollout", "workstream:other",
+                    "workstream:orion-rollout")), evidence,
+    ) == []
 
 
 @pytest.mark.parametrize(
@@ -875,12 +910,29 @@ def test_actual_p6_batch4_opens_grounded_synthesis_without_seed_components() -> 
         signal.signal_id: uuid5(NAMESPACE_URL, signal.signal_id)
         for signal in batch.signals
     }
+    adapter_candidates = _p6_simulation_mention_adapter(tuple(
+        PersistedSignalText(
+            signal_id=observation_ids[signal.signal_id],
+            source_channel=signal.source_channel,
+            content_text=signal.text,
+        )
+        for signal in batch.signals
+    ))
+    mentions_by_observation: dict[UUID, list[dict[str, str]]] = {}
+    for mention in adapter_candidates:
+        mentions_by_observation.setdefault(mention.signal_id, []).append({
+            "surface": mention.surface,
+            "canonical_ref": str(mention.provisional_canonical_ref or ""),
+        })
     trigger = TriggerContext(
         kind="T1", subkind="event_batch", tenant_id=uuid4(),
         observation_ids=list(observation_ids.values()),
         seed_signature={"batch_signal_fragments": [
             {"observation_id": str(observation_ids[signal.signal_id]),
-             "source_channel": signal.source_channel, "text": signal.text}
+             "source_channel": signal.source_channel, "text": signal.text,
+             "grounded_mentions": mentions_by_observation.get(
+                 observation_ids[signal.signal_id], []
+             )}
             for signal in batch.signals
         ]},
     )

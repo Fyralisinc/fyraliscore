@@ -31,6 +31,9 @@ from lib.llm.provider import CodexProvider, LLMConfig
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
 from services.domain.models.repo import ModelsRepo
+from services.evaluation.epistemic_repair.p6_think_runner import (
+    _p6_simulation_mention_adapter,
+)
 
 from services.reasoning.relationships import (
     JudgmentScores,
@@ -983,6 +986,57 @@ async def test_t1_batch_coalesces_ready_rows_and_attaches_members(
     assert {row["batch_parent_id"] for row in members} == {batch["id"]}
     assert all(row["locked_by"] is None for row in members)
     assert all(row["completed_at"] is None for row in members)
+
+
+async def test_t1_batch_attaches_current_governed_scope_coordinates(
+    fresh_db, tenant, tenant_cleanup,
+):
+    observations = [
+        await _seed_signal_observation(
+            fresh_db, tenant,
+            text=f"Atlas release, update 4: {body}",
+        )
+        for body in ("Ownership is open.", "The rollout is delayed.")
+    ]
+    triggers = [
+        await _enqueue_trigger_row(fresh_db, tenant, observation_id)
+        for observation_id in observations
+    ]
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            "UPDATE think_trigger_queue SET enqueued_at=now()-interval '10 seconds' "
+            "WHERE id=ANY($1::uuid[])",
+            triggers,
+        )
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10, worker_id="governed-coordinate-batcher",
+            tenant_filter=tenant, t1_batch_window_s=1.0,
+            t1_batch_max_size=4, t1_batch_min_size=2,
+        ),
+        mention_candidate_adapter=_p6_simulation_mention_adapter,
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    fragments = dispatched[0]["payload"]["batch_signal_fragments"]
+    assert len(fragments) == 2
+    assert {fragment["canonical_ref"] for fragment in fragments} == {
+        "workstream:atlas-release"
+    }
+    assert all(fragment["grounded_mentions"] == [{
+        "surface": "Atlas release",
+        "canonical_ref": "workstream:atlas-release",
+        "authority": "provisional_detection",
+        "detection_id": fragment["grounded_mentions"][0]["detection_id"],
+    }] for fragment in fragments)
 
 
 async def test_t1_batch_dispatch_cycle_does_not_lease_singleton_tail(

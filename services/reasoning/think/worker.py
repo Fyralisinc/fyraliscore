@@ -257,6 +257,33 @@ def _payload_dict(raw: Any) -> dict[str, Any]:
     return {}
 
 
+def _valid_canonical_ref(raw: Any) -> str | None:
+    value = str(raw or "").strip()
+    if ":" not in value:
+        return None
+    entity_type, entity_id = value.split(":", 1)
+    if not entity_type.strip() or not entity_id.strip():
+        return None
+    return f"{entity_type.strip().casefold()}:{entity_id.strip()}"
+
+
+def _canonical_entity_ref(raw: Any) -> str | None:
+    value = _payload_dict(raw) if not isinstance(raw, dict) else raw
+    direct = _valid_canonical_ref(
+        value.get("canonical_ref") or value.get("canonical_referent_id")
+    )
+    if direct is not None:
+        return direct
+    entity_id = str(value.get("id") or "").strip()
+    if not entity_id:
+        return None
+    already_typed = _valid_canonical_ref(entity_id)
+    if already_typed is not None:
+        return already_typed
+    entity_type = str(value.get("type") or "").strip().casefold()
+    return _valid_canonical_ref(f"{entity_type}:{entity_id}")
+
+
 def _timestamp(value: datetime) -> float:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -1963,6 +1990,7 @@ class ThinkWorker:
             )
         payload = await self._build_t1_batch_payload(
             conn,
+            tenant_id=tenant_id,
             batch_id=batch_id,
             members=members,
             observation_ids=observation_ids,
@@ -2017,6 +2045,7 @@ class ThinkWorker:
         self,
         conn: asyncpg.Connection,
         *,
+        tenant_id: UUID,
         batch_id: UUID,
         members: list[asyncpg.Record],
         observation_ids: list[UUID],
@@ -2031,6 +2060,57 @@ class ThinkWorker:
             """,
             observation_ids,
         )
+        mention_rows = await conn.fetch(
+            """
+            SELECT detection.id AS detection_id,
+                   detection.source_observation_id,
+                   detection.candidate_surface,
+                   detection.mention,
+                   trace.current_fate,
+                   trace.selected_referent
+            FROM entity_mention_detection_heads head
+            JOIN entity_mention_detections detection
+              ON detection.tenant_id = head.tenant_id
+             AND detection.id = head.current_detection_id
+            LEFT JOIN LATERAL (
+                SELECT current_fate, selected_referent
+                FROM grounding_traces
+                WHERE tenant_id = detection.tenant_id
+                  AND entity_mention_detection_id = detection.id
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            ) trace ON TRUE
+            WHERE head.tenant_id = $1
+              AND head.source_observation_id = ANY($2::uuid[])
+              AND detection.fate = 'detected'
+            ORDER BY detection.source_observation_id,
+                     detection.candidate_surface, detection.id
+            """,
+            tenant_id,
+            observation_ids,
+        )
+        governed_mentions: dict[UUID, list[dict[str, str]]] = {}
+        for mention_row in mention_rows:
+            mention = _payload_dict(mention_row["mention"])
+            referent = _payload_dict(mention_row["selected_referent"])
+            resolved = mention_row["current_fate"] == "resolved_for_consumer"
+            canonical_ref = (
+                _canonical_entity_ref(referent) if resolved
+                else _valid_canonical_ref(mention.get("provisional_canonical_ref"))
+            )
+            surface = str(mention_row["candidate_surface"] or "").strip()
+            if not surface or canonical_ref is None:
+                continue
+            governed_mentions.setdefault(
+                mention_row["source_observation_id"], []
+            ).append({
+                "surface": surface,
+                "canonical_ref": canonical_ref,
+                "authority": (
+                    "resolved_for_consumer" if resolved else "provisional_detection"
+                ),
+                "detection_id": str(mention_row["detection_id"]),
+            })
         seed_entities: list[dict[str, Any]] = []
         seen_entities: set[tuple[str, str]] = set()
         scope_actors: list[str] = []
@@ -2074,16 +2154,35 @@ class ThinkWorker:
             text = (row["content_text"] or "").strip()
             if text:
                 compact_full = " ".join(text.split())
-                signal_fragments.append(
-                    {
-                        "observation_id": str(row["id"]),
-                        "occurred_at": occurred_at.isoformat(),
-                        "source_channel": str(row["source_channel"]),
-                        "kind": str(row["kind"]),
-                        "text": compact_full[:900],
-                        "entities_mentioned": entities,
-                    }
-                )
+                fragment: dict[str, Any] = {
+                    "observation_id": str(row["id"]),
+                    "occurred_at": occurred_at.isoformat(),
+                    "source_channel": str(row["source_channel"]),
+                    "kind": str(row["kind"]),
+                    "text": compact_full[:900],
+                    "entities_mentioned": entities,
+                }
+                grounded = governed_mentions.get(row["id"], [])
+                if grounded:
+                    fragment["grounded_mentions"] = grounded
+                    refs = {item["canonical_ref"] for item in grounded}
+                    if len(refs) == 1:
+                        fragment["canonical_ref"] = next(iter(refs))
+                else:
+                    fallback_refs = (
+                        {
+                            ref
+                            for entity in entities
+                            if isinstance(entity, dict)
+                            and str(entity.get("type") or "").casefold() != "actor"
+                            and (ref := _canonical_entity_ref(entity)) is not None
+                        }
+                        if isinstance(entities, list)
+                        else set()
+                    )
+                    if len(fallback_refs) == 1:
+                        fragment["canonical_ref"] = next(iter(fallback_refs))
+                signal_fragments.append(fragment)
                 compact = compact_full
                 if len(compact) > 280:
                     compact = compact[:277].rstrip() + "..."

@@ -912,13 +912,12 @@ def _scoped_synthesis_candidates(
         if len(conclusion_candidates) != 1:
             continue
         conclusion = conclusion_candidates[0]
+        if not conclusion.canonical_scope_ref:
+            continue
         auxiliary_candidates = [
             candidate for candidate in current_scope_candidates
             if candidate is not conclusion
-            and (
-                not conclusion.canonical_scope_ref
-                or candidate.canonical_scope_ref == conclusion.canonical_scope_ref
-            )
+            and candidate.canonical_scope_ref == conclusion.canonical_scope_ref
         ]
         relation_candidates = _relation_evidence_candidates(auxiliary_candidates)
         relation_evidence_ids = tuple(dict.fromkeys(
@@ -1267,6 +1266,7 @@ def _group_batch_fragments(
     groups: dict[str, list[dict[str, str]]] = {}
     scope_labels: dict[str, str] = {}
     ungrouped: list[dict[str, str]] = []
+    ungrouped_raw: dict[str, Mapping[str, Any]] = {}
     for raw in fragments:
         if not isinstance(raw, dict):
             continue
@@ -1280,8 +1280,9 @@ def _group_batch_fragments(
                 "observation_id": observation_id,
                 "body": text,
                 "source_channel": str(raw.get("source_channel") or ""),
-                "canonical_ref": str(raw.get("canonical_ref") or ""),
+                "canonical_ref": _fragment_scope_ref(raw, None),
             })
+            ungrouped_raw[observation_id] = raw
             continue
         scope = " ".join(match.group("scope").split())
         scope_key = scope.casefold()
@@ -1292,7 +1293,7 @@ def _group_batch_fragments(
                 "observation_id": observation_id,
                 "body": text,
                 "source_channel": str(raw.get("source_channel") or ""),
-                "canonical_ref": str(raw.get("canonical_ref") or ""),
+                "canonical_ref": _fragment_scope_ref(raw, scope),
             }
         )
         scope_labels.setdefault(scope_key, scope)
@@ -1305,8 +1306,43 @@ def _group_batch_fragments(
             if _is_unprefixed_scope_assertion(member["body"], scope)
         ]
         if len(matching_scope_keys) == 1:
-            groups.setdefault(matching_scope_keys[0], []).append(member)
+            scope_key = matching_scope_keys[0]
+            bound = dict(member)
+            raw = ungrouped_raw.get(member["observation_id"], {})
+            bound["canonical_ref"] = _fragment_scope_ref(
+                raw, scope_labels[scope_key]
+            )
+            groups.setdefault(scope_key, []).append(bound)
     return groups, scope_labels
+
+
+def _canonical_ref_or_empty(raw: Any) -> str:
+    value = str(raw or "").strip()
+    if ":" not in value:
+        return ""
+    entity_type, entity_id = value.split(":", 1)
+    if not entity_type.strip() or not entity_id.strip():
+        return ""
+    return f"{entity_type.strip().casefold()}:{entity_id.strip()}"
+
+
+def _fragment_scope_ref(raw: Mapping[str, Any], scope: str | None) -> str:
+    """Select only a governed coordinate for the exact parsed scope surface."""
+    grounded_mentions = raw.get("grounded_mentions", [])
+    if scope and isinstance(grounded_mentions, list) and grounded_mentions:
+        wanted = " ".join(scope.casefold().split())
+        matching_refs = {
+            ref
+            for mention in grounded_mentions
+            if isinstance(mention, Mapping)
+            and " ".join(str(mention.get("surface") or "").casefold().split())
+            == wanted
+            and (ref := _canonical_ref_or_empty(mention.get("canonical_ref")))
+        }
+        if matching_refs:
+            return next(iter(matching_refs)) if len(matching_refs) == 1 else ""
+        return ""
+    return _canonical_ref_or_empty(raw.get("canonical_ref"))
 
 
 def _is_unprefixed_scope_assertion(text: str, scope: str) -> bool:

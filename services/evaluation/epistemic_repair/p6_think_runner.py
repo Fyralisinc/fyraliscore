@@ -49,6 +49,11 @@ _P6_ENVELOPE_RE = re.compile(
     r"^(?P<surface>[A-Z][A-Za-z0-9-]+(?: [A-Za-z0-9-]+){1,3}), update \d+:",
     flags=re.MULTILINE,
 )
+_P6_SCOPE_ASSERTION_RE = re.compile(
+    r"^(?P<surface>[A-Z][A-Za-z0-9-]+(?: [A-Za-z0-9-]+){1,3})\s+"
+    r"(?:is|are|was|were)\b",
+    flags=re.MULTILINE,
+)
 _P6_SCOPE_TYPES = {
     "release": "workstream", "migration": "workstream",
     "handoff": "workstream", "renewal": "commitment",
@@ -65,7 +70,10 @@ def _p6_simulation_mention_adapter(
 ) -> tuple[VerifiedMentionCandidate, ...]:
     candidates: list[VerifiedMentionCandidate] = []
     for signal in signals:
-        match = _P6_ENVELOPE_RE.search(signal.content_text)
+        match = (
+            _P6_ENVELOPE_RE.search(signal.content_text)
+            or _P6_SCOPE_ASSERTION_RE.search(signal.content_text)
+        )
         if match is not None:
             surface = match.group("surface")
             entity_type = _P6_SCOPE_TYPES.get(surface.rsplit(" ", 1)[-1].casefold())
