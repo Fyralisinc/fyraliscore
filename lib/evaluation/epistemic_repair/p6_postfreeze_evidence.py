@@ -37,6 +37,57 @@ def _json_list(value: Any) -> list[dict[str, Any]]:
     return [dict(item) for item in value or () if isinstance(item, dict)]
 
 
+def _signal_fate_rows(
+    observation_to_signal: dict[str, str],
+    *,
+    observed_ids: set[str],
+    boundary_by_signal: dict[str, dict[str, Any]],
+    mention_rows: list[dict[str, Any]],
+    claims: list[dict[str, Any]],
+    context_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    dispositions = {
+        str(row["source_signal_ids"][0]): row
+        for row in context_items
+        if row.get("context_item_kind") == "candidate"
+        and row.get("decision_fate") == "justified_noop"
+        and row.get("result_object_kind") in {
+            "open_question",
+            "clarification_residual",
+        }
+        and len(row.get("source_signal_ids") or ()) == 1
+    }
+    fates = []
+    for observation_id, signal_id in observation_to_signal.items():
+        canonical = any(
+            signal_id in claim.get("evidence_signal_ids", ()) for claim in claims
+        )
+        disposition = dispositions.get(signal_id)
+        fates.append({
+            "signal_id": signal_id,
+            "observation_id": observation_id,
+            "boundary_fate": "assigned" if signal_id in boundary_by_signal else None,
+            "mention_fate": "mention" if any(
+                str(row.get("source_observation_id")) == observation_id
+                and row.get("fate") == "detected"
+                for row in mention_rows
+            ) else "no_mention" if observation_id in observed_ids else None,
+            "mutation_fate": (
+                "canonical_mutation" if canonical
+                else str(disposition["result_object_kind"]) if disposition
+                else "no_mutation" if observation_id in observed_ids else None
+            ),
+            "mutation_reason": (
+                "nonassertable_signal_retained_outside_truth"
+                if disposition else None
+            ),
+            "disposition_decision_id": (
+                disposition.get("decision_id") if disposition else None
+            ),
+        })
+    return fates, list(dispositions.values())
+
+
 async def extract_p6_postfreeze_evidence(
     conn: Any, *, tenant_id: UUID, signal_ids: tuple[str, ...],
     boundary_decisions: tuple[dict[str, Any], ...] = (),
@@ -409,24 +460,21 @@ async def extract_p6_postfreeze_evidence(
         else "partial" if typed_scope_coordinates
         else "missing"
     )
+    signal_fates, uncertainty_dispositions = _signal_fate_rows(
+        observation_to_signal,
+        observed_ids=observed_ids,
+        boundary_by_signal=boundary_by_signal,
+        mention_rows=mention_rows,
+        claims=claims,
+        context_items=context_items,
+    )
     evidence = {
         "schema_version": "epistemic-repair-p6-postfreeze-evidence-v1",
         "tenant_id": str(tenant_id),
         "observation_signal_map": observation_to_signal,
         "observed_source_ids": sorted(observed_ids),
-        "signal_fates": [{
-            "signal_id": signal_id,
-            "observation_id": observation_id,
-            "boundary_fate": "assigned" if signal_id in boundary_by_signal else None,
-            "mention_fate": "mention" if any(
-                str(row.get("source_observation_id")) == observation_id
-                and row.get("fate") == "detected"
-                for row in mention_rows
-            ) else "no_mention" if observation_id in observed_ids else None,
-            "mutation_fate": "canonical_mutation" if any(
-                signal_id in claim.get("evidence_signal_ids", ()) for claim in claims
-            ) else "no_mutation" if observation_id in observed_ids else None,
-        } for observation_id, signal_id in observation_to_signal.items()],
+        "signal_fates": signal_fates,
+        "uncertainty_dispositions": uncertainty_dispositions,
         "boundaries": list(boundary_by_signal.values()),
         "mentions": mentions,
         "claims": claims,

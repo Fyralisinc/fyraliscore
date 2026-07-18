@@ -317,7 +317,7 @@ def _score_uncertainty_fates(
             )
     acceptable_fates = {
         "open_question", "residual", "clarification", "candidate",
-        "needs_clarification",
+        "needs_clarification", "clarification_residual",
     }
     correct: set[str] = set()
     incorrect: set[str] = set()

@@ -82,6 +82,75 @@ async def record_company_learning_context_credit(
     return tuple(row.decision_id for row in rows)
 
 
+async def record_uncertainty_dispositions(
+    conn: Any,
+    *,
+    tenant_id: UUID,
+    run_id: UUID,
+    batch_id: str,
+    route_id: str,
+    uncertainty_signals: list[dict[str, Any]],
+    decided_at: datetime | None = None,
+) -> tuple[UUID, ...]:
+    """Persist non-truth terminal fates for deterministic uncertainty signals."""
+
+    at = decided_at or datetime.now(timezone.utc)
+    service = CompanyLearningBarrierService()
+    rows: list[ContextDecision] = []
+    for signal in uncertainty_signals:
+        observation_id = str(signal.get("observation_id") or "").strip()
+        uncertainty_id = str(signal.get("uncertainty_id") or "").strip()
+        routing = str(signal.get("routing") or "").strip()
+        if not observation_id or not uncertainty_id or routing not in {
+            "open_question",
+            "clarification_residual",
+        }:
+            continue
+        decision_id = uuid5(
+            NAMESPACE_URL,
+            (
+                "fyralis:uncertainty-disposition:"
+                f"{tenant_id}:{run_id}:{observation_id}:{uncertainty_id}"
+            ),
+        )
+        rows.append(
+            ContextDecision(
+                decision_id=decision_id,
+                tenant_id=tenant_id,
+                batch_id=batch_id,
+                route_id=route_id,
+                context_item_kind="candidate",
+                context_item_id=observation_id,
+                context_item_version=uncertainty_id,
+                retrieved=False,
+                selected=False,
+                included=False,
+                referenced=False,
+                counterevidence_retained=False,
+                confidence_affecting=False,
+                necessary_background=False,
+                historical_reopen_reason=None,
+                decision_fate="justified_noop",
+                result_object_kind=routing,
+                result_object_id=None,
+                evidence_lineage=(
+                    {
+                        "kind": "uncertainty_signal",
+                        "observation_id": observation_id,
+                        "uncertainty_id": uncertainty_id,
+                        "uncertainty_kind": signal.get("kind"),
+                        "routing": routing,
+                        "reason": "nonassertable_signal_retained_outside_truth",
+                    },
+                ),
+                decided_at=at,
+            )
+        )
+    for row in rows:
+        await service.record_context_decision(tx=conn, item=row)
+    return tuple(row.decision_id for row in rows)
+
+
 def _decision(
     *, tenant_id: UUID, run_id: UUID, batch_id: str, route_id: str,
     kind: str, item_id: str, referenced: bool, op_count: int,
@@ -148,4 +217,7 @@ def _result(applied: Mapping[str, Any]) -> tuple[str | None, UUID | None]:
     return None, None
 
 
-__all__ = ["record_company_learning_context_credit"]
+__all__ = [
+    "record_company_learning_context_credit",
+    "record_uncertainty_dispositions",
+]

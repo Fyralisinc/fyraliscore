@@ -30,6 +30,7 @@ from services.reasoning.sage.inquiry_traces.emitter import (
 )
 
 from .cascade import CascadeEvent, CascadeResult, cascade
+from .company_learning_feedback import record_uncertainty_dispositions
 from .context_planner import assemble_reasoning_context, plan_context
 from .debug_capture import capture as debug_capture
 from .deterministic import deterministic_handler, is_authoritative
@@ -869,6 +870,16 @@ async def _record_context_plan_observability(
         stage="context_packet",
         payload=inquiry_result.context_packet,
     )
+    uncertainty_signals = inquiry_result.context_packet.get("uncertainty_signals")
+    if isinstance(uncertainty_signals, list) and uncertainty_signals:
+        await record_uncertainty_dispositions(
+            conn,
+            tenant_id=trigger.tenant_id,
+            run_id=record.id,
+            batch_id=str(record.trigger_id),
+            route_id=trigger_kind_full,
+            uncertainty_signals=uncertainty_signals,
+        )
 
 
 def _install_sage_inquiry_trace_context(

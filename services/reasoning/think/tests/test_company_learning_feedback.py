@@ -6,6 +6,7 @@ import pytest
 
 from services.reasoning.think.company_learning_feedback import (
     record_company_learning_context_credit,
+    record_uncertainty_dispositions,
 )
 
 
@@ -60,3 +61,43 @@ async def test_unreferenced_selected_model_gets_unused_fate():
         applied={},
     )
     assert tx.calls[0][1][15] == "unused"
+
+
+@pytest.mark.asyncio
+async def test_records_uncertainty_as_nonselected_justified_noop_candidate():
+    tx = _Tx()
+    tenant_id, run_id, observation_id = uuid4(), uuid4(), uuid4()
+    signal = {
+        "uncertainty_id": "MDU_atlas_question",
+        "kind": "open_question",
+        "observation_id": str(observation_id),
+        "routing": "open_question",
+    }
+
+    first = await record_uncertainty_dispositions(
+        tx,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        batch_id="batch-uncertainty",
+        route_id="T1:event_batch",
+        uncertainty_signals=[signal],
+    )
+    second = await record_uncertainty_dispositions(
+        tx,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        batch_id="batch-uncertainty",
+        route_id="T1:event_batch",
+        uncertainty_signals=[signal],
+    )
+
+    assert first == second
+    args = tx.calls[0][1]
+    assert args[4] == "candidate"
+    assert args[5] == str(observation_id)
+    assert args[6] == "MDU_atlas_question"
+    assert args[7:11] == (False, False, False, False)
+    assert args[15] == "justified_noop"
+    assert args[16] == "open_question"
+    assert args[17] is None
+    assert "nonassertable_signal_retained_outside_truth" in str(args[18])
