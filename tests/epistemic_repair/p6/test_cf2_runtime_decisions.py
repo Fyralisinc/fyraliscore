@@ -3,13 +3,19 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
+import pytest
+from pydantic import ValidationError
+
 from services.evaluation.epistemic_repair.cf2_decisions import (
     compiled_batch_memory_decisions,
 )
 from services.evaluation.epistemic_repair.cf2_provider import CF2StructuredRequest
 from services.reasoning.think.compiled_reasoning import (
+    BatchMemoryCandidateDecision,
     BatchMemoryDecisionSet,
     _batch_candidate_lines,
+    _situation_member_ids,
+    _supported_synthesis_relation_result,
 )
 
 
@@ -123,6 +129,81 @@ def test_admits_at_most_one_exact_evidenced_mechanistic_synthesis() -> None:
     assert accepted.source_model_id == model_ids[0]
     assert accepted.target_model_id == model_ids[1]
     assert rejected.decision == "reject"
+
+
+def test_synthesis_membership_is_normalized_to_include_relation_endpoints() -> None:
+    model_ids = [uuid4() for _ in range(4)]
+    decision = BatchMemoryCandidateDecision(
+        candidate_id="normalized-synthesis",
+        decision="accept",
+        operation="situation_and_edge",
+        confidence=0.9,
+        situation_member_model_ids=model_ids[:2],
+        source_model_id=model_ids[2],
+        target_model_id=model_ids[3],
+        reason="The selected endpoints express the causal mechanism.",
+    )
+    candidate = {
+        "candidate_kind": "synthesis",
+        "evidence_model_ids": [str(value) for value in model_ids],
+    }
+
+    assert _situation_member_ids(candidate, decision) == model_ids
+
+
+@pytest.mark.parametrize("endpoint_mode", ["missing", "identical"])
+def test_coupled_synthesis_requires_distinct_relation_endpoints(
+    endpoint_mode: str,
+) -> None:
+    endpoint = uuid4()
+    values = {
+        "source_model_id": endpoint,
+        "target_model_id": endpoint if endpoint_mode == "identical" else None,
+    }
+
+    with pytest.raises(ValidationError):
+        BatchMemoryCandidateDecision(
+            candidate_id="invalid-coupled-synthesis",
+            decision="accept",
+            operation="situation_and_edge",
+            confidence=0.9,
+            reason="Invalid endpoint binding.",
+            **values,
+        )
+
+
+def test_synthesis_relation_reports_exact_closed_set_failure() -> None:
+    source_id, target_id, outside_id = uuid4(), uuid4(), uuid4()
+    source_version_id, target_version_id = uuid4(), uuid4()
+    evidence_id = uuid4()
+    decision = BatchMemoryCandidateDecision(
+        candidate_id="diagnostic-synthesis",
+        decision="accept",
+        operation="situation_and_edge",
+        confidence=0.9,
+        source_model_id=source_id,
+        target_model_id=outside_id,
+        reason="A causal relation was selected.",
+    )
+    candidate = {
+        "candidate_kind": "synthesis",
+        "evidence_model_ids": [str(source_id), str(target_id)],
+        "endpoint_model_versions": {
+            str(source_id): str(source_version_id),
+            str(target_id): str(target_version_id),
+        },
+        "relation_evidence_observation_ids": [str(evidence_id)],
+        "explicit_relation_obligation": {
+            "edge_kind": "causes",
+            "evidence_event_ids": [str(evidence_id)],
+            "evidence_model_ids": [str(source_id), str(target_id)],
+        },
+    }
+
+    relation, failure = _supported_synthesis_relation_result(candidate, decision)
+
+    assert relation is None
+    assert failure == "relation endpoints are outside the closed model set"
 
 
 def test_compiled_parser_accepts_long_production_shaped_endpoint_cards() -> None:

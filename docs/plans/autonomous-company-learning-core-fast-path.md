@@ -2,7 +2,7 @@
 
 **Document type:** Executable multi-agent implementation and evaluation plan
 
-**Status:** M0, CF3-A, and CF3-B complete; CF3-C first run red, bounded repair ready for rerun
+**Status:** M0, CF3-A, and CF3-B complete; CF3-C second run isolated the final synthesis-binding defect and its provider-free repair is green
 
 **Active branch:** `codex/autonomous-company-learning`
 

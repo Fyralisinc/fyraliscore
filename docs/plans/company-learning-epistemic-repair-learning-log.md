@@ -2382,3 +2382,40 @@ production extraction.
 open CF4 or pursue unrelated lifecycle, efficiency, or ontology work. The
 original artifact remains red. Focused PostgreSQL and pure validation is green;
 one fresh four-batch rerun is required before any M1 claim.
+
+### 2026-07-19 — LOG-070 — Second CF3-C failure forces explicit synthesis ownership
+
+**Execution:** Tenant `bc18e40b-cadc-4ff8-bbc8-6ba7cbd76df0` processed four
+intact batches of 25 in `796.150s` with 57 provider calls. The strict report at
+`/tmp/fyralis-cf3c-four-batch-spark-r2-cf3c-v1.json` made every continuous
+grounding, atomic, linking, typing, lineage, scope, receipt, barrier and
+prior-memory metric green. Exactly 12 intended atomics entered each of the
+first three batches. The only six failed gates were consequences of one absent
+Atlas composite and its absent canonical causal relation.
+
+**Root cause:** The repaired short candidate identifier joined. The compiled
+trace then reported `invalid or stale closed-set relation binding`: one causal
+obligation was perceived, none emitted, and the synthesis was blocked. The
+provider controlled both endpoint roles and a second member-id list, while the
+compiler required those two independently authored fields to agree exactly.
+This redundant authority could silently discard a semantically valid decision;
+the raw structured provider decision was not retained, so the precise predicate
+was not observable after the run.
+
+**Architecture decision and bounded repair:** The provider owns the thesis and
+semantic source/target roles. The compiler owns the hydrated closed set, exact
+accepted-head versions, evidence bounds and final member normalization.
+Provider-selected members remain advisory and are preserved when closed-set
+valid; selected distinct endpoints are always included. The compiler does not
+force all hydrated Models into the composite because some are only background.
+Structured `situation_and_edge` decisions now require present, distinct
+endpoints, and every rejection names its exact failed predicate. Focused
+synthesis contracts and PostgreSQL composite-plus-relation atomicity pass
+`21/21`.
+
+**Reflection / next action:** This is the explicit architecture decision
+required after the same semantic boundary failed twice. It is still narrowly
+about the one missing end-to-end synthesis transition. Do not widen entity,
+ontology, lifecycle or efficiency work. Run at most one confirmation CF3-C
+canary; if it remains red, preserve the artifact and reconsider the synthesis
+boundary rather than entering another local patch/rerun loop.

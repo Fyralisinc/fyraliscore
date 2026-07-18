@@ -250,7 +250,7 @@ def test_synthesis_endpoint_outside_closed_members_emits_zero_writes() -> None:
     )
     assert diff.claim_ops == []
     assert diff.relation_claim_ops == []
-    assert "invalid or stale closed-set relation binding" in diff.reasoning_trace
+    assert "relation endpoints are outside the closed model set" in diff.reasoning_trace
 
 
 def test_rejected_synthesis_emits_neither_model_nor_relation() -> None:

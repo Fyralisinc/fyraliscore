@@ -6,15 +6,15 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** M0, CF3-A, and CF3-B are green. The first four-batch
-CF3-C run completed but is semantically red because it admitted no composite
-or canonical Atlas relation. The failure has been frozen and classified; a
-bounded local repair now covers exact synthesis-candidate identity, causal
-relation semantics, duplicate unresolved-mention admission, purpose-aware
-receipts, report/evidence digest binding, and sparse-gold mention scoring. The
-frozen rerender recovers `88/88` required mentions and reports adjudicated
-precision `0.967033`, with three confirmed false positives and 36 open-world
-review spans. CF4 remains locked. One fresh CF3-C rerun is next.
+**Current checkpoint:** M0, CF3-A, and CF3-B are green. The second four-batch
+CF3-C run made every measured grounding, atomic, scope, lineage, receipt and
+prior-memory gate green, but remained semantically red because the provider's
+relation endpoints and independently selected composite-member list disagreed.
+The compiler now normalizes advisory membership around distinct closed-set
+endpoints, structured output requires those endpoints, and rejection traces
+name the exact failed predicate. Provider-free synthesis and PostgreSQL
+atomicity proof passes `21/21`. CF4 remains locked pending one confirmation
+CF3-C canary.
 
 **Last updated:** 2026-07-19
 
@@ -2178,3 +2178,29 @@ matched feedback quality and objective entity v6.
 - Focused validation passes `101/101` with PostgreSQL, plus architecture
   ratchets, Ruff, and diff checks. One fresh CF3-C rerun is the next semantic
   action.
+
+### 2026-07-19 — Second CF3-C run isolates redundant synthesis ownership
+
+- Tenant `bc18e40b-cadc-4ff8-bbc8-6ba7cbd76df0` completed four 25-signal
+  batches in `796.150s` with 57 provider calls. Atomic precision/recall/F1,
+  canonical linking, entity typing, evidence lineage, scope precision/recall,
+  barriers, receipts and prior-memory gates were all green.
+- The duplicate-distractor repair worked: batches one through three admitted
+  exactly the 12 intended atomics each. Batch four still admitted no composite
+  or canonical relation. Its trace showed one perceived causal obligation but
+  zero emitted obligations and one blocked synthesis decision.
+- The short candidate identity joined correctly, moving the failure to a
+  redundant closed-set binding: the provider had to express semantic endpoints
+  and repeat compatible membership in an independent list. Raw provider output
+  was not persisted, so the old trace could not identify which predicate failed.
+- Architecture decision: the provider owns thesis and causal endpoint roles;
+  the compiler owns the hydrated closed set, exact versions, evidence and
+  membership normalization. Provider membership is advisory, valid selected
+  members are retained, and distinct selected endpoints are always included.
+  This avoids the semantically noisy alternative of forcing every hydrated
+  background Model into every composite.
+- Structured `situation_and_edge` output now requires present, distinct
+  endpoints. Compiler rejection reports the exact unsupported kind, endpoint,
+  evidence or version predicate. Focused synthesis plus real-PostgreSQL
+  atomicity proof passes `21/21`. One confirmation CF3-C canary is allowed;
+  another patch/rerun loop is not.

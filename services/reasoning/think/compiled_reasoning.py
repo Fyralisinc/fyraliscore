@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID, NAMESPACE_URL, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.shared.edge_registry import EDGE_REGISTRY
 from lib.shared.ids import uuid7
@@ -119,6 +119,27 @@ class BatchMemoryCandidateDecision(BaseModel):
     archive_reason: str | None = Field(default=None, max_length=60)
     superseded_by_model_id: UUID | None = None
     reason: str = Field(min_length=1, max_length=700)
+
+    @model_validator(mode="after")
+    def require_coupled_relation_endpoints(self) -> "BatchMemoryCandidateDecision":
+        """Make a coupled synthesis decision structurally complete.
+
+        The provider owns the semantic direction of the relation.  Missing or
+        self-referential endpoints are therefore invalid structured output,
+        rather than a well-formed decision that the compiler silently drops.
+        Closed-set membership and exact-version checks remain compiler-owned.
+        """
+
+        if self.operation == "situation_and_edge":
+            if self.source_model_id is None or self.target_model_id is None:
+                raise ValueError(
+                    "situation_and_edge requires source_model_id and target_model_id"
+                )
+            if self.source_model_id == self.target_model_id:
+                raise ValueError(
+                    "situation_and_edge requires distinct source and target models"
+                )
+        return self
 
 
 class PriorMemoryEffectDecision(BaseModel):
@@ -555,11 +576,14 @@ class CompiledBatchMemoryDecisionRequest:
                         "coupled relation operation required"
                     )
                     continue
-                if _supported_synthesis_relation(candidate, decision) is None:
+                _, binding_failure = _supported_synthesis_relation_result(
+                    candidate, decision,
+                )
+                if binding_failure is not None:
                     blocked += 1
                     trace_parts.append(
                         f"{decision.candidate_id}: synthesis not promoted - "
-                        "invalid or stale closed-set relation binding"
+                        f"{binding_failure}"
                     )
                     continue
                 claim_op, claim_placeholder, block_reason = (
@@ -4614,9 +4638,18 @@ def _batch_claim_proposition(
 def _supported_synthesis_relation(
     candidate: dict[str, Any], decision: BatchMemoryCandidateDecision,
 ) -> dict[str, Any] | None:
+    relation, _ = _supported_synthesis_relation_result(candidate, decision)
+    return relation
+
+
+def _supported_synthesis_relation_result(
+    candidate: dict[str, Any], decision: BatchMemoryCandidateDecision,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate a synthesis relation and expose its exact rejection predicate."""
+
     obligation = candidate.get("explicit_relation_obligation")
     if not isinstance(obligation, dict):
-        return None
+        return None, "missing explicit relation obligation"
     edge_kind = str(obligation.get("edge_kind") or "").strip()
     kind = {
         "blocks": "dependency_constraint", "depends_on": "dependency_constraint",
@@ -4634,23 +4667,25 @@ def _supported_synthesis_relation(
         candidate.get("relation_evidence_observation_ids")
     ))
     obligation_model_ids = set(_uuid_values(obligation.get("evidence_model_ids")))
-    if (
-        kind is None
-        or source_id is None
-        or target_id is None
-        or source_id == target_id
-        or source_id not in members
-        or target_id not in members
-        or not obligation_event_ids
-        or not obligation_event_ids.issubset(allowed_relation_event_ids)
-        or not {source_id, target_id}.issubset(obligation_model_ids)
-    ):
-        return None
+    if kind is None:
+        return None, f"unsupported relation kind {edge_kind or '<missing>'}"
+    if source_id is None or target_id is None:
+        return None, "relation endpoints are missing"
+    if source_id == target_id:
+        return None, "relation endpoints are identical"
+    if not {source_id, target_id}.issubset(obligation_model_ids):
+        return None, "relation endpoints are outside the closed model set"
+    if source_id not in members or target_id not in members:
+        return None, "relation endpoints are outside normalized composite members"
+    if not obligation_event_ids:
+        return None, "relation evidence is empty"
+    if not obligation_event_ids.issubset(allowed_relation_event_ids):
+        return None, "relation evidence is outside the candidate evidence set"
     source_version_id, target_version_id = _candidate_relation_endpoint_versions(
         candidate, source_id, target_id,
     )
     if source_version_id is None or target_version_id is None:
-        return None
+        return None, "relation endpoints lack exact accepted-head versions"
     return {
         "kind": kind,
         "mechanism": _trunc(
@@ -4662,7 +4697,7 @@ def _supported_synthesis_relation(
         "source_model_version_id": str(source_version_id),
         "target_model_version_id": str(target_version_id),
         "evidence_event_ids": [str(value) for value in sorted(obligation_event_ids, key=str)],
-    }
+    }, None
 
 
 def _candidate_event_ids(candidate: dict[str, Any]) -> list[UUID]:
@@ -4689,6 +4724,22 @@ def _situation_member_ids(
         *_uuid_values(candidate.get("target_model_ids")),
     ])[:8]
     selected = _dedupe_uuids(decision.situation_member_model_ids or [])
+    # For synthesis, provider membership is advisory.  The compiler normalizes
+    # it against the hydrated closed set and always includes the provider's
+    # semantic relation endpoints.  This prevents two redundant provider
+    # fields from disagreeing and silently discarding a valid synthesis.
+    if candidate.get("candidate_kind") == "synthesis":
+        if not set(selected).issubset(closed):
+            selected = []
+        endpoints = _dedupe_uuids([
+            value
+            for value in (decision.source_model_id, decision.target_model_id)
+            if value is not None
+        ])
+        normalized = _dedupe_uuids([*selected, *endpoints])
+        if len(normalized) >= 2 and set(normalized).issubset(closed):
+            return normalized[:8]
+        return closed
     if len(selected) >= 2 and set(selected).issubset(closed):
         return selected[:8]
     return closed

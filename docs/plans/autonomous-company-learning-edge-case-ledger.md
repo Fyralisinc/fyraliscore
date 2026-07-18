@@ -1399,6 +1399,27 @@ transport are excluded from this goal.
   observation use and memory-value ablation become binding metrics.
 - **Evidence:** `/tmp/fyralis-cf3c-four-batch-spark-r1.json` and LOG-069.
 
+### EDGE-062 — Persist raw structured synthesis decisions for diagnosis
+
+- **Status:** `observability backlog after the CF3-C confirmation canary`
+- **Trigger:** CF3-C r2 retained the final compiler trace but not the raw
+  structured provider decision, so endpoint/member disagreement could only be
+  inferred after the run.
+- **Current behavior:** The compiler now reports the exact binding predicate
+  and schema validation catches missing or identical endpoints before apply.
+  The provider payload itself is still not durably available in the artifact.
+- **Desired behavior:** Preserve a redacted, digest-bound structured-decision
+  receipt with candidate ID, operation, membership and endpoint fields.
+- **Risk:** Future provider regressions may still require another run to
+  distinguish malformed output from compiler normalization behavior.
+- **Safe boundary:** Exact compiler diagnostics and provider-free contract
+  tests are sufficient for the current narrow canary. Do not build a general
+  reasoning-event archive before the core loop closes.
+- **Return condition:** Implement with CF8 evidence packaging or earlier only
+  if the confirmation canary produces another otherwise-unexplainable red.
+- **Evidence:** CF3-C r2 tenant
+  `bc18e40b-cadc-4ff8-bbc8-6ba7cbd76df0` and LOG-070.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title
