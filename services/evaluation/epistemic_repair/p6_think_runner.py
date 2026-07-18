@@ -7,6 +7,7 @@ before an independent evaluator is allowed to join them to sealed truth.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -25,7 +26,7 @@ from lib.evaluation.epistemic_repair.provider_contract import (
     require_codex_cli_environment,
 )
 from lib.llm.provider import (
-    _codex_transport, build_provider, close_codex_app_server_client,
+    LLMProvider, _codex_transport, build_provider, close_codex_app_server_client,
     set_response_cache,
 )
 from lib.shared.errors import InvariantViolation
@@ -35,7 +36,7 @@ from services.domain.conversation_context.episode_boundaries import (
     ConversationBoundaryObservation, project_conversation_episode_boundaries,
 )
 from services.domain.entity_grounding.learned_discovery import (
-    PersistedSignalText,
+    MentionCandidateAdapter, PersistedSignalText,
     VerifiedMentionCandidate,
 )
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
@@ -63,6 +64,27 @@ _P6_LOCAL_WORK_ITEMS_RE = re.compile(
     r" is listed in the "
     r"(?P<ticket>[A-Z][A-Za-z0-9-]+(?: [A-Za-z0-9-]+){0,3} ticket)",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class P6ThinkExecutionDependencies:
+    """Gold-blind runtime dependencies for one P6-shaped execution.
+
+    Production construction remains owned by ``run_p6_production_think``.
+    Provider-free evaluators may inject compatible dependencies through
+    ``run_p6_think_with_dependencies`` without weakening that production
+    boundary or importing a sealed oracle into this module.
+    """
+
+    llm_provider: LLMProvider
+    mention_candidate_adapter: MentionCandidateAdapter | None
+    embedder: Any
+    run_provenance: dict[str, Any]
+    transport: str
+    pin_planner_model: bool = False
+    execution_mode: str = (
+        "injected ThinkWorker dependencies; no semantic success claimed"
+    )
 
 
 def _p6_simulation_mention_adapter(
@@ -506,31 +528,26 @@ def _run_provenance() -> dict[str, Any]:
     }
 
 
-async def run_p6_production_think(
+async def _execute_p6_think(
     *, database_url: str, population: P6Population, checkpoint_path: Path,
+    dependencies: P6ThinkExecutionDependencies,
     tenant_id: UUID | None = None, per_batch_timeout_s: float = 650.0,
     attempt_timeout_s: float = 300.0,
     total_timeout_s: float = 1800.0, max_batches: int = 12,
 ) -> dict[str, Any]:
-    """Run 12 intact transport batches through the real T1 Think worker."""
+    """Execute P6-shaped batches with already-constructed dependencies."""
 
-    require_codex_cli_environment()
     tenant_id = tenant_id or uuid4()
     run_started_at = datetime.now(timezone.utc)
     _assert_population_clock_safe(population, run_started_at=run_started_at)
-    run_provenance = _run_provenance()
+    run_provenance = dict(dependencies.run_provenance)
     pool = await asyncpg.create_pool(database_url, min_size=1, max_size=4,
                                      init=_init_p6_connection)
-    embedder = OllamaClient(OllamaConfig.from_env())
-    set_response_cache(None)
-    provider = build_provider()
+    embedder = dependencies.embedder
+    provider = dependencies.llm_provider
     expected_provider = str(provider.config.provider)
     expected_model = str(provider.config.model)
-    expected_transport = _codex_transport()
-    if expected_provider != "codex" or expected_transport != "cli":
-        raise RuntimeError(
-            "P6 production proof requires provider=codex and CODEX_TRANSPORT=cli"
-        )
+    expected_transport = str(dependencies.transport)
     # P6 is a one-configuration proof.  Inquiry planning normally selects a
     # faster Codex model; pin both planner roles to the exact main model here.
     pin_names = (
@@ -538,8 +555,9 @@ async def run_p6_production_think(
         "INQUIRY_CODEX_QUESTION_FALLBACK_MODEL",
     )
     prior_pins = {name: os.environ.get(name) for name in pin_names}
-    for name in pin_names:
-        os.environ[name] = expected_model
+    if dependencies.pin_planner_model:
+        for name in pin_names:
+            os.environ[name] = expected_model
     worker = ThinkWorker(
         pool,
         config=WorkerConfig(
@@ -553,7 +571,7 @@ async def run_p6_production_think(
             process_background_triggers=True,
         ),
         llm_provider=provider, mention_discovery_provider=provider,
-        mention_candidate_adapter=_p6_simulation_mention_adapter,
+        mention_candidate_adapter=dependencies.mention_candidate_adapter,
         embedder=embedder,
     )
     started = time.monotonic()
@@ -716,7 +734,7 @@ async def run_p6_production_think(
                 "transport": expected_transport,
             },
             "mixed_llm_attempt_count": len(mixed_attempts),
-            "provider_mode": "production ThinkWorker; every role pinned to one configuration",
+            "provider_mode": dependencies.execution_mode,
             "gold_visible_during_execution": False,
             "boundary_decisions": boundary_decisions,
             "run_provenance": run_provenance,
@@ -736,14 +754,96 @@ async def run_p6_production_think(
         _write_checkpoint(checkpoint_path, artifact)
         return artifact
     finally:
-        for name, prior in prior_pins.items():
-            if prior is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = prior
-        await close_codex_app_server_client()
-        await embedder.close()
+        if dependencies.pin_planner_model:
+            for name, prior in prior_pins.items():
+                if prior is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = prior
         await pool.close()
 
 
-__all__ = ["run_p6_production_think"]
+async def run_p6_think_with_dependencies(
+    *, database_url: str, population: P6Population, checkpoint_path: Path,
+    dependencies: P6ThinkExecutionDependencies,
+    tenant_id: UUID | None = None, per_batch_timeout_s: float = 650.0,
+    attempt_timeout_s: float = 300.0,
+    total_timeout_s: float = 1800.0, max_batches: int = 12,
+) -> dict[str, Any]:
+    """Run the gold-blind execution path with caller-owned dependencies.
+
+    This seam deliberately makes no provider-quality or semantic-success claim.
+    The caller owns provider/embedder construction and cleanup, and must supply
+    an explicit runtime identity suitable for its evaluation class.
+    """
+
+    if not dependencies.run_provenance:
+        raise ValueError("injected P6 execution requires runtime provenance")
+    if not dependencies.transport.strip():
+        raise ValueError("injected P6 execution requires a transport identity")
+    return await _execute_p6_think(
+        database_url=database_url,
+        population=population,
+        checkpoint_path=checkpoint_path,
+        dependencies=dependencies,
+        tenant_id=tenant_id,
+        per_batch_timeout_s=per_batch_timeout_s,
+        attempt_timeout_s=attempt_timeout_s,
+        total_timeout_s=total_timeout_s,
+        max_batches=max_batches,
+    )
+
+
+async def run_p6_production_think(
+    *, database_url: str, population: P6Population, checkpoint_path: Path,
+    tenant_id: UUID | None = None, per_batch_timeout_s: float = 650.0,
+    attempt_timeout_s: float = 300.0,
+    total_timeout_s: float = 1800.0, max_batches: int = 12,
+) -> dict[str, Any]:
+    """Run production P6 with a clean worktree and strict Codex CLI identity."""
+
+    require_codex_cli_environment()
+    run_provenance = _run_provenance()
+    set_response_cache(None)
+    provider = build_provider()
+    embedder = OllamaClient(OllamaConfig.from_env())
+    expected_transport = _codex_transport()
+    if str(provider.config.provider) != "codex" or expected_transport != "cli":
+        await close_codex_app_server_client()
+        await embedder.close()
+        raise RuntimeError(
+            "P6 production proof requires provider=codex and CODEX_TRANSPORT=cli"
+        )
+    dependencies = P6ThinkExecutionDependencies(
+        llm_provider=provider,
+        mention_candidate_adapter=_p6_simulation_mention_adapter,
+        embedder=embedder,
+        run_provenance=run_provenance,
+        transport=expected_transport,
+        pin_planner_model=True,
+        execution_mode=(
+            "production ThinkWorker; every role pinned to one configuration"
+        ),
+    )
+    try:
+        return await run_p6_think_with_dependencies(
+            database_url=database_url,
+            population=population,
+            checkpoint_path=checkpoint_path,
+            dependencies=dependencies,
+            tenant_id=tenant_id,
+            per_batch_timeout_s=per_batch_timeout_s,
+            attempt_timeout_s=attempt_timeout_s,
+            total_timeout_s=total_timeout_s,
+            max_batches=max_batches,
+        )
+    finally:
+        await close_codex_app_server_client()
+        await embedder.close()
+
+
+__all__ = [
+    "P6ThinkExecutionDependencies",
+    "run_p6_production_think",
+    "run_p6_think_with_dependencies",
+]
