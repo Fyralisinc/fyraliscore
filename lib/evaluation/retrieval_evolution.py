@@ -11,11 +11,12 @@ JsonObject = Mapping[str, Any]
 
 @dataclass(frozen=True)
 class RetrievalEvolutionPolicy:
-    schema_version: str = "retrieval-evolution-policy-v1"
+    schema_version: str = "retrieval-evolution-policy-v2"
     minimum_batches_per_phase: int = 3
     minimum_early_observation_share: float = 0.55
     minimum_late_model_share: float = 0.60
     minimum_late_model_reference_share: float = 0.60
+    minimum_late_model_material_use_share: float = 0.60
     minimum_model_share_gain: float = 0.15
     minimum_late_reference_coverage: float = 0.80
     minimum_late_raw_reason_coverage: float = 0.80
@@ -29,8 +30,11 @@ def evaluate_retrieval_evolution(
     """Measure whether retrieval moves from raw evidence to learned memory.
 
     A batch is measured only from persisted retrieval/context-use telemetry. A
-    Model merely selected is not treated as used: it must occur in the runtime's
-    referenced Model IDs. Late Observation use is allowed when the runtime
+    Model selection and operation-level references are retrieval diagnostics,
+    not proof of learning. Material use additionally requires persisted
+    decision-level reasoning evidence that cites the selected Model. This keeps
+    generic lifecycle bookkeeping from satisfying the learning gate. Late
+    Observation use is allowed when the runtime
     records a reopening reason (uncertainty, contradiction, correction, or
     provenance).
     """
@@ -49,6 +53,9 @@ def evaluate_retrieval_evolution(
     )
     late_with_selection = [row for row in phases["late"] if row["selected_total"]]
     late_model_reference_share = _reference_share(phases["late"], "referenced_models")
+    late_model_material_use_share = _reference_share(
+        phases["late"], "materially_used_models"
+    )
     late_reference_coverage = _ratio(
         sum(1 for row in late_with_selection if row["referenced_total"] > 0),
         len(late_with_selection),
@@ -74,6 +81,7 @@ def evaluate_retrieval_evolution(
         "early_observation_selection_share": early_observation_share,
         "late_model_selection_share": late_model_share,
         "late_model_reference_share": late_model_reference_share,
+        "late_model_material_use_share": late_model_material_use_share,
         "model_selection_share_gain": model_share_gain,
         "late_selected_context_reference_coverage": late_reference_coverage,
         "late_raw_observation_reason_coverage": late_raw_reason_coverage,
@@ -91,6 +99,10 @@ def evaluate_retrieval_evolution(
         "late_actual_use_is_model_preferred": _at_least(
             late_model_reference_share, policy.minimum_late_model_reference_share
         ),
+        "late_models_materially_affect_decisions": _at_least(
+            late_model_material_use_share,
+            policy.minimum_late_model_material_use_share,
+        ),
         "model_reliance_increases": _at_least(
             model_share_gain, policy.minimum_model_share_gain
         ),
@@ -104,7 +116,7 @@ def evaluate_retrieval_evolution(
     measured_checks = [value for value in checks.values() if value is not None]
     score = _ratio(sum(bool(value) for value in measured_checks), len(checks))
     return {
-        "schema_version": "retrieval-evolution-evaluation-v1",
+        "schema_version": "retrieval-evolution-evaluation-v2",
         "policy": asdict(policy),
         "batch_count": len(rows),
         "phase_batch_counts": {name: len(phase) for name, phase in phases.items()},
@@ -133,6 +145,15 @@ def _normalize_batch(batch: JsonObject, sequence: int) -> dict[str, Any]:
         context, "selected_observation_ids", batch, "retrieval_observation_count"
     )
     referenced_models = len(_ids(context.get("referenced_model_ids")))
+    selected_model_ids = _ids(context.get("selected_model_ids"))
+    referenced_model_ids = _ids(context.get("referenced_model_ids"))
+    trace_model_ids = _ids(context.get("trace_referenced_model_ids"))
+    decision_trace_used = context.get("reasoning_trace_context_decision_used") is True
+    materially_used_model_ids = (
+        selected_model_ids & referenced_model_ids & trace_model_ids
+        if decision_trace_used
+        else set()
+    )
     referenced_observations = len(_ids(context.get("referenced_observation_ids")))
     selected_historical = max(
         0, int(context.get("selected_historical_observation_count") or 0)
@@ -144,6 +165,9 @@ def _normalize_batch(batch: JsonObject, sequence: int) -> dict[str, Any]:
         "selected_observations": selected_observations,
         "selected_total": selected_models + selected_observations,
         "referenced_models": referenced_models,
+        "materially_used_models": len(materially_used_model_ids),
+        "materially_used_model_ids": sorted(materially_used_model_ids),
+        "decision_trace_used": decision_trace_used,
         "referenced_observations": referenced_observations,
         "referenced_total": referenced_models + referenced_observations,
         "selected_historical_observations": selected_historical,

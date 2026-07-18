@@ -14,7 +14,10 @@ from lib.evaluation.retrieval_evolution import evaluate_retrieval_evolution
 def _batches(payload: dict[str, Any]) -> list[dict[str, Any]]:
     batches: list[dict[str, Any]] = []
     for index, wave in enumerate(payload.get("waves") or [], start=1):
-        run = ((wave.get("t1_batch") or {}).get("run") or {})
+        run = (
+            ((wave.get("t1_batch") or {}).get("run") or {})
+            or ((wave.get("execution") or {}).get("run") or {})
+        )
         if run:
             batches.append({"sequence": wave.get("sequence", index), **run})
     return batches

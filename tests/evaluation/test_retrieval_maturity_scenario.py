@@ -79,6 +79,11 @@ def _run_batch(sequence: int, *, model_count: int, quality_mass: float) -> dict:
         bundle,
         RawDiff(trigger_ref=uuid4(), tenant_id=tenant_id, reasoning_trace=trace),
     )
+    # This fixture models a decision-level semantic use contract. Production
+    # telemetry earns this only when the reasoning trace cites selected Models
+    # as part of the resulting decision.
+    if references:
+        context_use["reasoning_trace_context_decision_used"] = True
     if model_ids:
         guidance = "\n".join(
             _build_retrieval_guidance_section(
@@ -108,6 +113,7 @@ def test_nine_batch_cold_to_mature_scenario_meets_retrieval_policy() -> None:
     assert report["measurements"]["early_observation_selection_share"] == 1.0
     assert report["measurements"]["late_model_selection_share"] == 8 / 11
     assert report["measurements"]["late_model_reference_share"] == 0.8
+    assert report["measurements"]["late_model_material_use_share"] == 0.8
     assert report["measurements"]["late_raw_observation_reason_coverage"] == 1.0
     assert all(len(batch["context_use"]["selected_observation_ids"]) > 1 for batch in batches)
     for batch in batches[-3:]:

@@ -8,12 +8,25 @@ def _batch(
     referenced_models=(),
     referenced_observations=(),
     reasons=(),
+    material_use=True,
 ):
+    selected_model_ids = list(referenced_models) + [
+        f"selected-model-{index}"
+        for index in range(max(0, models - len(referenced_models)))
+    ]
     return {
         "retrieval_model_count": models,
         "retrieval_observation_count": observations,
         "ops_applied": {"context_use": {
+            "selected_model_ids": selected_model_ids,
             "referenced_model_ids": list(referenced_models),
+            "trace_referenced_model_ids": (
+                list(referenced_models) if material_use else []
+            ),
+            "reasoning_trace_context_used": bool(referenced_models) and material_use,
+            "reasoning_trace_context_decision_used": (
+                bool(referenced_models) and material_use
+            ),
             "referenced_observation_ids": list(referenced_observations),
             "raw_observation_reopening_reasons": list(reasons),
             "selected_historical_observation_count": observations,
@@ -54,6 +67,35 @@ def test_selected_models_without_actual_reference_do_not_satisfy_use_gate():
     report = evaluate_retrieval_evolution(batches)
 
     assert report["checks"]["late_selected_context_is_actually_referenced"] is False
+    assert report["verdict"] == "below_policy"
+
+
+def test_lifecycle_bookkeeping_reference_is_not_material_semantic_use():
+    """Regression: the observed CF3-B false-positive must remain red.
+
+    A selected Model was referenced only by an automatically synthesized
+    ``unchanged`` lifecycle review. The provider reasoning trace neither cited
+    nor used that Model to change a conclusion, confidence, correction or act.
+    """
+    batches = (
+        [_batch(1, 9, referenced_observations=("o",)) for _ in range(3)]
+        + [_batch(5, 5, referenced_models=("m",)) for _ in range(3)]
+        + [
+            _batch(
+                9,
+                1,
+                referenced_models=("prior-model",),
+                material_use=False,
+            )
+            for _ in range(3)
+        ]
+    )
+
+    report = evaluate_retrieval_evolution(batches)
+
+    assert report["measurements"]["late_model_reference_share"] == 1.0
+    assert report["measurements"]["late_model_material_use_share"] == 0.0
+    assert report["checks"]["late_models_materially_affect_decisions"] is False
     assert report["verdict"] == "below_policy"
 
 
