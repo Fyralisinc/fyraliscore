@@ -65,20 +65,20 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | `ba800d97` (P7 strict sidecar and locked-run readiness) |
-| Repair implementation | P0-P8 normalization paths implemented; decisive integrated evidence is not complete |
-| Current phase | Clean pinned P6 diagnostic/decisive execution active; P7 provider run and P8 warm-pair rerun gated behind it |
+| Latest verified coordination checkpoint | First 12 x 25 P6 execution failed semantic synthesis; focused repairs through `c04a0445` are implemented but not yet integrated-run proof |
+| Repair implementation | P0-P8 normalization plus P6 synthesis/lifecycle/relation repairs implemented; decisive integrated evidence remains red |
+| Current phase | Focused post-repair P6 proof; repeat the expensive decisive run only after the semantic core is green |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
 | Current execution boundary | Begins with normalized, source-attributed signals already persisted in PostgreSQL |
 | Explicitly excluded | Connectors/listeners, OAuth/webhooks, task autonomy, external consequential action, second 45-batch run |
 | P0-P5 evidence state | Strict raw-member P9 regeneration/sidecar paths ready; current-release artifacts still require clean regeneration |
-| P6 evidence state | Barrier/retry/CLI/reported-usage/evaluator fixes and strict sidecar ready; active run is not yet an exit artifact |
+| P6 evidence state | Complete 300-signal run preserved as a semantic failure: atomic F1 0.603 and 0/4 coherent theses; four-batch diagnostic isolated edge-only synthesis |
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
-| Highest-priority outcome | Complete P6 honestly, then determine whether adaptive memory earns complexity under locked P7 controls |
+| Highest-priority outcome | Prove coherent claim-local synthesis and lifecycle evolution in focused batches, then rerun P6 honestly |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -1278,7 +1278,86 @@ ambiguity paraphrase; accepted-truth downgrade with full-batch siblings;
 manifest-first semantic partition; canonical evidence correct while derived
 evidence metadata is stale; optional local entity with no truth relevance.
 
-## 13. Entry Template
+### 2026-07-18 — LOG-040 — Complete P6 execution falsified coherent synthesis
+
+**Type:** observed and corrected
+
+**Work package / commit:** P6 12 x 25 diagnostic, focused four-batch trace,
+repairs through `c04a0445`.
+
+**What happened:** The first complete P6 run processed 300 signals in 12
+batches without a terminal error, but it did not build the required company
+theses. It accepted 93 Models: 73 singleton atomics and 20 multi-evidence
+Models, several of which mixed storylines or noise. A four-batch follow-up
+contained 24 accepted Models, all atomic facts; the synthesis provider chose
+`operation=edge` for every synthesis candidate, producing relations without a
+synthesis Model.
+
+**Evidence:** Immutable artifacts:
+`/tmp/p6-think-12batch-c3c4dc43.json`,
+`/tmp/p6-think-12batch-c3c4dc43-evidence.json`,
+`/tmp/p6-think-12batch-c3c4dc43-score.json`,
+`/tmp/p6-think-4batch-core-a2dd5376.json`,
+`/tmp/p6-think-4batch-core-a2dd5376-evidence.json`, and
+`/tmp/p6-think-4batch-core-a2dd5376-score.json`. The 12-batch score reported
+atomic precision 73/93 (0.7849), recall 45/92 (0.4891), F1 0.6027, direct
+thesis accuracy 0/4, and mean thesis-facet completeness 0/4. Execution, fates,
+receipts, token reporting, truth barriers, and noise controls passed their
+available hard gates; relation joint precision/recall, scope precision/recall,
+and refresh duplicate-processing ratio were not measured.
+
+**Interpretation:** Transport completion and atomic activity are not coherent
+company learning. Closed-atomic early return initially suppressed synthesis;
+after opening that lane, an untyped multi-evidence candidate allowed relation
+obligation to dominate. Later absorption could then contaminate multi-evidence
+Models. Proposition JSON strings were also an evaluator parsing defect, but
+parsing alone could not repair the genuine 0/4 synthesis outcome.
+
+**Decision or next test:** Treat the 12-batch run as immutable failed evidence.
+Use focused tests to prove that accepted synthesis creates a scope-local
+hypothesis with claim-local evidence, lifecycle probes do not enter truth,
+accepted relations replay, and explicit no-write decisions remain no-ops.
+Repeat the expensive decisive P6 run only after those focused gates pass.
+
+**Coordinator impact:** P6 changed from GO/active to failed-semantic-repair. P7
+and P8 remain gated. Commits `0d703818`, `881a6fac`, `36ccb3f8`, `53f31c7f`,
+`3b143e53`, `ae0b8441`, `a2dd5376`, `c479da91`, `b958076a`, `4fe2a338`,
+`0128aaf2`, and `c04a0445` are repair readiness, not integrated proof.
+
+**Edge cases added:** closed-atomic synthesis suppression; edge-only accepted
+synthesis; relation obligation dominating hypothesis creation; cross-story
+absorption; extracted proposition encoded as JSON text; replayed accepted
+relation missing from projections; explicit no-write veto mistaken for missing
+grounding.
+
+## 13. DEFERRED BACKLOG
+
+This ledger is deliberately quarantined from the core milestone. The milestone
+starts with normalized signals already stored in PostgreSQL and ends with an
+autonomous company-understanding and learning/feedback loop. Agents should log
+these items and continue core work unless one directly blocks semantic proof.
+
+### Explicitly outside the current milestone
+
+- Slack/Jira/email listeners and connectors, OAuth, webhooks, polling, delivery
+  retries, and transport durability.
+- Task or action autonomy and externally consequential actions.
+- A second 45-batch run.
+
+### Deferred until core semantic correctness is proven
+
+- Production hardening, high availability, deployment and operational polish.
+- Efficiency tuning for latency, tokens, call counts, throughput, and cost.
+- Broad framework/schema refactors and non-blocking edge-case fixes.
+- Another expensive P6 replay before focused synthesis/lifecycle/relation tests
+  are green.
+
+Evaluator work required to make the eventual core verdict truthful is not
+permanently deferred. In particular, relation joint precision/recall, scope
+precision/recall, and refresh duplicate-processing measurement must exist for
+P6 exit, but should not displace the immediate synthesis repair proof.
+
+## 14. Entry Template
 
 Copy this section for every new learning:
 

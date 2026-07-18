@@ -2,8 +2,8 @@
 
 **Document type:** Central implementation and evaluation coordinator
 
-**Status:** In execution — population-v3 one-batch semantics are proven; P6 is
-GO for the decisive pinned 12-batch run
+**Status:** In execution — the first decisive P6 run is a preserved semantic
+failure; focused repairs through `c04a0445` await fresh integrated proof
 
 **Active branch:** `codex/autonomous-company-learning`
 
@@ -26,16 +26,18 @@ GO for the decisive pinned 12-batch run
 | P3 perception and grounding | Raw eligible probe evidence and strict P9 sidecar path ready; current-commit artifact regeneration remains required. | `b057a20e`, `5a7a30ce` |
 | P4 causal closure and feedback | Raw learning evidence and strict P9 sidecar path ready; bounded PostgreSQL evidence is not an integrated P6 substitute. | `e476f9fa` |
 | P5 zero-seed vertical | Strict member-derived P9 sidecar ready for the existing deterministic vertical. It proves a bounded vertical, not provider-semantic quality. | `ffaf1341` |
-| P6 12-batch mixed stream | **GO for decisive P6.** The first population-v3 smoke failed closed after 14 reconciled atomics when the fifteenth candidate attempted to carry four unauthorized same-scope siblings. Repairs separated questions/ambiguity before truth formation, kept downgraded evidence outside accepted truth, resolved closed-atomic representation strictly from the manifest, and broadened uncertainty paraphrase coverage. The repinned smoke accepted all 12 intended atomics with precision/recall/F1 1.0, evidence-lineage coverage 1.0, scope precision/recall 1.0, exact mention F1 1.0, entity-type accuracy 1.0, canonical-link precision/recall 1.0, uncertainty fate precision/coverage 1.0, and zero noise-derived Models or relations. A post-freeze audit found four dashboard claims whose canonical evidence was correct but whose derived evidence metadata was stale; `36ccb3f8` repairs production normalization and adds a fail-closed evaluator gate. | `19219aa8`, `c7d936a6`, `4a67493b`, `bd17c6f8`, `b946f10c`, `0d703818`, `36ccb3f8` |
+| P6 12-batch mixed stream | **FAILED SEMANTICALLY; REPAIR IN PROGRESS.** The completed 12 x 25 run processed all 300 signals with complete fates and receipts, but atomic precision/recall/F1 were 0.785/0.489/0.603 and all four required theses were absent. A focused four-batch diagnostic then proved the synthesis provider selected only edges, leaving all 24 accepted Models atomic. Repairs through `c04a0445` now preserve entity-scoped synthesis, force accepted synthesis to materialize a hypothesis Model, keep lifecycle probes and absorption evidence out of unrelated truth, enforce lifecycle authority, and replay accepted relation projections. These are code/test readiness, not a P6 pass; a fresh focused proof is required before another expensive decisive run. | `/tmp/p6-think-12batch-c3c4dc43.json`, `/tmp/p6-think-12batch-c3c4dc43-evidence.json`, `/tmp/p6-think-12batch-c3c4dc43-score.json`, `/tmp/p6-think-4batch-core-a2dd5376.json`, `/tmp/p6-think-4batch-core-a2dd5376-evidence.json`, `/tmp/p6-think-4batch-core-a2dd5376-score.json`; `53f31c7f`..`c04a0445` |
 | P7 matched memory ablation | Historical 45-call run remains falsifying/insufficient evidence. The production lifecycle runner, raw-member oracle, strict P9 sidecar, reported-usage gate, clean-worktree preflight, and exclusive lock are ready; provider execution waits for P6. | `f8375cdf`, `ba800d97` |
 | P8 fault, scale, and characterization | Historical fault proofs remain bounded; the one-pass concurrency result remains red. Strict P9 sidecar and preregistered repeated warm-pair diagnostic are ready; the locked rerun waits for P6/P7 ownership. | `345eb31c`, `f594cc16` |
 | P9 release decision | Fail-closed manifest, exact phase gate/metric sets, content digests, evidence classes, independent reviewer reproduction receipt, and verdict precedence are implemented. No release manifest may be sealed until current-commit P0-P8 artifacts exist. | `63809479`, `ca850161` |
 
 The repository now has strict normalization paths for P0-P8, but code readiness
-is not evidence readiness. The population-v3 25-signal semantic/entity smoke
-has cleared the pre-run gate. The decisive dependency is now the full P6 run on
-a pinned clean commit containing `36ccb3f8`. P7 may start only after P6 produces
-a digest-bound exit artifact; P8
+is not evidence readiness. The first complete P6 execution is diagnostic
+evidence that atomic formation worked partially while coherent synthesis did
+not. The immediate dependency is focused post-repair proof of synthesis,
+lifecycle authority, relation replay, and claim-local evidence. Only after that
+proof is green should the expensive decisive P6 run be repeated. P7 may start
+only after P6 produces a digest-bound exit artifact; P8
 warm-pair work must retain exclusive database ownership; P9 may consume only
 artifacts regenerated on the selected release commit.
 
@@ -71,6 +73,59 @@ granularity.
   latency separately.
 - P9 requires one clean commit, exact phase contracts, an independent reviewer
   receipt, and an explicit non-customer proof boundary.
+
+### P6 diagnostic record and next gate
+
+The immutable 12-batch artifacts are `/tmp/p6-think-12batch-c3c4dc43.json`,
+`/tmp/p6-think-12batch-c3c4dc43-evidence.json`, and
+`/tmp/p6-think-12batch-c3c4dc43-score.json`. All 12 waves completed, with 300
+signals processed in 12 transport batches. Atomic claim precision was 73/93
+(0.7849), recall was 45/92 (0.4891), and F1 was 0.6027. Direct-thesis accuracy
+and mean thesis-facet completeness were both 0/4; the coherent-synthesis hard
+gate therefore failed. Of 93 accepted Models, 73 were singleton local atomics
+and 20 combined 2-37 evidence signals, often across unrelated storylines. No
+accepted Model represented one pure storyline across three lifecycle phases.
+
+The four-batch diagnostic artifacts are
+`/tmp/p6-think-4batch-core-a2dd5376.json`,
+`/tmp/p6-think-4batch-core-a2dd5376-evidence.json`, and
+`/tmp/p6-think-4batch-core-a2dd5376-score.json`. They contained 24 accepted
+Models, all atomic facts. Every `MDC_SYNTH_*` candidate was accepted as an edge,
+so four relation claims and no synthesis Model were emitted for each affected
+batch. This isolated the typed-operation failure: relation obligation dominated
+synthesis materialization.
+
+Repairs through `c04a0445` address the observed mechanisms: persisted entity
+identity now precedes source fallback for episode boundaries (`881a6fac`);
+uncertainty dispositions are durable but outside Models (`0d703818`);
+entity-scoped synthesis survives atomic formation (`53f31c7f`); lifecycle probes
+and absorption evidence remain claim-local (`3b143e53`, `ae0b8441`); accepted
+synthesis materializes a scope-local hypothesis Model with an explicit contract
+(`c479da91`); lifecycle evidence authority is enforced (`b958076a`); accepted
+relations replay into projections (`0128aaf2`); and grounding tests now match
+the no-write veto and write-intent contracts (`4fe2a338`, `c04a0445`). None of
+these commits retroactively changes the failed run.
+
+### DEFERRED BACKLOG — do not execute during the core milestone
+
+The current milestone is one working autonomous company-understanding and
+learning/feedback loop beginning with simulated, database-resident signal
+batches. Agents must record, not pursue, the following unless an item becomes a
+direct blocker to semantic correctness:
+
+- source listeners/connectors, OAuth, webhooks, polling, delivery retries, and
+  transport durability for Slack, Jira, email, or other systems;
+- task/action autonomy and any external consequential action;
+- production hardening, high availability, deployment polish, and broad
+  operational framework work;
+- latency, token, call-count, and throughput optimization that does not block
+  correctness;
+- broad schema or architectural refactors and non-blocking edge cases; and
+- another expensive large replay before focused post-repair semantic tests pass.
+
+Evaluator defects that prevent an honest core verdict are not deferred. Missing
+relation/scope measurements remain required before final P6 exit, but should be
+implemented only when the repaired semantic loop is green enough to measure.
 
 ## 1. Purpose
 
