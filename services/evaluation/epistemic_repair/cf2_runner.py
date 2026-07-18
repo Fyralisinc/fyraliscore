@@ -19,6 +19,7 @@ import asyncpg
 from lib.evaluation.epistemic_repair.core_fast_path_population import (
     build_core_fast_path_population,
 )
+from services.domain.observations.partitions import ensure_partitions
 from services.evaluation.epistemic_repair.cf2_provider import (
     CF2ProviderFreeLLM,
     CF2ResponseHandler,
@@ -89,6 +90,14 @@ async def run_cf2_provider_free(
         conn: asyncpg.Connection, actual_tenant_id: UUID, batch: Any,
     ) -> dict[str, UUID]:
         # Reuse the production-shaped stable identity and observation writer.
+        first = batch.signals[0]
+        await ensure_partitions(
+            conn,
+            as_of=_signal_occurred_at(
+                batch_number=first.batch_number, position=first.position,
+            ).date(),
+            months_ahead=0,
+        )
         return await _persist_runtime_batch(
             conn, tenant_id=actual_tenant_id, batch=batch,
         )

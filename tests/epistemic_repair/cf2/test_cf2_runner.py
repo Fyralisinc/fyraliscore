@@ -36,6 +36,10 @@ async def test_runner_uses_intact_batch_and_prepares_before_think(
         grounded.append(signal)
         return object()
 
+    async def fake_ensure(_conn, **_kwargs):
+        events.append("partition")
+        return []
+
     async def fake_run(*, population, dependencies, **_kwargs):
         assert len(population.batches) == 4
         assert all(len(batch.signals) == 25 for batch in population.batches)
@@ -46,6 +50,7 @@ async def test_runner_uses_intact_batch_and_prepares_before_think(
         return {"waves": [{"batch_number": 1, "snapshot": {}}], "complete": True}
 
     monkeypatch.setattr(cf2_runner, "_persist_runtime_batch", fake_persist)
+    monkeypatch.setattr(cf2_runner, "ensure_partitions", fake_ensure)
     monkeypatch.setattr(
         cf2_runner, "persist_source_authenticated_grounding", fake_ground,
     )
@@ -58,7 +63,7 @@ async def test_runner_uses_intact_batch_and_prepares_before_think(
         max_batches=1,
     )
 
-    assert events == ["persist", "think"]
+    assert events == ["partition", "persist", "think"]
     assert len(conn.metadata_rows) == 25
     assert len(grounded) == 25
     assert all(isinstance(item.observation_id, UUID) for item in grounded)
@@ -87,6 +92,9 @@ async def test_runner_preserves_authoritative_trust_and_source_space(
     async def fake_ground(_conn, _signal):
         return None
 
+    async def fake_ensure(_conn, **_kwargs):
+        return []
+
     async def fake_run(*, population, dependencies, **_kwargs):
         batch = population.batches[3]
         ids = await dependencies.persist_runtime_batch(conn, tenant_id, batch)
@@ -94,6 +102,7 @@ async def test_runner_preserves_authoritative_trust_and_source_space(
         return {"waves": [], "complete": True}
 
     monkeypatch.setattr(cf2_runner, "_persist_runtime_batch", fake_persist)
+    monkeypatch.setattr(cf2_runner, "ensure_partitions", fake_ensure)
     monkeypatch.setattr(
         cf2_runner, "persist_source_authenticated_grounding", fake_ground,
     )
