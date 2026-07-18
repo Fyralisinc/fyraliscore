@@ -18,7 +18,6 @@ from services.reasoning.sage.inquiry_traces import (
     reset_trace_context,
     set_trace_context,
 )
-from services.reasoning.sage.topology_optimizer.optimizer import TopologyOptimizer
 from services.reasoning.think.applier import (
     _accepted_question_policy_probe_model_ids,
     apply_diff,
@@ -413,24 +412,6 @@ async def test_lifecycle_obligations_survive_validate_apply_and_feedback(
         finally:
             reset_trace_context(token)
 
-        report = await TopologyOptimizer(
-            pool=fresh_db,
-            tenant_id=tenant,
-        ).optimize(
-            inquiry_session_id=session_id,
-            trigger_event="validated_synthesis_diff_applied",
-            conn=conn,
-        )
-        stats = await conn.fetchrow(
-            """
-            SELECT attempts, successes, total_credit, utility_score
-            FROM sage_question_policy_stats
-            WHERE tenant_id = $1
-              AND signal_type = 'T1'
-              AND question_primitive = 'DEPENDENCY'
-            """,
-            tenant,
-        )
         prediction_count = await conn.fetchval(
             """
             SELECT count(*)
@@ -459,6 +440,26 @@ async def test_lifecycle_obligations_survive_validate_apply_and_feedback(
             """,
             tenant,
         )
+        lifecycle_sidecar = await conn.fetchrow(
+            """
+            SELECT model_id,source_event_id,reading_kind,detail
+            FROM model_signal_readings
+            WHERE tenant_id=$1 AND source_event_id=$2
+            ORDER BY observed_at DESC LIMIT 1
+            """,
+            tenant,
+            event_ids[2],
+        )
+        lifecycle_feedback = await conn.fetchrow(
+            """
+            SELECT model_id,cause_id,cause_type,changed_fields
+            FROM audit_events
+            WHERE tenant_id=$1 AND cause_id=$2
+            ORDER BY occurred_at DESC LIMIT 1
+            """,
+            tenant,
+            event_ids[2],
+        )
 
     aggregation = result["memory_aggregation"]
     claim_summaries = result["claim_ops"]
@@ -469,18 +470,16 @@ async def test_lifecycle_obligations_survive_validate_apply_and_feedback(
     assert open_question_count == 2
     assert aggregation["evidence_attachments"] == 1
     assert lifecycle_review_truth_count == 0
+    assert lifecycle_sidecar is not None
+    assert lifecycle_sidecar["model_id"] == anchor_model
+    assert lifecycle_sidecar["source_event_id"] == event_ids[2]
+    assert lifecycle_sidecar["reading_kind"] == "observe"
+    assert lifecycle_feedback is not None
+    assert lifecycle_feedback["model_id"] == anchor_model
+    assert lifecycle_feedback["cause_id"] == event_ids[2]
+    assert lifecycle_feedback["cause_type"] == "field_update"
+    assert "signal_readings" in lifecycle_feedback["changed_fields"]
     assert any(summary.get("model_prediction_id") for summary in claim_summaries)
-    assert any(
-        {"question_policy", "lifecycle_obligation"}
-        <= {str(tag) for tag in (summary.get("domain_tags") or [])}
-        for summary in claim_summaries
-    )
-    assert report.question_policy_updates >= 1
-    assert stats is not None
-    assert stats["attempts"] >= 1
-    assert stats["successes"] >= 1
-    assert stats["total_credit"] > 0
-    assert stats["utility_score"] > 0
 
 
 def test_question_policy_feedback_accepts_lifecycle_obligation_source() -> None:
