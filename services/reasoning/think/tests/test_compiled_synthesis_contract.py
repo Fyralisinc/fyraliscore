@@ -39,6 +39,7 @@ def test_scoped_hydration_receipt_binds_exact_synthesis_head_versions() -> None:
 def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None:
     tenant_id, trigger_id = uuid4(), uuid4()
     observation_ids = [uuid4()]
+    relation_observation_ids = [uuid4(), uuid4()]
     prior_models = [uuid4(), uuid4()]
     prior_versions = [uuid4(), uuid4()]
     trigger = TriggerContext(
@@ -53,6 +54,9 @@ def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None
         "proposed_text": "Harbor renewal may have a coherent cross-time risk pattern.",
         "semantic_scope": ["Harbor renewal"],
         "member_observation_ids": [str(value) for value in observation_ids],
+        "relation_evidence_observation_ids": [
+            str(value) for value in relation_observation_ids
+        ],
         "evidence_model_ids": [str(value) for value in prior_models],
         "suggested_edge_kinds": ["blocks"],
         "endpoint_model_versions": {
@@ -66,7 +70,7 @@ def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None
         relation_obligations=(RelationObligation(
             candidate_id="MDC_SYNTH_scope", edge_kind="blocks", confidence=0.72,
             source_model_id=prior_models[0], target_model_id=prior_models[1],
-            evidence_event_ids=tuple(observation_ids),
+            evidence_event_ids=tuple(relation_observation_ids),
             evidence_model_ids=tuple(prior_models),
             evidence_text="Ownership gaps block Harbor renewal completion.",
             explanation="Exact conclusion opener names the blocking mechanism.",
@@ -76,7 +80,9 @@ def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None
     decisions = BatchMemoryDecisionSet(decisions=[
         BatchMemoryCandidateDecision(
             candidate_id="MDC_SYNTH_scope", decision="accept",
-            operation="situation", confidence=0.72,
+            operation="situation_and_edge", confidence=0.72,
+            source_model_id=prior_models[0], target_model_id=prior_models[1],
+            situation_member_model_ids=prior_models,
             claim_text=(
                 "Harbor renewal shows a persistent ownership gap whose status "
                 "signals have repeatedly overstated readiness."
@@ -108,7 +114,7 @@ def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None
     assert relation.source_model_version_id == prior_versions[0]
     assert relation.target_model_version_id == prior_versions[1]
     assert relation.semantic_scope == ["Harbor renewal"]
-    assert set(relation.evidence_event_ids) == set(observation_ids)
+    assert set(relation.evidence_event_ids) == set(relation_observation_ids)
     assert set(relation.evidence_model_ids) == set(prior_models)
     supported = proposition["supported_relation"]
     assert supported["kind"] == "dependency_constraint"
@@ -156,7 +162,53 @@ def test_ambiguous_synthesis_stays_pretruth_without_exact_endpoint_versions() ->
 
     assert diff.claim_ops == []
     assert diff.relation_claim_ops == []
-    assert "missing explicit bound relation obligation" in diff.reasoning_trace
+    assert "missing explicit relation obligation" in diff.reasoning_trace
+
+
+def test_synthesis_endpoint_outside_closed_members_emits_zero_writes() -> None:
+    tenant_id, trigger_id = uuid4(), uuid4()
+    opener, relation_event = uuid4(), uuid4()
+    members, versions = [uuid4(), uuid4()], [uuid4(), uuid4()]
+    outsider = uuid4()
+    candidate = {
+        "candidate_id": "MDC_SYNTH_closed", "candidate_kind": "synthesis",
+        "allowed_operations": ["situation_and_edge", "no_op"],
+        "op_family": "claim_insert", "proposed_text": "Atlas release is blocked.",
+        "semantic_scope": ["Atlas release"],
+        "member_observation_ids": [str(opener)],
+        "relation_evidence_observation_ids": [str(relation_event)],
+        "evidence_model_ids": [str(value) for value in members],
+        "endpoint_model_versions": dict(zip(
+            map(str, members), map(str, versions), strict=True,
+        )),
+    }
+    request = CompiledBatchMemoryDecisionRequest(
+        system="system", user="user", candidates=(candidate,),
+        relation_obligations=(RelationObligation(
+            candidate_id="MDC_SYNTH_closed", edge_kind="blocks", confidence=0.8,
+            source_model_id=None, target_model_id=None,
+            evidence_event_ids=(relation_event,), evidence_model_ids=tuple(members),
+            evidence_text="The open certificate blocks the rollout.",
+            explanation="Explicit dependency", matched_markers=("blocks",),
+        ),),
+    )
+    diff = request.to_raw_diff(
+        BatchMemoryDecisionSet(decisions=[BatchMemoryCandidateDecision(
+            candidate_id="MDC_SYNTH_closed", decision="accept",
+            operation="situation_and_edge", confidence=0.8,
+            source_model_id=members[0], target_model_id=outsider,
+            situation_member_model_ids=[members[0], outsider],
+            claim_text="Atlas release is blocked by certificate ownership.",
+            reason="Bind the explicit dependency.",
+        )]),
+        trigger=TriggerContext(
+            kind="T1", tenant_id=tenant_id, observation_ids=[opener, relation_event],
+        ),
+        trigger_ref=trigger_id,
+    )
+    assert diff.claim_ops == []
+    assert diff.relation_claim_ops == []
+    assert "invalid or stale closed-set relation binding" in diff.reasoning_trace
 
 
 def test_rejected_synthesis_emits_neither_model_nor_relation() -> None:

@@ -126,6 +126,8 @@ class MemoryDecisionCandidate:
     target_act_ids: tuple[str, ...] = ()
     source_observation_ids: tuple[str, ...] = ()
     member_observation_ids: tuple[str, ...] = ()
+    relation_evidence_observation_ids: tuple[str, ...] = ()
+    relation_observation_evidence: tuple[dict[str, Any], ...] = ()
     semantic_scope: tuple[str, ...] = ()
     observation_evidence: tuple[dict[str, str], ...] = ()
     evidence_model_ids: tuple[str, ...] = ()

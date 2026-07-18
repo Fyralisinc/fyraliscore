@@ -3,13 +3,14 @@ from __future__ import annotations
 import os
 from dataclasses import asdict
 from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import asyncpg
 import pytest
 from pgvector.asyncpg import register_vector
 
 from lib.shared.types import ModelCreate
+from lib.evaluation.epistemic_repair.p6_population import build_p6_population
 from services.domain.models.repo import ModelsRepo
 from services.platform.execution import context_packet, inquiry
 from services.platform.execution.types import (
@@ -26,8 +27,6 @@ from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.think.compiled_reasoning import (
     BatchMemoryCandidateDecision,
     BatchMemoryDecisionSet,
-    CompiledBatchMemoryDecisionRequest,
-    RelationObligation,
     build_compiled_batch_memory_decision_request,
 )
 from services.reasoning.think.applier import apply_diff
@@ -444,7 +443,7 @@ def test_unprefixed_recognized_scope_assertion_becomes_closed_atomic() -> None:
             {
                 "observation_id": prefixed_one,
                 "source_channel": "slack:message",
-                "text": "Orion delivery, update 4: Approval remains pending.",
+                "text": "Orion delivery, update 4: The record links pending approval to rollout delay.",
             },
             {
                 "observation_id": prefixed_two,
@@ -490,7 +489,7 @@ def test_unprefixed_recognized_scope_assertion_becomes_closed_atomic() -> None:
 def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> None:
     storylines = {
         "Atlas release": (
-            "The release certificate still has no clearly recorded owner.",
+            "A source links the open release certificate to the moved rollout window.",
             "A late reply asks whether the certificate ownership handoff happened.",
             "The release dashboard remains optimistic while its record is incomplete.",
             "Someone says they have it now without naming the infrastructure owner.",
@@ -631,7 +630,7 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
     atlas_fragment = next(
         fragment
         for fragment in synthesis_fragments
-        if fragment["text"].startswith("Atlas release, update 1:")
+        if fragment["text"].startswith("Atlas release, update 1: Someone says")
     )
     atlas_fragment["text"] = "Atlas release, update 4: Atlas release is ready."
     synthesis_trigger = TriggerContext(
@@ -672,7 +671,7 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
         "source_channel": atlas_fragment["source_channel"],
         "body": atlas_fragment["text"],
     },)
-    assert len(with_synthesis_opportunity) == 13
+    assert len(with_synthesis_opportunity) == 14
     synthesis_request = build_compiled_batch_memory_decision_request(
         synthesis_trigger,
         ContextBundle(notes={"inquiry_context_packet": {
@@ -686,7 +685,7 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
         }}),
     )
     assert synthesis_request is not None
-    assert len(synthesis_request.candidates) == 13
+    assert len(synthesis_request.candidates) == 14
     assert "MDC_SYNTH_" in synthesis_request.user
     assert not any(
         obligation.candidate_id == synthesis[0].candidate_id
@@ -709,7 +708,7 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
         for op in no_write.claim_ops
     )
     assert no_write.relation_claim_ops == []
-    assert "missing explicit bound relation obligation" in no_write.reasoning_trace
+    assert "invalid or stale closed-set relation binding" in no_write.reasoning_trace
 
     uncertainty = context_packet.batch_fragment_uncertainty_signals(trigger)
     assert len(uncertainty) == 8
@@ -808,11 +807,23 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
 
 def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None:
     scope = "Orion rollout"
+    ordinary_id = str(uuid4())
+    adverse_id = str(uuid4())
     ordinary = MemoryDecisionCandidate(
         candidate_id="ordinary", op_family="claim_insert", candidate_kind="atomic",
-        proposed_text="The owner changed yesterday.",
-        entailed_claim_text="The owner changed yesterday.",
-        member_observation_ids=(str(uuid4()),), semantic_scope=(scope,),
+        proposed_text="A record links the open owner handoff to the delayed rollout.",
+        entailed_claim_text="A record links the open owner handoff to the delayed rollout.",
+        member_observation_ids=(ordinary_id,), semantic_scope=(scope,),
+        observation_evidence=({"observation_id": ordinary_id, "body":
+            "A record links the open owner handoff to the delayed rollout."},),
+    )
+    adverse = MemoryDecisionCandidate(
+        candidate_id="adverse", op_family="claim_insert", candidate_kind="atomic",
+        proposed_text="The rollout window moved after ownership became unclear.",
+        entailed_claim_text="The rollout window moved after ownership became unclear.",
+        member_observation_ids=(adverse_id,), semantic_scope=(scope,),
+        observation_evidence=({"observation_id": adverse_id, "body":
+            "The rollout window moved after ownership became unclear."},),
     )
     conclusion = MemoryDecisionCandidate(
         candidate_id="conclusion", op_family="claim_insert", candidate_kind="atomic",
@@ -832,12 +843,87 @@ def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None
         [conclusion], diverse_memory[:1],
     ) == []
     candidates = context_packet._scoped_synthesis_candidates(
-        [ordinary, conclusion], diverse_memory,
+        [ordinary, adverse, conclusion], diverse_memory,
     )
     assert len(candidates) == 1
     assert candidates[0].semantic_scope == (scope,)
     assert len(candidates[0].evidence_model_ids) == 2
     assert candidates[0].allowed_operations == ("situation_and_edge", "no_op")
+
+
+def test_actual_p6_batch4_opens_grounded_synthesis_without_seed_components() -> None:
+    batch = build_p6_population().batches[3]
+    observation_ids = {
+        signal.signal_id: uuid5(NAMESPACE_URL, signal.signal_id)
+        for signal in batch.signals
+    }
+    trigger = TriggerContext(
+        kind="T1", subkind="event_batch", tenant_id=uuid4(),
+        observation_ids=list(observation_ids.values()),
+        seed_signature={"batch_signal_fragments": [
+            {"observation_id": str(observation_ids[signal.signal_id]),
+             "source_channel": signal.source_channel, "text": signal.text}
+            for signal in batch.signals
+        ]},
+    )
+    model_ids = (uuid4(), uuid4())
+    versions = (uuid4(), uuid4())
+    candidates = context_packet.memory_decision_candidates(
+        trigger, (), [], [], [],
+        SufficiencyVerdict("sufficient_for_reasoning", "ready", 0, 0, ()),
+        synthesis_scope_models={"Atlas release": tuple(map(str, model_ids))},
+    )
+    synthesis = [item for item in candidates if item.candidate_kind == "synthesis"]
+    assert len(synthesis) == 1
+    candidate = synthesis[0]
+    assert candidate.member_observation_ids == (
+        str(observation_ids["p6-b04-s09"]),
+    )
+    assert set(candidate.relation_evidence_observation_ids) == {
+        str(observation_ids[key])
+        for key in ("p6-b04-s01", "p6-b04-s05", "p6-b04-s13")
+    }
+    assert str(observation_ids["p6-b04-s17"]) not in (
+        candidate.relation_evidence_observation_ids
+    )
+    packet = {
+        "memory_decision_candidates": [asdict(item) for item in candidates],
+        "signal_summary": "P6 sealed batch 4",
+        "sufficiency_verdict": {"status": "sufficient_for_reasoning"},
+        "synthesis_scope_hydration": {
+            "endpoint_model_versions": dict(zip(
+                map(str, model_ids), map(str, versions), strict=True,
+            )),
+            "endpoint_model_cards": {
+                str(model_id): {
+                    "id": str(model_id), "version_id": str(version),
+                    "natural": f"Accepted Atlas model {index}",
+                    "proposition": {"kind": "belief", "subject": "Atlas release"},
+                    "canonical_scope": {
+                        "label": "Atlas release", "ref": "workstream:atlas-release",
+                    },
+                }
+                for index, (model_id, version) in enumerate(
+                    zip(model_ids, versions, strict=True), start=1,
+                )
+            },
+        },
+    }
+    request = build_compiled_batch_memory_decision_request(
+        trigger, ContextBundle(notes={"inquiry_context_packet": packet}),
+    )
+    assert request is not None
+    obligation = next(
+        item for item in request.relation_obligations
+        if item.candidate_id == candidate.candidate_id
+    )
+    assert obligation.edge_kind == "blocks"
+    assert set(obligation.evidence_event_ids) == {
+        observation_ids[key]
+        for key in ("p6-b04-s01", "p6-b04-s05", "p6-b04-s13")
+    }
+    assert obligation.source_model_id is None
+    assert obligation.target_model_id is None
 
 
 @pytest.mark.asyncio
@@ -847,7 +933,7 @@ async def test_conclusion_hydrates_scope_complete_memory_outside_selected_retrie
     for scope in scopes:
         fragments.extend([
             {"observation_id": str(uuid4()), "source_channel": "test",
-             "text": f"{scope}, update 4: Ownership remains unclear."},
+             "text": f"{scope}, update 4: A record links the open owner handoff to delayed completion."},
             {"observation_id": str(uuid4()), "source_channel": "test",
              "text": f"{scope}, update 4: Completion moved again."},
         ])
@@ -876,7 +962,9 @@ async def test_conclusion_hydrates_scope_complete_memory_outside_selected_retrie
             return [
                 {"scope_label": "Delta handoff",
                  "scope_ref": "workstream:delta-handoff", "id": model_id,
-                 "truth_version_id": version_id}
+                 "truth_version_id": version_id,
+                 "natural_text": f"Accepted Delta handoff model {model_id}",
+                 "proposition": {"kind": "belief", "subject": "Delta handoff"}}
                 for model_id, version_id in zip(delta_ids, delta_versions, strict=True)
             ]
 
@@ -974,30 +1062,33 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
             )
             model_ids.append(row.id)
 
-        conclusion_id = uuid4()
-        await conn.execute(
-            """
-            INSERT INTO observations
-              (id,tenant_id,occurred_at,kind,source_channel,content,content_text,
-               embedding,embedding_pending,trust_tier)
-            VALUES ($1,$2,now(),'signal','test','{}'::jsonb,$3,$4,FALSE,'authoritative')
-            """,
-            conclusion_id,
-            tenant_id,
-            "Orion delivery is blocked.",
-            [0.0] * 768,
+        conclusion_id, link_id, state_id = uuid4(), uuid4(), uuid4()
+        signal_rows = (
+            (link_id, "Orion delivery, update 4: A record links the open ownership handoff to delayed completion."),
+            (state_id, "Orion delivery, update 4: The rollout moved after ownership became unclear."),
+            (conclusion_id, "Orion delivery is blocked."),
         )
+        for observation_id, text in signal_rows:
+            await conn.execute(
+                """
+                INSERT INTO observations
+                  (id,tenant_id,occurred_at,kind,source_channel,content,content_text,
+                   embedding,embedding_pending,trust_tier)
+                VALUES ($1,$2,now(),'signal','test','{}'::jsonb,$3,$4,FALSE,'authoritative')
+                """,
+                observation_id, tenant_id, text, [0.0] * 768,
+            )
         trigger = TriggerContext(
             kind="T1",
             subkind="event_batch",
             tenant_id=tenant_id,
-            observation_ids=[uuid4(), uuid4(), conclusion_id],
+            observation_ids=[link_id, state_id, conclusion_id],
             seed_natural_text="Orion delivery batch",
             seed_signature={"batch_signal_fragments": [
-                {"observation_id": str(uuid4()), "source_channel": "test",
-                 "text": "Orion delivery, update 4: Ownership remains unclear."},
-                {"observation_id": str(uuid4()), "source_channel": "test",
-                 "text": "Orion delivery, update 4: Completion moved again."},
+                {"observation_id": str(link_id), "source_channel": "test",
+                 "text": signal_rows[0][1]},
+                {"observation_id": str(state_id), "source_channel": "test",
+                 "text": signal_rows[1][1]},
                 {"observation_id": str(conclusion_id), "source_channel": "test",
                  "text": "Orion delivery is blocked."},
             ]},
@@ -1006,35 +1097,31 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
             conn, trigger,
         )
         hydrated_model_ids = [UUID(value) for value in hydrated[scope_label]]
-        candidate = {
-            "candidate_id": "MDC_SYNTH_orion",
-            "candidate_kind": "synthesis",
-            "allowed_operations": ["situation_and_edge", "no_op"],
-            "op_family": "claim_insert",
-            "proposed_text": "Orion delivery is blocked by a persistent ownership gap.",
-            "semantic_scope": [scope_label],
-            "member_observation_ids": [str(conclusion_id)],
-            "evidence_model_ids": [str(model_id) for model_id in hydrated_model_ids],
-            "endpoint_model_versions": receipt["endpoint_model_versions"],
-            "suggested_edge_kinds": ["blocks"],
-            "reason": "Ownership ambiguity repeatedly delays Orion delivery completion.",
+        candidates = context_packet.memory_decision_candidates(
+            trigger, (), [], [], [],
+            SufficiencyVerdict("sufficient_for_reasoning", "ready", 0, 0, ()),
+            synthesis_scope_models=hydrated,
+        )
+        packet = {
+            "memory_decision_candidates": [asdict(item) for item in candidates],
+            "signal_summary": "Orion delivery batch",
+            "sufficiency_verdict": {"status": "sufficient_for_reasoning"},
+            "synthesis_scope_hydration": receipt,
         }
-        compiled = CompiledBatchMemoryDecisionRequest(
-            system="system", user="user", candidates=(candidate,),
-            relation_obligations=(RelationObligation(
-                candidate_id="MDC_SYNTH_orion", edge_kind="blocks", confidence=0.78,
+        request = build_compiled_batch_memory_decision_request(
+            trigger, ContextBundle(notes={"inquiry_context_packet": packet}),
+        )
+        assert request is not None
+        synthesis_candidate = next(
+            item for item in request.candidates if item["candidate_kind"] == "synthesis"
+        )
+        compiled = request.to_raw_diff(
+            BatchMemoryDecisionSet(decisions=[BatchMemoryCandidateDecision(
+                candidate_id=synthesis_candidate["candidate_id"], decision="accept",
+                operation="situation_and_edge", confidence=0.78,
                 source_model_id=hydrated_model_ids[0],
                 target_model_id=hydrated_model_ids[1],
-                evidence_event_ids=(conclusion_id,),
-                evidence_model_ids=tuple(hydrated_model_ids),
-                evidence_text="Orion delivery is blocked by a persistent ownership gap.",
-                explanation="The exact conclusion opener states the blocking mechanism.",
-                matched_markers=("blocked",),
-            ),),
-        ).to_raw_diff(
-            BatchMemoryDecisionSet(decisions=[BatchMemoryCandidateDecision(
-                candidate_id="MDC_SYNTH_orion", decision="accept",
-                operation="situation", confidence=0.78,
+                situation_member_model_ids=hydrated_model_ids,
                 claim_text="Orion delivery is blocked by a persistent ownership gap.",
                 reason="Ownership ambiguity repeatedly delays delivery completion.",
             )]),
@@ -1051,7 +1138,15 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
             trigger_cause_event_id=conclusion_id,
             models_repo=ModelsRepo(None, embedder=None),
         )
-        synthesis_id = UUID(str(apply_result["applied_model_ids"][0]))
+        synthesis_id = await conn.fetchval(
+            """
+            SELECT id FROM accepted_current_models
+            WHERE tenant_id=$1 AND proposition->>'claim_role'='situation'
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            tenant_id,
+        )
+        assert synthesis_id in apply_result["applied_model_ids"]
         synthesis_evidence_count = await conn.fetchval(
             """
             SELECT count(*)
@@ -1076,15 +1171,20 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
             "SELECT count(*) FROM model_edges WHERE tenant_id=$1",
             tenant_id,
         )
+        relation_evidence = await conn.fetchval(
+            "SELECT evidence_event_ids FROM relation_claims WHERE tenant_id=$1",
+            tenant_id,
+        )
     finally:
         await transaction.rollback()
         await conn.close()
 
     assert set(hydrated[scope_label]) == {str(model_id) for model_id in model_ids[1:]}
-    assert synthesis_evidence_count == 3
+    assert synthesis_evidence_count == 1
     assert accepted_relation_count == 1
     assert relation_version_count == 1
     assert projected_edge_count == 1
+    assert set(relation_evidence) == {link_id, state_id}
     assert set(receipt.pop("endpoint_model_versions")) == {
         str(model_id) for model_id in model_ids[1:]
     }

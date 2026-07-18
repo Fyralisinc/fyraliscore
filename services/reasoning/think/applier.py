@@ -401,6 +401,12 @@ async def _apply_relation_claim_ops_for_diff(
                 think_run_id=think_run_id,
             )
         except (EdgeRegistryError, ValidationError) as exc:
+            # A synthesis composite and its governed relation are one semantic
+            # mutation. Never preserve the composite by downgrading a failed
+            # coupled relation to an apply-time skip; raising aborts the caller's
+            # transaction and therefore rolls back both writes.
+            if bool((op.metadata or {}).get("atomic_with_synthesis")):
+                raise
             reason = _classify_apply_edge_drop_reason(exc)
             message = getattr(exc, "message", str(exc))
             log_dropped_op(
@@ -5284,12 +5290,12 @@ async def _apply_relation_claim_op(
     )
 
     edges_repo = EdgesRepo()
-    evidence_event_ids = tuple(
-        _merge_event_ids(
-            op.evidence_event_ids,
-            (cause_event_id,) if cause_event_id is not None else (),
-        )
-    )
+    evidence_event_ids = tuple(_merge_event_ids(
+        op.evidence_event_ids,
+        () if bool((op.metadata or {}).get("atomic_with_synthesis")) else (
+            (cause_event_id,) if cause_event_id is not None else ()
+        ),
+    ))
     endpoint_status = op.endpoint_binding_status
     if op.source_model_id is not None and op.target_model_id is not None:
         endpoint_status = "bound"

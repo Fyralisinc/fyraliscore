@@ -911,6 +911,23 @@ def _scoped_synthesis_candidates(
         if len(conclusion_candidates) != 1:
             continue
         conclusion = conclusion_candidates[0]
+        auxiliary_candidates = [
+            candidate for candidate in current_scope_candidates
+            if candidate is not conclusion
+        ]
+        relation_candidates = _relation_evidence_candidates(auxiliary_candidates)
+        relation_evidence_ids = tuple(dict.fromkeys(
+            observation_id
+            for candidate in relation_candidates
+            for observation_id in candidate.member_observation_ids
+        ))
+        if not relation_evidence_ids:
+            continue
+        relation_observation_evidence = tuple(
+            row
+            for candidate in relation_candidates
+            for row in candidate.observation_evidence
+        )
         current_ids = tuple(dict.fromkeys(
             observation_id
             for candidate in conclusion_candidates
@@ -925,9 +942,19 @@ def _scoped_synthesis_candidates(
             proposed_text=str(conclusion.entailed_claim_text or conclusion.proposed_text),
             source_observation_ids=current_ids,
             member_observation_ids=current_ids,
+            relation_evidence_observation_ids=relation_evidence_ids,
             semantic_scope=(scope,),
             evidence_model_ids=tuple(model_ids),
-            observation_evidence=conclusion.observation_evidence,
+            observation_evidence=tuple(dict(
+                (row.get("observation_id"), row)
+                for row in conclusion.observation_evidence
+                if row.get("observation_id")
+            ).values()),
+            relation_observation_evidence=tuple(dict(
+                (row.get("observation_id"), row)
+                for row in relation_observation_evidence
+                if row.get("observation_id")
+            ).values()),
             uncertainty_slots=(
                 "whether prior phases are coherent enough for one thesis",
             ),
@@ -942,6 +969,69 @@ def _scoped_synthesis_candidates(
             ),
         ))
     return out
+
+
+_EXPLICIT_RELATION_MARKERS = (
+    " blocked by ", " depends on ", " dependent on ", " waiting on ",
+    " caused by ", " causes ", " because ", " predicts ", " leads to ",
+    " prevents ", " enables ", " prerequisite ", " critical path ",
+)
+
+_BINARY_RELATION_RE = re.compile(
+    r"\b(?:link(?:s|ed)?|connect(?:s|ed)?|tie(?:s|d)?|associate(?:s|d)?)\b"
+    r".{1,180}\b(?:to|with)\b",
+    re.IGNORECASE,
+)
+_DEPENDENCY_STATE_RE = re.compile(
+    r"\b(?:open|pending|incomplete|missing|unowned|lacks? (?:an? )?owner|ownership)\b",
+    re.IGNORECASE,
+)
+_ADVERSE_OR_TEMPORAL_RE = re.compile(
+    r"\b(?:delay(?:ed|s)?|slip(?:ped|s)?|moved|blocked|risk|before|after|during|following)\b",
+    re.IGNORECASE,
+)
+
+
+def _relation_evidence_candidates(
+    candidates: list[MemoryDecisionCandidate],
+) -> list[MemoryDecisionCandidate]:
+    """Select a closed, same-scope bundle that states an actual mechanism.
+
+    Slack-like evidence often spreads the two sides of a relation over several
+    messages.  A binary link alone is insufficient: require at least two exact
+    auxiliary observations and corroborating dependency/adverse state.  This
+    stays deterministic and excludes questions/clarifications.
+    """
+    eligible: list[MemoryDecisionCandidate] = []
+    has_binary = False
+    has_dependency = False
+    has_adverse_or_temporal = False
+    for candidate in candidates:
+        text = str(candidate.entailed_claim_text or candidate.proposed_text or "")
+        lowered = f" {text.casefold()} "
+        if "?" in text or any(token in lowered for token in (
+            " clarify ", " clarification ", " which one ", " who does ",
+        )):
+            continue
+        explicit = _is_explicit_relation_bearing_text(text)
+        binary = bool(_BINARY_RELATION_RE.search(text))
+        dependency = bool(_DEPENDENCY_STATE_RE.search(text))
+        adverse_or_temporal = bool(_ADVERSE_OR_TEMPORAL_RE.search(text))
+        if explicit or binary or dependency or adverse_or_temporal:
+            eligible.append(candidate)
+            has_binary = has_binary or binary or explicit
+            has_dependency = has_dependency or dependency or explicit
+            has_adverse_or_temporal = has_adverse_or_temporal or adverse_or_temporal or explicit
+    if len(eligible) < 2 or not (
+        has_binary and has_dependency and has_adverse_or_temporal
+    ):
+        return []
+    return eligible
+
+
+def _is_explicit_relation_bearing_text(text: str) -> bool:
+    normalized = " " + " ".join(str(text or "").casefold().split()) + " "
+    return any(marker in normalized for marker in _EXPLICIT_RELATION_MARKERS)
 
 
 def synthesis_conclusion_scopes(trigger: TriggerContext) -> tuple[str, ...]:
@@ -967,10 +1057,11 @@ async def hydrate_synthesis_scope_models(
     if not scopes:
         return {}, {"queried": False, "reason": "no_scope_level_conclusion"}
     rows = await conn.fetch("""
-        SELECT scope_label,scope_ref,id,truth_version_id FROM (
+        SELECT scope_label,scope_ref,id,truth_version_id,natural_text,proposition FROM (
             SELECT binding.display_label AS scope_label,
                    binding.canonical_ref AS scope_ref,model.id,
                    model.truth_version_id,
+                   model.natural_text,model.proposition,
                    model.truth_advanced_at,model.created_at,
                    row_number() OVER (
                        PARTITION BY binding.display_label,binding.canonical_ref
@@ -998,12 +1089,22 @@ async def hydrate_synthesis_scope_models(
     """, trigger.tenant_id, list(scopes), max(2, min(int(limit_per_scope), 8)))
     grouped: dict[str, dict[str, list[str]]] = {scope: {} for scope in scopes}
     endpoint_versions: dict[str, str] = {}
+    semantic_cards: dict[str, dict[str, Any]] = {}
     for row in rows:
         scope = str(row["scope_label"])
         canonical_ref = str(row["scope_ref"] or "").strip()
         if scope in grouped and canonical_ref:
             grouped[scope].setdefault(canonical_ref, []).append(str(row["id"]))
             endpoint_versions[str(row["id"])] = str(row["truth_version_id"])
+            semantic_cards[str(row["id"])] = {
+                "id": str(row["id"]),
+                "version_id": str(row["truth_version_id"]),
+                "natural": str(row["natural_text"] or ""),
+                "proposition": dict(row["proposition"] or {}),
+                "canonical_scope": {
+                    "label": scope, "ref": canonical_ref,
+                },
+            }
     result = {
         scope: tuple(dict.fromkeys(next(iter(by_ref.values()))))
         if len(by_ref) == 1 else ()
@@ -1014,6 +1115,7 @@ async def hydrate_synthesis_scope_models(
         "limit_per_scope": max(2, min(int(limit_per_scope), 8)),
         "returned_model_count": sum(len(values) for values in result.values()),
         "endpoint_model_versions": endpoint_versions,
+        "endpoint_model_cards": semantic_cards,
         "ambiguous_scope_count": sum(len(by_ref) > 1 for by_ref in grouped.values()),
         "scopes": list(scopes),
     }

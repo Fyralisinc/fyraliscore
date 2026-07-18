@@ -429,27 +429,45 @@ class CompiledBatchMemoryDecisionRequest:
                 obligation = next((
                     item for item in self.relation_obligations
                     if item.candidate_id == decision.candidate_id
-                    and item.source_model_id is not None
-                    and item.target_model_id is not None
                 ), None)
                 if obligation is None:
                     blocked += 1
                     trace_parts.append(
                         f"{decision.candidate_id}: synthesis not promoted - "
-                        "missing explicit bound relation obligation"
+                        "missing explicit relation obligation"
                     )
                     continue
                 candidate = {
                     **candidate,
                     "explicit_relation_obligation": {
                         "edge_kind": obligation.edge_kind,
-                        "source_model_id": str(obligation.source_model_id),
-                        "target_model_id": str(obligation.target_model_id),
+                        "source_model_id": (
+                            str(obligation.source_model_id)
+                            if obligation.source_model_id is not None else None
+                        ),
+                        "target_model_id": (
+                            str(obligation.target_model_id)
+                            if obligation.target_model_id is not None else None
+                        ),
                         "evidence_event_ids": [str(x) for x in obligation.evidence_event_ids],
                         "evidence_model_ids": [str(x) for x in obligation.evidence_model_ids],
                         "evidence_text": obligation.evidence_text,
                     },
                 }
+                if decision.operation != "situation_and_edge":
+                    blocked += 1
+                    trace_parts.append(
+                        f"{decision.candidate_id}: synthesis not promoted - "
+                        "coupled relation operation required"
+                    )
+                    continue
+                if _supported_synthesis_relation(candidate, decision) is None:
+                    blocked += 1
+                    trace_parts.append(
+                        f"{decision.candidate_id}: synthesis not promoted - "
+                        "invalid or stale closed-set relation binding"
+                    )
+                    continue
                 claim_op, claim_placeholder, block_reason = (
                     _claim_op_from_batch_decision(
                         candidate,
@@ -831,6 +849,7 @@ def _bind_synthesis_endpoint_versions(
 
     receipt = packet.get("synthesis_scope_hydration") or {}
     versions = receipt.get("endpoint_model_versions") or {}
+    cards = receipt.get("endpoint_model_cards") or {}
     if not isinstance(versions, dict):
         versions = {}
     bound: list[dict[str, Any]] = []
@@ -848,6 +867,10 @@ def _bind_synthesis_endpoint_versions(
         }
         enriched = dict(candidate)
         enriched["endpoint_model_versions"] = exact
+        enriched["endpoint_model_cards"] = [
+            cards[str(model_id)] for model_id in member_ids
+            if isinstance(cards, dict) and isinstance(cards.get(str(model_id)), dict)
+        ]
         bound.append(enriched)
     return bound
 
@@ -1176,6 +1199,7 @@ def _build_batch_memory_decision_user_prompt(
             "Use claim_role=pattern only for repeated behavior directly supported in candidate_evidence.",
             "Use claim_role=situation only with operation=situation or situation_and_edge.",
             "For relation claims, target/source ids must be candidate target/evidence Model ids; if unsure, use suggested_edge_kinds as the first-pass menu.",
+            "For synthesis relations, source_model_id is the prerequisite, driver, or earlier condition and target_model_id is the blocked, affected, or later outcome. Choose both only from endpoint_model_cards. The compiler owns relation kind, mechanism, and evidence; you may bind endpoints but may not alter those semantics.",
             "Mandatory grounding obligations are code-perceived current-batch facts; code may insert one compact situation Model if accepted writes only update old Models or omit concrete batch anchors.",
             "Mandatory relation obligations are already perceived from the batch evidence; code may persist them when the batch has durable write intent, but an explicit background/duplicate no_op vetoes obligation persistence.",
             "Mandatory relation frame obligations are code-perceived N-ary relations; code may persist and project them only when the batch has durable write intent.",
@@ -1205,6 +1229,9 @@ def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
         "evidence_model_ids",
         "source_observation_ids",
         "member_observation_ids",
+        "relation_evidence_observation_ids",
+        "relation_observation_evidence",
+        "endpoint_model_cards",
         "semantic_scope",
         "observation_evidence",
         "supporting_evidence_ids",
@@ -1317,6 +1344,12 @@ _RELATION_OBLIGATION_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "gates ",
             "gating",
             "critical path",
+            "links ",
+            "linked ",
+            "connects ",
+            "connected ",
+            "ties ",
+            "associated ",
         ),
     ),
     (
@@ -1768,9 +1801,10 @@ def relation_obligations_from_packet(
             edge_kind=edge_kind,
             markers=markers,
         )
-        evidence_event_ids = tuple(
-            _dedupe_uuids(_uuid_values(candidate.get("source_observation_ids")))
-        )
+        evidence_event_ids = tuple(_dedupe_uuids(_uuid_values(
+            candidate.get("relation_evidence_observation_ids")
+            or candidate.get("source_observation_ids")
+        )))
         evidence_model_ids = tuple(_candidate_model_ids(candidate))
         key = (candidate_id, edge_kind, source_model_id, target_model_id)
         if key in seen:
@@ -1820,6 +1854,15 @@ def relation_claim_ops_from_obligations(
     review_intent = 0
     for obligation in obligations:
         decision = decisions_by_id.get(obligation.candidate_id)
+        if (
+            decision is not None
+            and decision.operation == "situation_and_edge"
+            and obligation.candidate_id not in claim_placeholders
+        ):
+            # A governed synthesis relation cannot outlive a failed composite
+            # compilation as an unbound pre-truth row.
+            blocked += 1
+            continue
         op = _relation_claim_op_from_obligation(
             obligation,
             decision=decision,
@@ -3035,11 +3078,20 @@ def _relation_obligation_clauses(
 
 
 def _candidate_relation_evidence_parts(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    observation_parts = tuple(
+        row.get("body")
+        for row in candidate.get("relation_observation_evidence") or ()
+        if isinstance(row, dict) and row.get("body")
+        and str(row.get("observation_id")) in {
+            str(value) for value in candidate.get("relation_evidence_observation_ids") or ()
+        }
+    )
     return (
         candidate.get("proposed_text"),
         candidate.get("answer_summary"),
         candidate.get("reason"),
         candidate.get("op_family"),
+        *observation_parts,
     )
 
 
@@ -3809,10 +3861,12 @@ def _supported_synthesis_relation(
         "predictive_indicator": "predictive_indicator",
     }.get(edge_kind)
     members = _situation_member_ids(candidate, decision)
-    source_id = _coerce_uuid(obligation.get("source_model_id"))
-    target_id = _coerce_uuid(obligation.get("target_model_id"))
-    opener_ids = set(_candidate_event_ids(candidate))
+    source_id = _coerce_uuid(obligation.get("source_model_id")) or decision.source_model_id
+    target_id = _coerce_uuid(obligation.get("target_model_id")) or decision.target_model_id
     obligation_event_ids = set(_uuid_values(obligation.get("evidence_event_ids")))
+    allowed_relation_event_ids = set(_uuid_values(
+        candidate.get("relation_evidence_observation_ids")
+    ))
     obligation_model_ids = set(_uuid_values(obligation.get("evidence_model_ids")))
     if (
         kind is None
@@ -3821,7 +3875,8 @@ def _supported_synthesis_relation(
         or source_id == target_id
         or source_id not in members
         or target_id not in members
-        or obligation_event_ids != opener_ids
+        or not obligation_event_ids
+        or not obligation_event_ids.issubset(allowed_relation_event_ids)
         or not {source_id, target_id}.issubset(obligation_model_ids)
     ):
         return None
@@ -3840,6 +3895,7 @@ def _supported_synthesis_relation(
         "target_model_id": str(target_id),
         "source_model_version_id": str(source_version_id),
         "target_model_version_id": str(target_version_id),
+        "evidence_event_ids": [str(value) for value in sorted(obligation_event_ids, key=str)],
     }
 
 
@@ -4164,9 +4220,9 @@ def _relation_claim_op_from_relation_hinted_batch_decision(
             return None, "synthesis relation lacks exact accepted endpoints"
         source_id = UUID(relation["source_model_id"])
         target_id = UUID(relation["target_model_id"])
-        evidence_events = _candidate_event_ids(candidate)
+        evidence_events = _uuid_values(relation.get("evidence_event_ids") or ())
         members = _situation_member_ids(candidate, decision)
-        if len(evidence_events) != 1 or not {source_id, target_id}.issubset(members):
+        if not evidence_events or not {source_id, target_id}.issubset(members):
             return None, "synthesis relation is not coupled to its opener and members"
         confidence = min(1.0, max(0.05, float(decision.confidence)))
         return RelationClaimOp(
@@ -4201,6 +4257,7 @@ def _relation_claim_op_from_relation_hinted_batch_decision(
                 "memory_decision_candidate_id": decision.candidate_id,
                 "relation_claim_origin": "accepted_composite_synthesis",
                 "synthesis_contract": True,
+                "atomic_with_synthesis": True,
             },
         ), ""
     if not _candidate_has_relation_hint(candidate):
