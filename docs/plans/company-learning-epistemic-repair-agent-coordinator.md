@@ -2,7 +2,8 @@
 
 **Document type:** Central implementation and evaluation coordinator
 
-**Status:** In execution — P0-P5 complete; P6-P8 active in parallel
+**Status:** In execution — normalization contracts ready through P8; P6 decisive
+evidence run active; P7 and P8 reruns gated behind it
 
 **Active branch:** `codex/autonomous-company-learning`
 
@@ -17,37 +18,50 @@
 **Reuse boundary:**
 [Autonomous Company-Learning Reuse Audit](autonomous-company-learning-reuse-audit.md)
 
-## Current execution checkpoint — 2026-07-17
+## Current execution checkpoint — 2026-07-18
 
 | Phase/package | State | Evidence |
 | --- | --- | --- |
-| P0 preregistration and baseline characterization | Complete | `779bfd10`, `420fb4f4` |
-| P1-A/P1-F hook quarantine and blind scan | Deterministic implementation complete | `16d0f335`, `7256e13b` |
-| P1-B/P1-E receipt schema, emission, runtime persistence, cost basis | Deterministic implementation complete; PostgreSQL proof pending | `27f320fc`, `16d0f335`, `ddf12cc8` |
-| P1-C unified retry ownership | Deterministic implementation complete | `16d0f335` |
-| P1-D timing/cost reconciliation evaluator | Complete as deterministic evaluator | `353b1c24` |
-| P1 reconciled observability and bounded real provider | Complete with Codex CLI plus durable PostgreSQL receipt reopen/replay | `d5a43734` |
-| P2 governed truth kernel and accepted-reader cutover | Complete on deterministic and PostgreSQL suites | `07420a95` through `e02d2679` |
-| P3 boundary, context, and entity grounding | Complete on sealed 120-signal qualification population | `68ff4a59`, `cc9de466`, `905ad557` |
-| P4 causal barrier and decision-level feedback | Complete on deterministic six-batch PostgreSQL evaluator | `6ca84393`, `33f51fde`, `3d38da74` |
-| P5 zero-seed integrated vertical | Deterministic three-batch vertical complete; Codex production-Think parity is being repaired in P6 | `096a4812` |
-| P6 12-batch mixed stream | Exact 300-signal mechanical run complete; live Think admission/synthesis repair active | `61061de8`, `16565834` |
-| P7 matched memory ablation | Clean 45-call Codex experiment complete but adaptive evolution and corruption safety are red | `f8375cdf` |
-| P8 fault, scale, and characterization | All fault boundaries proven; scale executed and latency gate red; characterization active | `ee3a7ec6` through `a0470516` |
+| P0-P2 constitutional evidence | Runtime work previously validated; strict P9 regeneration/member contracts ready. Current-commit artifacts must still be regenerated from a clean worktree. | `db44386d` |
+| P3 perception and grounding | Raw eligible probe evidence and strict P9 sidecar path ready; current-commit artifact regeneration remains required. | `b057a20e`, `5a7a30ce` |
+| P4 causal closure and feedback | Raw learning evidence and strict P9 sidecar path ready; bounded PostgreSQL evidence is not an integrated P6 substitute. | `e476f9fa` |
+| P5 zero-seed vertical | Strict member-derived P9 sidecar ready for the existing deterministic vertical. It proves a bounded vertical, not provider-semantic quality. | `ffaf1341` |
+| P6 12-batch mixed stream | Barrier reopen, retry ownership, pinned Codex CLI, reported usage, batch-level context scoring, independent post-freeze scoring, and strict P9 normalization are implemented. A clean pinned diagnostic/decisive run is active; no exit claim exists yet. | `5382f2da`, `fdb6796d`, `73fc8059` |
+| P7 matched memory ablation | Historical 45-call run remains falsifying/insufficient evidence. The production lifecycle runner, raw-member oracle, strict P9 sidecar, reported-usage gate, clean-worktree preflight, and exclusive lock are ready; provider execution waits for P6. | `f8375cdf`, `ba800d97` |
+| P8 fault, scale, and characterization | Historical fault proofs remain bounded; the one-pass concurrency result remains red. Strict P9 sidecar and preregistered repeated warm-pair diagnostic are ready; the locked rerun waits for P6/P7 ownership. | `345eb31c`, `f594cc16` |
+| P9 release decision | Fail-closed manifest, exact phase gate/metric sets, content digests, evidence classes, independent reviewer reproduction receipt, and verdict precedence are implemented. No release manifest may be sealed until current-commit P0-P8 artifacts exist. | `63809479`, `ca850161` |
 
-The deterministic company-learning kernel now has one PostgreSQL-backed
-zero-seed vertical over three genuine 25-signal batches. That result proves
-production-seam mechanical coherence, not provider-semantic quality or release
-readiness. The former external-provider HTTP 402 is no longer a dependency: the bounded
-real-provider gate passed through subscription-backed Codex CLI using pinned
-model `gpt-5.4`. P6-P8 plus the coherent P9 release audit remain required.
+The repository now has strict normalization paths for P0-P8, but code readiness
+is not evidence readiness. The decisive dependency is the active P6 run on one
+pinned clean commit. P7 may start only after P6 produces a digest-bound exit
+artifact; P8 warm-pair work must retain exclusive database ownership; P9 may
+consume only artifacts regenerated on the selected release commit.
 
-Every real-model phase, including P7 ablations, must use only the established
-Codex CLI provider and prove
-`provider=codex` plus the pinned model in durable logical and physical receipts.
+Every real-model phase, including P7 ablations, must use only
+`CODEX_TRANSPORT=cli` and prove `provider=codex`, the pinned model, and
+`usage_exactness=reported` in durable physical receipts.
 Deterministic providers are permitted only in unit and fault-injection tests.
-Codex subprocess transport still has no lower SDK retry knob, so its receipt
-completeness is at wrapper-invocation granularity.
+Estimated or unavailable usage is preserved as diagnostic evidence but cannot
+qualify economics. Codex subprocess transport still has no lower SDK retry
+knob, so retry ownership and receipt identity remain at wrapper-invocation
+granularity.
+
+### Current proof boundaries
+
+- Failed and partial P6/P7/P8 executions remain immutable diagnostics; a later
+  rerun cannot relabel them as current success.
+- P0-P5 sidecar readiness proves normalization code and bounded source
+  contracts, not that current release-commit artifacts have been regenerated.
+- The active P6 execution is not scored as successful until its barrier,
+  member-level evidence, oracle, and strict sidecar all reopen and agree.
+- The prior P7 experiment did not apply the required adaptive lifecycle and did
+  not earn memory complexity; only the locked production rerun may replace that
+  strategic evidence.
+- P8's fault evidence and component characterization do not waive the red
+  scale ratio. The preregistered warm-pair rerun must preserve cold and steady
+  latency separately.
+- P9 requires one clean commit, exact phase contracts, an independent reviewer
+  receipt, and an explicit non-customer proof boundary.
 
 ## 1. Purpose
 

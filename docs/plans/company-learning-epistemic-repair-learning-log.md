@@ -1,6 +1,7 @@
 # Company-Learning Epistemic Repair — Learning Log
 
-**Document type:** Append-only working scratchpad and evidence index
+**Document type:** Chronological working scratchpad, current-state mirror, and
+evidence index
 
 **Status:** Active
 
@@ -48,7 +49,10 @@ The root coordinator updates this log when:
 
 Rules:
 
-- Do not rewrite an old entry to make the journey look cleaner.
+- Preserve chronological observations and failed-run entries. Current snapshot,
+  ledger, hypothesis, and decision tables must be reconciled in place when
+  their state changes; do not leave a stale checkpoint merely to stay
+  append-only.
 - Append a correction that references the superseded entry.
 - Distinguish `observed`, `inferred`, `hypothesized`, and `decided`.
 - Link to member-level evidence, not only a summary score.
@@ -61,15 +65,20 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Repository checkpoint before these docs | `d4335afa4b0d` |
-| Repair implementation | Not started under the new coordinator |
-| Current phase | P0 characterization complete; P1 implementation next |
+| Latest verified coordination checkpoint | `ba800d97` (P7 strict sidecar and locked-run readiness) |
+| Repair implementation | P0-P8 normalization paths implemented; decisive integrated evidence is not complete |
+| Current phase | Clean pinned P6 diagnostic/decisive execution active; P7 provider run and P8 warm-pair rerun gated behind it |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
 | Current execution boundary | Begins with normalized, source-attributed signals already persisted in PostgreSQL |
 | Explicitly excluded | Connectors/listeners, OAuth/webhooks, task autonomy, external consequential action, second 45-batch run |
-| Highest-priority outcome | One benchmark-blind, evidence-grounded, online company-learning loop whose memory value is proven against controls |
+| P0-P5 evidence state | Strict raw-member P9 regeneration/sidecar paths ready; current-release artifacts still require clean regeneration |
+| P6 evidence state | Barrier/retry/CLI/reported-usage/evaluator fixes and strict sidecar ready; active run is not yet an exit artifact |
+| P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
+| P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
+| P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
+| Highest-priority outcome | Complete P6 honestly, then determine whether adaptive memory earns complexity under locked P7 controls |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -273,7 +282,7 @@ safety regression, Model-layer expansion remains unearned.
 | DEC-003 | 2026-07-17 | Use three logical planes and one accepted graph; no persistent working graph. | accepted | Retrieval/context hypotheses already provide temporary working state. |
 | DEC-004 | 2026-07-17 | Preserve the 45-batch run as immutable forensic evidence and retire it as semantic proof. | accepted | Benchmark leakage and incoherent proof boundary. |
 | DEC-005 | 2026-07-17 | Make invariant violations noncompensatory. | accepted | Reviewer/audit showed averages hid illegal truth states. |
-| DEC-006 | 2026-07-17 | Treat versioned N-ary relation instances as canonical business relations and binary edges as projections. | proposed; P0 must ratify against all readers/writers | Repository currently contains contradictory truth claims. |
+| DEC-006 | 2026-07-17 | Treat versioned N-ary relation instances as canonical business relations and binary edges as projections. | accepted and mechanically cut over | P2 truth kernel, accepted-current readers, projector boundaries, and reader-cutover ratchet. |
 | DEC-007 | 2026-07-17 | Run the deterministic three-batch vertical before another integrated semantic benchmark. | accepted | Fastest proof of the online causal contract. |
 | DEC-008 | 2026-07-17 | Use a 12-batch mixed-stream decisive run, not another 45-batch run, for the repaired core. | accepted | Enough chronology for creation/reuse/correction while controlling cost and ambiguity. |
 | DEC-009 | 2026-07-17 | The Model layer must earn its primary role through paired memory ablation. | accepted | Current memory value is unproven. |
@@ -311,15 +320,15 @@ authoritative dependency and success rules.
 | Package/phase | Owner | Input commit | State | Evidence | Last note |
 | --- | --- | --- | --- | --- | --- |
 | P0 contract/baseline/preregistration | root + three parallel lanes | `841f6f93e4de` | validated | `docs/plans/epistemic-repair/p0/epistemic-repair-p0-baseline-v1.json`; 21 focused tests | Characterization complete; repairs intentionally not mixed into P0. |
-| P1 blindness/observability/retry | unassigned | P0 checkpoint | pending | — | Four hook families and five telemetry reconciliation gaps are the exact repair surface. |
-| P2 truth/evidence/lifecycle/relation | unassigned | — | pending | — | Contracts may start after P0. |
-| P3 boundary/context/entity | unassigned | — | pending | — | Contracts may start after P0/P1. |
-| P4 online barrier/retrieval/feedback | unassigned | — | pending | — | Integration waits on P2/P3. |
-| P5 three-batch vertical | unassigned | — | pending | — | First integrated deterministic proof. |
-| P6 12-batch mixed stream | unassigned | — | pending | — | No run before P5 green. |
-| P7 matched memory ablation | unassigned | — | pending | — | Strategic fork. |
-| P8 fault/scale/characterization | unassigned | — | pending | — | Only earned architecture proceeds. |
-| P9 bounded release decision | unassigned | — | pending | — | Requires one coherent evidence set. |
+| P1 blindness/observability/retry | regeneration lane | clean release commit required | sidecar ready; regenerate | `db44386d` | Real economics require durable `reported` Codex usage; summaries alone cannot normalize. |
+| P2 truth/evidence/lifecycle/relation | regeneration lane | clean release commit required | sidecar ready; regenerate | `db44386d`; reader ratchet `fdb6796d` | Five readers legitimately used the governed shared read shape; scanner now recognizes it without permitting raw `models`. |
+| P3 boundary/context/entity | regeneration lane | P2 current artifact | sidecar ready; regenerate | `b057a20e`, `5a7a30ce` | Eligible raw probe denominators are retained. |
+| P4 online barrier/retrieval/feedback | regeneration lane | P2/P3 current artifacts | sidecar ready; regenerate | `e476f9fa` | Bounded causal evidence cannot substitute for P6. |
+| P5 three-batch vertical | regeneration lane | P1-P4 current artifacts | sidecar ready; regenerate | `ffaf1341` | Deterministic vertical remains bounded proof. |
+| P6 12-batch mixed stream | isolated execution owner | pinned clean worktree | active diagnostic/decisive run | `5382f2da`, `fdb6796d`, `73fc8059` | Raw run must pass barrier reopen, complete member extraction, independent oracle, and strict normalization. |
+| P7 matched memory ablation | waiting owner | P6 exit artifact | locked runner and sidecar ready; not launched | `ba800d97`; historical `f8375cdf` | Requires CLI transport, reported usage, exact raw gate members, and exclusive run lock. |
+| P8 fault/scale/characterization | waiting owner | exclusive DB after P6/P7 | strict sidecar and warm-pair rerun ready | `345eb31c`, `f594cc16` | Historical fault evidence is bounded; scale remains red until repeated paired diagnosis. |
+| P9 bounded release decision | release coordinator + independent reviewer | current P0-P8 artifacts | contract ready; manifest unsealed | `63809479`, `ca850161` | Exact artifact sets, digests, evidence classes, and reviewer receipt are nonoptional. |
 
 ## 10. Open Questions
 
@@ -754,7 +763,7 @@ IDs and fail closed when they do not. Trigger fallback is permitted only for a
 single normalized observation. A passing admission count is not success if its
 lineage is batch-wide.
 
-### 2026-07-18 — LOG-025 — Current adaptive memory did not earn complexity
+### 2026-07-18 — LOG-025 — Historical adaptive run did not earn complexity
 
 **Type:** observed
 
@@ -768,11 +777,13 @@ active beyond two batches.
 **Evidence:** `/tmp/epistemic-repair-p7-real-provider-clean-v1.json`; commit
 `f8375cdf`.
 
-**Effect:** memory has not earned its role in this run. The artifact remains
+**Effect:** memory did not earn its role in this historical run. The artifact remains
 `insufficient_evidence` because corrupted-memory safety is red, and the runner
 also revealed that provider answers were evaluated without applying adaptive
 memory evolution between stages. P7 must exercise the real mutation/lifecycle
-loop before choosing the strategic fork.
+loop before choosing the strategic fork. This result remains falsifying
+diagnostic evidence; it is not the current P7 exit artifact and may not be
+silently replaced by the readiness of the new runner.
 
 ### 2026-07-18 — LOG-026 — Fault correctness passed while scale efficiency failed
 
@@ -972,12 +983,11 @@ exact accepted versions, reopen the receipt, preserve retry ownership, and
 record provider-reported economics. Compatibility adapters must cover every
 reader of fields not yet present in immutable truth versions.
 
-**Decision or next test:** Run only from a detached clean worktree and record
-its commit. Use one 300-second provider attempt retry within a distinct
-650-second batch deadline. Require zero truth-critical triggers at each
-barrier, split eventual sidecars explicitly, and require reported Codex CLI
-usage. Validate the independent evidence extractor and scorer on a fresh
-one-batch run before another 12-batch spend.
+**Decision or next test:** The detached clean-worktree, 300-second attempt,
+650-second batch deadline, exact barrier reopen, reported CLI usage, and
+post-freeze extraction/scoring requirements have now been implemented. A
+clean diagnostic/decisive run is active. Its existence does not change the
+status until the frozen artifact and sidecar reopen successfully.
 
 **Coordinator impact:** P6 raw runs are frozen execution artifacts, never exit
 artifacts. The independent scorer remains fail-closed until boundary, signal
@@ -987,6 +997,42 @@ contamination evidence is complete.
 **Edge cases added:** missing barrier invocation; shared-worktree drift; stale
 accepted readers; retry budget shadowing; estimated usage despite reported
 provider telemetry.
+
+### 2026-07-18 — LOG-034 — Normalization readiness is separate from current evidence
+
+**Type:** observed + decided
+
+**Work packages / commits:** P0-P2 `db44386d`; P3 `b057a20e` and
+`5a7a30ce`; P4 `e476f9fa`; P5 `ffaf1341`; P6 `73fc8059`; P7
+`ba800d97`; P8 `f594cc16`; P9 `63809479` and `ca850161`.
+
+**What changed:** Each phase now has, or is connected to, a strict path that
+retains raw member contributions, preregistered gate and metric sets, full
+commit provenance, and content digests. P6's independent evaluator now scores
+batch-level retrieval decisions rather than fabricating target-by-context
+Cartesian rows. P7's oracle derives every hard gate from raw members and its
+runner refuses dirty or non-CLI execution under an exclusive lock. P8 has a
+strict sidecar and preregistered repeated warm-pair diagnostic. P9 rejects
+stale summaries, mixed commits, malformed metrics, and coordinator-authored
+review receipts.
+
+**Failed evidence preserved:** the no-barrier and timed-out P6 runs, the P6
+reader-shape failures, the historical P7 run without adaptive lifecycle, the
+mixed-model attempt ledger, the contradictory P8 gold run, and the red P8
+scale ratio remain diagnostic evidence. New code or a passing bounded test
+does not rewrite their verdicts.
+
+**Decision:** distinguish three states everywhere: `runner/sidecar ready`,
+`current artifact regenerated`, and `phase exit proven`. P0-P5 are currently
+in the first state for P9 assembly; P6 is executing toward the second and
+third; P7 and the P8 warm-pair rerun wait behind the isolated execution lock;
+P9 remains unsealed until one release commit supplies every required artifact
+and an independent reviewer reproduces the result.
+
+**Proof boundary:** no customer value, connector transport, task autonomy, or
+large open-world semantic guarantee follows from these harnesses. Reported
+Codex usage is required for economics; estimated or unavailable usage remains
+visible but cannot qualify it.
 
 ## 13. Entry Template
 
