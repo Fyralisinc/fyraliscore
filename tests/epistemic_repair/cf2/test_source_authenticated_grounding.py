@@ -3,6 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from lib.contracts.entity_mentions import EntityMentionDetectionFate
+from services.domain.entity_grounding.episode import prepare_context_selection
+from services.domain.entity_grounding.learned_discovery import DISCOVERY_VERSION
+from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
 from services.evaluation.epistemic_repair.cf2_source_grounding import (
     SourceAuthenticatedSignal,
     build_source_authenticated_grounding_episode,
@@ -39,6 +43,63 @@ def test_explicit_authenticated_source_resolves_through_production_contract() ->
     assert episode.model_output["gold_blind"] is True
     assert episode.model_output["source_authenticated"] is True
     assert episode.model_output["decision_source"] == "deterministic_source_fixture"
+    assert episode.mention_detection_command.detection.extractor_version == (
+        DISCOVERY_VERSION
+    )
+
+
+def test_authenticated_detection_matches_later_learned_batch_identity() -> None:
+    tenant_id, observation_id = uuid4(), uuid4()
+    occurred_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    text = "Atlas release, update 4: The certificate owner is still open."
+    episode = build_source_authenticated_grounding_episode(
+        SourceAuthenticatedSignal(
+            tenant_id=tenant_id,
+            observation_id=observation_id,
+            occurred_at=occurred_at,
+            source_channel="slack:message",
+            source_container_id="slack:release-room",
+            content_text=text,
+        )
+    )
+    assert episode is not None
+
+    learned_at = occurred_at.replace(minute=occurred_at.minute + 1)
+    context_command, context_outcome = prepare_context_selection(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Atlas release",
+        occurred_at=occurred_at,
+        source_channel="slack:message",
+        source_space="slack:message",
+        topology_incomplete=True,
+        boundary_hypotheses=(
+            {"kind": "slack_batch_boundary", "status": "provisional"},
+        ),
+        context_observations=(),
+        selection_dependency_refs=(),
+        now=learned_at,
+        focal_content_text=text,
+    )
+    learned_command = prepare_entity_mention_detection(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        phrase="Atlas release",
+        content_text=text,
+        source_channel="slack:message",
+        context_command=context_command,
+        context_outcome=context_outcome,
+        now=learned_at,
+        verified_span=(0, len("Atlas release")),
+        discovery_fate=EntityMentionDetectionFate.DETECTED,
+        discovery_confidence=0.99,
+        extractor_version=DISCOVERY_VERSION,
+        discovered_entity_type="project",
+    )
+
+    assert episode.mention_detection_command.detection_key == (
+        learned_command.detection_key
+    )
 
 
 def test_fixture_abstains_without_explicit_supported_source_subject() -> None:

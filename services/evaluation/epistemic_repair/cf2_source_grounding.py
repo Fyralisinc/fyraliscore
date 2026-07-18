@@ -19,6 +19,7 @@ from services.domain.entity_grounding.episode import (
     prepare_context_selection,
 )
 from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
+from services.domain.entity_grounding.learned_discovery import DISCOVERY_VERSION
 from services.domain.entity_grounding.repo import EntityGroundingRepo
 
 
@@ -118,6 +119,8 @@ def build_source_authenticated_grounding_episode(
         context_command=context_command,
         context_outcome=context_outcome,
         now=decided_at,
+        verified_span=(match.start("surface"), match.end("surface")),
+        extractor_version=DISCOVERY_VERSION,
     )
     return build_grounding_episode(
         tenant_id=signal.tenant_id,
