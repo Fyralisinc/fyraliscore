@@ -5,151 +5,125 @@ import json
 from pathlib import Path
 
 from lib.evaluation.epistemic_repair.p9_release import (
-    ALLOWED_VERDICTS,
-    PhaseEvidence,
-    READY_VERDICT,
-    build_release_report,
+    CONTENT_DIGEST_ALGORITHM, ManifestEvidence, READY_VERDICT,
+    REVIEW_SCHEMA_VERSION, REQUIRED_PHASES, build_release_report, reproduce, seal_manifest,
 )
 
 
-def _artifact(path: Path, phase: str, commit: str, *, ready: bool = True) -> PhaseEvidence:
-    payload = {
-        "schema_version": f"{phase}-test-v1",
-        "commit": commit,
-        "passed": ready,
-        "phase_exit_ready": ready,
-        "hard_gates": {"constitutional": ready},
-        "p9_continuous_metrics": [
-            {
-                "name": "coverage",
-                "value": 1.0,
-                "numerator": 1,
-                "denominator": 1,
-                "coverage": 1.0,
-                "uncertainty": "not_applicable",
-            }
-        ],
+def _digest(value):
+    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _phase(path: Path, phase: str, commit: str, *, metric=True):
+    body = {
+        "schema_version": f"{phase}-normalized-v1", "commit": commit,
+        "phase_exit_ready": True, "hard_gates": {f"{phase}-gate": True},
+        "p9_continuous_metrics": ([{
+            "name": f"{phase}-metric", "numerator": 1, "denominator": 1, "value": 1.0,
+            "coverage": 1.0, "uncertainty": "not_applicable", "status": "pass",
+            "operator": ">=", "threshold": 1.0, "source_artifact_digest": "a" * 64,
+            "worst_cases": [],
+        }] if metric else []),
+        "strategic_decision": "primary_memory_earned" if phase == "p7" else None,
     }
-    if phase == "p7":
-        payload["strategic_decision"] = "primary_memory_earned"
-    raw = json.dumps(payload, sort_keys=True).encode()
-    path.write_bytes(raw)
-    return PhaseEvidence(phase, path, sha256(raw).hexdigest())
+    body["content_digest"] = _digest(body)
+    path.write_text(json.dumps(body, sort_keys=True))
+    return ManifestEvidence(
+        str(path), body["schema_version"], commit, sha256(path.read_bytes()).hexdigest(),
+        body["content_digest"], "content_digest", CONTENT_DIGEST_ALGORITHM,
+        "integrated_current", (f"{phase}-gate",), (f"{phase}-metric",) if metric else (),
+    )
 
 
-def test_p9_authorizes_only_one_commit_with_all_green_evidence(tmp_path: Path) -> None:
+def _setup(tmp_path: Path, *, p0_metric=False):
     commit = "a" * 40
-    evidence = [_artifact(tmp_path / f"{phase}.json", phase, commit) for phase in (f"p{i}" for i in range(9))]
-    report = build_release_report(release_commit=commit, worktree_clean=True, evidence=evidence)
+    entries = {
+        phase: _phase(tmp_path / f"{phase}.json", phase, commit, metric=(phase != "p0" or p0_metric))
+        for phase in REQUIRED_PHASES
+    }
+    manifest = seal_manifest(
+        coordinator_id="coordinator", release_commit=commit, required_current=entries,
+    )
+    reproduction = reproduce(manifest)
+    receipt_body = {
+        "schema_version": REVIEW_SCHEMA_VERSION, "reviewer_id": "independent-reviewer",
+        "status": "reproduced", "reviewed_manifest_digest": manifest["manifest_digest"],
+        "reproduced_report_digest": reproduction["reproduced_report_digest"],
+    }
+    receipt = {**receipt_body, "receipt_digest": _digest(receipt_body)}
+    return commit, entries, manifest, receipt
+
+
+def test_strict_manifest_authorizes_exact_normalized_evidence(tmp_path: Path):
+    commit, _, manifest, receipt = _setup(tmp_path)
+    report = build_release_report(
+        manifest=manifest, verified_release_commit=commit,
+        verified_worktree_clean=True, reviewer_receipt=receipt,
+    )
     assert report["verdict"] == READY_VERDICT
     assert report["completion_authorized"] is True
-    assert report["evidence_complete"] is True
 
 
-def test_p9_fails_closed_on_missing_mixed_or_tampered_evidence(tmp_path: Path) -> None:
-    commit = "b" * 40
-    evidence = [_artifact(tmp_path / f"{phase}.json", phase, commit) for phase in (f"p{i}" for i in range(8))]
-    evidence[2] = PhaseEvidence(evidence[2].phase, evidence[2].path, "0" * 64)
-    report = build_release_report(release_commit=commit, worktree_clean=False, evidence=evidence)
-    assert report["verdict"] == "insufficient_evidence"
-    assert report["completion_authorized"] is False
-    assert report["missing_phases"] == ["p8"]
-    assert report["phase_evidence"][2]["digest_verified"] is False
+def test_metric_free_phase_requires_explicit_empty_required_set(tmp_path: Path):
+    _, entries, manifest, _ = _setup(tmp_path)
+    assert reproduce(manifest)["phase_evidence"][0]["metrics_valid"] is True
+    bad = dict(entries)
+    bad["p0"] = ManifestEvidence(**{
+        **bad["p0"].__dict__, "required_metric_ids": ("invented",),
+    })
+    rejected = seal_manifest(coordinator_id="coordinator", release_commit="a" * 40, required_current=bad)
+    assert reproduce(rejected)["required_evidence_green"] is False
 
 
-def test_p9_verdict_precedence_is_constitutional_then_memory_then_ops(tmp_path: Path) -> None:
-    commit = "c" * 40
-    evidence = [_artifact(tmp_path / f"{phase}.json", phase, commit) for phase in (f"p{i}" for i in range(9))]
-    p2 = json.loads(evidence[2].path.read_text())
-    p2["hard_gates"] = {"truth": False}
-    p2["phase_exit_ready"] = False
-    raw = json.dumps(p2, sort_keys=True).encode()
-    evidence[2].path.write_bytes(raw)
-    evidence[2] = PhaseEvidence("p2", evidence[2].path, sha256(raw).hexdigest())
-    report = build_release_report(release_commit=commit, worktree_clean=True, evidence=evidence)
-    assert report["verdict"] == "safety_or_truth_blocked"
-    assert report["verdict"] in ALLOWED_VERDICTS
+def test_adversarial_metric_and_gate_shapes_fail_closed(tmp_path: Path):
+    commit, entries, _, _ = _setup(tmp_path)
+    path = Path(entries["p3"].path)
+    artifact = json.loads(path.read_text())
+    artifact["p9_continuous_metrics"][0]["denominator"] = 0
+    artifact["p9_continuous_metrics"][0]["status"] = "pass"
+    artifact["hard_gates"]["undeclared-extra"] = True
+    artifact["content_digest"] = _digest({k: v for k, v in artifact.items() if k != "content_digest"})
+    path.write_text(json.dumps(artifact, sort_keys=True))
+    attacked = dict(entries)
+    attacked["p3"] = ManifestEvidence(**{
+        **attacked["p3"].__dict__, "sha256": sha256(path.read_bytes()).hexdigest(),
+        "content_digest": artifact["content_digest"],
+    })
+    manifest = seal_manifest(
+        coordinator_id="coordinator", release_commit=commit, required_current=attacked,
+    )
+    # Even after outer SHA and embedded digest resealing, exact gate IDs and
+    # the positive-denominator contract reject the artifact.
+    assert reproduce(manifest)["required_evidence_green"] is False
 
 
-def test_p9_recomputes_semantic_and_operational_health_from_hard_gates(
-    tmp_path: Path,
-) -> None:
-    commit = "d" * 40
-    evidence = [
-        _artifact(tmp_path / f"{phase}.json", phase, commit)
-        for phase in (f"p{i}" for i in range(9))
-    ]
-    p6 = json.loads(evidence[6].path.read_text())
-    p6["hard_gates"] = {"mixed_stream_quality": False}
-    # A stale or dishonest summary flag must not override member evidence.
-    p6["phase_exit_ready"] = True
-    raw = json.dumps(p6, sort_keys=True).encode()
-    evidence[6].path.write_bytes(raw)
-    evidence[6] = PhaseEvidence("p6", evidence[6].path, sha256(raw).hexdigest())
-
+def test_embedded_digest_and_reviewer_identity_are_mandatory(tmp_path: Path):
+    commit, entries, manifest, receipt = _setup(tmp_path)
+    path = Path(entries["p2"].path)
+    artifact = json.loads(path.read_text())
+    artifact["content_digest"] = "0" * 64
+    path.write_text(json.dumps(artifact, sort_keys=True))
+    assert reproduce(manifest)["required_evidence_green"] is False
+    receipt["reviewer_id"] = "coordinator"
     report = build_release_report(
-        release_commit=commit,
-        worktree_clean=True,
-        evidence=evidence,
+        manifest=manifest, verified_release_commit=commit,
+        verified_worktree_clean=True, reviewer_receipt=receipt,
     )
-
-    assert report["semantic_green"] is False
-    assert report["verdict"] == "mechanically_ready_semantically_insufficient"
+    assert report["reviewer_receipt_valid"] is False
     assert report["completion_authorized"] is False
 
 
-def test_p9_rejects_historical_evidence_as_required_current_phase(
-    tmp_path: Path,
-) -> None:
-    commit = "e" * 40
-    evidence = [
-        _artifact(tmp_path / f"{phase}.json", phase, commit)
-        for phase in (f"p{i}" for i in range(9))
-    ]
-    p5 = evidence[5]
-    evidence[5] = PhaseEvidence(
-        p5.phase,
-        p5.path,
-        p5.expected_sha256,
-        evidence_class="historical_falsifying",
-    )
-
-    report = build_release_report(
-        release_commit=commit,
-        worktree_clean=True,
-        evidence=evidence,
-    )
-
-    assert report["evidence_complete"] is False
-    assert report["verdict"] == "insufficient_evidence"
-    assert report["completion_authorized"] is False
-
-
-def test_p9_decodes_status_gates_and_fails_closed_on_unknown_gate_shapes(
-    tmp_path: Path,
-) -> None:
-    commit = "f" * 40
-    evidence = [
-        _artifact(tmp_path / f"{phase}.json", phase, commit)
-        for phase in (f"p{i}" for i in range(9))
-    ]
-    p6 = json.loads(evidence[6].path.read_text())
-    p6["hard_gates"] = {
-        "status_encoded": {"status": "pass", "eligible_count": 4},
-        "unknown_encoded": {"result": "looks-good"},
-    }
-    raw = json.dumps(p6, sort_keys=True).encode()
-    evidence[6].path.write_bytes(raw)
-    evidence[6] = PhaseEvidence("p6", evidence[6].path, sha256(raw).hexdigest())
-
-    report = build_release_report(
-        release_commit=commit,
-        worktree_clean=True,
-        evidence=evidence,
-    )
-
-    p6_record = next(row for row in report["phase_evidence"] if row["phase"] == "p6")
-    assert p6_record["hard_gate_count"] == 2
-    assert p6_record["all_declared_hard_gates_green"] is False
-    assert report["semantic_green"] is False
-    assert report["completion_authorized"] is False
+def test_diagnostics_never_substitute_for_required_phase(tmp_path: Path):
+    _, entries, _, _ = _setup(tmp_path)
+    missing = dict(entries)
+    diagnostic = missing.pop("p8")
+    try:
+        seal_manifest(
+            coordinator_id="coordinator", release_commit="a" * 40,
+            required_current=missing,
+            diagnostics=(ManifestEvidence(**{**diagnostic.__dict__, "evidence_class": "historical_falsifying"}),),
+        )
+    except ValueError as exc:
+        assert "exactly p0 through p8" in str(exc)
+    else:
+        raise AssertionError("diagnostic substituted for required p8")

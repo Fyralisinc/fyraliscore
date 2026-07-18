@@ -1,263 +1,289 @@
-"""Fail-closed P9 release-candidate evidence composition.
-
-P9 does not judge company semantics itself.  It verifies that every phase's
-sealed evidence belongs to one release candidate and that the phase verdicts
-jointly authorize exactly one bounded release verdict.
-"""
+"""Strict, fail-closed P9 release manifest and report composition."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+import re
+from typing import Any, Mapping
 
 
-SCHEMA_VERSION = "epistemic-repair-p9-release-candidate-v1"
+SCHEMA_VERSION = "epistemic-repair-p9-release-candidate-v2"
+MANIFEST_SCHEMA_VERSION = "epistemic-repair-p9-release-manifest-v1"
+REVIEW_SCHEMA_VERSION = "epistemic-repair-p9-reviewer-reproduction-v1"
 REQUIRED_PHASES = tuple(f"p{index}" for index in range(9))
 READY_VERDICT = "ready_for_bounded_internal_company_learning"
 ALLOWED_VERDICTS = {
-    READY_VERDICT,
-    "mechanically_ready_semantically_insufficient",
-    "memory_not_earned_simplification_required",
-    "operationally_insufficient",
-    "safety_or_truth_blocked",
-    "insufficient_evidence",
+    READY_VERDICT, "mechanically_ready_semantically_insufficient",
+    "memory_not_earned_simplification_required", "operationally_insufficient",
+    "safety_or_truth_blocked", "insufficient_evidence",
 }
 CURRENT_EVIDENCE_CLASSES = {"integrated_current", "bounded_current"}
-
-
-@dataclass(frozen=True)
-class PhaseEvidence:
-    phase: str
-    path: Path
-    expected_sha256: str
-    evidence_class: str = "integrated_current"
+DIAGNOSTIC_EVIDENCE_CLASSES = {"historical_falsifying", "unmeasured"}
+CONTENT_DIGEST_ALGORITHM = "canonical-json-sha256-excluding-declared-field"
+_HEX40 = re.compile(r"[0-9a-f]{40}")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 def _canonical_bytes(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _digest_bytes(payload: bytes) -> str:
-    return sha256(payload).hexdigest()
+def _digest(value: Any) -> str:
+    return sha256(_canonical_bytes(value)).hexdigest()
 
 
-def _read_artifact(item: PhaseEvidence) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    record: dict[str, Any] = {
-        "phase": item.phase,
-        "path": str(item.path),
-        "expected_sha256": item.expected_sha256,
-        "evidence_class": item.evidence_class,
+def _file_sha(path: Path) -> str:
+    return sha256(path.read_bytes()).hexdigest()
+
+
+def _embedded_digest(artifact: Mapping[str, Any], field: str, algorithm: str) -> str:
+    if algorithm != CONTENT_DIGEST_ALGORITHM:
+        raise ValueError(f"unsupported content digest algorithm: {algorithm}")
+    body = dict(artifact)
+    body.pop(field, None)
+    return _digest(body)
+
+
+@dataclass(frozen=True)
+class ManifestEvidence:
+    path: str
+    schema_version: str
+    commit: str
+    sha256: str
+    content_digest: str
+    content_digest_field: str
+    content_digest_algorithm: str
+    evidence_class: str
+    required_gate_ids: tuple[str, ...]
+    required_metric_ids: tuple[str, ...]
+
+
+def seal_manifest(
+    *, coordinator_id: str, release_commit: str,
+    required_current: Mapping[str, ManifestEvidence],
+    diagnostics: tuple[ManifestEvidence, ...] = (),
+) -> dict[str, Any]:
+    if not coordinator_id:
+        raise ValueError("coordinator_id is required")
+    if not _HEX40.fullmatch(release_commit):
+        raise ValueError("release_commit must be a full lowercase 40-character SHA")
+    if set(required_current) != set(REQUIRED_PHASES):
+        raise ValueError("required_current must contain exactly p0 through p8")
+    if any(item.evidence_class not in CURRENT_EVIDENCE_CLASSES for item in required_current.values()):
+        raise ValueError("required phase has non-current evidence class")
+    if any(item.commit != release_commit for item in required_current.values()):
+        raise ValueError("every required phase must bind the release commit")
+    if any(
+        len(set(item.required_gate_ids)) != len(item.required_gate_ids)
+        or len(set(item.required_metric_ids)) != len(item.required_metric_ids)
+        or item.content_digest_algorithm != CONTENT_DIGEST_ALGORITHM
+        for item in (*required_current.values(), *diagnostics)
+    ):
+        raise ValueError("manifest contains duplicate IDs or unsupported digest algorithm")
+    if any(item.evidence_class not in DIAGNOSTIC_EVIDENCE_CLASSES for item in diagnostics):
+        raise ValueError("diagnostic has non-diagnostic evidence class")
+    body = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "coordinator_id": coordinator_id,
+        "release_commit": release_commit,
+        "required_current": {key: asdict(required_current[key]) for key in REQUIRED_PHASES},
+        "diagnostics": [asdict(item) for item in diagnostics],
     }
+    return {**body, "manifest_digest": _digest(body)}
+
+
+def _gate_value(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Mapping) and value.get("status") in {"pass", "fail"}:
+        return value["status"] == "pass"
+    return None
+
+
+def _metric_valid(metric: Any) -> tuple[bool, bool]:
+    required = {
+        "name", "value", "numerator", "denominator", "coverage", "uncertainty",
+        "status", "operator", "threshold", "source_artifact_digest", "worst_cases",
+    }
+    if not isinstance(metric, Mapping) or not required <= set(metric):
+        return False, False
+    denominator, numerator = metric["denominator"], metric["numerator"]
+    if not isinstance(denominator, (int, float)) or denominator <= 0:
+        return False, False
+    if not isinstance(numerator, (int, float)) or not isinstance(metric["value"], (int, float)):
+        return False, False
+    coverage = metric["coverage"]
+    if not isinstance(coverage, (int, float)) or not 0 <= coverage <= 1:
+        return False, False
+    uncertainty = metric["uncertainty"]
+    if uncertainty != "not_applicable" and not isinstance(uncertainty, Mapping):
+        return False, False
+    if not _HEX64.fullmatch(str(metric["source_artifact_digest"])):
+        return False, False
+    if not isinstance(metric["worst_cases"], list):
+        return False, False
+    computed = numerator / denominator
+    if abs(float(metric["value"]) - computed) > 1e-12:
+        return False, False
+    operator, threshold = metric["operator"], metric["threshold"]
+    if operator not in {">=", "<=", "="} or not isinstance(threshold, (int, float)):
+        return False, False
+    passed = computed >= threshold if operator == ">=" else computed <= threshold if operator == "<=" else computed == threshold
+    if metric["status"] not in {"pass", "fail"} or (metric["status"] == "pass") != passed:
+        return False, False
+    return True, passed
+
+
+def _read_entry(entry: Mapping[str, Any], *, phase: str | None) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    record = {"phase": phase, "path": entry.get("path"), "evidence_class": entry.get("evidence_class")}
     try:
-        payload = item.path.read_bytes()
-        actual = _digest_bytes(payload)
-        record["actual_sha256"] = actual
-        record["digest_verified"] = actual == item.expected_sha256
-        parsed = json.loads(payload)
-        if not isinstance(parsed, dict):
-            raise ValueError("phase artifact root must be an object")
-        record["reopened"] = True
-        return parsed, record
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        record.update(
-            reopened=False,
-            digest_verified=False,
-            error=f"{type(exc).__name__}: {exc}",
+        path = Path(str(entry["path"]))
+        raw = path.read_bytes()
+        artifact = json.loads(raw)
+        if not isinstance(artifact, dict):
+            raise ValueError("artifact root must be an object")
+        gates = artifact.get("hard_gates")
+        metrics = artifact.get("p9_continuous_metrics")
+        required_gates = set(entry["required_gate_ids"])
+        required_metrics = set(entry["required_metric_ids"])
+        gate_ids = set(gates) if isinstance(gates, Mapping) else set()
+        metric_ids = {
+            str(item.get("name")) for item in metrics if isinstance(item, Mapping)
+        } if isinstance(metrics, list) else set()
+        gate_values = [_gate_value(gates[key]) for key in sorted(gate_ids)] if isinstance(gates, Mapping) else []
+        metric_results = [_metric_valid(item) for item in metrics] if isinstance(metrics, list) else []
+        embedded = _embedded_digest(
+            artifact, str(entry["content_digest_field"]), str(entry["content_digest_algorithm"]),
         )
+        checks = {
+            "sha256_matches": sha256(raw).hexdigest() == entry["sha256"],
+            "schema_matches": artifact.get("schema_version") == entry["schema_version"],
+            "commit_matches": artifact.get("commit") == entry["commit"],
+            "embedded_digest_matches": artifact.get(entry["content_digest_field"]) == entry["content_digest"] == embedded,
+            "exact_gate_set": gate_ids == required_gates,
+            "gates_decodable": bool(gate_values) and all(value is not None for value in gate_values),
+            "all_gates_green": bool(gate_values) and all(gate_values),
+            "metrics_present": isinstance(metrics, list),
+            "exact_metric_set": metric_ids == required_metrics and len(metric_ids) == len(metrics or ()),
+            "metrics_valid": len(metric_results) == len(required_metrics) and all(valid for valid, _ in metric_results),
+            "all_metrics_green": all(passed for _, passed in metric_results),
+            "phase_ready": artifact.get("phase_exit_ready") is True,
+        }
+        record.update(checks, reopened=True)
+        return artifact, record
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        record.update(reopened=False, error=f"{type(exc).__name__}: {exc}")
         return None, record
 
 
-def _hard_gate_values(artifact: Mapping[str, Any]) -> list[bool]:
-    gates = artifact.get("hard_gates")
-    if not isinstance(gates, Mapping):
-        return []
-    values: list[bool] = []
-    for value in gates.values():
-        if isinstance(value, bool):
-            values.append(value)
-        elif isinstance(value, Mapping):
-            if isinstance(value.get("passed"), bool):
-                values.append(bool(value["passed"]))
-            elif value.get("status") in {"pass", "fail"}:
-                values.append(value["status"] == "pass")
-            else:
-                # A declared but undecodable hard gate is evidence failure,
-                # never permission to silently omit the gate.
-                values.append(False)
-        else:
-            values.append(False)
-    return values
-
-
-def _record_green(record: Mapping[str, Any]) -> bool:
-    """Recompute phase health instead of trusting a summary-ready flag alone."""
-
+def _manifest_valid(manifest: Mapping[str, Any]) -> bool:
+    body = dict(manifest)
+    digest = body.pop("manifest_digest", None)
     return bool(
-        record.get("phase_ready")
-        and record.get("hard_gate_count", 0) > 0
-        and record.get("all_declared_hard_gates_green")
+        manifest.get("schema_version") == MANIFEST_SCHEMA_VERSION
+        and _HEX40.fullmatch(str(manifest.get("release_commit", "")))
+        and set(manifest.get("required_current", {})) == set(REQUIRED_PHASES)
+        and all(
+            entry.get("commit") == manifest.get("release_commit")
+            and entry.get("evidence_class") in CURRENT_EVIDENCE_CLASSES
+            and entry.get("content_digest_algorithm") == CONTENT_DIGEST_ALGORITHM
+            for entry in manifest.get("required_current", {}).values()
+        )
+        and digest == _digest(body)
     )
 
 
-def _phase_ready(phase: str, artifact: Mapping[str, Any]) -> bool:
-    if phase == "p0":
-        return bool(artifact.get("passed", artifact.get("baseline_complete", False)))
-    return bool(artifact.get("phase_exit_ready", artifact.get("passed", False)))
-
-
-def _metric_contract_complete(artifact: Mapping[str, Any]) -> bool:
-    """Require provenance for declared P9 continuous metrics.
-
-    Phases may omit a P9 metric block when they have no continuous metrics.
-    Once declared, every metric must expose numerator, denominator, coverage,
-    and uncertainty (which may explicitly be ``not_applicable``).
-    """
-
-    metrics = artifact.get("p9_continuous_metrics", [])
-    if not isinstance(metrics, list):
-        return False
-    required = {"name", "value", "numerator", "denominator", "coverage", "uncertainty"}
-    return all(isinstance(metric, Mapping) and required <= set(metric) for metric in metrics)
-
-
-def _select_verdict(
-    *,
-    evidence_complete: bool,
-    constitutional_green: bool,
-    semantic_green: bool,
-    memory_decision: str | None,
-    operational_green: bool,
-) -> str:
-    if not evidence_complete:
-        return "insufficient_evidence"
-    if not constitutional_green:
-        return "safety_or_truth_blocked"
-    if memory_decision in {"not_earned", "limited_compression_value"}:
-        return "memory_not_earned_simplification_required"
-    if not operational_green:
-        return "operationally_insufficient"
-    if not semantic_green or memory_decision != "primary_memory_earned":
-        return "mechanically_ready_semantically_insufficient"
-    return READY_VERDICT
-
-
-def build_release_report(
-    *,
-    release_commit: str,
-    worktree_clean: bool,
-    evidence: Iterable[PhaseEvidence],
-) -> dict[str, Any]:
-    items = list(evidence)
-    by_phase = {item.phase: item for item in items}
-    duplicate_phases = len(by_phase) != len(items)
-    missing_phases = sorted(set(REQUIRED_PHASES) - set(by_phase))
-    records: list[dict[str, Any]] = []
-    artifacts: dict[str, dict[str, Any]] = {}
-
+def reproduce(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    records, artifacts = [], {}
     for phase in REQUIRED_PHASES:
-        item = by_phase.get(phase)
-        if item is None:
-            continue
-        artifact, record = _read_artifact(item)
+        artifact, record = _read_entry(manifest["required_current"][phase], phase=phase)
         records.append(record)
         if artifact is not None:
             artifacts[phase] = artifact
-            record["artifact_commit"] = artifact.get("commit")
-            record["commit_matches"] = artifact.get("commit") == release_commit
-            gates = _hard_gate_values(artifact)
-            record["hard_gate_count"] = len(gates)
-            record["all_declared_hard_gates_green"] = bool(gates) and all(gates)
-            record["phase_ready"] = _phase_ready(phase, artifact)
-            record["continuous_metric_contract_complete"] = _metric_contract_complete(artifact)
-
-    evidence_complete = (
-        bool(release_commit)
-        and worktree_clean
-        and not duplicate_phases
-        and not missing_phases
-        and len(records) == len(REQUIRED_PHASES)
-        and all(
-            record.get("reopened")
-            and record.get("digest_verified")
-            and record.get("commit_matches")
-            and record.get("continuous_metric_contract_complete")
-            and record.get("evidence_class") in CURRENT_EVIDENCE_CLASSES
-            for record in records
-        )
+    diagnostic_records = [
+        _read_entry(entry, phase=None)[1] for entry in manifest.get("diagnostics", ())
+    ]
+    contract_complete = _manifest_valid(manifest) and all(
+        row.get("reopened") and row.get("sha256_matches") and row.get("schema_matches")
+        and row.get("commit_matches") and row.get("embedded_digest_matches")
+        and row.get("exact_gate_set") and row.get("gates_decodable") and row.get("metrics_present")
+        and row.get("exact_metric_set") and row.get("metrics_valid")
+        for row in records
     )
-    constitutional_phases = {"p0", "p1", "p2", "p3", "p4"}
-    constitutional_green = all(
-        _record_green(record)
-        for record in records
-        if record["phase"] in constitutional_phases
-    ) and constitutional_phases <= set(artifacts)
-    semantic_green = all(
-        next((_record_green(r) for r in records if r["phase"] == phase), False)
-        for phase in ("p5", "p6")
-    )
-    operational_green = all(
-        next((_record_green(r) for r in records if r["phase"] == phase), False)
-        for phase in ("p7", "p8")
-    )
-    p7 = artifacts.get("p7", {})
-    memory_decision = p7.get("strategic_decision")
-    verdict = _select_verdict(
-        evidence_complete=evidence_complete,
-        constitutional_green=constitutional_green,
-        semantic_green=semantic_green,
-        memory_decision=memory_decision if isinstance(memory_decision, str) else None,
-        operational_green=operational_green,
-    )
-    report: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
-        "commit": release_commit,
-        "worktree_clean": worktree_clean,
-        "required_phases": list(REQUIRED_PHASES),
-        "missing_phases": missing_phases,
-        "duplicate_phases": duplicate_phases,
-        "phase_evidence": records,
-        "evidence_classes": {
-            category: [r["phase"] for r in records if r["evidence_class"] == category]
-            for category in (
-                "integrated_current",
-                "bounded_current",
-                "historical_falsifying",
-                "unmeasured",
-            )
-        },
-        "constitutional_green": constitutional_green,
-        "semantic_green": semantic_green,
-        "memory_decision": memory_decision,
-        "operational_green": operational_green,
-        "evidence_complete": evidence_complete,
-        "verdict": verdict,
-        "completion_authorized": verdict == READY_VERDICT,
-        "scope_boundaries": {
-            "task_autonomy": "excluded",
-            "connector_transport": "excluded",
-            "customer_value": "not_claimed",
-            "future_large_real_provider_run": "separately_authorized",
-        },
+    phase_green = {
+        row["phase"]: bool(
+            row.get("all_gates_green") and row.get("all_metrics_green") and row.get("phase_ready")
+        ) for row in records
     }
-    report["report_digest"] = _digest_bytes(_canonical_bytes(report))
-    return report
+    required_green = contract_complete and all(phase_green.values())
+    p7_decision = artifacts.get("p7", {}).get("strategic_decision")
+    core = {
+        "manifest_digest": manifest.get("manifest_digest"),
+        "phase_evidence": records, "diagnostic_evidence": diagnostic_records,
+        "evidence_contract_complete": contract_complete,
+        "phase_green": phase_green, "required_evidence_green": required_green,
+        "memory_decision": p7_decision,
+    }
+    return {**core, "reproduced_report_digest": _digest(core)}
 
 
-def write_release_report(report: Mapping[str, Any], path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return path
+def build_release_report(
+    *, manifest: Mapping[str, Any], verified_release_commit: str,
+    verified_worktree_clean: bool, reviewer_receipt: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    reproduction = reproduce(manifest)
+    receipt = dict(reviewer_receipt or {})
+    receipt_body = dict(receipt)
+    receipt_digest = receipt_body.pop("receipt_digest", None)
+    reviewer_valid = bool(
+        receipt.get("schema_version") == REVIEW_SCHEMA_VERSION
+        and receipt.get("status") == "reproduced"
+        and receipt.get("reviewer_id")
+        and receipt.get("reviewer_id") != manifest.get("coordinator_id")
+        and receipt.get("reviewed_manifest_digest") == manifest.get("manifest_digest")
+        and receipt.get("reproduced_report_digest") == reproduction["reproduced_report_digest"]
+        and receipt_digest == _digest(receipt_body)
+    )
+    evidence_complete = bool(
+        verified_worktree_clean
+        and verified_release_commit == manifest.get("release_commit")
+        and _HEX40.fullmatch(verified_release_commit)
+        and reproduction["evidence_contract_complete"]
+        and reviewer_valid
+    )
+    memory = reproduction.get("memory_decision")
+    green = reproduction["phase_green"]
+    constitutional_green = all(green.get(f"p{i}", False) for i in range(5))
+    semantic_green = all(green.get(phase, False) for phase in ("p5", "p6"))
+    operational_green = all(green.get(phase, False) for phase in ("p7", "p8"))
+    if not evidence_complete:
+        verdict = "insufficient_evidence"
+    elif not constitutional_green:
+        verdict = "safety_or_truth_blocked"
+    elif memory in {"not_earned", "limited_compression_value"}:
+        verdict = "memory_not_earned_simplification_required"
+    elif not operational_green:
+        verdict = "operationally_insufficient"
+    elif not semantic_green or memory != "primary_memory_earned":
+        verdict = "mechanically_ready_semantically_insufficient"
+    else:
+        verdict = READY_VERDICT
+    report = {
+        "schema_version": SCHEMA_VERSION, "commit": verified_release_commit,
+        "worktree_clean": verified_worktree_clean, **reproduction,
+        "reviewer_receipt_valid": reviewer_valid, "evidence_complete": evidence_complete,
+        "constitutional_green": constitutional_green, "semantic_green": semantic_green,
+        "operational_green": operational_green,
+        "verdict": verdict, "completion_authorized": verdict == READY_VERDICT,
+        "scope_boundaries": {"task_autonomy": "excluded", "connector_transport": "excluded",
+                             "customer_value": "not_claimed", "future_large_real_provider_run": "separately_authorized"},
+    }
+    return {**report, "report_digest": _digest(report)}
 
 
-__all__ = [
-    "ALLOWED_VERDICTS",
-    "PhaseEvidence",
-    "READY_VERDICT",
-    "REQUIRED_PHASES",
-    "SCHEMA_VERSION",
-    "build_release_report",
-    "write_release_report",
-]
+__all__ = ["ALLOWED_VERDICTS", "CONTENT_DIGEST_ALGORITHM", "MANIFEST_SCHEMA_VERSION",
+           "ManifestEvidence", "READY_VERDICT", "REQUIRED_PHASES", "REVIEW_SCHEMA_VERSION",
+           "SCHEMA_VERSION", "build_release_report", "reproduce", "seal_manifest"]
