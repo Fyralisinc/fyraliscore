@@ -169,6 +169,7 @@ async def test_validate_accepts_memory_lifecycle_confirm_with_evidence(
                     model_id=model_id,
                     action="confirm",
                     evidence_event_ids=[observation_id],
+                    claim_local_evidence_event_ids=[observation_id],
                     rationale="The new observation confirms the predicted outcome.",
                 )
             ],
