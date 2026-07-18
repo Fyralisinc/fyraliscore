@@ -709,6 +709,8 @@ def _score_claims_and_theses(
         storyline: [] for storyline in P6_STORYLINES
     }
     precise_claims = lineage_ok = 0
+    atomic_prediction_count = 0
+    atomic_source_ids: list[str] = []
     predicted_scope_refs: set[str] = set()
     # This denominator is sealed-gold truth and therefore cannot shrink when a
     # prediction omits a scope binding.
@@ -730,6 +732,18 @@ def _score_claims_and_theses(
                     for item in evidence)
         )
         storyline = next(iter(storylines)) if len(storylines) == 1 else None
+        proposition = row.get("proposition")
+        if isinstance(proposition, str):
+            try:
+                proposition = json.loads(proposition)
+            except json.JSONDecodeError:
+                proposition = {}
+        proposition = proposition if isinstance(proposition, dict) else {}
+        canonical_composite_synthesis = (
+            row.get("is_canonical_synthesis") is True
+            and proposition.get("claim_role") == "situation"
+            and proposition.get("abstraction_level") == "composite"
+        )
         atomic_semantic = False
         thesis_semantic = False
         if pure and storyline:
@@ -746,25 +760,28 @@ def _score_claims_and_theses(
                 )
                 for signal_id in evidence_ids
             )
-        if pure and atomic_semantic and storyline:
-            precise_claims += 1
-            represented_claims.update(
-                item.claim_id
-                for item in evidence
-                if _directly_assertable_source(item)
-            )
-        else:
-            worst.append({
-                "source_id": str(row.get("id") or ""),
-                "reason": "impure_lineage_or_atomic_source_nonentailment",
-            })
+        if not canonical_composite_synthesis:
+            atomic_prediction_count += 1
+            atomic_source_ids.extend(evidence_ids)
+            if pure and atomic_semantic and storyline:
+                precise_claims += 1
+                represented_claims.update(
+                    item.claim_id
+                    for item in evidence
+                    if _directly_assertable_source(item)
+                )
+            else:
+                worst.append({
+                    "source_id": str(row.get("id") or ""),
+                    "reason": "impure_lineage_or_atomic_source_nonentailment",
+                })
         if pure and thesis_semantic and storyline:
             coherent_model_phases[storyline].append({
                 item.lifecycle_phase for item in evidence
             })
         predicted_scope_refs.update(_scope_refs(row.get("scope_entities")))
     precision, recall, f1 = _f1(
-        precise_claims, len(rows), len(expected_claims)
+        precise_claims, atomic_prediction_count, len(expected_claims)
     )
     # Claim recall is evidence-coordinate coverage, not number of Models.
     recall = len(represented_claims & expected_claims) / len(expected_claims)
@@ -798,16 +815,19 @@ def _score_claims_and_theses(
     )
     return {
         "atomic_claim_precision": _metric(
-            "atomic_claim_precision", precise_claims, len(rows), source_ids=source_ids,
+            "atomic_claim_precision", precise_claims, atomic_prediction_count,
+            source_ids=atomic_source_ids,
             worst_cases=worst[:10],
         ),
         "atomic_claim_recall": _metric(
             "atomic_claim_recall",
             len(represented_claims & expected_claims),
             len(expected_claims),
-            source_ids=source_ids,
+            source_ids=atomic_source_ids,
         ),
-        "atomic_claim_f1": _metric("atomic_claim_f1", f1, 1, source_ids=source_ids),
+        "atomic_claim_f1": _metric(
+            "atomic_claim_f1", f1, 1, source_ids=atomic_source_ids,
+        ),
         "evidence_lineage_coverage": _metric(
             "evidence_lineage_coverage", lineage_ok, len(rows), source_ids=source_ids,
         ),

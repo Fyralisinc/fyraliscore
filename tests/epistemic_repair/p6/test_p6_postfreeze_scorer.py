@@ -613,6 +613,60 @@ def test_broad_causal_claim_with_all_five_refs_fails_atomic_precision() -> None:
     assert scores["mean_thesis_facet_completeness"]["value"] > 0
 
 
+def test_composite_synthesis_is_not_an_atomic_prediction() -> None:
+    population = build_p6_population()
+    evidence = {
+        "claims": [
+            {
+                "id": "orion-atomic",
+                "natural_text": (
+                    "Atlas release certificate has no clearly recorded owner."
+                ),
+                "proposition": {
+                    "kind": "belief", "claim_role": "fact",
+                    "abstraction_level": "atomic",
+                    "assertion": "Ownership remains unresolved.",
+                },
+                "evidence_signal_ids": ["p6-b01-s01"],
+                "scope_entities": [
+                    {"canonical_ref": "workstream:atlas-release"}
+                ],
+            },
+            {
+                "id": "orion-synthesis",
+                "natural_text": (
+                    "Atlas release slips recur because certificate ownership "
+                    "changes during handoff."
+                ),
+                "proposition": {
+                    "kind": "belief", "claim_role": "situation",
+                    "abstraction_level": "composite",
+                    "situation": "A recurring ownership-handoff risk.",
+                },
+                "is_canonical_synthesis": True,
+                "evidence_signal_ids": [
+                    "p6-b01-s01", "p6-b01-s05", "p6-b01-s09",
+                    "p6-b01-s13", "p6-b01-s17",
+                ],
+                "scope_entities": [
+                    {"canonical_ref": "workstream:atlas-release"}
+                ],
+            },
+        ]
+    }
+
+    scores = _score_claims_and_theses(
+        {"postfreeze_evidence": evidence}, population,
+    )
+
+    assert scores["atomic_claim_precision"]["numerator"] == 1
+    assert scores["atomic_claim_precision"]["denominator"] == 1
+    assert scores["atomic_claim_precision"]["value"] == 1.0
+    assert scores["atomic_claim_recall"]["numerator"] == 1
+    assert scores["evidence_lineage_coverage"]["denominator"] == 2
+    assert scores["mean_thesis_facet_completeness"]["value"] > 0
+
+
 def test_provisional_typed_scope_scores_without_claiming_canonical_resolution() -> None:
     population = build_p6_population()
     scopes = (
