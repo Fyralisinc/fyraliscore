@@ -105,6 +105,11 @@ async def extract_p6_postfreeze_evidence(
         tenant_id, list(map(UUID, observation_to_signal)),
     ))
     observed_ids = {str(row["id"]) for row in observations}
+    observed_observation_to_signal = {
+        observation_id: signal_id
+        for observation_id, signal_id in observation_to_signal.items()
+        if observation_id in observed_ids
+    }
 
     mention_rows = _rows(await conn.fetch(
         """SELECT detection.id,detection.source_observation_id,
@@ -461,7 +466,7 @@ async def extract_p6_postfreeze_evidence(
         else "missing"
     )
     signal_fates, uncertainty_dispositions = _signal_fate_rows(
-        observation_to_signal,
+        observed_observation_to_signal,
         observed_ids=observed_ids,
         boundary_by_signal=boundary_by_signal,
         mention_rows=mention_rows,
@@ -471,7 +476,7 @@ async def extract_p6_postfreeze_evidence(
     evidence = {
         "schema_version": "epistemic-repair-p6-postfreeze-evidence-v1",
         "tenant_id": str(tenant_id),
-        "observation_signal_map": observation_to_signal,
+        "observation_signal_map": observed_observation_to_signal,
         "observed_source_ids": sorted(observed_ids),
         "signal_fates": signal_fates,
         "uncertainty_dispositions": uncertainty_dispositions,

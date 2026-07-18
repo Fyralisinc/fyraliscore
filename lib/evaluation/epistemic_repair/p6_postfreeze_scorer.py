@@ -780,6 +780,14 @@ def _score_claims_and_theses(
         for storyline in P6_STORYLINES
     }
     thesis_direct = sum(value == 1.0 for value in completeness.values())
+    synthesis_signal_ids = {
+        signal_id for _storyline, signal_id
+        in population.synthesis_signal_by_storyline
+    }
+    thesis_opportunity_complete = (
+        executed_source_ids is None
+        or synthesis_signal_ids <= executed_source_ids
+    )
     scope_tp = len(expected_scope_refs & predicted_scope_refs)
     scope_predicted = len(predicted_scope_refs)
     extracted_scope_coordinates_complete = (
@@ -815,16 +823,20 @@ def _score_claims_and_theses(
             source_ids=source_ids,
         ),
         "direct_thesis_accuracy": _metric(
-            "direct_thesis_accuracy", thesis_direct, len(P6_STORYLINES),
-            source_ids=list(P6_STORYLINES),
+            "direct_thesis_accuracy",
+            thesis_direct if thesis_opportunity_complete else None,
+            len(P6_STORYLINES) if thesis_opportunity_complete else None,
+            source_ids=(list(P6_STORYLINES) if thesis_opportunity_complete else []),
         ),
         "mean_thesis_facet_completeness": _metric(
-            "mean_thesis_facet_completeness", sum(completeness.values()),
-            len(completeness), source_ids=list(P6_STORYLINES),
-            worst_cases=[
+            "mean_thesis_facet_completeness",
+            sum(completeness.values()) if thesis_opportunity_complete else None,
+            len(completeness) if thesis_opportunity_complete else None,
+            source_ids=(list(P6_STORYLINES) if thesis_opportunity_complete else []),
+            worst_cases=([
                 {"storyline_id": key, "facet_completeness": value}
                 for key, value in sorted(completeness.items(), key=lambda item: item[1])
-            ],
+            ] if thesis_opportunity_complete else []),
         ),
     }
 
@@ -966,9 +978,14 @@ def score_p6_frozen_execution(
     evidence = raw_execution.get("postfreeze_evidence") or {}
     fates = _record_index(raw_execution, "signal_fates")
     fate_ids = [str(row.get("signal_id") or "") for row in fates]
-    exact_fates = len(fate_ids) == P6_SIGNAL_COUNT and set(fate_ids) == {
-        signal.signal_id for signal in sealed_population.signals
-    }
+    executed_source_ids = _executed_source_signal_ids(
+        raw_execution, sealed_population,
+    ) or set()
+    exact_fates = (
+        bool(executed_source_ids)
+        and len(fate_ids) == len(executed_source_ids)
+        and set(fate_ids) == executed_source_ids
+    )
     barriers = [wave.get("barrier_receipt") for wave in waves]
     barrier_ok = exact_batches and all(
         isinstance(row, dict)

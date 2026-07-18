@@ -197,6 +197,44 @@ def test_one_batch_source_metrics_use_only_executed_population() -> None:
     assert len(boundary["source_ids"]) == 25
 
 
+def test_partial_run_fate_completeness_is_physical_and_thesis_is_unmeasured() -> None:
+    population = build_p6_population()
+    batch_one = [signal for signal in population.signals if signal.batch_number == 1]
+    observation_map = {
+        f"observation-{index}": signal.signal_id
+        for index, signal in enumerate(batch_one)
+    }
+    evidence = {
+        "observed_source_ids": list(observation_map),
+        "observation_signal_map": observation_map,
+        "signal_fates": [{
+            "signal_id": signal.signal_id,
+            "boundary_fate": "assigned",
+            "mention_fate": "no_mention",
+            "mutation_fate": "no_mutation",
+        } for signal in batch_one],
+        "claims": [{
+            "id": "batch-one-claim",
+            "natural_text": "Atlas release certificate ownership is unresolved.",
+            "proposition": {},
+            "evidence_signal_ids": ["p6-b01-s01"],
+            "scope_entities": [],
+        }],
+    }
+    raw = _raw(population, evidence=evidence)
+    raw["waves"] = raw["waves"][:1]
+
+    report = score_p6_frozen_execution(
+        raw_execution=raw, sealed_population=population,
+    )
+
+    assert report["hard_gates"]["complete_signal_fates"]
+    assert report["hard_gates"]["complete_boundary_mention_mutation_fates"]
+    assert not report["hard_gates"]["exact_300_signals_12_batches"]
+    assert report["continuous_metrics"]["direct_thesis_accuracy"]["status"] == "unmeasured"
+    assert report["continuous_metrics"]["mean_thesis_facet_completeness"]["status"] == "unmeasured"
+
+
 def test_local_distractor_entities_are_mentions_not_storyline_links() -> None:
     population = build_p6_population()
     signal = next(item for item in population.signals if item.signal_id == "p6-b01-s25")
