@@ -918,7 +918,7 @@ def _operational_atomic_proposition(
 ) -> dict[str, Any]:
     natural = _operational_atomic_natural(group)
     subject = _operational_group_subject(group, original_prop)
-    return {
+    result = {
         "kind": "belief",
         "claim_role": "fact",
         "abstraction_level": "atomic",
@@ -929,6 +929,8 @@ def _operational_atomic_proposition(
         "assertion": natural.rstrip("."),
         "operational_split_source": "universal_facets",
     }
+    _preserve_lifecycle_phase(result, original_prop)
+    return result
 
 
 def _split_operational_claim_op(entry: dict[str, Any]) -> list[ClaimOp]:
@@ -1206,7 +1208,7 @@ def _atomic_proposition(
             base_raised_by = rb
 
     if kind == "concern":
-        return {
+        result = {
             "kind": "belief",
             "claim_role": "concern",
             "polarity": "negative",
@@ -1214,19 +1216,35 @@ def _atomic_proposition(
             "nature": piece_clean,
             "raised_by": base_raised_by,
         }
-    if kind == "prediction":
-        return {
+    elif kind == "prediction":
+        result = {
             "kind": "prediction",
             "expected": piece_clean,
             "resolution": "atomic_split_pending_resolution",
         }
-    # state default
-    return {
-        "kind": "belief",
-        "claim_role": "fact",
-        "subject": base_subject,
-        "assertion": piece_clean,
-    }
+    else:
+        result = {
+            "kind": "belief",
+            "claim_role": "fact",
+            "subject": base_subject,
+            "assertion": piece_clean,
+        }
+    _preserve_lifecycle_phase(result, original_prop)
+    return result
+
+
+def _preserve_lifecycle_phase(result: dict[str, Any], original_prop: Any) -> None:
+    if not isinstance(original_prop, dict):
+        return
+    phase = original_prop.get("lifecycle_phase")
+    basis = original_prop.get("lifecycle_phase_basis")
+    if phase in {
+        "weak_initial", "corroboration", "contradiction", "correction",
+        "external_outcome",
+    }:
+        result["lifecycle_phase"] = phase
+        if isinstance(basis, dict):
+            result["lifecycle_phase_basis"] = deepcopy(basis)
 
 
 __all__ = [

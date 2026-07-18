@@ -512,9 +512,9 @@ async def build_raw_reasoning_output(
         raw_diff, trigger, state.bundle
     )
     raw_diff = maybe_inject_lifecycle_obligations(raw_diff, trigger, state.bundle)
-    raw_diff = maybe_inject_synthesis_evolution_obligations(raw_diff, state.bundle)
     raw_diff = _drop_event_batch_wrapper_claims(raw_diff, trigger)
     raw_diff = enrich_raw_diff_representation(raw_diff, trigger, state.bundle)
+    raw_diff = maybe_inject_synthesis_evolution_obligations(raw_diff, state.bundle)
     record_stage_timing(stage_timings, "post_llm_enrichment", started)
 
     started = time.perf_counter()

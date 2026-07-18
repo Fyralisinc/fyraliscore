@@ -61,6 +61,30 @@ _URL_RE = re.compile(r"https?://[^\s)]+", re.I)
 _HEX_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.I)
 _NUMBER_RE = re.compile(r"[$]?[0-9][0-9,]*([.][0-9]+)?")
 _WS_RE = re.compile(r"\s+")
+_LIFECYCLE_PHASES = frozenset({
+    "weak_initial", "corroboration", "contradiction", "correction",
+    "external_outcome",
+})
+_OUTCOME_CUES = re.compile(
+    r"(?i)\b(final (?:audit|result|outcome)|external result|completed without|"
+    r"shipped|renewed|churned|incident (?:occurred|cleared)|current view|"
+    r"answered the follow-up|independently matches the adjudicated)\b"
+)
+_CORRECTION_CUES = re.compile(
+    r"(?i)\b(corrected|correction|adjudicat(?:ed|ion)|revised|actually|"
+    r"was wrong|source of truth (?:was )?updated|retained only as history|"
+    r"now reflects that|identified the missing)\b"
+)
+_CONTRADICTION_CUES = re.compile(
+    r"(?i)\b(contradicts?|conflicts? with|disputes?|no completed|"
+    r"still open|remains at risk despite|but .{0,100}\b(?:says|shows)|"
+    r"higher-trust .{0,80} conflicts?)\b"
+)
+_CORROBORATION_CUES = re.compile(
+    r"(?i)\b(second source|another|independent (?:source|record)|corroborates?|"
+    r"confirms?|matches the earlier|again|repeated|two independent|"
+    r"links? .{0,100} to|connect .{0,100} with)\b"
+)
 
 
 def enrich_raw_diff_representation(raw_diff: Any, trigger: TriggerContext, bundle: Any) -> Any:
@@ -79,6 +103,7 @@ def enrich_raw_diff_representation(raw_diff: Any, trigger: TriggerContext, bundl
             trigger,
             observation_index,
             substrate_candidates=substrate_candidates,
+            existing_models=list(getattr(bundle, "models", None) or ()),
         ):
             enriched += 1
 
@@ -139,6 +164,7 @@ def _enrich_claim_insert(
     observation_index: dict[UUID, Any],
     *,
     substrate_candidates: list[dict[str, Any]] | None = None,
+    existing_models: list[Any] | None = None,
 ) -> bool:
     entry = dict(op.entry or {})
     prop = dict(entry.get("proposition") or {})
@@ -193,9 +219,103 @@ def _enrich_claim_insert(
         frame,
         evidence_event_ids=evidence_event_ids,
     )
+    _maybe_classify_lifecycle_phase(
+        entry, prop, observations, existing_models or [],
+    )
     entry["proposition"] = prop
     op.entry = entry
     return True
+
+
+def _maybe_classify_lifecycle_phase(
+    entry: dict[str, Any],
+    prop: dict[str, Any],
+    observations: list[Any],
+    existing_models: list[Any],
+) -> None:
+    """Label an atomic only from exact evidence semantics and same-scope state."""
+
+    if prop.get("claim_role") not in {"fact", "concern", "prediction"}:
+        return
+    observation_ids = [
+        str(getattr(row, "id")) for row in observations if getattr(row, "id", None)
+    ]
+    if not observation_ids:
+        return
+    explicit: list[str] = []
+    invalid_explicit = False
+    for row in observations:
+        content = getattr(row, "content", None)
+        if not isinstance(content, dict):
+            continue
+        for key in ("lifecycle_phase", "evidence_role", "event_type", "status_transition"):
+            raw_value = content.get(key)
+            value = str(raw_value or "").casefold()
+            if value in _LIFECYCLE_PHASES:
+                explicit.append(value)
+            elif key == "lifecycle_phase" and raw_value not in (None, ""):
+                invalid_explicit = True
+    if invalid_explicit and not explicit:
+        return
+    scope = _lifecycle_scope_identity(entry.get("scope_entities"))
+    if not scope:
+        return
+    compared = [
+        model for model in existing_models
+        if str(getattr(model, "status", "active")) == "active"
+        and _lifecycle_scope_identity(getattr(model, "scope_entities", None)) == scope
+    ]
+    texts = " ".join(str(getattr(row, "content_text", "") or "") for row in observations)
+    declared = str(prop.get("lifecycle_phase") or "").casefold()
+    phase: str | None = (
+        declared if declared in _LIFECYCLE_PHASES
+        else explicit[0] if explicit else None
+    )
+    cues: list[str] = (
+        ["explicit_atomic_semantics"] if declared in _LIFECYCLE_PHASES
+        else ["explicit_source_semantics"] if phase else []
+    )
+    if phase is None and compared:
+        for candidate, pattern in (
+            ("external_outcome", _OUTCOME_CUES),
+            ("correction", _CORRECTION_CUES),
+            ("contradiction", _CONTRADICTION_CUES),
+            ("corroboration", _CORROBORATION_CUES),
+        ):
+            match = pattern.search(texts)
+            if match:
+                phase = candidate
+                cues.append(match.group(0).casefold())
+                break
+    elif phase is None:
+        phase = "weak_initial"
+        cues.append("no_same_scope_accepted_memory")
+    if phase is None:
+        return
+    prop["lifecycle_phase"] = phase
+    prop["lifecycle_phase_basis"] = {
+        "classifier_version": "explicit-scope-semantics-v1",
+        "exact_observation_ids": observation_ids,
+        "semantic_cues": cues,
+        "compared_model_ids": [str(getattr(model, "id")) for model in compared],
+    }
+
+
+def _lifecycle_scope_identity(value: Any) -> frozenset[tuple[str, str]]:
+    aliases = {
+        "workstream": "project", "workflow": "project",
+        "company": "organization", "org": "organization",
+    }
+    result: set[tuple[str, str]] = set()
+    for item in value or ():
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("canonical_ref") or item.get("id") or item.get("referent_id")
+        if not raw:
+            continue
+        kind = str(item.get("type") or "other").casefold()
+        result.add((aliases.get(kind, kind), str(raw).casefold()))
+    return frozenset(result)
 
 
 def _is_manifest_bound_closed_atomic(
