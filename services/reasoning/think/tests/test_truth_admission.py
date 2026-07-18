@@ -24,9 +24,13 @@ from services.reasoning.think.diff_schema import ClaimOp
 from services.reasoning.think.truth_admission import (
     _scope_canonical_ref,
     _scope_display_label,
+    _synthesis_member_ids,
+    _synthesis_member_evidence,
+    _validate_synthesis_relation,
     admit_validated_think_claim,
     advance_validated_think_model,
 )
+from services.reasoning.think.reconciler import _synthesis_scope_identical
 from services.reasoning.think.validator import _validate_claim_op
 
 
@@ -39,6 +43,89 @@ def test_candidate_scope_canonical_provenance_survives_uuid_derivation() -> None
 
     assert _scope_canonical_ref(entity) == "commitment:cobalt-renewal"
     assert _scope_display_label(entity, proposition) == "Cobalt renewal"
+
+
+def test_synthesis_scope_match_is_exact_and_fail_closed() -> None:
+    atlas = {
+        "scope_entities": [{
+            "type": "workstream", "id": "workstream:atlas-release",
+            "canonical_ref": "workstream:atlas-release",
+        }],
+        "proposition": {"scope_ref": "workstream:atlas-release"},
+    }
+    beacon = {
+        "scope_entities": [{
+            "type": "workstream", "id": "workstream:beacon-migration",
+            "canonical_ref": "workstream:beacon-migration",
+        }],
+        "proposition": {"scope_ref": "workstream:beacon-migration"},
+    }
+    assert _synthesis_scope_identical(atlas, dict(atlas)) is True
+    assert _synthesis_scope_identical(atlas, beacon) is False
+    assert _synthesis_scope_identical(atlas, {"scope_entities": []}) is False
+    scopes = (
+        "workstream:atlas-release", "workstream:beacon-migration",
+        "commitment:cobalt-renewal", "workstream:delta-handoff",
+    )
+    entries = [{
+        "scope_entities": [{"canonical_ref": scope}],
+        "proposition": {"scope_ref": scope},
+    } for scope in scopes]
+    for left_index, left in enumerate(entries):
+        for right_index, right in enumerate(entries):
+            assert _synthesis_scope_identical(left, right) is (
+                left_index == right_index
+            )
+
+
+def test_synthesis_requires_uuid_members_and_structured_mechanism() -> None:
+    members = [uuid4(), uuid4()]
+    assert _synthesis_member_ids({
+        "member_model_ids": [str(value) for value in members]
+    }) == tuple(members)
+    _validate_synthesis_relation({
+        "supported_relation": {
+            "kind": "dependency_constraint",
+            "mechanism": "approval gates downstream completion",
+        }
+    })
+    with pytest.raises(InvariantViolation, match="supported_relation"):
+        _validate_synthesis_relation({
+            "shared_mechanism": "these things appear together"
+        })
+
+
+@pytest.mark.asyncio
+async def test_synthesis_members_resolve_exact_active_versions_as_lineage() -> None:
+    tenant_id, synthesis_id = uuid4(), uuid4()
+    members, versions = [uuid4(), uuid4()], [uuid4(), uuid4()]
+    now = datetime.now(timezone.utc)
+
+    class Connection:
+        async def fetch(self, _query, _tenant_id, member_ids):
+            assert _tenant_id == tenant_id
+            assert member_ids == members
+            return [{
+                "model_id": member_id, "version_id": version_id,
+                "version": index + 2, "semantic_digest": "a" * 64,
+                "created_at": now, "canonical_refs": ["workstream:atlas"],
+            } for index, (member_id, version_id) in enumerate(zip(members, versions))]
+
+    refs = await _synthesis_member_evidence(
+        Connection(), tenant_id=tenant_id,
+        proposition={
+            "member_model_ids": [str(value) for value in members],
+            "supported_relation": {
+                "kind": "causal_influence",
+                "mechanism": "ownership churn delays completion",
+            },
+        },
+        scope_refs=frozenset({"workstream:atlas"}),
+        model_id=synthesis_id, admitted_at=now,
+    )
+    assert [ref.evidence_id for ref in refs] == list(map(str, versions))
+    assert [ref.evidence_version for ref in refs] == [2, 3]
+    assert all(ref.kind.value == "model_version" for ref in refs)
 
 
 def _claim(*, supporting_event_ids=(), born_from_event_id=None) -> ClaimOp:

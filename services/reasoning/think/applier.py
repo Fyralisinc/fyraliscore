@@ -4339,6 +4339,10 @@ async def _select_same_event_situation_anchor(
     best: dict[str, Any] | None = None
     best_score = 0.0
     for row in rows:
+        from .reconciler import _synthesis_scope_identical
+
+        if not _synthesis_scope_identical(entry, dict(row)):
+            continue
         row_prop = _json_obj(row["proposition"])
         if not row_prop:
             continue

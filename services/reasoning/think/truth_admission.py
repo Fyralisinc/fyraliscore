@@ -30,6 +30,9 @@ from .evidence_manifest import authorize_compiler_evidence_manifest
 
 
 _COMMAND_VERSION = "think-validated-claim-admission-v1"
+_SYNTHESIS_RELATION_KINDS = {
+    "causal_influence", "dependency_constraint", "predictive_indicator",
+}
 
 
 def _subject_id(tenant_id: UUID, value: Any) -> UUID:
@@ -79,6 +82,115 @@ def _scope_display_label(
         label = proposition.get("scope_label")
         return str(label).strip() if label else None
     return None
+
+
+def _synthesis_member_ids(proposition: dict[str, Any]) -> tuple[UUID, ...]:
+    raw = proposition.get("member_model_ids") or ()
+    if not isinstance(raw, (list, tuple)):
+        raise InvariantViolation(
+            "THINK_SYNTHESIS_MEMBERS_INVALID",
+            "synthesis member_model_ids must be a list of canonical Model ids",
+        )
+    try:
+        values = tuple(dict.fromkeys(UUID(str(value)) for value in raw))
+    except (TypeError, ValueError) as exc:
+        raise InvariantViolation(
+            "THINK_SYNTHESIS_MEMBERS_INVALID",
+            "synthesis members must be canonical Model UUIDs",
+        ) from exc
+    if len(values) < 2:
+        raise InvariantViolation(
+            "THINK_SYNTHESIS_MEMBERS_MISSING",
+            "a composite synthesis requires at least two accepted member Models",
+        )
+    return values
+
+
+def _validate_synthesis_relation(proposition: dict[str, Any]) -> None:
+    relation = proposition.get("supported_relation")
+    if not isinstance(relation, dict):
+        raise InvariantViolation(
+            "THINK_SYNTHESIS_RELATION_MISSING",
+            "composite synthesis requires an explicit supported_relation object",
+        )
+    kind = str(relation.get("kind") or "").strip().casefold()
+    mechanism = str(
+        relation.get("mechanism") or proposition.get("shared_mechanism") or ""
+    ).strip()
+    if kind not in _SYNTHESIS_RELATION_KINDS or len(mechanism.split()) < 3:
+        raise InvariantViolation(
+            "THINK_SYNTHESIS_RELATION_VAGUE",
+            "synthesis must state a supported causal, dependency, or predictive "
+            "relation and its evidence-backed mechanism",
+            relation_kind=kind or None,
+        )
+
+
+async def _synthesis_member_evidence(
+    conn: asyncpg.Connection, *, tenant_id: UUID,
+    proposition: dict[str, Any], scope_refs: frozenset[str],
+    model_id: UUID, admitted_at: datetime,
+) -> tuple[TruthEvidenceReference, ...]:
+    """Resolve synthesis members to exact active heads and immutable lineage."""
+
+    member_ids = _synthesis_member_ids(proposition)
+    _validate_synthesis_relation(proposition)
+    if not scope_refs:
+        raise InvariantViolation(
+            "THINK_SYNTHESIS_SCOPE_MISSING",
+            "synthesis requires an explicit canonical subject scope",
+        )
+    rows = await conn.fetch("""
+        SELECT h.model_id,h.version_id,v.version,v.semantic_digest,v.created_at,
+               array_remove(array_agg(s.canonical_ref ORDER BY s.canonical_ref), NULL)
+                   AS canonical_refs
+        FROM model_truth_heads h
+        JOIN model_truth_versions v
+          ON v.tenant_id=h.tenant_id AND v.version_id=h.version_id
+        LEFT JOIN model_truth_scope_bindings s
+          ON s.tenant_id=v.tenant_id AND s.model_version_id=v.version_id
+         AND s.scope_role='subject'
+        WHERE h.tenant_id=$1 AND h.model_id=ANY($2::uuid[])
+          AND v.lifecycle='active'
+        GROUP BY h.model_id,h.version_id,v.version,v.semantic_digest,v.created_at
+    """, tenant_id, list(member_ids))
+    by_id = {row["model_id"]: row for row in rows}
+    if set(by_id) != set(member_ids):
+        raise InvariantViolation(
+            "THINK_SYNTHESIS_MEMBER_HEAD_MISSING",
+            "every synthesis member must resolve to its active exact Model version",
+            unresolved_model_ids=sorted(map(str, set(member_ids) - set(by_id))),
+        )
+    references: list[TruthEvidenceReference] = []
+    for member_id in member_ids:
+        row = by_id[member_id]
+        member_scope = frozenset(str(value) for value in row["canonical_refs"] or ())
+        if member_scope != scope_refs:
+            raise InvariantViolation(
+                "THINK_SYNTHESIS_MEMBER_SCOPE_MISMATCH",
+                "synthesis members and conclusion must have identical canonical scope",
+                member_model_id=str(member_id),
+                conclusion_scope=sorted(scope_refs), member_scope=sorted(member_scope),
+            )
+        references.append(TruthEvidenceReference(
+            reference_id=uuid5(model_id, f"member-version:{row['version_id']}"),
+            tenant_id=tenant_id, kind=TruthEvidenceKind.MODEL_VERSION,
+            evidence_id=str(row["version_id"]), evidence_version=int(row["version"]),
+            evidence_digest=str(row["semantic_digest"]), role=TruthEvidenceRole.DERIVATION,
+            coordinate=TruthEvidenceCoordinate(
+                source_system="model_truth_versions",
+                source_object_id=str(row["version_id"]),
+                source_revision=str(row["version"]), field_path="semantic_digest",
+            ),
+            authority=EvidenceAuthority(
+                authority_ref=f"accepted-model-head:{member_id}",
+                policy_version=_COMMAND_VERSION, authority_epoch=1,
+                decided_at=admitted_at,
+            ),
+            occurred_at=row["created_at"], recorded_at=admitted_at,
+            cutoff_at=admitted_at,
+        ))
+    return tuple(references)
 
 
 def _recommendation_authorization_coordinates(
@@ -282,6 +394,29 @@ async def build_think_admission_command(
     kind = (TruthCandidateKind.SYNTHESIS if raw_role in {
         "situation", "hypothesis", "synthesis", "pattern",
     } else TruthCandidateKind.ATOMIC_CLAIM)
+    if kind is TruthCandidateKind.SYNTHESIS:
+        if len(evidence_tuple) != 1:
+            raise InvariantViolation(
+                "THINK_SYNTHESIS_DIRECT_EVIDENCE_INVALID",
+                "synthesis may cite exactly one direct observation as its "
+                "conclusion opener; prior evidence must arrive through member versions",
+                direct_observation_count=len(evidence_tuple),
+            )
+        canonical_scope = frozenset(
+            binding.canonical_ref for binding in scope
+            if binding.role is ClaimScopeRole.SUBJECT and binding.canonical_ref
+        )
+        member_evidence = await _synthesis_member_evidence(
+            conn, tenant_id=proposed.tenant_id, proposition=proposition,
+            scope_refs=canonical_scope, model_id=model_id, admitted_at=admitted_at,
+        )
+        evidence_tuple = (*evidence_tuple, *member_evidence)
+        evidence_refs = tuple(sorted(
+            (item.reference_id for item in evidence_tuple), key=str
+        ))
+        scope = tuple(binding.model_copy(update={
+            "claim_local_evidence_refs": evidence_refs,
+        }) for binding in scope)
     candidate_id = uuid5(model_id, _COMMAND_VERSION)
     candidate = TruthCandidate(
         candidate_id=candidate_id, candidate_version=1,

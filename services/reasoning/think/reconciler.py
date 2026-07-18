@@ -916,6 +916,10 @@ def _score_candidate_row(
         return None
     if not _generic_model_scope_compatible(context.entry, row):
         return None
+    if context.grammar.claim_role == "situation" and not _synthesis_scope_identical(
+        context.entry, row
+    ):
+        return None
     compatible, compatibility = contextual_frames_compatible(context.entry, row)
     if not compatible:
         return None
@@ -1027,6 +1031,36 @@ def _business_scope_refs(value: dict[str, Any]) -> set[tuple[str, str]]:
         if scope_type in _BUSINESS_SCOPE_TYPES and scope_id:
             refs.add((scope_type, str(scope_id)))
     return refs
+
+
+def _synthesis_scope_identical(
+    candidate: dict[str, Any], existing: dict[str, Any],
+) -> bool:
+    """Fail closed: composites may reconcile only inside one canonical scope."""
+
+    def refs(value: dict[str, Any]) -> frozenset[str]:
+        found: set[str] = set()
+        proposition = _normalize_jsonish(value.get("proposition"))
+        if isinstance(proposition, dict) and proposition.get("scope_ref"):
+            found.add(str(proposition["scope_ref"]))
+        for entity in value.get("scope_entities") or ():
+            if not isinstance(entity, dict):
+                continue
+            canonical = entity.get("canonical_ref")
+            if isinstance(canonical, dict):
+                kind, identifier = canonical.get("type"), canonical.get("id")
+                if kind and identifier:
+                    found.add(f"{kind}:{identifier}")
+            elif canonical:
+                found.add(str(canonical))
+            else:
+                identifier = entity.get("id") or entity.get("entity_id")
+                if identifier and ":" in str(identifier):
+                    found.add(str(identifier))
+        return frozenset(found)
+
+    candidate_refs, existing_refs = refs(candidate), refs(existing)
+    return bool(candidate_refs and candidate_refs == existing_refs)
 
 
 def _embedding_list(raw: Any) -> list[float] | None:
