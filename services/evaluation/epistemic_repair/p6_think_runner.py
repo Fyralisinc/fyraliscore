@@ -15,7 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import asyncpg
@@ -81,6 +81,12 @@ class P6ThinkExecutionDependencies:
     embedder: Any
     run_provenance: dict[str, Any]
     transport: str
+    persist_runtime_batch: Callable[
+        [asyncpg.Connection, UUID, Any], Awaitable[dict[str, UUID]]
+    ] | None = None
+    prepare_persisted_batch: Callable[
+        [asyncpg.Connection, UUID, Any, dict[str, UUID]], Awaitable[None]
+    ] | None = None
     pin_planner_model: bool = False
     execution_mode: str = (
         "injected ThinkWorker dependencies; no semantic success claimed"
@@ -425,6 +431,30 @@ async def _persist_runtime_batch(
     return result
 
 
+async def _prepare_runtime_batch(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    batch: Any,
+    dependencies: P6ThinkExecutionDependencies,
+) -> dict[str, UUID]:
+    """Persist one intact batch and run an optional pre-enqueue authority hook."""
+
+    if dependencies.persist_runtime_batch is None:
+        observation_ids = await _persist_runtime_batch(
+            conn, tenant_id=tenant_id, batch=batch,
+        )
+    else:
+        observation_ids = await dependencies.persist_runtime_batch(
+            conn, tenant_id, batch,
+        )
+    if dependencies.prepare_persisted_batch is not None:
+        await dependencies.prepare_persisted_batch(
+            conn, tenant_id, batch, observation_ids,
+        )
+    return observation_ids
+
+
 async def _persisted_boundary_entity_refs(
     conn: asyncpg.Connection,
     tenant_id: UUID,
@@ -600,9 +630,12 @@ async def _execute_p6_think(
                 break
             batch_started = time.monotonic()
             batch_deadline = batch_started + per_batch_timeout_s
-            async with pool.acquire() as conn:
-                observation_ids = await _persist_runtime_batch(
-                    conn, tenant_id=tenant_id, batch=batch,
+            async with pool.acquire() as conn, conn.transaction():
+                observation_ids = await _prepare_runtime_batch(
+                    conn,
+                    tenant_id=tenant_id,
+                    batch=batch,
+                    dependencies=dependencies,
                 )
             for signal in batch.signals:
                 observation_id = str(observation_ids[signal.signal_id])

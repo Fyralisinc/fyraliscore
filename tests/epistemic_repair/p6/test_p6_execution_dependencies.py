@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -9,6 +10,42 @@ from services.evaluation.epistemic_repair import p6_think_runner
 
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_injected_batch_hooks_preserve_order_before_enqueue_authority() -> None:
+    tenant_id = uuid4()
+    observation_id = uuid4()
+    calls: list[tuple[str, object]] = []
+
+    async def persist(_conn, actual_tenant_id, batch):
+        calls.append(("persist", batch))
+        assert actual_tenant_id == tenant_id
+        return {"signal-1": observation_id}
+
+    async def prepare(_conn, actual_tenant_id, batch, observation_ids):
+        calls.append(("prepare", batch))
+        assert actual_tenant_id == tenant_id
+        assert observation_ids == {"signal-1": observation_id}
+
+    dependencies = p6_think_runner.P6ThinkExecutionDependencies(
+        llm_provider=SimpleNamespace(config=SimpleNamespace(
+            provider="scripted", model="cf2-script-v1",
+        )),
+        mention_candidate_adapter=None,
+        embedder=object(),
+        run_provenance={"runtime_identity": "cf2"},
+        transport="in_process_scripted",
+        persist_runtime_batch=persist,
+        prepare_persisted_batch=prepare,
+    )
+    batch = SimpleNamespace(batch_number=1)
+
+    result = await p6_think_runner._prepare_runtime_batch(
+        object(), tenant_id=tenant_id, batch=batch, dependencies=dependencies,
+    )
+
+    assert result == {"signal-1": observation_id}
+    assert calls == [("persist", batch), ("prepare", batch)]
 
 
 async def test_injected_execution_avoids_production_provider_construction(
