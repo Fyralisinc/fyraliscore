@@ -1053,14 +1053,44 @@ def synthesis_conclusion_scopes(trigger: TriggerContext) -> tuple[str, ...]:
     }))
 
 
+def synthesis_conclusion_coordinates(
+    trigger: TriggerContext,
+) -> tuple[tuple[str, str], ...]:
+    """Return unambiguous display-scope to canonical-reference coordinates."""
+
+    candidates, material = _batch_fragment_candidates(trigger)
+    if not material:
+        return ()
+    by_scope: dict[str, set[str]] = {}
+    for candidate in candidates:
+        if (
+            len(candidate.semantic_scope) != 1
+            or not candidate.canonical_scope_ref
+            or not _is_scope_level_synthesis_assertion(
+                candidate, candidate.semantic_scope[0]
+            )
+        ):
+            continue
+        by_scope.setdefault(candidate.semantic_scope[0], set()).add(
+            candidate.canonical_scope_ref
+        )
+    return tuple(sorted(
+        (scope, next(iter(refs)))
+        for scope, refs in by_scope.items()
+        if len(refs) == 1
+    ))
+
+
 async def hydrate_synthesis_scope_models(
     conn: asyncpg.Connection, trigger: TriggerContext, *, limit_per_scope: int = 8,
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, Any]]:
     """Bounded accepted-memory read used only to open synthesis decisions."""
 
-    scopes = synthesis_conclusion_scopes(trigger)
-    if not scopes:
+    coordinates = synthesis_conclusion_coordinates(trigger)
+    if not coordinates:
         return {}, {"queried": False, "reason": "no_scope_level_conclusion"}
+    scopes = tuple(scope for scope, _ in coordinates)
+    scope_by_ref = {canonical_ref: scope for scope, canonical_ref in coordinates}
     rows = await conn.fetch("""
         SELECT scope_label,scope_ref,id,truth_version_id,natural_text,proposition FROM (
             SELECT binding.display_label AS scope_label,
@@ -1079,8 +1109,7 @@ async def hydrate_synthesis_scope_models(
              AND binding.model_version_id=model.truth_version_id
              AND binding.scope_role='subject'
             WHERE model.tenant_id=$1
-              AND binding.display_label=ANY($2::text[])
-              AND binding.canonical_ref IS NOT NULL
+              AND binding.canonical_ref=ANY($2::text[])
               AND NOT EXISTS (
                   SELECT 1 FROM model_truth_scope_bindings other
                   WHERE other.tenant_id=binding.tenant_id
@@ -1091,13 +1120,13 @@ async def hydrate_synthesis_scope_models(
         ) scoped
         WHERE scope_rank <= $3
         ORDER BY scope_label,scope_ref,scope_rank
-    """, trigger.tenant_id, list(scopes), max(2, min(int(limit_per_scope), 8)))
+    """, trigger.tenant_id, list(scope_by_ref), max(2, min(int(limit_per_scope), 8)))
     grouped: dict[str, dict[str, list[str]]] = {scope: {} for scope in scopes}
     endpoint_versions: dict[str, str] = {}
     semantic_cards: dict[str, dict[str, Any]] = {}
     for row in rows:
-        scope = str(row["scope_label"])
         canonical_ref = str(row["scope_ref"] or "").strip()
+        scope = scope_by_ref.get(canonical_ref, "")
         proposition = _json_object_or_none(row["proposition"])
         if scope in grouped and canonical_ref and proposition is not None:
             grouped[scope].setdefault(canonical_ref, []).append(str(row["id"]))
@@ -1180,6 +1209,8 @@ def _batch_fragment_candidates(
     """
     if not trigger.is_batch or not isinstance(trigger.seed_signature, dict):
         return [], False
+    if "governed_learning_episodes" in trigger.seed_signature:
+        return _governed_episode_candidates(trigger)
     fragments = trigger.seed_signature.get("batch_signal_fragments")
     if not isinstance(fragments, list):
         return [], False
@@ -1249,15 +1280,211 @@ def _batch_fragment_candidates(
     return candidates, material
 
 
+def _governed_episode_candidates(
+    trigger: TriggerContext,
+) -> tuple[list[MemoryDecisionCandidate], bool]:
+    """Compile exact atomics only from resolved, tenant-bound episodes."""
+
+    if not isinstance(trigger.seed_signature, dict):
+        return [], False
+    raw_episodes = trigger.seed_signature.get("governed_learning_episodes")
+    if not isinstance(raw_episodes, list):
+        return [], False
+    allowed_ids = {str(value) for value in trigger.observation_ids}
+    if trigger.observation_id is not None:
+        allowed_ids.add(str(trigger.observation_id))
+    if not allowed_ids:
+        return [], False
+
+    tenant_id = str(trigger.tenant_id)
+    all_assertion_ids: set[str] = set()
+    resolved_ids: set[str] = set()
+    candidates: list[MemoryDecisionCandidate] = []
+    for episode in sorted(
+        (row for row in raw_episodes if isinstance(row, Mapping)),
+        key=lambda row: str(row.get("episode_id") or ""),
+    ):
+        if str(episode.get("tenant_id") or "") != tenant_id:
+            continue
+        assertions = episode.get("assertions")
+        if not isinstance(assertions, list):
+            continue
+        for assertion in assertions:
+            if not isinstance(assertion, Mapping):
+                continue
+            observation_id = str(assertion.get("observation_id") or "").strip()
+            if (
+                str(assertion.get("tenant_id") or "") == tenant_id
+                and observation_id in allowed_ids
+            ):
+                all_assertion_ids.add(observation_id)
+        canonical_ref = _canonical_ref_or_empty(episode.get("canonical_ref"))
+        if not canonical_ref:
+            continue
+        resolved_by_observation: dict[str, dict[str, str]] = {}
+        for assertion in assertions:
+            if not isinstance(assertion, Mapping):
+                continue
+            observation_id = str(assertion.get("observation_id") or "").strip()
+            if (
+                str(assertion.get("tenant_id") or "") != tenant_id
+                or observation_id not in allowed_ids
+                or _canonical_ref_or_empty(assertion.get("canonical_ref"))
+                != canonical_ref
+            ):
+                continue
+            if str(assertion.get("coordinate_authority") or "") != "resolved":
+                continue
+            body = str(assertion.get("assertion_text") or "").strip()
+            surface = str(assertion.get("governed_surface") or "").strip()
+            if not body or not surface:
+                continue
+            row = {
+                "observation_id": observation_id,
+                "body": body,
+                "source_channel": str(assertion.get("source_channel") or ""),
+                "canonical_ref": canonical_ref,
+                "governed_surface": surface,
+                "coordinate_authority": "resolved",
+                "evidence_address": str(assertion.get("evidence_address") or ""),
+                "evidence_field_path": str(
+                    assertion.get("evidence_field_path") or ""
+                ),
+                "evidence_span_start": str(
+                    assertion.get("evidence_span_start")
+                    if assertion.get("evidence_span_start") is not None else ""
+                ),
+                "evidence_span_end": str(
+                    assertion.get("evidence_span_end")
+                    if assertion.get("evidence_span_end") is not None else ""
+                ),
+            }
+            prior = resolved_by_observation.get(observation_id)
+            if prior is None or tuple(row.values()) < tuple(prior.values()):
+                resolved_by_observation[observation_id] = row
+
+        members = sorted(
+            resolved_by_observation.values(),
+            key=lambda row: (row["observation_id"], row["body"]),
+        )
+        distinct_payloads = {row["body"].casefold() for row in members}
+        if len(members) < 2 or len(distinct_payloads) < 2:
+            continue
+        surface_counts: dict[str, int] = {}
+        display_by_key: dict[str, str] = {}
+        for row in members:
+            key = " ".join(row["governed_surface"].casefold().split())
+            surface_counts[key] = surface_counts.get(key, 0) + 1
+            display_by_key.setdefault(key, " ".join(row["governed_surface"].split()))
+        display_key = min(
+            surface_counts,
+            key=lambda key: (-surface_counts[key], key),
+        )
+        scope = display_by_key[display_key]
+        for member in members:
+            observation_id = member["observation_id"]
+            resolved_ids.add(observation_id)
+            uncertainty_kind = _batch_fragment_uncertainty_kind(member["body"])
+            if uncertainty_kind is not None:
+                continue
+            candidates.append(MemoryDecisionCandidate(
+                candidate_id=_candidate_id(
+                    "MDC_ATOM", f"{canonical_ref}_{observation_id}"
+                ),
+                op_family="claim_insert",
+                proposed_text=member["body"],
+                entailed_claim_text=member["body"],
+                source_observation_ids=(observation_id,),
+                member_observation_ids=(observation_id,),
+                semantic_scope=(scope,),
+                canonical_scope_ref=canonical_ref,
+                observation_evidence=(member,),
+                write_preconditions=(
+                    "entity coordinate is resolved_for_consumer",
+                    "evidence address is tenant-bound to the trigger batch",
+                ),
+                confidence=0.64,
+                reason=(
+                    "Exact assertion from a resolved canonical-scope learning episode"
+                ),
+            ))
+
+    coverage = len(resolved_ids) / max(1, len(all_assertion_ids))
+    material = len(candidates) >= 2 and coverage >= 0.60
+    return candidates, material
+
+
 def batch_fragment_uncertainty_signals(trigger: TriggerContext) -> list[dict[str, str]]:
     """Return claim-local question/clarification signals excluded from truth."""
     if not trigger.is_batch or not isinstance(trigger.seed_signature, dict):
         return []
+    if "governed_learning_episodes" in trigger.seed_signature:
+        return _governed_episode_uncertainty_signals(trigger)
     fragments = trigger.seed_signature.get("batch_signal_fragments")
     if not isinstance(fragments, list):
         return []
     groups, scope_labels = _group_batch_fragments(fragments)
     return _batch_fragment_uncertainty_rows(groups, scope_labels)
+
+
+def _governed_episode_uncertainty_signals(
+    trigger: TriggerContext,
+) -> list[dict[str, str]]:
+    """Keep provisional/unresolved episode assertions outside truth."""
+
+    if not isinstance(trigger.seed_signature, dict):
+        return []
+    episodes = trigger.seed_signature.get("governed_learning_episodes")
+    if not isinstance(episodes, list):
+        return []
+    allowed_ids = {str(value) for value in trigger.observation_ids}
+    if trigger.observation_id is not None:
+        allowed_ids.add(str(trigger.observation_id))
+    tenant_id = str(trigger.tenant_id)
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for episode in episodes:
+        if (
+            not isinstance(episode, Mapping)
+            or str(episode.get("tenant_id") or "") != tenant_id
+            or not isinstance(episode.get("assertions"), list)
+        ):
+            continue
+        for assertion in episode["assertions"]:
+            if not isinstance(assertion, Mapping):
+                continue
+            observation_id = str(assertion.get("observation_id") or "").strip()
+            authority = str(assertion.get("coordinate_authority") or "")
+            if (
+                str(assertion.get("tenant_id") or "") != tenant_id
+                or observation_id not in allowed_ids
+                or authority == "resolved"
+            ):
+                continue
+            key = (observation_id, authority)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                "uncertainty_id": _candidate_id(
+                    "MDU_ENTITY", f"{observation_id}_{authority}"
+                ),
+                "kind": (
+                    "provisional_entity_coordinate"
+                    if authority == "provisional"
+                    else "missing_governed_entity_coordinate"
+                ),
+                "semantic_scope": str(
+                    assertion.get("governed_surface")
+                    or episode.get("canonical_ref")
+                    or ""
+                ),
+                "observation_id": observation_id,
+                "source_channel": str(assertion.get("source_channel") or ""),
+                "text": str(assertion.get("assertion_text") or ""),
+                "routing": "entity_resolution",
+            })
+    return sorted(rows, key=lambda row: (row["observation_id"], row["kind"]))
 
 
 def _group_batch_fragments(
@@ -2517,5 +2744,6 @@ __all__ = [
     "residual_spine_for_packet",
     "select_minimal_sufficient_evidence",
     "state_contract_for_context_packet",
+    "synthesis_conclusion_coordinates",
     "synthesis_conclusion_scopes",
 ]

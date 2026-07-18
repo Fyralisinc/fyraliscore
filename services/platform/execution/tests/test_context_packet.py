@@ -110,6 +110,44 @@ def _grounded_scope(
     }]
 
 
+def _governed_episode(
+    tenant_id: UUID,
+    rows: list[tuple[UUID, str, str]],
+    *,
+    canonical_ref: str = "workstream:harbor-release",
+    surface: str = "Harbor release",
+) -> dict[str, object]:
+    return {
+        "episode_id": "GLE_test",
+        "tenant_id": str(tenant_id),
+        "canonical_ref": canonical_ref,
+        "assertions": [
+            {
+                "tenant_id": str(tenant_id),
+                "observation_id": str(observation_id),
+                "occurred_at": "2026-07-18T00:00:00+00:00",
+                "source_channel": "slack:message",
+                "assertion_text": text,
+                "evidence_address": (
+                    f"observation:{observation_id}:content_text"
+                ),
+                "evidence_field_path": "content_text",
+                "evidence_span_start": 0,
+                "evidence_span_end": len(surface),
+                "governed_surface": surface,
+                "canonical_ref": canonical_ref,
+                "coordinate_authority": authority,
+                "detection_id": str(uuid4()),
+                "uncertainty": [],
+            }
+            for observation_id, text, authority in rows
+        ],
+        "temporal_start": "2026-07-18T00:00:00+00:00",
+        "temporal_end": "2026-07-18T00:00:00+00:00",
+        "uncertainty": [],
+    }
+
+
 def test_context_packet_helpers_keep_legacy_inquiry_identity() -> None:
     assert inquiry._rank_evidence is context_packet.rank_evidence
     assert (
@@ -442,6 +480,145 @@ def test_batch_uncertainty_boundary_covers_question_and_ambiguity_paraphrases(
     expected: str | None,
 ) -> None:
     assert context_packet._batch_fragment_uncertainty_kind(body) == expected
+
+
+def test_governed_episodes_are_canonical_first_and_authority_gated() -> None:
+    tenant_id = uuid4()
+    resolved_one, resolved_two, provisional = uuid4(), uuid4(), uuid4()
+    episode = _governed_episode(tenant_id, [
+        (
+            resolved_one,
+            "Harbor release, update 2: The certificate remains open.",
+            "resolved",
+        ),
+        (
+            resolved_two,
+            "Harbor release is blocked by incomplete certificate renewal.",
+            "resolved",
+        ),
+        (
+            provisional,
+            "Harbor release, update 2: Someone says it is ready.",
+            "provisional",
+        ),
+    ])
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_ids=[resolved_one, resolved_two, provisional],
+        seed_signature={
+            "governed_learning_episodes": [episode],
+            # A conflicting legacy label must not override governed episodes.
+            "batch_signal_fragments": [{
+                "observation_id": str(provisional),
+                "text": "Fake scope, update 2: This must not become truth.",
+            }],
+        },
+    )
+
+    candidates, material = context_packet._batch_fragment_candidates(trigger)
+
+    assert material
+    assert {item.member_observation_ids for item in candidates} == {
+        (str(resolved_one),), (str(resolved_two),),
+    }
+    assert {item.canonical_scope_ref for item in candidates} == {
+        "workstream:harbor-release"
+    }
+    assert all(item.semantic_scope == ("Harbor release",) for item in candidates)
+    assert all(
+        item.observation_evidence[0]["coordinate_authority"] == "resolved"
+        for item in candidates
+    )
+    assert context_packet.synthesis_conclusion_coordinates(trigger) == (
+        ("Harbor release", "workstream:harbor-release"),
+    )
+    uncertainty = context_packet.batch_fragment_uncertainty_signals(trigger)
+    assert [(row["observation_id"], row["kind"]) for row in uncertainty] == [
+        (str(provisional), "provisional_entity_coordinate")
+    ]
+
+
+def test_governed_provisional_episode_cannot_fall_back_into_truth() -> None:
+    tenant_id = uuid4()
+    first, second = uuid4(), uuid4()
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_ids=[first, second],
+        seed_signature={
+            "governed_learning_episodes": [_governed_episode(tenant_id, [
+                (first, "Harbor release is delayed.", "provisional"),
+                (second, "Harbor release is blocked.", "provisional"),
+            ])],
+            "batch_signal_fragments": [
+                {
+                    "observation_id": str(first),
+                    "text": "Harbor release, update 1: It is delayed.",
+                },
+                {
+                    "observation_id": str(second),
+                    "text": "Harbor release, update 1: It is blocked.",
+                },
+            ],
+        },
+    )
+
+    assert context_packet._batch_fragment_candidates(trigger) == ([], False)
+    assert len(context_packet.batch_fragment_uncertainty_signals(trigger)) == 2
+
+
+@pytest.mark.asyncio
+async def test_synthesis_hydration_reads_by_canonical_ref_not_display_label() -> None:
+    tenant_id = uuid4()
+    first, second = uuid4(), uuid4()
+    model_id, version_id = uuid4(), uuid4()
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_ids=[first, second],
+        seed_signature={"governed_learning_episodes": [_governed_episode(
+            tenant_id,
+            [
+                (
+                    first,
+                    "Harbor release, update 3: The certificate remains open.",
+                    "resolved",
+                ),
+                (
+                    second,
+                    "Harbor release is blocked by certificate renewal.",
+                    "resolved",
+                ),
+            ],
+        )]},
+    )
+
+    class _Connection:
+        args: tuple[object, ...] = ()
+
+        async def fetch(self, _query: str, *args: object) -> list[dict[str, object]]:
+            self.args = args
+            return [{
+                "scope_label": "Renamed Harbor programme",
+                "scope_ref": "workstream:harbor-release",
+                "id": model_id,
+                "truth_version_id": version_id,
+                "natural_text": "The certificate is open.",
+                "proposition": {"kind": "belief"},
+            }]
+
+    conn = _Connection()
+    hydrated, receipt = await context_packet.hydrate_synthesis_scope_models(
+        conn, trigger,
+    )
+
+    assert conn.args[1] == ["workstream:harbor-release"]
+    assert hydrated == {"Harbor release": (str(model_id),)}
+    assert receipt["returned_model_count"] == 1
 
 
 def test_unprefixed_recognized_scope_assertion_becomes_closed_atomic() -> None:
@@ -1088,7 +1265,7 @@ async def test_conclusion_hydrates_scope_complete_memory_outside_selected_retrie
         async def fetch(self, _query, tenant_id, labels, limit):
             self.calls += 1
             assert tenant_id == trigger.tenant_id
-            assert labels == ["Delta handoff"]
+            assert labels == ["workstream:delta-handoff"]
             assert limit == 8
             return [
                 {"scope_label": "Delta handoff",
