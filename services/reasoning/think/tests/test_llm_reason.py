@@ -1045,10 +1045,9 @@ async def test_llm_reason_compiled_batch_memory_emits_code_built_ops(monkeypatch
     assert "Q_CRITICAL_PATH:DEPENDENCY=supported" in provider.calls[0]["user"]
     assert "claim_and_edge" in provider.calls[0]["schema_hint"]
     assert "claim_ops" not in provider.calls[0]["schema_hint"]
-    # Two provider-accepted claims plus the deterministic current-batch
-    # grounding situation. The grounding Model prevents the concrete Acme/SSO
-    # episode from collapsing into only an update, edge, and act transition.
-    assert len(diff.claim_ops) == 3
+    # The two accepted claims already ground the concrete Acme/SSO episode, so
+    # the deterministic grounding obligation is deduplicated.
+    assert len(diff.claim_ops) == 2
     assert len(diff.relation_claim_ops) == 1
     assert diff.edge_ops == []
     assert len(diff.act_ops) == 1
@@ -1067,9 +1066,6 @@ async def test_llm_reason_compiled_batch_memory_emits_code_built_ops(monkeypatch
     assert act.entity["new_state"] == "paused"
     assert "compiled_memory_candidate_id" not in act.entity
     assert str(act.confidence_basis) == diff.claim_ops[1].entry["born_from_event_id"]
-    grounding = diff.claim_ops[2]
-    assert grounding.entry["proposition"]["claim_role"] == "situation"
-    assert grounding.entry["proposition"]["compiled_grounding_obligation"] is True
 
 
 async def test_llm_reason_compiled_batch_memory_emits_relation_from_hinted_update(
@@ -3450,12 +3446,14 @@ async def test_llm_reason_compiled_batch_memory_supports_updates_situations_and_
     assert "memory_lifecycle" in provider.calls[0]["user"]
     assert "situation_and_edge" in provider.calls[0]["schema_hint"]
     assert provider.calls[0]["max_tokens"] == 1200
-    assert len(diff.claim_ops) == 2
+    assert len(diff.claim_ops) == 3
     update = diff.claim_ops[0]
     situation = diff.claim_ops[1]
+    grounding = diff.claim_ops[2]
     assert update.op == "update"
     assert update.model_id == model_a
-    assert update.changes["supporting_event_ids"] == [obs_id]
+    # Lifecycle updates may not inherit transport/batch evidence implicitly.
+    assert "supporting_event_ids" not in update.changes
     assert "supporting_model_ids" not in update.changes
     assert situation.op == "insert"
     assert situation.entry["proposition"]["claim_role"] == "situation"
@@ -3465,6 +3463,9 @@ async def test_llm_reason_compiled_batch_memory_supports_updates_situations_and_
     ]
     assert situation.entry["supporting_event_ids"] == [str(obs_id)]
     assert str(unrelated_transport_obs_id) not in json.dumps(situation.entry)
+    assert grounding.op == "insert"
+    assert grounding.entry["proposition"]["claim_role"] == "situation"
+    assert grounding.entry["proposition"]["compiled_grounding_obligation"] is True
     assert len(diff.relation_claim_ops) == 2
     assert diff.edge_ops == []
     relation = diff.relation_claim_ops[0]
