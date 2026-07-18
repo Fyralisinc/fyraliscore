@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from lib.evaluation.epistemic_repair.p2_oracles import stable_digest
+from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p4_population import build_p4_population
 
 
@@ -44,7 +44,7 @@ def build_unrun_p4_artifact() -> dict[str, Any]:
 
 def _seal(report: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(report)
-    result["artifact_content_digest"] = stable_digest(
+    result["artifact_content_digest"] = canonical_sha256(
         {k: v for k, v in result.items() if k not in {"generated_at", "artifact_content_digest"}}
     )
     return result

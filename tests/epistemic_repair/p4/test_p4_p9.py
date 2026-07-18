@@ -1,6 +1,8 @@
 import pytest
 import json
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import UUID
 
 from lib.evaluation.epistemic_repair.p4_p9 import _CONTRACTS, build_p4_p9_sidecar
 from lib.evaluation.epistemic_repair.p4_artifact import _seal
@@ -17,13 +19,28 @@ def _report():
 
 
 def _write(tmp_path: Path, report: dict) -> Path:
-    path = tmp_path / "p4.json"; path.write_text(json.dumps(report)); return path
+    path = tmp_path / "p4.json"; path.write_text(json.dumps(report, default=str)); return path
 
 
 def test_p4_sidecar_binds_all_raw_surfaces(tmp_path: Path):
     sidecar = build_p4_p9_sidecar(report_path=_write(tmp_path, _report()), commit="a" * 40, worktree_clean=True)
     assert len(sidecar["p9_member_contributions"]["gate_members"]) == 4
     assert len(sidecar["p9_member_contributions"]["metric_members"]) == 10
+
+
+def test_p4_seal_survives_json_round_trip_with_runtime_types(tmp_path: Path):
+    report = _report()
+    report["generated_at"] = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    report["raw_p9_evidence"]["context_decisions"][0]["decision_id"] = UUID(int=1)
+    report = _seal(report)
+
+    sidecar = build_p4_p9_sidecar(
+        report_path=_write(tmp_path, report),
+        commit="a" * 40,
+        worktree_clean=True,
+    )
+
+    assert sidecar["phase_exit_ready"] is True
 
 
 def test_p4_sidecar_rejects_missing_raw_rows_and_extra_metrics(tmp_path: Path):
