@@ -32,13 +32,30 @@ def summarize_fault_member_receipts(
         "terminal_fates": sorted({row.pre_restart_fate for row in db}) + sorted(
             {row.observed_outcome for row in llm}
         ),
-        "cross_tenant_effects": {"status": "not_recorded_in_member_receipts", "gate": False},
-        "duplicate_relation_transitions": {"status": "not_recorded_in_member_receipts", "gate": False},
-        "duplicate_lifecycle_transitions": {"status": "not_recorded_in_member_receipts", "gate": False},
-        "partial_truth_state": {"status": "partially_observed_via_barrier_model_pending_counts", "gate": False},
-        "stale_active_truth": {"status": "not_recorded_in_member_receipts", "gate": False},
-        "dead_letter_truth_critical_work": {"status": "not_recorded_in_member_receipts", "gate": False},
-        "uninterrupted_reference_digest_equality": {"status": "not_recorded_in_member_receipts", "gate": False},
+        "cross_tenant_effects": {"violations": sum(row.cross_tenant_model_hits for row in db),
+                                 "gate": all(row.cross_tenant_model_hits == 0 for row in db)},
+        "duplicate_relation_transitions": {"violations": sum(row.relation_version_count for row in db),
+                                           "gate": all(row.relation_version_count == 0 for row in db)},
+        "duplicate_lifecycle_transitions": {
+            "violations": sum(row.duplicate_lifecycle_transition_count for row in db),
+            "gate": all(row.duplicate_lifecycle_transition_count == 0 for row in db),
+        },
+        "partial_truth_state": {"violations": sum(row.partial_truth_state_count for row in db),
+                                "gate": all(row.partial_truth_state_count == 0 for row in db)},
+        "stale_active_truth": {"violations": sum(row.stale_active_truth_count for row in db),
+                               "gate": all(row.stale_active_truth_count == 0 for row in db)},
+        "dead_letter_truth_critical_work": {
+            "violations": sum(row.dead_letter_truth_critical_count for row in db),
+            "gate": all(row.dead_letter_truth_critical_count == 0 for row in db),
+        },
+        "uninterrupted_reference_digest_equality": {
+            "matched": sum(row.uninterrupted_reference_matches for row in db),
+            "denominator": len(db),
+            "gate": bool(db) and all(
+                row.uninterrupted_reference_matches and len(row.uninterrupted_reference_digest) == 64
+                for row in db
+            ),
+        },
     }
 
 

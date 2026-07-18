@@ -56,6 +56,14 @@ class DurableFaultReceipt:
     post_restart_pending_count: int
     replay_receipt_digest: str
     queried_state_digest: str
+    cross_tenant_model_hits: int = 0
+    relation_version_count: int = 0
+    duplicate_lifecycle_transition_count: int = 0
+    partial_truth_state_count: int = 0
+    stale_active_truth_count: int = 0
+    dead_letter_truth_critical_count: int = 0
+    uninterrupted_reference_digest: str = ""
+    uninterrupted_reference_matches: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +80,36 @@ async def _setup_tenant(dsn: str, tenant_id: UUID) -> None:
     conn = await asyncpg.connect(dsn)
     try:
         await conn.execute("INSERT INTO tenants (id,name) VALUES ($1,$2)", tenant_id, f"p8-{tenant_id}")
+    finally:
+        await conn.close()
+
+
+async def _uninterrupted_reference_digest(dsn: str) -> str:
+    """Execute the same semantic success path once, without a restart."""
+    tenant_id = uuid4()
+    await _setup_tenant(dsn, tenant_id)
+    conn = await asyncpg.connect(dsn)
+    try:
+        tx = conn.transaction()
+        await tx.start()
+        admission = _admission(tenant_id, 1)
+        admitted = await build_default_truth_kernel().admit(tx=conn, command=admission)
+        await CompanyLearningBarrierService().complete(
+            tx=conn, barrier_id=uuid4(), tenant_id=tenant_id, batch_id="p8:reference",
+            expected_model_version_ids=(admitted.version_id,), truth_critical_pending_count=0,
+            completed_at=datetime.now(timezone.utc),
+        )
+        await tx.commit()
+        row = await conn.fetchrow(
+            """SELECT
+                 (SELECT count(*)::int FROM company_learning_barriers WHERE tenant_id=$1) AS barriers,
+                 (SELECT count(*)::int FROM accepted_current_models WHERE tenant_id=$1) AS models,
+                 (SELECT count(*)::int FROM model_truth_versions WHERE tenant_id=$1) AS versions,
+                 (SELECT count(*)::int FROM model_truth_heads WHERE tenant_id=$1) AS heads,
+                 (SELECT count(*)::int FROM relation_truth_versions WHERE tenant_id=$1) AS relations""",
+            tenant_id,
+        )
+        return canonical_sha256(dict(row))
     finally:
         await conn.close()
 
@@ -230,16 +268,43 @@ async def _execute_case(dsn: str, *, boundary: str, duplicate: bool) -> DurableF
             "SELECT count(*)::int FROM accepted_current_models WHERE tenant_id=$1",
             tenant_id,
         )
+        invariants = await conn.fetchrow(
+            """SELECT
+                 (SELECT count(*)::int FROM accepted_current_models
+                    WHERE model_id=$2 AND tenant_id<>$1) AS cross_tenant_models,
+                 (SELECT count(*)::int FROM relation_truth_versions WHERE tenant_id=$1) AS relations,
+                 greatest((SELECT count(*)::int FROM model_truth_versions WHERE tenant_id=$1)-1,0) AS lifecycle_duplicates,
+                 abs((SELECT count(*)::int FROM models WHERE tenant_id=$1)-1)
+                   + abs((SELECT count(*)::int FROM model_truth_versions WHERE tenant_id=$1)-1)
+                   + abs((SELECT count(*)::int FROM model_truth_heads WHERE tenant_id=$1)-1) AS partial_truth,
+                 (SELECT count(*)::int FROM accepted_current_models
+                    WHERE tenant_id=$1 AND truth_version_id<>$3) AS stale_active,
+                 (SELECT count(*)::int FROM pending_post_commit_actions
+                    WHERE tenant_id=$1 AND dead_lettered_at IS NOT NULL)
+                   + (SELECT count(*)::int FROM projection_refresh_jobs
+                    WHERE tenant_id=$1 AND status='dead_letter')
+                   + (SELECT count(*)::int FROM summarization_batch_items
+                    WHERE tenant_id=$1 AND status='failed') AS dead_letters""",
+            tenant_id, admitted.model_id, admitted_version,
+        )
         await conn.close()
-        state = {
-            "tenant_id": str(tenant_id), "batch_id": batch_id,
+        normalized_state = {
             "barriers": row["barriers"], "models": models,
-            "pending": row["pending"], "receipt_digest": row["receipt_digest"],
+            "versions": 1 + invariants["lifecycle_duplicates"],
+            "heads": 1 if invariants["partial_truth"] == 0 else None,
+            "relations": invariants["relations"],
         }
+        reference_digest = await _uninterrupted_reference_digest(dsn)
+        state = {"tenant_id": str(tenant_id), "batch_id": batch_id,
+                 "pending": row["pending"], "receipt_digest": row["receipt_digest"],
+                 **normalized_state, **dict(invariants), "reference_digest": reference_digest}
         return DurableFaultReceipt(
             boundary, duplicate, str(tenant_id), batch_id, pre_restart_fate,
             row["barriers"], models, row["pending"], row["receipt_digest"],
-            canonical_sha256(state),
+            canonical_sha256(state), invariants["cross_tenant_models"], invariants["relations"],
+            invariants["lifecycle_duplicates"], invariants["partial_truth"],
+            invariants["stale_active"], invariants["dead_letters"], reference_digest,
+            canonical_sha256(normalized_state) == reference_digest,
         )
     except Exception:
         # Truth-kernel tables are intentionally append-only, so evidence tenants

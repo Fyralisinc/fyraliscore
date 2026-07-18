@@ -19,7 +19,9 @@ from lib.evaluation.epistemic_repair.p8_provider_runner import (
 def _slices():
     db_rows = tuple(
         DurableFaultReceipt(boundary, duplicate, "tenant", f"batch:{boundary}", "fault",
-                            1, 1, 0, "a" * 64, "b" * 64)
+                            1, 1, 0, "a" * 64, "b" * 64,
+                            uninterrupted_reference_digest="r" * 64,
+                            uninterrupted_reference_matches=True)
         for boundary in P8_DB_COVERED_BOUNDARIES for duplicate in (False, True)
     )
     provider_rows = tuple(
@@ -41,7 +43,9 @@ def test_binder_requires_all_24_schedule_executions() -> None:
     summary = summarize_fault_member_receipts(postgres=postgres, provider=provider)
     assert summary["observed_member_receipts"] == 24
     assert summary["attempt_budget_respected"] is True
-    assert summary["cross_tenant_effects"]["gate"] is False
+    assert summary["cross_tenant_effects"]["gate"] is True
+    assert summary["uninterrupted_reference_digest_equality"]["denominator"] == 18
+    assert summary["uninterrupted_reference_digest_equality"]["gate"] is True
     with pytest.raises(ValueError, match="denominator complete"):
         bind_fault_execution_evidence(
             postgres=postgres,
