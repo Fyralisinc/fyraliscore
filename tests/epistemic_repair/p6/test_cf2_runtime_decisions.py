@@ -94,8 +94,20 @@ def test_admits_at_most_one_exact_evidenced_mechanistic_synthesis() -> None:
         "member_observation_ids": [str(value) for value in observation_ids],
         "evidence_model_ids": [str(value) for value in model_ids],
         "endpoint_model_cards": [
-            {"id": str(model_id), "version_id": str(version_id)}
-            for model_id, version_id in zip(model_ids, version_ids, strict=True)
+            {
+                "id": str(model_id),
+                "version_id": str(version_id),
+                "natural": natural,
+            }
+            for model_id, version_id, natural in zip(
+                model_ids,
+                version_ids,
+                (
+                    "Certificate renewal remains incomplete.",
+                    "The rollout window moved after the delay.",
+                ),
+                strict=True,
+            )
         ],
     }
 
@@ -103,8 +115,10 @@ def test_admits_at_most_one_exact_evidenced_mechanistic_synthesis() -> None:
 
     accepted, rejected = result.decisions
     assert accepted.decision == "accept"
-    assert accepted.operation == "situation"
+    assert accepted.operation == "situation_and_edge"
     assert set(accepted.situation_member_model_ids) == set(model_ids)
+    assert accepted.source_model_id == model_ids[0]
+    assert accepted.target_model_id == model_ids[1]
     assert rejected.decision == "reject"
 
 
@@ -112,11 +126,15 @@ def test_synthesis_fails_closed_without_exact_heads_evidence_or_mechanism() -> N
     model_ids = [uuid4(), uuid4()]
     common = {
         "candidate_kind": "synthesis",
-        "allowed_operations": ["situation", "no_op"],
+        "allowed_operations": ["situation_and_edge", "no_op"],
         "canonical_scope_ref": "project:beacon",
         "evidence_model_ids": [str(value) for value in model_ids],
         "endpoint_model_cards": [
-            {"id": str(value), "version_id": str(uuid4())} for value in model_ids
+            {
+                "id": str(value), "version_id": str(uuid4()),
+                "natural": "Certificate renewal remains incomplete.",
+            }
+            for value in model_ids
         ],
         "member_observation_ids": [str(uuid4())],
     }

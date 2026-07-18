@@ -23,6 +23,9 @@ from services.evaluation.epistemic_repair.cf2_provider import (
     CF2ProviderFreeLLM,
     CF2ResponseHandler,
 )
+from services.evaluation.epistemic_repair.cf2_decisions import (
+    compiled_batch_memory_decisions,
+)
 from services.evaluation.epistemic_repair.cf2_source_grounding import (
     SourceAuthenticatedSignal,
     persist_source_authenticated_grounding,
@@ -74,7 +77,10 @@ async def run_cf2_provider_free(
     """Run intact CF2 batches from zero seed through the actual Think worker."""
 
     population = build_core_fast_path_population()
-    provider = CF2ProviderFreeLLM(handlers=handlers)
+    provider = CF2ProviderFreeLLM(handlers={
+        "BatchMemoryDecisionSet": compiled_batch_memory_decisions,
+        **dict(handlers or {}),
+    })
     runtime_embedder = embedder or CF2DeterministicEmbedder()
     owns_embedder = embedder is None
     preparation: dict[int, dict[str, Any]] = {}

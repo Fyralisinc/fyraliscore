@@ -120,6 +120,51 @@ def _exact_head_members(candidate: Mapping[str, Any]) -> list[str]:
     return members if set(members) == set(by_id) else []
 
 
+def _synthesis_endpoints(
+    candidate: Mapping[str, Any], members: list[str],
+) -> tuple[str, str] | None:
+    """Bind blocker -> affected-work endpoints from exact runtime Model cards."""
+
+    cards = candidate.get("endpoint_model_cards")
+    if not isinstance(cards, list):
+        return None
+    source_markers = (
+        "open", "incomplete", "missing", "unowned", "ownership",
+        "certificate", "renewal", "prerequisite", "waiting",
+    )
+    target_markers = (
+        "delay", "delayed", "slip", "moved", "rollout", "launch window",
+        "gate", "blocked", "cannot proceed", "impact",
+    )
+    scored: list[tuple[str, int, int]] = []
+    for card in cards:
+        if not isinstance(card, Mapping):
+            continue
+        card_ids = _uuid_strings(card.get("id"))
+        if not card_ids or card_ids[0] not in members:
+            continue
+        text = " ".join(
+            str(card.get(key) or "")
+            for key in ("natural", "proposition")
+        ).casefold()
+        source_score = sum(marker in text for marker in source_markers)
+        target_score = sum(marker in text for marker in target_markers)
+        scored.append((card_ids[0], source_score, target_score))
+    source_rows = sorted(
+        (row for row in scored if row[1] > 0),
+        key=lambda row: (-(row[1] - row[2]), -row[1], row[0]),
+    )
+    target_rows = sorted(
+        (row for row in scored if row[2] > 0),
+        key=lambda row: (-(row[2] - row[1]), -row[2], row[0]),
+    )
+    for source_id, _source_score, _source_target_score in source_rows:
+        for target_id, _target_source_score, _target_score in target_rows:
+            if source_id != target_id:
+                return source_id, target_id
+    return None
+
+
 def _atomic_decision(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
     text = str(candidate.get("entailed_claim_text") or "").strip()
     scope = str(candidate.get("canonical_scope_ref") or "").strip()
@@ -189,6 +234,7 @@ def _synthesis(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
     text = str(candidate.get("proposed_text") or "").strip()
     scope = str(candidate.get("canonical_scope_ref") or "").strip()
     members = _exact_head_members(candidate)
+    endpoints = _synthesis_endpoints(candidate, members)
     events = _event_ids(candidate)
     allowed = set(candidate.get("allowed_operations") or [])
     if (
@@ -198,17 +244,22 @@ def _synthesis(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
         or ":" not in scope
         or len(members) < 2
         or not events
-        or "situation" not in allowed
+        or "situation_and_edge" not in allowed
+        or endpoints is None
     ):
         return None
+    source_model_id, target_model_id = endpoints
     return {
         "candidate_id": str(candidate["candidate_id"]),
         "decision": "accept",
-        "operation": "situation",
+        "operation": "situation_and_edge",
         "confidence": min(0.95, max(0.52, float(candidate.get("confidence") or 0.7))),
         "claim_role": "situation",
         "claim_text": text,
         "situation_member_model_ids": members,
+        "edge_kind": "blocks",
+        "source_model_id": source_model_id,
+        "target_model_id": target_model_id,
         "reason": "Exact accepted heads and local evidence support an explicit mechanism.",
     }
 
