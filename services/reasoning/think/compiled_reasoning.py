@@ -58,6 +58,13 @@ BatchMemoryOperation = Literal[
 ]
 BatchClaimRole = Literal["fact", "concern", "hypothesis", "pattern", "situation"]
 BatchActType = Literal["commitment", "goal", "decision"]
+PriorMemoryRelation = Literal[
+    "supports",
+    "weakens",
+    "contradicts",
+    "supersedes",
+    "none",
+]
 
 
 class RelationshipCandidateDecision(BaseModel):
@@ -114,12 +121,28 @@ class BatchMemoryCandidateDecision(BaseModel):
     reason: str = Field(min_length=1, max_length=700)
 
 
+class PriorMemoryEffectDecision(BaseModel):
+    """Candidate-local effect of new evidence on exact-scope prior memory."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str = Field(min_length=1, max_length=120)
+    prior_model_id: UUID
+    relation: PriorMemoryRelation
+    claim_local_evidence_event_ids: list[UUID] = Field(
+        default_factory=list,
+        max_length=12,
+    )
+    reason: str = Field(min_length=1, max_length=700)
+
+
 class BatchMemoryDecisionSet(BaseModel):
     """Compact output shape for compiled T1 batch memory reasoning."""
 
     model_config = ConfigDict(extra="forbid")
 
     decisions: list[BatchMemoryCandidateDecision] = Field(default_factory=list)
+    prior_memory_effects: list[PriorMemoryEffectDecision] = Field(default_factory=list)
     reasoning_trace: str | None = Field(default=None, max_length=1400)
 
 
@@ -404,6 +427,68 @@ class CompiledBatchMemoryDecisionRequest:
                 candidate_claim_placeholders[candidate_id] = placeholder
                 trace_parts.append(f"{candidate_id}: deterministic atomic insert")
             accepted += 1
+
+        seen_prior_effects: set[tuple[str, UUID]] = set()
+        for effect in decisions.prior_memory_effects:
+            candidate = by_id.get(effect.candidate_id)
+            effect_key = (effect.candidate_id, effect.prior_model_id)
+            if candidate is None or effect_key in seen_prior_effects:
+                blocked += 1
+                trace_parts.append(
+                    f"{effect.candidate_id}: prior-memory effect blocked - "
+                    "unknown candidate or duplicate prior"
+                )
+                continue
+            seen_prior_effects.add(effect_key)
+            lifecycle_op, effect_trace = _prior_memory_effect_lifecycle_op(
+                candidate,
+                effect,
+            )
+            if effect.relation == "none":
+                trace_parts.append(effect_trace)
+                continue
+            if lifecycle_op is None:
+                blocked += 1
+                trace_parts.append(effect_trace)
+                continue
+            duplicate_index = next((
+                index
+                for index, existing in enumerate(memory_lifecycle_ops)
+                if existing.model_id == lifecycle_op.model_id
+                and existing.action == lifecycle_op.action
+                and set(existing.claim_local_evidence_event_ids)
+                == set(lifecycle_op.claim_local_evidence_event_ids)
+            ), None)
+            if duplicate_index is not None:
+                existing = memory_lifecycle_ops[duplicate_index]
+                if (existing.metadata or {}).get("source") == "closed_atomic_durable_fate":
+                    memory_lifecycle_ops[duplicate_index] = lifecycle_op
+                    trace_parts.append(
+                        f"{effect.candidate_id}: compiler confirm attributed to "
+                        "explicit prior-memory effect"
+                    )
+                    continue
+                trace_parts.append(
+                    f"{effect.candidate_id}: prior-memory {effect.relation} "
+                    "already represented by compiler-owned lifecycle op"
+                )
+                continue
+            memory_lifecycle_ops.append(lifecycle_op)
+            accepted += 1
+            trace_parts.append(effect_trace)
+        expected_prior_effects = {
+            (str(candidate.get("candidate_id") or ""), prior_id)
+            for candidate in self.candidates
+            for prior_id in _uuid_values(candidate.get("prior_same_scope_model_ids"))
+        }
+        for candidate_id, prior_id in sorted(
+            expected_prior_effects - seen_prior_effects,
+            key=lambda value: (value[0], str(value[1])),
+        ):
+            trace_parts.append(
+                f"{candidate_id}: prior-memory effect missing for {prior_id}; "
+                "no mutation"
+            )
 
         for decision in decisions.decisions:
             candidate = by_id.get(decision.candidate_id)
@@ -857,6 +942,11 @@ def build_compiled_batch_memory_decision_request(
             ),
         )
     candidates = candidates[:max_candidates]
+    candidates = _bind_prior_same_scope_models(
+        candidates,
+        models=bundle.models,
+        tenant_id=trigger.tenant_id,
+    )
     if _compiled_batch_requires_open_writer_surface(packet, candidates):
         return None
     relation_obligations = relation_obligations_from_packet(packet, candidates)
@@ -881,6 +971,10 @@ def build_compiled_batch_memory_decision_request(
         "For candidates with entailed_claim_text, the compiler owns their "
         "durable insert-or-confirm fate, immutable wording, and exact evidence; "
         "your response cannot suppress or widen them. "
+        "For each prior_same_scope_model_card, report one typed "
+        "prior_memory_effect: supports, weakens, contradicts, supersedes, or "
+        "none. This is candidate-local reconciliation, not generic lifecycle "
+        "pressure. Use only the candidate's prior Model and observation ids. "
         "Prefer updates over duplicate inserts, situations for composite "
         "candidate-local understanding, and edges when selected graph context is "
         "decision-relevant. Reject/no-op only when uncertainty is decisive, "
@@ -908,6 +1002,95 @@ def build_compiled_batch_memory_decision_request(
             "important_unknowns": packet.get("important_unknowns"),
         },
     )
+
+
+def _bind_prior_same_scope_models(
+    candidates: list[dict[str, Any]],
+    *,
+    models: list[Any],
+    tenant_id: UUID,
+) -> list[dict[str, Any]]:
+    """Expose bounded accepted memory sharing a candidate's exact coordinate."""
+
+    max_priors = _env_int("THINK_COMPILED_BATCH_PRIOR_MODELS_PER_CANDIDATE", 8)
+    bound: list[dict[str, Any]] = []
+    for candidate in candidates:
+        canonical_ref = str(candidate.get("canonical_scope_ref") or "").strip()
+        coordinate = _candidate_scope_coordinate(candidate)
+        is_atomic = (
+            candidate.get("candidate_kind") == "atomic"
+            or bool(str(candidate.get("entailed_claim_text") or "").strip())
+        )
+        if (
+            not is_atomic
+            or not canonical_ref
+            or canonical_ref.startswith("mention:")
+            or coordinate is None
+            or coordinate[1] != canonical_ref
+        ):
+            bound.append(candidate)
+            continue
+        exact_models = [
+            model
+            for model in models
+            if _active_model_has_exact_scope(
+                model,
+                coordinate=coordinate,
+                tenant_id=tenant_id,
+            )
+        ][:max_priors]
+        if not exact_models:
+            bound.append(candidate)
+            continue
+        row = dict(candidate)
+        row["prior_same_scope_model_ids"] = [
+            str(model.id) for model in exact_models
+        ]
+        row["prior_same_scope_model_cards"] = [
+            _prior_same_scope_model_card(model, coordinate=coordinate)
+            for model in exact_models
+        ]
+        bound.append(row)
+    return bound
+
+
+def _active_model_has_exact_scope(
+    model: Any,
+    *,
+    coordinate: tuple[str, str],
+    tenant_id: UUID,
+) -> bool:
+    if getattr(model, "tenant_id", None) != tenant_id:
+        return False
+    if str(getattr(model, "status", "")) != "active":
+        return False
+    model_coordinates = {
+        (
+            str(entity.get("type") or "").strip().casefold(),
+            str(entity.get("id") or entity.get("canonical_ref") or "").strip(),
+        )
+        for entity in getattr(model, "scope_entities", ()) or ()
+        if isinstance(entity, dict)
+    }
+    return coordinate in model_coordinates
+
+
+def _prior_same_scope_model_card(
+    model: Any,
+    *,
+    coordinate: tuple[str, str],
+) -> dict[str, Any]:
+    return {
+        "id": str(model.id),
+        "version_id": str(version_id) if (
+            version_id := getattr(model, "current_version_id", None)
+            or getattr(model, "version_id", None)
+        ) else None,
+        "natural": _trunc(str(getattr(model, "natural", "") or ""), 500),
+        "proposition": getattr(model, "proposition", None),
+        "confidence": getattr(model, "confidence", None),
+        "canonical_scope": {"type": coordinate[0], "ref": coordinate[1]},
+    }
 
 
 def _bind_synthesis_endpoint_versions(
@@ -1287,6 +1470,8 @@ def _build_batch_memory_decision_user_prompt(
     lines.extend(
         [
             "<decision_rules>",
+            "For every prior_same_scope_model_card on every candidate, return exactly one prior_memory_effect keyed by candidate_id and prior_model_id. Classify only as supports, weakens, contradicts, supersedes, or none; use none when the new claim has no material bearing on that prior proposition.",
+            "Every material prior_memory_effect must cite only claim-local observation UUIDs listed on that candidate. Generic lifecycle pressure, retrieval, similarity, or merely mentioning a prior UUID is not a prior-memory effect.",
             "For claim/claim_and_edge/claim_and_act, claim_text must be a single durable atomic sentence under 500 chars.",
             "Use claim_update when the candidate mainly confirms, weakens, or adds evidence to an existing target/evidence Model.",
             "Use memory_lifecycle when the candidate tests, confirms, falsifies, revises, archives, or supersedes an existing model_id; provide lifecycle_action.",
@@ -1333,6 +1518,8 @@ def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
         "endpoint_model_cards",
         "semantic_scope",
         "canonical_scope_ref",
+        "prior_same_scope_model_ids",
+        "prior_same_scope_model_cards",
         "observation_evidence",
         "supporting_evidence_ids",
         "counterevidence_ids",
@@ -1355,6 +1542,11 @@ def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
         if key == "endpoint_model_cards" and isinstance(value, list):
             lines.append("    endpoint_model_cards:")
             for card in value[:8]:
+                lines.append(f"      - {_endpoint_model_card_json(card)}")
+            continue
+        if key == "prior_same_scope_model_cards" and isinstance(value, list):
+            lines.append("    prior_same_scope_model_cards:")
+            for card in value:
                 lines.append(f"      - {_endpoint_model_card_json(card)}")
             continue
         lines.append(f"    {key}: {_trunc(_jsonish(value), 900)}")
@@ -3983,6 +4175,77 @@ def _memory_lifecycle_op_from_batch_decision(
         metadata=metadata,
     )
     return op, ""
+
+
+def _prior_memory_effect_lifecycle_op(
+    candidate: dict[str, Any],
+    effect: PriorMemoryEffectDecision,
+) -> tuple[MemoryLifecycleOp | None, str]:
+    """Compile one authorized exact-scope prior-memory judgment."""
+
+    authorized_priors = set(
+        _uuid_values(candidate.get("prior_same_scope_model_ids"))
+    )
+    prefix = (
+        f"{effect.candidate_id}: prior-memory {effect.relation} "
+        f"for {effect.prior_model_id}"
+    )
+    if effect.prior_model_id not in authorized_priors:
+        return None, f"{prefix} blocked - prior Model is not candidate-authorized"
+    exact_target_ids = set(_uuid_values(candidate.get("target_model_ids")))
+    exact_confirm_bound = (
+        effect.prior_model_id in exact_target_ids
+        and set(candidate.get("allowed_operations") or ()) == {"memory_lifecycle"}
+    )
+    if exact_confirm_bound and effect.relation not in {"supports", "none"}:
+        return None, f"{prefix} blocked - exact identical target can only be supported"
+    authorized_events = set(_candidate_event_ids(candidate))
+    submitted_events = _dedupe_uuids(effect.claim_local_evidence_event_ids)
+    if any(event_id not in authorized_events for event_id in submitted_events):
+        return None, f"{prefix} blocked - evidence is not candidate-authorized"
+    if effect.relation == "none":
+        return None, f"{prefix}; explicit no mutation - {effect.reason}"
+    if not submitted_events:
+        return None, f"{prefix} blocked - material effect requires claim-local evidence"
+
+    action: MemoryLifecycleAction
+    confidence_delta: float | None = None
+    resolution_outcome: bool | None = None
+    if effect.relation == "supports":
+        action = "confirm"
+        confidence_delta = 0.08
+    elif effect.relation == "weakens":
+        action = "revise"
+        confidence_delta = -0.12
+    elif effect.relation == "contradicts":
+        action = "falsify"
+        confidence_delta = -0.3
+        resolution_outcome = False
+    else:
+        # Supersession is a directed lifecycle claim and requires an accepted
+        # successor Model id.  The new compiler-owned atomic has only a
+        # pre-Apply placeholder here, so degrading this judgment into a revise
+        # would misstate what the provider decided.
+        return None, (
+            f"{prefix} blocked - supersession requires an accepted successor Model"
+        )
+
+    return MemoryLifecycleOp(
+        model_id=effect.prior_model_id,
+        action=action,
+        evidence_event_ids=submitted_events,
+        claim_local_evidence_event_ids=submitted_events,
+        confidence_delta=confidence_delta,
+        resolution_outcome=resolution_outcome,
+        rationale=_trunc(effect.reason, 700),
+        metadata={
+            "source": "prior_memory_effect",
+            "prior_model_id": str(effect.prior_model_id),
+            "effect_scope": "candidate",
+            "candidate_id": effect.candidate_id,
+            "relation": effect.relation,
+        },
+    ), f"{prefix} compiled as {action}"
 
 
 def _revision_retires_supported_relation(
