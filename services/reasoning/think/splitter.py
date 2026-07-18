@@ -108,6 +108,7 @@ _VERB_HINTS: frozenset[str] = frozenset({
     "lacks", "lacking", "lacks",
     "happened", "happens", "happen", "happening",
     "occurred", "occurs", "occur",
+    "remains", "unresolved", "moved", "worsening",
     "increased", "decreased", "improved", "degraded",
     "churning", "churned", "churn",
     "concerned", "worried",
@@ -215,6 +216,24 @@ _UNSPLITTABLE_CURIOSITY_TAGS: frozenset[str] = frozenset({
     "unresolved_unknown",
     "success_driver",
 })
+
+_PREDICATE_ROLE_TERMS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("absence", frozenset({"missing", "unresolved", "unclear", "unassigned", "unowned", "absent"})),
+    ("movement", frozenset({"moved", "delayed", "slipped", "postponed", "rescheduled", "drifted"})),
+    ("incomplete", frozenset({"incomplete", "partial", "stale", "inaccurate", "optimistic"})),
+    ("questioned", frozenset({"whether", "questioned", "uncertain", "unverified", "asks"})),
+    ("transfer", frozenset({"handoff", "transition", "transfer", "assigned", "received"})),
+    ("deterioration", frozenset({"worsening", "dropping", "declining", "degraded", "rising"})),
+)
+_CAUSAL_MARKERS = (
+    " because ", " causes ", " causing ", " caused ", " due to ",
+    " leads to ", " resulting in ", " is delaying ", " affects ", " affecting ",
+)
+_EVIDENCE_MATCH_STOPWORDS = {
+    "again", "after", "and", "are", "because", "from", "has", "have",
+    "into", "may", "remains", "signal", "signals", "still", "that", "the",
+    "their", "these", "this", "update", "while", "with", "workstream",
+}
 
 
 # ---------------------------------------------------------------------
@@ -377,6 +396,159 @@ def _trim(s: str, limit: int) -> str:
     if len(s) <= limit:
         return s
     return s[: limit - 3].rstrip() + "..."
+
+
+def _normalized_semantic_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw in re.findall(r"[a-z0-9]+", text.casefold()):
+        token = raw
+        for suffix in ("ship", "ing", "ed", "s"):
+            if len(token) > len(suffix) + 3 and token.endswith(suffix):
+                token = token[: -len(suffix)]
+                break
+        tokens.add(token)
+    return tokens
+
+
+def _predicate_roles(text: str) -> set[str]:
+    lowered = " ".join(text.casefold().split())
+    tokens = set(re.findall(r"[a-z0-9]+", lowered))
+    if "without naming" in lowered or "they have it" in lowered:
+        return {"ambiguous_reference"}
+    roles = {
+        role
+        for role, terms in _PREDICATE_ROLE_TERMS
+        if tokens & terms
+    }
+    if "no clearly recorded" in lowered or "no recorded" in lowered:
+        roles.add("absence")
+    return roles
+
+
+def _evidence_material_tokens(text: str) -> set[str]:
+    predicate_tokens = _normalized_semantic_tokens(
+        " ".join(term for _, terms in _PREDICATE_ROLE_TERMS for term in terms)
+    )
+    return {
+        token
+        for token in _normalized_semantic_tokens(text)
+        if len(token) >= 4 and token not in _EVIDENCE_MATCH_STOPWORDS
+        and token not in predicate_tokens
+    }
+
+
+def _atomic_evidence_matches(claim: str, body: str) -> bool:
+    claim_roles = _predicate_roles(claim)
+    body_roles = _predicate_roles(body)
+    if not claim_roles or not (claim_roles & body_roles):
+        return False
+    claim_objects = _evidence_material_tokens(claim)
+    body_objects = _evidence_material_tokens(body)
+    return bool(claim_objects & body_objects)
+
+
+def _is_causal_atomic(claim: str) -> bool:
+    lowered = f" {claim.casefold()} "
+    return any(marker in lowered for marker in _CAUSAL_MARKERS)
+
+
+def _derived_atomic_evidence(
+    entry: dict[str, Any],
+    claim: str,
+    manifest_by_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    derivations = entry.get("evidence_derivations")
+    if not isinstance(derivations, list):
+        return []
+    for raw in derivations:
+        if not isinstance(raw, dict):
+            continue
+        claim_pattern = str(raw.get("claim_pattern") or "").casefold().strip()
+        if claim_pattern and claim_pattern not in claim.casefold():
+            continue
+        groups = raw.get("premise_groups")
+        if not isinstance(groups, list):
+            continue
+        roles: set[str] = set()
+        ids: list[str] = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            role = str(group.get("role") or "").strip()
+            group_ids = [
+                str(value) for value in group.get("observation_ids") or []
+                if str(value) in manifest_by_id
+            ]
+            if role and group_ids:
+                roles.add(role)
+                ids.extend(group_ids)
+        if {"cause", "effect"} <= roles:
+            return [manifest_by_id[value] for value in dict.fromkeys(ids)]
+    return []
+
+
+def _redistribute_atomic_evidence(entry: dict[str, Any], claim: str) -> bool:
+    """Keep only observations that positively support this split atomic.
+
+    Absence of a manifest means this is a legacy/non-compiled claim and retains
+    its existing evidence. A present manifest is authoritative: zero matches
+    quarantines the atomic instead of widening back to its parent batch.
+    """
+    manifest = entry.get("evidence_observation_manifest")
+    if not isinstance(manifest, list):
+        return True
+    manifest_by_id = {
+        str(row["observation_id"]): dict(row)
+        for row in manifest
+        if isinstance(row, dict) and row.get("observation_id")
+    }
+    if _is_causal_atomic(claim):
+        matched = _derived_atomic_evidence(entry, claim, manifest_by_id)
+    else:
+        matched = [
+            row for row in manifest_by_id.values()
+            if _atomic_evidence_matches(claim, str(row.get("body") or ""))
+        ]
+    if not matched:
+        return False
+    matched_ids = list(
+        dict.fromkeys(str(row["observation_id"]) for row in matched)
+    )
+    entry["evidence_observation_manifest"] = matched
+    entry["supporting_event_ids"] = matched_ids
+    proposition = entry.get("proposition")
+    if isinstance(proposition, dict):
+        proposition["evidence_event_ids"] = matched_ids
+    return True
+
+
+def _composite_is_necessary(entry: dict[str, Any]) -> bool:
+    """Require an explicit emergent judgment, not merely multiple clauses."""
+    proposition = entry.get("proposition")
+    if not isinstance(proposition, dict):
+        return False
+    explicit_situation = proposition.get("claim_role") == "situation"
+    mechanism = str(
+        proposition.get("shared_mechanism")
+        or proposition.get("emergent_mechanism")
+        or proposition.get("judgment_change")
+        or ""
+    ).strip()
+    derivation = str(
+        proposition.get("composite_derivation")
+        or proposition.get("relationship_summary")
+        or ""
+    ).strip()
+    emergent = " ".join((mechanism, derivation)).casefold()
+    emergent_markers = (
+        "compounds", "feedback", "jointly", "mechanism", "reinforces",
+        "tradeoff", "together",
+    )
+    return bool(
+        derivation
+        and (explicit_situation or mechanism)
+        and any(marker in emergent for marker in emergent_markers)
+    )
 
 
 def _is_unsplittable_proposition(prop: Any) -> bool:
@@ -708,7 +880,8 @@ def _split_operational_claim_op(entry: dict[str, Any]) -> list[ClaimOp]:
             base_entry.get("proposition"),
         )
         atomic_entry.pop("embedding", None)
-        split_ops.append(ClaimOp(op="insert", entry=atomic_entry))
+        if _redistribute_atomic_evidence(atomic_entry, natural):
+            split_ops.append(ClaimOp(op="insert", entry=atomic_entry))
 
     text = _claim_text(entry)
     pressure_type = _infer_pressure_type(text) or "execution"
@@ -733,12 +906,17 @@ def _split_operational_claim_op(entry: dict[str, Any]) -> list[ClaimOp]:
         "shared_mechanism": trimmed,
         "pressure_type": pressure_type,
     }
+    if base_entry.get("supporting_event_ids"):
+        situation_entry["proposition"]["evidence_event_ids"] = list(
+            base_entry["supporting_event_ids"]
+        )
     situation_entry["natural"] = f"Composite operational situation: {trimmed}"
     situation_entry["member_model_pending"] = True
     situation_entry["split_reasons"] = [
         f"multi_operational_facts:{len(groups)}",
     ]
-    split_ops.append(ClaimOp(op="insert", entry=situation_entry))
+    if _composite_is_necessary(entry):
+        split_ops.append(ClaimOp(op="insert", entry=situation_entry))
     return split_ops
 
 
@@ -878,7 +1056,8 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
         atomic_entry["natural"] = piece.rstrip(".") + "."
         # Embedding stays None — applier / backfill will compute.
         atomic_entry.pop("embedding", None)
-        split_ops.append(ClaimOp(op="insert", entry=atomic_entry))
+        if _redistribute_atomic_evidence(atomic_entry, piece):
+            split_ops.append(ClaimOp(op="insert", entry=atomic_entry))
 
     # Synthesize the composing situation.
     situation_entry = deepcopy(base_entry)
@@ -903,6 +1082,8 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
         "shared_mechanism": trimmed,
     }
     sit_prop["pressure_type"] = pressure_type
+    if base_entry.get("supporting_event_ids"):
+        sit_prop["evidence_event_ids"] = list(base_entry["supporting_event_ids"])
     situation_entry["proposition"] = sit_prop
     situation_entry["natural"] = f"Composite situation: {trimmed}"
     # Flag for the integrator: patch member_model_ids after atomic
@@ -912,7 +1093,8 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
     # this situation was synthesized.
     situation_entry["split_reasons"] = reasons
 
-    split_ops.append(ClaimOp(op="insert", entry=situation_entry))
+    if _composite_is_necessary(entry):
+        split_ops.append(ClaimOp(op="insert", entry=situation_entry))
     return split_ops
 
 
