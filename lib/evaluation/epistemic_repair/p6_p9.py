@@ -30,6 +30,8 @@ METRIC_SPECS: dict[str, tuple[str, float]] = {
     "entity_type_accuracy": (">=", .95),
     "canonical_link_precision": (">=", .98),
     "canonical_link_recall": (">=", .90),
+    "uncertainty_fate_precision": (">=", .95),
+    "uncertainty_fate_coverage": (">=", .95),
     "atomic_claim_precision": (">=", .90),
     "atomic_claim_recall": (">=", .85),
     "atomic_claim_f1": (">=", .875),
@@ -129,7 +131,7 @@ def build_p6_p9_sidecar(
     ):
         raise ValueError("P6 score hard gates do not exactly match the preregistered 17-gate contract")
     if not isinstance(metrics, dict) or set(metrics) != set(METRIC_SPECS) or len(metrics) != len(METRIC_SPECS):
-        raise ValueError("P6 score metrics do not exactly match the preregistered 32-metric contract")
+        raise ValueError("P6 score metrics do not exactly match the preregistered 34-metric contract")
 
     provenance = execution.get("run_provenance") or {}
     config = execution.get("expected_llm_configuration") or {}

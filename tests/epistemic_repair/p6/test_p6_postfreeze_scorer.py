@@ -12,6 +12,7 @@ from lib.evaluation.epistemic_repair.p6_postfreeze_scorer import (
     _score_claims_and_theses,
     _score_context,
     _score_mentions,
+    _score_uncertainty_fates,
     score_p6_frozen_execution,
 )
 
@@ -73,6 +74,7 @@ def test_current_raw_shape_fails_closed_on_unpreserved_member_evidence() -> None
         "boundary_b_cubed_f1", "selected_context_contamination",
         "sufficient_context_recall", "exact_mention_f1", "entity_type_accuracy",
         "canonical_link_precision", "canonical_link_recall",
+        "uncertainty_fate_precision", "uncertainty_fate_coverage",
         "atomic_claim_precision", "atomic_claim_recall", "atomic_claim_f1",
         "evidence_lineage_coverage", "scope_precision", "scope_recall",
         "direct_thesis_accuracy", "mean_thesis_facet_completeness",
@@ -327,6 +329,92 @@ def test_atomic_source_oracle_accepts_exact_ownership_one_ref() -> None:
     assert scores["atomic_claim_recall"]["denominator"] == 92
     assert scores["atomic_claim_recall"]["value"] > 0
     assert scores["direct_thesis_accuracy"]["value"] == 0
+
+
+def test_one_batch_nonassertable_signals_have_complete_candidate_plane_fates() -> None:
+    population = build_p6_population()
+    batch_one = [signal for signal in population.signals if signal.batch_number == 1]
+    observation_map = {
+        f"observation-{index}": signal.signal_id
+        for index, signal in enumerate(batch_one)
+    }
+    uncertainty_ids = {
+        item.signal_id for item in population.gold
+        if item.signal_id in {signal.signal_id for signal in batch_one}
+        and item.lifecycle_phase == "weak_initial"
+        and item.claim_id
+        and item.claim_id.rsplit(":", 1)[-1] in {"2", "4"}
+    }
+    raw = _raw(population, evidence={
+        "observed_source_ids": list(observation_map),
+        "observation_signal_map": observation_map,
+        "signal_fates": [
+            {"signal_id": signal_id, "mutation_fate": "open_question"}
+            for signal_id in sorted(uncertainty_ids)
+        ],
+        "open_questions": [
+            {"source_signal_id": signal_id, "status": "open"}
+            for signal_id in sorted(uncertainty_ids)
+        ],
+        "claims": [],
+    })
+    raw["waves"] = raw["waves"][:1]
+
+    scores = _score_uncertainty_fates(raw, population)
+
+    assert len(uncertainty_ids) == 8
+    assert scores["uncertainty_fate_precision"]["numerator"] == 8
+    assert scores["uncertainty_fate_precision"]["denominator"] == 8
+    assert scores["uncertainty_fate_precision"]["status"] == "pass"
+    assert scores["uncertainty_fate_coverage"]["numerator"] == 8
+    assert scores["uncertainty_fate_coverage"]["denominator"] == 8
+    assert scores["uncertainty_fate_coverage"]["status"] == "pass"
+
+
+def test_canonicalized_question_fails_uncertainty_fate_metrics() -> None:
+    population = build_p6_population()
+    batch_one = [signal for signal in population.signals if signal.batch_number == 1]
+    observation_map = {
+        f"observation-{index}": signal.signal_id
+        for index, signal in enumerate(batch_one)
+    }
+    uncertainty_ids = sorted({
+        item.signal_id for item in population.gold
+        if item.signal_id in {signal.signal_id for signal in batch_one}
+        and item.lifecycle_phase == "weak_initial"
+        and item.claim_id
+        and item.claim_id.rsplit(":", 1)[-1] in {"2", "4"}
+    })
+    raw = _raw(population, evidence={
+        "observed_source_ids": list(observation_map),
+        "observation_signal_map": observation_map,
+        "signal_fates": [
+            {"signal_id": signal_id, "mutation_fate": "open_question"}
+            for signal_id in uncertainty_ids
+        ],
+        "open_questions": [
+            {"source_signal_id": signal_id, "status": "open"}
+            for signal_id in uncertainty_ids
+        ],
+        "claims": [{
+            "id": "bad-question-model",
+            "natural_text": "The unresolved question is canonical truth.",
+            "proposition": {"claim_role": "fact"},
+            "evidence_signal_ids": [uncertainty_ids[0]],
+        }],
+    })
+    raw["waves"] = raw["waves"][:1]
+
+    scores = _score_uncertainty_fates(raw, population)
+
+    assert scores["uncertainty_fate_precision"]["value"] == pytest.approx(7 / 8)
+    assert scores["uncertainty_fate_precision"]["status"] == "fail"
+    assert scores["uncertainty_fate_coverage"]["value"] == pytest.approx(7 / 8)
+    assert scores["uncertainty_fate_coverage"]["status"] == "fail"
+    assert scores["uncertainty_fate_precision"]["worst_cases"] == [{
+        "source_id": uncertainty_ids[0],
+        "reason": "nonassertable_uncertainty_promoted_to_canonical_claim",
+    }]
 
 
 def test_atomic_recall_denominator_is_limited_to_observed_one_batch() -> None:

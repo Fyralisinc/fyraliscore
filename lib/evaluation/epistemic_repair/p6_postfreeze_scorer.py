@@ -35,6 +35,8 @@ _SPECS: dict[str, MetricSpec] = {
     "entity_type_accuracy": (">=", 0.95),
     "canonical_link_precision": (">=", 0.98),
     "canonical_link_recall": (">=", 0.90),
+    "uncertainty_fate_precision": (">=", 0.95),
+    "uncertainty_fate_coverage": (">=", 0.95),
     "atomic_claim_precision": (">=", 0.90),
     "atomic_claim_recall": (">=", 0.85),
     "atomic_claim_f1": (">=", 0.875),
@@ -187,6 +189,8 @@ def _score_mentions(
     storyline_refs = {
         str(item.canonical_ref) for item in population.gold if item.canonical_ref
     }
+
+
     scored_prediction_count = 0
     worst = []
     signal_text = {signal.signal_id: signal.text for signal in population.signals}
@@ -261,6 +265,97 @@ def _score_mentions(
         "canonical_link_recall": _metric(
             "canonical_link_recall", recall_link_ok, storyline_required_count,
             source_ids=storyline_ids,
+        ),
+    }
+
+
+def _score_uncertainty_fates(
+    raw: dict[str, Any], population: P6Population,
+) -> dict[str, dict[str, Any]]:
+    """Score nonassertable weak signals without rewarding truth promotion."""
+
+    executed = _executed_source_signal_ids(raw, population)
+    expected = {
+        item.signal_id for item in population.gold
+        if item.lifecycle_phase == "weak_initial"
+        and (coordinate := _claim_coordinate(item)) is not None
+        and coordinate[2] in {2, 4}
+        and (executed is None or item.signal_id in executed)
+    }
+    if not expected:
+        return {
+            name: _metric(name, None, None)
+            for name in ("uncertainty_fate_precision", "uncertainty_fate_coverage")
+        }
+    fate_by_signal = {
+        str(row.get("signal_id") or ""): row
+        for row in _record_index(raw, "signal_fates")
+    }
+    open_question_sources: set[str] = set()
+    for row in _record_index(raw, "open_questions"):
+        open_question_sources.update(
+            str(value) for value in (
+                row.get("source_signal_id"), row.get("signal_id")
+            ) if value
+        )
+        open_question_sources.update(
+            str(value) for value in row.get("evidence_signal_ids") or ()
+        )
+    canonical_sources: set[str] = set()
+    for row in _record_index(raw, "claims"):
+        proposition = row.get("proposition")
+        distinct_uncertainty_contract = bool(
+            row.get("uncertainty_existence_contract") is True
+            or isinstance(proposition, Mapping)
+            and proposition.get("uncertainty_existence_contract") is True
+        )
+        if not distinct_uncertainty_contract:
+            canonical_sources.update(
+                expected & {
+                    str(value) for value in row.get("evidence_signal_ids") or ()
+                }
+            )
+    acceptable_fates = {
+        "open_question", "residual", "clarification", "candidate",
+        "needs_clarification",
+    }
+    correct: set[str] = set()
+    incorrect: set[str] = set()
+    worst: list[dict[str, Any]] = []
+    for signal_id in sorted(expected):
+        fate = fate_by_signal.get(signal_id) or {}
+        mutation_fate = str(fate.get("mutation_fate") or "").casefold()
+        justified_noop = mutation_fate in {"no_mutation", "no_op"} and any(
+            str(fate.get(key) or "").strip()
+            for key in ("mutation_reason", "no_op_reason", "justification", "reason")
+        )
+        acceptable = (
+            signal_id in open_question_sources
+            or mutation_fate in acceptable_fates
+            or justified_noop
+        )
+        if signal_id in canonical_sources:
+            incorrect.add(signal_id)
+            worst.append({
+                "source_id": signal_id,
+                "reason": "nonassertable_uncertainty_promoted_to_canonical_claim",
+            })
+        elif acceptable:
+            correct.add(signal_id)
+        else:
+            worst.append({
+                "source_id": signal_id,
+                "reason": "uncertainty_has_no_explicit_candidate_or_justified_noop_fate",
+            })
+    disposition_count = len(correct | incorrect)
+    return {
+        "uncertainty_fate_precision": _metric(
+            "uncertainty_fate_precision", len(correct), disposition_count or None,
+            source_ids=list(expected), worst_cases=worst[:12],
+        ),
+        "uncertainty_fate_coverage": _metric(
+            "uncertainty_fate_coverage", len(correct), len(expected),
+            source_ids=list(expected), worst_cases=worst[:12],
         ),
     }
 
@@ -884,6 +979,7 @@ def score_p6_frozen_execution(
 
     metrics: dict[str, dict[str, Any]] = {}
     metrics.update(_score_mentions(raw_execution, sealed_population))
+    metrics.update(_score_uncertainty_fates(raw_execution, sealed_population))
     metrics.update(_score_context(raw_execution, sealed_population))
     metrics.update(_score_boundaries(raw_execution, sealed_population))
     metrics.update(_score_claims_and_theses(raw_execution, sealed_population))

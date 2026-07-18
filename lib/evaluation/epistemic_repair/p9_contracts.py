@@ -65,6 +65,7 @@ PHASE_EVIDENCE_CONTRACTS = {
                   "all_hg_gates"),
         "metrics": ("boundary_b_cubed_f1", "selected_context_contamination", "sufficient_context_recall",
                     "exact_mention_f1", "entity_type_accuracy", "canonical_link_precision", "canonical_link_recall",
+                    "uncertainty_fate_precision", "uncertainty_fate_coverage",
                     "atomic_claim_precision", "atomic_claim_recall", "atomic_claim_f1", "evidence_lineage_coverage",
                     "scope_precision", "scope_recall", "direct_thesis_accuracy", "mean_thesis_facet_completeness",
                     "relation_joint_precision", "relation_joint_recall", "lifecycle_expected_transition_accuracy",
