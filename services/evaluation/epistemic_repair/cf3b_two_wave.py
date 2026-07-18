@@ -12,6 +12,21 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
+_MATERIAL_PRIOR_MEMORY_ACTIONS = {
+    "confirm",
+    "falsify",
+    "revise",
+    "archive",
+    "supersede",
+}
+_PRIOR_MEMORY_RELATION_ACTIONS = {
+    "supports": {"confirm"},
+    "weakens": {"revise"},
+    "contradicts": {"falsify"},
+    "supersedes": {"archive", "supersede"},
+}
+
+
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -95,6 +110,34 @@ def _barrier_complete(wave: Mapping[str, Any]) -> bool:
     )
 
 
+def _authorized_prior_memory_effects(
+    context: Mapping[str, Any],
+    *,
+    selected_prior_ids: set[str],
+) -> list[Mapping[str, Any]]:
+    effects: list[Mapping[str, Any]] = []
+    for raw in _sequence(context.get("prior_memory_effects")):
+        effect = _mapping(raw)
+        prior_model_id = str(effect.get("prior_model_id") or "")
+        if not (
+            effect.get("source") == "prior_memory_effect"
+            and effect.get("effect_scope") == "candidate"
+            and str(effect.get("candidate_id") or "").strip()
+            and str(effect.get("relation") or "").strip()
+            and prior_model_id in selected_prior_ids
+            and effect.get("action") in _MATERIAL_PRIOR_MEMORY_ACTIONS
+            and effect.get("action")
+            in _PRIOR_MEMORY_RELATION_ACTIONS.get(
+                str(effect.get("relation") or ""), set()
+            )
+            and effect.get("material") is True
+            and effect.get("reasoning_trace_accounted") is True
+        ):
+            continue
+        effects.append(effect)
+    return effects
+
+
 def evaluate_cf3b_two_wave(artifact: Mapping[str, Any]) -> dict[str, Any]:
     """Score one raw P6 artifact against the complete CF3-B proof contract."""
 
@@ -168,13 +211,22 @@ def evaluate_cf3b_two_wave(artifact: Mapping[str, Any]) -> dict[str, Any]:
     lifecycle_only_b1_ids = (
         lifecycle_referenced_b1_ids - non_lifecycle_op_referenced_b1_ids
     )
+    authorized_prior_memory_effects = _authorized_prior_memory_effects(
+        context,
+        selected_prior_ids=selected_b1_ids,
+    )
+    effect_prior_b1_ids = {
+        str(effect["prior_model_id"])
+        for effect in authorized_prior_memory_effects
+    }
     materially_used_b1_ids = (
         selected_b1_ids
         & referenced_b1_ids
         & trace_b1_ids
         & durable_selected_b1
         & durable_referenced_b1
-    ) - lifecycle_only_b1_ids
+        & effect_prior_b1_ids
+    )
     reasoning_decision_used = (
         context.get("reasoning_trace_context_decision_used") is True
     )
@@ -264,6 +316,9 @@ def evaluate_cf3b_two_wave(artifact: Mapping[str, Any]) -> dict[str, Any]:
         "b2_trace_referenced_b1_model_count": len(trace_b1_ids),
         "b2_durable_referenced_b1_model_count": len(durable_referenced_b1),
         "b2_lifecycle_only_referenced_b1_model_count": len(lifecycle_only_b1_ids),
+        "b2_authorized_prior_memory_effect_count": len(
+            authorized_prior_memory_effects
+        ),
         "b2_materially_used_b1_model_count": len(materially_used_b1_ids),
         "b2_materially_used_b1_version_ids": sorted(
             b1_model_to_version[model_id] for model_id in materially_used_b1_ids

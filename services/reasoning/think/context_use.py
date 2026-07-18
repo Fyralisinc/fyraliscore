@@ -44,6 +44,20 @@ _MODEL_REFERENCE_LIST_KEYS = {
     "target_model_ids",
 }
 
+_MATERIAL_PRIOR_MEMORY_ACTIONS = {
+    "confirm",
+    "falsify",
+    "revise",
+    "archive",
+    "supersede",
+}
+_PRIOR_MEMORY_RELATION_ACTIONS = {
+    "supports": {"confirm"},
+    "weakens": {"revise"},
+    "contradicts": {"falsify"},
+    "supersedes": {"archive", "supersede"},
+}
+
 
 def _coerce_uuid(value: Any) -> UUID | None:
     if value is None:
@@ -93,6 +107,67 @@ def _model_references_from_mapping(mapping: Any) -> set[UUID]:
 
 def _uuid_strings(values: set[UUID]) -> list[str]:
     return sorted(str(value) for value in values)
+
+
+def _prior_memory_effects(
+    diff: RawDiff | ValidatedDiff,
+    *,
+    selected_model_ids: set[UUID],
+    trace_referenced_models: set[UUID],
+    reasoning_trace_context_decision_used: bool,
+) -> list[dict[str, Any]]:
+    """Return compiler-authorized, candidate-level effects of prior memory.
+
+    A generic lifecycle op is only evidence that a Model was touched.  It is
+    not evidence that prior memory changed a provider decision.  The compiler
+    owns this narrow metadata envelope so context-use telemetry can distinguish
+    an explicit candidate-level causal effect from lifecycle pressure and other
+    post-hoc bookkeeping.
+    """
+
+    effects: list[dict[str, Any]] = []
+    for op in getattr(diff, "memory_lifecycle_ops", []) or []:
+        metadata = getattr(op, "metadata", None)
+        if not isinstance(metadata, dict):
+            continue
+        model_id = _coerce_uuid(getattr(op, "model_id", None))
+        prior_model_id = _coerce_uuid(metadata.get("prior_model_id"))
+        candidate_id = str(metadata.get("candidate_id") or "").strip()
+        relation = str(metadata.get("relation") or "").strip()
+        if not (
+            metadata.get("source") == "prior_memory_effect"
+            and metadata.get("effect_scope") == "candidate"
+            and model_id is not None
+            and prior_model_id == model_id
+            and model_id in selected_model_ids
+            and candidate_id
+            and relation
+        ):
+            continue
+        action = str(getattr(op, "action", "") or "")
+        material = (
+            action in _MATERIAL_PRIOR_MEMORY_ACTIONS
+            and action in _PRIOR_MEMORY_RELATION_ACTIONS.get(relation, set())
+        )
+        trace_text = str(getattr(diff, "reasoning_trace", None) or "").lower()
+        reasoning_accounted = bool(
+            material
+            and reasoning_trace_context_decision_used
+            and model_id in trace_referenced_models
+            and candidate_id.lower() in trace_text
+            and relation.lower() in trace_text
+        )
+        effects.append({
+            "source": "prior_memory_effect",
+            "effect_scope": "candidate",
+            "candidate_id": candidate_id,
+            "relation": relation,
+            "prior_model_id": str(model_id),
+            "action": action,
+            "material": material,
+            "reasoning_trace_accounted": reasoning_accounted,
+        })
+    return effects
 
 
 def _ratio(numerator: int, denominator: int) -> float:
@@ -271,6 +346,7 @@ def _ids_from_reasoning_trace(diff: RawDiff | ValidatedDiff) -> set[UUID]:
 
 
 _TRACE_DECISION_RATIONALE_MARKERS = (
+    "prior-memory",
     "no edge",
     "no-edge",
     "does not warrant an edge",
@@ -459,6 +535,15 @@ def _context_use_report(values: dict[str, Any]) -> dict[str, Any]:
     memory_lifecycle_ops = values["memory_lifecycle_ops"]
     open_question_ops = values["open_question_ops"]
     formation_resolutions = values["formation_resolutions"]
+    prior_memory_effects = values["prior_memory_effects"]
+    material_prior_memory_effects = [
+        effect for effect in prior_memory_effects if effect["material"]
+    ]
+    reasoning_accounted_prior_memory_effects = [
+        effect
+        for effect in material_prior_memory_effects
+        if effect["reasoning_trace_accounted"]
+    ]
 
     return {
         "context_use_grade": values["context_use_grade"],
@@ -475,6 +560,16 @@ def _context_use_report(values: dict[str, Any]) -> dict[str, Any]:
         "reasoning_trace_context_decision_used": (
             values["trace_selected_context_decision_used"]
         ),
+        "prior_memory_effects": prior_memory_effects,
+        "authorized_prior_memory_effect_count": len(prior_memory_effects),
+        "material_prior_memory_effect_count": len(material_prior_memory_effects),
+        "reasoning_accounted_prior_memory_effect_count": len(
+            reasoning_accounted_prior_memory_effects
+        ),
+        "material_prior_model_ids": sorted({
+            effect["prior_model_id"]
+            for effect in reasoning_accounted_prior_memory_effects
+        }),
         "trace_referenced_model_ids": _uuid_strings(values["trace_referenced_models"]),
         "trace_referenced_observation_ids": _uuid_strings(
             values["trace_referenced_observations"]
@@ -612,6 +707,12 @@ def summarize_context_use(
     trace_selected_context_decision_used = _trace_uses_selected_context_for_decision(
         diff,
         selected_model_ids | selected_observation_ids,
+    )
+    prior_memory_effects = _prior_memory_effects(
+        diff,
+        selected_model_ids=selected_model_ids,
+        trace_referenced_models=trace_referenced_models,
+        reasoning_trace_context_decision_used=trace_selected_context_decision_used,
     )
     reasoning_trace_context_used = (
         (total_ops == 0 or trace_selected_context_decision_used)

@@ -63,6 +63,16 @@ def _artifact() -> dict:
         "referenced_model_ids": ["model-1"],
         "trace_referenced_model_ids": ["model-1"],
         "reasoning_trace_context_decision_used": True,
+        "prior_memory_effects": [{
+            "source": "prior_memory_effect",
+            "effect_scope": "candidate",
+            "candidate_id": "candidate-2",
+            "relation": "supports",
+            "prior_model_id": "model-1",
+            "action": "confirm",
+            "material": True,
+            "reasoning_trace_accounted": True,
+        }],
     }
     return {
         "complete": True,
@@ -124,6 +134,9 @@ def test_even_trace_reference_cannot_promote_lifecycle_only_bookkeeping() -> Non
     artifact["waves"][1]["execution"]["run"]["ops_applied"][
         "memory_lifecycle_ops"
     ] = [{"model_id": "model-1", "operation": "review"}]
+    artifact["waves"][1]["execution"]["run"]["ops_applied"]["context_use"][
+        "prior_memory_effects"
+    ] = []
 
     report = evaluate_cf3b_two_wave(artifact)
 
@@ -132,6 +145,50 @@ def test_even_trace_reference_cannot_promote_lifecycle_only_bookkeeping() -> Non
     ] == 1
     assert report["gates"]["b2_materially_uses_exact_b1_model_version"] is False
     assert report["verdict"] == "red"
+
+
+def test_generic_or_unchanged_effect_envelope_cannot_earn_material_credit() -> None:
+    artifact = _artifact()
+    context = artifact["waves"][1]["execution"]["run"]["ops_applied"]["context_use"]
+    context["prior_memory_effects"] = [
+        {
+            "source": "representation_contract",
+            "effect_scope": "candidate",
+            "candidate_id": "candidate-2",
+            "relation": "supports",
+            "prior_model_id": "model-1",
+            "action": "confirm",
+            "material": True,
+            "reasoning_trace_accounted": True,
+        },
+        {
+            "source": "prior_memory_effect",
+            "effect_scope": "candidate",
+            "candidate_id": "candidate-2",
+            "relation": "unchanged",
+            "prior_model_id": "model-1",
+            "action": "unchanged",
+            "material": False,
+            "reasoning_trace_accounted": True,
+        },
+    ]
+
+    report = evaluate_cf3b_two_wave(artifact)
+
+    assert report["measurements"]["b2_authorized_prior_memory_effect_count"] == 0
+    assert report["gates"]["b2_materially_uses_exact_b1_model_version"] is False
+    assert report["verdict"] == "red"
+
+
+def test_effect_must_be_accounted_for_by_provider_reasoning() -> None:
+    artifact = _artifact()
+    context = artifact["waves"][1]["execution"]["run"]["ops_applied"]["context_use"]
+    context["prior_memory_effects"][0]["reasoning_trace_accounted"] = False
+
+    report = evaluate_cf3b_two_wave(artifact)
+
+    assert report["measurements"]["b2_authorized_prior_memory_effect_count"] == 0
+    assert report["gates"]["b2_materially_uses_exact_b1_model_version"] is False
 
 
 def test_provider_free_artifact_cannot_overclaim_green() -> None:
