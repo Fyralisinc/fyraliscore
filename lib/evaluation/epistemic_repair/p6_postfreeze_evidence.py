@@ -37,6 +37,12 @@ def _json_list(value: Any) -> list[dict[str, Any]]:
     return [dict(item) for item in value or () if isinstance(item, dict)]
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        value = json.loads(value)
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _signal_fate_rows(
     observation_to_signal: dict[str, str],
     *,
@@ -202,6 +208,7 @@ async def extract_p6_postfreeze_evidence(
     version_to_claim: dict[str, str] = {}
     for row in claim_rows:
         evidence = _json_list(row.pop("evidence"))
+        row["proposition"] = _json_object(row.get("proposition"))
         row["scope_entities"] = _json_list(row.get("scope_entities"))
         evidence_signal_ids = [
             observation_to_signal[str(item.get("id"))]

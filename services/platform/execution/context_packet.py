@@ -741,7 +741,14 @@ def memory_decision_candidates(
         # Closed atomics are bounded by the physical batch and cheap in prompt
         # shape. The generic six-candidate cap would silently drop most of a
         # mixed 25-signal batch before compiled adjudication.
-        return local_candidates[: max(max_candidates, 24)]
+        synthesis_candidates = _scoped_synthesis_candidates(
+            local_candidates,
+            evidence,
+        )
+        return [
+            *local_candidates[: max(max_candidates, 24)],
+            *synthesis_candidates[:4],
+        ]
 
     candidates: list[MemoryDecisionCandidate] = []
     used_ids: set[str] = set()
@@ -838,6 +845,62 @@ def memory_decision_candidates(
         add(_noop_candidate(trigger, noop, evidence))
 
     return candidates[:max_candidates]
+
+
+def _scoped_synthesis_candidates(
+    atomic_candidates: list[MemoryDecisionCandidate],
+    evidence: list[EvidenceCard],
+) -> list[MemoryDecisionCandidate]:
+    """Reserve one bounded synthesis decision per entity-backed episode.
+
+    Atomic admission and cross-time synthesis are separate obligations. This
+    lane only opens when prior accepted Models explicitly name the same scope;
+    it never treats the transport batch itself as a synthesis unit.
+    """
+    scopes = sorted({
+        candidate.semantic_scope[0]
+        for candidate in atomic_candidates
+        if len(candidate.semantic_scope) == 1
+    })
+    out: list[MemoryDecisionCandidate] = []
+    for scope in scopes:
+        scope_text = scope.casefold()
+        model_cards = [
+            card for card in evidence
+            if card.source_type == "model" and scope_text in card.summary.casefold()
+        ]
+        model_ids = _evidence_model_ids(model_cards, limit=8)
+        if not model_ids:
+            continue
+        current_ids = tuple(dict.fromkeys(
+            observation_id
+            for candidate in atomic_candidates
+            if candidate.semantic_scope == (scope,)
+            for observation_id in candidate.member_observation_ids
+        ))
+        digest_basis = f"{scope}:{','.join(model_ids)}:{','.join(current_ids)}"
+        out.append(MemoryDecisionCandidate(
+            candidate_id=_candidate_id("MDC_SYNTH", digest_basis),
+            op_family="claim_insert",
+            proposed_text=(
+                f"Synthesize the current durable state of {scope} from its "
+                "accepted Models and claim-local new evidence, preserving "
+                "corrections, contradictions, and unresolved uncertainty."
+            ),
+            source_observation_ids=current_ids,
+            member_observation_ids=current_ids,
+            semantic_scope=(scope,),
+            evidence_model_ids=tuple(model_ids),
+            uncertainty_slots=(
+                "whether prior phases are coherent enough for one thesis",
+            ),
+            confidence=0.6,
+            reason=(
+                "Entity-scoped accepted memory and new evidence require a "
+                "separate cross-time synthesis decision"
+            ),
+        ))
+    return out
 
 
 _BATCH_SCOPE_PREFIX_RE = re.compile(

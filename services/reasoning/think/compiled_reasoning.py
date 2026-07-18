@@ -682,13 +682,18 @@ def build_compiled_batch_memory_decision_request(
     if not candidates:
         return None
     max_candidates = _env_int("THINK_COMPILED_BATCH_MEMORY_MAX_CANDIDATES", 6)
-    if all(
-        str(candidate.get("entailed_claim_text") or "").strip()
+    atomic_count = sum(
+        bool(str(candidate.get("entailed_claim_text") or "").strip())
         for candidate in candidates
-    ):
+    )
+    if atomic_count:
         max_candidates = max(
             max_candidates,
-            _env_int("THINK_COMPILED_BATCH_ATOMIC_MAX_CANDIDATES", 24),
+            min(
+                len(candidates),
+                _env_int("THINK_COMPILED_BATCH_ATOMIC_MAX_CANDIDATES", 24)
+                + _env_int("THINK_COMPILED_BATCH_SYNTHESIS_MAX_CANDIDATES", 4),
+            ),
         )
     candidates = candidates[:max_candidates]
     if _compiled_batch_requires_open_writer_surface(packet, candidates):

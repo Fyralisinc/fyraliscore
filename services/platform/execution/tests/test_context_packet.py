@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -534,6 +535,41 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
         assert "delay" not in candidate.entailed_claim_text.casefold()
         assert not (set(candidate.member_observation_ids) & distractor_ids)
     assert all(candidate.candidate_id != "MDC_H2" for candidate in candidates)
+
+    with_prior_model = context_packet.memory_decision_candidates(
+        trigger,
+        (),
+        [],
+        [],
+        [_card(
+            "Accepted Model for Atlas release records earlier ownership state.",
+            raw_content_ref=f"model:{uuid4()}",
+        )],
+        SufficiencyVerdict("sufficient_for_reasoning", "ready", 1, 0, ()),
+    )
+    synthesis = [
+        item for item in with_prior_model
+        if item.candidate_id.startswith("MDC_SYNTH_")
+    ]
+    assert len(synthesis) == 1
+    assert synthesis[0].semantic_scope == ("Atlas release",)
+    assert synthesis[0].evidence_model_ids
+    assert len(with_prior_model) == 13
+    synthesis_request = build_compiled_batch_memory_decision_request(
+        trigger,
+        ContextBundle(notes={"inquiry_context_packet": {
+            "signal_summary": "Entity-scoped mixed batch",
+            "sufficiency_verdict": {"status": "sufficient_for_reasoning"},
+            "memory_decision_candidates": [
+                asdict(candidate) for candidate in with_prior_model
+            ],
+            "important_unknowns": [],
+            "tiers": {},
+        }}),
+    )
+    assert synthesis_request is not None
+    assert len(synthesis_request.candidates) == 13
+    assert "MDC_SYNTH_" in synthesis_request.user
 
     uncertainty = context_packet.batch_fragment_uncertainty_signals(trigger)
     assert len(uncertainty) == 8

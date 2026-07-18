@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from lib.evaluation.epistemic_repair.p6_postfreeze_evidence import _signal_fate_rows
+from lib.evaluation.epistemic_repair.p6_postfreeze_evidence import (
+    _json_object,
+    _signal_fate_rows,
+)
+
+
+def test_postfreeze_normalizes_jsonb_proposition_strings() -> None:
+    assert _json_object('{"claim_role":"situation","member_model_ids":["m1"]}') == {
+        "claim_role": "situation",
+        "member_model_ids": ["m1"],
+    }
 
 
 def test_postfreeze_maps_candidate_receipt_without_canonical_promotion() -> None:
@@ -52,4 +62,3 @@ def test_canonical_promotion_remains_visible_over_candidate_receipt() -> None:
     )
 
     assert fates[0]["mutation_fate"] == "canonical_mutation"
-
