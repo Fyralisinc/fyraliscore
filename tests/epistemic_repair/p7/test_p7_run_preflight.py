@@ -27,8 +27,9 @@ def test_p7_preflight_rejects_non_cli_transport(monkeypatch, tmp_path: Path) -> 
     monkeypatch.setattr(MODULE.subprocess, "check_output", lambda command, **_: (
         "a" * 40 if command[1] == "rev-parse" else ""
     ))
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
     monkeypatch.setenv("CODEX_TRANSPORT", "app_server")
-    with pytest.raises(SystemExit, match="CODEX_TRANSPORT=cli"):
+    with pytest.raises(RuntimeError, match="requires exact environment"):
         MODULE._clean_cli_provenance(tmp_path)
 
 
@@ -36,6 +37,7 @@ def test_p7_preflight_rejects_dirty_worktree(monkeypatch, tmp_path: Path) -> Non
     monkeypatch.setattr(MODULE.subprocess, "check_output", lambda command, **_: (
         "a" * 40 if command[1] == "rev-parse" else " M dirty.py"
     ))
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
     monkeypatch.setenv("CODEX_TRANSPORT", "cli")
     with pytest.raises(SystemExit, match="isolated clean worktree"):
         MODULE._clean_cli_provenance(tmp_path)

@@ -21,6 +21,9 @@ import asyncpg
 
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from lib.evaluation.epistemic_repair.p6_population import P6Batch, P6Population
+from lib.evaluation.epistemic_repair.provider_contract import (
+    require_codex_cli_environment,
+)
 from lib.llm.provider import (
     _codex_transport, build_provider, close_codex_app_server_client,
     set_response_cache,
@@ -435,6 +438,7 @@ async def run_p6_production_think(
 ) -> dict[str, Any]:
     """Run 12 intact transport batches through the real T1 Think worker."""
 
+    require_codex_cli_environment()
     tenant_id = tenant_id or uuid4()
     run_started_at = datetime.now(timezone.utc)
     _assert_population_clock_safe(population, run_started_at=run_started_at)

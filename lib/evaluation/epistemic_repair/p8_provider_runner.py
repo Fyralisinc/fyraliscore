@@ -13,6 +13,9 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.epistemic_repair.provider_contract import (
+    require_codex_cli_environment,
+)
 
 
 PROVIDER_BOUNDARIES = (
@@ -197,6 +200,7 @@ def _reported_usage(stdout: bytes) -> dict[str, int]:
 
 
 async def run_provider_fault_slice(dsn: str) -> ProviderFaultSlice:
+    require_codex_cli_environment()
     run_id, rows = str(uuid4()), []
     for boundary in PROVIDER_BOUNDARIES:
         outcome, stdout, events, started, ended = await _codex_call(boundary)

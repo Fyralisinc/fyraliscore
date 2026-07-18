@@ -8,8 +8,13 @@ import json
 from pathlib import Path
 import subprocess
 
+from lib.evaluation.epistemic_repair.provider_contract import (
+    require_codex_cli_environment,
+)
+
 
 def main() -> int:
+    require_codex_cli_environment()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--authorization-id", required=True)
     parser.add_argument("--output", type=Path, required=True)

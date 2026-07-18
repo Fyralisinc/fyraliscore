@@ -17,6 +17,9 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.evaluation.epistemic_repair.p6_think_runner import _write_checkpoint
+from lib.evaluation.epistemic_repair.provider_contract import (
+    require_codex_cli_environment,
+)
 from services.evaluation.epistemic_repair.p7_production_runner import (
     P7_ATTEMPT_TIMEOUT_S,
     P7_BATCH_DEADLINE_S,
@@ -49,6 +52,7 @@ def _require_restart_from_zero(*paths: Path) -> None:
 
 
 def _clean_cli_provenance(repository: Path) -> dict[str, object]:
+    require_codex_cli_environment()
     repository = repository.resolve()
     commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=repository, text=True,
@@ -58,8 +62,6 @@ def _clean_cli_provenance(repository: Path) -> dict[str, object]:
     ).strip()
     if dirty:
         raise SystemExit("P7 provider run requires an isolated clean worktree")
-    if os.environ.get("CODEX_TRANSPORT") != "cli":
-        raise SystemExit("P7 provider run requires CODEX_TRANSPORT=cli")
     return {
         "git_commit": commit, "worktree_clean": True,
         "worktree_path": str(repository), "codex_transport": "cli",
