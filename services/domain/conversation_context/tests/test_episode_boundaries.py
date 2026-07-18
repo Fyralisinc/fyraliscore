@@ -34,3 +34,37 @@ def test_deictic_message_does_not_create_an_unsupported_cross_source_merge() -> 
     assert {frozenset(group) for group in groups} == {
         frozenset({"root", "reply"}), frozenset({"noise"}),
     }
+
+
+def test_persisted_entity_ref_joins_cross_source_episode() -> None:
+    groups = project_conversation_episode_boundaries((
+        ConversationBoundaryObservation(
+            "slack", NOW, "The owner is missing.", "slack:thread-a",
+            ("workstream:delta-handoff",),
+        ),
+        ConversationBoundaryObservation(
+            "email", NOW, "The incident rate moved.", "email:thread-b",
+            ("workstream:delta-handoff",),
+        ),
+        ConversationBoundaryObservation(
+            "jira", NOW, "The checklist is incomplete.", "jira:issue-c",
+            ("workstream:delta-handoff",),
+        ),
+    ))
+    assert groups == (("email", "jira", "slack"),)
+
+
+def test_same_surface_without_same_persisted_identity_does_not_merge() -> None:
+    groups = project_conversation_episode_boundaries((
+        ConversationBoundaryObservation(
+            "business", NOW, "Beacon is delayed.", "slack:business",
+            ("workstream:beacon-migration",),
+        ),
+        ConversationBoundaryObservation(
+            "office", NOW, "Beacon ticket moved.", "jira:workplace",
+            ("work_item:beacon-office-ticket",),
+        ),
+    ))
+    assert {frozenset(group) for group in groups} == {
+        frozenset({"business"}), frozenset({"office"}),
+    }

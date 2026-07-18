@@ -372,6 +372,51 @@ async def _persist_runtime_batch(
     return result
 
 
+async def _persisted_boundary_entity_refs(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    observation_ids: list[UUID],
+) -> dict[str, tuple[str, ...]]:
+    """Load current verified entity coordinates for boundary projection."""
+    rows = await conn.fetch(
+        """SELECT detection.source_observation_id,detection.mention,
+                  trace.current_fate,trace.selected_referent
+           FROM entity_mention_detections detection
+           JOIN entity_mention_detection_heads head
+             ON head.tenant_id=detection.tenant_id
+            AND head.current_detection_id=detection.id
+           LEFT JOIN grounding_traces trace
+             ON trace.tenant_id=detection.tenant_id
+            AND trace.source_observation_id=detection.source_observation_id
+            AND trace.phrase=detection.candidate_surface
+           WHERE detection.tenant_id=$1
+             AND detection.source_observation_id=ANY($2::uuid[])
+             AND detection.fate='detected'
+           ORDER BY detection.source_observation_id,detection.id""",
+        tenant_id,
+        observation_ids,
+    )
+    refs: dict[str, set[str]] = {}
+    for row in rows:
+        mention = row["mention"] or {}
+        referent = row["selected_referent"] or {}
+        if isinstance(mention, str):
+            mention = json.loads(mention)
+        if isinstance(referent, str):
+            referent = json.loads(referent)
+        resolved = row["current_fate"] in {"resolved", "resolved_for_consumer"}
+        canonical_ref = (
+            referent.get("canonical_ref")
+            or referent.get("id")
+            or referent.get("canonical_referent_id")
+        ) if resolved else mention.get("provisional_canonical_ref")
+        if canonical_ref:
+            refs.setdefault(str(row["source_observation_id"]), set()).add(
+                str(canonical_ref)
+            )
+    return {key: tuple(sorted(values)) for key, values in refs.items()}
+
+
 def _project_boundaries(
     observations: list[ConversationBoundaryObservation],
     observation_to_signal: dict[str, str],
@@ -520,9 +565,6 @@ async def run_p6_production_think(
                     content_text=signal.text,
                     source_container_id=signal.source_space,
                 ))
-            boundary_decisions = _project_boundaries(
-                boundary_inputs, observation_to_signal,
-            )
             await enqueue_t1_for_observations(
                 pool, tenant_id=tenant_id,
                 observation_ids=list(observation_ids.values()), limit=25,
@@ -544,6 +586,25 @@ async def run_p6_production_think(
                     "elapsed_s": round(time.monotonic() - batch_started, 3),
                 })
                 break
+            async with pool.acquire() as conn:
+                entity_refs = await _persisted_boundary_entity_refs(
+                    conn,
+                    tenant_id,
+                    [UUID(item.observation_id) for item in boundary_inputs],
+                )
+            enriched_boundary_inputs = [
+                ConversationBoundaryObservation(
+                    observation_id=item.observation_id,
+                    occurred_at=item.occurred_at,
+                    content_text=item.content_text,
+                    source_container_id=item.source_container_id,
+                    entity_refs=entity_refs.get(item.observation_id, ()),
+                )
+                for item in boundary_inputs
+            ]
+            boundary_decisions = _project_boundaries(
+                enriched_boundary_inputs, observation_to_signal,
+            )
             run = execution.get("run") or {}
             barrier_receipt: dict[str, Any] | None = None
             truth_drain: dict[str, Any] | None = None

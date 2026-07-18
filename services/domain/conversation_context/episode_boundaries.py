@@ -19,6 +19,7 @@ class ConversationBoundaryObservation:
     occurred_at: datetime
     content_text: str
     source_container_id: str | None = None
+    entity_refs: tuple[str, ...] = ()
 
 
 def explicit_topic_reference(text: str) -> str | None:
@@ -46,17 +47,43 @@ def project_conversation_episode_boundaries(
     authenticated source container remains the conservative boundary.
     """
 
-    groups: dict[str, list[str]] = {}
-    for item in sorted(observations, key=lambda row: (row.occurred_at, row.observation_id)):
+    ordered = sorted(
+        observations, key=lambda row: (row.occurred_at, row.observation_id)
+    )
+    parent = {item.observation_id: item.observation_id for item in ordered}
+
+    def find(value: str) -> str:
+        while parent[value] != value:
+            parent[value] = parent[parent[value]]
+            value = parent[value]
+        return value
+
+    def union(left: str, right: str) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    first_by_key: dict[str, str] = {}
+    for item in ordered:
         topic = explicit_topic_reference(item.content_text)
-        key = (
-            f"topic:{topic}"
-            if topic is not None
-            else f"source:{item.source_container_id}"
+        entity_keys = {
+            f"entity:{value.strip().casefold()}"
+            for value in item.entity_refs
+            if value and value.strip()
+        }
+        keys = entity_keys or (
+            {f"topic:{topic}"} if topic is not None
+            else {f"source:{item.source_container_id}"}
             if item.source_container_id
-            else f"singleton:{item.observation_id}"
+            else {f"singleton:{item.observation_id}"}
         )
-        groups.setdefault(key, []).append(item.observation_id)
+        for key in sorted(keys):
+            prior = first_by_key.setdefault(key, item.observation_id)
+            union(item.observation_id, prior)
+
+    groups: dict[str, list[str]] = {}
+    for item in ordered:
+        groups.setdefault(find(item.observation_id), []).append(item.observation_id)
     return tuple(tuple(items) for _, items in sorted(groups.items()))
 
 
