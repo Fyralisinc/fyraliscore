@@ -1482,3 +1482,59 @@ display label mapping to multiple canonical refs; cross-scope composite merge;
 inactive or stale member head; proposition member ID without immutable
 Model-version evidence; vague co-occurrence presented as a mechanism; direct
 observation siblings substituted for transitive prior phases.
+
+### 2026-07-18 — LOG-043 — Stop repeated P6 execution and preserve a clean handoff
+
+**Type:** observed, corrected, and decided
+
+**Work package / commit:** P6 preparation through clean commit
+`a34533b8e1dca0ca84b40a3dd460f33b477c2f5c`; interrupted execution artifact
+`/tmp/p6-think-12batch-a34533b8.json`.
+
+**What happened:** P6 consumed disproportionate goal time because several runs
+started before all cheap cross-phase contracts, real-schema paths, evaluator
+manifests, and synthesis invariants had converged. Each late correction changed
+HEAD, and P9's exact-commit rule then invalidated prior runtime evidence. The
+final attempt began only after the complete epistemic-repair suite passed, but
+the user explicitly stopped P6 after two successful batches. The process was
+terminated and no P6 process remains active.
+
+**Evidence:** The final preflight on `a34533b8` passed `415` epistemic-repair
+tests with PostgreSQL enabled. P0 through P5 exact-commit evidence was green.
+The interrupted raw artifact records clean exact-commit provenance, two waves,
+`completed_batches=2`, and `elapsed_s=422.982`; it is deliberately incomplete
+and must not be scored or normalized as P6 release evidence. Batch 1 started
+from zero accepted Models and created 12. Batch 2 retrieved accepted Model
+context, committed successfully, and raised the total to 24. Earlier failed
+artifacts remain diagnostic evidence for the schema, synthesis, relation,
+scope-identity, and manifest defects repaired during this run.
+
+**Interpretation:** The dominant failure was execution sequencing, not the
+nominal cost of one 12-batch simulation. Expensive runs repeatedly served as
+preflight. Mocks missed production SQL/view drift; paired P0/P2 authority
+registrations were checked after provider execution began; synthesis producer,
+validator, truth-admission, and applier contracts were reviewed serially rather
+than frozen together. Frequent restarts obscured milestone progress and made
+P6 appear continuously active for hours.
+
+**Decision or next test:** Stop all P6 work now. Do not resume automatically.
+If P6 is resumed later, treat `a34533b8` as the handoff baseline and first
+verify that HEAD and the coordinator contract are still intended. Run one
+single preflight containing: the complete epistemic-repair suite; clean P0-P5
+regeneration; exact P0/P2 reader-manifest reconciliation; provider-free sealed
+batch-4 packet-to-validator-to-apply proof; and clean-worktree provenance.
+Freeze HEAD only after every check passes. Then run one 12x25 zero-seed P6
+execution, score it before editing anything, and accept the resulting verdict.
+Only a terminal execution failure or a core truth-corruption failure may justify
+a repair/replay. Efficiency, refresh ratios, optional retrieval improvements,
+and new edge cases must go to the backlog instead of triggering another P6
+cycle.
+
+**Coordinator impact:** P6 remains incomplete by explicit user direction. The
+interrupted artifact is diagnostic only. P1 provider evidence, P7, P8, and P9
+remain downstream and must not claim release closure without a complete green
+P6 artifact from the same final commit. No architecture document was modified.
+
+**Edge cases added:** `EDGE-039` remains the compatibility backlog for governed
+mention-coordinate phrasing and legacy fixtures. No new runtime edge case was
+opened by the interrupted final attempt.
