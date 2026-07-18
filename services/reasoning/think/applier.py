@@ -4425,7 +4425,18 @@ def _prepare_claim_insert_model(
     entry.setdefault("confidence_at_assertion", entry.get("confidence", 0.5))
     if "born_from_event_id" not in entry and cause_event_id is not None:
         entry["born_from_event_id"] = cause_event_id
-    for stray in ("title", "description", "id", "model_id"):
+    # These fields are compiler-only receipts used before canonical model
+    # construction.  Their semantic result is already reflected in the exact
+    # supporting_event_ids/proposition evidence coordinates; they are not part
+    # of the strict ModelCreate storage contract.
+    for stray in (
+        "title",
+        "description",
+        "id",
+        "model_id",
+        "evidence_observation_manifest",
+        "evidence_derivations",
+    ):
         entry.pop(stray, None)
     entry = prepare_prediction_entry(entry)
     ensure_situation_compositional_defaults(entry)

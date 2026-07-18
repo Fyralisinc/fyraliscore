@@ -7,6 +7,8 @@ from services.reasoning.think.compiled_reasoning import (
     BatchMemoryCandidateDecision,
     _claim_op_from_batch_decision,
 )
+from services.reasoning.think.applier import _prepare_claim_insert_model
+from services.reasoning.think.diff_schema import ClaimOp
 from services.reasoning.think.reconciler import (
     _business_scope_refs,
     _generic_model_scope_compatible,
@@ -91,3 +93,25 @@ def test_compiled_workstreams_cannot_reconcile_across_scope() -> None:
     }
     assert not _generic_model_scope_compatible(atlas, beacon)
     assert not _generic_model_scope_compatible(beacon, atlas)
+
+
+def test_compiler_evidence_manifest_is_consumed_before_model_create() -> None:
+    entry = _compiled_claim("Atlas release")
+    observation_id = entry["supporting_event_ids"][0]
+    entry["evidence_observation_manifest"] = [
+        {
+            "observation_id": observation_id,
+            "body": "Atlas release still has no clearly recorded owner.",
+            "source_channel": "slack:message",
+        }
+    ]
+
+    model = _prepare_claim_insert_model(
+        ClaimOp(op="insert", entry=entry),
+        entry["tenant_id"],
+        cause_event_id=entry["born_from_event_id"],
+        trigger_supporting_event_ids=[],
+    )
+
+    assert [str(value) for value in model.supporting_event_ids] == [observation_id]
+    assert "evidence_observation_manifest" not in model.model_dump()
