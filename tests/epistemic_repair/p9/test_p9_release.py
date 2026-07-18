@@ -123,3 +123,33 @@ def test_p9_rejects_historical_evidence_as_required_current_phase(
     assert report["evidence_complete"] is False
     assert report["verdict"] == "insufficient_evidence"
     assert report["completion_authorized"] is False
+
+
+def test_p9_decodes_status_gates_and_fails_closed_on_unknown_gate_shapes(
+    tmp_path: Path,
+) -> None:
+    commit = "f" * 40
+    evidence = [
+        _artifact(tmp_path / f"{phase}.json", phase, commit)
+        for phase in (f"p{i}" for i in range(9))
+    ]
+    p6 = json.loads(evidence[6].path.read_text())
+    p6["hard_gates"] = {
+        "status_encoded": {"status": "pass", "eligible_count": 4},
+        "unknown_encoded": {"result": "looks-good"},
+    }
+    raw = json.dumps(p6, sort_keys=True).encode()
+    evidence[6].path.write_bytes(raw)
+    evidence[6] = PhaseEvidence("p6", evidence[6].path, sha256(raw).hexdigest())
+
+    report = build_release_report(
+        release_commit=commit,
+        worktree_clean=True,
+        evidence=evidence,
+    )
+
+    p6_record = next(row for row in report["phase_evidence"] if row["phase"] == "p6")
+    assert p6_record["hard_gate_count"] == 2
+    assert p6_record["all_declared_hard_gates_green"] is False
+    assert report["semantic_green"] is False
+    assert report["completion_authorized"] is False

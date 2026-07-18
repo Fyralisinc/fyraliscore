@@ -78,8 +78,17 @@ def _hard_gate_values(artifact: Mapping[str, Any]) -> list[bool]:
     for value in gates.values():
         if isinstance(value, bool):
             values.append(value)
-        elif isinstance(value, Mapping) and isinstance(value.get("passed"), bool):
-            values.append(bool(value["passed"]))
+        elif isinstance(value, Mapping):
+            if isinstance(value.get("passed"), bool):
+                values.append(bool(value["passed"]))
+            elif value.get("status") in {"pass", "fail"}:
+                values.append(value["status"] == "pass")
+            else:
+                # A declared but undecodable hard gate is evidence failure,
+                # never permission to silently omit the gate.
+                values.append(False)
+        else:
+            values.append(False)
     return values
 
 
