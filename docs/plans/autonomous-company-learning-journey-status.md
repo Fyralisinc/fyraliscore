@@ -6,17 +6,13 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** CF3-A supported-model attempt at commit `8b027197`,
-tenant `97b210f5-28c9-4206-b8a1-9c1f25335809`, completed one batch mechanically
-with `gpt-5.3-codex-spark` at low reasoning effort: four physical LLM attempts
-succeeded with exact usage and all 25 signal fates were emitted. Barrier 0
-remains pending and CF3-A remains red because 2 of 24 extracted mentions have
-no downstream grounding continuity: `Atlas certificate training example` on
-`p6-b01-s24` and `Facilities` on `p6-b01-s21`. Detection fate is separately
-durable for both; evaluator evidence now exposes `detection_fate`, nullable
-`grounding_fate`, and `grounding_stage`, and fails an explicit continuity gate.
-CF3-A remains red pending a runtime rerun; hold CF3-B. Full-P6 scorer missing
-fields are expected for this partial prefix and are not the CF3-A verdict.
+**Current checkpoint:** CF3-A is green on the receipted rerun at commit
+`e7de1c3a`, tenant `08d19975-2c39-4fef-a820-27d29c30fd9b`. One batch processed
+exactly 25 signals in `269.295s`; all 24 detected mentions have explicit trace
+fates. Truth-critical work drained `27 -> 3 -> 0`, and the barrier closed with
+zero pending. The run recorded 28 logical and 29 physical attempts, all with
+exact reported usage. No active reviews, candidates, Models, or relations
+remained. CF3-B is unlocked.
 
 **Last updated:** 2026-07-18
 
@@ -2129,3 +2125,19 @@ matched feedback quality and objective entity v6.
 - Focused evidence/scorer validation passed `44/44`. Runtime enqueue/barrier
   behavior was not changed. CF3-A stays red until a fresh one-batch rerun proves
   complete continuity; CF3-B remains held.
+
+### 2026-07-18 — Receipted CF3-A rerun is green
+
+- Commit `e7de1c3a`, tenant `08d19975-2c39-4fef-a820-27d29c30fd9b`, processed
+  exactly 25 signals in one batch over `269.295s`.
+- All `24/24` detected mentions reached explicit trace fates. Truth-critical
+  drain receipts show `27 -> 3 -> 0`, followed by a barrier receipt with zero
+  pending work.
+- The run recorded 28 logical calls and 29 physical attempts; every physical
+  receipt has exact reported usage. One physical attempt was a parse failure
+  and 28 succeeded.
+- Post-freeze evidence contains zero active reviews, candidates, Models, and
+  relations. CF3-A is green and CF3-B is now unlocked.
+- Artifacts: `/tmp/fyralis-cf3a-codex-one-batch-spark-receipted.json`,
+  `/tmp/fyralis-cf3a-codex-one-batch-spark-receipted-evidence.json`, and
+  `/tmp/fyralis-cf3a-codex-one-batch-spark-receipted-score.json`.

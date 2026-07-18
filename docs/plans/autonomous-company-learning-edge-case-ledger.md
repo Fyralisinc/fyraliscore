@@ -1094,29 +1094,31 @@ transport are excluded from this goal.
 
 ### EDGE-048 — Extracted mentions can lack a grounding fate
 
-- **Status:** `active; CF3-A red and CF3-B held`
+- **Status:** `resolved by receipted CF3-A rerun; CF3-B unlocked`
 - **Trigger:** Supported-model CF3-A attempt at commit `8b027197`, tenant
   `97b210f5-28c9-4206-b8a1-9c1f25335809`.
-- **Current behavior:** The batch completed mechanically and emitted 25 signal
-  fates. Both affected mentions have durable detection fate `detected`, but 2
-  of 24 extracted mentions have no downstream grounding disposition:
-  `Atlas certificate training example` on `p6-b01-s24` and `Facilities` on
-  `p6-b01-s21`.
+- **Current behavior:** The original attempt emitted 25 signal fates but left
+  two detected mentions without downstream grounding disposition. The
+  receipted rerun now gives all `24/24` detected mentions explicit trace fates
+  and drains truth-critical work to zero before barrier closure.
 - **Desired behavior:** Every extracted mention receives an explicit governed
   fate, including unresolved, rejected or intentionally ignored outcomes.
 - **Risk:** A mention can disappear between extraction and grounding without an
   auditable disposition, making company-physics coverage unknowable.
-- **Safe boundary:** Evidence must expose detection fate separately from
-  nullable grounding fate and explicitly fail incomplete grounding continuity.
-  Keep CF3-A red and hold CF3-B. Do not treat missing
-  full-P6 scorer fields from the one-batch partial prefix as the CF3-A verdict.
-- **Return condition:** A fresh bounded rung passes
+- **Safe boundary:** Evidence exposes detection fate separately from nullable
+  grounding fate and fails incomplete grounding continuity. CF3-B is unlocked,
+  while full-P6 scorer fields missing from a one-batch prefix remain outside
+  the CF3-A verdict.
+- **Return condition:** Satisfied at commit `e7de1c3a`: a fresh bounded rung passes
   `complete_detected_mention_grounding_continuity`: both exact mentions receive
   durable explicit grounding dispositions, with no regression across all 24.
 - **Evidence:** `/tmp/fyralis-cf3a-codex-one-batch-spark-evidence.json` and
   `/tmp/fyralis-cf3a-codex-one-batch-spark-score.json`.
-  Evaluator separation and continuity gate are focused-test green `44/44`;
-  runtime rerun remains pending.
+  Evaluator separation and continuity gate are focused-test green `44/44`.
+  Receipted rerun tenant `08d19975-2c39-4fef-a820-27d29c30fd9b` processed 25
+  signals, produced `24/24` trace fates, drained `27 -> 3 -> 0`, and closed its
+  barrier at zero. See `/tmp/fyralis-cf3a-codex-one-batch-spark-receipted.json`
+  and its `-evidence.json` and `-score.json` companions.
 
 ### EDGE-049 — Barrier count can race a concurrent grounding enqueue
 

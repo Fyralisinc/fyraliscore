@@ -65,9 +65,9 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | CF3-A supported-model attempt at commit `8b027197`, tenant `97b210f5-28c9-4206-b8a1-9c1f25335809`, mechanically completed one batch with four successful exact-usage LLM attempts and 25 signal fates; barrier 0 remains pending |
+| Latest verified coordination checkpoint | CF3-A green at commit `e7de1c3a`, tenant `08d19975-2c39-4fef-a820-27d29c30fd9b`: exactly 25 signals, 24/24 trace fates, drain `27 -> 3 -> 0`, barrier zero, 28 logical/29 physical attempts with exact reported usage, elapsed `269.295s` |
 | Repair implementation | Validator preserves explicit retirement; the evaluator now reads the exact historical relation instance required to verify retirement instead of relying only on the current-instance surface; focused evaluator suite `14/14` green |
-| Current phase | CF3-A remains red pending rerun: both affected mentions have explicit detection fate, but no downstream grounding continuity. Evidence now separates `detection_fate`, nullable `grounding_fate`, and `grounding_stage`, with an explicit continuity gate. Hold CF3-B |
+| Current phase | CF3-A receipted rerun is green. No active reviews, candidates, Models, or relations remain; CF3-B is unlocked |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
@@ -78,7 +78,7 @@ Rules:
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
-| Highest-priority outcome | Rerun the one-batch CF3-A rung and require `complete_detected_mention_grounding_continuity`; do not start CF3-B. Missing full-P6 scorer evidence remains expected on a partial prefix and is not the verdict |
+| Highest-priority outcome | Launch CF3-B under its preregistered two-batch memory-canary contract; do not widen to CF3-C unless CF3-B is green |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -2083,6 +2083,27 @@ incomplete members.
 **Boundary and proof:** No runtime enqueue or barrier behavior changed in this
 evaluator slice. Focused evidence and scorer tests passed `44/44`. CF3-A remains red until a fresh
 one-batch run proves the gate; CF3-B remains held.
+
+### 2026-07-18 — LOG-060 — Receipted CF3-A rerun closes the transport canary
+
+**Result:** Commit `e7de1c3a`, tenant
+`08d19975-2c39-4fef-a820-27d29c30fd9b`, completed exactly 25 signals in one
+batch over `269.295s`. All `24/24` detected mentions have explicit trace fates.
+
+**Drain and barrier:** Truth-critical pending work drained `27 -> 3 -> 0` over
+two cycles. The batch barrier then closed with
+`truth_critical_pending_count=0`.
+
+**Receipts and residue:** The run recorded 28 logical calls and 29 physical
+attempts, all with exact reported usage; 28 physical attempts succeeded and one
+ended in parse failure. Post-freeze evidence shows zero active reviews,
+candidates, Models, and relations.
+
+**Decision:** CF3-A is green. CF3-B is unlocked; CF3-C remains gated on CF3-B.
+
+**Artifacts:** `/tmp/fyralis-cf3a-codex-one-batch-spark-receipted.json`,
+`/tmp/fyralis-cf3a-codex-one-batch-spark-receipted-evidence.json`, and
+`/tmp/fyralis-cf3a-codex-one-batch-spark-receipted-score.json`.
 
 ### 2026-07-18 — LOG-059 — Durable pending work must remain consumable and version-owned
 
