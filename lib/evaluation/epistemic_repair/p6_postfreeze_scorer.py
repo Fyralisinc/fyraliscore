@@ -907,14 +907,32 @@ def _score_lifecycle(
     raw: dict[str, Any], population: P6Population,
 ) -> dict[str, dict[str, Any]]:
     rows = _record_index(raw, "lifecycle_events")
-    if not rows:
+    executed_source_ids = _executed_source_signal_ids(raw, population)
+    eligible_storylines = {
+        item.storyline_id
+        for item in population.gold
+        if item.lifecycle_phase == "correction"
+        and item.storyline_id
+        and (
+            executed_source_ids is None
+            or item.signal_id in executed_source_ids
+        )
+    }
+    # A prefix before correction evidence has no terminal-transition
+    # opportunity. Confirm/review events remain auditable but cannot turn an
+    # unavailable terminal oracle into a synthetic 0/N failure.
+    if not eligible_storylines:
         return {"lifecycle_expected_transition_accuracy": _metric(
             "lifecycle_expected_transition_accuracy", None, None
         )}
     gold = {item.signal_id: item for item in population.gold}
     matched = set()
     worst = []
-    for row in rows:
+    terminal_rows = [
+        row for row in rows
+        if row.get("action") in {"falsify", "supersede", "archive", "correct"}
+    ]
+    for row in terminal_rows:
         evidence = [
             gold.get(str(value)) for value in row.get("evidence_signal_ids") or ()
         ]
@@ -932,7 +950,6 @@ def _score_lifecycle(
         }
         valid = (
             len(storylines) == 1
-            and row.get("action") in {"falsify", "supersede", "archive", "correct"}
             and bool(evidence_batches & {9, 10})
         )
         if valid:
@@ -940,8 +957,10 @@ def _score_lifecycle(
         else:
             worst.append({"source_id": row.get("id"), "reason": "unexpected_transition"})
     return {"lifecycle_expected_transition_accuracy": _metric(
-        "lifecycle_expected_transition_accuracy", len(matched), len(P6_STORYLINES),
-        source_ids=[str(row.get("id") or "") for row in rows],
+        "lifecycle_expected_transition_accuracy",
+        len(matched & eligible_storylines),
+        len(eligible_storylines),
+        source_ids=[str(row.get("id") or "") for row in terminal_rows],
         worst_cases=worst[:10],
     )}
 def score_p6_frozen_execution(

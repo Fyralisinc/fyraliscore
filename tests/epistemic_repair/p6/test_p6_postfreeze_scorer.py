@@ -6,11 +6,15 @@ from pathlib import Path
 import pytest
 
 from lib.contracts.kernel import canonical_sha256
-from lib.evaluation.epistemic_repair.p6_population import build_p6_population
+from lib.evaluation.epistemic_repair.p6_population import (
+    P6_STORYLINES,
+    build_p6_population,
+)
 from lib.evaluation.epistemic_repair.p6_postfreeze_scorer import (
     _score_boundaries,
     _score_claims_and_theses,
     _score_context,
+    _score_lifecycle,
     _score_mentions,
     _score_uncertainty_fates,
     score_p6_frozen_execution,
@@ -233,6 +237,56 @@ def test_partial_run_fate_completeness_is_physical_and_thesis_is_unmeasured() ->
     assert not report["hard_gates"]["exact_300_signals_12_batches"]
     assert report["continuous_metrics"]["direct_thesis_accuracy"]["status"] == "unmeasured"
     assert report["continuous_metrics"]["mean_thesis_facet_completeness"]["status"] == "unmeasured"
+
+
+def test_prefix_lifecycle_is_unmeasured_and_confirm_is_not_terminal_failure() -> None:
+    population = build_p6_population()
+    raw = _raw(population, evidence={
+        "lifecycle_events": [{
+            "id": "early-confirm",
+            "action": "confirm",
+            "evidence_signal_ids": ["p6-b01-s01"],
+        }],
+    })
+    raw["waves"] = raw["waves"][:4]
+
+    metric = _score_lifecycle(raw, population)[
+        "lifecycle_expected_transition_accuracy"
+    ]
+
+    assert metric["status"] == "unmeasured"
+    assert metric["denominator"] is None
+    assert metric["source_ids"] == []
+
+
+def test_terminal_lifecycle_denominator_tracks_executed_storyline_opportunities() -> None:
+    population = build_p6_population()
+    correction = next(
+        item for item in population.gold
+        if item.lifecycle_phase == "correction" and item.storyline_id == "atlas"
+    )
+    raw = _raw(population, evidence={
+        "lifecycle_events": [
+            {
+                "id": "early-confirm",
+                "action": "confirm",
+                "evidence_signal_ids": ["p6-b01-s01"],
+            },
+            {
+                "id": "atlas-correction",
+                "action": "falsify",
+                "evidence_signal_ids": [correction.signal_id],
+            },
+        ],
+    })
+
+    metric = _score_lifecycle(raw, population)[
+        "lifecycle_expected_transition_accuracy"
+    ]
+
+    assert metric["numerator"] == 1
+    assert metric["denominator"] == len(P6_STORYLINES)
+    assert metric["source_ids"] == ["atlas-correction"]
 
 
 def test_local_distractor_entities_are_mentions_not_storyline_links() -> None:
