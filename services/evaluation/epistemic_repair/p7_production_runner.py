@@ -30,6 +30,11 @@ from services.evaluation.epistemic_repair.p7_evolution import (
 from services.evaluation.epistemic_repair.p7_retrieval_policy import (
     production_retrieval_policy,
 )
+from services.evaluation.epistemic_repair.p7_bootstrap_clone import (
+    BootstrapCassette,
+    checkpoint_digest,
+    clone_receipt,
+)
 from lib.llm.provider import build_provider, close_codex_app_server_client, set_response_cache
 from lib.shared.errors import InvariantViolation
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
@@ -265,14 +270,17 @@ async def _run_arm(
     batch_deadline_s: float,
     required_provider: str,
     required_model: str,
+    batches: tuple[P6Batch, ...] | None = None,
+    initial_waves: tuple[dict[str, Any], ...] = (),
+    finalize: bool = True,
 ) -> dict[str, Any]:
     from scripts.run_1000_signal_model_layer_probe import enqueue_t1_for_observations
     from scripts.run_storyline_batch_benchmark import _process_one_t1_batch
 
-    waves: list[dict[str, Any]] = []
+    waves: list[dict[str, Any]] = list(initial_waves)
     corruption_model_ids: frozenset[UUID] = frozenset()
     corruption_injected_batch: int | None = None
-    for batch in population.batches:
+    for batch in batches if batches is not None else population.batches:
         started = time.monotonic()
         async with pool.acquire() as conn:
             observation_ids = await _persist_runtime_batch(
@@ -337,6 +345,7 @@ async def _run_arm(
             async with pool.acquire() as conn:
                 model_rows = await conn.fetch(
                     """SELECT model.id,model.truth_version_id,model.truth_version,
+                              model.truth_semantic_digest,
                               model.proposition,model.natural_text,model.confidence,
                               model.scope_entities,model.truth_lifecycle,
                               model.truth_advanced_at,
@@ -352,6 +361,7 @@ async def _run_arm(
                 )
                 relation_rows = await conn.fetch(
                     """SELECT relation.id,relation.truth_relation_kind,
+                              relation.truth_semantic_digest,
                               relation.truth_rationale,
                               COALESCE((SELECT jsonb_agg(jsonb_build_object(
                                   'model_id',participant.model_id,
@@ -423,14 +433,14 @@ async def _run_arm(
         receipt["within_two_batch_recovery_bound"] is True
         for wave in waves for receipt in wave["lifecycle_receipts"]
     )
-    if runtime.arm == "corrupted" and not corruption_model_ids:
+    if finalize and runtime.arm == "corrupted" and not corruption_model_ids:
         raise InvariantViolation(
             "P7_CORRUPTION_INTERVENTION_NOT_ADMITTED",
             "production Think admitted no observable optimistic claim for the corrupted arm",
         )
     expected_reasoning_batches = 3 if runtime.arm == "frozen" else 12
     reasoning_batch_count = sum(wave["reasoning_executed"] for wave in waves)
-    arm_contract_satisfied = (
+    arm_contract_satisfied = finalize and (
         len(waves) == 12
         and reasoning_batch_count == expected_reasoning_batches
         and (runtime.arm != "corrupted" or recovered)
@@ -546,17 +556,98 @@ async def run_p7_production_staged(
                     ),
                 )
             runtimes.append(P7ArmRuntime(arm=arm, tenant_id=tenant_id, worker=worker))
+        # Establish exactly one real adaptive bootstrap, then deterministically
+        # replay its provider transcript into each isolated tenant.  Interventions
+        # start only after an equality digest proves the batch-3 canonical state
+        # is identical across arms.
+        bootstrap_batches = tuple(
+            batch for batch in population.batches if batch.batch_number <= 3
+        )
+        intervention_batches = tuple(
+            batch for batch in population.batches if batch.batch_number > 3
+        )
+        adaptive_runtime = next(item for item in runtimes if item.arm == "adaptive")
+        cassette = BootstrapCassette()
+        async with cassette.record(provider):
+            adaptive_bootstrap = await _run_arm(
+                pool=pool, runtime=adaptive_runtime, population=population,
+                batch_deadline_s=batch_deadline_s,
+                required_provider=required_provider, required_model=required_model,
+                batches=bootstrap_batches, finalize=False,
+            )
+        source_snapshot = adaptive_bootstrap["waves"][-1]["stage_snapshot"]
+        source_digest = checkpoint_digest(source_snapshot)
+        bootstrap_waves: dict[P7EvolutionArm, tuple[dict[str, Any], ...]] = {
+            "adaptive": tuple(adaptive_bootstrap["waves"]),
+        }
+        clone_receipts = {
+            "adaptive": clone_receipt(
+                source_tenant_id=str(adaptive_runtime.tenant_id),
+                target_tenant_id=str(adaptive_runtime.tenant_id),
+                source_digest=source_digest, target_digest=source_digest,
+                cassette=cassette,
+            )
+        }
+        for runtime in runtimes:
+            if runtime.arm == "adaptive":
+                continue
+            assert runtime.worker is not None
+            intervention_policy = runtime.worker.execution_policy
+            runtime.worker.execution_policy = NORMAL_EXECUTION_POLICY
+            try:
+                bootstrap_runtime = P7ArmRuntime(
+                    arm="adaptive", tenant_id=runtime.tenant_id, worker=runtime.worker,
+                )
+                async with cassette.replay(provider):
+                    replayed = await _run_arm(
+                        pool=pool, runtime=bootstrap_runtime, population=population,
+                        batch_deadline_s=batch_deadline_s,
+                        required_provider=required_provider,
+                        required_model=required_model,
+                        batches=bootstrap_batches, finalize=False,
+                    )
+            finally:
+                runtime.worker.execution_policy = intervention_policy
+            target_digest = checkpoint_digest(
+                replayed["waves"][-1]["stage_snapshot"]
+            )
+            receipt = clone_receipt(
+                source_tenant_id=str(adaptive_runtime.tenant_id),
+                target_tenant_id=str(runtime.tenant_id),
+                source_digest=source_digest, target_digest=target_digest,
+                cassette=cassette,
+            )
+            if not receipt.equality_proven:
+                raise InvariantViolation(
+                    "P7_BOOTSTRAP_CHECKPOINT_MISMATCH",
+                    "replayed arm did not reproduce the adaptive batch-3 checkpoint",
+                    arm=runtime.arm,
+                    source_digest=source_digest,
+                    target_digest=target_digest,
+                )
+            bootstrap_waves[runtime.arm] = tuple(replayed["waves"])
+            clone_receipts[runtime.arm] = receipt
+
         results = await asyncio.gather(*(
             _run_arm(
-                pool=pool,
-                runtime=runtime,
-                population=population,
+                pool=pool, runtime=runtime, population=population,
                 batch_deadline_s=batch_deadline_s,
                 required_provider=required_provider,
                 required_model=required_model,
+                batches=intervention_batches,
+                initial_waves=bootstrap_waves[runtime.arm],
             )
             for runtime in runtimes
         ))
+        results = [
+            {
+                **result,
+                "bootstrap_clone_receipt": clone_receipts[result["arm"]].model_dump(
+                    mode="json"
+                ),
+            }
+            for result in results
+        ]
         return {
             "schema_version": "epistemic-repair-p7-production-staged-v1",
             "population_version": population.version,

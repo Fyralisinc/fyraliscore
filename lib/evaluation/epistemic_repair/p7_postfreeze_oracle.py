@@ -37,6 +37,21 @@ _NEGATED_PREDICATE = re.compile(
 )
 
 
+def exact_bootstrap_clone_receipts(world: dict[str, Any]) -> bool:
+    """Accept clone proof only from equal, explicit checkpoint receipts."""
+
+    arms = world.get("arm_results") or ()
+    receipts = [arm.get("bootstrap_clone_receipt") or {} for arm in arms]
+    digests = {receipt.get("canonical_checkpoint_digest") for receipt in receipts}
+    return (
+        bool(world.get("population_digest"))
+        and len(arms) == len(P7_ARMS)
+        and len(digests) == 1
+        and None not in digests
+        and all(receipt.get("equality_proven") is True for receipt in receipts)
+    )
+
+
 def _semantic_text(model: dict[str, Any]) -> str:
     proposition = model.get("proposition") or {}
     return " ".join((str(model.get("natural_text") or ""), str(proposition))).casefold()
@@ -747,7 +762,7 @@ def evaluate_frozen_worlds(
             for wave in arm["waves"] if wave["reasoning_executed"]
         ),
         "exact_bootstrap_clones": all(
-            world.get("population_digest") and len(world["arm_results"]) == len(P7_ARMS)
+            exact_bootstrap_clone_receipts(world)
             for world in world_results
         ),
         "exact_paired_population": len(endpoints) == expected_endpoints,
@@ -816,8 +831,7 @@ def evaluate_frozen_worlds(
         ) for arm, wave in reasoning_waves],
         "exact_bootstrap_clones": [gate_member(
             str(world["world_id"]), world,
-            bool(world.get("population_digest"))
-            and len(world["arm_results"]) == len(P7_ARMS),
+            exact_bootstrap_clone_receipts(world),
         ) for world in world_results],
         "exact_paired_population": [gate_member(
             ":".join(map(str, key)), endpoint,
