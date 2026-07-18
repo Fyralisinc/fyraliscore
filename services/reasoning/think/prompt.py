@@ -1700,10 +1700,17 @@ def _build_triggering_section(
     compiled_decision_mode: bool = False,
     suppress_raw_trigger_text: bool = False,
 ) -> str:
+    # RawDiff requires both coordinates and instructs providers to echo them.
+    # Keep them in the dynamic user message so every inferential lane can
+    # satisfy the schema without guessing tenant or trigger identity.
+    from .deterministic import _trigger_ref  # avoids a module import cycle
+
     lines = ["<triggering_event>"]
     signature = (
         trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
     )
+    lines.append(f"  trigger_ref: {_trigger_ref(trigger)}")
+    lines.append(f"  tenant_id: {trigger.tenant_id}")
     lines.append(f"  kind: {trigger.kind}")
     if trigger.subkind:
         lines.append(f"  subkind: {trigger.subkind}")

@@ -15,8 +15,11 @@ from services.evaluation.epistemic_repair.cf2_provider import (
 from services.platform.execution.question_planning_schemas import (
     LLMCompactQuestionPlan,
 )
+from services.reasoning.retrieval.assembler import ContextBundle
+from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.compiled_reasoning import BatchMemoryDecisionSet
-from services.reasoning.think.diff_schema import RawDiff
+from services.reasoning.think.diff_schema import RawDiff, RawDiffClaimsOnly
+from services.reasoning.think.prompt import build_prompt
 
 
 pytestmark = pytest.mark.asyncio
@@ -122,6 +125,30 @@ async def test_raw_diff_noop_uses_runtime_ids_and_emits_receipts() -> None:
     assert telemetry["call_count"] == 1
     assert telemetry["input_tokens"] > 0
     assert telemetry["output_tokens"] > 0
+
+
+async def test_repair_prompt_exposes_required_raw_diff_coordinates() -> None:
+    provider = CF2ProviderFreeLLM()
+    tenant_id, trigger_id = uuid4(), uuid4()
+    pair = build_prompt(
+        TriggerContext(
+            kind="T4",
+            subkind="representation_repair",
+            tenant_id=tenant_id,
+            seed_signature={"trigger_id": str(trigger_id)},
+        ),
+        ContextBundle(),
+    )
+
+    result = await provider.structured(
+        system=pair.system,
+        user=pair.user,
+        schema=RawDiffClaimsOnly,
+    )
+
+    assert result.tenant_id == tenant_id
+    assert result.trigger_ref == trigger_id
+    assert result.claim_ops == []
 
 
 async def test_unsupported_schema_fails_closed() -> None:

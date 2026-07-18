@@ -88,6 +88,8 @@ async def test_build_prompt_emits_all_sections():
     # Triggering event section
     assert "<triggering_event>" in user
     assert "</triggering_event>" in user
+    assert f"trigger_ref: {trigger.observation_id}" in user
+    assert f"tenant_id: {trigger.tenant_id}" in user
     assert "kind: T1" in user
     assert "Alice PR #187 merged" in user
 
