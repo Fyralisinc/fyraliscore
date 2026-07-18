@@ -27,5 +27,10 @@ async def test_postgres_fault_slice_restarts_queries_and_replays_without_overcla
     assert all(row.post_restart_barrier_count == 1 for row in result.receipts)
     assert all(row.post_restart_model_count == 1 for row in result.receipts)
     assert all(row.post_restart_pending_count == 0 for row in result.receipts)
+    assert all(row.persisted_observation_count == 25 for row in result.receipts)
+    assert all(row.simulated_source_channel == "synthetic:normalized" for row in result.receipts)
+    assert len({row.reached_boundary for row in result.receipts}) == 9
+    assert all(len(row.reached_boundary_receipt_digest) == 64 for row in result.receipts)
+    assert all(row.uninterrupted_reference_matches for row in result.receipts)
     assert all(len(row.replay_receipt_digest) == 64 for row in result.receipts)
     assert len({row.queried_state_digest for row in result.receipts}) == 18

@@ -14,11 +14,14 @@ from lib.evaluation.epistemic_repair.p8_provider_runner import (
     PROVIDER_BOUNDARIES,
     ProviderFaultSlice,
 )
+from lib.evaluation.epistemic_repair.p8_population import fault_injection_points
 
 
 def _slices():
     db_rows = tuple(
         DurableFaultReceipt(boundary, duplicate, "tenant", f"batch:{boundary}", "fault",
+                            fault_injection_points()[boundary],
+                            "z" * 64, 25, "synthetic:normalized",
                             1, 1, 0, "a" * 64, "b" * 64,
                             uninterrupted_reference_digest="r" * 64,
                             uninterrupted_reference_matches=True)
@@ -62,4 +65,20 @@ def test_binder_rejects_unbound_post_restart_state() -> None:
             postgres=replace(postgres, receipts=(broken, *postgres.receipts[1:])),
             provider=provider,
             commit_sha="f" * 40,
+        )
+
+
+def test_binder_rejects_non_25_batch_or_unreached_boundary() -> None:
+    postgres, provider = _slices()
+    wrong_batch = replace(postgres.receipts[0], persisted_observation_count=24)
+    with pytest.raises(ValueError, match="durable-state binding"):
+        bind_fault_execution_evidence(
+            postgres=replace(postgres, receipts=(wrong_batch, *postgres.receipts[1:])),
+            provider=provider, commit_sha="f" * 40,
+        )
+    wrong_boundary = replace(postgres.receipts[0], reached_boundary="generic:fallthrough")
+    with pytest.raises(ValueError, match="durable-state binding"):
+        bind_fault_execution_evidence(
+            postgres=replace(postgres, receipts=(wrong_boundary, *postgres.receipts[1:])),
+            provider=provider, commit_sha="f" * 40,
         )

@@ -26,7 +26,7 @@ def _seal(path: Path, value: dict) -> None:
 
 def _fixtures(tmp_path: Path) -> dict[str, Path]:
     paths = {name: tmp_path / f"{name}.json" for name in (
-        "fault", "scale", "characterization", "contention", "exit",
+        "fault", "scale", "characterization", "contention", "warm", "exit",
     )}
     qualification = {
         "observed_member_receipts": 24,
@@ -79,6 +79,14 @@ def _fixtures(tmp_path: Path) -> dict[str, Path]:
             "concurrent_cells": 3, "wall_time_ms": 10, "individual_wall_time_sum_ms": 20,
             "contention_ratio": .5, "evidence_digest": "b" * 64,
         },
+    })
+    _seal(paths["warm"], {
+        "schema_version": "p8-repeated-warm-pair-v1", "commit": COMMIT,
+        "preregistration": {
+            "controls": [[25, 12], [25, 100]], "repetitions": 5,
+            "concurrencies": [1, 20], "warmups_excluded": True,
+        },
+        "analysis": {"diagnostic_complete": True},
     })
     hashes = {name: sha256(paths[name].read_bytes()).hexdigest() for name in (
         "fault", "scale", "characterization", "contention",
@@ -177,7 +185,8 @@ def test_exit_cli_emits_wired_p9_sidecar(tmp_path: Path) -> None:
         sys.executable, str(ROOT / "scripts/build_epistemic_repair_p8_exit.py"),
         "--fault", str(paths["fault"]), "--scale", str(paths["scale"]),
         "--characterization", str(paths["characterization"]),
-        "--contention", str(paths["contention"]), "--provider-canary", str(canary),
+        "--contention", str(paths["contention"]),
+        "--repeated-warm", str(paths["warm"]), "--provider-canary", str(canary),
         "--output", str(output), "--p9-output", str(p9_output),
     ], cwd=ROOT, text=True, capture_output=True)
     assert result.returncode == 0, result.stdout + result.stderr

@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p8_oracles import ProductionExecutionEvidence
-from lib.evaluation.epistemic_repair.p8_population import build_fault_schedule, build_scale_matrix
-from services.evaluation.epistemic_repair.p8_postgres_runner import PostgresFaultSlice
+from lib.evaluation.epistemic_repair.p8_population import (
+    build_fault_schedule,
+    build_scale_matrix,
+    fault_injection_points,
+)
+from services.evaluation.epistemic_repair.p8_postgres_runner import (
+    P8_PHYSICAL_BATCH_SIZE,
+    P8_SIMULATED_SOURCE,
+    PostgresFaultSlice,
+)
 from lib.evaluation.epistemic_repair.p8_provider_runner import ProviderFaultSlice
 from services.evaluation.epistemic_repair.p8_scale_runner import ScaleExecution
 
@@ -23,6 +31,31 @@ def summarize_fault_member_receipts(
         "every_physical_attempt_has_receipt": attempts == 24 and all(
             row.persisted_attempt_receipts == 1 for row in llm
         ),
+        "database_fault_batches": {
+            "denominator": len(db),
+            "exact_25_signal_batches": sum(
+                row.persisted_observation_count == P8_PHYSICAL_BATCH_SIZE for row in db
+            ),
+            "post_ingestion_sources": sorted({row.simulated_source_channel for row in db}),
+            "gate": bool(db) and all(
+                row.persisted_observation_count == P8_PHYSICAL_BATCH_SIZE
+                and row.simulated_source_channel == P8_SIMULATED_SOURCE
+                for row in db
+            ),
+        },
+        "exact_fault_boundaries_reached": {
+            "denominator": len(db),
+            "matched": sum(
+                row.reached_boundary == fault_injection_points()[row.boundary]
+                and len(row.reached_boundary_receipt_digest) == 64
+                for row in db
+            ),
+            "gate": bool(db) and all(
+                row.reached_boundary == fault_injection_points()[row.boundary]
+                and len(row.reached_boundary_receipt_digest) == 64
+                for row in db
+            ),
+        },
         "exactly_once_barrier_violations": sum(row.post_restart_barrier_count != 1 for row in db),
         "duplicate_model_violations": sum(row.post_restart_model_count > 1 for row in db),
         "pending_truth_critical_violations": sum(row.post_restart_pending_count != 0 for row in db),
@@ -79,6 +112,10 @@ def bind_fault_execution_evidence(
         or row.post_restart_pending_count != 0
         or len(row.replay_receipt_digest) != 64
         or len(row.queried_state_digest) != 64
+        or row.persisted_observation_count != P8_PHYSICAL_BATCH_SIZE
+        or row.simulated_source_channel != P8_SIMULATED_SOURCE
+        or row.reached_boundary != fault_injection_points()[row.boundary]
+        or len(row.reached_boundary_receipt_digest) != 64
         for row in postgres.receipts
     ):
         raise ValueError("PostgreSQL fault receipt failed durable-state binding")
