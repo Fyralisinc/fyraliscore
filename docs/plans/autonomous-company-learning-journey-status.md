@@ -1892,3 +1892,31 @@ matched feedback quality and objective entity v6.
 - Reflection verdict: still aligned with the core end-to-end goal. The next
   action is exactly one clean four-batch CF2 rerun and independent scoring
   before any new implementation.
+
+### 2026-07-18 — Four-batch CF2 reached synthesis and exposed same-diff staleness
+
+- Provider-free run 5 completed all four intact 25-signal batches from zero
+  seed in `103.448s`, with no pending truth-critical work and no mixed provider
+  calls. Accepted atomic memory grew `10 -> 20 -> 30 -> 40`; batch 3 also
+  admitted one accepted dependency relation.
+- The batch-3 Think receipt reported one accepted composite insert, but the
+  barrier correctly saw only 30 current accepted Models. Canonical forensics
+  showed that the composite was committed against exact member version
+  `c32de567...`; 24ms later, a compiler-owned confirmation in the same diff
+  advanced that member to `a7f9acd8...`. The accepted-current view therefore
+  hid the immediately stale composite, and batch 4 had no composite to revise.
+- The compiler now converts only a conflicting compiler-owned exact confirm
+  into a standalone evidence-bound atomic insert. This preserves the atomic
+  observation without advancing a member head named by a new synthesis.
+  Focused unit and PostgreSQL production-path proofs show the composite remains
+  visible, the cited member stays at version 1, and the coupled relation still
+  applies.
+- Reflection verdict: the work remains on the shortest end-to-end path. The
+  failed run was not replayed blindly, later phases were not opened, and the
+  fix is limited to the exact semantic conflict. The next full run waits for an
+  honest gold-blind runtime receipt and the focused rollback proof; evaluator
+  fields that lack durable evidence must score unavailable rather than be
+  inferred.
+- Current CF2 status: operational batching/retrieval/apply/barriers are proven;
+  current composite visibility, batch-4 revision, independent scoring and
+  deterministic replay remain open. CF3 is not authorized yet.

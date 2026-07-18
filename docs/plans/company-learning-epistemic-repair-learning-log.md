@@ -1748,3 +1748,49 @@ first new root cause and decide whether it violates a CF2 truth invariant.
   retries again dominate barrier time after valid provider execution.
 - Recommended future phase: CF8
 - Status: open
+
+### 2026-07-18 — LOG-047 — A committed synthesis can be non-current immediately
+
+**Type:** executed, failed honestly, localized, repaired, and awaiting rerun
+
+**Artifact:** `/tmp/fyralis-cf2-provider-free-run5.json`; tenant
+`8bf9c5d6-ca8a-4b8c-8364-d6cca6cd87d1`.
+
+**What happened:** The actual worker completed four 25-signal batches from zero
+seed. Batch 3 committed ten new atomics, one composite situation and one
+dependency relation. The saved accepted-current snapshot nevertheless exposed
+30 Models and no composite. Batch 4 therefore created ordinary correction
+facts but could not revise the missing current situation.
+
+**Root cause:** The composite truth version cited exact member version
+`c32de567...`. In the same semantic diff, a deterministic closed-atomic confirm
+then advanced that member's head to `a7f9acd8...`. The truth rows and admission
+receipt remained durable, but `accepted_current_models` correctly excluded the
+composite because its exact model-version evidence was no longer current. An
+apply receipt is not by itself proof of current accepted visibility.
+
+**Repair and evidence:** When a compiler-owned exact confirm targets a member
+of a newly emitted synthesis, the compiler now preserves the new observation
+as its own atomic insert instead of advancing that member in the same diff. It
+does not rewrite user/LLM lifecycle semantics. Eleven compiler tests and a
+focused PostgreSQL production-path test pass; the latter proves the new
+composite is current and the cited member head does not advance.
+
+**Reflection:** This was a productive single-root-cause loop: inspect one failed
+run, prove the exact truth/version sequence, implement the smallest generic
+conflict rule, and stop before rerunning. The investigation briefly appeared to
+be a missing-write problem because accepted-current and canonical physical
+truth were conflated; future postmortems must query both before proposing a
+write-path repair. No connector, provider realism, task autonomy, broad
+lifecycle redesign or later phase was opened.
+
+**Evaluator lesson:** A first runtime-receipt adapter attempted to infer
+accepted models, participant versions, commit identity, per-signal processing
+and barrier matching from weaker coordinates. Those inferences would hide this
+exact failure. The adapter is not accepted evidence until every scorer field is
+backed by current heads, exact relation participants, actual per-input fate and
+durable lifecycle provenance; unavailable coordinates must remain unavailable.
+
+**Decision or next test:** Finish the gold-blind receipt and coupled rollback
+test, commit the focused checkpoint, then run one fresh four-batch CF2 vertical.
+Score it before any deterministic replay or CF3 work.

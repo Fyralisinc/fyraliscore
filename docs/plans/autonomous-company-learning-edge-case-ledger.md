@@ -878,6 +878,52 @@ transport are excluded from this goal.
 - **Return condition:** Inventory other production assertion envelopes and
   migrate affected fixtures through the real mention-detection boundary.
 
+### EDGE-040 — Non-compiler lifecycle work can stale a new same-diff synthesis
+
+- **Status:** `open; compiler-owned confirm path resolved`
+- **Trigger:** A newly admitted composite cites an exact active member version,
+  while another lifecycle operation in the same diff advances that member.
+- **Current behavior:** Compiler-owned exact confirms are converted to separate
+  atomic inserts, preserving both durable fates. User- or LLM-authored
+  lifecycle operations retain their requested semantics and can still conflict
+  with a new synthesis member.
+- **Desired behavior:** The compiler should either bind the composite to the
+  successor member version, schedule synthesis after the lifecycle transition,
+  or reject the coupled proposal before apply. It must never report a useful
+  current synthesis that becomes stale inside its own command envelope.
+- **Risk:** A physically committed but non-current composite disappears from
+  retrieval and cannot receive later correction or feedback.
+- **Safe boundary:** Only the proven compiler-owned conflict is repaired for
+  CF2. Any other same-diff lifecycle/synthesis collision fails current-visibility
+  evaluation and remains in the ledger rather than triggering a broad ordering
+  rewrite.
+- **Return condition:** CF8 fault/lifecycle testing covers every lifecycle
+  action against synthesis members and proves an explicit rebind, defer or
+  fail-closed fate.
+- **Evidence:** Run-5 canonical sequence and
+  `test_compiled_confirm_and_synthesis_preserve_visible_composite`.
+
+### EDGE-041 — Evaluator adapters can manufacture proof from correlation
+
+- **Status:** `P0 open until runtime receipt audit is green`
+- **Trigger:** A report adapter labels model IDs as version IDs, treats Think
+  run correlation as commit identity, assumes successful batches processed
+  every signal, or declares stored barrier expectations matched without
+  comparing actual heads.
+- **Current behavior:** The first adapter draft was rejected before commit. Its
+  focused tests proved only schema consumption, not evidence integrity.
+- **Desired behavior:** Every reported coordinate must come from an exact
+  durable row or signed artifact field. Missing transaction identity,
+  per-signal processing fate, current-head match or correction provenance must
+  lower coverage/score instead of being inferred.
+- **Risk:** The evaluator can award synthesis, relation atomicity, barrier or
+  correction credit while the product behavior is actually broken.
+- **Safe boundary:** Do not use or publish a CF2 score from the draft adapter.
+- **Return condition:** Independent field-by-field review plus a negative test
+  reproducing run 5 and showing that the stale composite receives zero current
+  synthesis credit.
+- **Evidence:** LOG-047 and the P0 receipt review performed after run 5.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title

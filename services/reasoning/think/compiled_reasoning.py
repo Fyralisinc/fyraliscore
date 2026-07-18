@@ -622,6 +622,59 @@ class CompiledBatchMemoryDecisionRequest:
                 f"confidence={decision.confidence:.2f}"
             )
 
+        # A composite binds immutable member-version evidence at admission.
+        # Advancing one of those member heads later in this same diff makes the
+        # just-created composite immediately disappear from
+        # ``accepted_current_models``.  Preserve both durable fates by turning
+        # compiler-owned exact confirms into standalone atomic inserts whenever
+        # their target is also a member of a new synthesis.  This is deliberately
+        # limited to compiler-owned confirms; user/LLM-authored lifecycle work
+        # keeps its original semantics and must be coordinated explicitly.
+        synthesis_member_ids = {
+            member_id
+            for claim_op in claim_ops
+            if claim_op.op == "insert" and isinstance(claim_op.entry, dict)
+            for proposition in [claim_op.entry.get("proposition")]
+            if isinstance(proposition, dict)
+            and proposition.get("synthesis_contract") is True
+            for member_id in _uuid_values(proposition.get("member_model_ids"))
+        }
+        if synthesis_member_ids:
+            retained_lifecycle_ops: list[MemoryLifecycleOp] = []
+            for lifecycle_op in memory_lifecycle_ops:
+                metadata = lifecycle_op.metadata or {}
+                if (
+                    lifecycle_op.model_id not in synthesis_member_ids
+                    or metadata.get("source") != "closed_atomic_durable_fate"
+                ):
+                    retained_lifecycle_ops.append(lifecycle_op)
+                    continue
+                candidate_id = str(metadata.get("candidate_id") or "")
+                closed_candidate = by_id.get(candidate_id)
+                if closed_candidate is None:
+                    raise ValueError(
+                        "compiler-owned synthesis member confirm lost its candidate"
+                    )
+                claim_op, _ignored_lifecycle, placeholder, block_reason = (
+                    _closed_atomic_durable_fate(
+                        closed_candidate,
+                        trigger=trigger,
+                        force_insert=True,
+                    )
+                )
+                if claim_op is None or placeholder is None:
+                    raise ValueError(
+                        "compiler-owned synthesis member confirm could not be "
+                        f"preserved as an atomic insert: {block_reason}"
+                    )
+                claim_ops.append(claim_op)
+                candidate_claim_placeholders[candidate_id] = placeholder
+                trace_parts.append(
+                    f"{candidate_id}: exact confirm emitted as atomic insert to "
+                    "preserve a new synthesis member head"
+                )
+            memory_lifecycle_ops = retained_lifecycle_ops
+
         if decisions.reasoning_trace:
             trace_parts.insert(0, decisions.reasoning_trace)
         trace_parts.append(
@@ -3621,6 +3674,7 @@ def _closed_atomic_durable_fate(
     candidate: dict[str, Any],
     *,
     trigger: TriggerContext,
+    force_insert: bool = False,
 ) -> tuple[ClaimOp | None, MemoryLifecycleOp | None, UUID | None, str]:
     evidence_event_ids = _candidate_event_ids(candidate)
     if len(evidence_event_ids) != 1:
@@ -3635,7 +3689,7 @@ def _closed_atomic_durable_fate(
         max(0.55, float(candidate.get("confidence") or 0.58)),
     )
     candidate_id = str(candidate.get("candidate_id") or "closed_atomic")
-    if exact_bound:
+    if exact_bound and not force_insert:
         op = MemoryLifecycleOp(
             model_id=target_ids[0],
             action="confirm",

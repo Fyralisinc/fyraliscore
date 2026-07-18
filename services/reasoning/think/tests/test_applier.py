@@ -42,6 +42,12 @@ from services.reasoning.sage.inquiry_traces import (
 from services.reasoning.sage.topology_optimizer.optimizer import TopologyOptimizer
 from services.reasoning.sage.reader import SynthesisReader
 from services.reasoning.think.capability_probes import maybe_inject_capability_probe_ops
+from services.reasoning.think.compiled_reasoning import (
+    BatchMemoryCandidateDecision,
+    BatchMemoryDecisionSet,
+    CompiledBatchMemoryDecisionRequest,
+    RelationObligation,
+)
 from services.reasoning.think.text_embedding import deterministic_text_embedding
 from services.reasoning.think.quality_gate import QualityVerdict
 from services.reasoning.think.validator import validate
@@ -227,6 +233,191 @@ async def test_twelve_manifest_bound_atomics_apply_without_sibling_evidence(
     for row in rows:
         assert len(row["refs"]) == 1
         assert UUID(row["refs"][0]) in observation_ids
+
+
+async def test_compiled_confirm_and_synthesis_preserve_visible_composite(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """A same-diff exact confirm must not stale new composite lineage."""
+    from services.reasoning.think.tests.conftest import make_embedding
+
+    async with fresh_db.acquire() as conn:
+        member_events = [uuid7(), uuid7()]
+        confirm_event, synthesis_event, relation_event = uuid7(), uuid7(), uuid7()
+        event_text = {
+            member_events[0]: "Atlas approval has no owner.",
+            member_events[1]: "Atlas release cannot proceed without approval.",
+            confirm_event: "Atlas approval has no owner.",
+            synthesis_event: "Missing approval ownership blocks Atlas release.",
+            relation_event: "The open approval dependency blocks release completion.",
+        }
+        for event_id, text in event_text.items():
+            await conn.execute(
+                """
+                INSERT INTO observations
+                  (id,tenant_id,occurred_at,kind,source_channel,content,
+                   content_text,embedding,embedding_pending,trust_tier)
+                VALUES ($1,$2,now(),'signal','test','{}'::jsonb,$3,$4,FALSE,
+                        'authoritative')
+                """,
+                event_id,
+                tenant,
+                text,
+                make_embedding(text),
+            )
+
+        scope = [{
+            "type": "workstream",
+            "id": "workstream:atlas-release",
+            "canonical_ref": "workstream:atlas-release",
+            "display_label": "Atlas release",
+        }]
+        seed_diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(event_id),
+                    "supporting_event_ids": [str(event_id)],
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "fact",
+                        "abstraction_level": "atomic",
+                        "subject": "Atlas release",
+                        "assertion": event_text[event_id],
+                        "scope_ref": "workstream:atlas-release",
+                        "scope_label": "Atlas release",
+                        "evidence_event_ids": [str(event_id)],
+                    },
+                    "natural": event_text[event_id],
+                    "embedding": make_embedding(event_text[event_id]),
+                    "scope_actors": [],
+                    "scope_entities": scope,
+                    "scope_temporal": {},
+                    "confidence": 0.7,
+                    "confidence_at_assertion": 0.7,
+                })
+                for event_id in member_events
+            ],
+        )
+        async with conn.transaction():
+            seed = await apply_diff(
+                seed_diff,
+                conn,
+                trigger_kind="T1:event_batch",
+                trigger_supporting_event_ids=member_events,
+            )
+        member_ids = seed["applied_model_ids"]
+        head_rows = await conn.fetch(
+            """SELECT model_id,version_id FROM model_truth_heads
+                 WHERE tenant_id=$1 AND model_id=ANY($2::uuid[])
+                 ORDER BY model_id""",
+            tenant,
+            member_ids,
+        )
+        version_by_model = {
+            row["model_id"]: row["version_id"] for row in head_rows
+        }
+        closed = {
+            "candidate_id": "MDC_ATOM_ATLAS_CONFIRM",
+            "op_family": "claim_insert",
+            "proposed_text": event_text[confirm_event],
+            "entailed_claim_text": event_text[confirm_event],
+            "source_observation_ids": [str(confirm_event)],
+            "member_observation_ids": [str(confirm_event)],
+            "semantic_scope": ["Atlas release"],
+            "canonical_scope_ref": "workstream:atlas-release",
+            "target_model_ids": [str(member_ids[0])],
+            "allowed_operations": ["memory_lifecycle"],
+            "confidence": 0.8,
+        }
+        synthesis = {
+            "candidate_id": "MDC_SYNTH_ATLAS",
+            "candidate_kind": "synthesis",
+            "allowed_operations": ["situation_and_edge", "no_op"],
+            "op_family": "claim_insert",
+            "proposed_text": event_text[synthesis_event],
+            "semantic_scope": ["Atlas release"],
+            "canonical_scope_ref": "workstream:atlas-release",
+            "member_observation_ids": [str(synthesis_event)],
+            "relation_evidence_observation_ids": [str(relation_event)],
+            "evidence_model_ids": [str(value) for value in member_ids],
+            "endpoint_model_versions": {
+                str(model_id): str(version_by_model[model_id])
+                for model_id in member_ids
+            },
+            "confidence": 0.8,
+        }
+        request = CompiledBatchMemoryDecisionRequest(
+            system="system",
+            user="user",
+            candidates=(closed, synthesis),
+            relation_obligations=(RelationObligation(
+                candidate_id="MDC_SYNTH_ATLAS",
+                edge_kind="blocks",
+                confidence=0.8,
+                source_model_id=member_ids[0],
+                target_model_id=member_ids[1],
+                evidence_event_ids=(relation_event,),
+                evidence_model_ids=tuple(member_ids),
+                evidence_text=event_text[relation_event],
+                explanation="The approval dependency blocks completion.",
+                matched_markers=("blocks",),
+            ),),
+        )
+        raw = request.to_raw_diff(
+            BatchMemoryDecisionSet(decisions=[BatchMemoryCandidateDecision(
+                candidate_id="MDC_SYNTH_ATLAS",
+                decision="accept",
+                operation="situation_and_edge",
+                confidence=0.8,
+                claim_role="situation",
+                claim_text=event_text[synthesis_event],
+                situation_member_model_ids=member_ids,
+                source_model_id=member_ids[0],
+                target_model_id=member_ids[1],
+                reason="The exact heads support the dependency.",
+            )]),
+            trigger=TriggerContext(
+                kind="T1",
+                tenant_id=tenant,
+                observation_ids=[confirm_event, synthesis_event, relation_event],
+            ),
+            trigger_ref=uuid7(),
+        )
+        diff = ValidatedDiff.model_validate(raw.model_dump())
+        synthesis_tx = conn.transaction()
+        await synthesis_tx.start()
+        try:
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1:event_batch",
+                trigger_supporting_event_ids=[
+                    confirm_event,
+                    synthesis_event,
+                    relation_event,
+                ],
+            )
+            assert result["memory_lifecycle_ops"] == []
+            assert await conn.fetchval(
+                """SELECT count(*) FROM accepted_current_models
+                     WHERE tenant_id=$1
+                       AND proposition->>'claim_role'='situation'
+                       AND proposition->>'abstraction_level'='composite'""",
+                tenant,
+            ) == 1
+            assert await conn.fetchval(
+                """SELECT version FROM model_truth_heads
+                     WHERE tenant_id=$1 AND model_id=$2""",
+                tenant,
+                member_ids[0],
+            ) == 1
+        finally:
+            await synthesis_tx.rollback()
 
 
 async def test_reconciler_db_error_does_not_poison_apply_transaction(

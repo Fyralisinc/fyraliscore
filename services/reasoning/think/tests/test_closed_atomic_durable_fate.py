@@ -10,6 +10,7 @@ from services.reasoning.think.compiled_reasoning import (
     BatchMemoryCandidateDecision,
     BatchMemoryDecisionSet,
     CompiledBatchMemoryDecisionRequest,
+    RelationObligation,
     _bind_exact_closed_atomic_targets,
 )
 
@@ -140,3 +141,84 @@ def test_exact_bound_confirm_excludes_transport_sibling() -> None:
     assert op.evidence_event_ids == [observation_id]
     assert op.claim_local_evidence_event_ids == [observation_id]
     assert sibling_id not in op.evidence_event_ids
+
+
+def test_exact_confirm_cannot_stale_new_synthesis_member_in_same_diff() -> None:
+    tenant_id = uuid7()
+    confirmation_id, synthesis_id, relation_id = uuid7(), uuid7(), uuid7()
+    member_ids, version_ids = [uuid7(), uuid7()], [uuid7(), uuid7()]
+    closed = _candidate(confirmation_id)
+    closed.update({
+        "candidate_id": "MDC_ATOM_ATLAS_CONFIRM",
+        "target_model_ids": [str(member_ids[0])],
+        "allowed_operations": ["memory_lifecycle"],
+        "canonical_scope_ref": "workstream:atlas-release",
+    })
+    synthesis = {
+        "candidate_id": "MDC_SYNTH_ATLAS",
+        "candidate_kind": "synthesis",
+        "allowed_operations": ["situation_and_edge", "no_op"],
+        "op_family": "claim_insert",
+        "proposed_text": "Missing approval ownership blocks Atlas release.",
+        "semantic_scope": ["Atlas release"],
+        "canonical_scope_ref": "workstream:atlas-release",
+        "member_observation_ids": [str(synthesis_id)],
+        "relation_evidence_observation_ids": [str(relation_id)],
+        "evidence_model_ids": [str(value) for value in member_ids],
+        "endpoint_model_versions": {
+            str(model_id): str(version_id)
+            for model_id, version_id in zip(member_ids, version_ids, strict=True)
+        },
+        "confidence": 0.8,
+    }
+    request = CompiledBatchMemoryDecisionRequest(
+        system="system",
+        user="user",
+        candidates=(closed, synthesis),
+        relation_obligations=(RelationObligation(
+            candidate_id="MDC_SYNTH_ATLAS",
+            edge_kind="blocks",
+            confidence=0.8,
+            source_model_id=member_ids[0],
+            target_model_id=member_ids[1],
+            evidence_event_ids=(relation_id,),
+            evidence_model_ids=tuple(member_ids),
+            evidence_text="Missing approval ownership blocks Atlas release.",
+            explanation="The approval dependency blocks completion.",
+            matched_markers=("blocks",),
+        ),),
+    )
+    decisions = BatchMemoryDecisionSet(decisions=[
+        BatchMemoryCandidateDecision(
+            candidate_id="MDC_SYNTH_ATLAS",
+            decision="accept",
+            operation="situation_and_edge",
+            confidence=0.8,
+            claim_role="situation",
+            claim_text="Missing approval ownership blocks Atlas release.",
+            situation_member_model_ids=member_ids,
+            source_model_id=member_ids[0],
+            target_model_id=member_ids[1],
+            reason="The exact accepted heads support the dependency.",
+        )
+    ])
+
+    diff = request.to_raw_diff(
+        decisions,
+        trigger=TriggerContext(
+            kind="T1",
+            tenant_id=tenant_id,
+            observation_ids=[confirmation_id, synthesis_id, relation_id],
+        ),
+        trigger_ref=uuid7(),
+    )
+
+    assert diff.memory_lifecycle_ops == []
+    assert [
+        op.entry["proposition"]["claim_role"] for op in diff.claim_ops
+    ].count("fact") == 1
+    assert [
+        op.entry["proposition"]["claim_role"] for op in diff.claim_ops
+    ].count("situation") == 1
+    assert len(diff.relation_claim_ops) == 1
+    assert "preserve a new synthesis member head" in diff.reasoning_trace
