@@ -460,6 +460,19 @@ def test_unprefixed_recognized_scope_assertion_becomes_closed_atomic() -> None:
     assert context_packet._is_scope_level_synthesis_assertion(
         matching[0], "Orion delivery"
     )
+    synthesis = context_packet._scoped_synthesis_candidates(
+        candidates,
+        [
+            _card("Accepted Model for Orion delivery records approval state."),
+            _card("Accepted Model for Orion delivery records schedule impact."),
+        ],
+    )
+    assert len(synthesis) == 1
+    assert synthesis[0].member_observation_ids == (conclusion,)
+    assert synthesis[0].source_observation_ids == (conclusion,)
+    # Synthesis is an additional candidate; it never consumes its direct
+    # conclusion atomic.
+    assert matching[0] in candidates
 
 
 def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> None:

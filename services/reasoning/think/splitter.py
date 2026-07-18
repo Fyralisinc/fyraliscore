@@ -514,7 +514,9 @@ def _redistribute_atomic_evidence(entry: dict[str, Any], claim: str) -> bool:
         for row in manifest
         if isinstance(row, dict) and row.get("observation_id")
     }
-    if _is_causal_atomic(claim):
+    if _closed_atomic_singleton_manifest(entry, claim, manifest_by_id):
+        matched = list(manifest_by_id.values())
+    elif _is_causal_atomic(claim):
         matched = _derived_atomic_evidence(entry, claim, manifest_by_id)
     else:
         matched = [
@@ -532,6 +534,38 @@ def _redistribute_atomic_evidence(entry: dict[str, Any], claim: str) -> bool:
     if isinstance(proposition, dict):
         proposition["evidence_event_ids"] = matched_ids
     return True
+
+
+def _closed_atomic_singleton_manifest(
+    entry: dict[str, Any],
+    claim: str,
+    manifest_by_id: dict[str, dict[str, Any]],
+) -> bool:
+    """Preserve exact compiler-entailed singleton evidence through splitting.
+
+    The marker alone is insufficient: the claim must remain byte-semantically
+    identical after whitespace/case normalization. Split or derived atomics
+    therefore cannot borrow the parent's authorization.
+    """
+
+    proposition = entry.get("proposition")
+    if not isinstance(proposition, dict):
+        return False
+    contract = proposition.get("closed_atomic_contract")
+    if not isinstance(contract, dict) or contract != {
+        "version": "v1",
+        "compiler_entails_exact_text": True,
+        "evidence_cardinality": "singleton",
+    }:
+        return False
+    if len(manifest_by_id) != 1:
+        return False
+    body = str(next(iter(manifest_by_id.values())).get("body") or "")
+
+    def normalize(value: Any) -> str:
+        return " ".join(str(value).casefold().split())
+
+    return bool(normalize(claim)) and normalize(claim) == normalize(body)
 
 
 def _composite_is_necessary(entry: dict[str, Any]) -> bool:

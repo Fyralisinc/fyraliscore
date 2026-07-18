@@ -3669,6 +3669,15 @@ def _batch_claim_proposition(
         "polarity": "negative" if role == "concern" else "neutral",
         "compiled_memory_candidate_id": str(candidate.get("candidate_id") or ""),
     }
+    if (
+        str(candidate.get("entailed_claim_text") or "").strip()
+        and len(evidence_event_ids) == 1
+    ):
+        base["closed_atomic_contract"] = {
+            "version": "v1",
+            "compiler_entails_exact_text": True,
+            "evidence_cardinality": "singleton",
+        }
     scope_coordinate = _candidate_scope_coordinate(candidate)
     if scope_coordinate:
         base.update(

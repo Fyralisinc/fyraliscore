@@ -507,6 +507,57 @@ def test_atomic_evidence_matching_rejects_p6_distractors_and_wrong_predicates():
     )
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Orion delivery is ready.",
+        "Orion delivery, update 4: The release owner supplied a timestamp that matches the earlier thread.",
+        "Orion delivery, update 4: A later reply clarifies that 'it' meant the approval record, not the launch note.",
+    ],
+)
+def test_closed_atomic_singleton_manifest_preserves_explicit_direct_assertions(
+    text: str,
+) -> None:
+    observation_id = str(uuid4())
+    op = _make_op(natural=text)
+    op.entry["supporting_event_ids"] = [observation_id]
+    op.entry["proposition"]["evidence_event_ids"] = [observation_id]
+    op.entry["proposition"]["closed_atomic_contract"] = {
+        "version": "v1",
+        "compiler_entails_exact_text": True,
+        "evidence_cardinality": "singleton",
+    }
+    op.entry["evidence_observation_manifest"] = [{
+        "observation_id": observation_id,
+        "body": text,
+        "source_channel": "slack:message",
+    }]
+
+    out = split_compound_claim_op(op)
+
+    assert len(out) == 1
+    assert out[0].entry["supporting_event_ids"] == [observation_id]
+    assert out[0].entry["evidence_observation_manifest"][0]["body"] == text
+
+
+def test_unmarked_unsupported_timestamp_atomic_remains_quarantined() -> None:
+    text = (
+        "Orion delivery, update 4: The release owner supplied a timestamp "
+        "that matches the earlier thread."
+    )
+    observation_id = str(uuid4())
+    op = _make_op(natural=text)
+    op.entry["supporting_event_ids"] = [observation_id]
+    op.entry["proposition"]["evidence_event_ids"] = [observation_id]
+    op.entry["evidence_observation_manifest"] = [{
+        "observation_id": observation_id,
+        "body": text,
+        "source_channel": "slack:message",
+    }]
+
+    assert split_compound_claim_op(op) == []
+
+
 def test_compound_split_quarantines_atomic_without_local_support():
     owner_id = str(uuid4())
     op = _make_op(

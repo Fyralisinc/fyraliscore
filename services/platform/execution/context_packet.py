@@ -889,9 +889,13 @@ def _scoped_synthesis_candidates(
         }
         if len(model_ids) < 2 or len(distinct_model_summaries) < 2:
             continue
+        conclusion_candidates = [
+            candidate for candidate in current_scope_candidates
+            if _is_scope_level_synthesis_assertion(candidate, scope)
+        ]
         current_ids = tuple(dict.fromkeys(
             observation_id
-            for candidate in current_scope_candidates
+            for candidate in conclusion_candidates
             for observation_id in candidate.member_observation_ids
         ))
         digest_basis = f"{scope}:{','.join(model_ids)}:{','.join(current_ids)}"
