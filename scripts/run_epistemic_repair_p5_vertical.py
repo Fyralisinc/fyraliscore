@@ -8,6 +8,8 @@ import asyncio
 import os
 from pathlib import Path
 import sys
+import json
+import subprocess
 from uuid import uuid4
 
 import asyncpg
@@ -21,6 +23,7 @@ from lib.evaluation.epistemic_repair.p5_runner import (
     write_p5_artifact,
     write_p5_schema,
 )
+from lib.evaluation.epistemic_repair.p5_p9 import build_p5_p9_sidecar
 
 
 DEFAULT_OUTPUT = Path(
@@ -40,6 +43,15 @@ async def _run(args: argparse.Namespace) -> int:
         await transaction.rollback()
         await conn.close()
     write_p5_artifact(artifact, args.output)
+    if args.p9_output is not None:
+        root = Path(__file__).resolve().parents[1]
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        clean = not subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=root, text=True,
+        ).strip()
+        sidecar = build_p5_p9_sidecar(artifact=artifact, commit=commit, worktree_clean=clean)
+        args.p9_output.parent.mkdir(parents=True, exist_ok=True)
+        args.p9_output.write_text(json.dumps(sidecar, indent=2, sort_keys=True) + "\n")
     if args.schema_output is not None:
         write_p5_schema(args.schema_output)
     print(
@@ -60,6 +72,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--schema-output", type=Path)
+    parser.add_argument("--p9-output", type=Path)
     return parser
 
 
