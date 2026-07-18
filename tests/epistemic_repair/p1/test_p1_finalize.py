@@ -14,7 +14,7 @@ def test_p1_finalizer_requires_all_three_evidence_planes() -> None:
         "logical_call_count": 1,
         "elapsed_s": 8.0,
         "context_digest_present": True,
-        "usage_exactness": ["unavailable"],
+        "usage_exactness": ["reported"],
         "cost_usd": 0,
     }
     durable = {

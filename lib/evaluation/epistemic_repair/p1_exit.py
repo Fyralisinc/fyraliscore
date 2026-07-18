@@ -29,6 +29,11 @@ from lib.evaluation.epistemic_repair.p1_population import (
     build_p1_population,
     production_payload,
 )
+from lib.evaluation.epistemic_repair.p9_contributions import (
+    attach_p9_member_evidence,
+    git_run_provenance,
+)
+from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.reconciliation import (
     AttemptCost,
     TimingSpan,
@@ -269,7 +274,7 @@ async def run_p1_exit_evaluation(
         "durable PostgreSQL receipt write and recovery behavior",
         "bounded clean real-provider telemetry smoke",
     ]
-    return {
+    artifact = {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
         "population_version": population.version,
         "population_digest": population.digest,
@@ -323,6 +328,7 @@ async def run_p1_exit_evaluation(
         "hook_scan": {
             "registry_version": REGISTRY_VERSION,
             "reachable_module_count": len(static_scan.reachable_modules),
+            "reachable_modules": list(static_scan.reachable_modules),
             "findings": hook_findings,
             "hook_blind": not hook_findings,
         },
@@ -340,6 +346,57 @@ async def run_p1_exit_evaluation(
             "Database receipt durability is evaluated separately.",
         ],
     }
+    raw_attempts = artifact["attempt_history"]
+    raw_batches = artifact["batches"]
+    raw_cost = artifact["cost_reconciliation"]
+    gate_members = {
+        "HG-01_benchmark_blindness": [{
+            "member_id": "hook-scan:production-reachability-and-surfaces",
+            "conforms": not bool(hook_findings),
+            "raw_source_digest": canonical_sha256(artifact["hook_scan"]),
+        }],
+        "HG-13_observability_integrity": [
+            *[{
+                "member_id": f"batch:{item['batch_id']}:timing",
+                "conforms": bool(item["timing_reconciled"]),
+                "raw_source_digest": canonical_sha256(item),
+            } for item in raw_batches],
+            {
+                "member_id": "cost-reconciliation",
+                "conforms": bool(raw_cost["reconciled"]),
+                "raw_source_digest": canonical_sha256(raw_cost),
+            },
+        ],
+    }
+    metric_members = {
+        "attempt_receipt_coverage": [{
+            "member_id": f"attempt:{item['physical_attempt_id']}",
+            "numerator": int(bool(item.get("logical_call_id") and item.get("outcome"))),
+            "denominator": 1,
+            "raw_source_digest": canonical_sha256(item),
+        } for item in raw_attempts],
+        "count_reconciliation": [{
+            "member_id": "raw-count-reconciliation",
+            "numerator": int(count_reconciled), "denominator": 1,
+            "raw_source_digest": canonical_sha256(artifact["counts"]),
+        }],
+        "cost_coverage": [{
+            "member_id": f"attempt:{item['physical_attempt_id']}:cost",
+            "numerator": int(item.get("pricing_version") is not None), "denominator": 1,
+            "raw_source_digest": canonical_sha256(item),
+        } for item in raw_attempts],
+        "timing_reconciliation": [{
+            "member_id": f"batch:{item['batch_id']}:timing-error",
+            "numerator": max(0.0, 1.0 - float(item["timing_relative_error"])),
+            "denominator": 1,
+            "raw_source_digest": canonical_sha256(item),
+        } for item in raw_batches],
+    }
+    return attach_p9_member_evidence(
+        artifact, phase="p1", gate_members=gate_members,
+        metric_members=metric_members,
+        run_provenance=git_run_provenance(repository_root),
+    )
 
 
 def write_p1_exit_artifact(report: dict[str, Any], path: Path) -> Path:

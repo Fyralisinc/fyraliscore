@@ -6,9 +6,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 from pathlib import Path
+import sys
 
-from lib.evaluation.epistemic_repair.p1_exit import (
-    ARTIFACT_NAME,
+ROOT = Path(__file__).resolve().parents[1]
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(ROOT))
+
+from lib.evaluation.epistemic_repair.p1_exit import (  # noqa: E402
     run_p1_exit_evaluation,
     write_p1_exit_artifact,
 )
@@ -16,10 +20,12 @@ from lib.evaluation.epistemic_repair.p1_exit import (
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=Path("reports") / ARTIFACT_NAME)
+    parser.add_argument(
+        "--output", type=Path,
+        default=Path("artifacts/epistemic-repair/p9/p1.normalized.json"),
+    )
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
-    report = asyncio.run(run_p1_exit_evaluation(repository_root=root))
+    report = asyncio.run(run_p1_exit_evaluation(repository_root=ROOT))
     write_p1_exit_artifact(report, args.output)
     print(args.output)
     return 0 if report["passed"] else 1

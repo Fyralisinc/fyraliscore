@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import re
 from statistics import mean, median
-from typing import Any
+from typing import Any, Mapping
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p6_population import (
@@ -780,7 +780,7 @@ def score_p6_frozen_execution(
         )
     )
     exact_usage_complete = receipt_identity_complete and all(
-        row.get("usage_exactness") == "exact"
+        row.get("usage_exactness") == "reported"
         and row.get("input_tokens") is not None
         and row.get("output_tokens") is not None
         for row in receipts
@@ -831,7 +831,10 @@ def score_p6_frozen_execution(
     wrappers = [
         row for row in claim_rows
         if not row.get("evidence_signal_ids")
-        or str((row.get("proposition") or {}).get("kind") or "").casefold()
+        or str(
+            (row.get("proposition") or {}).get("kind")
+            if isinstance(row.get("proposition"), Mapping) else ""
+        ).casefold()
         in {"wrapper", "control", "batch", "episode"}
     ]
     candidates = list(evidence.get("active_candidates") or ())

@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p6_population import build_p6_population
 from lib.evaluation.epistemic_repair.p6_postfreeze_scorer import (
@@ -176,7 +178,10 @@ def test_postfreeze_evidence_digest_and_receipts_are_a_hard_gate() -> None:
     assert not report["hard_gates"]["postfreeze_evidence_digest_valid"]
 
 
-def test_estimated_usage_cannot_pass_exact_token_receipt_gate() -> None:
+@pytest.mark.parametrize("usage_exactness", ("estimated", "unavailable"))
+def test_nonreported_usage_cannot_pass_exact_token_receipt_gate(
+    usage_exactness: str,
+) -> None:
     population = build_p6_population()
     raw = _raw(population)
     receipts = []
@@ -188,7 +193,7 @@ def test_estimated_usage_cannot_pass_exact_token_receipt_gate() -> None:
             "think_run_id": run_id,
             "provider": "codex",
             "model": "gpt-5.4",
-            "usage_exactness": "estimated",
+            "usage_exactness": usage_exactness,
             "input_tokens": 10,
             "output_tokens": 10,
         })
@@ -199,3 +204,38 @@ def test_estimated_usage_cannot_pass_exact_token_receipt_gate() -> None:
     assert report["hard_gates"]["durable_call_receipts"]
     assert not report["hard_gates"]["exact_token_usage_receipts"]
     assert report["continuous_metrics"]["metered_llm_calls_per_signal"]["value"] == 12 / 300
+
+
+def test_provider_reported_usage_passes_exact_token_receipt_gate() -> None:
+    population = build_p6_population()
+    raw = _raw(population)
+    raw["llm_attempt_receipts"] = []
+    for index, wave in enumerate(raw["waves"], start=1):
+        run_id = f"run-{index}"
+        wave["execution"]["run"] = {"id": run_id}
+        raw["llm_attempt_receipts"].append({
+            "physical_attempt_id": f"attempt-{index}", "think_run_id": run_id,
+            "provider": "codex", "model": "gpt-5.4",
+            "usage_exactness": "reported", "input_tokens": 10, "output_tokens": 10,
+        })
+    report = score_p6_frozen_execution(
+        raw_execution=raw, sealed_population=population,
+    )
+    assert report["hard_gates"]["exact_token_usage_receipts"]
+
+
+def test_string_proposition_from_live_accepted_view_does_not_crash() -> None:
+    population = build_p6_population()
+    evidence = {
+        "claims": [{
+            "id": "live-claim", "proposition": "Project status changed.",
+            "natural_text": "Project status changed.",
+            "evidence_signal_ids": [population.signals[0].signal_id],
+        }],
+        "relations": [],
+    }
+    report = score_p6_frozen_execution(
+        raw_execution=_raw(population, evidence=evidence),
+        sealed_population=population,
+    )
+    assert report["hard_gates"]["wrapper_control_models_zero"]

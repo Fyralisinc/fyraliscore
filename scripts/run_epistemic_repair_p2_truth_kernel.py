@@ -7,11 +7,16 @@ import argparse
 import asyncio
 import os
 from pathlib import Path
+import sys
 
 import asyncpg
 
-from lib.evaluation.epistemic_repair.p2_exit import ARTIFACT_NAME, write_p2_exit_artifact
-from lib.evaluation.epistemic_repair.p2_runner import run_p2_truth_kernel
+ROOT = Path(__file__).resolve().parents[1]
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(ROOT))
+
+from lib.evaluation.epistemic_repair.p2_exit import write_p2_exit_artifact  # noqa: E402
+from lib.evaluation.epistemic_repair.p2_runner import run_p2_truth_kernel  # noqa: E402
 
 
 async def _run(dsn: str, output: Path) -> None:
@@ -29,7 +34,10 @@ async def _run(dsn: str, output: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dsn", default=os.environ.get("DATABASE_URL"))
-    parser.add_argument("--output", type=Path, default=Path(ARTIFACT_NAME))
+    parser.add_argument(
+        "--output", type=Path,
+        default=Path("artifacts/epistemic-repair/p9/p2.normalized.json"),
+    )
     args = parser.parse_args()
     if not args.dsn:
         parser.error("--dsn or DATABASE_URL is required")

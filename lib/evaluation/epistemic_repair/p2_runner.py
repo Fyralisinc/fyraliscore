@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from lib.contracts.truth_admission import (
     AdmissionDecision, AdmissionDisposition, AdmitModelCommand,
     AdvanceModelHeadCommand, CandidateReviewState, ModelHeadExpectation,
-    ModelTruthLifecycle, ModelTruthTransition, ModelVersion, TruthCandidate,
+    ModelTruthTransition, ModelVersion, TruthCandidate,
     TruthCandidateKind,
 )
 from lib.contracts.truth_evidence import (
@@ -34,6 +34,10 @@ from lib.evaluation.epistemic_repair.p2_oracles import (
     race_conforms, stable_digest,
 )
 from lib.evaluation.epistemic_repair.p2_population import P2Case, build_p2_population
+from lib.evaluation.epistemic_repair.p9_contributions import (
+    attach_p9_member_evidence,
+    git_run_provenance,
+)
 from lib.evaluation.epistemic_repair.reader_cutover import scan_reader_cutover
 from lib.evaluation.epistemic_repair.p2_hg10_probes import (
     probe_derived_writer_rejection,
@@ -199,7 +203,9 @@ class P2TruthKernelEvaluator:
             )
             self.snapshots.append({"case_id": case.case_id, "before": before, "after": after})
 
+        race_started = time.perf_counter()
         race_observations = await self._races(population.races)
+        race_elapsed_ms = (time.perf_counter() - race_started) * 1000
         report = build_p2_exit_artifact(population=population, case_observations=observations, execution_status="complete")
         expected = {case.case_id: case.expected_disposition for case in population.cases}
         report["hard_gates"] = {
@@ -213,7 +219,6 @@ class P2TruthKernelEvaluator:
             {**asdict(item), "conforms": race_conforms(item, race.expected_outcome)}
             for race, item in zip(population.races, race_observations, strict=True)
         ]
-        observed = [item for item in observations.values() if item.status == "observed"]
         report["continuous_metrics"].update({
             "evidence_lineage_coverage": self._rate(observations, ("accepted_atomic", "accepted_synthesis"), "HG-05"),
             "scope_precision": self._rate(observations, ("accepted_atomic", "accepted_synthesis", "entity_type_conflict"), "HG-06"),
@@ -264,7 +269,104 @@ class P2TruthKernelEvaluator:
             and report["reader_cutover_coverage"] == 1.0
         )
         report["artifact_content_digest"] = stable_digest({k: v for k, v in report.items() if k not in {"generated_at", "artifact_content_digest"}})
-        return report
+        case_by_id = {case.case_id: case for case in population.cases}
+        gate_members = {
+            gate: [{
+                "member_id": observation.case_id,
+                "conforms": bool(
+                    observation.status == "observed"
+                    and dict(observation.invariant_checks).get(gate) is True
+                    and not observation.violation_codes
+                    and observation.observed_disposition
+                    == case_by_id[observation.case_id].expected_disposition
+                ),
+                "raw_source_digest": stable_digest(observation),
+            } for observation in observations.values()
+            if gate in case_by_id[observation.case_id].expected_invariants]
+            for gate in P2_GATE_IDS
+        }
+
+        def case_metric_members(
+            metric: str, families: tuple[str, ...], gate: str, *, invert: bool = False,
+        ) -> list[dict[str, Any]]:
+            members = [{
+                "member_id": f"{metric}:{item.case_id}",
+                "numerator": int(
+                    item.status == "observed"
+                    and dict(item.invariant_checks).get(gate) is True
+                    and not item.violation_codes
+                ),
+                "denominator": 1,
+                "raw_source_digest": stable_digest(item),
+            } for item in observations.values()
+            if case_by_id[item.case_id].family in families]
+            if invert:
+                for member in members:
+                    member["numerator"] = 1 - member["numerator"]
+            return members
+
+        metric_members = {
+            "active_unexplained_perfect_confidence_relation_rate": [{
+                "member_id": f"perfect-confidence-relation:{index}",
+                "numerator": int(not explained), "denominator": 1,
+                "raw_source_digest": stable_digest({
+                    "ordinal": index, "explained": explained,
+                }),
+            } for index, explained in enumerate(
+                self._perfect_confidence_relation_explanations, start=1
+            )] or [{
+                "member_id": "perfect-confidence-relation:none-observed",
+                "numerator": 0, "denominator": 1,
+                "raw_source_digest": stable_digest({"observed_count": 0}),
+            }],
+            "active_wrapper_contamination": case_metric_members(
+                "active_wrapper_contamination", ("wrapper_control",), "HG-04",
+                invert=True,
+            ),
+            "background_repair_latency_ms": [{
+                "member_id": "race-suite-wall-time",
+                "numerator": race_elapsed_ms,
+                "denominator": max(1, len(race_observations)),
+                "raw_source_digest": stable_digest({
+                    "race_results": race_observations,
+                    "elapsed_ms": race_elapsed_ms,
+                }),
+            }],
+            "evidence_lineage_coverage": case_metric_members(
+                "evidence_lineage_coverage",
+                ("accepted_atomic", "accepted_synthesis"), "HG-05",
+            ),
+            "lifecycle_transition_latency_ms": [{
+                "member_id": f"case:{case.case_id}:latency",
+                "numerator": elapsed_ms, "denominator": 1,
+                "raw_source_digest": stable_digest({
+                    "case_result": observations[case.case_id],
+                    "elapsed_ms": elapsed_ms,
+                }),
+            } for case, elapsed_ms in zip(population.cases, self.latencies, strict=True)],
+            "relation_joint_accuracy": case_metric_members(
+                "relation_joint_accuracy", ("business_relation",), "HG-09",
+            ),
+            "scope_precision": case_metric_members(
+                "scope_precision",
+                ("accepted_atomic", "accepted_synthesis", "entity_type_conflict"),
+                "HG-06",
+            ),
+            "semantic_duplicate_absorption": [{
+                "member_id": f"semantic_duplicate_absorption:{item.case_id}",
+                "numerator": int(
+                    item.status == "observed" and not item.violation_codes
+                ),
+                "denominator": 1,
+                "raw_source_digest": stable_digest(item),
+            } for item in observations.values()
+            if case_by_id[item.case_id].family == "semantic_duplicate"],
+        }
+        return attach_p9_member_evidence(
+            report, phase="p2", gate_members=gate_members,
+            metric_members=metric_members,
+            run_provenance=git_run_provenance(repo_root),
+        )
 
     async def _case(self, case: P2Case, before_digest: str) -> P2CaseObservation:
         family = case.family
