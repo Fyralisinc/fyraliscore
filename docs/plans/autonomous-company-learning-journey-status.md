@@ -6,8 +6,8 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** CF1 authority seam integrated at `62080642`; CF2
-provider-free four-batch vertical active
+**Current checkpoint:** CF2 first actual T1 batch reached Think; atomic coverage
+veto and RawDiff coordinate defects repaired at `9fe88aee`; clean rerun pending
 
 **Last updated:** 2026-07-18
 
@@ -800,7 +800,7 @@ mere presence in the repository is not counted as completed company learning.
 
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
-| New M0 core fast path | 55–60% | CF0 is complete and the CF1 authority/contracts needed by the vertical are integrated; the actual four-batch CF2 run, scorer, lifecycle correction and atomic failure proof remain |
+| New M0 core fast path | 60–65% | CF0 and CF1 are complete enough to execute the real worker; the first CF2 T1 batch reached retrieval/reasoning/apply and exposed two now-repaired blockers. A clean four-batch run, scorer, lifecycle correction and atomic failure proof remain |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
 | Scoped company-learning runtime implementation | 98–99% | Batched path, retrieval transition, adversarial company physics, source equivalence, restart-safe correction, exact joined runtime, matched feedback lift and strict single-Model synthesis execute in bounded populations |
 | Customer-free objective substantiation | 97–98% | Eight-component v8 scores `1.0`; strict synthesis is learned `3/3` versus frozen `0/3`; objective entity v6 adds exact-runtime F1 `0.971429`, type/fate/negative safety `1.0` with complete pre-call provenance. The immutable `not_credible` large run and open-world breadth prevent company-scale generalization |
@@ -1876,3 +1876,19 @@ matched feedback quality and objective entity v6.
   action is the single four-batch provider-free actual-worker vertical.
 - Deferred: schema-drift tool synchronization, real-provider P8 faults, and
   local Git object cleanup.
+
+### 2026-07-18 — First CF2 actual-worker reflection
+
+- A fresh zero-seed run passed source grounding and executed one intact
+  25-signal T1 batch through the real Think worker.
+- The batch made a valid compiled-memory provider call and committed, but
+  admitted zero Models because unresolved uncertainty episodes incorrectly
+  diluted canonical atomic coverage from `10/10` to `10/25`.
+- The coverage denominator is repaired and protected by a mixed 25-signal
+  regression. Required RawDiff tenant/trigger coordinates are now present in
+  every inferential prompt so provider-free T4 feedback can terminate.
+- The run's fourteen forced T4 retries are recorded as `DEFER-004`; queue/backoff
+  policy will not displace the next core rerun.
+- Reflection verdict: still aligned with the core end-to-end goal. The next
+  action is exactly one clean four-batch CF2 rerun and independent scoring
+  before any new implementation.

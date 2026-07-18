@@ -1680,3 +1680,71 @@ rejection, and composite/relation atomicity through PostgreSQL.
   become materially slow or fail.
 - Recommended future phase: CF8/repository maintenance
 - Status: open
+
+### 2026-07-18 — LOG-046 — First CF2 worker run exposed a coverage-plane veto
+
+**Type:** executed, failed honestly, reflected, repaired, and awaiting rerun
+
+**Work package / commits:** `9a7dbca2`, `31983ff6`, and `9fe88aee`.
+
+**What happened:** A fresh zero-seed CF2 run passed source-authenticated
+grounding and executed the actual first 25-signal T1 batch. The first attempt
+had previously stopped before Think because source-authenticated grounding and
+learned discovery used different extractor identities for the same mention;
+aligning the exact span and extractor identity closed that duplicate-processing
+collision. The next run reached a successful Think commit, selected 20 of 25
+observations, and made one valid `BatchMemoryDecisionSet` call, but admitted no
+Models. The barrier then failed because representation-repair triggers remained
+pending.
+
+**Root cause:** The governed episode compiler had already produced ten valid,
+tenant-bound atomic candidates from five Harbor and five Delta observations.
+It then divided their coverage by all 25 assertions, including 15 observations
+already routed to unresolved uncertainty episodes. The resulting `10/25 =
+0.40` fell below the `0.60` materiality gate, so the runtime discarded the ten
+closed atomics and substituted four generic, non-actionable hypotheses. The
+provider-free handler correctly rejected those hypotheses. This was a plane
+accounting defect: uncertainty-plane rows were allowed to veto independent
+resolved truth.
+
+**Repair and evidence:** Canonical-scope coverage now excludes unresolved
+singleton episodes while still counting malformed or provisional assertions
+inside the same canonical episode. A 25-signal regression proves that ten
+resolved atomics survive alongside fifteen unresolved uncertainty rows. The
+focused context-packet suite passed `31` tests with one database test skipped
+when `DATABASE_URL` was absent; the joined CF2 source/runner slice passed `6/6`.
+The RawDiff prompt now also exposes its required tenant and trigger coordinates,
+and the provider-free repair-prompt regression passes.
+
+**Reflection:** The run advanced the core path rather than repeating P6: it
+reached real T1 retrieval, reasoning, validation and apply, then stopped at the
+first new semantic blocker. No connector, task-autonomy, broad ontology, or
+production-hardening work was started. The next action is one clean CF2 rerun;
+no additional contract polishing is authorized before that result.
+
+**Decision or next test:** Execute one fresh four-batch provider-free run at the
+frozen commit. Score the result before editing. If it fails, classify only the
+first new root cause and decide whether it violates a CF2 truth invariant.
+
+### DEFER-004 — Barrier drain bypasses retry backoff for observation-only T4 work
+
+- Date: 2026-07-18
+- Discovered in phase/run: first actual CF2 worker run
+- Artifact or reproduction: tenant
+  `d0b30a2c-5a82-4378-8258-b8eb35f3e2e9` in the local CF2 database
+- Category: `ROBUSTNESS`
+- Observed behavior: three observation-only representation-repair warnings
+  became one batched T4 attempt plus unbatched retries; the evaluator drain
+  forced fourteen rapid attempts despite normal retry scheduling.
+- Affected component: truth-critical drain and representation-repair queue
+- Core invariant affected: not for the current CF2 semantic path, provided all
+  accepted-truth invalidation and repair obligations remain barrier-critical
+- Severity: medium operational cost; low for the next M0 rerun
+- Why deferred: prompt coordinates now let these provider-free calls terminate
+  normally. Reclassifying barrier criticality and retry scheduling is broader
+  queue policy and does not create the missing atomics, synthesis, correction,
+  or reuse proof.
+- Revisit trigger: CF8 bounded recovery, or any run where observation-only T4
+  retries again dominate barrier time after valid provider execution.
+- Recommended future phase: CF8
+- Status: open
