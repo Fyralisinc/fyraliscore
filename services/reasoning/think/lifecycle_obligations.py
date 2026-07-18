@@ -18,7 +18,13 @@ from uuid import UUID
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
 
-from .diff_schema import ClaimOp, OpenQuestionOp, RawDiff, ResourceOp
+from .diff_schema import (
+    ClaimOp,
+    MemoryLifecycleOp,
+    OpenQuestionOp,
+    RawDiff,
+    ResourceOp,
+)
 
 
 _PREDICTION_RE = re.compile(
@@ -92,6 +98,147 @@ _NUMBER_WORDS = {
     "nine": 9,
     "ten": 10,
 }
+
+_SYNTHESIS_PHASES = (
+    "weak_initial",
+    "corroboration",
+    "contradiction",
+    "correction",
+    "external_outcome",
+)
+
+
+def maybe_inject_synthesis_evolution_obligations(
+    raw_diff: RawDiff,
+    bundle: ContextBundle,
+) -> RawDiff:
+    """Deterministically evolve a same-scope synthesis on explicit phase evidence.
+
+    Only an inserted atomic with an explicit ``lifecycle_phase`` can trigger this
+    path.  Batch membership is never evidence, and scope-local exactness is
+    required before the existing synthesis is touched.
+    """
+
+    existing_keys = {
+        (op.model_id, str(op.metadata.get("synthesis_phase_transition") or ""))
+        for op in raw_diff.memory_lifecycle_ops
+    }
+    additions: list[MemoryLifecycleOp] = []
+    for claim_op in raw_diff.claim_ops:
+        if claim_op.op != "insert" or not isinstance(claim_op.entry, dict):
+            continue
+        entry = claim_op.entry
+        proposition = entry.get("proposition")
+        if not isinstance(proposition, dict):
+            continue
+        if proposition.get("claim_role") in {"situation", "synthesis"}:
+            continue
+        phase = str(proposition.get("lifecycle_phase") or "")
+        if phase not in _SYNTHESIS_PHASES:
+            continue
+        atomic_id = _uuid_or_none(entry.get("id") or entry.get("model_id"))
+        if atomic_id is None:
+            continue
+        atomic_scope = _scope_identity(entry.get("scope_entities"))
+        if not atomic_scope:
+            continue
+        event_ids = [
+            value for value in (
+                _uuid_or_none(raw) for raw in (
+                    entry.get("supporting_event_ids") or ()
+                )
+            ) if value is not None
+        ]
+        for model in _active_models(bundle):
+            model_id = _uuid_or_none(getattr(model, "id", None))
+            current = getattr(model, "proposition", None)
+            if model_id is None or not isinstance(current, dict):
+                continue
+            if current.get("claim_role") not in {"situation", "synthesis"}:
+                continue
+            if _scope_identity(getattr(model, "scope_entities", None)) != atomic_scope:
+                continue
+            history = [
+                value for value in current.get("lifecycle_phase_history") or ()
+                if value in _SYNTHESIS_PHASES
+            ]
+            current_phase = str(current.get("current_lifecycle_phase") or "")
+            if current_phase in _SYNTHESIS_PHASES and current_phase not in history:
+                history.append(current_phase)
+            if phase in history:
+                continue
+            prior_rank = max(
+                (_SYNTHESIS_PHASES.index(value) for value in history), default=-1
+            )
+            if _SYNTHESIS_PHASES.index(phase) <= prior_rank:
+                continue
+            key = (model_id, phase)
+            if key in existing_keys:
+                continue
+            members = list(dict.fromkeys([
+                *(str(value) for value in current.get("member_model_ids") or ()),
+                str(atomic_id),
+            ]))
+            next_proposition = {
+                **current,
+                "member_model_ids": members,
+                "lifecycle_phase_history": [*history, phase],
+                "current_lifecycle_phase": phase,
+                "lifecycle_state": {
+                    "contradiction": "contested",
+                    "correction": "revised",
+                    "external_outcome": "resolved",
+                }.get(phase, "active"),
+            }
+            additions.append(MemoryLifecycleOp(
+                model_id=model_id,
+                action="revise",
+                evidence_event_ids=event_ids,
+                claim_local_evidence_event_ids=event_ids,
+                evidence_model_ids=[atomic_id],
+                rationale=(
+                    f"Exact same-scope atomic evidence advances the coherent "
+                    f"synthesis from {current_phase or 'unphased'} to {phase}."
+                ),
+                reason=f"synthesis_phase_transition:{phase}",
+                metadata={
+                    "source": "deterministic_synthesis_evolution",
+                    "synthesis_phase_transition": phase,
+                    "prior_phase": current_phase or None,
+                    "next_proposition": next_proposition,
+                    "exact_atomic_model_id": str(atomic_id),
+                },
+            ))
+            existing_keys.add(key)
+            break
+    if not additions:
+        return raw_diff
+    trace = (raw_diff.reasoning_trace or "").rstrip()
+    note = "synthesis_evolution: " + ", ".join(
+        str(op.metadata["synthesis_phase_transition"]) for op in additions
+    )
+    return raw_diff.model_copy(update={
+        "memory_lifecycle_ops": [*raw_diff.memory_lifecycle_ops, *additions],
+        "reasoning_trace": f"{trace}\n{note}".strip(),
+    })
+
+
+def _scope_identity(value: Any) -> frozenset[tuple[str, str]]:
+    aliases = {
+        "workstream": "project",
+        "workflow": "project",
+        "company": "organization",
+        "org": "organization",
+    }
+    result: set[tuple[str, str]] = set()
+    for item in value or ():
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("canonical_ref") or item.get("id") or item.get("referent_id")
+        if raw:
+            kind = str(item.get("type") or "other").casefold()
+            result.add((aliases.get(kind, kind), str(raw).casefold()))
+    return frozenset(result)
 
 
 def maybe_inject_lifecycle_obligations(
@@ -622,4 +769,7 @@ def _uuid_or_none(value: Any) -> UUID | None:
         return None
 
 
-__all__ = ["maybe_inject_lifecycle_obligations"]
+__all__ = [
+    "maybe_inject_lifecycle_obligations",
+    "maybe_inject_synthesis_evolution_obligations",
+]

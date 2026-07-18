@@ -25,9 +25,97 @@ from services.reasoning.think.applier import (
 from services.reasoning.think.diff_schema import ClaimOp, RawDiff, ResourceOp
 from services.reasoning.think.lifecycle_obligations import (
     maybe_inject_lifecycle_obligations,
+    maybe_inject_synthesis_evolution_obligations,
 )
 from services.reasoning.think.text_embedding import deterministic_text_embedding
 from services.reasoning.think.validator import validate
+
+
+def test_synthesis_evolution_is_exact_scope_local_and_multi_phase() -> None:
+    tenant_id = uuid7()
+    synthesis_id = uuid7()
+    scope = [{"type": "project", "canonical_ref": "project:atlas"}]
+    synthesis = SimpleNamespace(
+        id=synthesis_id,
+        status="active",
+        confidence=0.75,
+        scope_entities=scope,
+        proposition={
+            "kind": "belief",
+            "claim_role": "situation",
+            "abstraction_level": "composite",
+            "subject": "Atlas",
+            "member_model_ids": [],
+            "lifecycle_phase_history": [],
+        },
+    )
+    bundle = ContextBundle(models=[synthesis])
+    for phase in (
+        "weak_initial", "corroboration", "contradiction", "correction",
+        "external_outcome",
+    ):
+        atomic_id, event_id = uuid7(), uuid7()
+        raw = RawDiff(
+            trigger_ref=str(uuid7()),
+            tenant_id=tenant_id,
+            claim_ops=[ClaimOp(op="insert", entry={
+                "id": str(atomic_id),
+                "proposition": {
+                    "kind": "state", "claim_role": "fact",
+                    "lifecycle_phase": phase,
+                },
+                "scope_entities": scope,
+                "supporting_event_ids": [str(event_id)],
+            })],
+        )
+        out = maybe_inject_synthesis_evolution_obligations(raw, bundle)
+        assert len(out.memory_lifecycle_ops) == 1
+        op = out.memory_lifecycle_ops[0]
+        assert op.model_id == synthesis_id
+        assert op.action == "revise"
+        assert op.evidence_model_ids == [atomic_id]
+        assert op.claim_local_evidence_event_ids == [event_id]
+        assert op.metadata["synthesis_phase_transition"] == phase
+        if phase == "correction":
+            assert op.action != "confirm"
+        synthesis.proposition = op.metadata["next_proposition"]
+
+    assert synthesis.proposition["lifecycle_phase_history"] == [
+        "weak_initial", "corroboration", "contradiction", "correction",
+        "external_outcome",
+    ]
+    assert synthesis.proposition["lifecycle_state"] == "resolved"
+    assert len(synthesis.proposition["member_model_ids"]) == 5
+
+
+def test_synthesis_evolution_rejects_cross_scope_and_batch_evidence() -> None:
+    synthesis = SimpleNamespace(
+        id=uuid7(), status="active", confidence=0.8,
+        scope_entities=[{"type": "project", "canonical_ref": "project:atlas"}],
+        proposition={
+            "claim_role": "situation", "current_lifecycle_phase": "corroboration",
+        },
+    )
+    atomic_id, exact_event, sibling_event = uuid7(), uuid7(), uuid7()
+    raw = RawDiff(
+        trigger_ref=str(uuid7()), tenant_id=uuid7(),
+        claim_ops=[ClaimOp(op="insert", entry={
+            "id": str(atomic_id),
+            "proposition": {
+                "kind": "state", "claim_role": "fact",
+                "lifecycle_phase": "contradiction",
+            },
+            "scope_entities": [
+                {"type": "project", "canonical_ref": "project:beacon"}
+            ],
+            "supporting_event_ids": [str(exact_event)],
+        })],
+    )
+    out = maybe_inject_synthesis_evolution_obligations(
+        raw, ContextBundle(models=[synthesis])
+    )
+    assert out.memory_lifecycle_ops == []
+    assert str(sibling_event) not in out.model_dump_json()
 
 
 async def _insert_lifecycle_model(conn, tenant, observation_id, natural: str) -> UUID:

@@ -1357,6 +1357,9 @@ async def _compile_memory_lifecycle_update(
     changes: dict[str, Any] = {
         "supporting_model_ids": supporting_model_ids,
     }
+    next_proposition = op.metadata.get("next_proposition")
+    if op.action == "revise" and isinstance(next_proposition, dict):
+        changes["proposition"] = next_proposition
     if op.claim_local_evidence_event_ids:
         changes["supporting_event_ids"] = op.claim_local_evidence_event_ids
     confidence = _lifecycle_confidence(op, current_confidence=current_confidence)
@@ -1433,6 +1436,7 @@ async def _apply_memory_lifecycle_ops_for_diff(
                     # It is never implicit authority to support the target claim.
                     trigger_supporting_event_ids=[],
                     audit_cause_override=None,
+                    truth_reason_code=op.reason,
                 )
         except ValidationError as exc:
             message = getattr(exc, "message", str(exc))
@@ -4552,6 +4556,7 @@ async def _apply_claim_update(
     cause_event_id: UUID | None,
     trigger_supporting_event_ids: list[UUID],
     audit_cause_override: str | None,
+    truth_reason_code: str | None = None,
 ) -> dict[str, Any]:
     if op.model_id is None or not op.changes:
         raise ValidationError("apply_claim_op update: bad op")
@@ -4593,7 +4598,8 @@ async def _apply_claim_update(
             resolution_outcome=prepared.changes.get("resolution_outcome"),
             resolved_at=prepared.changes.get("resolved_at"),
             reason_code=(
-                "validated_think_claim_update:"
+                truth_reason_code
+                or "validated_think_claim_update:"
                 f"{cause_event_id or 'no-cause'}"
             ),
         )
