@@ -6,8 +6,11 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** CF2 first actual T1 batch reached Think; atomic coverage
-veto and RawDiff coordinate defects repaired at `9fe88aee`; clean rerun pending
+**Current checkpoint:** Run 9 at `f02df04f` exposed a semantic false-positive.
+The bounded correction-coherence repair and strengthened evaluator now pass a
+55-test focused slice against PostgreSQL. One fresh zero-seed four-batch run and
+canonical score remain before CF2 single-execution M0 can close; the independent
+determinism replay remains separately deferred.
 
 **Last updated:** 2026-07-18
 
@@ -71,9 +74,17 @@ CF1 then established the runtime seam required to begin the vertical:
 - the joined CF1 slice passed `55/55` focused tests and the worker authority
   slice passed `16/16` against the fresh CF0 database.
 
-This is an implementation checkpoint, not an M0 claim. CF2 must still run all
-100 signals through four actual worker batches and prove retrieval reuse,
-synthesis, correction, PostgreSQL truth behavior, and barriers end to end.
+Run 9 satisfies the mechanical four-batch contract: all 100 signals passed
+through four actual worker batches, with retrieval reuse, exact synthesis and
+correction lineage, relation atomicity, PostgreSQL truth behavior, barriers and
+tenant isolation recorded end to end. It does **not** satisfy canonical semantic
+coherence. Composite version 2 changed `proposition.summary` to “Harbor release
+is no longer blocked after certificate renewal completed,” while
+`natural_text` and `supported_relation.mechanism` retained “Harbor release is
+blocked by incomplete certificate renewal.” The old evaluator scored only the
+lineage/proposition gates and therefore reported green without detecting this
+contradiction. Cross-run determinism remains a separate unproven gate because
+the user-deferred independent replay was not run.
 
 The parallel CF0 reuse audit found no reason to replace observations, mention
 grounding, entity resolution, Slack context, batching, SAGE/retrieval, the Model
@@ -800,7 +811,7 @@ mere presence in the repository is not counted as completed company learning.
 
 | Scope | Estimate | Meaning |
 | --- | ---: | --- |
-| New M0 core fast path | 60–65% | CF0 and CF1 are complete enough to execute the real worker; the first CF2 T1 batch reached retrieval/reasoning/apply and exposed two now-repaired blockers. A clean four-batch run, scorer, lifecycle correction and atomic failure proof remain |
+| New M0 core fast path | 85–90% | The real four-batch worker path and focused correction-coherence repair are implemented and DB-tested. One fresh zero-seed four-batch run plus strengthened canonical score remains; independent replay is separately deferred |
 | Exact-alias clarification-to-reuse vertical | 100% | Implemented, real-Postgres tested and causally compared from persisted normalized signals |
 | Scoped company-learning runtime implementation | 98–99% | Batched path, retrieval transition, adversarial company physics, source equivalence, restart-safe correction, exact joined runtime, matched feedback lift and strict single-Model synthesis execute in bounded populations |
 | Customer-free objective substantiation | 97–98% | Eight-component v8 scores `1.0`; strict synthesis is learned `3/3` versus frozen `0/3`; objective entity v6 adds exact-runtime F1 `0.971429`, type/fate/negative safety `1.0` with complete pre-call provenance. The immutable `not_credible` large run and open-world breadth prevent company-scale generalization |
@@ -2008,3 +2019,30 @@ matched feedback quality and objective entity v6.
 - The authorization downgrade now carries a forced-review marker through
   validation. Focused validation passes `48/48`; the next action remains one
   fresh four-batch run and canonical score, with broader work still deferred.
+
+### 2026-07-18 — Run 9 completed mechanically but exposed a semantic false-green
+
+- Frozen commit `f02df04f`, tenant
+  `f8c222db-88f9-4e1d-b215-be08a36400b7`: four 25-signal batches completed in
+  `105.855s` from zero accepted Models and relations.
+- The then-current scorer is green for population binding, batch integrity,
+  grounding (`80/80`), evidence-bound atomics (`80/80`), accepted-memory
+  retrieval, exact composite synthesis, batch-4 correction history, shared
+  composite/relation atomicity, all four barriers and contamination.
+- The accepted composite advanced with exact version lineage and the same
+  canonical Model identity, but only its proposition summary reflected “no
+  longer blocked.” Canonical `natural_text` and the embedded
+  `supported_relation.mechanism` remained “blocked by incomplete certificate
+  renewal.” The scorer did not compare these three semantic surfaces, so its
+  green lifecycle gate is not sufficient CF2 evidence.
+- Retrieval shifted from observations toward memory:
+  `20/0`, `10/20`, `12/20`, `2/20` observations/Models by batch.
+- The bounded repair is to carry revised natural text through the governed
+  truth-version command and rebuild the embedded relation's semantic fields
+  from the exact correction while retaining its governed endpoint identity.
+  Add a canonical coherence assertion before one fresh four-batch score. Do not
+  broaden this into relation-lifecycle redesign, transition-enum migration,
+  latency work, or unrelated edge-case cleanup.
+- Determinism remains red (`replay_count=1`) because the independent replay is
+  explicitly deferred. That is separate from this observed single-execution
+  semantic defect.

@@ -91,6 +91,7 @@ def semantic_replay_projection(receipt: Mapping[str, Any]) -> dict[str, Any]:
         descriptor = {
             "source_signal_id": model.get("source_signal_id"),
             "proposition": model.get("proposition"),
+            "natural_text": model.get("natural_text"),
             "abstraction_level": model.get("abstraction_level"),
             "claim_role": model.get("claim_role"),
             "lifecycle": model.get("lifecycle"),
@@ -111,6 +112,7 @@ def semantic_replay_projection(receipt: Mapping[str, Any]) -> dict[str, Any]:
         model_fingerprint(version_id)
 
     projected_batches: list[dict[str, Any]] = []
+    relation_fingerprints: dict[str, str] = {}
     for batch in batches:
         model_descriptors: list[dict[str, Any]] = []
         relation_descriptors: list[dict[str, Any]] = []
@@ -141,6 +143,9 @@ def semantic_replay_projection(receipt: Mapping[str, Any]) -> dict[str, Any]:
                 ],
             }
             relation_fingerprint = canonical_sha256(descriptor)
+            relation_version_id = str(relation.get("relation_version_id") or "")
+            if relation_version_id:
+                relation_fingerprints[relation_version_id] = relation_fingerprint
             relation_descriptors.append({"semantic_relation": relation_fingerprint})
             commit_id = str(relation.get("commit_id") or "")
             if commit_id:
@@ -180,6 +185,20 @@ def semantic_replay_projection(receipt: Mapping[str, Any]) -> dict[str, Any]:
         barrier = batch.get("barrier")
         if not isinstance(barrier, Mapping):
             barrier = {}
+        relation_fate_descriptors = [
+            {
+                "prior_semantic_relation": relation_fingerprints.get(
+                    str(fate.get("prior_relation_version_id") or ""),
+                    canonical_sha256({"unresolved_prior_relation": True}),
+                ),
+                "kind": fate.get("kind"),
+                "lifecycle": fate.get("lifecycle"),
+                "prior_active_head_absent": (
+                    fate.get("prior_active_head_absent") is True
+                ),
+            }
+            for fate in _items(batch.get("relation_fates"))
+        ]
         projected_batches.append({
             "batch_number": batch.get("batch_number"),
             "input_signal_ids": sorted(_strings(batch.get("input_signal_ids"))),
@@ -201,6 +220,7 @@ def semantic_replay_projection(receipt: Mapping[str, Any]) -> dict[str, Any]:
             },
             "models": _multiset(model_descriptors),
             "relations": _multiset(relation_descriptors),
+            "relation_fates": _multiset(relation_fate_descriptors),
             "commit_groups": _multiset(commit_groups),
             "missing_commit_identity_count": missing_commit_count,
             "barrier": {

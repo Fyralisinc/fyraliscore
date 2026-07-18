@@ -73,6 +73,8 @@ def test_core_fast_path_gold_is_complete_separate_and_digest_bound() -> None:
     assert sum(row.role == "synthesis_conclusion" for row in gold.signals) == 1
     assert sum(row.role == "authoritative_correction" for row in gold.signals) == 1
     assert gold.expected_scope_ref == "workstream:harbor-release"
+    assert gold.expected_corrected_thesis != gold.expected_thesis
+    assert gold.expected_post_correction_relation_lifecycle == "retired"
     assert gold.synthesis_signal_id != gold.correction_signal_id
 
     body = {
@@ -92,6 +94,10 @@ def test_core_fast_path_gold_is_complete_separate_and_digest_bound() -> None:
         "correction_signal_id": gold.correction_signal_id,
         "expected_scope_ref": gold.expected_scope_ref,
         "expected_thesis": gold.expected_thesis,
+        "expected_corrected_thesis": gold.expected_corrected_thesis,
         "expected_relation_kind": gold.expected_relation_kind,
+        "expected_post_correction_relation_lifecycle": (
+            gold.expected_post_correction_relation_lifecycle
+        ),
     }
     assert gold.gold_digest == canonical_sha256(body)

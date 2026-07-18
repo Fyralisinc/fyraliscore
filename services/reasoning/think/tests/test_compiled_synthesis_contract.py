@@ -254,6 +254,7 @@ def test_authoritative_reconciliation_builds_revision_proposition() -> None:
         uuid4(), uuid4(), uuid4(), uuid4(),
     )
     member_ids = [uuid4(), uuid4()]
+    member_version_ids = [uuid4(), uuid4()]
     prior = {
         "kind": "belief",
         "claim_role": "situation",
@@ -265,7 +266,15 @@ def test_authoritative_reconciliation_builds_revision_proposition() -> None:
         "situation": "Harbor release is blocked by incomplete certificate renewal.",
         "summary": "Harbor release is blocked by incomplete certificate renewal.",
         "member_model_ids": [str(value) for value in member_ids],
-        "supported_relation": {"kind": "dependency_constraint"},
+        "supported_relation": {
+            "kind": "dependency_constraint",
+            "mechanism": "Incomplete renewal blocks the release.",
+            "source_model_id": str(member_ids[0]),
+            "target_model_id": str(member_ids[1]),
+            "source_model_version_id": str(member_version_ids[0]),
+            "target_model_version_id": str(member_version_ids[1]),
+            "evidence_event_ids": [str(uuid4())],
+        },
     }
     candidate = {
         "candidate_id": "MDC_RECON_harbor",
@@ -317,4 +326,15 @@ def test_authoritative_reconciliation_builds_revision_proposition() -> None:
     assert revised["summary"] == candidate["proposed_text"]
     assert revised["lifecycle_phase"] == "correction"
     assert revised["member_model_ids"] == prior["member_model_ids"]
-    assert revised["supported_relation"] == prior["supported_relation"]
+    assert revised["supported_relation"]["kind"] == prior["supported_relation"]["kind"]
+    assert revised["supported_relation"]["mechanism"] == candidate["proposed_text"]
+    assert revised["supported_relation"]["evidence_event_ids"] == [
+        str(observation_id)
+    ]
+    assert revised["supported_relation"]["lifecycle"] == "retired"
+    assert op.metadata["next_natural"] == candidate["proposed_text"]
+    assert len(diff.relation_claim_ops) == 1
+    retirement = diff.relation_claim_ops[0]
+    assert retirement.status == "retired"
+    assert retirement.write_policy == "no_edge"
+    assert retirement.evidence_event_ids == [observation_id]

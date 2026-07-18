@@ -52,6 +52,7 @@ def perfect_receipt() -> dict:
                 "version_id": "version:harbor-synthesis:1",
                 "source_signal_id": gold.synthesis_signal_id,
                 "proposition": gold.expected_thesis,
+                "natural_text": gold.expected_thesis,
                 "abstraction_level": "composite",
                 "claim_role": "situation",
                 "lifecycle": "active",
@@ -73,7 +74,8 @@ def perfect_receipt() -> dict:
                 "model_id": "model:harbor-synthesis",
                 "version_id": "version:harbor-synthesis:2",
                 "source_signal_id": gold.correction_signal_id,
-                "proposition": "Harbor release is unblocked after certificate renewal.",
+                "natural_text": gold.expected_corrected_thesis,
+                "proposition": gold.expected_corrected_thesis,
                 "abstraction_level": "composite",
                 "claim_role": "situation",
                 "lifecycle": "active",
@@ -84,6 +86,16 @@ def perfect_receipt() -> dict:
                 "supersedes_version_id": "version:harbor-synthesis:1",
                 "history_retained": True,
                 "commit_id": "commit:correction",
+            })
+        relation_fates = []
+        if source_batch.batch_number == 4:
+            relation_fates.append({
+                "relation_id": "relation:harbor-dependency",
+                "relation_version_id": "relation-version:2",
+                "prior_relation_version_id": "relation-version:1",
+                "kind": gold.expected_relation_kind,
+                "lifecycle": "retired",
+                "prior_active_head_absent": True,
             })
         batches.append({
             "batch_number": source_batch.batch_number,
@@ -101,6 +113,7 @@ def perfect_receipt() -> dict:
             },
             "accepted_models": models,
             "accepted_relations": relations,
+            "relation_fates": relation_fates,
             "barrier": {
                 "snapshot_validated": True,
                 "expected_head_count": 4,
@@ -178,6 +191,26 @@ def test_synthesis_and_relation_select_composite_not_same_source_atomic() -> Non
     assert artifact["metrics"]["relation_atomicity"]["score"] == 1.0
     assert artifact["gates"]["batch_3_synthesis"] is True
     assert artifact["gates"]["relation_atomicity"] is True
+
+
+def test_correction_fails_when_canonical_natural_text_is_stale() -> None:
+    receipt = perfect_receipt()
+    receipt["batches"][3]["accepted_models"][0]["natural_text"] = (
+        build_core_fast_path_gold().expected_thesis
+    )
+
+    artifact = score_core_fast_path(receipt, gold=build_core_fast_path_gold())
+
+    assert artifact["gates"]["batch_4_lifecycle_correction_history"] is False
+
+
+def test_correction_fails_without_exact_relation_retirement_lineage() -> None:
+    receipt = perfect_receipt()
+    receipt["batches"][3]["relation_fates"] = []
+
+    artifact = score_core_fast_path(receipt, gold=build_core_fast_path_gold())
+
+    assert artifact["gates"]["batch_4_relation_retirement"] is False
 
 
 def test_synthesis_rejects_atomic_with_multiple_derivation_references() -> None:

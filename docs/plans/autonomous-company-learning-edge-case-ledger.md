@@ -949,35 +949,47 @@ transport are excluded from this goal.
   `34` focused tests, and `2/2` production-shaped PostgreSQL tests on the
   dedicated fully migrated database.
 
-### EDGE-042 — Canonical revision keeps stale natural text and confirm labeling
+### EDGE-042 — Canonical revision envelope contradicts its corrected proposition
 
-- **Status:** `open; deferred beyond the next CF2 vertical`
+- **Status:** `active; bounded repair implemented, fresh CF2 proof pending`
 - **Trigger:** A compiled `revise` lifecycle operation supplies a changed
   proposition, but `advance_validated_think_model` retains the prior canonical
   `natural` text and records the active-head transition through the existing
   `confirm` enum because canonical truth has no distinct `revise` transition.
-- **Current behavior:** Version lineage, changed proposition, exact correction
-  evidence and active successor head are durable. The compatibility lifecycle
-  summary still says `revise`, but canonical natural text can describe the old
-  thesis and the canonical lifecycle event cannot distinguish revision from
-  confirmation without inspecting proposition/reason evidence.
+- **Current behavior:** Run 9 remains frozen false-green evidence. The bounded
+  repair now versions proposition and natural text together, rebuilds the
+  embedded relation mechanism from exact correction evidence, advances the
+  matching canonical relation to an immutable retired successor, and retires
+  its projection binding. The strengthened receipt/scorer require exact text
+  coherence, successor lineage and same-envelope retirement; semantic replay
+  includes both natural text and relation fate. Canonical transition labeling
+  still uses the existing confirm transition, but that broader enum issue is
+  not required for this repair.
 - **Desired behavior:** One canonical successor version should keep natural
   text and proposition coherent and expose a durable revision transition or
   equivalent typed revision receipt without inventing a second truth source.
 - **Risk:** Retrieval or reporting that privileges natural text can repeat a
   corrected belief, and lifecycle analytics can undercount genuine revisions.
-- **Safe boundary:** The immediate CF2 evaluator must score the immutable
-  proposition, predecessor, correction evidence and history rather than stale
-  compatibility text. Do not widen the truth-transition enum or migration on
-  the critical path before the current four-batch semantic loop is proven.
-- **Return condition:** CF4 lifecycle hardening adds one narrow canonical
-  revision contract, migration and retrieval-coherence proof.
-- **Evidence:** `_compile_memory_lifecycle_update`,
-  `_apply_claim_update`, and `advance_validated_think_model` source audit.
+- **Safe boundary:** Carry exact revised natural text through the governed
+  truth-version update; retain supported-relation identity/endpoints while
+  rebuilding its mechanism and evidence from the exact correction; and make
+  the evaluator require proposition summary, natural text and embedded relation
+  mechanism to agree. Do not widen the transition enum, redesign relation
+  lifecycle, or pull unrelated backlog items onto the CF2 critical path.
+- **Return condition:** Focused compiler/applier/truth tests pass and one fresh
+  four-batch receipt proves the corrected composite is coherent on all three
+  surfaces. The deferred independent determinism replay is not part of this
+  return condition.
+- **Evidence:** Frozen Run 9 commit `f02df04f`, tenant
+  `f8c222db-88f9-4e1d-b215-be08a36400b7`; `_memory_lifecycle_op_from_batch_decision`,
+  `_compile_memory_lifecycle_update`, `_apply_claim_update`, and
+  `advance_validated_think_model` source audit; `55/55` joined focused tests on
+  `fyralis_cf2_core_20260718`. A fresh four-batch runtime receipt is still
+  required before resolution.
 
 ### EDGE-043 — Lifecycle-only revisions can accidentally re-authorize relations
 
-- **Status:** `compiler and validator repair implemented; fresh-runtime validation pending`
+- **Status:** `bounded authorization defect resolved in Run 9; CF2 remains open for EDGE-042`
 - **Trigger:** Frozen CF2 run 6 reached batch 4, then failed closed with
   `RELATION_ENDPOINT_VERSION_MISMATCH` while attempting an accepted relation
   whose endpoint versions did not match the exact current heads.
@@ -992,8 +1004,8 @@ transport are excluded from this goal.
 - **Safe boundary:** Keep the repair limited to authorization and exact local
   evidence. Do not expand relation semantics, retry policy, latency work or
   general repair behavior before the next core run.
-- **Return condition:** One fresh zero-seed four-wave CF2 execution applies the
-  batch-4 revision and closes its exact barrier.
+- **Return condition:** Satisfied by Run 9: batch 4 applies the revision and
+  closes its exact barrier without admitting the inferred relation.
 - **Evidence:** Frozen commit `48cb02741574`, tenant
   `5dab01e7-38b0-4c61-b6ce-77e555f1f2bc`; batches 1–3 succeeded and batch 4
   failed with the exact version-mismatch invariant. Run 8 at `df55e849` proved
@@ -1019,7 +1031,7 @@ transport are excluded from this goal.
 
 ### EDGE-045 — Post-compiler lifecycle pressure can stale a new composite member
 
-- **Status:** `bounded repair implemented; fresh-runtime validation pending`
+- **Status:** `bounded same-diff defect resolved in Run 9; CF2 remains open for EDGE-042`
 - **Trigger:** Run 7 created the exact batch-3 composite and relation, then a
   representation-contract `unchanged` operation advanced one member head later
   in the same diff.
@@ -1031,9 +1043,9 @@ transport are excluded from this goal.
   be proven.
 - **Safe boundary:** Preserve the narrow selection exclusion. Do not redesign
   lifecycle policy or add broad repair machinery before the core rerun.
-- **Return condition:** A fresh four-batch run retains the exact composite,
-  revises it in batch 4, and makes synthesis, correction-history and
-  relation-atomicity gates green.
+- **Return condition:** Run 9 proves the exact composite remains current and is
+  versioned in batch 4, closing this same-diff ordering defect. Its separate
+  revision-envelope contradiction is tracked only in EDGE-042.
 - **Evidence:** Frozen Run 7 tenant
   `c907278e-0ef4-42be-a462-9c9f2a359b33`; focused repaired seam `47/47` green.
 

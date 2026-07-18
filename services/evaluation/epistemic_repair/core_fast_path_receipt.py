@@ -230,10 +230,15 @@ async def build_core_fast_path_runtime_receipt(
     )
     relation_rows = await conn.fetch(
         """SELECT v.relation_id AS id,v.relation_version_id,
-                  v.relation_kind,v.lifecycle,i.think_run_id,
+                  v.relation_kind,v.lifecycle,
+                  v.supersedes_relation_version_id,
+                  h.relation_version_id AS head_relation_version_id,
+                  h.lifecycle AS head_lifecycle,i.think_run_id,
                   i.status AS instance_status,
                   d.disposition AS admission_disposition
              FROM relation_truth_versions v
+             JOIN relation_truth_heads h
+               ON h.tenant_id=v.tenant_id AND h.relation_id=v.relation_id
              JOIN relation_instances i
                ON i.tenant_id=v.tenant_id AND i.id=v.relation_id
              JOIN relation_truth_admission_decisions d
@@ -440,6 +445,7 @@ async def build_core_fast_path_runtime_receipt(
                     or proposition.get("situation")
                     or row["natural_text"]
                 ),
+                "natural_text": row["natural_text"],
                 "abstraction_level": proposition.get("abstraction_level"),
                 "claim_role": proposition.get("claim_role"),
                 "lifecycle": row["lifecycle"],
@@ -468,6 +474,7 @@ async def build_core_fast_path_runtime_receipt(
                     "tenant_id": str(tenant_id),
                 })
         batch_relations: list[dict[str, Any]] = []
+        relation_fates: list[dict[str, Any]] = []
         relation_row_by_version: dict[str, Mapping[str, Any]] = {}
         for row in relation_rows:
             relation_version_id = str(row["relation_version_id"])
@@ -538,15 +545,64 @@ async def build_core_fast_path_runtime_receipt(
         reported_matched_count = matched_count if receipt_valid else 0
         reported_missing_count = expected_count - reported_matched_count
 
-        # A Think run is used as a shared transaction-envelope coordinate only
-        # when durable apply, composite, relation, and barrier evidence all
-        # agree. It is not relabeled as either canonical truth command ID.
+        # Relation lifecycle credit must be caused by this batch's durable
+        # apply envelope.  A successor observed between barriers is not enough:
+        # it may have been advanced by unrelated work in the same tenant.
         db_run = runs_by_id.get(run_id)
         run_ops = _json(db_run["ops_applied"]) if db_run is not None else {}
         run_ops = run_ops if isinstance(run_ops, Mapping) else {}
         diff_hash = str(run_ops.get("diff_hash") or "")
         db_trigger_id = str(db_run["trigger_id"]) if db_run is not None else ""
         applied = applied_by_trigger.get(db_trigger_id)
+        retirement_envelope_valid = bool(
+            receipt_valid
+            and db_run is not None
+            and db_run["status"] == "success"
+            and db_run["error"] is None
+            and db_trigger_id == trigger_id
+            and diff_hash
+            and applied is not None
+            and applied["outcome"] == "success"
+            and applied["diff_hash"] == diff_hash
+            and int(run_ops.get("apply_dropped_op_count") or 0) == 0
+        )
+        applied_retired_relation_ids = {
+            str(relation_id)
+            for op in run_ops.get("relation_claim_ops") or ()
+            if isinstance(op, Mapping) and op.get("status") == "retired"
+            for relation_id in op.get("retired_relation_ids") or ()
+        }
+        for row in relation_rows:
+            prior_relation_version_id = row["supersedes_relation_version_id"]
+            if (
+                prior_relation_version_id is None
+                or str(prior_relation_version_id) not in prior_relation_heads
+                or str(row["head_relation_version_id"])
+                != str(row["relation_version_id"])
+                or (
+                    number == 4
+                    and (
+                        not retirement_envelope_valid
+                        or str(row["id"]) not in applied_retired_relation_ids
+                    )
+                )
+            ):
+                continue
+            relation_fates.append({
+                "relation_id": str(row["id"]),
+                "relation_version_id": str(row["relation_version_id"]),
+                "prior_relation_version_id": str(prior_relation_version_id),
+                "kind": row["relation_kind"],
+                "lifecycle": row["head_lifecycle"],
+                "prior_active_head_absent": (
+                    receipt_valid
+                    and str(prior_relation_version_id) not in expected_relation_ids
+                ),
+            })
+
+        # A Think run is used as a shared transaction-envelope coordinate only
+        # when durable apply, composite, relation, and barrier evidence all
+        # agree. It is not relabeled as either canonical truth command ID.
         envelope_valid = bool(
             receipt_valid
             and db_run is not None
@@ -626,6 +682,7 @@ async def build_core_fast_path_runtime_receipt(
             },
             "accepted_models": batch_models,
             "accepted_relations": batch_relations,
+            "relation_fates": relation_fates,
             "barrier": {
                 "snapshot_validated": receipt_valid,
                 "expected_head_count": expected_count,

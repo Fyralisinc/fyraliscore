@@ -340,6 +340,7 @@ async def test_governed_admission_persists_exact_claim_local_evidence() -> None:
             "kind": "state", "subject": "Atlas", "assertion": "blocked",
             "qualifier": "release certificate",
         }
+        revised_natural = "Atlas release is blocked by its certificate."
         revised_falsifier = {"kind": "observation_pattern", "pattern": "certificate clears"}
         supporting_model_id = uuid4()
         resolved_at = datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
@@ -353,6 +354,7 @@ async def test_governed_admission_persists_exact_claim_local_evidence() -> None:
             conn, tenant_id=tenant_id, model_id=row.id, confidence=0.61,
             evidence_observation_ids=(observation_id,), reason_code="focused-proof",
             proposition=revised_proposition, falsifier=revised_falsifier,
+            natural=revised_natural,
             evidential_weight=0.73, supporting_model_ids=(supporting_model_id,),
             visible_to_subjects=False, resolution_outcome=False,
             resolved_at=resolved_at, scope=revised_scope,
@@ -362,6 +364,7 @@ async def test_governed_admission_persists_exact_claim_local_evidence() -> None:
             conn, tenant_id=tenant_id, model_id=row.id, confidence=0.61,
             evidence_observation_ids=(observation_id,), reason_code="focused-proof",
             proposition=revised_proposition, falsifier=revised_falsifier,
+            natural=revised_natural,
             evidential_weight=0.73, supporting_model_ids=(supporting_model_id,),
             visible_to_subjects=False, resolution_outcome=False,
             resolved_at=resolved_at, scope=revised_scope,
@@ -378,13 +381,20 @@ async def test_governed_admission_persists_exact_claim_local_evidence() -> None:
         ) == pytest.approx(0.61)
         projected = await conn.fetchrow(
             """
-            SELECT proposition,falsifier,evidential_weight,visible_to_subjects,
+            SELECT proposition,"natural",falsifier,evidential_weight,visible_to_subjects,
                    supporting_model_ids,resolution_outcome,resolved_at,
                    scope_entities,scope_temporal
             FROM models WHERE tenant_id=$1 AND id=$2
             """, tenant_id, row.id,
         )
         assert json.loads(projected["proposition"]) == revised_proposition
+        assert projected["natural"] == revised_natural
+        assert await conn.fetchval(
+            """SELECT natural_text FROM model_truth_versions
+               WHERE tenant_id=$1 AND model_id=$2 AND version=2""",
+            tenant_id,
+            row.id,
+        ) == revised_natural
         assert json.loads(projected["falsifier"]) == revised_falsifier
         assert float(projected["evidential_weight"]) == pytest.approx(0.73)
         assert projected["visible_to_subjects"] is False

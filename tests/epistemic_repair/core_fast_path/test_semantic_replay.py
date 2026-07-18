@@ -18,6 +18,7 @@ def _receipt(*, split_commit: bool = False, duplicate_model: bool = False):
         {
             "model_id": str(uuid4()), "version_id": str(version_a),
             "source_signal_id": "signal-a", "proposition": "A",
+            "natural_text": "A",
             "lifecycle": "active", "scope_refs": ["scope:x"],
             "evidence_signal_ids": ["signal-a"],
             "supporting_model_version_ids": [], "commit_id": str(uuid4()),
@@ -27,6 +28,7 @@ def _receipt(*, split_commit: bool = False, duplicate_model: bool = False):
         {
             "model_id": str(uuid4()), "version_id": str(version_b),
             "source_signal_id": "signal-b", "proposition": "B",
+            "natural_text": "B",
             "lifecycle": "active", "scope_refs": ["scope:x"],
             "evidence_signal_ids": ["signal-b"],
             "supporting_model_version_ids": [], "commit_id": str(uuid4()),
@@ -36,6 +38,7 @@ def _receipt(*, split_commit: bool = False, duplicate_model: bool = False):
         {
             "model_id": str(uuid4()), "version_id": str(version_s),
             "source_signal_id": None, "proposition": "A therefore B",
+            "natural_text": "A therefore B",
             "lifecycle": "active", "scope_refs": ["scope:x"],
             "evidence_signal_ids": ["signal-a", "signal-b"],
             "supporting_model_version_ids": [str(version_a), str(version_b)],
@@ -103,3 +106,33 @@ def test_digest_preserves_commit_equivalence_and_multiplicity() -> None:
     assert semantic_replay_digest(_receipt()) != semantic_replay_digest(
         _receipt(duplicate_model=True),
     )
+
+
+def test_digest_detects_natural_text_change() -> None:
+    original = _receipt()
+    changed = deepcopy(original)
+    changed["batches"][0]["accepted_models"][2]["natural_text"] = "stale text"
+    assert semantic_replay_digest(original) != semantic_replay_digest(changed)
+
+
+def test_digest_detects_relation_fate_change_without_execution_ids() -> None:
+    original = _receipt()
+    relation = original["batches"][0]["accepted_relations"][0]
+    original["batches"][0]["relation_fates"] = [{
+        "relation_id": relation["relation_id"],
+        "relation_version_id": str(uuid4()),
+        "prior_relation_version_id": relation["relation_version_id"],
+        "kind": relation["kind"],
+        "lifecycle": "retired",
+        "prior_active_head_absent": True,
+    }]
+    same_semantics = deepcopy(original)
+    same_semantics["batches"][0]["relation_fates"][0].update({
+        "relation_id": str(uuid4()),
+        "relation_version_id": str(uuid4()),
+    })
+    changed = deepcopy(original)
+    changed["batches"][0]["relation_fates"][0]["prior_active_head_absent"] = False
+
+    assert semantic_replay_digest(original) == semantic_replay_digest(same_semantics)
+    assert semantic_replay_digest(original) != semantic_replay_digest(changed)

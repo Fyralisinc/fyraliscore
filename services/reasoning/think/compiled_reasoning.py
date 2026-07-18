@@ -498,6 +498,13 @@ class CompiledBatchMemoryDecisionRequest:
                     )
                     continue
                 memory_lifecycle_ops.append(lifecycle_op)
+                retired_relation_op = _retired_supported_relation_op(
+                    candidate,
+                    decision,
+                    lifecycle_op=lifecycle_op,
+                )
+                if retired_relation_op is not None:
+                    relation_claim_ops.append(retired_relation_op)
                 accepted += 1
                 trace_parts.append(
                     f"{decision.candidate_id}: accepted {decision.operation} "
@@ -3834,9 +3841,10 @@ def _memory_lifecycle_op_from_batch_decision(
         "operation": decision.operation,
     }
     if action == "revise" and str(decision.claim_text or "").strip():
+        revised_text = str(decision.claim_text).strip()
         next_proposition = _batch_claim_proposition(
             decision.claim_role or "situation",
-            str(decision.claim_text).strip(),
+            revised_text,
             candidate,
             decision,
         )
@@ -3853,7 +3861,6 @@ def _memory_lifecycle_op_from_batch_decision(
                 "scope_label",
                 "scope_ref",
                 "member_model_ids",
-                "supported_relation",
                 "pressure_type",
                 "affected_decisions",
                 "affected_customers",
@@ -3861,10 +3868,28 @@ def _memory_lifecycle_op_from_batch_decision(
             ):
                 if key in prior_proposition:
                     next_proposition[key] = prior_proposition[key]
+            prior_relation = prior_proposition.get("supported_relation")
+            if isinstance(prior_relation, dict):
+                next_proposition["supported_relation"] = {
+                    **prior_relation,
+                    "mechanism": revised_text,
+                    "evidence_event_ids": [
+                        str(value) for value in claim_local_evidence_event_ids
+                    ],
+                    **({"lifecycle": "retired"}
+                       if _revision_retires_supported_relation(
+                           prior_relation,
+                           revised_text,
+                           lifecycle_phase=str(
+                               candidate.get("lifecycle_phase") or ""
+                           ),
+                       ) else {}),
+                }
         next_proposition["lifecycle_phase"] = (
             candidate.get("lifecycle_phase") or "correction"
         )
         metadata["next_proposition"] = next_proposition
+        metadata["next_natural"] = revised_text
     op = MemoryLifecycleOp(
         op="reconcile",
         model_id=model_id,
@@ -3881,6 +3906,101 @@ def _memory_lifecycle_op_from_batch_decision(
         metadata=metadata,
     )
     return op, ""
+
+
+def _revision_retires_supported_relation(
+    relation: dict[str, Any],
+    revised_text: str,
+    *,
+    lifecycle_phase: str,
+) -> bool:
+    kind = str(relation.get("kind") or "").casefold()
+    text = revised_text.casefold()
+    if lifecycle_phase != "correction":
+        return False
+    if kind in {"blocks", "dependency_constraint"}:
+        return any(phrase in text for phrase in (
+            "no longer blocked",
+            "is unblocked",
+            "blocker cleared",
+            "blocker was removed",
+            "prerequisite was completed",
+            "prerequisite is complete",
+        ))
+    return False
+
+
+def _retired_supported_relation_op(
+    candidate: dict[str, Any],
+    decision: BatchMemoryCandidateDecision,
+    *,
+    lifecycle_op: MemoryLifecycleOp,
+) -> RelationClaimOp | None:
+    if lifecycle_op.action != "revise":
+        return None
+    prior_proposition = candidate.get("target_proposition")
+    if not isinstance(prior_proposition, dict):
+        return None
+    relation = prior_proposition.get("supported_relation")
+    revised_text = str(decision.claim_text or "").strip()
+    if (
+        not isinstance(relation, dict)
+        or not revised_text
+        or not _revision_retires_supported_relation(
+            relation,
+            revised_text,
+            lifecycle_phase=str(candidate.get("lifecycle_phase") or ""),
+        )
+    ):
+        return None
+    source_model_id = _coerce_uuid(relation.get("source_model_id"))
+    target_model_id = _coerce_uuid(relation.get("target_model_id"))
+    source_version_id = _coerce_uuid(relation.get("source_model_version_id"))
+    target_version_id = _coerce_uuid(relation.get("target_model_version_id"))
+    if None in {
+        source_model_id,
+        target_model_id,
+        source_version_id,
+        target_version_id,
+    }:
+        return None
+    prior_kind = str(relation.get("kind") or "")
+    edge_kind = {
+        "dependency_constraint": "blocks",
+        "enablement": "enables",
+        "causal_influence": "causes",
+        "predictive_indicator": "predicts",
+    }.get(prior_kind, prior_kind)
+    evidence_ids = list(lifecycle_op.claim_local_evidence_event_ids)
+    return RelationClaimOp(
+        op="upsert",
+        source_model_id=source_model_id,
+        target_model_id=target_model_id,
+        source_model_version_id=source_version_id,
+        target_model_version_id=target_version_id,
+        subject_ref={"kind": "model", "model_id": str(source_model_id)},
+        object_ref={"kind": "model", "model_id": str(target_model_id)},
+        predicate=edge_kind,
+        edge_kind=edge_kind,
+        direction="source_to_target",
+        endpoint_binding_status="bound",
+        write_policy="no_edge",
+        status="retired",
+        confidence=float(decision.confidence),
+        binding_confidence=1.0,
+        evidence_event_ids=evidence_ids,
+        evidence_model_ids=[source_model_id, target_model_id],
+        evidence_text=revised_text,
+        explanation=(
+            "Authoritative composite correction retires the previously "
+            f"supported {edge_kind} relation."
+        ),
+        metadata={
+            "relation_claim_origin": "composite_correction_retirement",
+            "governing_composite_model_id": str(lifecycle_op.model_id),
+            "memory_decision_candidate_id": decision.candidate_id,
+        },
+    )
 
 
 def _infer_batch_lifecycle_action(

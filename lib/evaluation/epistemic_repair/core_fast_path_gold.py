@@ -33,7 +33,9 @@ class CoreFastPathGold:
     correction_signal_id: str
     expected_scope_ref: str
     expected_thesis: str
+    expected_corrected_thesis: str
     expected_relation_kind: str
+    expected_post_correction_relation_lifecycle: str
     gold_digest: str
 
 
@@ -102,7 +104,11 @@ def build_core_fast_path_gold() -> CoreFastPathGold:
         "expected_thesis": (
             "Harbor release is blocked by incomplete certificate renewal."
         ),
+        "expected_corrected_thesis": (
+            "Harbor release is no longer blocked after certificate renewal completed."
+        ),
         "expected_relation_kind": "dependency_constraint",
+        "expected_post_correction_relation_lifecycle": "retired",
     }
     return CoreFastPathGold(
         population_digest=population.population_digest,
@@ -111,7 +117,11 @@ def build_core_fast_path_gold() -> CoreFastPathGold:
         correction_signal_id=str(body["correction_signal_id"]),
         expected_scope_ref=str(body["expected_scope_ref"]),
         expected_thesis=str(body["expected_thesis"]),
+        expected_corrected_thesis=str(body["expected_corrected_thesis"]),
         expected_relation_kind=str(body["expected_relation_kind"]),
+        expected_post_correction_relation_lifecycle=str(
+            body["expected_post_correction_relation_lifecycle"]
+        ),
         gold_digest=canonical_sha256(body),
     )
 

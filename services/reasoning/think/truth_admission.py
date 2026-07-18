@@ -611,6 +611,7 @@ async def advance_validated_think_model(
     conn: asyncpg.Connection, *, tenant_id: UUID, model_id: UUID,
     confidence: float, evidence_observation_ids: tuple[UUID, ...],
     proposition: dict[str, Any] | None = None,
+    natural: str | None = None,
     falsifier: dict[str, Any] | None = None,
     evidential_weight: float | None = None,
     supporting_model_ids: tuple[UUID, ...] | None = None,
@@ -668,6 +669,7 @@ async def advance_validated_think_model(
     ) for row in rows if str(row["id"]) not in prior_observations)
     evidence = (*prior.evidence, *additions)
     next_proposition = proposition if proposition is not None else prior.proposition
+    next_natural = natural.strip() if isinstance(natural, str) and natural.strip() else prior.natural
     next_falsifier = falsifier if falsifier is not None else prior.falsifier
     next_weight = evidential_weight if evidential_weight is not None else prior.evidential_weight
     next_supporting_models = supporting_model_ids if supporting_model_ids is not None else prior.supporting_model_ids
@@ -681,6 +683,7 @@ async def advance_validated_think_model(
         "confidence": confidence, "evidence": evidence,
         "semantic_digest_version": 2,
         "proposition": next_proposition, "falsifier": next_falsifier,
+        "natural": next_natural,
         "evidential_weight": next_weight,
         "supporting_model_ids": next_supporting_models,
         "visible_to_subjects": next_visible,
@@ -689,7 +692,7 @@ async def advance_validated_think_model(
         "temporal_scope": next_temporal_scope,
         "lifecycle": transition.resulting_lifecycle, "created_at": at,
         "semantic_digest": ModelVersion.compute_semantic_digest(
-            proposition=next_proposition, natural=prior.natural, evidence=evidence,
+            proposition=next_proposition, natural=next_natural, evidence=evidence,
             scope=next_scope, confidence=confidence,
             falsifier=next_falsifier, evidential_weight=next_weight,
             supporting_model_ids=next_supporting_models,

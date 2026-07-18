@@ -3803,7 +3803,6 @@ async def test_apply_relation_claim_op_persists_claim_and_creates_edge(
             """,
             tenant,
         )
-
     assert len(result["relation_claim_ops"]) == 1
     assert result["relation_claim_ops"][0]["status"] == "accepted"
     assert len(result["edge_ops"]) == 1
@@ -3844,19 +3843,91 @@ async def test_apply_relation_claim_op_persists_claim_and_creates_edge(
 async def test_apply_retired_relation_claim_retires_projected_edge(
     fresh_db,
     tenant,
-    tenant_cleanup,
 ):
+    from services.reasoning.think.applier import _active_pairwise_relation_ids
     from services.reasoning.think.tests.conftest import _insert_observation
 
     async with fresh_db.acquire() as conn:
+        blocker_oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="DPA approval is pending",
+            external_id=f"relation-claim-blocker-{uuid7()}",
+        )
+        blocked_work_oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="HubSpot import is blocked",
+            external_id=f"relation-claim-blocked-work-{uuid7()}",
+        )
         oid = await _insert_observation(
             conn,
             tenant,
             content_text="Future evidence retired the blocker relation",
             external_id=f"relation-claim-retire-{uuid7()}",
         )
-        a = await _insert_applier_model(conn, tenant, oid, "DPA approval is pending")
-        b = await _insert_applier_model(conn, tenant, oid, "HubSpot import is blocked")
+        endpoint_text = {
+            blocker_oid: "DPA approval is pending",
+            blocked_work_oid: "HubSpot import is blocked",
+        }
+        endpoint_seed = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(event_id),
+                        "supporting_event_ids": [str(event_id)],
+                        "proposition": {
+                            "kind": "belief",
+                            "claim_role": "fact",
+                            "abstraction_level": "atomic",
+                            "subject": "HubSpot import",
+                            "assertion": text,
+                            "scope_ref": "workstream:hubspot-import",
+                            "scope_label": "HubSpot import",
+                            "evidence_event_ids": [str(event_id)],
+                        },
+                        "natural": text,
+                        "scope_actors": [],
+                        "scope_entities": [
+                            {
+                                "type": "workstream",
+                                "id": "workstream:hubspot-import",
+                                "canonical_ref": "workstream:hubspot-import",
+                                "display_label": "HubSpot import",
+                            }
+                        ],
+                        "scope_temporal": {},
+                        "confidence": 0.78,
+                        "confidence_at_assertion": 0.78,
+                    },
+                )
+                for event_id, text in endpoint_text.items()
+            ],
+        )
+        async with conn.transaction():
+            endpoint_result = await apply_diff(
+                endpoint_seed,
+                conn,
+                "T1:event_batch",
+                trigger_supporting_event_ids=list(endpoint_text),
+            )
+        a, b = endpoint_result["applied_model_ids"]
+        endpoint_heads = await conn.fetch(
+            """
+            SELECT model_id, version_id
+            FROM model_truth_heads
+            WHERE tenant_id=$1 AND model_id=ANY($2::uuid[])
+            """,
+            tenant,
+            [a, b],
+        )
+        version_by_model = {
+            row["model_id"]: row["version_id"] for row in endpoint_heads
+        }
         add_diff = ValidatedDiff(
             trigger_ref=uuid7(),
             tenant_id=tenant,
@@ -3865,6 +3936,8 @@ async def test_apply_retired_relation_claim_retires_projected_edge(
                     op="upsert",
                     source_model_id=a,
                     target_model_id=b,
+                    source_model_version_id=version_by_model[a],
+                    target_model_version_id=version_by_model[b],
                     subject_ref={"kind": "model", "model_id": str(a)},
                     object_ref={"kind": "model", "model_id": str(b)},
                     predicate="blocks",
@@ -3878,11 +3951,35 @@ async def test_apply_retired_relation_claim_retires_projected_edge(
                     evidence_model_ids=[a, b],
                     evidence_text="The DPA approval blocks the HubSpot import.",
                     explanation="The pending DPA approval gates the import.",
+                    semantic_scope=["workstream:hubspot-import"],
                 )
             ],
         )
         async with conn.transaction():
-            await apply_diff(add_diff, conn, "T1", oid)
+            add_result = await apply_diff(add_diff, conn, "T1", oid)
+        relation_id = UUID(
+            add_result["relation_claim_ops"][0]["relation_instance_id"]
+        )
+        # Canonical discovery must not depend on the legacy relation frame being
+        # eligible. Hide that compatibility row, prove the truth-head lookup,
+        # then restore it so the downstream legacy retirement is also covered.
+        await conn.execute(
+            "UPDATE relation_instances SET status='candidate' WHERE id=$1",
+            relation_id,
+        )
+        discovered = await _active_pairwise_relation_ids(
+            conn,
+            tenant_id=tenant,
+            source_model_id=a,
+            target_model_id=b,
+            relation_kind="blocks",
+            direction="source_to_target",
+        )
+        assert discovered == (relation_id,)
+        await conn.execute(
+            "UPDATE relation_instances SET status='accepted' WHERE id=$1",
+            relation_id,
+        )
 
         retire_diff = ValidatedDiff(
             trigger_ref=uuid7(),
@@ -3892,6 +3989,8 @@ async def test_apply_retired_relation_claim_retires_projected_edge(
                     op="upsert",
                     source_model_id=a,
                     target_model_id=b,
+                    source_model_version_id=version_by_model[a],
+                    target_model_version_id=version_by_model[b],
                     subject_ref={"kind": "model", "model_id": str(a)},
                     object_ref={"kind": "model", "model_id": str(b)},
                     predicate="blocks",
@@ -3905,6 +4004,7 @@ async def test_apply_retired_relation_claim_retires_projected_edge(
                     evidence_model_ids=[a, b],
                     evidence_text="Future evidence shows the import is no longer blocked.",
                     explanation="Future validation retired the blocker relation.",
+                    semantic_scope=["workstream:hubspot-import"],
                 )
             ],
         )
@@ -3948,21 +4048,50 @@ async def test_apply_retired_relation_claim_retires_projected_edge(
             """,
             tenant,
         )
-
+        truth_versions = await conn.fetch(
+            """
+            SELECT relation_version_id,version,lifecycle,
+                   supersedes_relation_version_id
+            FROM relation_truth_versions
+            WHERE tenant_id=$1
+            ORDER BY version
+            """,
+            tenant,
+        )
+        truth_head = await conn.fetchrow(
+            """
+            SELECT relation_version_id,version,lifecycle
+            FROM relation_truth_heads
+            WHERE tenant_id=$1
+            """,
+            tenant,
+        )
     assert retire_result["relation_claim_ops"][0]["status"] == "retired"
     assert retire_result["edge_ops"][0]["op"] == "retire"
     assert retire_result["edge_ops"][0]["source"] == "relation_claim_op"
-    assert retire_result["edge_ops"][0]["retired_edges"] == 1
+    assert retire_result["edge_ops"][0]["retired_edges"] == 0
     assert edge is not None
-    assert edge["status"] == "inert"
-    assert edge["review_status"] == "retired"
-    assert edge["status_reason"] == "Future validation retired the blocker relation."
+    # Canonical projections are immutable history. Retirement changes the
+    # authoritative truth head and its compatibility-frame projection, not the
+    # already-materialized historical edge row.
+    assert edge["status"] == "active"
+    assert edge["review_status"] == "accepted"
+    assert edge["status_reason"] is None
     assert retired_claim is not None
     assert retired_claim["write_policy"] == "no_edge"
     assert canonical_relation is not None
     assert canonical_relation["status"] == "retired"
     assert projection is not None
     assert projection["status"] == "retired"
+    assert len(truth_versions) == 2
+    assert truth_versions[0]["lifecycle"] == "active"
+    assert truth_versions[1]["lifecycle"] == "retired"
+    assert truth_versions[1]["supersedes_relation_version_id"] == (
+        truth_versions[0]["relation_version_id"]
+    )
+    assert truth_head["version"] == 2
+    assert truth_head["lifecycle"] == "retired"
+    assert truth_head["relation_version_id"] == truth_versions[1]["relation_version_id"]
 
 
 @pytest.mark.parametrize("status", ["candidate", "needs_review"])

@@ -65,20 +65,20 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | Clean four-batch P6 core pass at `bf26d622`; full twelve-batch evidence remains outstanding |
-| Repair implementation | Exact atomic, uncertainty, scope, lineage, and first mature synthesis contracts are integrated through batch four |
-| Current phase | Advance from bounded four-batch proof to the clean decisive twelve-batch P6 run |
+| Latest verified coordination checkpoint | CF2 provider-free Run 9 at `f02df04f`: four-batch mechanics complete, but the old evaluator produced a semantic false-green because revised proposition, natural text and supported-relation mechanism disagree |
+| Repair implementation | Exact atomic evidence, scope, synthesis, relation authority, correction lineage and barriers reach batch four; canonical revision-envelope coherence remains open |
+| Current phase | Repair and rescore only the bounded Run-9 canonical coherence defect before claiming CF2 complete; independent determinism replay remains deferred |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
 | Current execution boundary | Begins with normalized, source-attributed signals already persisted in PostgreSQL |
 | Explicitly excluded | Connectors/listeners, OAuth/webhooks, task autonomy, external consequential action, second 45-batch run |
 | P0-P5 evidence state | Strict raw-member P9 regeneration/sidecar paths ready; current-release artifacts still require clean regeneration |
-| P6 evidence state | Historical 300-signal failure preserved; clean four-batch rerun now has atomic/uncertainty/lineage/scope metrics 1.0 and one claim-local Atlas composite |
+| P6 evidence state | Historical 300-signal failure preserved; CF2 Run 9 proves one mechanically complete zero-seed four-batch execution, not a semantically coherent CF2 exit or the full twelve-batch P6 claim |
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
-| Highest-priority outcome | Run all twelve batches without weakening the clean four-batch contracts; measure all four theses and terminal lifecycle behavior |
+| Highest-priority outcome | Keep the working four-batch loop green while proving the next smallest company-model learning behavior; do not reopen the full P6 loop |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -1927,3 +1927,63 @@ passes `48/48` tests.
 survived the full pipeline. This is the same relation-authorization invariant
 at the next consumer, not permission to broaden relation semantics. Validate
 once more on the exact four-batch path.
+
+### 2026-07-18 — LOG-052 — Run 9's old evaluator green was a semantic false-positive
+
+**Frozen evidence:** Commit `f02df04f`; tenant
+`f8c222db-88f9-4e1d-b215-be08a36400b7`; four batches completed in `105.855s`.
+Every then-implemented gate except cross-run determinism reported green. The system
+processed `100/100`, grounded and admitted `80/80` exact atomics, retained the
+batch-3 composite and relation, revised that same composite in batch 4 with
+history, closed all barriers, and showed zero contamination.
+
+Independent canonical inspection subsequently found that composite v2 changed
+`proposition.summary` to the corrected “no longer blocked” thesis while
+canonical `natural_text` and `supported_relation.mechanism` retained the v1
+“blocked by incomplete certificate renewal” thesis. The evaluator checked
+lineage, current-head state and relation atomicity, but not agreement among
+these semantic surfaces. Its green result was therefore a false-positive and
+does not complete CF2.
+
+**Learning:** Authorization has to survive every consumer, immutable composite
+evidence has to survive same-diff ordering, and a revision is not coherent
+unless proposition, natural text and its embedded relation envelope describe
+the same current judgment. The bounded repair should version revised natural
+text through canonical truth and refresh only the relation envelope's semantic
+fields from exact correction evidence while retaining governed endpoint
+identity. Add the missing evaluator coherence assertion.
+
+**Reflection:** The mechanical loop is intact, but the semantic exit is not.
+Repair and rescore this exact defect before opening CF3. Do not run the deferred
+second replay or expand into transition-enum redesign, broad relation lifecycle,
+latency, production hardening, stale broad-test cleanup, or other ledger items.
+
+### 2026-07-18 — LOG-053 — Correction coherence is now one governed transition
+
+**Implementation:** A composite correction now advances proposition and
+canonical natural text together, refreshes the embedded relation mechanism from
+the exact correction evidence, and emits an explicit retirement operation for
+the superseded relation. Canonical relation discovery reads current relation
+truth and exact typed participants rather than trusting mutable legacy
+projections. Retirement advances the immutable canonical head first, retires
+the relation instance/projection binding second, and preserves the historical
+accepted edge row as an immutable artifact.
+
+**Evaluator repair:** The gold and scorer now require the exact corrected
+thesis, equality between canonical natural text and proposition, and an exact
+active-to-retired relation successor. The receipt binds that successor to the
+same successful batch-4 Think/apply envelope and diff hash. Semantic replay
+fingerprints now include natural text and relation fate so these defects cannot
+be hidden by a stable digest.
+
+**Evidence:** The joined compiler, applier, truth-admission, atomicity, receipt,
+scorer, semantic-replay and CF2 decision slice passed `55/55` against
+`fyralis_cf2_core_20260718`. Architecture ratchets passed. The repository-wide
+technical-debt budget still fails on pre-existing global thresholds and
+unrelated named files; none of the reported file/function overruns points to
+this patch.
+
+**Reflection:** This repair stayed inside the core truth-consistency boundary.
+The next action is a checkpoint commit followed by exactly one fresh zero-seed
+four-batch run and strengthened score. Do not open CF3 or chase unrelated debt
+before that proof.

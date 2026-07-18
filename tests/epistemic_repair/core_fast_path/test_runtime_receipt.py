@@ -80,6 +80,9 @@ class _Connection:
                 "relation_version_id": self.relation_version_id,
                 "relation_kind": "dependency_constraint",
                 "lifecycle": "active",
+                "supersedes_relation_version_id": None,
+                "head_relation_version_id": self.relation_version_id,
+                "head_lifecycle": "active",
                 "think_run_id": None,
                 "instance_status": "accepted",
                 "admission_disposition": "accepted",
@@ -241,6 +244,124 @@ async def test_runtime_receipt_is_json_safe_and_scorer_consumable(
     ] == [str(connection.version_id)]
     report = score_core_fast_path(receipt, gold=build_core_fast_path_gold())
     assert report["schema_version"] == "core-fast-path-score-v1"
+
+
+async def test_batch_four_relation_fate_requires_applied_retirement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unrelated successor between barriers receives no B4 fate credit."""
+
+    tenant_id = uuid4()
+    population = build_core_fast_path_population()
+    signal = population.batches[0].signals[0]
+    observation_id = uuid5(
+        NAMESPACE_URL, f"p6-think:{tenant_id}:{signal.signal_id}",
+    )
+    connection = _Connection(
+        tenant_id=tenant_id, observation_id=observation_id,
+        signal_id=signal.signal_id,
+    )
+    prior_relation_version_id = connection.relation_version_id
+    successor_version_id = uuid4()
+    relation = connection.rows["relation_truth_versions"][0]
+    relation.update({
+        "relation_version_id": prior_relation_version_id,
+        "head_relation_version_id": successor_version_id,
+        "head_lifecycle": "retired",
+    })
+    connection.rows["relation_truth_versions"].append({
+        **relation,
+        "relation_version_id": successor_version_id,
+        "supersedes_relation_version_id": prior_relation_version_id,
+        "head_relation_version_id": successor_version_id,
+        "lifecycle": "retired",
+    })
+
+    async def prove_queue(_conn, **kwargs):
+        return tuple(sorted(kwargs["expected_observation_ids"], key=str))
+
+    monkeypatch.setattr(
+        core_fast_path_receipt, "proven_batch_observation_ids", prove_queue,
+    )
+    waves = []
+    prior_barrier_id = None
+    for number in range(1, 5):
+        run_id, trigger_id, barrier_id = uuid4(), uuid4(), uuid4()
+        expected_relation_ids = (
+            [prior_relation_version_id] if number < 4 else [successor_version_id]
+        )
+        barrier = {
+            "barrier_id": barrier_id, "tenant_id": tenant_id,
+            "batch_id": f"p6-batch-{number}", "barrier_version": number,
+            "prior_barrier_id": prior_barrier_id,
+            "expected_model_version_ids": [connection.version_id],
+            "expected_relation_version_ids": expected_relation_ids,
+            "invalidated_model_version_ids": [],
+            "truth_critical_pending_count": 0, "status": "complete",
+            "completed_at": datetime(2026, 7, 18, number, tzinfo=timezone.utc),
+        }
+        barrier["receipt_digest"] = _barrier_digest(barrier)
+        connection.rows["company_learning_barriers"].append(barrier)
+        connection.rows["think_runs"].append({
+            "id": run_id, "trigger_id": trigger_id, "status": "success",
+            "error": None,
+            "ops_applied": {
+                "diff_hash": "a" * 64,
+                "apply_dropped_op_count": 0,
+                "relation_claim_ops": ([{
+                    "status": "retired",
+                    "retired_relation_ids": [],
+                }] if number == 4 else []),
+            },
+        })
+        connection.rows["applied_triggers"].append({
+            "trigger_id": trigger_id, "diff_hash": "a" * 64,
+            "outcome": "success",
+        })
+        artifact_barrier = {
+            key: barrier[key] for key in (
+                "barrier_id", "batch_id", "barrier_version",
+                "prior_barrier_id", "expected_model_version_ids",
+                "expected_relation_version_ids", "invalidated_model_version_ids",
+                "truth_critical_pending_count", "receipt_digest", "completed_at",
+            )
+        }
+        artifact_barrier["reopened_exactly"] = True
+        waves.append({
+            "batch_number": number, "status": "success",
+            "execution": {
+                "trigger_id": str(trigger_id),
+                "run": {"id": str(run_id), "status": "success"},
+            },
+            "barrier_receipt": artifact_barrier,
+            "snapshot": {
+                "accepted_models": [{
+                    "truth_version_id": str(connection.version_id),
+                }],
+                "accepted_relations": [{
+                    "truth_relation_version_id": str(value),
+                } for value in expected_relation_ids],
+                "accepted_relation_count": len(expected_relation_ids),
+            },
+        })
+        prior_barrier_id = barrier_id
+    artifact = {
+        "tenant_id": str(tenant_id),
+        "population_digest": population.population_digest,
+        "waves": waves,
+    }
+
+    receipt = await build_core_fast_path_runtime_receipt(connection, artifact)
+
+    assert receipt["batches"][3]["relation_fates"] == []
+
+    connection.rows["think_runs"][-1]["ops_applied"][
+        "relation_claim_ops"
+    ][0]["retired_relation_ids"] = [str(connection.relation_id)]
+    bound = await build_core_fast_path_runtime_receipt(connection, artifact)
+    assert bound["batches"][3]["relation_fates"][0][
+        "relation_id"
+    ] == str(connection.relation_id)
 
 
 async def test_runtime_blindness_proof_does_not_require_completed_execution() -> None:

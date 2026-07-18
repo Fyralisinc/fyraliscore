@@ -28,7 +28,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import asyncpg
 
@@ -1366,6 +1366,9 @@ async def _compile_memory_lifecycle_update(
     next_proposition = op.metadata.get("next_proposition")
     if op.action == "revise" and isinstance(next_proposition, dict):
         changes["proposition"] = next_proposition
+        next_natural = str(op.metadata.get("next_natural") or "").strip()
+        if next_natural:
+            changes["natural"] = next_natural
     if op.claim_local_evidence_event_ids:
         changes["supporting_event_ids"] = op.claim_local_evidence_event_ids
     confidence = _lifecycle_confidence(op, current_confidence=current_confidence)
@@ -3010,6 +3013,7 @@ _ALLOWED_MODEL_UPDATE_COLUMNS = {
     "resolved_at",
     "resolution_outcome",
     "proposition",
+    "natural",
     "domain_tags",
     "semantic_terms",
     "contributing_models",
@@ -3238,6 +3242,11 @@ def _coerce_update_value(column: str, value: Any) -> Any:
         raise ValidationError(
             f"apply_claim_op update: proposition must be a dict; got {value!r}"
         )
+    if column == "natural":
+        natural = str(value).strip()
+        if not natural:
+            raise ValidationError("apply_claim_op update: natural must be non-empty")
+        return natural
     if column in ("domain_tags", "semantic_terms"):
         values = value if isinstance(value, (list, tuple, set)) else (value,)
         tags = [str(tag).strip() for tag in values if str(tag).strip()]
@@ -4595,6 +4604,7 @@ async def _apply_claim_update(
                 dict.fromkeys(prepared.changes.get("supporting_event_ids") or ())
             ),
             proposition=prepared.changes.get("proposition"),
+            natural=prepared.changes.get("natural"),
             evidential_weight=prepared.changes.get("evidential_weight"),
             supporting_model_ids=(
                 tuple(prepared.changes["supporting_model_ids"])
@@ -4613,6 +4623,7 @@ async def _apply_claim_update(
         # command capability is active.  The applier never mints that capability.
         for governed_field in (
             "confidence", "proposition", "supporting_event_ids",
+            "natural",
             "evidential_weight", "supporting_model_ids", "visible_to_subjects",
             "resolution_outcome", "resolved_at",
         ):
@@ -5342,14 +5353,42 @@ async def _apply_relation_claim_op(
         and op.source_model_id is not None
         and op.target_model_id is not None
     ):
-        count = await edges_repo.retire(
+        governed_relation_ids = await _active_pairwise_relation_ids(
             conn,
-            source=op.source_model_id,
-            target=op.target_model_id,
-            kind=op.edge_kind,
             tenant_id=tenant_id,
+            source_model_id=op.source_model_id,
+            target_model_id=op.target_model_id,
+            relation_kind=op.edge_kind,
+            direction=op.direction,
+        )
+        await _retire_canonical_relation_truth(
+            conn,
+            tenant_id=tenant_id,
+            relation_ids=governed_relation_ids,
             reason=op.explanation or "relation_claim_retired",
         )
+        newly_retired_relation_ids = await repo.retire_pairwise_relation_frames(
+            conn,
+            tenant_id=tenant_id,
+            source_model_id=op.source_model_id,
+            target_model_id=op.target_model_id,
+            relation_kind=op.edge_kind,
+            reason=op.explanation or "relation_claim_retired",
+        )
+        retired_relation_ids.extend(newly_retired_relation_ids)
+        # Canonical accepted edges are immutable historical projections. Their
+        # truth head and projection binding above make them inert; only legacy
+        # edges without canonical governance are mutated in place.
+        count = 0
+        if not governed_relation_ids:
+            count = await edges_repo.retire(
+                conn,
+                source=op.source_model_id,
+                target=op.target_model_id,
+                kind=op.edge_kind,
+                tenant_id=tenant_id,
+                reason=op.explanation or "relation_claim_retired",
+            )
         retired_edge_summaries.append(
             {
                 "op": "retire",
@@ -5359,16 +5398,6 @@ async def _apply_relation_claim_op(
                 "retired_edges": count,
                 "source": "relation_claim_op",
             }
-        )
-        retired_relation_ids.extend(
-            await repo.retire_pairwise_relation_frames(
-                conn,
-                tenant_id=tenant_id,
-                source_model_id=op.source_model_id,
-                target_model_id=op.target_model_id,
-                relation_kind=op.edge_kind,
-                reason=op.explanation or "relation_claim_retired",
-            )
         )
     if (
         op.write_policy == "accepted_edge"
@@ -5676,6 +5705,153 @@ async def _apply_relation_claim_op(
         "edge_summary": edge_summary,
         "edge_summaries": edge_summaries,
     }
+
+
+async def _retire_canonical_relation_truth(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    relation_ids: tuple[UUID, ...],
+    reason: str,
+) -> tuple[UUID, ...]:
+    """Advance every governed relation head to an immutable retired successor."""
+
+    if not relation_ids:
+        return ()
+    from services.domain.truth_kernel.relations.contracts import (
+        RelationLifecycle,
+        RelationVersion,
+    )
+    from services.domain.truth_kernel.relations.repository import (
+        AsyncpgRelationKernelStorage,
+    )
+    from services.domain.truth_kernel.relations.service import (
+        AdvanceRelationCommand,
+        RelationTruthKernel,
+    )
+
+    storage = AsyncpgRelationKernelStorage()
+    kernel = RelationTruthKernel(storage)
+    retired_versions: list[UUID] = []
+    now = datetime.now(timezone.utc)
+    for relation_id in dict.fromkeys(relation_ids):
+        head = await storage.lock_head(
+            tx=conn,
+            tenant_id=tenant_id,
+            relation_id=relation_id,
+        )
+        if head is None:
+            continue
+        if head.lifecycle is RelationLifecycle.RETIRED:
+            retired_versions.append(head.relation_version_id)
+            continue
+        prior = await storage.load_version(
+            tx=conn,
+            tenant_id=tenant_id,
+            relation_version_id=head.relation_version_id,
+        )
+        successor_id = uuid5(
+            head.relation_version_id,
+            "canonical-relation-retirement-v1",
+        )
+        successor = RelationVersion(
+            relation_version_id=successor_id,
+            relation_id=prior.relation_id,
+            tenant_id=prior.tenant_id,
+            version=prior.version + 1,
+            admission_decision_id=prior.admission_decision_id,
+            kind=prior.kind,
+            lifecycle=RelationLifecycle.RETIRED,
+            participants=prior.participants,
+            rationale=prior.rationale,
+            assertion=prior.assertion,
+            evidence=prior.evidence,
+            supersedes_relation_version_id=prior.relation_version_id,
+            created_at=now,
+            semantic_digest=prior.semantic_digest,
+        )
+        command_id = uuid5(successor_id, "canonical-relation-retirement-command")
+        await kernel.advance(
+            tx=conn,
+            command=AdvanceRelationCommand(
+                command_id=command_id,
+                tenant_id=tenant_id,
+                idempotency_key=(
+                    f"think-relation-retire:{tenant_id}:{relation_id}:"
+                    f"{prior.relation_version_id}"
+                ),
+                expected_head=head,
+                next_version=successor,
+                issued_at=now,
+            ),
+        )
+        retired_versions.append(successor_id)
+    return tuple(retired_versions)
+
+
+async def _active_pairwise_relation_ids(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    source_model_id: UUID,
+    target_model_id: UUID,
+    relation_kind: str,
+    direction: str,
+) -> tuple[UUID, ...]:
+    """Locate exact active governed truth independently of legacy projections."""
+
+    from services.domain.truth_kernel.relations.contracts import (
+        ROLE_SCHEMA,
+        RelationKind,
+    )
+
+    governed = _governed_relation_kind(relation_kind.strip())
+    if governed is None:
+        return ()
+    kind = RelationKind(governed[0])
+    reverse_roles = governed[1]
+    left_id, right_id = source_model_id, target_model_id
+    if direction == "target_to_source":
+        left_id, right_id = right_id, left_id
+    if reverse_roles:
+        left_id, right_id = right_id, left_id
+    source_role, target_role = ROLE_SCHEMA[kind]
+
+    rows = await conn.fetch(
+        """
+        SELECT head.relation_id
+        FROM relation_truth_heads head
+        JOIN relation_truth_versions version
+          ON version.tenant_id=head.tenant_id
+         AND version.relation_version_id=head.relation_version_id
+        WHERE head.tenant_id=$1
+          AND head.lifecycle='active'
+          AND version.lifecycle='active'
+          AND version.relation_kind=$4
+          AND EXISTS (
+            SELECT 1 FROM relation_truth_participants source_participant
+            WHERE source_participant.tenant_id=head.tenant_id
+              AND source_participant.relation_version_id=head.relation_version_id
+              AND source_participant.model_id=$2
+              AND source_participant.role=$5
+          )
+          AND EXISTS (
+            SELECT 1 FROM relation_truth_participants target_participant
+            WHERE target_participant.tenant_id=head.tenant_id
+              AND target_participant.relation_version_id=head.relation_version_id
+              AND target_participant.model_id=$3
+              AND target_participant.role=$6
+          )
+        ORDER BY head.relation_id
+        """,
+        tenant_id,
+        left_id,
+        right_id,
+        kind.value,
+        source_role,
+        target_role,
+    )
+    return tuple(row["relation_id"] for row in rows)
 
 
 async def _apply_relation_frame_op(

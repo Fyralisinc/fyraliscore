@@ -26,11 +26,13 @@ REQUIRED_RUNTIME_FIELDS = (
     "batches[].atomics[]:{signal_id,observation_id,evidence_bound,tenant_id}",
     "batches[].retrieval:{accepted_model_version_ids,observation_ids}",
     "batches[].accepted_models[]:{model_id,version_id,source_signal_id,"
-    "proposition,lifecycle,scope_refs,evidence_signal_ids,"
+    "proposition,natural_text,lifecycle,scope_refs,evidence_signal_ids,"
     "supporting_model_version_ids,commit_id,prior_version_id,"
     "supersedes_version_id,history_retained}",
     "batches[].accepted_relations[]:{relation_id,relation_version_id,kind,"
     "lifecycle,participant_model_version_ids,commit_id}",
+    "batches[].relation_fates[]:{relation_id,relation_version_id,"
+    "prior_relation_version_id,kind,lifecycle,prior_active_head_absent}",
     "batches[].barrier:{snapshot_validated,expected_head_count,"
     "matched_head_count,stale_head_count,missing_head_count}",
     "contamination:{gold_fields_seen,cross_tenant_row_count,oracle_imported}",
@@ -191,7 +193,9 @@ def score_core_fast_path(
     batch4_models = _items(batches.get(4, {}).get("accepted_models"))
     correction = next(
         (row for row in batch4_models
-         if row.get("source_signal_id") == gold.correction_signal_id),
+         if row.get("source_signal_id") == gold.correction_signal_id
+         and row.get("abstraction_level") == "composite"
+         and row.get("claim_role") == "situation"),
         {},
     )
     correction_checks = (
@@ -201,8 +205,9 @@ def score_core_fast_path(
         correction.get("history_retained") is True,
         correction.get("supersedes_version_id") == correction.get("prior_version_id")
         and bool(correction.get("prior_version_id")),
-        correction.get("proposition") != gold.expected_thesis
-        and bool(correction.get("proposition")),
+        correction.get("proposition") == gold.expected_corrected_thesis,
+        correction.get("natural_text") == correction.get("proposition")
+        and correction.get("natural_text") == gold.expected_corrected_thesis,
     )
     correction_score = sum(bool(value) for value in correction_checks) / len(correction_checks)
 
@@ -219,6 +224,24 @@ def score_core_fast_path(
         and relation.get("commit_id") == synthesis.get("commit_id"),
     )
     relation_score = sum(bool(value) for value in relation_checks) / len(relation_checks)
+
+    relation_fates = _items(batches.get(4, {}).get("relation_fates"))
+    retired_relation = next((
+        row for row in relation_fates
+        if row.get("relation_id") == relation.get("relation_id")
+        and row.get("kind") == gold.expected_relation_kind
+    ), {})
+    relation_retirement_checks = (
+        bool(retired_relation.get("relation_version_id")),
+        retired_relation.get("prior_relation_version_id")
+        == relation.get("relation_version_id"),
+        retired_relation.get("lifecycle")
+        == gold.expected_post_correction_relation_lifecycle,
+        retired_relation.get("prior_active_head_absent") is True,
+    )
+    relation_retirement_score = sum(
+        bool(value) for value in relation_retirement_checks
+    ) / len(relation_retirement_checks)
 
     barrier_checks: list[bool] = []
     for number in range(1, 5):
@@ -264,6 +287,7 @@ def score_core_fast_path(
         "batch_3_synthesis": _metric(synthesis_score),
         "batch_4_lifecycle_correction_history": _metric(correction_score),
         "relation_atomicity": _metric(relation_score),
+        "batch_4_relation_retirement": _metric(relation_retirement_score),
         "barriers": _metric(barrier_score, valid_batches=sum(barrier_checks)),
         "contamination": _metric(contamination_score),
         "determinism": _metric(1.0 if deterministic else 0.0, replay_count=len(replay_digests)),
@@ -277,6 +301,7 @@ def score_core_fast_path(
         "batch_3_synthesis": synthesis_score == 1.0,
         "batch_4_lifecycle_correction_history": correction_score == 1.0,
         "relation_atomicity": relation_score == 1.0,
+        "batch_4_relation_retirement": relation_retirement_score == 1.0,
         "barriers": barrier_score == 1.0,
         "contamination": contamination_score == 1.0,
         "determinism": deterministic,
