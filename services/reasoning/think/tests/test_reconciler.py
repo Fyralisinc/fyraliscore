@@ -26,6 +26,7 @@ from services.reasoning.think.diff_schema import ClaimOp
 from services.reasoning.think.reconciler import (
     _compute_signal_breakdown,
     _falsifier_cosine,
+    _generic_model_scope_compatible,
     _member_overlap_fraction,
     _pattern_id,
     reconcile_claim_op,
@@ -122,6 +123,49 @@ def test_signal_breakdown_caps_at_one():
     row = {"supporting_event_ids": [shared]}
     adjusted, _ = _compute_signal_breakdown(entry, row, base_cosine=0.99)
     assert adjusted == pytest.approx(1.0)
+
+
+def test_generic_models_do_not_merge_across_unrelated_workstreams():
+    atlas_id, borealis_id = uuid7(), uuid7()
+    entry = {
+        "proposition": {"retrieval_tags": ["source_digest"]},
+        "scope_entities": [{"type": "workstream", "id": str(atlas_id)}],
+    }
+    row = {
+        "proposition": {"retrieval_tags": ["source_digest"]},
+        "scope_entities": [{"type": "workstream", "id": str(borealis_id)}],
+    }
+
+    assert not _generic_model_scope_compatible(entry, row)
+
+
+def test_generic_models_merge_for_same_workstream_evolution():
+    workstream_id = uuid7()
+    entry = {
+        "proposition": {"retrieval_tags": ["curiosity_low_priority"]},
+        "scope_entities": [
+            {"type": "candidate_workstream", "id": str(workstream_id)}
+        ],
+    }
+    row = {
+        "proposition": {"retrieval_tags": ["source_digest"]},
+        "scope_entities": [{"type": "workstream", "id": workstream_id}],
+    }
+
+    assert _generic_model_scope_compatible(entry, row)
+
+
+def test_generic_models_cannot_use_source_system_as_business_overlap():
+    source_id = uuid7()
+    entry = {
+        "domain_tags": ["source_digest"],
+        "scope_entities": [{"type": "source_system", "id": str(source_id)}],
+    }
+    row = {
+        "scope_entities": [{"type": "source_system", "id": str(source_id)}],
+    }
+
+    assert not _generic_model_scope_compatible(entry, row)
 
 
 # =====================================================================

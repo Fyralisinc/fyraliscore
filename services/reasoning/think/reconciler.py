@@ -912,6 +912,8 @@ def _score_candidate_row(
         return None
     if not _pattern_instance_matches(row, context):
         return None
+    if not _generic_model_scope_compatible(context.entry, row):
+        return None
     compatible, compatibility = contextual_frames_compatible(context.entry, row)
     if not compatible:
         return None
@@ -940,6 +942,60 @@ def _score_candidate_row(
         breakdown=breakdown,
         member_overlap=member_overlap,
     )
+
+
+_GENERIC_MODEL_TAGS = {
+    "source_digest",
+    "major_source_window",
+    "curiosity_low_priority",
+    "candidate_bound_curiosity",
+}
+_BUSINESS_SCOPE_TYPES = {"actor", "customer", "workstream", "commitment"}
+
+
+def _generic_model_scope_compatible(
+    entry: dict[str, Any],
+    row: dict[str, Any],
+) -> bool:
+    """Require positive business-scope overlap for generic generated Models.
+
+    Source/channel/vendor coordinates are deliberately excluded: they describe
+    where a claim arrived, not which part of the company it describes.
+    """
+    if not _has_generic_model_tag(entry):
+        return True
+    entry_refs = _business_scope_refs(entry)
+    row_refs = _business_scope_refs(row)
+    return bool(entry_refs and row_refs and entry_refs.intersection(row_refs))
+
+
+def _has_generic_model_tag(value: dict[str, Any]) -> bool:
+    proposition = value.get("proposition")
+    proposition = proposition if isinstance(proposition, dict) else {}
+    tags = {
+        str(tag).strip().lower()
+        for tag in [
+            *(value.get("domain_tags") or []),
+            *(proposition.get("retrieval_tags") or []),
+        ]
+    }
+    return bool(tags.intersection(_GENERIC_MODEL_TAGS))
+
+
+def _business_scope_refs(value: dict[str, Any]) -> set[tuple[str, str]]:
+    refs: set[tuple[str, str]] = set()
+    for actor_id in value.get("scope_actors") or []:
+        if actor_id:
+            refs.add(("actor", str(actor_id)))
+    for entity in value.get("scope_entities") or []:
+        if not isinstance(entity, dict):
+            continue
+        raw_type = str(entity.get("type") or entity.get("kind") or "").lower()
+        scope_type = raw_type.removeprefix("candidate_")
+        scope_id = entity.get("id") or entity.get("entity_id")
+        if scope_type in _BUSINESS_SCOPE_TYPES and scope_id:
+            refs.add((scope_type, str(scope_id)))
+    return refs
 
 
 def _embedding_list(raw: Any) -> list[float] | None:
