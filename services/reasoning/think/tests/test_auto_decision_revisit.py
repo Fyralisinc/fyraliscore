@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from lib.shared.ids import uuid7
-from services.domain.models.propositions import validate_proposition
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.auto_create_commitment import (
@@ -400,35 +399,8 @@ def test_maybe_inject_decision_pressure_recommendation_from_situation():
         diff, trigger, ContextBundle()
     )
 
-    assert len(out.claim_ops) == 2
-    recommendation = out.claim_ops[1].entry
-    assert recommendation["proposition"]["kind"] == "norm"
-    assert recommendation["proposition"]["claim_role"] == "recommendation"
-    assert recommendation["proposition"]["target_act_ref"] is None
-    assert recommendation["proposition"]["target_actor_id"] is None
-    assert recommendation["proposition"]["proposed_change"] == {
-        "operation": "create",
-        "payload": {
-            "title": (
-                "Review next action: "
-                "Foundry connector reliability is renewal risk"
-            ),
-            "description": (
-                "Assign an accountable owner to decide the next step for this "
-                "accepted operational pressure; do not mutate the Acts ledger "
-                "automatically."
-            ),
-            "kind": "decision_pressure",
-            "source_pressure_type": "revenue",
-        },
-    }
-    assert recommendation["scope_entities"] == [
-        {"type": "customer", "id": str(customer_id)}
-    ]
-    assert "owner review" in recommendation["semantic_terms"]
+    assert len(out.claim_ops) == 1
     assert out.act_ops == []
-    parsed = validate_proposition(recommendation["proposition"])
-    assert parsed.claim_role == "recommendation"
 
 
 def test_maybe_inject_decision_pressure_recommendation_creates_owned_decision():
@@ -496,7 +468,7 @@ def test_maybe_inject_decision_pressure_recommendation_creates_owned_decision():
 
     out = maybe_inject_decision_pressure_recommendation(diff, trigger, bundle)
 
-    assert len(out.claim_ops) == 2
+    assert len(out.claim_ops) == 1
     pressure_entry = out.claim_ops[0].entry
     assert pressure_entry is not None
     pressure_model_id = pressure_entry["model_id"]

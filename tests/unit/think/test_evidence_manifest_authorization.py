@@ -160,3 +160,42 @@ def test_internal_compiler_preserves_authorized_manifest_for_admission() -> None
     assert op.entry["proposition"]["evidence_observation_manifest"] == (
         op.entry["evidence_observation_manifest"]
     )
+
+
+@pytest.mark.asyncio
+async def test_canonical_admission_rejects_t4_shaped_unsupported_recommendation() -> None:
+    observation_id = uuid4()
+    tenant_id = uuid4()
+    proposed = ModelCreate(
+        tenant_id=tenant_id,
+        born_from_event_id=observation_id,
+        proposition={
+            "kind": "norm",
+            "claim_role": "recommendation",
+            "target_act_ref": None,
+            "target_actor_id": None,
+            "expected_impact": None,
+            "qualitative_impact": "Turns pressure into an owner-facing review.",
+            "proposed_change": {
+                "operation": "create",
+                "payload": {"kind": "decision_pressure"},
+            },
+        },
+        natural="Review owner and next action for Atlas release.",
+        embedding=[],
+        scope_temporal={},
+        confidence=0.69,
+        confidence_at_assertion=0.69,
+        supporting_event_ids=[observation_id],
+    )
+
+    with pytest.raises(
+        InvariantViolation, match="recommendations remain outside canonical truth"
+    ):
+        await build_think_admission_command(
+            object(),  # type: ignore[arg-type]
+            proposed=proposed,
+            model_id=uuid4(),
+            evidence_observation_ids=(observation_id,),
+            admitted_at=datetime(2026, 7, 18, tzinfo=timezone.utc),
+        )

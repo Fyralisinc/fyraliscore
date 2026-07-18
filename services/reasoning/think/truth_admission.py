@@ -81,6 +81,102 @@ def _scope_display_label(
     return None
 
 
+def _recommendation_authorization_coordinates(
+    proposed: ModelCreate, proposition: dict[str, Any],
+) -> tuple[UUID | None, tuple[str, UUID] | None, tuple[UUID, ...]] | None:
+    """Keep unsupported intervention proposals out of canonical company truth."""
+
+    role = str(proposition.get("claim_role") or "").lower()
+    kind = str(proposition.get("kind") or "").lower()
+    if role != "recommendation" and kind not in {"norm", "recommendation"}:
+        return None
+
+    try:
+        target_actor = (
+            UUID(str(proposition.get("target_actor_id")))
+            if proposition.get("target_actor_id") else None
+        )
+    except ValueError:
+        target_actor = None
+    target_act = proposition.get("target_act_ref")
+    parsed_target_act: tuple[str, UUID] | None = None
+    if isinstance(target_act, dict) and target_act.get("id"):
+        try:
+            parsed_target_act = (
+                str(target_act.get("type") or "").lower(),
+                UUID(str(target_act["id"])),
+            )
+        except ValueError:
+            parsed_target_act = None
+    has_target = target_actor is not None or parsed_target_act is not None
+    expected_impact = proposition.get("expected_impact")
+    derived_ids = proposition.get("derived_from_concern_model_ids")
+    supporting_ids = {str(value) for value in proposed.supporting_model_ids}
+    explicit_derivation = (
+        isinstance(derived_ids, list)
+        and bool(derived_ids)
+        and {str(value) for value in derived_ids}.issubset(supporting_ids)
+    )
+    parsed_derived_ids: tuple[UUID, ...] = ()
+    if explicit_derivation:
+        try:
+            parsed_derived_ids = tuple(UUID(str(value)) for value in derived_ids)
+        except ValueError:
+            explicit_derivation = False
+    if has_target and expected_impact is not None and explicit_derivation:
+        return target_actor, parsed_target_act, parsed_derived_ids
+    raise InvariantViolation(
+        "THINK_TRUTH_UNSUPPORTED_RECOMMENDATION",
+        "recommendations remain outside canonical truth unless they have an "
+        "authorized actor/Act target, expected impact, and explicit derivation "
+        "from a supporting accepted concern",
+        has_authorized_target=has_target,
+        has_expected_impact=expected_impact is not None,
+        has_explicit_concern_derivation=explicit_derivation,
+    )
+
+
+async def _verify_recommendation_authority(
+    conn: asyncpg.Connection, *, tenant_id: UUID,
+    coordinates: tuple[UUID | None, tuple[str, UUID] | None, tuple[UUID, ...]],
+) -> None:
+    target_actor, target_act, concern_ids = coordinates
+    actor_authorized = False
+    if target_actor is not None:
+        actor_authorized = bool(await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM actors WHERE tenant_id=$1 AND id=$2)",
+            tenant_id, target_actor,
+        ))
+    act_authorized = False
+    if target_act is not None:
+        act_type, act_id = target_act
+        table = {
+            "goal": "goals", "commitment": "commitments",
+            "decision": "decisions", "resource": "resources",
+        }.get(act_type)
+        if table:
+            act_authorized = bool(await conn.fetchval(
+                f"SELECT EXISTS(SELECT 1 FROM {table} WHERE tenant_id=$1 AND id=$2)",
+                tenant_id, act_id,
+            ))
+    concern_count = int(await conn.fetchval(
+        """SELECT count(*) FROM models
+           WHERE tenant_id=$1 AND id=ANY($2::uuid[])
+             AND claim_role='concern' AND status='active'""",
+        tenant_id, list(concern_ids),
+    ) or 0)
+    if (actor_authorized or act_authorized) and concern_count == len(concern_ids):
+        return
+    raise InvariantViolation(
+        "THINK_TRUTH_RECOMMENDATION_AUTHORITY_MISSING",
+        "recommendation targets and concern derivations must resolve to "
+        "authorized tenant-local canonical records",
+        target_authorized=actor_authorized or act_authorized,
+        accepted_concern_count=concern_count,
+        derived_concern_count=len(concern_ids),
+    )
+
+
 async def build_think_admission_command(
     conn: asyncpg.Connection, *, proposed: ModelCreate, model_id: UUID,
     evidence_observation_ids: tuple[UUID, ...], admitted_at: datetime,
@@ -89,6 +185,14 @@ async def build_think_admission_command(
 
     proposition = dict(proposed.proposition)
     compiler_manifest = proposition.pop("evidence_observation_manifest", None)
+    recommendation_coordinates = _recommendation_authorization_coordinates(
+        proposed, proposition
+    )
+    if recommendation_coordinates is not None:
+        await _verify_recommendation_authority(
+            conn, tenant_id=proposed.tenant_id,
+            coordinates=recommendation_coordinates,
+        )
     if not evidence_observation_ids:
         raise InvariantViolation(
             "THINK_TRUTH_EVIDENCE_MISSING",

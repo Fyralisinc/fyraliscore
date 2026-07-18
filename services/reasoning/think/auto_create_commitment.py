@@ -653,12 +653,11 @@ def maybe_inject_decision_pressure_recommendation(
     trigger: TriggerContext,
     bundle: ContextBundle,
 ) -> RawDiff:
-    """Surface one inert recommendation for accepted operational pressure.
+    """Create an authorized decision Act, but no canonical recommendation Model.
 
-    This deliberately creates a durable recommendation Model, not an Act
-    mutation. It gives downstream projection/retrieval an action hook when Think
-    has already accepted a situation or concern, while avoiding autonomous
-    commitment creation unless the explicit create-commitment path fired.
+    A recommendation is an intervention proposal, not company truth. The
+    deterministic pressure hook lacks an already-admitted concern derivation and
+    measured expected impact, so it must not manufacture a durable norm.
     """
     if trigger.kind != "T1":
         return raw_diff
@@ -688,49 +687,6 @@ def maybe_inject_decision_pressure_recommendation(
     if born_from is None:
         return raw_diff
 
-    natural = f"Review owner and next action for {title}."
-    description = (
-        "Assign an accountable owner to decide the next step for this accepted "
-        "operational pressure; do not mutate the Acts ledger automatically."
-    )
-    recommendation_entry = {
-        "born_from_event_id": str(born_from),
-        "proposition": {
-            "kind": "norm",
-            "claim_role": "recommendation",
-            "target_act_ref": None,
-            "proposed_change": {
-                "operation": "create",
-                "payload": {
-                    "title": f"Review next action: {title}",
-                    "description": description,
-                    "kind": "decision_pressure",
-                    "source_pressure_type": pressure_type,
-                },
-            },
-            "expected_impact": None,
-            "qualitative_impact": (
-                f"Turns {pressure_type} pressure into an owner-facing decision "
-                "review without inventing a commitment or transition."
-            ),
-            "target_actor_id": None,
-        },
-        "natural": natural,
-        "confidence": min(0.72, max(0.58, float(entry.get("confidence") or 0.66))),
-        "scope_actors": list(entry.get("scope_actors") or []),
-        "scope_entities": list(entry.get("scope_entities") or []),
-        "scope_temporal": dict(entry.get("scope_temporal") or {}),
-        "semantic_terms": _semantic_terms_for_recommendation(title, pressure_type),
-        "falsifier": {
-            "kind": "observation_pattern",
-            "pattern": (
-                "The pressure resolves, an owner explicitly declines action, "
-                "or later evidence shows the situation is no longer material."
-            ),
-            "within_window": "P30D",
-        },
-    }
-    raw_diff.claim_ops.append(ClaimOp(op="insert", entry=recommendation_entry))
     _maybe_inject_decision_pressure_act(
         raw_diff,
         trigger=trigger,

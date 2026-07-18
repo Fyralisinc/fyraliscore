@@ -369,6 +369,19 @@ async def extract_p6_postfreeze_evidence(
         for claim in claims
         for entity in claim.get("scope_entities") or ()
     ]
+    resolved_scope_statuses = {"resolved", "accepted"}
+    resolved_scope_coordinates = [
+        entity for entity in scope_coordinates
+        if entity.get("canonical_ref")
+        and str(entity.get("canonical_ref_status") or "").lower()
+        in resolved_scope_statuses
+    ]
+    provisional_scope_coordinates = [
+        entity for entity in scope_coordinates
+        if entity.get("canonical_ref")
+        and str(entity.get("canonical_ref_status") or "").lower()
+        == "provisional"
+    ]
     evidence = {
         "schema_version": "epistemic-repair-p6-postfreeze-evidence-v1",
         "tenant_id": str(tenant_id),
@@ -403,16 +416,17 @@ async def extract_p6_postfreeze_evidence(
             "missing": len(expected_context_opportunities - emitted_context_opportunities),
             "unexpected": len(emitted_context_opportunities - expected_context_opportunities),
         },
-        "scope_coordinates_canonical": bool(scope_coordinates) and all(
-            entity.get("canonical_ref") for entity in scope_coordinates
+        "scope_coordinates_canonical": bool(scope_coordinates) and (
+            len(resolved_scope_coordinates) == len(scope_coordinates)
         ),
         "scope_coordinate_counts": {
             "total": len(scope_coordinates),
-            "resolved": sum(
-                bool(entity.get("canonical_ref")) for entity in scope_coordinates
-            ),
-            "unresolved": sum(
-                not entity.get("canonical_ref") for entity in scope_coordinates
+            "resolved": len(resolved_scope_coordinates),
+            "provisional": len(provisional_scope_coordinates),
+            "unresolved": (
+                len(scope_coordinates)
+                - len(resolved_scope_coordinates)
+                - len(provisional_scope_coordinates)
             ),
         },
         "refresh_events": refresh_events,
