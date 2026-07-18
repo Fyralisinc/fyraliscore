@@ -456,7 +456,14 @@ async def advance_validated_think_model(
     transition: ModelTruthTransition = ModelTruthTransition.CONFIRM,
     reason_code: str = "validated_think_update",
 ) -> UUID:
-    idempotency_key = f"think-update:{tenant_id}:{model_id}:{reason_code}"
+    exact_evidence_ids = tuple(sorted(set(evidence_observation_ids), key=str))
+    evidence_identity = canonical_sha256({
+        "transition": transition.value,
+        "evidence_observation_ids": [str(value) for value in exact_evidence_ids],
+    })
+    idempotency_key = (
+        f"think-update:{tenant_id}:{model_id}:{transition.value}:{evidence_identity}"
+    )
     replay = await conn.fetchval(
         "SELECT command_id FROM truth_command_receipts WHERE tenant_id=$1 AND idempotency_key=$2",
         tenant_id, idempotency_key,
@@ -467,14 +474,17 @@ async def advance_validated_think_model(
     rows = await conn.fetch("""
         SELECT id,occurred_at,source_channel,content_text FROM observations
         WHERE tenant_id=$1 AND id=ANY($2::uuid[]) ORDER BY occurred_at,id
-    """, tenant_id, list(evidence_observation_ids))
-    if len(rows) != len(set(evidence_observation_ids)):
+    """, tenant_id, list(exact_evidence_ids))
+    if len(rows) != len(exact_evidence_ids):
         raise InvariantViolation(
             "THINK_TRUTH_UPDATE_EVIDENCE_NOT_FOUND",
             "every update evidence observation must exist in the same tenant",
         )
     at = datetime.now(timezone.utc)
-    version_id = uuid5(model_id, f"think-update:{prior.version + 1}:{reason_code}")
+    version_id = uuid5(
+        model_id,
+        f"think-update:{prior.version + 1}:{transition.value}:{evidence_identity}",
+    )
     prior_observations = {x.evidence_id for x in prior.evidence if x.kind is TruthEvidenceKind.OBSERVATION}
     additions = tuple(TruthEvidenceReference(
         reference_id=uuid5(version_id, f"observation:{row['id']}"), tenant_id=tenant_id,

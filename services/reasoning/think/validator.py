@@ -1625,6 +1625,18 @@ async def _validate_memory_lifecycle_op(
     if op.action == "supersede" and op.superseded_by_model_id is None:
         raise ValidationError("memory_lifecycle_op supersede requires superseded_by_model_id")
 
+    broad_event_ids = set(op.evidence_event_ids)
+    claim_local_event_ids = set(op.claim_local_evidence_event_ids)
+    if not claim_local_event_ids <= broad_event_ids:
+        raise ValidationError(
+            "memory_lifecycle_op claim-local evidence must be a subset of its "
+            "declared observation evidence"
+        )
+    if op.action == "confirm" and not claim_local_event_ids:
+        raise ValidationError(
+            "memory_lifecycle_op confirm requires claim-local observation evidence"
+        )
+
     if op.evidence_event_ids:
         rows = await conn.fetch(
             """
