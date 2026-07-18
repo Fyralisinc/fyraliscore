@@ -3288,13 +3288,14 @@ async def test_llm_reason_compiled_batch_memory_supports_updates_situations_and_
     tid = uuid7()
     trig_id = uuid7()
     obs_id = uuid7()
+    unrelated_transport_obs_id = uuid7()
     model_a = uuid7()
     model_b = uuid7()
     trigger = TriggerContext(
         kind="T1",
         tenant_id=tid,
         observation_id=obs_id,
-        observation_ids=[obs_id],
+        observation_ids=[obs_id, unrelated_transport_obs_id],
         seed_signature={"trigger_id": str(trig_id)},
         seed_natural_text=(
             "DeltaFleet onboarding is blocked by owner handoff and capacity."
@@ -3333,7 +3334,19 @@ async def test_llm_reason_compiled_batch_memory_supports_updates_situations_and_
                         "proposed_text": "Capacity pressure is reinforced.",
                         "target_model_ids": [str(model_a)],
                         "evidence_model_ids": [str(model_a), str(model_b)],
-                        "source_observation_ids": [str(obs_id)],
+                        "source_observation_ids": [
+                            str(obs_id),
+                            str(unrelated_transport_obs_id),
+                        ],
+                        "member_observation_ids": [str(obs_id)],
+                        "semantic_scope": ["DeltaFleet onboarding"],
+                        "observation_evidence": [
+                            {
+                                "observation_id": str(obs_id),
+                                "body": "DeltaFleet capacity remains constrained.",
+                                "source_channel": "slack",
+                            }
+                        ],
                         "supporting_evidence_ids": ["ev1"],
                         "confidence": 0.66,
                     },
@@ -3346,7 +3359,22 @@ async def test_llm_reason_compiled_batch_memory_supports_updates_situations_and_
                         ),
                         "target_model_ids": [str(model_a), str(model_b)],
                         "evidence_model_ids": [str(model_a), str(model_b)],
-                        "source_observation_ids": [str(obs_id)],
+                        "source_observation_ids": [
+                            str(obs_id),
+                            str(unrelated_transport_obs_id),
+                        ],
+                        "member_observation_ids": [str(obs_id)],
+                        "semantic_scope": ["DeltaFleet onboarding"],
+                        "observation_evidence": [
+                            {
+                                "observation_id": str(obs_id),
+                                "body": (
+                                    "DeltaFleet owner handoff compounds the "
+                                    "capacity constraint."
+                                ),
+                                "source_channel": "slack",
+                            }
+                        ],
                         "supporting_evidence_ids": ["ev1"],
                         "confidence": 0.68,
                     },
@@ -3399,7 +3427,15 @@ async def test_llm_reason_compiled_batch_memory_supports_updates_situations_and_
 
     diff, _ = await llm_reason(trigger, bundle, provider, max_tokens=2048)
 
+    assert len(provider.calls) == 1
     assert "claim_update" in provider.calls[0]["user"]
+    assert (
+        "one physical transport unit, never a semantic unit"
+        in provider.calls[0]["system"]
+    )
+    assert f'"observation_id": "{obs_id}"' in provider.calls[0]["user"]
+    assert "DeltaFleet capacity remains constrained." in provider.calls[0]["user"]
+    assert "semantic_scope" in provider.calls[0]["user"]
     assert "memory_lifecycle" in provider.calls[0]["user"]
     assert "situation_and_edge" in provider.calls[0]["schema_hint"]
     assert provider.calls[0]["max_tokens"] == 1200
@@ -3416,6 +3452,8 @@ async def test_llm_reason_compiled_batch_memory_supports_updates_situations_and_
         str(model_a),
         str(model_b),
     ]
+    assert situation.entry["supporting_event_ids"] == [str(obs_id)]
+    assert str(unrelated_transport_obs_id) not in json.dumps(situation.entry)
     assert len(diff.relation_claim_ops) == 2
     assert diff.edge_ops == []
     relation = diff.relation_claim_ops[0]

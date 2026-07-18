@@ -691,10 +691,11 @@ def build_compiled_batch_memory_decision_request(
         "You adjudicate closed-world memory-decision candidates for a Fyralis "
         "T1 event batch. You do not author RawDiff JSON. For each listed "
         "candidate, decide whether code should emit a durable memory mutation. "
-        "The batch is the unit of reasoning: accept compact synthesis when "
-        "multiple signals or selected Models jointly change the world model. "
+        "The batch is one physical transport unit, never a semantic unit. "
+        "Reason independently within each candidate's explicit semantic scope "
+        "and member observations; never combine unrelated candidates. "
         "Prefer updates over duplicate inserts, situations for composite "
-        "batch-level understanding, and edges when selected graph context is "
+        "candidate-local understanding, and edges when selected graph context is "
         "decision-relevant. Reject/no-op only when uncertainty is decisive, "
         "evidence is merely background, or ids would need to be invented."
     )
@@ -941,7 +942,7 @@ def _build_batch_memory_decision_user_prompt(
             "For claim/claim_and_edge/claim_and_act, claim_text must be a single durable atomic sentence under 500 chars.",
             "Use claim_update when the candidate mainly confirms, weakens, or adds evidence to an existing target/evidence Model.",
             "Use memory_lifecycle when the candidate tests, confirms, falsifies, revises, archives, or supersedes an existing model_id; provide lifecycle_action.",
-            "Use situation when the batch exposes a composite condition across multiple signals or selected Models; provide 2-8 situation_member_model_ids when available.",
+            "Use situation when one candidate-local episode exposes a composite condition across its member signals or selected Models; provide 2-8 situation_member_model_ids when available.",
             "Use claim_role=concern for blockers, risks, waiting states, churn, trust, or negative pressure.",
             "Use claim_role=fact for neutral observed progress or state.",
             "Use claim_role=pattern only for repeated behavior directly supported in candidate_evidence.",
@@ -972,6 +973,9 @@ def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
         "target_act_ids",
         "evidence_model_ids",
         "source_observation_ids",
+        "member_observation_ids",
+        "semantic_scope",
+        "observation_evidence",
         "supporting_evidence_ids",
         "counterevidence_ids",
         "uncertainty_slots",
@@ -983,6 +987,10 @@ def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
     )
     lines = ["  <candidate>"]
     for key in keys:
+        if key == "source_observation_ids" and candidate.get(
+            "member_observation_ids"
+        ):
+            continue
         value = candidate.get(key)
         if value in (None, [], {}, ""):
             continue
@@ -3199,9 +3207,7 @@ def _claim_op_from_batch_decision(
     born_event = uuid7()
     role = force_role or decision.claim_role
     proposition = _batch_claim_proposition(role, text, candidate, decision)
-    evidence_event_ids = [
-        str(value) for value in _uuid_values(candidate.get("source_observation_ids"))
-    ]
+    evidence_event_ids = [str(value) for value in _candidate_event_ids(candidate)]
     if evidence_event_ids:
         proposition["evidence_event_ids"] = evidence_event_ids
     evidence_model_ids = (
@@ -3228,6 +3234,8 @@ def _claim_op_from_batch_decision(
         entry["supporting_model_ids"] = [
             str(model_id) for model_id in evidence_model_ids
         ]
+    if evidence_event_ids:
+        entry["supporting_event_ids"] = evidence_event_ids
     return ClaimOp(op="insert", entry=entry), born_event, ""
 
 
@@ -3246,7 +3254,7 @@ def _claim_update_op_from_batch_decision(
     )
     if model_id is None:
         return None, None, "missing model_id for update"
-    evidence_event_ids = _uuid_values(candidate.get("source_observation_ids"))
+    evidence_event_ids = _candidate_event_ids(candidate)
     changes: dict[str, Any] = {
         "confidence": min(0.74, max(0.35, float(decision.confidence))),
     }
@@ -3271,7 +3279,7 @@ def _memory_lifecycle_op_from_batch_decision(
     if model_id is None:
         return None, "missing model_id for lifecycle reconciliation"
     action = decision.lifecycle_action or _infer_batch_lifecycle_action(candidate, decision)
-    evidence_event_ids = _uuid_values(candidate.get("source_observation_ids"))
+    evidence_event_ids = _candidate_event_ids(candidate)
     evidence_model_ids = _dedupe_uuids(
         [
             *_uuid_values(candidate.get("evidence_model_ids")),
@@ -3334,9 +3342,7 @@ def _batch_claim_proposition(
     candidate: dict[str, Any],
     decision: BatchMemoryCandidateDecision,
 ) -> dict[str, Any]:
-    evidence_event_ids = [
-        str(value) for value in _uuid_values(candidate.get("source_observation_ids"))
-    ]
+    evidence_event_ids = [str(value) for value in _candidate_event_ids(candidate)]
     if role == "situation":
         members = _situation_member_ids(candidate, decision)
         return {
@@ -3383,6 +3389,21 @@ def _batch_claim_proposition(
     else:
         base.update({"subject": _claim_about(candidate), "assertion": text})
     return base
+
+
+def _candidate_event_ids(candidate: dict[str, Any]) -> list[UUID]:
+    """Return only the semantic candidate's exact observation members.
+
+    New packets expose ``member_observation_ids`` explicitly. The legacy key is
+    retained solely for compatibility with older persisted packets; it is never
+    unioned with the member set because that could reintroduce transport-batch
+    observations into a candidate-local claim.
+    """
+
+    member_ids = candidate.get("member_observation_ids")
+    if member_ids:
+        return _uuid_values(member_ids)
+    return _uuid_values(candidate.get("source_observation_ids"))
 
 
 def _situation_member_ids(
