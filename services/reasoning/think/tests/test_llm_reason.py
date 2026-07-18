@@ -1045,7 +1045,10 @@ async def test_llm_reason_compiled_batch_memory_emits_code_built_ops(monkeypatch
     assert "Q_CRITICAL_PATH:DEPENDENCY=supported" in provider.calls[0]["user"]
     assert "claim_and_edge" in provider.calls[0]["schema_hint"]
     assert "claim_ops" not in provider.calls[0]["schema_hint"]
-    assert len(diff.claim_ops) == 2
+    # Two provider-accepted claims plus the deterministic current-batch
+    # grounding situation. The grounding Model prevents the concrete Acme/SSO
+    # episode from collapsing into only an update, edge, and act transition.
+    assert len(diff.claim_ops) == 3
     assert len(diff.relation_claim_ops) == 1
     assert diff.edge_ops == []
     assert len(diff.act_ops) == 1
@@ -1064,6 +1067,9 @@ async def test_llm_reason_compiled_batch_memory_emits_code_built_ops(monkeypatch
     assert act.entity["new_state"] == "paused"
     assert "compiled_memory_candidate_id" not in act.entity
     assert str(act.confidence_basis) == diff.claim_ops[1].entry["born_from_event_id"]
+    grounding = diff.claim_ops[2]
+    assert grounding.entry["proposition"]["claim_role"] == "situation"
+    assert grounding.entry["proposition"]["compiled_grounding_obligation"] is True
 
 
 async def test_llm_reason_compiled_batch_memory_emits_relation_from_hinted_update(
@@ -3105,7 +3111,7 @@ async def test_question_policy_stats_survive_disabled_trace_emission(monkeypatch
     assert ops_summary["question_policy_updates"] == 1
 
 
-async def test_llm_reason_broad_path_adds_mandatory_grounding_obligation(
+async def test_llm_reason_broad_path_honors_explicit_noop_before_grounding(
     monkeypatch,
 ):
     monkeypatch.setenv("THINK_COMPILED_BATCH_MEMORY_REASONING", "0")
@@ -3194,15 +3200,8 @@ async def test_llm_reason_broad_path_adds_mandatory_grounding_obligation(
     diff, _ = await llm_reason(trigger, bundle, provider, max_tokens=2048)
 
     assert "<compiled_batch_memory_task>" not in provider.calls[0]["user"]
-    assert len(diff.claim_ops) == 1
-    grounding = diff.claim_ops[0]
-    assert grounding.op == "insert"
-    assert grounding.entry is not None
-    assert grounding.entry["proposition"]["claim_role"] == "situation"
-    assert grounding.entry["proposition"]["compiled_grounding_obligation"] is True
-    assert "FoundryWorks" in grounding.entry["natural"]
-    assert "connector reliability" in grounding.entry["natural"]
-    assert "mandatory_grounding_obligations=perceived:1,emitted:1" in (
+    assert diff.claim_ops == []
+    assert "relation_lifecycle_kernel=packet_obligations_skipped:explicit_noop" in (
         diff.reasoning_trace or ""
     )
 
