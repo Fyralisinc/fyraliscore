@@ -280,6 +280,32 @@ async def _find_governed_corruption_candidate(
     )
 
 
+async def _checkpoint_model_rows(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+) -> list[asyncpg.Record]:
+    """Snapshot accepted Model truth with its compatibility scope payload."""
+    return await conn.fetch(
+        """SELECT model.id,model.truth_version_id,model.truth_version,
+                  model.truth_semantic_digest,
+                  model.proposition,model.natural_text,model.confidence,
+                  legacy.scope_entities,model.truth_lifecycle,
+                  model.truth_advanced_at,
+                  COALESCE((SELECT array_agg(ref.evidence_id ORDER BY ref.evidence_id)
+                    FROM model_truth_evidence_references ref
+                    WHERE ref.tenant_id=model.tenant_id
+                      AND ref.model_version_id=model.truth_version_id
+                      AND ref.evidence_kind='observation'), ARRAY[]::text[])
+                    AS evidence_observation_ids
+           FROM accepted_current_models model
+           JOIN models legacy
+             ON legacy.tenant_id=model.tenant_id AND legacy.id=model.id
+           WHERE model.tenant_id=$1
+           ORDER BY model.truth_advanced_at,model.id""",
+        tenant_id,
+    )
+
+
 async def _run_arm(
     *,
     pool: asyncpg.Pool,
@@ -361,22 +387,7 @@ async def _run_arm(
         snapshot = await _snapshot(pool, runtime.tenant_id)
         if batch.batch_number in {3, 6, 10, 12}:
             async with pool.acquire() as conn:
-                model_rows = await conn.fetch(
-                    """SELECT model.id,model.truth_version_id,model.truth_version,
-                              model.truth_semantic_digest,
-                              model.proposition,model.natural_text,model.confidence,
-                              model.scope_entities,model.truth_lifecycle,
-                              model.truth_advanced_at,
-                              COALESCE((SELECT array_agg(ref.evidence_id ORDER BY ref.evidence_id)
-                                FROM model_truth_evidence_references ref
-                                WHERE ref.tenant_id=model.tenant_id
-                                  AND ref.model_version_id=model.truth_version_id
-                                  AND ref.evidence_kind='observation'), ARRAY[]::text[])
-                                AS evidence_observation_ids
-                       FROM accepted_current_models model WHERE model.tenant_id=$1
-                       ORDER BY truth_advanced_at,id""",
-                    runtime.tenant_id,
-                )
+                model_rows = await _checkpoint_model_rows(conn, runtime.tenant_id)
                 relation_rows = await conn.fetch(
                     """SELECT relation.id,relation.truth_relation_kind,
                               relation.truth_semantic_digest,

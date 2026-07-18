@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
 from uuid import uuid4
 
+import asyncpg
 import pytest
 
+from services.domain.truth_kernel import build_default_truth_kernel
+from services.evaluation.epistemic_repair.p2_runner import _admission
 from services.evaluation.epistemic_repair.p7_production_runner import (
     P7_ARMS,
     P7_ATTEMPT_TIMEOUT_S,
@@ -11,6 +15,7 @@ from services.evaluation.epistemic_repair.p7_production_runner import (
     P7_MAX_ATTEMPTS,
     _arm_tenant_id,
     _canonical_counts_unchanged_after_bootstrap,
+    _checkpoint_model_rows,
     _run_id,
     _validate_deadlines,
     assess_provider_identity_receipts,
@@ -18,6 +23,42 @@ from services.evaluation.epistemic_repair.p7_production_runner import (
 )
 from lib.evaluation.epistemic_repair.p6_population import build_p6_population
 from lib.shared.errors import InvariantViolation
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_models_read_scope_from_accepted_compatibility_payload() -> None:
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL required for P7 checkpoint schema proof")
+
+    conn = await asyncpg.connect(dsn)
+    tx = conn.transaction()
+    await tx.start()
+    try:
+        tenant_id = uuid4()
+        await conn.execute(
+            "INSERT INTO tenants(id,name,is_demo) VALUES($1,$2,FALSE)",
+            tenant_id,
+            f"p7-checkpoint-{tenant_id}",
+        )
+        admitted = await build_default_truth_kernel().admit(
+            tx=conn,
+            command=_admission(tenant_id, 7801),
+        )
+
+        rows = await _checkpoint_model_rows(conn, tenant_id)
+
+        assert len(rows) == 1
+        assert rows[0]["id"] == admitted.model_id
+        assert rows[0]["scope_entities"]
+        assert rows[0]["scope_entities"] == await conn.fetchval(
+            "SELECT scope_entities FROM models WHERE tenant_id=$1 AND id=$2",
+            tenant_id,
+            admitted.model_id,
+        )
+    finally:
+        await tx.rollback()
+        await conn.close()
 
 
 def test_p7_arm_set_is_preregistered_and_complete() -> None:
