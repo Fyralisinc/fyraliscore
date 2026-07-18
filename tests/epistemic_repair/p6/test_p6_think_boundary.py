@@ -1,4 +1,5 @@
 import ast
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -7,8 +8,10 @@ import asyncpg
 import pytest
 
 from lib.shared.errors import InvariantViolation
+from lib.evaluation.epistemic_repair.p6_population import build_p6_population
 from services.evaluation.epistemic_repair.p6_think_runner import (
-    _complete_and_reopen_barrier, _snapshot,
+    _P6_RUNTIME_START, _assert_population_clock_safe,
+    _complete_and_reopen_barrier, _signal_occurred_at, _snapshot,
 )
 from services.reasoning.think.lanes import ThinkLane
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
@@ -48,6 +51,31 @@ def test_production_think_runner_requires_real_batch_worker() -> None:
     assert 'expected_transport != "cli"' in source
     assert "P6_OBSERVATION_IDEMPOTENCY_CONFLICT" in source
     assert "ON CONFLICT (id) DO NOTHING" in source
+
+
+def test_all_twelve_p6_batches_are_past_dated_before_execution() -> None:
+    population = build_p6_population()
+    started_at = datetime(2026, 7, 18, tzinfo=timezone.utc)
+
+    _assert_population_clock_safe(population, run_started_at=started_at)
+
+    occurred = [
+        _signal_occurred_at(
+            batch_number=signal.batch_number, position=signal.position,
+        )
+        for signal in population.signals
+    ]
+    assert len(occurred) == 300
+    assert min(occurred) >= _P6_RUNTIME_START
+    assert max(occurred) < started_at
+
+
+def test_p6_clock_preflight_rejects_future_dated_population() -> None:
+    with pytest.raises(InvariantViolation, match="must not occur after"):
+        _assert_population_clock_safe(
+            build_p6_population(),
+            run_started_at=datetime(2025, 7, 10, tzinfo=timezone.utc),
+        )
 
 
 @pytest.mark.asyncio

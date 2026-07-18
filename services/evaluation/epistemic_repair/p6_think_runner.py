@@ -33,6 +33,37 @@ from services.domain.conversation_context.episode_boundaries import (
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
 
+# Fixed evaluator event time, deliberately far behind wall-clock execution.
+# This is transport metadata only and is not part of the sealed population.
+_P6_RUNTIME_START = datetime(2025, 7, 10, 9, 0, tzinfo=timezone.utc)
+
+
+def _signal_occurred_at(*, batch_number: int, position: int) -> datetime:
+    return _P6_RUNTIME_START + timedelta(
+        days=batch_number - 1, minutes=position,
+    )
+
+
+def _assert_population_clock_safe(
+    population: P6Population, *, run_started_at: datetime,
+) -> None:
+    """Fail before writes if any synthetic evidence is future-dated."""
+
+    latest = max(
+        _signal_occurred_at(
+            batch_number=signal.batch_number, position=signal.position,
+        )
+        for signal in population.signals
+    )
+    if latest > run_started_at:
+        raise InvariantViolation(
+            "P6_FUTURE_EVIDENCE_CLOCK",
+            "P6 runtime evidence must not occur after the proof starts",
+            latest_occurred_at=latest.isoformat(),
+            run_started_at=run_started_at.isoformat(),
+        )
+
+
 async def _init_p6_connection(conn: asyncpg.Connection) -> None:
     await _register_codecs(conn)
 
@@ -226,12 +257,12 @@ async def _persist_runtime_batch(
 
     result: dict[str, UUID] = {}
     rows = []
-    base = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
     for signal in batch.signals:
         observation_id = uuid5(NAMESPACE_URL, f"p6-think:{tenant_id}:{signal.signal_id}")
         result[signal.signal_id] = observation_id
-        occurred_at = base + timedelta(days=signal.batch_number - 1,
-                                       minutes=signal.position)
+        occurred_at = _signal_occurred_at(
+            batch_number=signal.batch_number, position=signal.position,
+        )
         rows.append((observation_id, tenant_id, occurred_at,
                      signal.source_channel, json.dumps({"text": signal.text}),
                      signal.text))
@@ -338,6 +369,8 @@ async def run_p6_production_think(
     """Run 12 intact transport batches through the real T1 Think worker."""
 
     tenant_id = tenant_id or uuid4()
+    run_started_at = datetime.now(timezone.utc)
+    _assert_population_clock_safe(population, run_started_at=run_started_at)
     run_provenance = _run_provenance()
     pool = await asyncpg.create_pool(database_url, min_size=1, max_size=4,
                                      init=_init_p6_connection)
@@ -408,10 +441,9 @@ async def run_p6_production_think(
                 observation_to_signal[observation_id] = signal.signal_id
                 boundary_inputs.append(ConversationBoundaryObservation(
                     observation_id=observation_id,
-                    occurred_at=(
-                        datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
-                        + timedelta(days=signal.batch_number - 1,
-                                    minutes=signal.position)
+                    occurred_at=_signal_occurred_at(
+                        batch_number=signal.batch_number,
+                        position=signal.position,
                     ),
                     content_text=signal.text,
                     source_container_id=signal.source_space,
