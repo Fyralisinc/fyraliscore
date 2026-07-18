@@ -274,14 +274,25 @@ def _expand_claim_ops_for_splitter(
             expanded_ops.append((src_op, src_op, None))
             continue
         splits = split_compound_claim_op(src_op)
-        if len(splits) <= 1:
-            expanded_ops.append((src_op, src_op, None))
+        if not splits:
+            continue
+        if len(splits) == 1:
+            expanded_ops.append((src_op, splits[0], None))
             continue
         gid = next_gid
         next_gid += 1
         split_summary["compound_inputs"] += 1
-        split_summary["atomic_outputs"] += max(0, len(splits) - 1)
-        split_summary["synthesized_situations"] += 1
+        for split_op in splits:
+            proposition = (
+                split_op.entry.get("proposition")
+                if isinstance(split_op.entry, dict)
+                else None
+            )
+            role = proposition.get("claim_role") if isinstance(proposition, dict) else None
+            if role == "situation":
+                split_summary["synthesized_situations"] += 1
+            else:
+                split_summary["atomic_outputs"] += 1
         for split_op in splits:
             expanded_ops.append((src_op, split_op, gid))
     return expanded_ops, split_summary

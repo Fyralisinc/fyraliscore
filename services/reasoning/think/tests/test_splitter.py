@@ -630,3 +630,23 @@ def test_unsplit_atomic_with_manifest_and_no_positive_support_is_quarantined():
     ]
 
     assert split_compound_claim_op(op) == []
+
+
+@pytest.mark.parametrize("wording", ["lacks", "is lacking"])
+def test_unsplit_owner_absence_supports_lacks_wording(wording: str):
+    observation_id = str(uuid4())
+    op = _make_op(natural=f"Delta handoff {wording} a recorded owner.")
+    op.entry["supporting_event_ids"] = [observation_id]
+    op.entry["proposition"]["evidence_event_ids"] = [observation_id]
+    op.entry["evidence_observation_manifest"] = [
+        {
+            "observation_id": observation_id,
+            "body": "Delta handoff has no clearly recorded owner.",
+            "source_channel": "slack:message",
+        }
+    ]
+
+    out = split_compound_claim_op(op)
+
+    assert len(out) == 1
+    assert out[0].entry["supporting_event_ids"] == [observation_id]

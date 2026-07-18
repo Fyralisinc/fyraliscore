@@ -218,7 +218,7 @@ _UNSPLITTABLE_CURIOSITY_TAGS: frozenset[str] = frozenset({
 })
 
 _PREDICATE_ROLE_TERMS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("absence", frozenset({"missing", "unresolved", "unclear", "unassigned", "unowned", "absent"})),
+    ("absence", frozenset({"missing", "unresolved", "unclear", "unassigned", "unowned", "absent", "lacks", "lacking"})),
     ("movement", frozenset({"moved", "delayed", "slipped", "postponed", "rescheduled", "drifted"})),
     ("incomplete", frozenset({"incomplete", "partial", "stale", "inaccurate", "optimistic"})),
     ("questioned", frozenset({"whether", "questioned", "uncertain", "unverified", "asks"})),
