@@ -28,7 +28,7 @@ def _function_source(relative: str, name: str) -> str:
 
 def test_manifest_reconciles_every_p0_reader_module() -> None:
     report = scan_reader_cutover(ROOT, MANIFEST)
-    assert len(report.results) == 72
+    assert len(report.results) == 73
     assert all(item.reason for item in report.results)
     assert all(item.authority != "uncovered" for item in report.results)
 
