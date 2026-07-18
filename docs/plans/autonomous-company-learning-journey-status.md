@@ -6,14 +6,17 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** M0 and CF3-A are green. The first CF3-B attempt reached
-batch 1 mechanically but created zero accepted Models, so it was stopped before
-an impossible batch-2 reuse claim. The bounded repair now preserves an exact
-provisional assertion as one evidence-bound `mention:<detection UUID>` atomic
-without granting canonical identity, relation, or cross-observation synthesis
-authority. Focused compiler, isolation, truth-admission, and PostgreSQL
-authority tests pass `69/69`; a provider-free vertical and fresh CF3-B rerun
-remain required before CF3-C is authorized.
+**Current checkpoint:** M0 and CF3-A are green; CF3-B remains red on semantic
+memory use. At commit `e8bbe033`, tenant
+`fd1588ed-1379-49c6-b6da-ac69b5f25b79` completed two real Codex batches in
+`481.491s`. Batch 1 safely admitted 14 exact mention-scoped atomics; batch 2
+retrieved all 14 and ended with 28 accepted Models. Both barriers closed at
+zero truth-critical pending. Independent audit rejected the apparent
+`model_context_used` grade: the provider trace based decisions on direct
+observations, while the sole batch-1 Model reference came from generic
+lifecycle bookkeeping. CF3-C remains locked. The next architecture decision is
+whether founder-assisted canonical entity bootstrap becomes the primary
+product cold start while zero-seed mention memory remains a safe fallback.
 
 **Last updated:** 2026-07-18
 

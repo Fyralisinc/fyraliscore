@@ -1207,6 +1207,26 @@ transport are excluded from this goal.
   novel-entity handling against zero seed.
 - **Evidence:** LOG-061 and LOG-062.
 
+### EDGE-053 — Mechanical Model references can overstate semantic memory use
+
+- **Status:** `open; P0 evaluator integrity before CF3-B can pass`
+- **Trigger:** The completed real two-batch run at commit `e8bbe033`.
+- **Current behavior:** Context-use telemetry reports `model_context_used` when
+  a generic lifecycle obligation references a selected Model, even when the
+  provider reasoning trace bases all semantic decisions on direct observations.
+- **Desired behavior:** Material-use credit requires a decision-level trace or
+  output whose conclusion, confidence, correction, or selected action depends
+  on prior accepted Model content. Maintenance bookkeeping is reported
+  separately.
+- **Risk:** Retrieval presence and generic lifecycle maintenance can create a
+  false-green autonomous-learning claim.
+- **Safe boundary:** Independent semantic audit overrides the generic grade;
+  CF3-B and CF3-C remain red/locked.
+- **Return condition:** A focused evaluator test rejects the observed artifact,
+  and a fresh run demonstrates traceable prior-Model influence.
+- **Evidence:** LOG-063 and
+  `/tmp/fyralis-cf3b-codex-two-batch-spark-r2.json`.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title

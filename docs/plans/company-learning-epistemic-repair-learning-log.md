@@ -2166,3 +2166,29 @@ subsystem. Mention-scoped atomics remain the bounded fallback for absent,
 incomplete, or newly outdated bootstrap knowledge. Evaluate founder-bootstrap
 usefulness and zero-seed safety as separate modes after the core reuse loop is
 green.
+
+### 2026-07-18 — LOG-063 — Retrieval and mechanical reference are not semantic learning
+
+**Execution:** Commit `e8bbe033`, tenant
+`fd1588ed-1379-49c6-b6da-ac69b5f25b79`, processed two real Codex batches of 25
+signals in `481.491s`. Batch 1 admitted 14 evidence-bound mention-scoped
+atomics. Batch 2 retrieved all 14 batch-1 Models and finished with 28 accepted
+Models. Both exact barriers closed with zero truth-critical pending work.
+
+**False-positive telemetry:** Runtime telemetry labeled batch 2
+`model_context_used` because a generic lifecycle-pressure obligation touched
+one selected batch-1 Model. The provider reasoning trace instead states that
+each decision followed from its direct member observation and never cites or
+reasons from prior Model content. Independent audit therefore classifies the
+CF3-B material-use gate red.
+
+**Architectural meaning:** Mention-scoped atomics solve safe factual retention,
+but intentionally cannot group different unresolved detections. Retrieval alone
+does not create the identity continuity required for company-level learning.
+Do not weaken that safety boundary or tune the use metric to pass. Evaluate the
+existing founder/bootstrap and canonical-identity reuse surfaces before another
+provider run; retain zero-seed mention memory as fallback evidence.
+
+**Artifacts:** `/tmp/fyralis-cf3b-codex-two-batch-spark-r2.json`, its
+`-evidence.json` and `-score.json` companions. The generic full-P6 score is
+expected red on a two-batch prefix and is not the CF3-B verdict.
