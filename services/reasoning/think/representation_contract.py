@@ -31,6 +31,7 @@ _SOURCE_DIGEST_MIN_TOP_COUNT = 5
 _SOURCE_DIGEST_EXCLUDED_SOURCES = frozenset({"internal:state_change"})
 _CURIOSITY_MAX_PER_DIFF = 1
 _CURIOSITY_MIN_OBSERVATIONS = 8
+_CURIOSITY_EVIDENCE_MAX = 8
 _CURIOSITY_BINDING_KINDS = frozenset({
     "actor",
     "customer",
@@ -38,6 +39,9 @@ _CURIOSITY_BINDING_KINDS = frozenset({
     "commitment",
     "system",
     "vendor",
+})
+_CURIOSITY_CANONICAL_BINDING_KINDS = frozenset({
+    "actor", "customer", "workstream", "commitment",
 })
 _CURIOSITY_LOW_VALUE_UNKNOWNS = frozenset({
     "",
@@ -215,6 +219,12 @@ def _maybe_add_source_digest_claims(raw_diff: Any, trigger: TriggerContext, bund
         summary = _source_digest_summary(source, rows)
         if summary is None:
             continue
+        if summary.get("repetition_mode") != "normalized_repetition":
+            _append_trace(raw_diff, f"source_digest skipped {source}: source volume is not repetition")
+            continue
+        if not _entity_or_episode_coherent(rows):
+            _append_trace(raw_diff, f"source_digest skipped {source}: evidence is not entity/episode coherent")
+            continue
         digests.append(
             _source_digest_claim(
                 trigger,
@@ -261,13 +271,32 @@ def _maybe_add_curiosity_claims(raw_diff: Any, trigger: TriggerContext, bundle: 
         _append_trace(raw_diff, "curiosity skipped: no strong substrate binding")
         return
 
+    canonical_bindings = [
+        binding for binding in candidate_bindings
+        if binding.get("kind") in _CURIOSITY_CANONICAL_BINDING_KINDS
+    ]
+    evidence_ids = {
+        str(value)
+        for binding in canonical_bindings
+        for value in binding.get("evidence_observation_ids") or []
+    }
+    scoped_observations = [
+        row for row in observations if str(getattr(row, "id", "")) in evidence_ids
+    ][:_CURIOSITY_EVIDENCE_MAX]
+    if not canonical_bindings or not scoped_observations:
+        _append_trace(
+            raw_diff,
+            "curiosity skipped: no business-bound claim-local evidence; retain in candidate plane",
+        )
+        return
+
     claims = [
         _curiosity_claim(
             trigger,
-            observations,
+            scoped_observations,
             packet,
             unknowns,
-            candidate_bindings,
+            canonical_bindings,
         )
     ]
     raw_diff.claim_ops = [*list(getattr(raw_diff, "claim_ops", []) or []), *claims[:_CURIOSITY_MAX_PER_DIFF]]
@@ -441,6 +470,10 @@ def _curiosity_candidate_bindings(
                 },
                 "confidence": float(candidate.get("confidence") or 0.0),
                 "status": str(candidate.get("status") or "proposed"),
+                "evidence_observation_ids": [
+                    str(value)
+                    for value in candidate.get("evidence_observation_ids") or []
+                ],
             }
         )
         if len(selected) >= limit:
@@ -1307,6 +1340,25 @@ def _source_digest_summary(source: str, rows: list[Any]) -> dict[str, Any] | Non
         "repetition_mode": "normalized_repetition" if is_repetitive else "source_cadence",
         "sample_signatures": [sig for sig, _ in signatures.most_common(4)],
     }
+
+
+def _entity_or_episode_coherent(rows: list[Any]) -> bool:
+    """Require one positive semantic coordinate shared by every evidence row."""
+
+    if not rows:
+        return False
+    entity_sets = [
+        {
+            (str(item.get("type") or ""), str(item.get("id") or item.get("referent_id") or ""))
+            for item in (getattr(row, "entities_mentioned", None) or [])
+            if isinstance(item, dict) and (item.get("id") or item.get("referent_id"))
+        }
+        for row in rows
+    ]
+    if entity_sets and all(entity_sets) and set.intersection(*entity_sets):
+        return True
+    episode_sets = [set(_source_thread_refs(row)) for row in rows]
+    return bool(episode_sets and all(episode_sets) and set.intersection(*episode_sets))
 
 
 def _source_digest_claim(

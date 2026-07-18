@@ -144,11 +144,13 @@ def test_representation_enrichment_adds_source_bound_default_falsifier() -> None
 
 def test_source_digest_fallback_turns_repetitive_batch_into_pattern_model() -> None:
     tenant_id = uuid4()
+    workstream_id = uuid4()
     observations = [
         _obs(
             oid=uuid4(),
             source_channel="aws:event",
             text="[aws] iam:CreateAccessKey",
+            entities_mentioned=[{"type": "workstream", "id": str(workstream_id)}],
             occurred_at=datetime(2026, 6, 17, 0, i, tzinfo=timezone.utc),
         )
         for i in range(10)
@@ -178,11 +180,13 @@ def test_source_digest_fallback_turns_repetitive_batch_into_pattern_model() -> N
 
 def test_repetitive_batch_gets_pattern_digest_even_with_ordinary_claim() -> None:
     tenant_id = uuid4()
+    workstream_id = uuid4()
     observations = [
         _obs(
             oid=uuid4(),
             source_channel="aws:event",
             text="[aws] lambda error code 503",
+            entities_mentioned=[{"type": "workstream", "id": str(workstream_id)}],
             occurred_at=datetime(2026, 6, 17, 0, i, tzinfo=timezone.utc),
         )
         for i in range(10)
@@ -240,6 +244,7 @@ def test_repetitive_batch_gets_pattern_digest_even_with_ordinary_claim() -> None
 
 def test_existing_recurrence_claim_only_suppresses_its_own_source() -> None:
     tenant_id = uuid4()
+    github_workstream_id = uuid4()
     aws_rows = [
         _obs(
             oid=uuid4(),
@@ -254,6 +259,9 @@ def test_existing_recurrence_claim_only_suppresses_its_own_source() -> None:
             oid=uuid4(),
             source_channel="github:webhook",
             text=f"github pull request event {i}",
+            entities_mentioned=[
+                {"type": "workstream", "id": str(github_workstream_id)}
+            ],
             occurred_at=datetime(2026, 6, 17, 1, i, tzinfo=timezone.utc),
         )
         for i in range(8)
@@ -309,7 +317,7 @@ def test_existing_recurrence_claim_only_suppresses_its_own_source() -> None:
     assert sum("source_digest" in op.entry["domain_tags"] for op in raw.claim_ops) == 2
 
 
-def test_batch_fragments_fill_source_digest_when_bundle_is_pruned() -> None:
+def test_batch_fragments_without_scope_do_not_create_source_digest() -> None:
     tenant_id = uuid4()
     aws_rows = [
         _obs(
@@ -355,13 +363,11 @@ def test_batch_fragments_fill_source_digest_when_bundle_is_pruned() -> None:
 
     enrich_raw_diff_representation(raw, trigger, SimpleNamespace(observations=aws_rows))
 
-    naturals = [op.entry["natural"] for op in raw.claim_ops]
-    assert len(raw.claim_ops) == 2
-    assert any("aws:event source" in natural for natural in naturals)
-    assert any("github:webhook source" in natural for natural in naturals)
+    assert raw.claim_ops == []
+    assert "evidence is not entity/episode coherent" in raw.reasoning_trace
 
 
-def test_major_source_window_gets_digest_even_when_text_is_diverse() -> None:
+def test_diverse_source_volume_does_not_become_canonical_pattern() -> None:
     tenant_id = uuid4()
     texts = [
         "[aws] lambda cold start exceeded baseline",
@@ -395,16 +401,8 @@ def test_major_source_window_gets_digest_even_when_text_is_diverse() -> None:
 
     enrich_raw_diff_representation(raw, trigger, SimpleNamespace(observations=observations))
 
-    assert len(raw.claim_ops) == 1
-    prop = raw.claim_ops[0].entry["proposition"]
-    assert prop["claim_role"] == "pattern"
-    assert prop["repetition_mode"] == "source_cadence"
-    assert "source_digest" in prop["retrieval_tags"]
-    assert "major_source_window" in prop["retrieval_tags"]
-    assert "discovered_pattern" in prop["coverage_roles"]
-    assert "source" in prop["coverage_roles"]
-    assert "source_observability" in raw.claim_ops[0].entry["domain_tags"]
-    assert "compute_activity" in raw.claim_ops[0].entry["domain_tags"]
+    assert raw.claim_ops == []
+    assert "source volume is not repetition" in raw.reasoning_trace
 
 
 def test_event_batch_subkind_is_enough_to_enable_digest_fallback() -> None:
@@ -414,6 +412,7 @@ def test_event_batch_subkind_is_enough_to_enable_digest_fallback() -> None:
             oid=uuid4(),
             source_channel="github:webhook",
             text=f"github pull request review event {i}",
+            content={"thread_id": "review-thread-1"},
             occurred_at=datetime(2026, 6, 17, 0, i, tzinfo=timezone.utc),
         )
         for i in range(8)
@@ -627,6 +626,9 @@ def test_bound_inquiry_unknowns_become_low_priority_curiosity_hypothesis() -> No
                             "type": "candidate_commitment",
                             "id": str(commitment_id),
                         },
+                        "evidence_observation_ids": [
+                            str(obs.id) for obs in observations[:8]
+                        ],
                     }
                 ],
             },
@@ -706,6 +708,9 @@ def test_curiosity_hypothesis_binds_to_provisional_substrate_candidates() -> Non
                             "type": "candidate_actor",
                             "id": str(candidate_actor),
                         },
+                        "evidence_observation_ids": [
+                            str(obs.id) for obs in observations[:4]
+                        ],
                     },
                     {
                         "id": str(candidate_commitment),
@@ -717,6 +722,9 @@ def test_curiosity_hypothesis_binds_to_provisional_substrate_candidates() -> Non
                             "type": "candidate_commitment",
                             "id": str(candidate_commitment),
                         },
+                        "evidence_observation_ids": [
+                            str(obs.id) for obs in observations[:8]
+                        ],
                     },
                 ],
             },
@@ -740,16 +748,91 @@ def test_curiosity_hypothesis_binds_to_provisional_substrate_candidates() -> Non
     assert "candidate_actor_question" not in prop["retrieval_tags"]
     assert "curiosity_low_priority" in prop["retrieval_tags"]
     assert prop["candidate_bindings"][0]["scope_ref"]["type"] == "candidate_commitment"
+    assert curiosity["supporting_event_ids"] == [obs.id for obs in observations[:8]]
+
+
+def test_generic_source_only_curiosity_never_becomes_canonical_claim() -> None:
+    tenant_id = uuid4()
+    system_id = uuid4()
+    observations = [
+        _obs(
+            oid=uuid4(), source_channel="slack:message",
+            text=f"Mixed company signal {index}",
+            occurred_at=datetime(2026, 6, 17, 0, index, tzinfo=timezone.utc),
+        )
+        for index in range(25)
+    ]
+    trigger = TriggerContext(
+        kind="T1", subkind="event_batch", tenant_id=tenant_id,
+        observation_id=observations[0].id,
+        observation_ids=[obs.id for obs in observations],
+    )
+    raw = RawDiff(trigger_ref=uuid4(), tenant_id=tenant_id, claim_ops=[])
+    enrich_raw_diff_representation(
+        raw,
+        trigger,
+        SimpleNamespace(
+            observations=observations,
+            notes={
+                "inquiry_context_packet": {
+                    "important_unknowns": ["responsible owner"],
+                    "question_path": [{
+                        "question": "Who owns this?", "primitive": "OWNERSHIP",
+                    }],
+                },
+                "substrate_candidates": [{
+                    "id": str(system_id), "kind": "system",
+                    "label": "Slack source", "confidence": 0.9,
+                    "status": "promoted",
+                    "scope_ref": {"type": "system", "id": str(system_id)},
+                    "evidence_observation_ids": [str(obs.id) for obs in observations],
+                }],
+            },
+        ),
+    )
+    curiosity = [
+        op for op in raw.claim_ops
+        if op.entry["proposition"].get("claim_role") == "hypothesis"
+    ]
+    assert curiosity == []
+    assert "retain in candidate plane" in raw.reasoning_trace
+
+
+def test_repeated_mixed_storyline_and_noise_evidence_is_not_a_pattern() -> None:
+    tenant_id = uuid4()
+    atlas_id, beacon_id = uuid4(), uuid4()
+    observations = []
+    for index in range(10):
+        entity = atlas_id if index < 4 else beacon_id if index < 8 else None
+        observations.append(_obs(
+            oid=uuid4(), source_channel="slack:message",
+            text="status moved after ownership changed",
+            entities_mentioned=(
+                [{"type": "workstream", "id": str(entity)}] if entity else []
+            ),
+            occurred_at=datetime(2026, 6, 17, 0, index, tzinfo=timezone.utc),
+        ))
+    trigger = TriggerContext(
+        kind="T1", subkind="event_batch", tenant_id=tenant_id,
+        observation_id=observations[0].id,
+        observation_ids=[obs.id for obs in observations],
+    )
+    raw = RawDiff(trigger_ref=uuid4(), tenant_id=tenant_id, claim_ops=[])
+    enrich_raw_diff_representation(raw, trigger, SimpleNamespace(observations=observations))
+    assert raw.claim_ops == []
+    assert "evidence is not entity/episode coherent" in raw.reasoning_trace
 
 
 def test_source_digest_binds_to_source_system_candidate_scope() -> None:
     tenant_id = uuid4()
     system_id = uuid4()
+    workstream_id = uuid4()
     observations = [
         _obs(
             oid=uuid4(),
             source_channel="aws:event",
             text="[aws] iam:CreateAccessKey",
+            entities_mentioned=[{"type": "workstream", "id": str(workstream_id)}],
             occurred_at=datetime(2026, 6, 17, 0, i, tzinfo=timezone.utc),
         )
         for i in range(10)
