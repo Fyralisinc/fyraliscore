@@ -13,6 +13,10 @@ from services.platform.execution.types import (
     SufficiencyVerdict,
 )
 from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.retrieval.assembler import ContextBundle
+from services.reasoning.think.compiled_reasoning import (
+    build_compiled_batch_memory_decision_request,
+)
 
 
 def _trigger() -> TriggerContext:
@@ -482,7 +486,10 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
         SufficiencyVerdict("sufficient_for_reasoning", "ready", 0, 0, ()),
     )
 
-    assert len(candidates) == 20
+    # Only directly assertable facets enter the closed truth-candidate plane.
+    # Questions and unresolved pronouns remain explicitly represented below,
+    # but cannot be promoted as facts by the compiled writer.
+    assert len(candidates) == 12
     assert {candidate.semantic_scope[0] for candidate in candidates} == set(storylines)
     for candidate in candidates:
         scope = candidate.semantic_scope[0]
@@ -507,6 +514,51 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
         assert "delay" not in candidate.entailed_claim_text.casefold()
         assert not (set(candidate.member_observation_ids) & distractor_ids)
     assert all(candidate.candidate_id != "MDC_H2" for candidate in candidates)
+
+    uncertainty = context_packet.batch_fragment_uncertainty_signals(trigger)
+    assert len(uncertainty) == 8
+    assert {row["kind"] for row in uncertainty} == {
+        "open_question",
+        "clarification_required",
+    }
+    assert {row["routing"] for row in uncertainty} == {
+        "open_question",
+        "clarification_residual",
+    }
+    assert {row["observation_id"] for row in uncertainty}.isdisjoint({
+        observation_id
+        for candidate in candidates
+        for observation_id in candidate.member_observation_ids
+    })
+    assert {
+        row["observation_id"] for row in uncertainty
+    } | {
+        observation_id
+        for candidate in candidates
+        for observation_id in candidate.member_observation_ids
+    } == set().union(*expected.values())
+
+    compiled_packet = context_packet.compile_context_packet(
+        trigger,
+        "DEEP_INQUIRY_PATH",
+        (),
+        [],
+        [],
+        [],
+        SufficiencyVerdict("sufficient_for_reasoning", "ready", 20, 0, ()),
+        token_budget=4000,
+        evidence_mode="all",
+    )
+    assert len(compiled_packet["memory_decision_candidates"]) == 12
+    assert compiled_packet["uncertainty_signals"] == uncertainty
+    request = build_compiled_batch_memory_decision_request(
+        trigger,
+        ContextBundle(notes={"inquiry_context_packet": compiled_packet}),
+    )
+    assert request is not None
+    assert "<uncertainty_signals>" in request.user
+    assert "Do not emit a claim or decision for them" in request.user
+    assert request.user.count("<candidate>") == 12
 
     reordered = context_packet.memory_decision_candidates(
         TriggerContext(

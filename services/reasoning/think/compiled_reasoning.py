@@ -851,6 +851,18 @@ def _build_batch_memory_decision_user_prompt(
             ]
         )
 
+    uncertainty_signals = packet.get("uncertainty_signals")
+    if isinstance(uncertainty_signals, list) and uncertainty_signals:
+        lines.extend([
+            "<uncertainty_signals>",
+            "These signals are accounted outside accepted truth. Do not emit a "
+            "claim or decision for them in this closed-world pass.",
+        ])
+        for signal in uncertainty_signals[:24]:
+            if isinstance(signal, dict):
+                lines.append("  - " + _trunc(_jsonish(signal), 700))
+        lines.append("</uncertainty_signals>")
+
     lines.append("<memory_decision_candidates>")
     for candidate in candidates:
         lines.extend(_batch_candidate_lines(candidate))

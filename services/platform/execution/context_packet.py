@@ -647,6 +647,15 @@ def compile_context_packet(
         residuals or [],
         token_budget=token_budget,
     )
+    memory_candidates = memory_decision_candidates(
+        trigger,
+        hypotheses,
+        questions,
+        answers,
+        packet_evidence,
+        sufficiency,
+    )
+    uncertainty_signals = batch_fragment_uncertainty_signals(trigger)
     return {
         "signal_summary": compact(trigger_text(trigger), 1000),
         "source_metadata": {
@@ -663,16 +672,12 @@ def compile_context_packet(
         "question_answers": [jsonable(asdict(answer)) for answer in answers],
         "sufficiency_verdict": jsonable(asdict(sufficiency)),
         "memory_decision_candidates": [
-            jsonable(asdict(candidate))
-            for candidate in memory_decision_candidates(
-                trigger,
-                hypotheses,
-                questions,
-                answers,
-                packet_evidence,
-                sufficiency,
-            )
+            jsonable(asdict(candidate)) for candidate in memory_candidates
         ],
+        # These are explicitly outside the truth-candidate plane. They remain
+        # visible to reasoning and residual/clarification accounting without
+        # asking the writer to turn a question or unresolved pronoun into fact.
+        "uncertainty_signals": uncertainty_signals,
         "candidate_state_changes": candidate_state_changes(
             hypotheses,
             packet_evidence,
@@ -863,29 +868,7 @@ def _batch_fragment_candidates(
     if not isinstance(fragments, list):
         return [], False
 
-    groups: dict[str, list[dict[str, str]]] = {}
-    scope_labels: dict[str, str] = {}
-    for raw in fragments:
-        if not isinstance(raw, dict):
-            continue
-        observation_id = str(raw.get("observation_id") or "").strip()
-        text = str(raw.get("text") or "").strip()
-        if not observation_id or not text:
-            continue
-        match = _BATCH_SCOPE_PREFIX_RE.match(text)
-        if match is None:
-            continue
-        scope = " ".join(match.group("scope").split())
-        scope_key = scope.casefold()
-        if scope_key in _NON_BUSINESS_SCOPE_WORDS:
-            continue
-        row = {
-            "observation_id": observation_id,
-            "body": text,
-            "source_channel": str(raw.get("source_channel") or ""),
-        }
-        groups.setdefault(scope_key, []).append(row)
-        scope_labels.setdefault(scope_key, scope)
+    groups, scope_labels = _group_batch_fragments(fragments)
 
     candidates: list[MemoryDecisionCandidate] = []
     covered_ids: set[str] = set()
@@ -912,6 +895,8 @@ def _batch_fragment_candidates(
             # byte-for-byte evidence without a second interpretation step.
             entailed_text = member["body"]
             covered_ids.add(observation_id)
+            if _batch_fragment_uncertainty_kind(match.group("body")) is not None:
+                continue
             candidates.append(
                 MemoryDecisionCandidate(
                     candidate_id=_candidate_id(
@@ -937,9 +922,104 @@ def _batch_fragment_candidates(
         for raw in fragments
         if isinstance(raw, dict) and raw.get("observation_id") and raw.get("text")
     )
+    # Coverage includes uncertainty-plane routing: excluded questions are not
+    # lost merely because they correctly produce no truth candidate.
     coverage = len(covered_ids) / max(1, eligible_count)
     material = len(candidates) >= 2 and coverage >= 0.60
     return candidates, material
+
+
+def batch_fragment_uncertainty_signals(trigger: TriggerContext) -> list[dict[str, str]]:
+    """Return claim-local question/clarification signals excluded from truth."""
+    if not trigger.is_batch or not isinstance(trigger.seed_signature, dict):
+        return []
+    fragments = trigger.seed_signature.get("batch_signal_fragments")
+    if not isinstance(fragments, list):
+        return []
+    groups, scope_labels = _group_batch_fragments(fragments)
+    return _batch_fragment_uncertainty_rows(groups, scope_labels)
+
+
+def _group_batch_fragments(
+    fragments: list[Any],
+) -> tuple[dict[str, list[dict[str, str]]], dict[str, str]]:
+    groups: dict[str, list[dict[str, str]]] = {}
+    scope_labels: dict[str, str] = {}
+    for raw in fragments:
+        if not isinstance(raw, dict):
+            continue
+        observation_id = str(raw.get("observation_id") or "").strip()
+        text = str(raw.get("text") or "").strip()
+        if not observation_id or not text:
+            continue
+        match = _BATCH_SCOPE_PREFIX_RE.match(text)
+        if match is None:
+            continue
+        scope = " ".join(match.group("scope").split())
+        scope_key = scope.casefold()
+        if scope_key in _NON_BUSINESS_SCOPE_WORDS:
+            continue
+        groups.setdefault(scope_key, []).append(
+            {
+                "observation_id": observation_id,
+                "body": text,
+                "source_channel": str(raw.get("source_channel") or ""),
+            }
+        )
+        scope_labels.setdefault(scope_key, scope)
+    return groups, scope_labels
+
+
+def _batch_fragment_uncertainty_kind(body: str) -> str | None:
+    normalized = " ".join(body.casefold().split())
+    if re.search(r"\basks? whether\b|\bwhether\b[^.?!]*[?]", normalized):
+        return "open_question"
+    if (
+        "without naming" in normalized
+        and re.search(r"\b(someone|they|them|their|it)\b", normalized)
+    ):
+        return "clarification_required"
+    return None
+
+
+def _batch_fragment_uncertainty_rows(
+    groups: dict[str, list[dict[str, str]]],
+    scope_labels: dict[str, str],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for scope_key in sorted(groups):
+        members = groups[scope_key]
+        payloads = {
+            _BATCH_SCOPE_PREFIX_RE.match(member["body"]).group("body").casefold()  # type: ignore[union-attr]
+            for member in members
+        }
+        if len(members) < 2 or len(payloads) < 2:
+            continue
+        for member in sorted(members, key=lambda row: row["observation_id"]):
+            match = _BATCH_SCOPE_PREFIX_RE.match(member["body"])
+            if match is None:
+                continue
+            kind = _batch_fragment_uncertainty_kind(match.group("body"))
+            if kind is None:
+                continue
+            rows.append(
+                {
+                    "uncertainty_id": _candidate_id(
+                        "MDU", f"{scope_key}_{member['observation_id']}"
+                    ),
+                    "kind": kind,
+                    "semantic_scope": scope_labels[scope_key],
+                    "observation_id": member["observation_id"],
+                    "source_channel": member["source_channel"],
+                    "text": member["body"],
+                    "routing": (
+                        "open_question"
+                        if kind == "open_question"
+                        else "clarification_residual"
+                    ),
+                }
+            )
+    return rows
 
 
 _RELATION_SLOT_PRIORITY = {

@@ -97,7 +97,10 @@ def _compile(trigger: TriggerContext):
 
 
 def _by_scope(candidates):
-    return {candidate.semantic_scope[0]: candidate for candidate in candidates}
+    grouped = {}
+    for candidate in candidates:
+        grouped.setdefault(candidate.semantic_scope[0], []).append(candidate)
+    return grouped
 
 
 def _candidate_blocks(prompt: str) -> list[str]:
@@ -120,21 +123,40 @@ def test_compiled_candidates_and_prompt_remain_workstream_local() -> None:
     by_scope = _by_scope(candidates)
 
     assert set(by_scope) == set(_WORKSTREAMS)
-    assert len(candidates) == 4
+    assert len(candidates) == 20
     member_sets: list[set[str]] = []
-    for scope, candidate in by_scope.items():
-        member_ids = set(candidate.member_observation_ids)
+    for scope, scoped_candidates in by_scope.items():
+        member_ids = {
+            observation_id
+            for candidate in scoped_candidates
+            for observation_id in candidate.member_observation_ids
+        }
         member_sets.append(member_ids)
-        assert candidate.semantic_scope == (scope,)
+        assert len(scoped_candidates) == 5
+        assert all(
+            candidate.semantic_scope == (scope,)
+            for candidate in scoped_candidates
+        )
         assert member_ids == expected[scope]
-        assert set(candidate.source_observation_ids) == expected[scope]
-        assert len(candidate.observation_evidence) == 5
+        assert all(
+            candidate.source_observation_ids == candidate.member_observation_ids
+            for candidate in scoped_candidates
+        )
+        assert all(
+            len(candidate.observation_evidence) == 1
+            for candidate in scoped_candidates
+        )
         assert {
-            item["observation_id"] for item in candidate.observation_evidence
+            item["observation_id"]
+            for candidate in scoped_candidates
+            for item in candidate.observation_evidence
         } == expected[scope]
         assert not member_ids & distractor_ids
         assert str(trigger.observation_id) not in member_ids
-        rendered = json.dumps(asdict(candidate), sort_keys=True).casefold()
+        rendered = json.dumps(
+            [asdict(candidate) for candidate in scoped_candidates],
+            sort_keys=True,
+        ).casefold()
         assert "about=batch" not in rendered
         assert "transport wrapper" not in rendered
         assert "evidence window" not in rendered
@@ -160,24 +182,34 @@ def test_compiled_candidates_and_prompt_remain_workstream_local() -> None:
     )
     assert request is not None
     blocks = _candidate_blocks(request.user)
-    assert len(blocks) == 4
+    assert len(blocks) == 20
     for scope, expected_ids in expected.items():
-        block = next(part for part in blocks if scope in part)
+        scoped_blocks = [part for part in blocks if scope in part]
+        assert len(scoped_blocks) == 5
         for observation_id in expected_ids:
             body = next(
                 row["text"]
                 for row in fragments
                 if row["observation_id"] == observation_id
             )
-            assert observation_id in block
-            assert body in block
+            matching = [part for part in scoped_blocks if observation_id in part]
+            assert len(matching) == 1
+            assert body in matching[0]
         foreign_ids = set().union(
             *(ids for other_scope, ids in expected.items() if other_scope != scope)
         )
-        assert all(observation_id not in block for observation_id in foreign_ids)
-        assert all(observation_id not in block for observation_id in distractor_ids)
-        assert str(trigger.observation_id) not in block
-        assert wrapper_text not in block
+        assert all(
+            observation_id not in block
+            for block in scoped_blocks
+            for observation_id in foreign_ids
+        )
+        assert all(
+            observation_id not in block
+            for block in scoped_blocks
+            for observation_id in distractor_ids
+        )
+        assert all(str(trigger.observation_id) not in block for block in scoped_blocks)
+        assert all(wrapper_text not in block for block in scoped_blocks)
 
 
 def test_wrapper_changes_and_member_permutation_do_not_change_locality() -> None:
@@ -201,7 +233,17 @@ def test_wrapper_changes_and_member_permutation_do_not_change_locality() -> None
 
     assert set(baseline) == set(adversarial) == set(_WORKSTREAMS)
     for scope in _WORKSTREAMS:
-        assert set(baseline[scope].member_observation_ids) == expected[scope]
-        assert set(adversarial[scope].member_observation_ids) == expected[scope]
-        assert baseline[scope].candidate_id == adversarial[scope].candidate_id
-        assert baseline[scope].semantic_scope == adversarial[scope].semantic_scope
+        baseline_projection = {
+            (candidate.candidate_id, candidate.member_observation_ids)
+            for candidate in baseline[scope]
+        }
+        adversarial_projection = {
+            (candidate.candidate_id, candidate.member_observation_ids)
+            for candidate in adversarial[scope]
+        }
+        assert {
+            observation_id
+            for candidate in baseline[scope]
+            for observation_id in candidate.member_observation_ids
+        } == expected[scope]
+        assert baseline_projection == adversarial_projection
