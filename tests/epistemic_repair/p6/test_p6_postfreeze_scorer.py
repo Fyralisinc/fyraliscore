@@ -9,6 +9,7 @@ from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p6_population import build_p6_population
 from lib.evaluation.epistemic_repair.p6_postfreeze_scorer import (
     _score_boundaries,
+    _score_context,
     score_p6_frozen_execution,
 )
 
@@ -156,6 +157,59 @@ def test_context_recall_does_not_infer_denominator_from_selected_rows() -> None:
     )
     assert report["continuous_metrics"]["sufficient_context_recall"]["status"] == "unmeasured"
     assert report["continuous_metrics"]["selected_context_contamination"]["status"] == "unmeasured"
+
+
+def test_mixed_batch_context_is_scored_once_per_retrieval_not_cartesian_targets() -> None:
+    population = build_p6_population()
+    gold = {item.signal_id: item for item in population.gold}
+    by_story_batch = {
+        (item.storyline_id, signal.batch_number): item.signal_id
+        for signal, item in zip(population.signals, population.gold, strict=True)
+        if item.storyline_id
+    }
+    current_atlas = by_story_batch[("atlas", 6)]
+    historical_atlas = by_story_batch[("atlas", 2)]
+    historical_beacon = by_story_batch[("beacon", 2)]
+    noise_id = next(
+        item.signal_id for item in population.gold
+        if item.role == "noise" and next(
+            signal.batch_number for signal in population.signals
+            if signal.signal_id == item.signal_id
+        ) == 2
+    )
+    input_ids = [
+        signal.signal_id for signal in population.signals if signal.batch_number == 6
+    ]
+
+    def row(item_id: str, source_id: str, *, referenced: bool) -> dict[str, object]:
+        return {
+            "decision_id": item_id, "context_item_id": item_id,
+            "think_run_id": "run-6", "selected": True,
+            "input_signal_ids": input_ids, "source_signal_ids": [source_id],
+            "output_evidence_signal_ids": [current_atlas], "batch_number": 6,
+            "context_item_kind": "observation", "referenced": referenced,
+            "historical_reopen_reason": "claim_evidence_reopen",
+            "necessary_background": referenced,
+        }
+
+    rows = [
+        row("current-input", current_atlas, referenced=True),
+        row("atlas-history", historical_atlas, referenced=True),
+        row("beacon-history", historical_beacon, referenced=False),
+        row("noise-history", noise_id, referenced=False),
+    ]
+    scores = _score_context({
+        "postfreeze_evidence": {
+            "context_items": rows, "context_opportunities_complete": True,
+        }
+    }, population)
+    assert gold[historical_beacon].storyline_id != gold[current_atlas].storyline_id
+    assert scores["selected_context_contamination"]["numerator"] == 1
+    assert scores["selected_context_contamination"]["denominator"] == 3
+    assert scores["sufficient_context_recall"]["value"] == 1.0
+    assert scores["sufficient_context_recall"]["denominator"] == 1
+    assert scores["selected_context_utilization"]["numerator"] == 1
+    assert scores["selected_context_utilization"]["denominator"] == 3
 
 
 def test_postfreeze_evidence_digest_and_receipts_are_a_hard_gate() -> None:

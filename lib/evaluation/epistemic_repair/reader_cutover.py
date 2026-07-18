@@ -64,7 +64,11 @@ def scan_reader_cutover(repo_root: Path, manifest_path: Path) -> ReaderCutoverRe
             "module": item["module"],
             "classification": "consequential",
             "authority": "accepted_direct",
-            "required_all": ["accepted_current_models"],
+            # Governed readers may reference the accepted view directly or
+            # through the shared read-shape constant. Both resolve to the same
+            # canonical SQL; raw `models` reads satisfy neither token.
+            "required_any": ["accepted_current_models", "ACCEPTED_MODEL_ROWS_SQL"],
+            "required_all": [],
             "reason": item["reason"],
         }
         for item in manifest.get("additional_consequential", [])
@@ -86,7 +90,10 @@ def scan_reader_cutover(repo_root: Path, manifest_path: Path) -> ReaderCutoverRe
             raise ValueError(f"reader manifest path does not exist: {module}")
         source = path.read_text(encoding="utf-8")
         required = tuple(entry["required_all"])
+        required_any = tuple(entry.get("required_any", ()))
         missing_tokens = tuple(token for token in required if token not in source)
+        if required_any and not any(token in source for token in required_any):
+            missing_tokens = (*missing_tokens, f"one_of:{'|'.join(required_any)}")
         compliant = (
             entry["classification"] == "exempt"
             or (entry["authority"] in {"accepted_direct", "accepted_delegate"}

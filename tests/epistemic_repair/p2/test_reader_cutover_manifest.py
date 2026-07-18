@@ -58,6 +58,22 @@ def test_central_cutover_tokens_are_ratcheted() -> None:
     assert all(item.compliant for item in central.values())
 
 
+def test_shared_accepted_read_shape_satisfies_additional_reader_authority() -> None:
+    report = scan_reader_cutover(ROOT, MANIFEST)
+    governed = {
+        item.module: item for item in report.consequential
+        if item.module in {
+            "services/domain/actors/operating_context.py",
+            "services/reasoning/dynamics/detectors.py",
+            "services/reasoning/think/cascade.py",
+            "services/reasoning/think/edge_semantics.py",
+            "services/reasoning/think/reconciler.py",
+        }
+    }
+    assert len(governed) == 5
+    assert all(item.compliant for item in governed.values())
+
+
 def test_p2_exit_requires_complete_reader_cutover() -> None:
     source = (
         ROOT / "lib/evaluation/epistemic_repair/p2_runner.py"

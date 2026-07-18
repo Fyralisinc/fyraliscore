@@ -198,12 +198,12 @@ def _score_mentions(
 def _score_context(raw: dict[str, Any], population: P6Population) -> dict[str, dict[str, Any]]:
     rows = _record_index(raw, "context_items")
     evidence = raw.get("postfreeze_evidence") or {}
-    # Retrieval recall needs the complete preregistered opportunity set.  The
-    # current decision table preserves selected items but not the target signal
-    # coordinate, so it is dishonest to infer a denominator from predictions.
     opportunities_complete = evidence.get("context_opportunities_complete") is True
     coordinates_complete = bool(rows) and all(
-        row.get("target_signal_id") and row.get("source_signal_id") for row in rows
+        row.get("think_run_id") and isinstance(row.get("input_signal_ids"), list)
+        and isinstance(row.get("source_signal_ids"), list)
+        and isinstance(row.get("output_evidence_signal_ids"), list)
+        for row in rows
     )
     if not opportunities_complete or not coordinates_complete:
         return {name: _metric(name, None, None) for name in (
@@ -212,70 +212,95 @@ def _score_context(raw: dict[str, Any], population: P6Population) -> dict[str, d
             "mature_unnecessary_historical_observation_use", "selected_context_utilization",
         )}
     gold = {item.signal_id: item for item in population.gold}
-    selected = [row for row in rows if row.get("selected")]
+    signals = {item.signal_id: item for item in population.signals}
+
+    def source_ids(row: dict[str, Any]) -> set[str]:
+        return {str(value) for value in row.get("source_signal_ids") or ()}
+
+    # Current-batch observations are batch inputs, not retrieval choices. They
+    # never become 25 target-specific context decisions and are excluded from
+    # the selected-retrieval denominator.
+    selected = [
+        row for row in rows if row.get("selected")
+        and not (source_ids(row) & {
+            str(value) for value in row.get("input_signal_ids") or ()
+        })
+    ]
     contamination = 0
-    sufficient_expected = sum(
-        1 for row in rows
-        if (
-            (target := gold.get(str(row.get("target_signal_id") or ""))) is not None
-            and (source := gold.get(str(row.get("source_signal_id") or ""))) is not None
-            and target.storyline_id is not None
-            and source.storyline_id == target.storyline_id
-            and source.role not in {"noise", "high_similarity_distractor"}
-        )
-    )
-    sufficient_selected = 0
     historical = historical_reasoned = 0
     mature = [row for row in selected if int(row.get("batch_number") or 0) >= 11]
     mature_models = mature_unnecessary = 0
     utilized = 0
     worst = []
+    output_needs: set[tuple[str, str]] = set()
+    selected_coverage: set[tuple[str, str]] = set()
     for row in selected:
-        target = gold.get(str(row.get("target_signal_id") or ""))
-        source = gold.get(str(row.get("source_signal_id") or ""))
-        if target is None or source is None:
+        sources = [gold[value] for value in source_ids(row) if value in gold]
+        relevant_sources = [
+            item for item in sources
+            if item.role not in {"noise", "high_similarity_distractor"}
+        ]
+        if not sources or not relevant_sources:
             contamination += 1
-            worst.append({"source_id": row.get("source_signal_id"), "reason": "unbound_context"})
-        elif source.storyline_id != target.storyline_id or source.role in {
-            "noise", "high_similarity_distractor",
-        }:
-            contamination += 1
-        if (
-            target is not None and source is not None
-            and target.storyline_id is not None
-            and source.storyline_id == target.storyline_id
-            and source.role not in {"noise", "high_similarity_distractor"}
-        ):
-            sufficient_selected += 1
-        source_signal = next(
-            (signal for signal in population.signals
-             if signal.signal_id == row.get("source_signal_id")), None
+            worst.append({
+                "source_id": str(row.get("context_item_id") or ""),
+                "reason": "unbound_or_noise_only_retrieval_context",
+            })
+        run_id = str(row["think_run_id"])
+        selected_coverage.update(
+            (run_id, str(item.storyline_id)) for item in relevant_sources
+            if item.storyline_id
         )
-        target_signal = next(
-            (signal for signal in population.signals
-             if signal.signal_id == row.get("target_signal_id")), None
+        output_ids = {
+            str(value) for value in row.get("output_evidence_signal_ids") or ()
+        }
+        output_needs.update(
+            (run_id, str(item.storyline_id))
+            for value in output_ids
+            if (item := gold.get(value)) is not None and item.storyline_id
         )
-        is_historical = bool(
-            source_signal and target_signal
-            and source_signal.batch_number < target_signal.batch_number
-        )
+        source_batches = {
+            signals[value].batch_number for value in source_ids(row) if value in signals
+        }
+        batch_number = int(row.get("batch_number") or 0)
+        is_historical = bool(source_batches and min(source_batches) < batch_number)
         if is_historical:
             historical += 1
             historical_reasoned += int(bool(row.get("historical_reopen_reason")))
-        utilized += int(bool(row.get("referenced")))
+        utilized += int(bool(row.get("referenced") or source_ids(row) & output_ids))
+    # Output needs also occur on current-input decision rows, which are not in
+    # the retrieval denominator but carry the same run/result lineage. Current
+    # inputs can satisfy a claim's evidence need without becoming retrieval.
+    for row in rows:
+        run_id = str(row.get("think_run_id") or "")
+        if row.get("selected"):
+            selected_coverage.update(
+                (run_id, str(item.storyline_id))
+                for value in source_ids(row)
+                if (item := gold.get(value)) is not None
+                and item.storyline_id
+                and item.role not in {"noise", "high_similarity_distractor"}
+            )
+        for value in row.get("output_evidence_signal_ids") or ():
+            item = gold.get(str(value))
+            if run_id and item is not None and item.storyline_id:
+                output_needs.add((run_id, str(item.storyline_id)))
     for row in mature:
         mature_models += int(row.get("context_item_kind") == "model")
         mature_unnecessary += int(
             row.get("context_item_kind") == "observation"
             and any(
-                signal.signal_id == row.get("source_signal_id")
-                and signal.batch_number <= 10
-                for signal in population.signals
+                signals[value].batch_number <= 10
+                for value in source_ids(row) if value in signals
             )
-            and not row.get("necessary")
+            and not row.get("necessary_background")
         )
-    sufficient_total = sufficient_expected
-    ids = [str(row.get("source_signal_id")) for row in rows]
+    ids = [
+        str(row.get("context_item_id") or row.get("decision_id") or "")
+        for row in rows
+    ]
+    sufficient_selected = len(output_needs & selected_coverage)
+    sufficient_total = len(output_needs)
     return {
         "selected_context_contamination": _metric(
             "selected_context_contamination", contamination, len(selected),

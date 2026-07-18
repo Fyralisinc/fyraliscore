@@ -233,7 +233,7 @@ async def extract_p6_postfreeze_evidence(
         )
         payload = row.pop("trigger_payload", None) or {}
         context_use = row.pop("context_use", None) or {}
-        row.pop("think_run_id", None)
+        think_run_id = str(row.pop("think_run_id", None) or "")
         if isinstance(payload, str):
             payload = json.loads(payload)
         if isinstance(context_use, str):
@@ -253,19 +253,27 @@ async def extract_p6_postfreeze_evidence(
         }
         if not selected_ids:
             context_manifest_present = False
-        for target_id in target_ids:
-            expected_context_opportunities.update(
-                (target_id, selected_id) for selected_id in selected_ids
+        expected_context_opportunities.update(
+            (think_run_id, selected_id) for selected_id in selected_ids
+        )
+        if row.get("selected"):
+            emitted_context_opportunities.add(
+                (think_run_id, str(row["context_item_id"]))
             )
-        for target_id in target_ids:
-            for source_id in source_ids:
-                emitted_context_opportunities.add((target_id, str(row["context_item_id"])))
-                context_items.append({
-                    **row, "target_signal_id": target_id,
-                    "source_signal_id": source_id,
-                    "batch_number": int(target_id.split("-")[1][1:]),
-                    "context_item_kind": item_kind,
-                })
+        output_evidence_signal_ids = claim_sources.get(
+            str(row.get("result_object_id")), []
+        )
+        context_items.append({
+            **row,
+            "think_run_id": think_run_id,
+            "input_signal_ids": target_ids,
+            "source_signal_ids": source_ids,
+            "output_evidence_signal_ids": output_evidence_signal_ids,
+            "batch_number": (
+                int(target_ids[0].split("-")[1][1:]) if target_ids else None
+            ),
+            "context_item_kind": item_kind,
+        })
 
     refresh_events = _rows(await conn.fetch(
         """SELECT id,projection_name,projection_version,subject_key,status,
