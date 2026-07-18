@@ -76,7 +76,7 @@ def test_shared_accepted_read_shape_satisfies_additional_reader_authority() -> N
 
 def test_p2_exit_requires_complete_reader_cutover() -> None:
     source = (
-        ROOT / "lib/evaluation/epistemic_repair/p2_runner.py"
+        ROOT / "services/evaluation/epistemic_repair/p2_runner.py"
     ).read_text(encoding="utf-8")
     assert 'report["reader_cutover_coverage"] = reader_report.coverage' in source
     assert 'report["reader_cutover_coverage"] == 1.0' in source

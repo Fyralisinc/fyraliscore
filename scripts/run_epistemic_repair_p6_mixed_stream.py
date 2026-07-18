@@ -16,11 +16,11 @@ import asyncpg
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib.evaluation.epistemic_repair.p6_runner import (
+from services.evaluation.epistemic_repair.p6_runner import (
     run_p6_mixed_stream, write_p6_artifact, write_p6_markdown,
 )
 from lib.evaluation.epistemic_repair.p6_population import build_p6_population
-from lib.evaluation.epistemic_repair.p6_provider import (
+from services.evaluation.epistemic_repair.p6_provider import (
     run_p6_provider_entity_evaluation, write_p6_provider_report,
 )
 

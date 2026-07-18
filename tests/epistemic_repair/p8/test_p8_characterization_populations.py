@@ -6,8 +6,8 @@ from lib.evaluation.epistemic_repair.p8_characterization_population import (
     population_manifest,
 )
 from lib.contracts.kernel import canonical_sha256
-from lib.evaluation.epistemic_repair.p8_characterization_runner import _metric
-from lib.evaluation.epistemic_repair.p8_characterization_runner import (
+from services.evaluation.epistemic_repair.p8_characterization_runner import _metric
+from services.evaluation.epistemic_repair.p8_characterization_runner import (
     _predict_boundary,
     _run_boundary,
 )

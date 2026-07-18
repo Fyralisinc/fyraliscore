@@ -15,8 +15,8 @@ from typing import Iterator
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib.evaluation.epistemic_repair.p6_think_runner import _write_checkpoint
-from lib.evaluation.epistemic_repair.p7_production_runner import (
+from services.evaluation.epistemic_repair.p6_think_runner import _write_checkpoint
+from services.evaluation.epistemic_repair.p7_production_runner import (
     run_p7_production_staged,
     run_p7_production_worlds,
     seal_execution_stream,
@@ -28,7 +28,7 @@ from lib.evaluation.epistemic_repair.p7_population import (
     P7_INITIAL_WORLD_COUNT,
     build_p7_population,
 )
-from lib.evaluation.epistemic_repair.p7_real_runner import _variant_population
+from services.evaluation.epistemic_repair.p7_real_runner import _variant_population
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -7,7 +7,7 @@ import asyncpg
 import pytest
 
 from lib.shared.errors import InvariantViolation
-from lib.evaluation.epistemic_repair.p6_think_runner import (
+from services.evaluation.epistemic_repair.p6_think_runner import (
     _complete_and_reopen_barrier, _snapshot,
 )
 from services.reasoning.think.lanes import ThinkLane
@@ -16,7 +16,7 @@ from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
 def test_production_think_runner_cannot_import_or_read_sealed_gold() -> None:
     source = Path(
-        "lib/evaluation/epistemic_repair/p6_think_runner.py"
+        "services/evaluation/epistemic_repair/p6_think_runner.py"
     ).read_text()
     tree = ast.parse(source)
     imported = {
@@ -34,7 +34,7 @@ def test_production_think_runner_cannot_import_or_read_sealed_gold() -> None:
 
 def test_production_think_runner_requires_real_batch_worker() -> None:
     source = Path(
-        "lib/evaluation/epistemic_repair/p6_think_runner.py"
+        "services/evaluation/epistemic_repair/p6_think_runner.py"
     ).read_text()
     assert "_process_one_t1_batch" in source
     assert "retry_attempts=1" in source

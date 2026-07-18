@@ -11,7 +11,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from lib.contracts.truth_admission import ModelTruthTransition
-from lib.evaluation.epistemic_repair.p2_runner import _admission, _advance
+from services.evaluation.epistemic_repair.p2_runner import _admission, _advance
 from lib.evaluation.epistemic_repair.p4_artifact import SCHEMA_VERSION, _seal
 from lib.evaluation.epistemic_repair.p4_population import build_p4_population
 from services.domain.company_learning import (

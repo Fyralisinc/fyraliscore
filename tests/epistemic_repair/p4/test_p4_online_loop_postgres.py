@@ -5,7 +5,7 @@ import os
 import asyncpg
 import pytest
 
-from lib.evaluation.epistemic_repair.p4_runner import run_p4_online_loop
+from services.evaluation.epistemic_repair.p4_runner import run_p4_online_loop
 
 
 @pytest.mark.asyncio

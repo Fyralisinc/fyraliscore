@@ -13,7 +13,7 @@ import asyncpg
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p8_population import ScaleCell
-from lib.evaluation.epistemic_repair.p8_scale_runner import run_scale_cell
+from services.evaluation.epistemic_repair.p8_scale_runner import run_scale_cell
 
 
 CONTROLS = ((25, 12), (25, 100))

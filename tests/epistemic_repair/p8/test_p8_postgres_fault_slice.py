@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from lib.evaluation.epistemic_repair.p8_postgres_runner import (
+from services.evaluation.epistemic_repair.p8_postgres_runner import (
     P8_DB_COVERED_BOUNDARIES,
     P8_DB_UNCOVERED_BOUNDARIES,
     run_postgres_fault_slice,

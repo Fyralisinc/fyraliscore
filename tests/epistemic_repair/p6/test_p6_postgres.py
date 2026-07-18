@@ -7,7 +7,7 @@ import asyncpg
 import pytest
 from pydantic import ValidationError
 
-from lib.evaluation.epistemic_repair.p6_runner import P6Artifact, run_p6_mixed_stream
+from services.evaluation.epistemic_repair.p6_runner import P6Artifact, run_p6_mixed_stream
 
 
 pytestmark = pytest.mark.asyncio

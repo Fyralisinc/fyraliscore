@@ -5,7 +5,7 @@ import os
 import asyncpg
 import pytest
 
-from lib.evaluation.epistemic_repair.p8_characterization_db import run_db_characterization
+from services.evaluation.epistemic_repair.p8_characterization_db import run_db_characterization
 
 
 pytestmark = pytest.mark.asyncio

@@ -311,7 +311,7 @@ async def run_characterization_contract(repository_root: Path) -> dict[str, Any]
         "services/domain/entity_grounding/episode.py",
         "services/domain/entity_grounding/mentions.py",
         "lib/evaluation/epistemic_repair/p3_runner.py",
-        "lib/evaluation/epistemic_repair/p4_runner.py",
+        "services/evaluation/epistemic_repair/p4_runner.py",
     )
     source_digests = {path: canonical_sha256((repository_root / path).read_text()) for path in source_paths}
     artifact = {

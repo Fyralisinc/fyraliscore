@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from lib.evaluation.epistemic_repair.p7_production_runner import (
+from services.evaluation.epistemic_repair.p7_production_runner import (
     P7_ARMS,
     _run_id,
     assess_provider_identity_receipts,

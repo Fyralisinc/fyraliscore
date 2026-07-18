@@ -8,8 +8,8 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from lib.evaluation.epistemic_repair.p2_runner import _admission
-from lib.evaluation.epistemic_repair.p7_evolution import (
+from services.evaluation.epistemic_repair.p2_runner import _admission
+from services.evaluation.epistemic_repair.p7_evolution import (
     arm_allows_canonical_mutation,
     arm_allows_reasoning,
     arm_memory_visible,

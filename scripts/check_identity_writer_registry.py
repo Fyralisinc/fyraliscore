@@ -17,6 +17,7 @@ def violations() -> list[str]:
     files = [
         path for path in (ROOT / "services").rglob("*.py")
         if "/tests/" not in path.relative_to(ROOT).as_posix()
+        and not path.relative_to(ROOT).as_posix().startswith("services/evaluation/")
         and not path.name.startswith("test_")
     ]
     mutation = re.compile(

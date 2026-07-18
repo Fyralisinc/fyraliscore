@@ -12,7 +12,7 @@ from pathlib import Path
 
 import asyncpg
 
-from lib.evaluation.epistemic_repair.p4_runner import run_p4_online_loop
+from services.evaluation.epistemic_repair.p4_runner import run_p4_online_loop
 from lib.evaluation.epistemic_repair.p4_p9 import build_p4_p9_sidecar
 
 

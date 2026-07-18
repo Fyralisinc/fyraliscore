@@ -13,7 +13,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from lib.evaluation.epistemic_repair.p6_population import build_p6_population
-from lib.evaluation.epistemic_repair.p6_think_runner import run_p6_production_think
+from services.evaluation.epistemic_repair.p6_think_runner import run_p6_production_think
 
 
 async def _run(args: argparse.Namespace) -> int:

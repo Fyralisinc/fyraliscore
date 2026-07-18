@@ -18,7 +18,7 @@ import asyncpg
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib.evaluation.epistemic_repair.p5_runner import (
+from services.evaluation.epistemic_repair.p5_runner import (
     run_p5_vertical,
     write_p5_artifact,
     write_p5_schema,

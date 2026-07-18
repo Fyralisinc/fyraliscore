@@ -1,6 +1,6 @@
 from copy import deepcopy
 
-from lib.evaluation.epistemic_repair.p8_latency_diagnostic import CONTROLS, analyze_repeated_warm_pairs
+from services.evaluation.epistemic_repair.p8_latency_diagnostic import CONTROLS, analyze_repeated_warm_pairs
 
 
 def _artifact(repetitions=5):

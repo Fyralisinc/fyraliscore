@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if __package__ in {None, ""}:
     sys.path.insert(0, str(ROOT))
 
-from lib.evaluation.epistemic_repair.p8_database_isolation import run_isolated_warm_pair
+from services.evaluation.epistemic_repair.p8_database_isolation import run_isolated_warm_pair
 
 
 async def _run(args: argparse.Namespace) -> int:

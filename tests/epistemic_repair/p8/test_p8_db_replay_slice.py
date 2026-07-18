@@ -9,7 +9,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from lib.evaluation.epistemic_repair.p2_runner import _admission
+from services.evaluation.epistemic_repair.p2_runner import _admission
 from services.domain.company_learning.barrier import CompanyLearningBarrierService
 from services.domain.truth_kernel.repository import AsyncpgTruthKernelStorage
 from services.domain.truth_kernel.service import TruthKernelService

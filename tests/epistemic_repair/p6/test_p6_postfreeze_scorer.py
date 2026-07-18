@@ -41,7 +41,7 @@ def _raw(population, *, evidence=None):
 
 
 def test_scorer_is_pure_and_production_runner_does_not_import_it() -> None:
-    production = Path("lib/evaluation/epistemic_repair/p6_think_runner.py").read_text()
+    production = Path("services/evaluation/epistemic_repair/p6_think_runner.py").read_text()
     imports = {
         alias.name
         for node in ast.walk(ast.parse(production))

@@ -14,7 +14,7 @@ import sys
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib.evaluation.epistemic_repair.p8_scale_runner import (
+from services.evaluation.epistemic_repair.p8_scale_runner import (
     evaluate_scale_execution,
     run_scale_matrix,
     run_shared_contention,

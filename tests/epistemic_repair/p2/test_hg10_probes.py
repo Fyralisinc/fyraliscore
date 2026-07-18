@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from lib.evaluation.epistemic_repair.p2_hg10_probes import (
+from services.evaluation.epistemic_repair.p2_hg10_probes import (
     ProjectionIdempotenceProbe,
     probe_derived_writer_rejection,
 )
@@ -61,7 +61,7 @@ def test_projection_probe_conformance_is_continuous_not_exception_based() -> Non
 
 def test_runner_integrates_both_sealed_hg10_families() -> None:
     source = open(
-        "lib/evaluation/epistemic_repair/p2_runner.py", encoding="utf-8"
+        "services/evaluation/epistemic_repair/p2_runner.py", encoding="utf-8"
     ).read()
     assert 'family == "derived_direct_write"' in source
     assert 'family == "projection_idempotence"' in source

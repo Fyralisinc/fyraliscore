@@ -12,7 +12,7 @@ import asyncpg
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p8_population import ScaleCell
-from lib.evaluation.epistemic_repair.p8_scale_runner import (
+from services.evaluation.epistemic_repair.p8_scale_runner import (
     ActualScaleCell,
     WarmPairDiagnostic,
     run_scale_cell,

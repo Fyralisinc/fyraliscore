@@ -16,7 +16,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(ROOT))
 
 from lib.evaluation.epistemic_repair.p2_exit import write_p2_exit_artifact  # noqa: E402
-from lib.evaluation.epistemic_repair.p2_runner import run_p2_truth_kernel  # noqa: E402
+from services.evaluation.epistemic_repair.p2_runner import run_p2_truth_kernel  # noqa: E402
 
 
 async def _run(dsn: str, output: Path) -> None:

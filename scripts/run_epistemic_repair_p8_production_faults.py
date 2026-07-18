@@ -15,10 +15,10 @@ import sys
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib.evaluation.epistemic_repair.p8_evidence import bind_fault_execution_evidence, summarize_fault_member_receipts
+from services.evaluation.epistemic_repair.p8_evidence import bind_fault_execution_evidence, summarize_fault_member_receipts
 from lib.evaluation.epistemic_repair.p8_oracles import evaluate_p8
 from lib.evaluation.epistemic_repair.p8_population import build_characterization_manifests, build_fault_schedule
-from lib.evaluation.epistemic_repair.p8_postgres_runner import run_postgres_fault_slice
+from services.evaluation.epistemic_repair.p8_postgres_runner import run_postgres_fault_slice
 from lib.evaluation.epistemic_repair.p8_provider_runner import run_provider_fault_slice
 from lib.evaluation.epistemic_repair.p8_runner import _distributions, _fault_results, _scale_results
 from lib.contracts.kernel import canonical_sha256

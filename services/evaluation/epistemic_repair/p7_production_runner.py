@@ -17,17 +17,17 @@ import asyncpg
 
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from lib.evaluation.epistemic_repair.p6_population import P6Batch, P6Population
-from lib.evaluation.epistemic_repair.p6_think_runner import (
+from services.evaluation.epistemic_repair.p6_think_runner import (
     _init_p6_connection,
     _persist_runtime_batch,
     _snapshot,
 )
-from lib.evaluation.epistemic_repair.p7_evolution import (
+from services.evaluation.epistemic_repair.p7_evolution import (
     P7EvolutionArm,
     arm_allows_reasoning,
     bridge_validated_think_lifecycle,
 )
-from lib.evaluation.epistemic_repair.p7_retrieval_policy import (
+from services.evaluation.epistemic_repair.p7_retrieval_policy import (
     production_retrieval_policy,
 )
 from lib.llm.provider import build_provider, close_codex_app_server_client, set_response_cache

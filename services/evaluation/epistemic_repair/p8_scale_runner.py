@@ -21,7 +21,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from lib.contracts.kernel import canonical_sha256
-from lib.evaluation.epistemic_repair.p2_runner import _admission
+from services.evaluation.epistemic_repair.p2_runner import _admission
 from lib.evaluation.epistemic_repair.p8_population import ScaleCell, build_scale_matrix
 from lib.evaluation.epistemic_repair.p8_measurement_contracts import QUEUE_FAMILIES
 from services.domain.company_learning.barrier import CompanyLearningBarrierService

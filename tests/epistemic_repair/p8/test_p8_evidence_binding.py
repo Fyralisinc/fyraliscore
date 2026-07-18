@@ -2,8 +2,8 @@ from dataclasses import replace
 
 import pytest
 
-from lib.evaluation.epistemic_repair.p8_evidence import bind_fault_execution_evidence, summarize_fault_member_receipts
-from lib.evaluation.epistemic_repair.p8_postgres_runner import (
+from services.evaluation.epistemic_repair.p8_evidence import bind_fault_execution_evidence, summarize_fault_member_receipts
+from services.evaluation.epistemic_repair.p8_postgres_runner import (
     DurableFaultReceipt,
     P8_DB_COVERED_BOUNDARIES,
     P8_DB_UNCOVERED_BOUNDARIES,

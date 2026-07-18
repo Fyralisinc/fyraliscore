@@ -5,13 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from lib.evaluation.epistemic_repair.p2_runner import _admission
-from lib.evaluation.epistemic_repair.p4_runner import _admit_relation
+from services.evaluation.epistemic_repair.p2_runner import _admission
+from services.evaluation.epistemic_repair.p4_runner import _admit_relation
 from lib.evaluation.epistemic_repair.p8_characterization_population import (
     build_feedback_population,
     build_retrieval_population,
 )
-from lib.evaluation.epistemic_repair.p8_characterization_runner import _metric
+from services.evaluation.epistemic_repair.p8_characterization_runner import _metric
 from lib.evaluation.epistemic_repair.p8_measurement_contracts import QUEUE_FAMILIES, queue_curve_is_usable
 from services.domain.company_learning.barrier import (
     CompanyLearningBarrierService,

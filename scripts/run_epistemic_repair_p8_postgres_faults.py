@@ -14,7 +14,7 @@ import sys
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib.evaluation.epistemic_repair.p8_postgres_runner import run_postgres_fault_slice
+from services.evaluation.epistemic_repair.p8_postgres_runner import run_postgres_fault_slice
 
 
 async def _run(args: argparse.Namespace) -> int:

@@ -15,9 +15,9 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(ROOT))
 
 from lib.contracts.kernel import canonical_sha256
-from lib.evaluation.epistemic_repair.p8_database_isolation import prove_existing_template_cells
+from services.evaluation.epistemic_repair.p8_database_isolation import prove_existing_template_cells
 from lib.evaluation.epistemic_repair.p8_population import build_scale_matrix
-from lib.evaluation.epistemic_repair.p8_scale_runner import (
+from services.evaluation.epistemic_repair.p8_scale_runner import (
     SCALE_EXECUTION_VERSION,
     ScaleExecution,
     evaluate_scale_execution,

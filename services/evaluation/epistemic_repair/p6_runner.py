@@ -13,7 +13,7 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.contracts.kernel import canonical_sha256
-from lib.evaluation.epistemic_repair.p5_runner import _ground_and_admit, _persist_batch
+from services.evaluation.epistemic_repair.p5_runner import _ground_and_admit, _persist_batch
 from lib.evaluation.epistemic_repair.p6_population import (
     P6_BATCH_COUNT, P6_SIGNAL_COUNT, P6_SIGNALS_PER_BATCH, P6_STORYLINES,
     P6Population, P6Signal, build_p6_population,

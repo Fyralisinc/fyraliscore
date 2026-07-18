@@ -9,7 +9,7 @@ import pytest
 
 from lib.evaluation.epistemic_repair.p5_oracles import build_p5_artifact
 from lib.evaluation.epistemic_repair.p5_population import build_p5_population
-from lib.evaluation.epistemic_repair.p5_runner import run_p5_vertical
+from services.evaluation.epistemic_repair.p5_runner import run_p5_vertical
 
 
 pytestmark = pytest.mark.asyncio

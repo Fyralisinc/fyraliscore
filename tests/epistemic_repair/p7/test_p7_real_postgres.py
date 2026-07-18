@@ -7,7 +7,7 @@ import asyncio
 import asyncpg
 import pytest
 
-from lib.evaluation.epistemic_repair.p7_real_runner import run_p7_real_provider
+from services.evaluation.epistemic_repair.p7_real_runner import run_p7_real_provider
 from lib.llm.provider import LLMConfig, LLMProvider
 
 

@@ -8,7 +8,7 @@ import sys
 import asyncpg
 import pytest
 
-from lib.evaluation.epistemic_repair.p2_runner import run_p2_truth_kernel
+from services.evaluation.epistemic_repair.p2_runner import run_p2_truth_kernel
 
 
 def test_p2_runner_cli_exposes_dsn_and_output() -> None:

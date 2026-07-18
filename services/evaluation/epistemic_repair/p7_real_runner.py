@@ -37,12 +37,12 @@ from lib.contracts.truth_evidence import (
     TruthEvidenceReference,
     TruthEvidenceRole,
 )
-from lib.evaluation.epistemic_repair.p5_runner import _occurred_at, _persist_batch
+from services.evaluation.epistemic_repair.p5_runner import _occurred_at, _persist_batch
 from lib.evaluation.epistemic_repair.p6_population import (
     P6Population,
     build_p6_population,
 )
-from lib.evaluation.epistemic_repair.p6_runner import (
+from services.evaluation.epistemic_repair.p6_runner import (
     _record_decision,
     run_p6_mixed_stream,
 )

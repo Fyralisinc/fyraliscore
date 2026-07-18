@@ -27,7 +27,7 @@ def test_receipt_schema_registers_absorbed_duplicate_outcome() -> None:
 
 def test_runner_enforces_required_continuous_threshold() -> None:
     source = Path(
-        "lib/evaluation/epistemic_repair/p2_runner.py"
+        "services/evaluation/epistemic_repair/p2_runner.py"
     ).read_text(encoding="utf-8")
     assert '"semantic_duplicate_absorption": 0.90' in source
     assert ">= 0.90" in source

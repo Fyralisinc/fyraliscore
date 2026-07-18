@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from lib.evaluation.epistemic_repair.p4_artifact import build_unrun_p4_artifact
 from lib.evaluation.epistemic_repair.p4_population import build_p4_population
-from lib.evaluation.epistemic_repair.p4_runner import _batch_decisions
+from services.evaluation.epistemic_repair.p4_runner import _batch_decisions
 
 
 def test_population_is_exactly_six_batches_of_twenty_and_two_episodes() -> None:

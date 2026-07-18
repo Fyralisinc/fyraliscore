@@ -66,7 +66,7 @@ RAW_THINK_OBLIGATION_INSERT_ALLOWED_FILES = {
     Path("services/domain/obligations.py"),
 }
 VALIDATE_ONLY_POLICY_ISSUER_ALLOWED_FILES = {
-    Path("lib/evaluation/epistemic_repair/p7_production_runner.py"),
+    Path("services/evaluation/epistemic_repair/p7_production_runner.py"),
     Path("services/reasoning/think/execution_policy.py"),
 }
 IMPORT_LINTER_IGNORE_IMPORT_LIMITS = {

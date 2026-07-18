@@ -28,7 +28,7 @@ from lib.contracts.truth_evidence import (
     TruthEvidenceReference,
     TruthEvidenceRole,
 )
-from lib.evaluation.epistemic_repair.p5_runner import _load_model_version
+from services.evaluation.epistemic_repair.p5_runner import _load_model_version
 from lib.shared.errors import InvariantViolation
 from services.domain.truth_kernel import build_default_truth_kernel
 from services.domain.truth_kernel.relations.repository import (

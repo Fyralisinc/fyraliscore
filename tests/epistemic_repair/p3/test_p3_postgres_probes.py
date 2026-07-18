@@ -7,7 +7,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-from lib.evaluation.epistemic_repair.p3_postgres_probes import run_p3_postgres_probes
+from services.evaluation.epistemic_repair.p3_postgres_probes import run_p3_postgres_probes
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -46,7 +46,7 @@ async def test_p3_postgres_authority_scope_and_tenant_proofs() -> None:
 
 def test_tenant_probe_is_nonempty_database_safe() -> None:
     source = (
-        ROOT / "lib/evaluation/epistemic_repair/p3_postgres_probes.py"
+        ROOT / "services/evaluation/epistemic_repair/p3_postgres_probes.py"
     ).read_text()
     assert "WHERE tenant_id=$1" in source
     assert "relation.relrowsecurity" in source

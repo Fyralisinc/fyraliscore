@@ -7,7 +7,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from lib.evaluation.epistemic_repair.p2_runner import _admission
+from services.evaluation.epistemic_repair.p2_runner import _admission
 from lib.shared.errors import InvariantViolation
 from services.domain.company_learning.barrier import (
     CompanyLearningBarrierService,

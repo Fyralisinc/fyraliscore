@@ -28,7 +28,7 @@ from services.domain.entity_grounding.episode import (
 from services.domain.entity_grounding.mentions import (
     prepare_entity_mention_detection,
 )
-from lib.evaluation.epistemic_repair.p3_postgres_probes import run_p3_postgres_probes
+from services.evaluation.epistemic_repair.p3_postgres_probes import run_p3_postgres_probes
 from lib.evaluation.epistemic_repair.p3_p9 import build_p3_p9_sidecar
 
 

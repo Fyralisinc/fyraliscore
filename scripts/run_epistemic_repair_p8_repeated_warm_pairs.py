@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if __package__ in {None, ""}:
     sys.path.insert(0, str(ROOT))
 
-from lib.evaluation.epistemic_repair.p8_latency_diagnostic import run_repeated_warm_pairs
+from services.evaluation.epistemic_repair.p8_latency_diagnostic import run_repeated_warm_pairs
 
 
 def main() -> int:

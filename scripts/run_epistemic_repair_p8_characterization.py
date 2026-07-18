@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if __package__ in {None, ""}:
     sys.path.insert(0, str(ROOT))
 
-from lib.evaluation.epistemic_repair.p8_characterization_runner import run_characterization_contract
-from lib.evaluation.epistemic_repair.p8_characterization_db import run_db_characterization
+from services.evaluation.epistemic_repair.p8_characterization_runner import run_characterization_contract
+from services.evaluation.epistemic_repair.p8_characterization_db import run_db_characterization
 from lib.evaluation.epistemic_repair.p8_measurement_contracts import (
     RETIRED_QUEUE_EVIDENCE,
     projection_refresh_measure_is_usable,

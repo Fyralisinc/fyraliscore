@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from lib.contracts.truth_admission import ModelHead, ModelTruthLifecycle, ModelVersion
-from lib.evaluation.epistemic_repair.p2_race_probes import (
+from services.evaluation.epistemic_repair.p2_race_probes import (
     FiveProjectionFence,
     InjectedFenceFailure,
     probe_concurrent_transitions,

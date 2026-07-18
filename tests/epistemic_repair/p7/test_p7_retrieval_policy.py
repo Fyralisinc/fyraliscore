@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from lib.evaluation.epistemic_repair.p7_retrieval_policy import (
+from services.evaluation.epistemic_repair.p7_retrieval_policy import (
     _strip_models,
     assert_no_model_context,
     production_retrieval_policy,

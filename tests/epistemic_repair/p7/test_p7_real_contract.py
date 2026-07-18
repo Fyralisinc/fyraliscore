@@ -2,7 +2,7 @@ import pytest
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p7_population import build_p7_population
-from lib.evaluation.epistemic_repair.p7_real_runner import (
+from services.evaluation.epistemic_repair.p7_real_runner import (
     P7RealArtifact,
     _variant_population,
 )

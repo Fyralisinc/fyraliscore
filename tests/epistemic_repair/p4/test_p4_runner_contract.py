@@ -16,7 +16,7 @@ def test_cli_requires_dsn_and_exposes_output() -> None:
 
 
 def test_runner_uses_production_barrier_and_rollback_script() -> None:
-    runner = Path("lib/evaluation/epistemic_repair/p4_runner.py").read_text()
+    runner = Path("services/evaluation/epistemic_repair/p4_runner.py").read_text()
     script = Path("scripts/run_epistemic_repair_p4_online_loop.py").read_text()
     assert "CompanyLearningBarrierService" in runner
     assert "company_learning_context_decisions" in runner
@@ -26,7 +26,7 @@ def test_runner_uses_production_barrier_and_rollback_script() -> None:
 
 
 def test_late_historical_use_metric_is_database_derived() -> None:
-    runner = Path("lib/evaluation/epistemic_repair/p4_runner.py").read_text()
+    runner = Path("services/evaluation/epistemic_repair/p4_runner.py").read_text()
     assert "late_unnecessary_historical / late_historical" in runner
     assert "late_unnecessary_historical_observation_count" in runner
     assert '"late_unnecessary_historical_observation_use": 0.0' not in runner

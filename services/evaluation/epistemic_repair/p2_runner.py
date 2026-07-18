@@ -39,11 +39,11 @@ from lib.evaluation.epistemic_repair.p9_contributions import (
     git_run_provenance,
 )
 from lib.evaluation.epistemic_repair.reader_cutover import scan_reader_cutover
-from lib.evaluation.epistemic_repair.p2_hg10_probes import (
+from services.evaluation.epistemic_repair.p2_hg10_probes import (
     probe_derived_writer_rejection,
     probe_projection_idempotence,
 )
-from lib.evaluation.epistemic_repair.p2_race_probes import (
+from services.evaluation.epistemic_repair.p2_race_probes import (
     probe_concurrent_transitions,
     probe_fault_rollback_and_retry,
 )

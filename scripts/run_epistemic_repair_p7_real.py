@@ -16,7 +16,7 @@ import asyncpg
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib.evaluation.epistemic_repair.p7_real_runner import run_p7_real_provider
+from services.evaluation.epistemic_repair.p7_real_runner import run_p7_real_provider
 from lib.llm.provider import build_provider
 
 

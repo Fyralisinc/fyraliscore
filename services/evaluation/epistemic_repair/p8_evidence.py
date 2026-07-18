@@ -5,9 +5,9 @@ from __future__ import annotations
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.p8_oracles import ProductionExecutionEvidence
 from lib.evaluation.epistemic_repair.p8_population import build_fault_schedule, build_scale_matrix
-from lib.evaluation.epistemic_repair.p8_postgres_runner import PostgresFaultSlice
+from services.evaluation.epistemic_repair.p8_postgres_runner import PostgresFaultSlice
 from lib.evaluation.epistemic_repair.p8_provider_runner import ProviderFaultSlice
-from lib.evaluation.epistemic_repair.p8_scale_runner import ScaleExecution
+from services.evaluation.epistemic_repair.p8_scale_runner import ScaleExecution
 
 
 def summarize_fault_member_receipts(

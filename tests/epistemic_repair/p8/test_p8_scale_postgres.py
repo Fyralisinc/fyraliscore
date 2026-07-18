@@ -5,7 +5,7 @@ import os
 import pytest
 
 from lib.evaluation.epistemic_repair.p8_population import ScaleCell
-from lib.evaluation.epistemic_repair.p8_scale_runner import (
+from services.evaluation.epistemic_repair.p8_scale_runner import (
     ScaleExecution,
     evaluate_scale_execution,
     run_scale_cell,
