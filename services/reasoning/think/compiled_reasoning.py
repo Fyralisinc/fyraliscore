@@ -412,7 +412,7 @@ class CompiledBatchMemoryDecisionRequest:
                         candidate,
                         decision,
                         trigger,
-                        force_role="hypothesis",
+                        force_role="situation",
                     )
                 )
                 if claim_op is None or claim_placeholder is None:
@@ -3474,6 +3474,7 @@ def _batch_claim_proposition(
             "kind": "belief",
             "claim_role": "situation",
             "abstraction_level": "composite",
+            "synthesis_contract": True,
             "situation": _trunc(text, 180),
             "summary": text,
             "subject": scope,

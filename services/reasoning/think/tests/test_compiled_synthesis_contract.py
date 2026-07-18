@@ -10,7 +10,7 @@ from services.reasoning.think.compiled_reasoning import (
 )
 
 
-def test_accepted_synthesis_edge_also_materializes_hypothesis_model() -> None:
+def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None:
     tenant_id, trigger_id = uuid4(), uuid4()
     observation_ids = [uuid4(), uuid4()]
     prior_models = [uuid4(), uuid4()]
@@ -53,7 +53,8 @@ def test_accepted_synthesis_edge_also_materializes_hypothesis_model() -> None:
 
     assert len(diff.claim_ops) == 1
     proposition = diff.claim_ops[0].entry["proposition"]
-    assert proposition["claim_role"] == "hypothesis"
+    assert proposition["claim_role"] == "situation"
+    assert proposition["abstraction_level"] == "composite"
     assert proposition["synthesis_contract"] is True
     assert set(proposition["member_model_ids"]) == set(map(str, prior_models))
     assert set(diff.claim_ops[0].entry["supporting_event_ids"]) == set(

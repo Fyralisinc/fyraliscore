@@ -11,6 +11,7 @@ from services.platform.execution.types import (
     EvidenceCard,
     Hypothesis,
     InquiryQuestion,
+    MemoryDecisionCandidate,
     QuestionAnswer,
     ResidualDebtCard,
     SufficiencyVerdict,
@@ -544,11 +545,50 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
         [_card(
             "Accepted Model for Atlas release records earlier ownership state.",
             raw_content_ref=f"model:{uuid4()}",
+        ), _card(
+            "Accepted Model for Atlas release records a separate schedule impact.",
+            raw_content_ref=f"model:{uuid4()}",
         )],
         SufficiencyVerdict("sufficient_for_reasoning", "ready", 1, 0, ()),
     )
     synthesis = [
         item for item in with_prior_model
+        if item.candidate_id.startswith("MDC_SYNTH_")
+    ]
+    assert synthesis == []
+
+    synthesis_fragments = [dict(fragment) for fragment in fragments]
+    atlas_fragment = next(
+        fragment
+        for fragment in synthesis_fragments
+        if fragment["text"].startswith("Atlas release, update 1:")
+    )
+    atlas_fragment["text"] = "Atlas release, update 4: Atlas release is ready."
+    synthesis_trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=trigger.tenant_id,
+        observation_id=all_ids[0],
+        observation_ids=all_ids,
+        seed_natural_text="Evidence window containing 25 source signals.",
+        seed_signature={"batch_signal_fragments": synthesis_fragments},
+    )
+    with_synthesis_opportunity = context_packet.memory_decision_candidates(
+        synthesis_trigger,
+        (),
+        [],
+        [],
+        [_card(
+            "Accepted Model for Atlas release records earlier ownership state.",
+            raw_content_ref=f"model:{uuid4()}",
+        ), _card(
+            "Accepted Model for Atlas release records a separate schedule impact.",
+            raw_content_ref=f"model:{uuid4()}",
+        )],
+        SufficiencyVerdict("sufficient_for_reasoning", "ready", 1, 0, ()),
+    )
+    synthesis = [
+        item for item in with_synthesis_opportunity
         if item.candidate_id.startswith("MDC_SYNTH_")
     ]
     assert len(synthesis) == 1
@@ -558,14 +598,14 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
         "situation", "situation_and_edge", "no_op",
     )
     assert synthesis[0].evidence_model_ids
-    assert len(with_prior_model) == 13
+    assert len(with_synthesis_opportunity) == 13
     synthesis_request = build_compiled_batch_memory_decision_request(
-        trigger,
+        synthesis_trigger,
         ContextBundle(notes={"inquiry_context_packet": {
             "signal_summary": "Entity-scoped mixed batch",
             "sufficiency_verdict": {"status": "sufficient_for_reasoning"},
             "memory_decision_candidates": [
-                asdict(candidate) for candidate in with_prior_model
+                asdict(candidate) for candidate in with_synthesis_opportunity
             ],
             "important_unknowns": [],
             "tiers": {},
@@ -668,6 +708,42 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
     assert atom_projection(candidates) <= atom_projection(duplicated)
     assert all(len(item.member_observation_ids) == 1 for item in duplicated)
     assert all(len(item.observation_evidence) == 1 for item in duplicated)
+
+
+def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None:
+    scope = "Orion rollout"
+    ordinary = MemoryDecisionCandidate(
+        candidate_id="ordinary", op_family="claim_insert", candidate_kind="atomic",
+        proposed_text="The owner changed yesterday.",
+        entailed_claim_text="The owner changed yesterday.",
+        member_observation_ids=(str(uuid4()),), semantic_scope=(scope,),
+    )
+    conclusion = MemoryDecisionCandidate(
+        candidate_id="conclusion", op_family="claim_insert", candidate_kind="atomic",
+        proposed_text=f"{scope} is blocked.",
+        entailed_claim_text=f"{scope} is blocked.",
+        member_observation_ids=(str(uuid4()),), semantic_scope=(scope,),
+    )
+    diverse_memory = [
+        _card(f"{scope} previously lacked an owner."),
+        _card(f"{scope} previously missed a delivery window."),
+    ]
+
+    assert context_packet._scoped_synthesis_candidates(
+        [ordinary], diverse_memory,
+    ) == []
+    assert context_packet._scoped_synthesis_candidates(
+        [conclusion], diverse_memory[:1],
+    ) == []
+    candidates = context_packet._scoped_synthesis_candidates(
+        [ordinary, conclusion], diverse_memory,
+    )
+    assert len(candidates) == 1
+    assert candidates[0].semantic_scope == (scope,)
+    assert len(candidates[0].evidence_model_ids) == 2
+    assert candidates[0].allowed_operations == (
+        "situation", "situation_and_edge", "no_op",
+    )
 
 
 def test_compile_context_packet_carries_bounded_residual_spine() -> None:

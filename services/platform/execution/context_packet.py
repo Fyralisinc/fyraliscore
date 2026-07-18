@@ -864,18 +864,34 @@ def _scoped_synthesis_candidates(
     })
     out: list[MemoryDecisionCandidate] = []
     for scope in scopes:
+        current_scope_candidates = [
+            candidate
+            for candidate in atomic_candidates
+            if candidate.semantic_scope == (scope,)
+        ]
+        # Retrieved memory alone is not a synthesis opportunity.  Wait until
+        # the current episode makes a scope-level conclusion that can be tested
+        # against prior accepted Models; otherwise ordinary incremental facts
+        # create premature generic composites on the second batch.
+        if not any(
+            _is_scope_level_synthesis_assertion(candidate, scope)
+            for candidate in current_scope_candidates
+        ):
+            continue
         scope_text = scope.casefold()
         model_cards = [
             card for card in evidence
             if card.source_type == "model" and scope_text in card.summary.casefold()
         ]
         model_ids = _evidence_model_ids(model_cards, limit=8)
-        if not model_ids:
+        distinct_model_summaries = {
+            " ".join(card.summary.casefold().split()) for card in model_cards
+        }
+        if len(model_ids) < 2 or len(distinct_model_summaries) < 2:
             continue
         current_ids = tuple(dict.fromkeys(
             observation_id
-            for candidate in atomic_candidates
-            if candidate.semantic_scope == (scope,)
+            for candidate in current_scope_candidates
             for observation_id in candidate.member_observation_ids
         ))
         digest_basis = f"{scope}:{','.join(model_ids)}:{','.join(current_ids)}"
@@ -895,6 +911,10 @@ def _scoped_synthesis_candidates(
             uncertainty_slots=(
                 "whether prior phases are coherent enough for one thesis",
             ),
+            write_preconditions=(
+                "current evidence asserts a scope-level conclusion",
+                "at least two distinct accepted Models support cross-time comparison",
+            ),
             confidence=0.6,
             reason=(
                 "Entity-scoped accepted memory and new evidence require a "
@@ -902,6 +922,21 @@ def _scoped_synthesis_candidates(
             ),
         ))
     return out
+
+
+def _is_scope_level_synthesis_assertion(
+    candidate: MemoryDecisionCandidate,
+    scope: str,
+) -> bool:
+    """Whether current evidence asserts a conclusion about the whole scope."""
+    text = str(candidate.entailed_claim_text or candidate.proposed_text or "").strip()
+    match = _BATCH_SCOPE_PREFIX_RE.match(text)
+    body = (match.group("body") if match else text).strip().casefold()
+    scope_text = scope.strip().casefold()
+    return any(
+        body.startswith(f"{scope_text} {copula} ")
+        for copula in ("is", "are", "was", "were")
+    )
 
 
 _BATCH_SCOPE_PREFIX_RE = re.compile(
