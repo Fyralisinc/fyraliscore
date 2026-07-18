@@ -584,3 +584,49 @@ def test_explicit_emergent_composite_preserves_parent_evidence_union():
         first_id,
         second_id,
     ]
+
+
+def test_unsplit_delta_atomic_keeps_only_owner_supporting_observation():
+    bodies = (
+        "Delta handoff, update 1: The named support owner still has no clearly recorded owner.",
+        "Delta handoff, update 1: A late reply asks whether the support-to-operations handoff happened.",
+        "Delta handoff, update 1: The handoff checklist remains optimistic while the underlying record is incomplete.",
+        "Delta handoff, update 1: The repeat incident rate moved again after the ownership question resurfaced.",
+    )
+    observation_ids = [str(uuid4()) for _ in bodies]
+    op = _make_op(natural="Delta handoff ownership remains unresolved.")
+    op.entry["supporting_event_ids"] = observation_ids
+    op.entry["proposition"]["evidence_event_ids"] = observation_ids
+    op.entry["evidence_observation_manifest"] = [
+        {"observation_id": oid, "body": body, "source_channel": "slack:message"}
+        for oid, body in zip(observation_ids, bodies, strict=True)
+    ]
+
+    out = split_compound_claim_op(op)
+
+    assert len(out) == 1
+    assert out[0] is not op
+    assert out[0].entry["supporting_event_ids"] == [observation_ids[0]]
+    assert out[0].entry["proposition"]["evidence_event_ids"] == [
+        observation_ids[0]
+    ]
+    assert [
+        row["observation_id"]
+        for row in out[0].entry["evidence_observation_manifest"]
+    ] == [observation_ids[0]]
+
+
+def test_unsplit_atomic_with_manifest_and_no_positive_support_is_quarantined():
+    observation_id = str(uuid4())
+    op = _make_op(natural="Delta executive sentiment is worsening.")
+    op.entry["supporting_event_ids"] = [observation_id]
+    op.entry["proposition"]["evidence_event_ids"] = [observation_id]
+    op.entry["evidence_observation_manifest"] = [
+        {
+            "observation_id": observation_id,
+            "body": "Delta handoff checklist record remains incomplete.",
+            "source_channel": "email:message",
+        }
+    ]
+
+    assert split_compound_claim_op(op) == []

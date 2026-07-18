@@ -422,6 +422,18 @@ def _predicate_roles(text: str) -> set[str]:
     }
     if "no clearly recorded" in lowered or "no recorded" in lowered:
         roles.add("absence")
+    # Prefer the most discriminative state predicate. Words such as
+    # "handoff" often name the workstream/object rather than asserting that a
+    # transfer occurred, so they must not make every local row compatible.
+    for primary in (
+        "absence",
+        "movement",
+        "incomplete",
+        "questioned",
+        "deterioration",
+    ):
+        if primary in roles:
+            return {primary}
     return roles
 
 
@@ -549,6 +561,28 @@ def _composite_is_necessary(entry: dict[str, Any]) -> bool:
         and (explicit_situation or mechanism)
         and any(marker in emergent for marker in emergent_markers)
     )
+
+
+def _allocate_unsplit_atomic(op: ClaimOp) -> list[ClaimOp]:
+    entry = op.entry
+    if not isinstance(entry, dict) or not isinstance(
+        entry.get("evidence_observation_manifest"), list
+    ):
+        return [op]
+    proposition = entry.get("proposition")
+    proposition = proposition if isinstance(proposition, dict) else {}
+    if (
+        proposition.get("claim_role") in {"pattern", "situation", "recommendation"}
+        or proposition.get("abstraction_level") in {"pattern", "composite"}
+    ):
+        return [op]
+    allocated_entry = deepcopy(entry)
+    if not _redistribute_atomic_evidence(
+        allocated_entry,
+        _claim_text(allocated_entry),
+    ):
+        return []
+    return [ClaimOp(op="insert", entry=allocated_entry)]
 
 
 def _is_unsplittable_proposition(prop: Any) -> bool:
@@ -1023,7 +1057,7 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
 
     entry = op.entry
     if _is_unsplittable_proposition(entry.get("proposition")):
-        return [op]
+        return _allocate_unsplit_atomic(op)
 
     operational_splits = _split_operational_claim_op(entry)
     if operational_splits:
@@ -1031,7 +1065,7 @@ def split_compound_claim_op(op: ClaimOp) -> list[ClaimOp]:
 
     compound, reasons = is_compound(entry)
     if not compound:
-        return [op]
+        return _allocate_unsplit_atomic(op)
 
     text = _claim_text(entry)
     conjuncts = _split_top_level(text)
