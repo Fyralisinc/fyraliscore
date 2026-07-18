@@ -2565,6 +2565,8 @@ async def test_compiled_batch_memory_to_raw_diff_emits_memory_lifecycle_ops():
     tid = uuid7()
     trig_id = uuid7()
     obs_id = uuid7()
+    uncertainty_sibling_id = uuid7()
+    distractor_sibling_id = uuid7()
     model_id = uuid7()
     evidence_model_id = uuid7()
     trigger = TriggerContext(
@@ -2581,7 +2583,11 @@ async def test_compiled_batch_memory_to_raw_diff_emits_memory_lifecycle_ops():
         "proposed_text": "Support confirmed that the escalation is resolved.",
         "target_model_ids": [str(model_id)],
         "evidence_model_ids": [str(model_id), str(evidence_model_id)],
-        "source_observation_ids": [str(obs_id)],
+        "source_observation_ids": [
+            str(obs_id),
+            str(uncertainty_sibling_id),
+            str(distractor_sibling_id),
+        ],
         "suggested_edge_kinds": ["supports"],
         "confidence": 0.74,
     }
@@ -2599,6 +2605,7 @@ async def test_compiled_batch_memory_to_raw_diff_emits_memory_lifecycle_ops():
                 confidence=0.74,
                 lifecycle_action="confirm",
                 model_id=model_id,
+                claim_local_evidence_event_ids=[obs_id],
                 resolution_outcome=True,
                 reason="The latest evidence directly confirms this memory.",
             )
@@ -2614,7 +2621,12 @@ async def test_compiled_batch_memory_to_raw_diff_emits_memory_lifecycle_ops():
     op = diff.memory_lifecycle_ops[0]
     assert op.model_id == model_id
     assert op.action == "confirm"
-    assert op.evidence_event_ids == [obs_id]
+    assert op.evidence_event_ids == [
+        obs_id,
+        uncertainty_sibling_id,
+        distractor_sibling_id,
+    ]
+    assert op.claim_local_evidence_event_ids == [obs_id]
     assert op.evidence_model_ids == [evidence_model_id]
     assert op.resolution_outcome is True
     assert op.metadata["source"] == "compiled_batch_memory_candidate"

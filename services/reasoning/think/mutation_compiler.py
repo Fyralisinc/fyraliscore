@@ -201,6 +201,7 @@ async def _compile_claim_ops(
                 model_id=canonical_id,
                 action="confirm",
                 evidence_event_ids=evidence_event_ids,
+                claim_local_evidence_event_ids=evidence_event_ids,
                 evidence_model_ids=evidence_model_ids,
                 rationale=(
                     "Canonical mutation compiler rewrote a duplicate Model "

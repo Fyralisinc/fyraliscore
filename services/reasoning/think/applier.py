@@ -1355,9 +1355,10 @@ async def _compile_memory_lifecycle_update(
         op.evidence_model_ids,
     )
     changes: dict[str, Any] = {
-        "supporting_event_ids": op.evidence_event_ids,
         "supporting_model_ids": supporting_model_ids,
     }
+    if op.claim_local_evidence_event_ids:
+        changes["supporting_event_ids"] = op.claim_local_evidence_event_ids
     confidence = _lifecycle_confidence(op, current_confidence=current_confidence)
     if confidence is not None:
         changes["confidence"] = confidence
@@ -1428,7 +1429,9 @@ async def _apply_memory_lifecycle_ops_for_diff(
                     models_repo,
                     diff.tenant_id,
                     cause_event_id=trigger_cause_event_id,
-                    trigger_supporting_event_ids=trigger_evidence_ids,
+                    # Lifecycle provenance may cover an entire trigger episode.
+                    # It is never implicit authority to support the target claim.
+                    trigger_supporting_event_ids=[],
                     audit_cause_override=None,
                 )
         except ValidationError as exc:
@@ -1469,6 +1472,10 @@ async def _apply_memory_lifecycle_ops_for_diff(
             "rationale": op.rationale,
             "evidence_event_ids": [
                 str(event_id) for event_id in _merge_event_ids(op.evidence_event_ids)
+            ],
+            "claim_local_evidence_event_ids": [
+                str(event_id)
+                for event_id in _merge_event_ids(op.claim_local_evidence_event_ids)
             ],
             "evidence_model_ids": [
                 str(model_id) for model_id in _merge_event_ids(op.evidence_model_ids)

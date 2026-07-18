@@ -1136,6 +1136,7 @@ async def test_apply_memory_lifecycle_confirm_resolves_prediction_model(
                     model_id=model_id,
                     action="confirm",
                     evidence_event_ids=[evidence_id],
+                    claim_local_evidence_event_ids=[evidence_id],
                     rationale="The observed launch completion confirms the forecast.",
                 )
             ],
@@ -1176,6 +1177,83 @@ async def test_apply_memory_lifecycle_confirm_resolves_prediction_model(
     assert model_row["resolution_outcome"] is True
     assert evidence_id in model_row["supporting_event_ids"]
     assert prediction_status == "confirmed"
+
+
+async def test_memory_lifecycle_attaches_only_authorized_claim_local_evidence(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation, make_embedding
+
+    async with fresh_db.acquire() as conn:
+        original_id = await _insert_observation(
+            conn, tenant, content_text="Atlas launch is awaiting security approval."
+        )
+        entry = {
+            "tenant_id": str(tenant),
+            "born_from_event_id": str(original_id),
+            "proposition": {
+                "kind": "state",
+                "subject": "Atlas launch",
+                "assertion": "Atlas launch is awaiting security approval.",
+            },
+            "natural": "Atlas launch is awaiting security approval.",
+            "supporting_event_ids": [str(original_id)],
+            "embedding": make_embedding("Atlas launch is awaiting security approval."),
+            "scope_actors": [],
+            "scope_entities": [],
+            "scope_temporal": {},
+            "confidence": 0.61,
+            "confidence_at_assertion": 0.61,
+        }
+        async with conn.transaction():
+            inserted = await apply_diff(
+                ValidatedDiff(
+                    trigger_ref=uuid7(), tenant_id=tenant,
+                    claim_ops=[ClaimOp(op="insert", entry=entry)],
+                ),
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=original_id,
+            )
+        model_id = inserted["applied_model_ids"][0]
+
+        local_id = await _insert_observation(
+            conn, tenant, content_text="Security again confirmed Atlas is awaiting approval."
+        )
+        uncertainty_id = await _insert_observation(
+            conn, tenant, content_text="It is unclear who owns the unrelated Beacon review."
+        )
+        distractor_id = await _insert_observation(
+            conn, tenant, content_text="The cafeteria menu changed this week."
+        )
+        reviewed_ids = [local_id, uncertainty_id, distractor_id]
+        async with conn.transaction():
+            result = await apply_diff(
+                ValidatedDiff(
+                    trigger_ref=uuid7(), tenant_id=tenant,
+                    memory_lifecycle_ops=[MemoryLifecycleOp(
+                        model_id=model_id,
+                        action="confirm",
+                        evidence_event_ids=reviewed_ids,
+                        claim_local_evidence_event_ids=[local_id],
+                        rationale="Only the Atlas observation supports this exact claim.",
+                    )],
+                ),
+                conn,
+                trigger_kind="T1:event_batch",
+                trigger_supporting_event_ids=reviewed_ids,
+            )
+        row = await conn.fetchrow(
+            "SELECT supporting_event_ids FROM models WHERE tenant_id=$1 AND id=$2",
+            tenant, model_id,
+        )
+
+    assert set(row["supporting_event_ids"]) == {original_id, local_id}
+    summary = result["memory_lifecycle_ops"][0]
+    assert set(summary["evidence_event_ids"]) == {str(value) for value in reviewed_ids}
+    assert summary["claim_local_evidence_event_ids"] == [str(local_id)]
 
 
 async def test_apply_drops_act_op_with_unresolved_confidence_basis(

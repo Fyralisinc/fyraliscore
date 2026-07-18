@@ -78,7 +78,14 @@ class MemoryLifecycleOp(BaseModel):
     op: Literal["reconcile"] = "reconcile"
     model_id: UUID
     action: MemoryLifecycleAction
+    # All observations considered by the reconciliation decision.  This is
+    # audit provenance, not authority to attach those observations to truth.
     evidence_event_ids: list[UUID] = Field(default_factory=list)
+    # Exact claim-local observations authorized to become canonical support.
+    # Keeping this separate prevents a lifecycle review over a transport batch
+    # from laundering sibling, uncertainty, or distractor observations into a
+    # Model's supporting_event_ids.
+    claim_local_evidence_event_ids: list[UUID] = Field(default_factory=list)
     evidence_model_ids: list[UUID] = Field(default_factory=list)
     confidence_delta: float | None = None
     confidence: float | None = None
