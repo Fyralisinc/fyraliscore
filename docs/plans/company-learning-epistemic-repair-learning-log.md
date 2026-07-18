@@ -1074,6 +1074,50 @@ claim-local, and independently entailed by their recorded evidence.
 source system; hallucinated batch event IDs; source-only merge keys; wrapper
 primary observation used as evidence.
 
+### 2026-07-18 — LOG-036 — Positive formation must begin before the final claim
+
+**Type:** observed + corrected
+
+**Work package / commit:** P6 one-batch semantic smoke; `af4e84bb` and
+`40078761`.
+
+**What happened:** The first repinned smoke stopped before Codex because the
+runner used `ON CONFLICT (id)` against the partitioned observation key. After
+correcting it to `(id, occurred_at)`, Codex produced claims but truth admission
+correctly rejected missing claim-local evidence. Per-claim quarantine then let
+the same 25-signal batch finish with a durable barrier and zero accepted
+Models. The preserved response showed the upstream cause: inquiry compiled a
+single `MDC_H2` claim that “multiple active work items in this batch” lacked
+owners, marked it `about=batch`, and attached the first twelve batch member
+IDs. The quality gate correctly rejected it as `claim_scope_batch_wrapper`.
+
+**Evidence:** `/tmp/p6-think-1batch-semantic-af4e84bb.json` is a failed safety
+diagnostic; `/tmp/p6-think-1batch-semantic-40078761.json` is a complete
+zero-Model safety smoke. The latter used two successful Codex calls for the
+main run, then completed repair work, preserved response/validation/apply
+artifacts, and wrote no unsupported canonical truth.
+
+**Interpretation:** Downstream evidence narrowing cannot rescue a hypothesis
+whose subject is already the transport batch. Positive formation must start
+where inquiry creates hypotheses and memory-decision candidates. Each
+candidate needs a typed business scope plus its exact item-level observation
+IDs and bodies before the single final Codex call.
+
+**Decision or next test:** Compile workstream/episode-local candidates inside
+the one 25-signal transport batch; never prepend the batch trigger or all
+member IDs; expose exact candidate-local ID/body manifests; keep one main
+Codex call; suppress the generic batch hypothesis when local material coverage
+exists. The next smoke must form useful local Models without noise or
+cross-workstream evidence.
+
+**Coordinator impact:** A complete barrier with zero Models proves safe
+abstention, not company learning. P6 semantic readiness requires both zero
+contamination and positive, workstream-local Model formation.
+
+**Edge cases added:** partitioned observation conflict target; unsupported
+claim rolling back siblings; first-twelve batch ID inheritance; `about=batch`;
+batch-level ownership aggregation; successful zero-Model barrier.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
