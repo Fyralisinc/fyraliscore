@@ -62,7 +62,7 @@ PHASE_EVIDENCE_CONTRACTS = {
                   "external_outcome_instruction_leakage_zero", "one_coherent_synthesis_per_thesis",
                   "all_truth_critical_barriers_close", "single_commit_provider_configuration",
                   "postfreeze_evidence_digest_valid", "durable_call_receipts", "exact_token_usage_receipts",
-                  "all_hg_gates"),
+                  "zero_seed_canonical_truth", "semantic_evidence_metadata_coherent", "all_hg_gates"),
         "metrics": ("boundary_b_cubed_f1", "selected_context_contamination", "sufficient_context_recall",
                     "exact_mention_f1", "entity_type_accuracy", "canonical_link_precision", "canonical_link_recall",
                     "uncertainty_fate_precision", "uncertainty_fate_coverage",

@@ -96,7 +96,7 @@ def test_normalizes_exact_p6_contract_and_member_contributions(tmp_path: Path) -
     assert artifact["phase_exit_ready"] is True
     assert set(artifact["hard_gates"]) == set(GATE_IDS)
     assert {row["name"] for row in artifact["p9_continuous_metrics"]} == set(METRIC_SPECS)
-    assert len(artifact["p9_member_contributions"]["gate_members"]) == 17
+    assert len(artifact["p9_member_contributions"]["gate_members"]) == 19
     assert len(artifact["p9_member_contributions"]["metric_members"]) == 34
     body = dict(artifact); digest = body.pop("content_digest")
     assert digest == canonical_sha256(body)

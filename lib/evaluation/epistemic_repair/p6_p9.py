@@ -20,7 +20,8 @@ GATE_IDS = (
     "external_outcome_instruction_leakage_zero", "one_coherent_synthesis_per_thesis",
     "all_truth_critical_barriers_close", "single_commit_provider_configuration",
     "postfreeze_evidence_digest_valid", "durable_call_receipts",
-    "exact_token_usage_receipts", "all_hg_gates",
+    "exact_token_usage_receipts", "zero_seed_canonical_truth",
+    "semantic_evidence_metadata_coherent", "all_hg_gates",
 )
 METRIC_SPECS: dict[str, tuple[str, float]] = {
     "boundary_b_cubed_f1": (">=", .90),
@@ -129,7 +130,7 @@ def build_p6_p9_sidecar(
         or len(gates) != len(GATE_IDS)
         or any(not isinstance(value, bool) for value in gates.values())
     ):
-        raise ValueError("P6 score hard gates do not exactly match the preregistered 17-gate contract")
+        raise ValueError("P6 score hard gates do not exactly match the preregistered 19-gate contract")
     if not isinstance(metrics, dict) or set(metrics) != set(METRIC_SPECS) or len(metrics) != len(METRIC_SPECS):
         raise ValueError("P6 score metrics do not exactly match the preregistered 34-metric contract")
 
