@@ -27,7 +27,7 @@ from lib.evaluation.epistemic_repair.provider_contract import (
 )
 from lib.llm.provider import (
     LLMProvider, _codex_transport, build_provider, close_codex_app_server_client,
-    set_response_cache,
+    set_response_cache, using_usage_purpose,
 )
 from lib.shared.errors import InvariantViolation
 from services.app.gateway.db_bootstrap import _register_codecs
@@ -41,6 +41,7 @@ from services.domain.entity_grounding.learned_discovery import (
 )
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.worker import EntityResolverWorker
+from services.reasoning.think.llm_receipts import ThinkLLMReceiptCollector
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
@@ -391,10 +392,21 @@ async def _drain_truth_critical_work(
         tasks = tuple(worker._in_flight)
         if tasks:
             await asyncio.gather(*tasks)
-        grounded_observations = await resolver.process_pending(
-            limit=30,
+        grounding_receipts = ThinkLLMReceiptCollector(
             tenant_id=tenant_id,
+            batch_id=f"p6-grounding-cycle-{cycle}",
         )
+        with grounding_receipts.capture(), using_usage_purpose("entity_grounding"):
+            grounded_observations = await resolver.process_pending(
+                limit=30,
+                tenant_id=tenant_id,
+            )
+        grounding_receipts.set_terminal_outcomes(
+            validation_outcome="accepted",
+            apply_outcome="applied",
+        )
+        async with pool.acquire() as conn:
+            await grounding_receipts.persist(conn)
         async with pool.acquire() as conn:
             pending_after = sum((await _truth_critical_pending_counts(
                 conn, tenant_id,
