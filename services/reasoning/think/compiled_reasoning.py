@@ -1072,7 +1072,28 @@ def _active_model_has_exact_scope(
         for entity in getattr(model, "scope_entities", ()) or ()
         if isinstance(entity, dict)
     }
-    return coordinate in model_coordinates
+    if coordinate in model_coordinates:
+        return True
+
+    # Representation admission may promote a semantic workstream coordinate
+    # into a substrate entity UUID in ``scope_entities``.  The accepted Model's
+    # proposition retains the compiler-owned semantic coordinate used by later
+    # batch candidates.  Treat it as an exact authorization surface only when
+    # both the complete ref and its declared type match; never fall back to a
+    # display label or fuzzy similarity.
+    proposition = getattr(model, "proposition", None)
+    if not isinstance(proposition, dict):
+        return False
+    proposition_scope_ref = str(proposition.get("scope_ref") or "").strip()
+    proposition_scope_type = (
+        proposition_scope_ref.split(":", 1)[0].strip().casefold()
+        if ":" in proposition_scope_ref
+        else ""
+    )
+    return (
+        proposition_scope_ref == coordinate[1]
+        and proposition_scope_type == coordinate[0]
+    )
 
 
 def _prior_same_scope_model_card(

@@ -124,6 +124,50 @@ def test_memory_present_exposes_exact_scope_prior_and_compiles_effect() -> None:
     }
 
 
+def test_semantic_scope_ref_survives_substrate_entity_normalization() -> None:
+    tenant_id, observation_id = uuid4(), uuid4()
+    prior = _model(tenant_id=tenant_id)
+    prior.scope_entities = [{"type": "project", "id": str(uuid4())}]
+    prior.proposition = {
+        **prior.proposition,
+        "scope_ref": "workstream:atlas-release",
+    }
+
+    _, request = _request(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        models=[prior],
+    )
+
+    candidate = request.candidates[0]
+    assert candidate["prior_same_scope_model_ids"] == [str(prior.id)]
+
+
+def test_semantic_scope_ref_requires_exact_type_and_ref() -> None:
+    tenant_id, observation_id = uuid4(), uuid4()
+    wrong_ref = _model(tenant_id=tenant_id)
+    wrong_ref.scope_entities = [{"type": "project", "id": str(uuid4())}]
+    wrong_ref.proposition = {
+        **wrong_ref.proposition,
+        "scope_ref": "workstream:beacon-migration",
+    }
+    wrong_type = _model(tenant_id=tenant_id)
+    wrong_type.scope_entities = [{"type": "project", "id": str(uuid4())}]
+    wrong_type.proposition = {
+        **wrong_type.proposition,
+        "scope_ref": "commitment:atlas-release",
+    }
+
+    _, request = _request(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        models=[wrong_ref, wrong_type],
+    )
+
+    candidate = request.candidates[0]
+    assert "prior_same_scope_model_ids" not in candidate
+
+
 def test_memory_ablated_keeps_singleton_insert_without_prior_effect_surface() -> None:
     tenant_id, observation_id = uuid4(), uuid4()
     trigger, request = _request(

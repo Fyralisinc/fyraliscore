@@ -8,9 +8,17 @@
 
 **Current checkpoint:** M0 and CF3-A are green. The exact-scope prior-memory
 effect contract is implemented and deterministically proven through production
-compile, validate, and PostgreSQL apply boundaries; a fresh provider CF3-B
-rerun is now the only remaining proof for that repair. The previous
-founder-assisted CF3-B rerun was red only on material prior-Model use. Tenant
+compile, validate, and PostgreSQL apply boundaries. A fresh provider CF3-B run
+for tenant `feb50ba5-d87f-42d3-b77c-6fe3bd55936e` then completed in `282.745s`:
+batch 1 admitted 14/14 evidence-backed Models; batch 2 selected all 14 exact
+batch-1 versions, trace-referenced eight, and submitted eight explicit semantic
+effects. All eight were safely blocked because production representation had
+normalized `scope_entities` into substrate entity UUIDs while the exact
+semantic coordinate remained in `proposition.scope_ref`. The strict verdict is
+therefore still red only on material prior-Model use. A minimal exact
+type-plus-ref fallback is green in unit and real-PostgreSQL vertical tests; one
+fresh provider rerun remains required before CF3-B can close. The earlier
+founder-assisted tenant
 `cb3a8a53-5222-4b31-90ee-f86bf1b68589` completed two production ThinkWorker
 Codex batches in `414.720s` (`259.934s` and `154.671s`). Its receipted founder
 bootstrap established four exact aliases before enqueue, seeded zero semantic

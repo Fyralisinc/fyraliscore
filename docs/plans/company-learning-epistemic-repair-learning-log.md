@@ -2294,3 +2294,24 @@ evidence. It is not yet proof that the real provider follows the new output
 contract. Run exactly one fresh two-wave CF3-B canary next; if it fails, inspect
 that artifact and repair only the single governing defect. Keep all unrelated
 worker-suite and temporal-compaction issues in the ledger.
+
+### 2026-07-19 — LOG-067 — Semantic effects reached the provider but failed the production scope join
+
+**Execution:** The fresh CF3-B run for tenant
+`feb50ba5-d87f-42d3-b77c-6fe3bd55936e` completed in `282.745s`. Batch 1
+admitted `14/14` Models. Batch 2 selected all 14 prior Models, referenced eight
+in its reasoning trace, and attempted eight explicit prior-memory effects. Its
+strict report is
+`/tmp/fyralis-cf3b-prior-effect-two-batch-spark-r1-cf3b-v1.json`.
+
+**Result:** All eight effects were compiler-blocked, so material use remained
+red. Production `scope_entities` had been substrate-normalized while each
+Model's semantic `proposition.scope_ref` still retained the exact candidate
+coordinate. The binder therefore did not authorize the referenced prior Models
+under its entity-only exact-scope comparison.
+
+**Bounded repair direction:** Treat matching semantic scope type plus exact
+`proposition.scope_ref` as a fallback only when the substrate-normalized entity
+coordinate does not directly match. That minimal fallback is locally tested;
+a fresh CF3-B rerun is still required. Do not broaden matching by label or
+similarity, and do not reopen the deferred temporal-deduplication work.

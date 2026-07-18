@@ -1278,18 +1278,19 @@ transport are excluded from this goal.
 
 ### EDGE-057 — Retrieved exact Models do not yet have a required semantic effect
 
-- **Status:** `P0 contract implemented and deterministic vertical green; fresh CF3-B proof pending`
+- **Status:** `P0 scope-coordinate repair locally tested; fresh CF3-B proof pending`
 - **Trigger:** Founder-assisted CF3-B tenant
   `cb3a8a53-5222-4b31-90ee-f86bf1b68589` selected all 14 exact batch-1 Model
   versions in batch 2 and referenced two durably, while its provider trace
   referenced and materially used zero.
-- **Current behavior:** Founder grounding and retrieval establish the right
-  canonical scope and deliver prior Models. The runtime now joins atomic
-  candidates to exact same-scope prior Models, requests an explicit semantic
-  effect, validates prior/evidence authority, applies supported effects through
-  the existing lifecycle boundary, and emits conservative material-use
-  telemetry. The provider-free PostgreSQL vertical is green; fresh provider
-  behavior remains unproven.
+- **Current behavior:** A second fresh run for tenant
+  `feb50ba5-d87f-42d3-b77c-6fe3bd55936e` completed in `282.745s`: batch 1
+  admitted `14/14`, and batch 2 selected 14 prior Models, trace-referenced eight,
+  and attempted eight explicit effects. Every effect was compiler-blocked
+  because production `scope_entities` were substrate-normalized while semantic
+  `proposition.scope_ref` retained the exact candidate coordinate. A minimal
+  exact type-plus-ref fallback is locally tested; fresh provider proof remains
+  pending.
 - **Desired behavior:** For a scope with relevant prior truth, the runtime
   records the exact selected version, exposes a scope-matched comparison to the
   provider, and validates a decision-level effect on conclusion, confidence,
@@ -1302,8 +1303,10 @@ transport are excluded from this goal.
 - **Return condition:** A fresh two-batch run has a non-empty trace reference
   and evaluator-accepted material effect tied to an exact batch-1 Model
   version, with both barriers still complete and pending zero.
-- **Evidence:** LOG-065, LOG-066, commits `a1a62edd`, `d3172185`, `1a3f9734`, and
-  `/tmp/fyralis-cf3b-founder-two-batch-spark-r1-cf3b-v1.json`.
+- **Evidence:** LOG-065 through LOG-067, commits `a1a62edd`, `d3172185`,
+  `1a3f9734`, `/tmp/fyralis-cf3b-founder-two-batch-spark-r1-cf3b-v1.json`, and
+  `/tmp/fyralis-cf3b-prior-effect-two-batch-spark-r1-cf3b-v1.json` for tenant
+  `feb50ba5-d87f-42d3-b77c-6fe3bd55936e`.
 
 ### EDGE-058 — Exact-envelope deduplication has unresolved temporal semantics
 

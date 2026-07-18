@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from services.domain.models.repo import ModelsRepo
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
@@ -78,16 +76,6 @@ async def test_prior_memory_effect_survives_compile_validate_apply(
         prior_model_id = seed_result["applied_model_ids"][0]
         prior_model = await ModelsRepo().get_by_id(prior_model_id, conn=conn)
         assert prior_model is not None
-        prior_context_model = SimpleNamespace(
-            id=prior_model.id,
-            tenant_id=prior_model.tenant_id,
-            status=prior_model.status,
-            natural=prior_model.natural,
-            proposition=prior_model.proposition,
-            confidence=prior_model.confidence,
-            abstraction_level=prior_model.abstraction_level,
-            scope_entities=scope,
-        )
         prior_head = await conn.fetchrow(
             """SELECT version, version_id
                  FROM model_truth_heads
@@ -126,7 +114,7 @@ async def test_prior_memory_effect_survives_compile_validate_apply(
             seed_natural_text=new_text,
         )
         context = ContextBundle(
-            models=[prior_context_model],
+            models=[prior_model],
             notes={
                 "inquiry_context_packet": {
                     "signal_summary": new_text,
@@ -164,7 +152,7 @@ async def test_prior_memory_effect_survives_compile_validate_apply(
 
         validated = await validate(
             raw_diff,
-            RetrievalResult(trigger=trigger, models=[prior_context_model]),
+            RetrievalResult(trigger=trigger, models=[prior_model]),
             conn,
         )
         assert len(validated.claim_ops) == 1
