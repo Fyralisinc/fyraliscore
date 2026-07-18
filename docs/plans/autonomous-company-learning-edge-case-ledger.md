@@ -1188,28 +1188,30 @@ transport are excluded from this goal.
 
 ### EDGE-052 — Founder-bootstrap quality and staleness are not yet evaluated
 
-- **Status:** `deferred; product qualification after core reuse proof`
+- **Status:** `bounded implementation; product qualification deferred`
 - **Trigger:** Cold-start review after CF3-B produced zero Models without
   canonical entity seed state.
-- **Current behavior:** The development ladder deliberately starts from zero
-  semantic seed to prove safe fallback behavior. It does not measure a
-  founder-assisted company-map onboarding path.
+- **Current behavior:** A governed founder manifest can now establish exact
+  canonical names and aliases without seeding behavioral truth. A unique,
+  active exact match grounds synchronously before Think; unknown or conflicting
+  names retain the zero-seed fallback. Product-level quality and staleness are
+  not yet measured.
 - **Desired behavior:** Founders can establish a vivid, versioned initial
   entity and relationship map; the runtime resolves ordinary signals against
   it while detecting and safely routing novel or stale concepts.
 - **Risk:** Treating zero-seed inference as the normal product path can make
   early company understanding slower and less useful. Treating founder input
   as permanent truth can instead freeze mistakes and stale structure.
-- **Safe boundary:** Finish the zero-seed fallback and CF3-B memory-reuse gate;
-  do not build onboarding during the active repair.
-- **Return condition:** After M1, preregister a founder-bootstrap simulation and
-  compare time-to-useful-model, resolution accuracy, correction behavior, and
-  novel-entity handling against zero seed.
-- **Evidence:** LOG-061 and LOG-062.
+- **Safe boundary:** Keep onboarding identity-only and versioned; do not add a
+  broad UI, behavioral seeds, or automatic cross-mention merging during CF3-B.
+- **Return condition:** After the core reuse proof, preregister a bootstrap
+  simulation and compare time-to-useful-model, resolution accuracy, correction
+  behavior, and novel-entity handling against zero seed.
+- **Evidence:** LOG-061, LOG-062, LOG-064, `1fc88737`, and `9af2275a`.
 
 ### EDGE-053 — Mechanical Model references can overstate semantic memory use
 
-- **Status:** `open; P0 evaluator integrity before CF3-B can pass`
+- **Status:** `bounded by evaluator v2; fresh CF3-B proof still required`
 - **Trigger:** The completed real two-batch run at commit `e8bbe033`.
 - **Current behavior:** Context-use telemetry reports `model_context_used` when
   a generic lifecycle obligation references a selected Model, even when the
@@ -1220,12 +1222,58 @@ transport are excluded from this goal.
   separately.
 - **Risk:** Retrieval presence and generic lifecycle maintenance can create a
   false-green autonomous-learning claim.
-- **Safe boundary:** Independent semantic audit overrides the generic grade;
-  CF3-B and CF3-C remain red/locked.
-- **Return condition:** A focused evaluator test rejects the observed artifact,
-  and a fresh run demonstrates traceable prior-Model influence.
+- **Safe boundary:** Evaluator v2 rejects lifecycle-only references; CF3-B and
+  CF3-C remain red/locked until a fresh run demonstrates traceable prior-Model
+  influence.
+- **Return condition:** A fresh run satisfies the v2 decision-level semantic-use
+  contract.
 - **Evidence:** LOG-063 and
   `/tmp/fyralis-cf3b-codex-two-batch-spark-r2.json`.
+
+### EDGE-054 — Founder alias lookup is query-per-phrase
+
+- **Status:** `backlog; scale optimization after core proof`
+- **Current behavior:** Pre-Think grounding performs one exact governed-alias
+  lookup per unique mention phrase.
+- **Desired behavior:** Bulk-load the batch's exact aliases while preserving
+  tenant, valid-time, conflict, and authority fail-closed behavior.
+- **Safe boundary:** Keep the simple auditable query on the current small-batch
+  path; measure before optimizing.
+- **Return condition:** Profiling shows alias lookup materially affects batch
+  latency or target batch sizes make query count operationally significant.
+
+### EDGE-055 — Generic founder referents lack a complete identity lifecycle
+
+- **Status:** `backlog; not required for first learning-loop proof`
+- **Current behavior:** Bootstrap can bind typed generic referents and versioned
+  exact aliases, but rename, split, merge, replacement, and retirement are not
+  yet one closed lifecycle for those referents.
+- **Desired behavior:** Founder corrections preserve immutable provenance and
+  redirect or supersede affected aliases, grounding, and learned scope without
+  rewriting history.
+- **Safe boundary:** Treat the v1 manifest as initial identity authority and
+  fail closed on active conflicts; do not broaden identity mutation during
+  CF3-B.
+- **Return condition:** Before production founder onboarding or any correction
+  simulation that changes canonical identity.
+
+### EDGE-056 — Wider worker lane has three failures outside founder grounding
+
+- **Status:** `backlog; classify separately from focused proof`
+- **Current behavior:** The focused bootstrap/evaluator/pre-Think grounding
+  slices pass. The wider sweep observed:
+  `test_clarification_adjudication_changes_future_grounding_fate` expected
+  `company_learning.status=insufficient` but received `contradicted`;
+  `test_llm_timeout_is_requeued` depleted its scripted provider response during
+  retry; and `test_review_queue_tenant_isolated` lacked the other tenant needed
+  by a foreign key. None exercises the new deterministic founder alias branch.
+- **Desired behavior:** The full wider worker lane is green and each failure has
+  an independently reproduced cause.
+- **Safe boundary:** Do not claim broad worker-suite health or call these
+  preexisting/flaky without investigation, but do not expand the core CF3-B
+  repair until a failure is shown to share its cause.
+- **Return condition:** After the fresh CF3-B core proof, reproduce and triage
+  the three failures independently; promote only a causally related failure.
 
 ## Entry Template
 

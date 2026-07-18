@@ -6,17 +6,24 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** M0 and CF3-A are green; CF3-B remains red on semantic
-memory use. At commit `e8bbe033`, tenant
+**Current checkpoint:** M0 and CF3-A are green; the original CF3-B run remains
+red on semantic memory use. At commit `e8bbe033`, tenant
 `fd1588ed-1379-49c6-b6da-ac69b5f25b79` completed two real Codex batches in
 `481.491s`. Batch 1 safely admitted 14 exact mention-scoped atomics; batch 2
 retrieved all 14 and ended with 28 accepted Models. Both barriers closed at
 zero truth-critical pending. Independent audit rejected the apparent
 `model_context_used` grade: the provider trace based decisions on direct
 observations, while the sole batch-1 Model reference came from generic
-lifecycle bookkeeping. CF3-C remains locked. The next architecture decision is
-whether founder-assisted canonical entity bootstrap becomes the primary
-product cold start while zero-seed mention memory remains a safe fallback.
+lifecycle bookkeeping. Founder-assisted identity bootstrap is now the chosen
+primary cold start: `1fc88737` writes only governed exact aliases, and
+`9af2275a` resolves a unique active founder alias synchronously before Think.
+Zero-seed mention memory remains the safe fallback. Evaluator v2 at `9650c846`
+requires decision-level semantic dependence and rejects lifecycle-only Model
+references. Commit `58688b8c` proves the joined pre-reasoning dataflow: two
+separate signals naming one founder-known workstream become one resolved
+governed episode, while a novel name remains an unresolved singleton. A fresh
+CF3-B run has not yet proved genuine prior-Model influence, so CF3-C remains
+locked.
 
 **Last updated:** 2026-07-18
 

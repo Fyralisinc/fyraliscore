@@ -2192,3 +2192,36 @@ provider run; retain zero-seed mention memory as fallback evidence.
 **Artifacts:** `/tmp/fyralis-cf3b-codex-two-batch-spark-r2.json`, its
 `-evidence.json` and `-score.json` companions. The generic full-P6 score is
 expected red on a two-batch prefix and is not the CF3-B verdict.
+
+### 2026-07-18 — LOG-064 — Identity bootstrap belongs before reasoning, not inside belief truth
+
+**Architecture chosen:** Founder onboarding now materializes a versioned,
+provenance-bound exact identity vocabulary without seeding Models, relations,
+resources, observations, or behavioral conclusions. Unknown names still use
+the unresolved/provisional path.
+
+**Runtime repair:** A detected mention that has exactly one active, governed
+founder alias receives a deterministic grounding episode before Think builds
+its batch payload. Missing, stale, malformed, or conflicting aliases abstain;
+the path makes no LLM call. This gives reasoning canonical continuity without
+weakening zero-seed safety.
+
+**Evaluator repair:** Retrieval evaluator v2 requires decision-level semantic
+dependence on a prior accepted Model. Retrieval presence and lifecycle-only
+references are reported but cannot earn material-use credit.
+
+**Proof boundary:** Bootstrap passed `4/4`, evaluator v2 passed `6/6`, and
+pre-Think grounding passed `9/9` pure plus `3/3` focused PostgreSQL tests. A
+joined PostgreSQL proof at `58688b8c` also passed `1/1`: two Atlas observations
+were grouped into one resolved canonical Think episode while novel Zephyr
+remained an unresolved singleton. The gold-blind replay preparer and dependency
+ordering passed `8/8`; architecture ratchets and diff checks are green. This is
+not yet a fresh multi-batch provider run materially using prior Models. CF3-B
+remains red until rerun evidence satisfies v2; CF3-C remains locked.
+
+**Deliberate deferrals:** Per-phrase alias query scaling and lifecycle support
+for generic referents (rename, split, merge, and retirement) are logged rather
+than expanded into the core repair. Three failures found only in the wider
+worker lane are also kept separate because they do not exercise the new exact
+founder-grounding path. They were not investigated, so any preexisting/flaky
+classification remains provisional rather than evidence.
