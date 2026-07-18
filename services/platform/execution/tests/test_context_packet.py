@@ -502,7 +502,7 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
             for row in candidate.observation_evidence
         )
         assert candidate.entailed_claim_text == candidate.proposed_text
-        assert candidate.entailed_claim_text.startswith(f"{scope}: ")
+        assert candidate.entailed_claim_text.startswith(f"{scope}, update 1: ")
         assert "churn" not in candidate.entailed_claim_text.casefold()
         assert "delay" not in candidate.entailed_claim_text.casefold()
         assert not (set(candidate.member_observation_ids) & distractor_ids)

@@ -905,10 +905,12 @@ def _batch_fragment_candidates(
             match = _BATCH_SCOPE_PREFIX_RE.match(member["body"])
             if match is None:  # guarded during grouping
                 continue
-            assertion = " ".join(match.group("body").split())
-            if not assertion:
+            if not match.group("body").strip():
                 continue
-            entailed_text = f"{scope}: {assertion}"
+            # Keep the exact persisted body. The recognized envelope carries
+            # the scope coordinate and lets splitter/admission reopen the same
+            # byte-for-byte evidence without a second interpretation step.
+            entailed_text = member["body"]
             covered_ids.add(observation_id)
             candidates.append(
                 MemoryDecisionCandidate(

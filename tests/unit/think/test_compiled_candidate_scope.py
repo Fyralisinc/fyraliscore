@@ -16,6 +16,10 @@ from services.reasoning.think.reconciler import (
     _business_scope_refs,
     _generic_model_scope_compatible,
 )
+from services.reasoning.think.evidence_manifest import (
+    authorize_compiler_evidence_manifest,
+)
+from services.reasoning.think.splitter import split_compound_claim_op
 
 
 def _compiled_claim(scope: str, *, role: str = "concern"):
@@ -152,19 +156,28 @@ def test_closed_atomic_candidate_ignores_provider_rewrite_and_keeps_one_ref() ->
 
 def test_closed_atomic_batch_is_not_truncated_to_six_candidates() -> None:
     observations = [uuid4() for _ in range(20)]
+
+    def fact_text(index: int) -> str:
+        if index == 0:
+            return (
+                "Atlas release, update 1: The release certificate still has "
+                "no clearly recorded owner."
+            )
+        return f"Atlas release, update 1: exact operational fact {index}."
+
     candidates = [
         {
             "candidate_id": f"MDC_ATOM_{index}",
             "op_family": "claim_insert",
-            "proposed_text": f"Atlas release: exact fact {index}.",
-            "entailed_claim_text": f"Atlas release: exact fact {index}.",
+            "proposed_text": fact_text(index),
+            "entailed_claim_text": fact_text(index),
             "semantic_scope": ["Atlas release"],
             "source_observation_ids": [str(observation_id)],
             "member_observation_ids": [str(observation_id)],
             "observation_evidence": [
                 {
                     "observation_id": str(observation_id),
-                    "body": f"Atlas release, update 1: exact fact {index}.",
+                    "body": fact_text(index),
                     "source_channel": "slack:message",
                 }
             ],
@@ -209,8 +222,27 @@ def test_closed_atomic_batch_is_not_truncated_to_six_candidates() -> None:
     )
     assert len(diff.claim_ops) == 1
     assert diff.claim_ops[0].entry is not None
-    assert diff.claim_ops[0].entry["natural"] == "Atlas release: exact fact 0."
+    assert (
+        diff.claim_ops[0].entry["natural"]
+        == fact_text(0)
+    )
     assert diff.claim_ops[0].entry["proposition"]["claim_role"] == "fact"
+    split_ops = split_compound_claim_op(diff.claim_ops[0])
+    assert len(split_ops) == 1
+    split_entry = split_ops[0].entry
+    assert split_entry is not None
+    selected = split_entry["supporting_event_ids"]
+    assert selected == [str(observations[0])]
+    authorize_compiler_evidence_manifest(
+        selected_observation_ids=[observations[0]],
+        manifest=split_entry["evidence_observation_manifest"],
+        persisted_observations=[
+            {
+                "id": observations[0],
+                "content_text": fact_text(0),
+            }
+        ],
+    )
 
 
 def test_compiler_evidence_manifest_is_consumed_before_model_create() -> None:

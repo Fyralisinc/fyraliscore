@@ -25,6 +25,7 @@ from lib.shared.ids import uuid7
 from services.reasoning.think.diff_schema import ClaimOp
 from services.reasoning.think.reconciler import (
     _compute_signal_breakdown,
+    _closed_atomic_assertion_compatible,
     _falsifier_cosine,
     _generic_model_scope_compatible,
     _member_overlap_fraction,
@@ -166,6 +167,47 @@ def test_generic_models_cannot_use_source_system_as_business_overlap():
     }
 
     assert not _generic_model_scope_compatible(entry, row)
+
+
+def test_closed_atomics_same_scope_do_not_merge_when_assertions_differ():
+    candidate = {
+        "compiled_memory_candidate_id": "MDC_ATOM_cobalt_crm",
+        "assertion": (
+            "Cobalt renewal: The CRM health field remains optimistic while "
+            "the underlying record is incomplete."
+        ),
+    }
+    other_cobalt_assertions = (
+        "Cobalt renewal: The customer approval email has no recorded owner.",
+        "Cobalt renewal: A reply asks whether approval happened before cutoff.",
+        "Cobalt renewal: Someone claims ownership without naming procurement.",
+        "Cobalt renewal: The signature moved after ownership resurfaced.",
+    )
+
+    for index, assertion in enumerate(other_cobalt_assertions):
+        row = {
+            "proposition": {
+                "compiled_memory_candidate_id": f"MDC_ATOM_cobalt_{index}",
+                "assertion": assertion,
+            }
+        }
+        assert not _closed_atomic_assertion_compatible(candidate, row)
+
+
+def test_closed_atomics_same_assertion_can_merge_across_observations():
+    assertion = "Cobalt renewal: The CRM health field remains optimistic."
+    candidate = {
+        "compiled_memory_candidate_id": "MDC_ATOM_cobalt_new_observation",
+        "assertion": assertion,
+    }
+    row = {
+        "proposition": {
+            "compiled_memory_candidate_id": "MDC_ATOM_cobalt_prior_observation",
+            "assertion": assertion,
+        }
+    }
+
+    assert _closed_atomic_assertion_compatible(candidate, row)
 
 
 # =====================================================================

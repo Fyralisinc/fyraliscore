@@ -910,6 +910,8 @@ def _score_candidate_row(
     existing_embedding = _embedding_list(row.get("embedding"))
     if existing_embedding is None:
         return None
+    if not _closed_atomic_assertion_compatible(context.proposition, row):
+        return None
     if not _pattern_instance_matches(row, context):
         return None
     if not _generic_model_scope_compatible(context.entry, row):
@@ -951,6 +953,35 @@ _GENERIC_MODEL_TAGS = {
     "candidate_bound_curiosity",
 }
 _BUSINESS_SCOPE_TYPES = {"actor", "customer", "workstream", "commitment"}
+
+
+def _closed_atomic_assertion_compatible(
+    candidate_proposition: dict[str, Any],
+    row: dict[str, Any],
+) -> bool:
+    """Keep distinct same-scope atomics separate while allowing confirmation."""
+
+    candidate_id = str(
+        candidate_proposition.get("compiled_memory_candidate_id") or ""
+    )
+    if not candidate_id.startswith("MDC_ATOM_"):
+        return True
+    existing = _normalize_jsonish(row.get("proposition"))
+    if not isinstance(existing, dict):
+        return False
+    existing_id = str(existing.get("compiled_memory_candidate_id") or "")
+    if not existing_id.startswith("MDC_ATOM_"):
+        return False
+
+    def assertion(value: dict[str, Any]) -> str:
+        raw = value.get("assertion") or value.get("nature") or ""
+        return " ".join(str(raw).casefold().split())
+
+    candidate_assertion = assertion(candidate_proposition)
+    return bool(
+        candidate_assertion
+        and candidate_assertion == assertion(existing)
+    )
 
 
 def _generic_model_scope_compatible(
