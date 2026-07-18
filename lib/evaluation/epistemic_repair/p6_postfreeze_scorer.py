@@ -149,11 +149,26 @@ def _score_mentions(
 ) -> dict[str, dict[str, Any]]:
     rows = _record_index(raw, "mentions")
     executed_source_ids = _executed_source_signal_ids(raw, population)
-    expected = {
-        item.signal_id: item for item in population.gold
-        if item.entity_surface
-        and (executed_source_ids is None or item.signal_id in executed_source_ids)
-    }
+    gold_rows = [
+        item for item in population.gold
+        if executed_source_ids is None or item.signal_id in executed_source_ids
+    ]
+    required: dict[str, list[tuple[str, tuple[str, ...], str | None]]] = {}
+    optional: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+    for item in gold_rows:
+        if item.entity_surface:
+            required.setdefault(item.signal_id, []).append((
+                item.entity_surface,
+                (str(item.entity_type),) if item.entity_type else (),
+                item.canonical_ref,
+            ))
+        for mention in item.local_mentions:
+            target = required if mention.required else optional
+            payload = (
+                (mention.surface, mention.entity_types, None)
+                if mention.required else (mention.surface, mention.entity_types)
+            )
+            target.setdefault(item.signal_id, []).append(payload)
     if not rows:
         return {
             name: _metric(name, None, None)
@@ -162,39 +177,91 @@ def _score_mentions(
                 "canonical_link_precision", "canonical_link_recall",
             )
         }
-    exact = type_ok = link_ok = 0
+    exact = type_ok = precision_link_ok = recall_link_ok = 0
     predicted_links = 0
-    seen_expected: set[str] = set()
+    seen_expected: set[tuple[str, str]] = set()
+    required_count = sum(len(items) for items in required.values())
+    storyline_required_count = sum(
+        1 for items in required.values() for _surface, _types, ref in items if ref
+    )
+    storyline_refs = {
+        str(item.canonical_ref) for item in population.gold if item.canonical_ref
+    }
+    scored_prediction_count = 0
     worst = []
     signal_text = {signal.signal_id: signal.text for signal in population.signals}
     for row in rows:
         signal_id = str(row.get("signal_id") or "")
-        item = expected.get(signal_id)
-        if item is None:
-            worst.append({"source_id": signal_id, "reason": "unexpected_mention"})
-            continue
-        start = signal_text[signal_id].find(str(item.entity_surface))
-        exact_match = (
-            row.get("surface") == item.entity_surface
-            and row.get("span_start") == start
-            and row.get("span_end") == start + len(str(item.entity_surface))
+        surface = str(row.get("surface") or "")
+        start = signal_text.get(signal_id, "").find(surface)
+        exact_span = (
+            start >= 0 and row.get("span_start") == start
+            and row.get("span_end") == start + len(surface)
         )
-        if exact_match:
+        required_match = next((
+            item for item in required.get(signal_id, ())
+            if item[0] == surface and exact_span
+            and (signal_id, surface) not in seen_expected
+        ), None)
+        optional_match = next((
+            item for item in optional.get(signal_id, ())
+            if item[0] == surface and exact_span
+        ), None)
+        if required_match is None and optional_match is None:
+            scored_prediction_count += 1
+            worst.append({"source_id": signal_id, "reason": "unexpected_mention"})
+        elif required_match is not None:
+            scored_prediction_count += 1
             exact += 1
-            seen_expected.add(signal_id)
-        if exact_match and row.get("entity_type") == item.entity_type:
-            type_ok += 1
-        if row.get("canonical_ref") is not None:
+            seen_expected.add((signal_id, surface))
+            allowed_types = required_match[1]
+            type_ok += int(row.get("entity_type") in allowed_types)
+        canonical_ref = row.get("canonical_ref")
+        if canonical_ref is not None:
             predicted_links += 1
-            if exact_match and row.get("canonical_ref") == item.canonical_ref:
-                link_ok += 1
-    _, _, mention_f1 = _f1(exact, len(rows), len(expected))
-    ids = list(expected)
+            if required_match is not None and required_match[2] is not None:
+                correct = canonical_ref == required_match[2]
+                precision_link_ok += int(correct)
+                recall_link_ok += int(correct)
+            elif (
+                (required_match is not None or optional_match is not None)
+                and canonical_ref not in storyline_refs
+            ):
+                # Local entities may remain unresolved or gain their own local
+                # identity, but must never alias a sealed storyline entity.
+                precision_link_ok += 1
+            else:
+                worst.append({
+                    "source_id": signal_id,
+                    "reason": "local_entity_linked_to_storyline",
+                })
+    _, _, mention_f1 = _f1(exact, scored_prediction_count, required_count)
+    ids = sorted(required)
+    storyline_ids = sorted(
+        signal_id for signal_id, items in required.items()
+        if any(ref is not None for _surface, _types, ref in items)
+    )
     return {
-        "exact_mention_f1": _metric("exact_mention_f1", mention_f1, 1, source_ids=ids, worst_cases=worst),
-        "entity_type_accuracy": _metric("entity_type_accuracy", type_ok, exact, source_ids=ids),
-        "canonical_link_precision": _metric("canonical_link_precision", link_ok, predicted_links, source_ids=ids),
-        "canonical_link_recall": _metric("canonical_link_recall", link_ok, len(expected), source_ids=ids),
+        "exact_mention_f1": _metric(
+            "exact_mention_f1",
+            mention_f1 if required_count else None,
+            1 if required_count else None,
+            source_ids=ids, worst_cases=worst,
+        ),
+        "entity_type_accuracy": _metric(
+            "entity_type_accuracy",
+            type_ok if required_count else None,
+            exact if required_count else None,
+            source_ids=ids,
+        ),
+        "canonical_link_precision": _metric(
+            "canonical_link_precision", precision_link_ok, predicted_links,
+            source_ids=storyline_ids, worst_cases=worst,
+        ),
+        "canonical_link_recall": _metric(
+            "canonical_link_recall", recall_link_ok, storyline_required_count,
+            source_ids=storyline_ids,
+        ),
     }
 
 

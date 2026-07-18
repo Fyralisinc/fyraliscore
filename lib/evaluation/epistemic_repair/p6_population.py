@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from lib.contracts.kernel import canonical_sha256
 
 
-P6_POPULATION_VERSION = "epistemic-repair-p6-mixed-stream-12x25-v2"
+P6_POPULATION_VERSION = "epistemic-repair-p6-mixed-stream-12x25-v3"
 P6_BATCH_COUNT = 12
 P6_SIGNALS_PER_BATCH = 25
 P6_SIGNAL_COUNT = 300
@@ -29,6 +29,13 @@ class P6Signal:
 
 
 @dataclass(frozen=True, slots=True)
+class P6MentionGold:
+    surface: str
+    entity_types: tuple[str, ...]
+    required: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class P6Gold:
     signal_id: str
     storyline_id: str | None
@@ -38,6 +45,7 @@ class P6Gold:
     canonical_ref: str | None
     claim_id: str | None
     lifecycle_phase: str
+    local_mentions: tuple[P6MentionGold, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +225,14 @@ def build_p6_population() -> P6Population:
             text = f"Week {batch}: {text}"
             rows.append((
                 P6Signal(signal_id, batch, position, "slack:message", "slack:general", text),
-                P6Gold(signal_id, None, "noise", None, None, None, None, _phase(batch)),
+                P6Gold(
+                    signal_id, None, "noise", None, None, None, None,
+                    _phase(batch),
+                    local_mentions=(
+                        (P6MentionGold("Facilities", ("organizational_unit", "team"), False),)
+                        if ordinal == 1 else ()
+                    ),
+                ),
             ))
         for ordinal in range(1, 3):
             position = len(rows) + 1
@@ -229,8 +244,17 @@ def build_p6_population() -> P6Population:
             text = f"Week {batch}: {text}"
             rows.append((
                 P6Signal(signal_id, batch, position, "jira:comment", "jira:workplace", text),
-                P6Gold(signal_id, None, "high_similarity_distractor", None, None,
-                       None, None, _phase(batch)),
+                P6Gold(
+                    signal_id, None, "high_similarity_distractor", None, None,
+                    None, None, _phase(batch),
+                    local_mentions=(
+                        (
+                            P6MentionGold("Cobalt paint approval", ("work_item",)),
+                            P6MentionGold("Beacon office ticket", ("work_item",)),
+                        )
+                        if ordinal == 2 else ()
+                    ),
+                ),
             ))
         assert len(rows) == P6_SIGNALS_PER_BATCH
         # Rotate physical order so transport position never exposes storyline.
@@ -245,7 +269,7 @@ def build_p6_population() -> P6Population:
             gold.append(P6Gold(signal.signal_id, item.storyline_id, item.role,
                                item.entity_surface, item.entity_type,
                                item.canonical_ref, item.claim_id,
-                               item.lifecycle_phase))
+                               item.lifecycle_phase, item.local_mentions))
         batches.append(P6Batch(batch, tuple(normalized)))
     payload = {
         "version": P6_POPULATION_VERSION,
@@ -266,5 +290,5 @@ def build_p6_population() -> P6Population:
 
 
 __all__ = ["P6_BATCH_COUNT", "P6_SIGNALS_PER_BATCH", "P6_SIGNAL_COUNT",
-           "P6_STORYLINES", "P6Batch", "P6Gold", "P6Population", "P6Signal",
+           "P6_STORYLINES", "P6Batch", "P6Gold", "P6MentionGold", "P6Population", "P6Signal",
            "build_p6_population"]

@@ -145,21 +145,27 @@ def test_one_batch_source_metrics_use_only_executed_population() -> None:
     }
     mentions = []
     for item in gold.values():
-        if not item.entity_surface:
-            continue
         text = next(
             signal.text for signal in batch_one_signals
             if signal.signal_id == item.signal_id
         )
-        start = text.find(item.entity_surface)
-        mentions.append({
-            "signal_id": item.signal_id,
-            "surface": item.entity_surface,
-            "span_start": start,
-            "span_end": start + len(item.entity_surface),
-            "entity_type": item.entity_type,
-            "canonical_ref": item.canonical_ref,
-        })
+        expected_mentions = (
+            [(item.entity_surface, item.entity_type, item.canonical_ref)]
+            if item.entity_surface else []
+        ) + [
+            (mention.surface, mention.entity_types[0], None)
+            for mention in item.local_mentions if mention.required
+        ]
+        for surface, entity_type, canonical_ref in expected_mentions:
+            start = text.find(surface)
+            mentions.append({
+                "signal_id": item.signal_id,
+                "surface": surface,
+                "span_start": start,
+                "span_end": start + len(surface),
+                "entity_type": entity_type,
+                "canonical_ref": canonical_ref,
+            })
     # Preserve a genuine executed-batch type failure; population scoping must
     # not turn missing values inside the measured slice into success.
     mentions[0]["entity_type"] = None
@@ -180,13 +186,113 @@ def test_one_batch_source_metrics_use_only_executed_population() -> None:
     boundary = _score_boundaries(raw, population)["boundary_b_cubed_f1"]
 
     assert mention_scores["exact_mention_f1"]["value"] == 1.0
-    assert mention_scores["entity_type_accuracy"]["numerator"] == 18
-    assert mention_scores["entity_type_accuracy"]["denominator"] == 20
+    assert mention_scores["entity_type_accuracy"]["numerator"] == 20
+    assert mention_scores["entity_type_accuracy"]["denominator"] == 22
     assert mention_scores["entity_type_accuracy"]["status"] == "fail"
     assert mention_scores["canonical_link_recall"]["denominator"] == 20
     assert len(mention_scores["canonical_link_recall"]["source_ids"]) == 20
     assert boundary["value"] == 1.0
     assert len(boundary["source_ids"]) == 25
+
+
+def test_local_distractor_entities_are_mentions_not_storyline_links() -> None:
+    population = build_p6_population()
+    signal = next(item for item in population.signals if item.signal_id == "p6-b01-s25")
+    gold = next(item for item in population.gold if item.signal_id == signal.signal_id)
+    mentions = []
+    for mention in gold.local_mentions:
+        start = signal.text.find(mention.surface)
+        mentions.append({
+            "signal_id": signal.signal_id,
+            "surface": mention.surface,
+            "span_start": start,
+            "span_end": start + len(mention.surface),
+            "entity_type": "work_item",
+            "canonical_ref": None,
+        })
+    raw = {
+        "postfreeze_evidence": {
+            "observed_source_ids": ["observation-ticket"],
+            "observation_signal_map": {"observation-ticket": signal.signal_id},
+            "mentions": mentions,
+        },
+        "waves": [],
+    }
+
+    scores = _score_mentions(raw, population)
+
+    assert scores["exact_mention_f1"]["value"] == 1.0
+    assert scores["entity_type_accuracy"]["value"] == 1.0
+    assert scores["canonical_link_precision"]["status"] == "unmeasured"
+
+
+def test_optional_facilities_mention_is_neither_required_nor_penalized() -> None:
+    population = build_p6_population()
+    signal = next(item for item in population.signals if item.signal_id == "p6-b01-s21")
+    start = signal.text.find("Facilities")
+    raw = {
+        "postfreeze_evidence": {
+            "observed_source_ids": ["observation-facilities"],
+            "observation_signal_map": {
+                "observation-facilities": signal.signal_id,
+            },
+            "mentions": [{
+                "signal_id": signal.signal_id,
+                "surface": "Facilities",
+                "span_start": start,
+                "span_end": start + len("Facilities"),
+                "entity_type": "team",
+                "canonical_ref": None,
+            }],
+        },
+        "waves": [],
+    }
+
+    with_optional = _score_mentions(raw, population)
+    without_optional = _score_mentions(
+        {
+            "postfreeze_evidence": {
+                "observed_source_ids": ["observation-facilities"],
+                "observation_signal_map": {
+                    "observation-facilities": signal.signal_id,
+                },
+                "mentions": [],
+            },
+            "waves": [],
+        },
+        population,
+    )
+
+    assert with_optional["exact_mention_f1"]["status"] == "unmeasured"
+    assert without_optional["exact_mention_f1"]["status"] == "unmeasured"
+
+
+def test_local_entity_linked_to_storyline_fails_link_precision() -> None:
+    population = build_p6_population()
+    signal = next(item for item in population.signals if item.signal_id == "p6-b01-s25")
+    start = signal.text.find("Beacon office ticket")
+    scores = _score_mentions({
+        "postfreeze_evidence": {
+            "observed_source_ids": ["observation-ticket"],
+            "observation_signal_map": {"observation-ticket": signal.signal_id},
+            "mentions": [{
+                "signal_id": signal.signal_id,
+                "surface": "Beacon office ticket",
+                "span_start": start,
+                "span_end": start + len("Beacon office ticket"),
+                "entity_type": "work_item",
+                "canonical_ref": "workstream:beacon-migration",
+            }],
+        },
+        "waves": [],
+    }, population)
+
+    assert scores["canonical_link_precision"]["value"] == 0.0
+    assert scores["canonical_link_precision"]["status"] == "fail"
+    assert scores["canonical_link_precision"]["worst_cases"] == [{
+        "source_id": signal.signal_id,
+        "reason": "local_entity_linked_to_storyline",
+    }]
 
 
 def test_atomic_source_oracle_accepts_exact_ownership_one_ref() -> None:

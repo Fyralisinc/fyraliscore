@@ -58,3 +58,25 @@ def test_runtime_signal_has_no_oracle_fields() -> None:
         "source_space", "text",
     }
     assert canonical_sha256(signal.text) != build_p6_population().population_digest
+
+
+def test_noise_roles_do_not_erase_legitimate_local_entities() -> None:
+    population = build_p6_population()
+    facilities = next(
+        item for item in population.gold if item.signal_id == "p6-b01-s21"
+    )
+    ticket = next(
+        item for item in population.gold if item.signal_id == "p6-b01-s25"
+    )
+
+    assert facilities.role == "noise"
+    assert [(item.surface, item.entity_types, item.required)
+            for item in facilities.local_mentions] == [
+        ("Facilities", ("organizational_unit", "team"), False),
+    ]
+    assert ticket.role == "high_similarity_distractor"
+    assert [(item.surface, item.entity_types, item.required)
+            for item in ticket.local_mentions] == [
+        ("Cobalt paint approval", ("work_item",), True),
+        ("Beacon office ticket", ("work_item",), True),
+    ]
