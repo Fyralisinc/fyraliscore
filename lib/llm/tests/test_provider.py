@@ -353,10 +353,16 @@ async def test_codex_provider_uses_cli_transport(monkeypatch):
 
         async def communicate(self, input=None):
             captured["stdin"] = input.decode("utf-8")
-            args = captured["args"]
-            output_path = Path(args[args.index("--output-last-message") + 1])
-            output_path.write_text(_valid_payload(), encoding="utf-8")
-            return b"codex\n", b""
+            events = (
+                {"type": "item.completed", "item": {
+                    "type": "agent_message", "text": _valid_payload(),
+                }},
+                {"type": "turn.completed", "usage": {
+                    "input_tokens": 123, "output_tokens": 17,
+                    "cached_input_tokens": 41,
+                }},
+            )
+            return ("\n".join(json.dumps(x) for x in events).encode(), b"")
 
         def kill(self):
             captured["killed"] = True
@@ -396,13 +402,17 @@ async def test_codex_provider_uses_cli_transport(monkeypatch):
         "exec",
     ]
     assert "--output-schema" not in captured["args"]
+    assert "--json" in captured["args"]
+    assert "--output-last-message" not in captured["args"]
     assert "system prompt" in captured["stdin"]
     assert "user prompt" in captured["stdin"]
     assert "Alice ships fast" not in captured["stdin"]
     assert '"properties"' in captured["stdin"]
     assert usage.call_count == 1
-    assert usage.total_input_tokens > 0
-    assert usage.total_output_tokens > 0
+    assert usage.total_input_tokens == 123
+    assert usage.total_output_tokens == 17
+    assert usage.total_cache_read_tokens == 41
+    assert usage.calls[0].usage_exactness == "reported"
 
 
 async def test_codex_provider_reuses_app_server_transport(monkeypatch):

@@ -278,7 +278,8 @@ def _run_provenance() -> dict[str, Any]:
 
 async def run_p6_production_think(
     *, database_url: str, population: P6Population, checkpoint_path: Path,
-    tenant_id: UUID | None = None, per_batch_timeout_s: float = 180.0,
+    tenant_id: UUID | None = None, per_batch_timeout_s: float = 650.0,
+    attempt_timeout_s: float = 300.0,
     total_timeout_s: float = 1800.0, max_batches: int = 12,
 ) -> dict[str, Any]:
     """Run 12 intact transport batches through the real T1 Think worker."""
@@ -307,7 +308,7 @@ async def run_p6_production_think(
             poll_batch=30, max_concurrency_per_tenant=1,
             tenant_filter=tenant_id, worker_id=f"p6-{tenant_id}",
             t1_batch_window_s=1.0, t1_batch_min_size=25,
-            t1_batch_max_size=25, run_timeout_s=per_batch_timeout_s,
+            t1_batch_max_size=25, run_timeout_s=attempt_timeout_s,
             downstream_batch_window_s=1.0,
             downstream_batch_min_size=2,
             t4_batch_max_size=4,
@@ -336,6 +337,7 @@ async def run_p6_production_think(
                 terminal_reason = "total_timeout"
                 break
             batch_started = time.monotonic()
+            batch_deadline = batch_started + per_batch_timeout_s
             async with pool.acquire() as conn:
                 observation_ids = await _persist_runtime_batch(
                     conn, tenant_id=tenant_id, batch=batch,
@@ -346,10 +348,13 @@ async def run_p6_production_think(
                 run_id=f"p6-batch-{batch.batch_number}",
             )
             try:
-                async with asyncio.timeout(min(per_batch_timeout_s, remaining)):
+                async with asyncio.timeout(min(
+                    per_batch_timeout_s, remaining,
+                    max(0.001, batch_deadline - time.monotonic()),
+                )):
                     execution = await _process_one_t1_batch(
                         pool, worker, tenant_id=tenant_id,
-                        force_window_elapsed_s=1.0, retry_attempts=0,
+                        force_window_elapsed_s=1.0, retry_attempts=1,
                     )
             except TimeoutError:
                 terminal_reason = f"batch_{batch.batch_number}_timeout"
@@ -362,7 +367,9 @@ async def run_p6_production_think(
             barrier_receipt: dict[str, Any] | None = None
             truth_drain: dict[str, Any] | None = None
             if run.get("status") == "success":
-                async with asyncio.timeout(min(per_batch_timeout_s, remaining)):
+                async with asyncio.timeout(min(
+                    remaining, max(0.001, batch_deadline - time.monotonic()),
+                )):
                     truth_drain = await _drain_truth_critical_work(
                         pool, worker, tenant_id=tenant_id,
                     )
@@ -396,6 +403,11 @@ async def run_p6_production_think(
                 "waves": waves, "terminal_reason": terminal_reason,
                 "elapsed_s": round(time.monotonic() - started, 3),
                 "run_provenance": run_provenance,
+                "timeout_budget": {
+                    "attempt_timeout_s": attempt_timeout_s, "max_attempts": 2,
+                    "batch_deadline_s": per_batch_timeout_s,
+                    "total_deadline_s": total_timeout_s,
+                },
             }
             _write_checkpoint(checkpoint_path, checkpoint)
             print(f"p6_think_batch={batch.batch_number}/12 status={run.get('status')} models={len(snapshot['accepted_models'])} elapsed_s={waves[-1]['elapsed_s']}", flush=True)
@@ -429,6 +441,11 @@ async def run_p6_production_think(
             "provider_mode": "production ThinkWorker; every role pinned to one configuration",
             "gold_visible_during_execution": False,
             "run_provenance": run_provenance,
+            "timeout_budget": {
+                "attempt_timeout_s": attempt_timeout_s, "max_attempts": 2,
+                "batch_deadline_s": per_batch_timeout_s,
+                "total_deadline_s": total_timeout_s,
+            },
             "elapsed_s": round(time.monotonic() - started, 3),
             "proof_boundary": (
                 "Production outputs are frozen before independent gold evaluation.",

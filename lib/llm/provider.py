@@ -1916,8 +1916,7 @@ class CodexProvider(LLMProvider):
 
         async def _do_call() -> str:
             with tempfile.TemporaryDirectory(prefix="fyralis-codex-") as tmp:
-                tmpdir = Path(tmp)
-                output_path = tmpdir / "last_message.txt"
+                del tmp
                 args = [
                     "codex",
                     "--ask-for-approval",
@@ -1930,8 +1929,7 @@ class CodexProvider(LLMProvider):
                     "read-only",
                     "--model",
                     self.config.model,
-                    "--output-last-message",
-                    str(output_path),
+                    "--json",
                 ]
                 args.append("-")
 
@@ -1968,23 +1966,48 @@ class CodexProvider(LLMProvider):
                         model=self.config.model,
                     )
 
-                content = ""
-                if output_path.exists():
-                    content = output_path.read_text(encoding="utf-8").strip()
-                if not content:
-                    content = _codex_cli_stdout_fallback(stdout)
+                content, usage = _codex_cli_json_result(stdout)
                 if not content:
                     raise LLMError("empty response from codex cli", model=self.config.model)
+                if not usage:
+                    raise LLMError(
+                        "codex cli completed without reported token usage",
+                        model=self.config.model,
+                    )
+                self._record_usage(
+                    usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+                    cache_read_tokens=usage.get("cached_input_tokens", 0),
+                    usage_exactness="reported",
+                )
                 return content
 
         content = await _through_breaker(self.circuit_breaker_name, _do_call)
-        self._record_estimated_text_usage(
-            system=system,
-            user=user,
-            schema_hint=schema_hint,
-            content=content,
-        )
         return content
+
+
+def _codex_cli_json_result(stdout: bytes) -> tuple[str, dict[str, int]]:
+    """Extract final agent text and exact provider-reported CLI usage."""
+
+    messages: list[str] = []
+    usage: dict[str, int] = {}
+    for raw in stdout.splitlines():
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item") or {}
+        if event.get("type") == "item.completed" and item.get("type") == "agent_message":
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                messages.append(text.strip())
+        reported = event.get("usage")
+        if event.get("type") == "turn.completed" and isinstance(reported, dict):
+            usage = {
+                key: int(reported[key])
+                for key in ("input_tokens", "output_tokens", "cached_input_tokens")
+                if isinstance(reported.get(key), int)
+            }
+    return (messages[-1] if messages else ""), usage
 
 
 def _responses_output_text(response: Any) -> str:

@@ -23,6 +23,7 @@ async def _run(args: argparse.Namespace) -> int:
         database_url=args.database_url, population=build_p6_population(),
         checkpoint_path=args.output,
         per_batch_timeout_s=args.batch_timeout,
+        attempt_timeout_s=args.attempt_timeout,
         total_timeout_s=args.total_timeout,
         max_batches=args.max_batches,
     )
@@ -34,7 +35,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database-url", default=os.environ.get("DATABASE_URL"))
     parser.add_argument("--output", type=Path, default=Path("/tmp/p6-think.json"))
-    parser.add_argument("--batch-timeout", type=float, default=180.0)
+    parser.add_argument("--attempt-timeout", type=float, default=300.0)
+    parser.add_argument("--batch-timeout", type=float, default=650.0)
     parser.add_argument("--total-timeout", type=float, default=1800.0)
     parser.add_argument("--max-batches", type=int, default=12)
     return asyncio.run(_run(parser.parse_args()))

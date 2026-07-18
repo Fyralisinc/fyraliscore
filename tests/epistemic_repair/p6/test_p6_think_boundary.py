@@ -37,6 +37,8 @@ def test_production_think_runner_requires_real_batch_worker() -> None:
         "lib/evaluation/epistemic_repair/p6_think_runner.py"
     ).read_text()
     assert "_process_one_t1_batch" in source
+    assert "retry_attempts=1" in source
+    assert "run_timeout_s=attempt_timeout_s" in source
     assert "ThinkWorker" in source
     assert "t1_batch_max_size=25" in source
     assert "DeepSeek" not in source
@@ -161,3 +163,49 @@ async def test_downstream_pruner_reads_legacy_fields_through_accepted_adapter() 
             }])
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_retry_reuses_membership_after_timeout(monkeypatch) -> None:
+    """One provider timeout retries the same queue batch exactly once."""
+
+    import scripts.run_storyline_batch_benchmark as benchmark
+
+    trigger_id = uuid4()
+    row = {"id": trigger_id, "payload": {"batch_member_trigger_ids": [
+        str(uuid4()), str(uuid4()),
+    ]}}
+    dispatched = []
+
+    class Worker:
+        async def _dispatch_trigger(self, item):
+            dispatched.append(item)
+
+    runs = iter((
+        {"status": "failed", "error": "think_run_timeout after 300s"},
+        {"status": "success", "error": None, "ops_applied": 1},
+    ))
+
+    async def run_for_trigger(_pool, _trigger_id):
+        assert _trigger_id == trigger_id
+        return next(runs)
+
+    async def queue_state(_pool, *, trigger_id):
+        return {"attempts": 1, "completed": False}
+
+    async def relock(_pool, *, worker, trigger_id):
+        return row
+
+    monkeypatch.setattr(benchmark, "_run_for_trigger", run_for_trigger)
+    monkeypatch.setattr(benchmark, "_t1_batch_queue_state", queue_state)
+    monkeypatch.setattr(benchmark, "_lock_t1_batch_for_retry", relock)
+    result, history = await benchmark._dispatch_t1_batch_with_retries(
+        object(), Worker(), row, retry_attempts=1,
+    )
+    assert result["status"] == "success"
+    assert result["recovered_after_retry"] is True
+    assert len(history) == 2
+    assert dispatched == [row, row]
+    assert dispatched[0]["payload"]["batch_member_trigger_ids"] == (
+        dispatched[1]["payload"]["batch_member_trigger_ids"]
+    )
