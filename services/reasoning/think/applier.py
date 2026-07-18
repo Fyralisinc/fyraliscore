@@ -3215,12 +3215,10 @@ async def _apply_evidence_downgrade(
     original Observation as the durable record and avoid creating memory mass.
     """
     entry = dict(op.entry or {})
-    source_event_ids = _merge_event_ids(
-        entry.get("supporting_event_ids"),
-        entry.get("born_from_event_id"),
-        cause_event_id,
-        trigger_supporting_event_ids,
-    )
+    # A downgrade is a sidecar observation, not semantic confirmation.  Its
+    # evidence authority is therefore exactly the incoming claim-local support;
+    # transport/episode IDs must never be unioned into the anchored Model.
+    source_event_ids = _merge_event_ids(entry.get("supporting_event_ids"))
     source_event_id = source_event_ids[0] if source_event_ids else None
     anchor_id = await _select_evidence_anchor_model(
         conn,
@@ -3406,8 +3404,7 @@ async def _append_observe_reading(
     existing_readings.append(reading)
 
     merged_supporting_event_ids = _merge_supporting_event_ids(
-        row["supporting_event_ids"],
-        supporting_event_ids,
+        row["supporting_event_ids"], supporting_event_ids,
     )
 
     previous_state = {
@@ -3420,20 +3417,9 @@ async def _append_observe_reading(
         "SELECT 1 FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
         tenant_id, model_id,
     ))
-    if is_accepted:
-        from .truth_admission import advance_validated_think_model
-
-        confidence = await conn.fetchval(
-            "SELECT confidence FROM accepted_current_models WHERE tenant_id=$1 AND id=$2",
-            tenant_id, model_id,
-        )
-        await advance_validated_think_model(
-            conn, tenant_id=tenant_id, model_id=model_id,
-            confidence=float(confidence),
-            evidence_observation_ids=tuple(merged_supporting_event_ids),
-            evidential_weight=evidential_weight,
-            reason_code=f"validated_think_evidence_absorption:{source_event_id or 'none'}",
-        )
+    # Accepted truth may only advance after explicit semantic confirmation.
+    # A quality downgrade records a reading/residual sidecar and leaves the
+    # canonical head, version, evidence and compatibility support untouched.
     await conn.execute(
         ("""
         UPDATE models SET signal_readings = $3::jsonb
@@ -3487,23 +3473,23 @@ async def _append_observe_reading(
 
     from .audit import CAUSE_FIELD_UPDATE, emit_audit_event
 
+    audit_new_state = {"signal_readings": existing_readings}
+    audit_changed_fields = ["signal_readings"]
+    if not is_accepted:
+        audit_new_state.update({
+            "supporting_event_ids": [str(uid) for uid in merged_supporting_event_ids],
+            "evidential_weight": evidential_weight,
+        })
+        audit_changed_fields.extend(["supporting_event_ids", "evidential_weight"])
     await emit_audit_event(
         conn,
         model_id=model_id,
         tenant_id=tenant_id,
         cause_type=CAUSE_FIELD_UPDATE,
-        new_state={
-            "signal_readings": existing_readings,
-            "supporting_event_ids": [str(uid) for uid in merged_supporting_event_ids],
-            "evidential_weight": evidential_weight,
-        },
+        new_state=audit_new_state,
         previous_state=previous_state,
         cause_id=source_event_id,
-        changed_fields=[
-            "signal_readings",
-            "supporting_event_ids",
-            "evidential_weight",
-        ],
+        changed_fields=audit_changed_fields,
     )
 
     return {

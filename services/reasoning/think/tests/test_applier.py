@@ -16,7 +16,7 @@ from lib.shared.ids import uuid7
 
 from services.domain.models.repo import ModelsRepo
 from services.reasoning.think.applier import (
-    AlreadyAppliedError, apply_diff, hash_diff,
+    AlreadyAppliedError, _apply_evidence_downgrade, apply_diff, hash_diff,
 )
 from services.reasoning.think.diff_schema import (
     ActOp,
@@ -42,6 +42,7 @@ from services.reasoning.sage.topology_optimizer.optimizer import TopologyOptimiz
 from services.reasoning.sage.reader import SynthesisReader
 from services.reasoning.think.capability_probes import maybe_inject_capability_probe_ops
 from services.reasoning.think.text_embedding import deterministic_text_embedding
+from services.reasoning.think.quality_gate import QualityVerdict
 from services.reasoning.think.validator import validate
 
 
@@ -2498,6 +2499,99 @@ async def test_quality_downgrade_attaches_observe_reading_without_new_model(
     assert new_event in row["supporting_event_ids"]
     assert float(row["evidential_weight"]) > 0.5
     assert sidecar_count == 1
+
+
+async def test_accepted_truth_downgrade_is_sidecar_only_and_claim_local(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """A low-quality same-scope question cannot confirm accepted truth."""
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    scope_entity = {"type": "workstream", "id": str(uuid7())}
+    dashboard = "Atlas dashboard remains incomplete."
+    question = "Did the Atlas dashboard change?"
+    async with fresh_db.acquire() as conn:
+        original_id = await _insert_observation(conn, tenant, content_text=dashboard)
+        question_id = await _insert_observation(conn, tenant, content_text=question)
+        sibling_id = await _insert_observation(
+            conn, tenant, content_text="Unrelated episode sibling.",
+        )
+        manifest = [{
+            "observation_id": str(original_id), "body": dashboard,
+            "source_channel": "test",
+        }]
+        admitted = ValidatedDiff(
+            trigger_ref=uuid7(), tenant_id=tenant,
+            claim_ops=[ClaimOp(op="insert", entry={
+                "tenant_id": str(tenant),
+                "proposition": {
+                    "kind": "state", "claim_role": "fact",
+                    "subject": "Atlas dashboard", "assertion": dashboard,
+                    "evidence_event_ids": [str(original_id)],
+                    "evidence_observation_manifest": manifest,
+                },
+                "natural": dashboard, "supporting_event_ids": [str(original_id)],
+                "evidence_observation_manifest": manifest,
+                "scope_actors": [], "scope_entities": [scope_entity],
+                "scope_temporal": {}, "confidence": .7,
+                "confidence_at_assertion": .7,
+            })],
+        )
+        async with conn.transaction():
+            applied = await apply_diff(admitted, conn, trigger_kind="T1")
+        model_id = applied["applied_model_ids"][0]
+        before = await conn.fetchrow("""
+            SELECT h.version_id,v.semantic_digest,m.supporting_event_ids,
+                   array_agg(e.evidence_id ORDER BY e.evidence_id) AS evidence_ids
+            FROM model_truth_heads h
+            JOIN model_truth_versions v ON v.tenant_id=h.tenant_id
+             AND v.version_id=h.version_id
+            JOIN models m ON m.tenant_id=h.tenant_id AND m.id=h.model_id
+            JOIN model_truth_evidence_references e ON e.tenant_id=h.tenant_id
+             AND e.model_version_id=h.version_id
+            WHERE h.tenant_id=$1 AND h.model_id=$2
+            GROUP BY h.version_id,v.semantic_digest,m.supporting_event_ids
+        """, tenant, model_id)
+
+        verdict = QualityVerdict(
+            decision="downgrade_to_evidence", atomicity_score=.8,
+            durability_score=.1, kind_fit_score=.2, overall_score=.2,
+        )
+        async with conn.transaction():
+            await _apply_evidence_downgrade(
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant), "natural": question,
+                    "proposition": {"kind": "question", "assertion": question},
+                    "supporting_event_ids": [str(question_id)],
+                    "scope_actors": [], "scope_entities": [scope_entity],
+                }),
+                conn, tenant_id=tenant, cause_event_id=question_id,
+                trigger_supporting_event_ids=[question_id, sibling_id],
+                verdict=verdict, preferred_model_id=model_id,
+            )
+        after = await conn.fetchrow("""
+            SELECT h.version_id,v.semantic_digest,m.supporting_event_ids,
+                   array_agg(e.evidence_id ORDER BY e.evidence_id) AS evidence_ids
+            FROM model_truth_heads h
+            JOIN model_truth_versions v ON v.tenant_id=h.tenant_id
+             AND v.version_id=h.version_id
+            JOIN models m ON m.tenant_id=h.tenant_id AND m.id=h.model_id
+            JOIN model_truth_evidence_references e ON e.tenant_id=h.tenant_id
+             AND e.model_version_id=h.version_id
+            WHERE h.tenant_id=$1 AND h.model_id=$2
+            GROUP BY h.version_id,v.semantic_digest,m.supporting_event_ids
+        """, tenant, model_id)
+        sidecar = await conn.fetchrow("""
+            SELECT source_event_id,detail FROM model_signal_readings
+            WHERE tenant_id=$1 AND model_id=$2 ORDER BY observed_at DESC LIMIT 1
+        """, tenant, model_id)
+
+    assert dict(after) == dict(before)
+    assert sidecar["source_event_id"] == question_id
+    assert sibling_id not in after["supporting_event_ids"]
+    assert question_id not in after["supporting_event_ids"]
 
 
 async def test_scoped_atomic_near_duplicate_absorbs_without_new_model(
