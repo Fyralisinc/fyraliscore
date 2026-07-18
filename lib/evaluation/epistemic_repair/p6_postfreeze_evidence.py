@@ -136,11 +136,25 @@ def _detected_mention_evidence(row: dict[str, Any], *, signal_id: str | None) ->
     anchor = mention.get("primary_anchor") or {}
     coordinate = anchor.get("coordinate") or {}
     trace_fate = row.get("grounding_fate")
-    grounding_fate = trace_fate or mention.get("grounding_fate")
+    provisional_fate = mention.get("grounding_fate")
+    work_fate = _json_object(row.get("grounding_work_fate"))
+    work_status = row.get("grounding_work_status")
+    grounding_fate = (
+        trace_fate or provisional_fate or work_fate.get("fate_kind")
+    )
     grounding_stage = (
         "trace_recorded" if trace_fate
-        else "provisional_detection" if grounding_fate
+        else "provisional_detection" if provisional_fate
+        else "work_scheduled" if work_status in {"pending", "retry_scheduled"}
+        else "work_terminal" if work_status
         else "not_started"
+    )
+    grounding_complete = bool(
+        trace_fate or provisional_fate or (
+            work_status
+            and work_status not in {"pending", "retry_scheduled"}
+            and work_fate.get("terminal") is True
+        )
     )
     resolved = grounding_fate in {"resolved", "resolved_for_consumer"}
     resolved_ref = (
@@ -163,6 +177,7 @@ def _detected_mention_evidence(row: dict[str, Any], *, signal_id: str | None) ->
         "detection_fate": row.get("fate"),
         "grounding_fate": grounding_fate,
         "grounding_stage": grounding_stage,
+        "grounding_complete": grounding_complete,
     }
 
 
@@ -172,7 +187,7 @@ def _mention_grounding_continuity(
     incomplete = [
         mention for mention in mentions
         if mention.get("detection_fate") == "detected"
-        and mention.get("grounding_stage") == "not_started"
+        and mention.get("grounding_complete") is not True
     ]
     return not incomplete, {
         "detected": len(mentions),
@@ -215,15 +230,39 @@ async def extract_p6_postfreeze_evidence(
     mention_rows = _rows(await conn.fetch(
         """SELECT detection.id,detection.source_observation_id,
                   detection.candidate_surface,detection.fate,detection.mention,
-                  trace.current_fate AS grounding_fate,trace.selected_referent
+                  trace.current_fate AS grounding_fate,trace.selected_referent,
+                  work.status AS grounding_work_status,
+                  work.useful_safe_fate AS grounding_work_fate
            FROM entity_mention_detections detection
            JOIN entity_mention_detection_heads head
              ON head.tenant_id=detection.tenant_id
             AND head.current_detection_id=detection.id
-           LEFT JOIN grounding_traces trace
-             ON trace.tenant_id=detection.tenant_id
-            AND trace.source_observation_id=detection.source_observation_id
-            AND trace.phrase=detection.candidate_surface
+           LEFT JOIN LATERAL (
+             SELECT candidate.id,candidate.status,candidate.current_trace_id,
+                    candidate.useful_safe_fate
+             FROM entity_grounding_work_items candidate
+             WHERE candidate.tenant_id=detection.tenant_id
+               AND candidate.source_observation_id=detection.source_observation_id
+               AND candidate.phrase=detection.candidate_surface
+             ORDER BY candidate.processing_generation DESC,
+                      candidate.updated_at DESC,candidate.id DESC
+             LIMIT 1
+           ) work ON TRUE
+           LEFT JOIN LATERAL (
+             SELECT candidate.current_fate,candidate.selected_referent
+             FROM grounding_traces candidate
+             WHERE candidate.tenant_id=detection.tenant_id
+               AND (
+                 candidate.id=work.current_trace_id
+                 OR (
+                   work.id IS NULL
+                   AND candidate.entity_mention_detection_id=detection.id
+                 )
+               )
+             ORDER BY (candidate.id=work.current_trace_id) DESC,
+                      candidate.created_at DESC,candidate.id DESC
+             LIMIT 1
+           ) trace ON TRUE
            WHERE detection.tenant_id=$1
              AND detection.source_observation_id=ANY($2::uuid[])
            ORDER BY detection.source_observation_id,detection.id""",

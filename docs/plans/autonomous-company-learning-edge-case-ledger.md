@@ -1115,8 +1115,74 @@ transport are excluded from this goal.
   durable explicit grounding dispositions, with no regression across all 24.
 - **Evidence:** `/tmp/fyralis-cf3a-codex-one-batch-spark-evidence.json` and
   `/tmp/fyralis-cf3a-codex-one-batch-spark-score.json`.
-  Evaluator separation and continuity gate are focused-test green `42/42`;
+  Evaluator separation and continuity gate are focused-test green `44/44`;
   runtime rerun remains pending.
+
+### EDGE-049 — Barrier count can race a concurrent grounding enqueue
+
+- **Status:** `deferred; must close before concurrency proof`
+- **Trigger:** Review of the CF3-A grounding enqueue and truth-critical barrier
+  accounting path.
+- **Current behavior:** Barrier completion reads the tenant's pending count and
+  later writes its receipt under the default transaction isolation. A
+  concurrent detected-mention enqueue can commit after the zero count without
+  sharing a tenant-scoped lock with barrier closure.
+- **Desired behavior:** Grounding enqueue and barrier truth snapshot serialize
+  on one tenant-scoped transaction fence, so a receipt can never close over
+  concurrently created truth-critical work.
+- **Risk:** A barrier can certify zero pending work while a detected mention is
+  already becoming durable outside its snapshot.
+- **Safe boundary:** Do not claim concurrent barrier atomicity from the bounded
+  single-run proof. Preserve the new pending-work gate.
+- **Return condition:** A two-connection race test proves enqueue either commits
+  before and blocks closure, or commits after a fully fenced receipt boundary.
+- **Evidence:** Review of
+  `services/evaluation/epistemic_repair/p6_think_runner.py` and
+  `services/domain/company_learning/barrier.py`.
+
+### EDGE-050 — Existing detected heads do not backfill missing grounding work
+
+- **Status:** `deferred; legacy repair required`
+- **Trigger:** Review against the two fate-less detections preserved by the
+  supported CF3-A tenant.
+- **Current behavior:** Mention-fate replay stops when a detection head already
+  exists. It does not idempotently ensure grounding work for an existing
+  `detected` head, so legacy rows or a partially committed caller can remain
+  stranded.
+- **Desired behavior:** Replay ensures one current grounding work identity for
+  every current detected head, regardless of whether detection was newly
+  written or already durable.
+- **Risk:** Deploying the enqueue repair protects new detections but does not
+  repair existing fate gaps.
+- **Safe boundary:** Keep historical tenants red; do not infer backfill from
+  future-path unit tests.
+- **Return condition:** A bounded backfill/replay test begins with a detected
+  head and no work item, then creates exactly one idempotent pending item.
+- **Evidence:** Supported CF3-A tenant
+  `97b210f5-28c9-4206-b8a1-9c1f25335809` and
+  `services/domain/entity_grounding/mention_fates.py`.
+
+### EDGE-051 — Superseded detections can reuse stale grounding work
+
+- **Status:** `deferred; versioned work identity required`
+- **Trigger:** Idempotency review of grounding work identity and barrier
+  correlation.
+- **Current behavior:** Enqueue fixes `processing_generation=1` and ignores a
+  uniqueness conflict on tenant, observation, phrase and generation. Barrier
+  accounting treats any work row for the phrase as ownership, without proving
+  it belongs to the current detection version.
+- **Desired behavior:** Each current detection version is correlated to its own
+  current grounding work or terminal trace; repeated delivery of the same
+  version remains idempotent.
+- **Risk:** A terminal row for an older detection can hide an ungrounded
+  superseding detection and permit false barrier closure.
+- **Safe boundary:** Do not exercise supersession in CF3-A; retain it as a
+  required fault/concurrency case rather than broadening the current repair.
+- **Return condition:** Tests prove old-terminal/new-detected remains pending,
+  while replaying the same detection version creates no duplicate work.
+- **Evidence:** Review of `services/domain/entity_grounding/repo.py` and
+  truth-critical accounting in
+  `services/evaluation/epistemic_repair/p6_think_runner.py`.
 
 ## Entry Template
 

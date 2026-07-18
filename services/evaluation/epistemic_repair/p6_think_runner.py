@@ -39,6 +39,8 @@ from services.domain.entity_grounding.learned_discovery import (
     MentionCandidateAdapter, PersistedSignalText,
     VerifiedMentionCandidate,
 )
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.workers.entity_resolver.worker import EntityResolverWorker
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
@@ -348,8 +350,21 @@ async def _complete_and_reopen_barrier(
     }, current_models)
 
 
+def _build_p6_entity_resolver(
+    *, pool: asyncpg.Pool, provider: LLMProvider,
+) -> EntityResolverWorker:
+    """Use the exact pinned P6 provider for the entity-grounding lane."""
+
+    return EntityResolverWorker(
+        pool=pool,
+        llm=provider,
+        alias_repo=EntityAliasRepo(pool),
+    )
+
+
 async def _drain_truth_critical_work(
-    pool: asyncpg.Pool, worker: ThinkWorker, *, tenant_id: UUID,
+    pool: asyncpg.Pool, worker: ThinkWorker, resolver: EntityResolverWorker, *,
+    tenant_id: UUID,
     max_cycles: int = 8,
 ) -> dict[str, Any]:
     """Process batched downstream truth work until the barrier can close."""
@@ -376,20 +391,26 @@ async def _drain_truth_critical_work(
         tasks = tuple(worker._in_flight)
         if tasks:
             await asyncio.gather(*tasks)
+        grounded_observations = await resolver.process_pending(
+            limit=30,
+            tenant_id=tenant_id,
+        )
         async with pool.acquire() as conn:
             pending_after = sum((await _truth_critical_pending_counts(
                 conn, tenant_id,
             )).values())
         cycle_receipts.append({
             "cycle": cycle, "pending_before": pending_before,
-            "dispatched_batches": len(tasks), "pending_after": pending_after,
+            "dispatched_batches": len(tasks),
+            "grounded_observations": grounded_observations,
+            "pending_after": pending_after,
         })
         if pending_after == 0:
             return {
                 "complete": True, "cycles": cycle,
                 "cycle_receipts": cycle_receipts, "pending_after": 0,
             }
-        if not tasks and pending_after >= pending_before:
+        if not tasks and grounded_observations == 0 and pending_after >= pending_before:
             break
     return {
         "complete": False, "cycles": len(cycle_receipts),
@@ -642,6 +663,7 @@ async def _execute_p6_think(
         mention_candidate_adapter=dependencies.mention_candidate_adapter,
         embedder=embedder,
     )
+    resolver = _build_p6_entity_resolver(pool=pool, provider=provider)
     started = time.monotonic()
     waves: list[dict[str, Any]] = []
     previous_model_versions: set[UUID] = set()
@@ -735,7 +757,7 @@ async def _execute_p6_think(
                     remaining, max(0.001, batch_deadline - time.monotonic()),
                 )):
                     truth_drain = await _drain_truth_critical_work(
-                        pool, worker, tenant_id=tenant_id,
+                        pool, worker, resolver, tenant_id=tenant_id,
                     )
                 if not truth_drain["complete"]:
                     terminal_reason = (

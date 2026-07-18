@@ -1391,7 +1391,10 @@ class EntityResolverWorker:
             fate = work_fates.get(phrase) if isinstance(work_fates, dict) else None
             if not isinstance(fate, dict):
                 return True
-            if fate.get("status") != "retry_scheduled":
+            status = fate.get("status")
+            if status == "pending":
+                return True
+            if status != "retry_scheduled":
                 return False
             raw_next = fate.get("next_attempt_at")
             if not isinstance(raw_next, str):

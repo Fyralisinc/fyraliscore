@@ -2126,6 +2126,6 @@ matched feedback quality and objective entity v6.
   `grounding_stage` separately. A detected mention with no trace or provisional
   grounding disposition is reported as `not_started` and fails
   `complete_detected_mention_grounding_continuity`.
-- Focused evidence/scorer validation passed `42/42`. Runtime enqueue/barrier
+- Focused evidence/scorer validation passed `44/44`. Runtime enqueue/barrier
   behavior was not changed. CF3-A stays red until a fresh one-batch rerun proves
   complete continuity; CF3-B remains held.

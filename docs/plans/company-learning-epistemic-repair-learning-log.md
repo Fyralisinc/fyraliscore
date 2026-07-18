@@ -2081,5 +2081,26 @@ provisional grounding disposition is `not_started`; the new
 incomplete members.
 
 **Boundary and proof:** No runtime enqueue or barrier behavior changed in this
-evaluator slice. Focused evidence and scorer tests passed `42/42`. CF3-A remains red until a fresh
+evaluator slice. Focused evidence and scorer tests passed `44/44`. CF3-A remains red until a fresh
 one-batch run proves the gate; CF3-B remains held.
+
+### 2026-07-18 — LOG-059 — Durable pending work must remain consumable and version-owned
+
+**Confirmed repair:** The resolver's phrase-readiness filter treated every work
+status except due `retry_scheduled` as ineligible. Once detected mentions began
+creating durable `pending` work, that defensive filter made the work invisible
+to the resolver. `pending` is now immediately ready, `retry_scheduled` is ready
+only when due, and terminal statuses remain ineligible. The persisted-batch
+grounding test is the governing regression.
+
+**Deferred atomicity lesson:** Counting pending work is not itself a barrier
+fence. Grounding enqueue and barrier completion must eventually share a
+tenant-scoped transaction serialization mechanism; otherwise a concurrent
+enqueue can cross the zero-count/receipt-write interval.
+
+**Deferred replay lesson:** A future-path enqueue does not repair existing
+detected heads. Replay must idempotently backfill missing work, and grounding
+work identity must follow the current detection version. A fixed generation and
+phrase-only correlation can let stale terminal work mask a superseding
+detection. These cases remain explicitly deferred in EDGE-049 through EDGE-051
+and are not part of the current narrow readiness repair.
