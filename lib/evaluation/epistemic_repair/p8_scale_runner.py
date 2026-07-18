@@ -51,6 +51,7 @@ class TenantScaleReceipt:
     pool_wait_ms: float
     queried_state_digest: str
     barrier_measurements: tuple[dict[str, object], ...] = ()
+    bootstrap_ms: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +297,7 @@ async def _run_tenant(
     barrier_measurements: list[dict[str, object]] = []
     hits = leakage = 0
     try:
+        bootstrap_started = time.perf_counter()
         bootstrap = conn.transaction()
         await bootstrap.start()
         try:
@@ -307,6 +309,7 @@ async def _run_tenant(
             raise
         else:
             await bootstrap.commit()
+        bootstrap_ms = (time.perf_counter() - bootstrap_started) * 1000
         barrier_service = CompanyLearningBarrierService()
         base = datetime(2026, 7, 18, tzinfo=timezone.utc)
         for batch in range(1, cell.memory_horizon_batches + 1):
@@ -392,7 +395,7 @@ async def _run_tenant(
             tuple(prompt_tokens), tuple(queue_depth), hits,
             leakage, model_count, version_count, barrier_count,
             (time.perf_counter() - started) * 1000, pool_wait_ms,
-            canonical_sha256(state), tuple(barrier_measurements),
+            canonical_sha256(state), tuple(barrier_measurements), bootstrap_ms,
         )
     finally:
         try:
