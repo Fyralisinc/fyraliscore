@@ -52,6 +52,7 @@ from lib.shared.ids import uuid7
 from services.domain.entity_grounding import (
     ensure_persisted_observation_mention_fates,
 )
+from services.domain.entity_grounding.learned_discovery import MentionCandidateAdapter
 from services.domain.models.read_shapes import ACCEPTED_MODEL_ROWS_SQL
 from services.domain.triggers import enqueue_trigger
 
@@ -688,6 +689,7 @@ class ThinkWorker:
         config: WorkerConfig | None = None,
         llm_provider: LLMProvider | None = None,
         mention_discovery_provider: LLMProvider | None = None,
+        mention_candidate_adapter: MentionCandidateAdapter | None = None,
         embedder: Any | None = None,
         execution_policy: ThinkExecutionPolicy | None = None,
     ) -> None:
@@ -698,6 +700,7 @@ class ThinkWorker:
         # reasoning response. Production launchers pass the same real provider
         # explicitly; tests can isolate discovery or exercise fallback.
         self.mention_discovery_provider = mention_discovery_provider
+        self.mention_candidate_adapter = mention_candidate_adapter
         # Embedder wire-through — enables pathway B (semantic retrieval)
         # and pathway C (temporal) in primary_retrieve. Lazy-constructed
         # default so tests that don't want Ollama can pass None.
@@ -1947,6 +1950,7 @@ class ThinkWorker:
             tenant_id=tenant_id,
             observation_ids=observation_ids,
             discovery_provider=self.mention_discovery_provider,
+            candidate_adapter=self.mention_candidate_adapter,
         )
         if (
             fate_coverage.eligible_opportunities

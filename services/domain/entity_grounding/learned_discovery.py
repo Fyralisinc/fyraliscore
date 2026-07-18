@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -209,10 +209,17 @@ class VerifiedMentionCandidate:
     reason_codes: tuple[str, ...]
     type_confidence: float | None = None
     extractor_version: str = DISCOVERY_VERSION
+    provisional_canonical_ref: str | None = None
+    normalization_version: int | None = None
 
     @property
     def detection_confidence(self) -> float:
         return self.confidence
+
+
+MentionCandidateAdapter = Callable[
+    [tuple[PersistedSignalText, ...]], tuple[VerifiedMentionCandidate, ...]
+]
 
 
 def _type_confidence_for_candidate(
@@ -380,13 +387,15 @@ async def discover_batch_mentions(
     *,
     provider: StructuredDiscoveryProvider | None,
     signals: tuple[PersistedSignalText, ...],
+    candidate_adapter: MentionCandidateAdapter | None = None,
 ) -> LearnedDiscoveryResult:
     """Use exactly one structured call, then distrust and verify its coordinates."""
 
+    adapted = candidate_adapter(signals) if candidate_adapter is not None else ()
     if provider is None or not signals:
         if signals:
             DISCOVERY_BATCHES.inc(mode="deterministic_fallback", outcome="disabled")
-        return LearnedDiscoveryResult((), "deterministic_fallback")
+        return LearnedDiscoveryResult(adapted, "deterministic_fallback")
     payload = [
         {
             "signal_id": str(item.signal_id),
@@ -409,13 +418,16 @@ async def discover_batch_mentions(
             outcome="provider_error",
         )
         return LearnedDiscoveryResult(
-            (), "deterministic_fallback", f"{type(exc).__name__}: {exc}"[:500]
+            adapted, "deterministic_fallback", f"{type(exc).__name__}: {exc}"[:500]
         )
     DISCOVERY_BATCHES.inc(mode="learned", outcome="success")
-    return LearnedDiscoveryResult(
-        _verify_candidates(learned.mentions, signals),
-        "learned",
-    )
+    verified = list(_verify_candidates(learned.mentions, signals))
+    adapted_spans = {(item.signal_id, item.span_start, item.span_end) for item in adapted}
+    verified = [
+        item for item in verified
+        if (item.signal_id, item.span_start, item.span_end) not in adapted_spans
+    ]
+    return LearnedDiscoveryResult(tuple([*verified, *adapted]), "learned")
 
 
 def _verify_candidates(
@@ -577,5 +589,6 @@ __all__ = [
     "LearnedDiscoveryResult", "LearnedMentionBatch",
     "PersistedSignalText", "StructuredDiscoveryProvider",
     "VerifiedMentionCandidate", "discover_batch_mentions",
+    "MentionCandidateAdapter",
     "preflight_structured_discovery",
 ]

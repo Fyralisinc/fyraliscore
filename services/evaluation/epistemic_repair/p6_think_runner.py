@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 from typing import Any
@@ -30,12 +31,55 @@ from services.domain.company_learning.barrier import CompanyLearningBarrierServi
 from services.domain.conversation_context.episode_boundaries import (
     ConversationBoundaryObservation, project_conversation_episode_boundaries,
 )
+from services.domain.entity_grounding.learned_discovery import (
+    PersistedSignalText,
+    VerifiedMentionCandidate,
+)
+from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
 
 # Fixed evaluator event time, deliberately far behind wall-clock execution.
 # This is transport metadata only and is not part of the sealed population.
 _P6_RUNTIME_START = datetime(2025, 7, 10, 9, 0, tzinfo=timezone.utc)
+_P6_ENVELOPE_RE = re.compile(
+    r"^(?P<surface>[A-Z][A-Za-z0-9-]+(?: [A-Za-z0-9-]+){1,3}), update \d+:",
+    flags=re.MULTILINE,
+)
+_P6_SCOPE_TYPES = {
+    "release": "workstream", "migration": "workstream",
+    "handoff": "workstream", "renewal": "commitment",
+}
+
+
+def _p6_simulation_mention_adapter(
+    signals: tuple[PersistedSignalText, ...],
+) -> tuple[VerifiedMentionCandidate, ...]:
+    candidates: list[VerifiedMentionCandidate] = []
+    for signal in signals:
+        match = _P6_ENVELOPE_RE.search(signal.content_text)
+        if match is None:
+            continue
+        surface = match.group("surface")
+        entity_type = _P6_SCOPE_TYPES.get(surface.rsplit(" ", 1)[-1].casefold())
+        if entity_type is None:
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "-", surface.casefold()).strip("-")
+        candidates.append(VerifiedMentionCandidate(
+            signal_id=signal.signal_id,
+            surface=surface,
+            span_start=match.start("surface"),
+            span_end=match.end("surface"),
+            entity_type=entity_type,
+            confidence=0.99,
+            fate=EntityMentionDetectionFate.DETECTED,
+            reason_codes=("p6_sealed_business_envelope",),
+            type_confidence=0.99,
+            extractor_version="p6-simulation-envelope-v1",
+            provisional_canonical_ref=f"{entity_type}:{slug}",
+            normalization_version=1,
+        ))
+    return tuple(candidates)
 
 
 def _signal_occurred_at(*, batch_number: int, position: int) -> datetime:
@@ -407,6 +451,7 @@ async def run_p6_production_think(
             process_background_triggers=True,
         ),
         llm_provider=provider, mention_discovery_provider=provider,
+        mention_candidate_adapter=_p6_simulation_mention_adapter,
         embedder=embedder,
     )
     started = time.monotonic()

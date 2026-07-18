@@ -81,16 +81,28 @@ async def extract_p6_postfreeze_evidence(
         if isinstance(referent, str):
             referent = json.loads(referent)
         if row.get("fate") == "detected":
+            anchor = mention.get("primary_anchor") or {}
+            coordinate = anchor.get("coordinate") or {}
+            grounding_fate = row.get("grounding_fate") or mention.get("grounding_fate")
+            resolved = grounding_fate in {"resolved", "resolved_for_consumer"}
+            resolved_ref = (
+                referent.get("canonical_ref")
+                or referent.get("id")
+                or referent.get("canonical_referent_id")
+            ) if resolved else None
             mentions.append({
                 "id": row["id"],
                 "signal_id": observation_to_signal.get(str(row["source_observation_id"])),
                 "surface": mention.get("surface") or row.get("candidate_surface"),
-                "span_start": mention.get("span_start"),
-                "span_end": mention.get("span_end"),
-                "entity_type": mention.get("entity_type"),
-                "canonical_ref": referent.get("canonical_ref")
-                or referent.get("id") or referent.get("canonical_referent_id"),
-                "grounding_fate": row.get("grounding_fate"),
+                "span_start": coordinate.get("span_start"),
+                "span_end": coordinate.get("span_end"),
+                "entity_type": mention.get("provisional_entity_type"),
+                "canonical_ref": resolved_ref
+                or mention.get("provisional_canonical_ref"),
+                "canonical_ref_status": "resolved" if resolved_ref
+                else mention.get("canonical_ref_status"),
+                "normalization_version": mention.get("normalization_version"),
+                "grounding_fate": grounding_fate,
             })
 
     claim_rows = _rows(await conn.fetch(
@@ -408,6 +420,7 @@ async def extract_p6_postfreeze_evidence(
             "boundary_fate": "assigned" if signal_id in boundary_by_signal else None,
             "mention_fate": "mention" if any(
                 str(row.get("source_observation_id")) == observation_id
+                and row.get("fate") == "detected"
                 for row in mention_rows
             ) else "no_mention" if observation_id in observed_ids else None,
             "mutation_fate": "canonical_mutation" if any(

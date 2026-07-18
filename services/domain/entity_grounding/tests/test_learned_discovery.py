@@ -13,9 +13,21 @@ from services.domain.entity_grounding.learned_discovery import (
     DiscoveryProviderPreflightError,
     LearnedMentionBatch,
     PersistedSignalText,
+    VerifiedMentionCandidate,
     discover_batch_mentions,
     preflight_structured_discovery,
 )
+
+
+def _adapter(signals):
+    signal = signals[0]
+    return (VerifiedMentionCandidate(
+        signal_id=signal.signal_id, surface="Atlas release",
+        span_start=0, span_end=13, entity_type="workstream", confidence=.99,
+        fate=EntityMentionDetectionFate.DETECTED, reason_codes=("adapter",),
+        provisional_canonical_ref="workstream:atlas-release",
+        normalization_version=1,
+    ),)
 
 
 class ScriptedProvider:
@@ -91,6 +103,39 @@ async def test_one_call_discovers_batch_and_verifies_every_source_span() -> None
     assert "work signal by signal" in prompt
     assert "return each distinct literal occurrence" in prompt
     assert "never resolve" in prompt and "registry id" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [RuntimeError("offline"), {"mentions": []}])
+async def test_candidate_adapter_survives_provider_failure_or_empty_success(response) -> None:
+    signal_id = uuid4()
+    result = await discover_batch_mentions(
+        provider=ScriptedProvider(response),
+        signals=(PersistedSignalText(
+            signal_id, "slack:message", "Atlas release, update 1: blocked.",
+        ),),
+        candidate_adapter=_adapter,
+    )
+    assert result.candidates[0].provisional_canonical_ref == "workstream:atlas-release"
+
+
+@pytest.mark.asyncio
+async def test_adapter_overrides_wrong_learned_candidate_at_exact_span() -> None:
+    signal_id = uuid4()
+    provider = ScriptedProvider({"mentions": [{
+        "signal_id": str(signal_id), "surface": "Atlas release",
+        "span_start": 0, "span_end": 13, "entity_type": "person",
+        "confidence": .98, "abstain": False,
+    }]})
+    result = await discover_batch_mentions(
+        provider=provider,
+        signals=(PersistedSignalText(
+            signal_id, "slack:message", "Atlas release, update 1: blocked.",
+        ),),
+        candidate_adapter=_adapter,
+    )
+    assert len(result.candidates) == 1
+    assert result.candidates[0].entity_type == "workstream"
 
 
 @pytest.mark.asyncio

@@ -83,6 +83,38 @@ def test_exact_explicit_mentions_retain_every_source_coordinate() -> None:
     )
 
 
+def test_provisional_coordinate_is_persisted_in_candidate_plane() -> None:
+    tenant_id, observation_id = uuid4(), uuid4()
+    context_command, context_outcome = prepare_context_selection(
+        tenant_id=tenant_id, observation_id=observation_id,
+        phrase="Cobalt renewal", occurred_at=NOW,
+        source_channel="email:message", source_space="email:message",
+        topology_incomplete=False, boundary_hypotheses=(),
+        context_observations=(), selection_dependency_refs=(),
+        now=NOW + timedelta(minutes=1),
+    )
+    command = prepare_entity_mention_detection(
+        tenant_id=tenant_id, observation_id=observation_id,
+        phrase="Cobalt renewal",
+        content_text="Cobalt renewal, update 1: pending.",
+        source_channel="email:message", context_command=context_command,
+        context_outcome=context_outcome, now=NOW + timedelta(minutes=1),
+        verified_span=(0, 14), discovered_entity_type="commitment",
+        provisional_canonical_ref="commitment:cobalt-renewal",
+        normalization_version=1,
+    )
+
+    mention = command.detection.mention
+    assert mention is not None
+    assert mention.primary_anchor.coordinate.span_start == 0
+    assert mention.primary_anchor.coordinate.span_end == 14
+    assert mention.provisional_entity_type == "commitment"
+    assert mention.provisional_canonical_ref == "commitment:cobalt-renewal"
+    assert mention.canonical_ref_status == "provisional"
+    assert mention.normalization_version == 1
+    assert mention.grounding_fate == "extracted_unresolved"
+
+
 def test_learned_type_is_bound_to_exact_detected_mention() -> None:
     tenant_id = uuid4()
     observation_id = uuid4()

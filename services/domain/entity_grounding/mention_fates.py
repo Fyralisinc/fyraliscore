@@ -26,6 +26,7 @@ from services.domain.entity_grounding.episode import (
 from services.domain.entity_grounding.mentions import prepare_entity_mention_detection
 from services.domain.entity_grounding.learned_discovery import (
     PersistedSignalText,
+    MentionCandidateAdapter,
     StructuredDiscoveryProvider,
     VerifiedMentionCandidate,
     discover_batch_mentions,
@@ -163,6 +164,12 @@ async def ensure_observation_mention_fates(
             ),
             discovery_reason_codes=learned.reason_codes if learned else (),
             discovered_entity_type=learned.entity_type if learned else None,
+            provisional_canonical_ref=(
+                learned.provisional_canonical_ref if learned else None
+            ),
+            normalization_version=(
+                learned.normalization_version if learned else None
+            ),
         )
         if await conn.fetchval(
             """
@@ -203,6 +210,7 @@ async def ensure_persisted_observation_mention_fates(
     observation_ids: Iterable[UUID],
     now: datetime | None = None,
     discovery_provider: StructuredDiscoveryProvider | None = None,
+    candidate_adapter: MentionCandidateAdapter | None = None,
 ) -> MentionFateCoverage:
     """Close mention fates for an already-persisted observation batch."""
 
@@ -230,6 +238,7 @@ async def ensure_persisted_observation_mention_fates(
             )
             for row in prepared_rows
         ),
+        candidate_adapter=candidate_adapter,
     )
     learned_by_observation: dict[UUID, list[VerifiedMentionCandidate]] = {}
     for candidate in discovery.candidates:

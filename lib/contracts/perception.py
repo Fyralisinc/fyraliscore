@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Self
+from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import (
@@ -592,7 +592,27 @@ class EntityMention(_PerceptionContract):
     source_assertion_and_frame_refs: tuple[str, ...] = Field(min_length=1)
     detection_confidence: float = Field(ge=0.0, le=1.0)
     extractor_version: str = Field(min_length=1)
+    provisional_entity_type: str | None = None
+    provisional_canonical_ref: str | None = None
+    canonical_ref_status: Literal["provisional"] | None = None
+    normalization_version: int | None = Field(default=None, ge=1)
+    grounding_fate: Literal["extracted_unresolved"] | None = None
     correction_predecessor_ref: str | None = None
+
+    @model_validator(mode="after")
+    def provisional_coordinate_is_complete(self) -> Self:
+        fields = (
+            self.provisional_entity_type,
+            self.provisional_canonical_ref,
+            self.canonical_ref_status,
+            self.normalization_version,
+            self.grounding_fate,
+        )
+        if any(value is not None for value in fields) and not all(
+            value is not None for value in fields
+        ):
+            raise ValueError("provisional mention coordinate must be complete")
+        return self
 
 
 class EntityTypeAssessment(_PerceptionContract):

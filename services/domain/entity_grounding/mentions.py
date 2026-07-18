@@ -53,6 +53,8 @@ def prepare_entity_mention_detection(
     extractor_version: str = _EXTRACTOR_VERSION,
     discovery_reason_codes: tuple[str, ...] = (),
     discovered_entity_type: str | None = None,
+    provisional_canonical_ref: str | None = None,
+    normalization_version: int | None = None,
 ) -> CommitEntityMentionDetectionCommand:
     """Create one total-fate detection over the exact pre-model context."""
 
@@ -98,6 +100,17 @@ def prepare_entity_mention_detection(
             ),
             detection_confidence=discovery_confidence or 0.6,
             extractor_version=extractor_version,
+            provisional_entity_type=(
+                discovered_entity_type if provisional_canonical_ref else None
+            ),
+            provisional_canonical_ref=provisional_canonical_ref,
+            canonical_ref_status=(
+                "provisional" if provisional_canonical_ref else None
+            ),
+            normalization_version=normalization_version,
+            grounding_fate=(
+                "extracted_unresolved" if provisional_canonical_ref else None
+            ),
         )
         fate = EntityMentionDetectionFate.DETECTED
         reasons = discovery_reason_codes or (
