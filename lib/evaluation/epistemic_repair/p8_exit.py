@@ -5,9 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from lib.contracts.kernel import canonical_sha256
+
+
+_HEX40 = re.compile(r"[0-9a-f]{40}")
 
 
 def _read_reopened(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -88,18 +92,29 @@ def compose_p8_exit(
         "cached_input_tokens": exact_receipt.get("cache_tokens", 0),
         "source": "scheduled_provider_fault_receipt",
     }
-    if usage is None and provider_canary_path is not None:
+    canary_usage = None
+    if provider_canary_path is not None:
         canary_rows = [
             json.loads(line) for line in provider_canary_path.read_bytes().splitlines() if line.strip()
         ]
-        usage = next((
+        canary_usage = next((
             {**row["usage"], "source": "separately_authorized_provider_canary"}
             for row in reversed(canary_rows) if row.get("type") == "turn.completed"
         ), None)
+        if usage is None:
+            usage = canary_usage
     scale_gates = artifacts["scale"].get("evaluation", {}).get("gates", {})
     latency_green = bool(scale_gates.get("concurrency_latency_ratio"))
     characterization_complete = _metrics_complete(artifacts["characterization"])
     fault_qualification = artifacts["fault"].get("member_receipt_qualification")
+    commits = {artifact.get("commit") for artifact in artifacts.values()}
+    coherent_commit = next(iter(commits)) if len(commits) == 1 else None
+    single_commit = isinstance(coherent_commit, str) and bool(_HEX40.fullmatch(coherent_commit))
+    canary_completed = bool(
+        provider_canary_path is not None
+        and canary_usage is not None
+        and canary_usage.get("input_tokens", 0) > 0
+    )
     gates = {
         "fault_schedule_12x2": len(artifacts["fault"].get("bound_execution_evidence", {}).get("fault_execution_keys", [])) == 24,
         "fault_zero_counts_denominator_complete": bool(fault_qualification) and all(
@@ -116,21 +131,28 @@ def compose_p8_exit(
         "deterministic_token_status_exact_not_estimated": scale_gates.get("exact_provider_prompt_token_measurement") is False,
         "shared_contention_separate": _contention_complete(artifacts["contention"]),
         "characterization_reporting_complete": characterization_complete,
-        "authorized_provider_canaries": False if not latency_green else False,
+        "authorized_provider_canaries": latency_green and canary_completed,
         "provider_usage_observability": isinstance(usage, dict) and usage.get("input_tokens", 0) > 0,
         "hash_reopen_review": all(
             row["stable_on_reopen"] and row["nonempty"]
             and row["canonical_digest_matches"] is not False
             for row in reviews
         ),
-        "single_commit_evidence": False,
+        "single_commit_evidence": single_commit,
     }
     result = {
         "schema_version": "epistemic-repair-p8-fault-scale-v1",
+        "commit": coherent_commit if single_commit else "",
         "artifact_reviews": reviews,
         "provider_usage_receipt": usage,
         "provider_canary_policy": {
-            "status": "gated_off", "reason": "deterministic_latency_red",
+            "status": "completed" if latency_green and canary_completed else "gated_off",
+            "reason": (
+                "completed_separately_authorized_canary"
+                if latency_green and canary_completed
+                else "deterministic_latency_red" if not latency_green
+                else "authorized_canary_receipt_missing"
+            ),
             "authorized_points": ["p8-bs25-h12-t1", "largest_deterministic_passing_cell"],
         },
         "gates": gates,

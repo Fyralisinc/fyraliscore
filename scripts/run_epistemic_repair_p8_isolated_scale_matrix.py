@@ -48,7 +48,7 @@ async def _run(args: argparse.Namespace) -> int:
     artifact = {
         "schema_version": "p8-isolated-scale-matrix-v1",
         "execution": asdict(execution), "evaluation": evaluate_scale_execution(execution),
-        "isolation_proof": asdict(proof), "commit_sha": args.expected_head,
+        "isolation_proof": asdict(proof), "commit": args.expected_head,
     }
     artifact["artifact_digest"] = canonical_sha256(artifact)
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -56,7 +56,7 @@ async def _run(args: argparse.Namespace) -> int:
     contention_artifact = {
         "schema_version": "p8-shared-contention-v2",
         "scale_execution_version": SCALE_EXECUTION_VERSION,
-        "result": asdict(contention), "commit_sha": args.expected_head,
+        "result": asdict(contention), "commit": args.expected_head,
     }
     contention_artifact["artifact_digest"] = canonical_sha256(contention_artifact)
     args.contention_output.parent.mkdir(parents=True, exist_ok=True)

@@ -21,6 +21,7 @@ from lib.evaluation.epistemic_repair.p8_population import build_characterization
 from lib.evaluation.epistemic_repair.p8_postgres_runner import run_postgres_fault_slice
 from lib.evaluation.epistemic_repair.p8_provider_runner import run_provider_fault_slice
 from lib.evaluation.epistemic_repair.p8_runner import _distributions, _fault_results, _scale_results
+from lib.contracts.kernel import canonical_sha256
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -38,6 +39,7 @@ async def _run(args: argparse.Namespace) -> int:
         production_evidence=evidence,
     )
     output = {
+        "commit": commit_sha,
         "postgres_fault_slice": asdict(postgres),
         "provider_fault_slice": asdict(provider),
         "bound_execution_evidence": asdict(evidence),
@@ -48,6 +50,7 @@ async def _run(args: argparse.Namespace) -> int:
         "deterministic_qualification_ready": artifact["deterministic_qualification_ready"],
         "phase_exit_ready": artifact["phase_exit_ready"],
     }
+    output["artifact_digest"] = canonical_sha256(output)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     fault_ready = all(output["fault_hard_gates"].values())

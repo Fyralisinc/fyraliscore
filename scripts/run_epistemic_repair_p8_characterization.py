@@ -9,6 +9,7 @@ import asyncpg
 import json
 from pathlib import Path
 import sys
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 if __package__ in {None, ""}:
@@ -25,6 +26,9 @@ from lib.contracts.kernel import canonical_sha256
 
 async def _run(output: Path, database_url: str) -> int:
     artifact = await run_characterization_contract(ROOT)
+    artifact["commit"] = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+    ).strip()
     conn = await asyncpg.connect(database_url)
     tx = conn.transaction()
     await tx.start()
