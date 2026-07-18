@@ -1978,3 +1978,22 @@ matched feedback quality and objective entity v6.
 - Reflection verdict: the defects remain bounded. Do not expand into latency,
   repair-policy, noise handling or broader architecture work before validating
   the repaired core path.
+
+### 2026-07-18 — Run 7 completed all batches and exposed one same-diff coherence defect
+
+- Frozen commit `32f484e0fcdd`, tenant
+  `c907278e-0ef4-42be-a462-9c9f2a359b33`: all four zero-seed batches completed
+  in `107.575s`; `100/100` signals processed, `80/80` exact groundings and
+  atomics, 20 correct abstentions, zero contamination and four exact barriers.
+- Retrieval moved as intended from observations to accepted Models:
+  `20/0`, `10/20`, `10/20`, `2/20` observations/Models by batch.
+- Canonical scoring found one causal coherence defect. Post-compiler lifecycle
+  pressure advanced a member head after the member was bound into a new
+  composite. That invalidated the composite, prevented batch-4 correction
+  lineage, and removed the shared composite/relation envelope from proof.
+- The repair excludes same-diff composite members from lifecycle-pressure
+  target selection while preserving maintenance on an eligible non-member.
+  Focused validation passes `47/47` tests on the dedicated database.
+- Determinism remains unproven with one complete replay; this is not an
+  observed disagreement. The next action is one fresh four-batch validation of
+  the bounded repair, followed by canonical scoring before any wider phase.

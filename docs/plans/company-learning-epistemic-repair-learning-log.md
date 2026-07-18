@@ -1876,3 +1876,34 @@ existing test-contract drift and recorded for later cleanup.
 **Reflection:** The run produced bounded defects, not a reason to open latency,
 repair-policy, noise-handling or broader architecture work. Preserve the
 core-fast framing and validate only the repaired batch-4 path next.
+
+### 2026-07-18 — LOG-050 — Run 7 closed mechanics and isolated one coherence ordering defect
+
+**Type:** frozen execution, canonical scoring, bounded runtime repair
+
+**Frozen evidence:** Commit `32f484e0fcdd`; tenant
+`c907278e-0ef4-42be-a462-9c9f2a359b33`. The zero-seed provider-free run
+completed all four 25-signal batches in `107.575s`. All `100/100` signals were
+processed, all `80/80` named signals grounded and produced exact evidence-bound
+atomics, all 20 distractors abstained, and barriers matched
+`20/20`, `40/40`, `61/61`, and `81/81` with no missing or stale heads.
+Retrieval shifted from observations toward memory: observations
+`20/10/10/2`, accepted Models `0/20/20/20`.
+
+**Scoring and root cause:** Batch integrity, grounding, atomic evidence,
+retrieval, barriers and contamination are green. Synthesis, correction history
+and shared composite/relation atomicity are red because representation
+enrichment advanced one immutable member head after admitting the batch-3
+composite. The composite became non-current immediately; batch 4 therefore
+inserted the corrected thesis as a new atomic instead of revising the
+composite. The evaluator correctly refused credit.
+
+**Bounded repair:** Lifecycle-pressure target selection now excludes every
+Model used by a new same-diff composite and selects another eligible Model, or
+emits no maintenance operation. The focused representation, compiler,
+transaction and evaluator slice passes `47/47` tests on the dedicated database.
+
+**Reflection:** This is one causal defect with three downstream red gates, not
+three independent workstreams. Do not open general lifecycle policy, latency,
+provider, connector or stale broad-test cleanup. Commit this repair and rerun
+the exact four-batch vertical once.

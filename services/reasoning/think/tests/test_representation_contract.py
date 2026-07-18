@@ -1256,3 +1256,78 @@ def test_large_batch_selected_models_get_lifecycle_and_candidate_edge_pressure()
     assert raw.edge_ops[0].source_model_id == model_a
     assert raw.edge_ops[0].target_model_id == model_b
     assert raw.edge_ops[0].review_status == "candidate"
+
+
+def test_lifecycle_pressure_does_not_advance_new_composite_member() -> None:
+    tenant_id = uuid4()
+    member_id = uuid4()
+    alternate_id = uuid4()
+    observations = [
+        _obs(
+            oid=uuid4(),
+            source_channel="github:webhook",
+            text=f"composite evidence {index}",
+            occurred_at=datetime(2026, 6, 17, 0, index, tzinfo=timezone.utc),
+        )
+        for index in range(12)
+    ]
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=observations[0].id,
+        observation_ids=[observation.id for observation in observations],
+    )
+    raw = RawDiff(
+        trigger_ref=uuid4(),
+        tenant_id=tenant_id,
+        claim_ops=[
+            ClaimOp(
+                op="insert",
+                entry={
+                    "born_from_event_id": observations[0].id,
+                    "supporting_event_ids": [observations[0].id],
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "situation",
+                        "abstraction_level": "composite",
+                        "synthesis_contract": True,
+                        "member_model_ids": [str(member_id)],
+                    },
+                    "natural": "The member claims form one composite condition.",
+                    "confidence": 0.82,
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                },
+            )
+        ],
+    )
+
+    enrich_raw_diff_representation(
+        raw,
+        trigger,
+        SimpleNamespace(
+            observations=observations,
+            models=[
+                SimpleNamespace(
+                    id=member_id,
+                    status="active",
+                    claim_role="prediction",
+                    proposition={"claim_role": "prediction"},
+                    reading_contestable=True,
+                ),
+                SimpleNamespace(
+                    id=alternate_id,
+                    status="active",
+                    claim_role="fact",
+                    proposition={"claim_role": "fact"},
+                    reading_contestable=True,
+                ),
+            ],
+        ),
+    )
+
+    assert len(raw.memory_lifecycle_ops) == 1
+    assert raw.memory_lifecycle_ops[0].model_id == alternate_id
+    assert raw.memory_lifecycle_ops[0].model_id != member_id

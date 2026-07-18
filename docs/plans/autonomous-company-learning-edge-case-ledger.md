@@ -1014,6 +1014,26 @@ transport are excluded from this goal.
   broad assertions in a dedicated test-contract cleanup after the core path.
 - **Evidence:** Run-6 postmortem and focused validation at the frozen checkpoint.
 
+### EDGE-045 — Post-compiler lifecycle pressure can stale a new composite member
+
+- **Status:** `bounded repair implemented; fresh-runtime validation pending`
+- **Trigger:** Run 7 created the exact batch-3 composite and relation, then a
+  representation-contract `unchanged` operation advanced one member head later
+  in the same diff.
+- **Current behavior:** Lifecycle-pressure target selection excludes every
+  Model referenced by a newly inserted same-diff composite. It selects another
+  eligible Model or emits no maintenance operation.
+- **Risk:** A valid composite disappears from accepted-current truth
+  immediately, so later evidence cannot revise it and relation atomicity cannot
+  be proven.
+- **Safe boundary:** Preserve the narrow selection exclusion. Do not redesign
+  lifecycle policy or add broad repair machinery before the core rerun.
+- **Return condition:** A fresh four-batch run retains the exact composite,
+  revises it in batch 4, and makes synthesis, correction-history and
+  relation-atomicity gates green.
+- **Evidence:** Frozen Run 7 tenant
+  `c907278e-0ef4-42be-a462-9c9f2a359b33`; focused repaired seam `47/47` green.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title

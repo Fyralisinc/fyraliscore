@@ -1227,9 +1227,18 @@ def _maybe_add_lifecycle_pressure_ops(
     evidence_ids = _dedupe_uuid_values(getattr(row, "id", None) for row in observations)
     if not evidence_ids:
         return
-    model = _select_lifecycle_pressure_model(getattr(bundle, "models", []) or [])
+    synthesis_member_ids = _new_composite_member_ids(raw_diff)
+    model = _select_lifecycle_pressure_model(
+        getattr(bundle, "models", []) or [],
+        exclude_model_ids=synthesis_member_ids,
+    )
     model_id = _model_id(model)
     if model_id is None:
+        if synthesis_member_ids:
+            _append_trace(
+                raw_diff,
+                "lifecycle_pressure skipped: no eligible non-composite-member model",
+            )
         return
     rationale = (
         "Large evidence window touched selected prediction or contestable memory; "
@@ -1299,8 +1308,40 @@ def _maybe_add_adaptive_edge_candidate_ops(
     _append_trace(raw_diff, "adaptive_edge_candidate synthesized 1 candidate edge op")
 
 
-def _select_lifecycle_pressure_model(models: list[Any]) -> Any | None:
-    active = [model for model in models if _model_active(model)]
+def _new_composite_member_ids(raw_diff: Any) -> set[UUID]:
+    member_ids: set[UUID] = set()
+    for op in list(getattr(raw_diff, "claim_ops", []) or []):
+        if getattr(op, "op", None) != "insert":
+            continue
+        entry = getattr(op, "entry", None)
+        if not isinstance(entry, dict):
+            continue
+        proposition = entry.get("proposition")
+        if not isinstance(proposition, dict):
+            continue
+        is_composite = (
+            proposition.get("synthesis_contract") is True
+            or (
+                proposition.get("abstraction_level") == "composite"
+                and proposition.get("claim_role") == "situation"
+            )
+        )
+        if is_composite:
+            member_ids.update(
+                _dedupe_uuid_values(proposition.get("member_model_ids") or ())
+            )
+    return member_ids
+
+
+def _select_lifecycle_pressure_model(
+    models: list[Any],
+    *,
+    exclude_model_ids: set[UUID] | frozenset[UUID] = frozenset(),
+) -> Any | None:
+    active = [
+        model for model in models
+        if _model_active(model) and _model_id(model) not in exclude_model_ids
+    ]
     for model in active:
         if _model_is_prediction_like(model):
             return model
