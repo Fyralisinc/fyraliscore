@@ -6,10 +6,10 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** `8fd4e72f` current-runtime/objective-entity-v6 integration;
-entity-v6 synthesis-aware 45-batch evaluator rerender
+**Current checkpoint:** CF0 core fast-path baseline established; runtime candidate
+`a34533b8`, coordinator starting point `9f8bdad0`
 
-**Last updated:** 2026-07-17
+**Last updated:** 2026-07-18
 
 ## Purpose
 
@@ -26,6 +26,54 @@ It is deliberately separate from:
 
 Those documents explain what the system should be. This document explains where
 the work actually is.
+
+## Core Fast-Path Execution State — 2026-07-18
+
+The active execution path is now governed by
+[Autonomous Company Learning — Core Fast-Path Agent Coordinator](autonomous-company-learning-core-fast-path.md).
+The immediate milestone is M0: one real-PostgreSQL, provider-free, four-batch
+learning vertical through the production-shaped entity, retrieval, synthesis,
+lifecycle and canonical-truth boundaries. No new full P6 or other provider run
+is authorized before that vertical is green.
+
+CF0 established the following current baseline:
+
+- the isolated worktree is clean and no P6/provider process is active;
+- `a34533b8` remains the candidate runtime baseline; `f9bc4c78` and `9f8bdad0`
+  are execution-record/coordinator documentation commits;
+- a fresh local database, `fyralis_cf_fastpath_20260718`, was created rather
+  than reusing a stale proof database;
+- all 218 current migration files through `0234_truth_scope_canonical_provenance.sql`
+  were applied to that database;
+- the focused PostgreSQL truth-kernel, P5, P6 and barrier slice passed `12/12`;
+- the complete epistemic-repair suite reached `415 passed`; the only additional
+  test is an explicitly real-Codex P8 provider-fault proof and is not part of
+  the provider-free CF0 gate;
+- a provider-free run without `DATABASE_URL` also passed `385` tests and skipped
+  31 database tests, but that result is not accepted as the M0 baseline;
+- the current schema-drift checker reports `think_runs.execution_mode` and
+  `think_runs.validation_result` as unexpected even though they are introduced
+  by current migrations. This tooling mismatch is deferred and does not
+  authorize bypassing database tests.
+
+The parallel CF0 reuse audit found no reason to replace observations, mention
+grounding, entity resolution, Slack context, batching, SAGE/retrieval, the Model
+truth kernel, relation truth kernel, lifecycle CAS/fences or projections. The
+smallest core repair is limited to:
+
+1. a governed semantic episode adapter preserving entity authority, scope,
+   time and evidence membership independently of transport batches;
+2. an immutable accepted-memory snapshot over existing accepted read surfaces;
+3. a typed evidence-manifest envelope over existing canonical evidence
+   references;
+4. one first-class composite-plus-relation command/receipt over the existing
+   Model and relation truth kernels; and
+5. a provider-neutral wrapper around the real P6 Think orchestration for the
+   CF2 deterministic four-batch vertical.
+
+This is a consolidation path, not a rewrite. Connector transport, task
+autonomy, broad relation coverage, perfect economics and noncritical legacy
+compatibility remain outside the critical path.
 
 ## Update Protocol
 

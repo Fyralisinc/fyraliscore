@@ -1538,3 +1538,80 @@ P6 artifact from the same final commit. No architecture document was modified.
 **Edge cases added:** `EDGE-039` remains the compatibility backlog for governed
 mention-coordinate phrasing and legacy fixtures. No new runtime edge case was
 opened by the interrupted final attempt.
+
+### 2026-07-18 — LOG-044 — CF0 resets execution around the provider-free core
+
+**Type:** observed, reflected, and decided
+
+**Work package / commit:** Core fast-path coordinator `9f8bdad0`; CF0 baseline
+and three parallel reuse audits.
+
+**What happened:** Implementation resumed without restarting P6. The first
+provider-free suite passed `385` tests but skipped 31 PostgreSQL tests because
+the shell lacked `DATABASE_URL`. Treating that as a green baseline would repeat
+the earlier mistake of using the expensive integrated run as the first real
+schema check. A stale local proof database then failed six targeted truth/P5/P6
+tests because it lacked current columns and barrier functions. Rather than
+patching code around stale schema, CF0 created a fresh isolated database,
+applied the current migration set, and reran the same slice. The targeted
+PostgreSQL tests passed `12/12`; the complete epistemic-repair suite reached
+`415 passed`. The one additional P8 test requires an explicitly configured real
+Codex provider and is outside the provider-free CF0 gate.
+
+**Reflection:** The work is still aligned with the main goal. No provider run,
+P7/P8 expansion, ingestion work, task autonomy or broad refactor began. The
+first discovered failure was classified as environment/schema readiness, not
+semantic learning. This prevented the previous loop of provider run -> schema
+failure -> patch -> new commit -> full restart. The parallel audits converged on
+one reuse-heavy seam rather than three new subsystems.
+
+**Decision or next test:** Complete CF0 with the fresh-database receipt, reuse
+matrix and file ownership. CF1 begins with the smallest core truth defect: make
+the T1 observation read tenant-scoped, then introduce the governed semantic
+episode and accepted-memory/evidence/atomic-command seams behind existing
+components. CF2 must prove the real Think path using an injected scripted
+provider before CF3 may call Codex.
+
+**Coordinator impact:** P6 remains stopped. The existing P6 population is now a
+development regression. The next authorized milestone is M0, not a full
+twelve-batch execution.
+
+**Deferred behaviors:**
+
+### DEFER-001 — Schema-drift checker lags current Think columns
+
+- Date: 2026-07-18
+- Discovered in phase/run: CF0 fresh-database migration
+- Artifact or reproduction: `scripts/check_schema_drift.py` after applying all
+  current core migrations
+- Category: `COMPATIBILITY`
+- Observed behavior: the checker reports `think_runs.execution_mode` and
+  `think_runs.validation_result` as unexpected even though current migrations
+  add those columns.
+- Affected component: schema drift tooling
+- Core invariant affected: no
+- Severity: low
+- Why deferred: migrated truth/P5/P6 PostgreSQL slices pass; repairing the
+  checker does not advance the M0 learning vertical.
+- Revisit trigger: before production-release schema qualification or if the
+  checker begins hiding a real missing column.
+- Recommended future phase: CF8/production hardening
+- Status: open
+
+### DEFER-002 — Real-provider P8 fault slice is outside CF0
+
+- Date: 2026-07-18
+- Discovered in phase/run: CF0 complete epistemic-repair suite
+- Artifact or reproduction:
+  `tests/epistemic_repair/p8/test_p8_provider_fault_slice.py`
+- Category: `ROBUSTNESS`
+- Observed behavior: the test requires `LLM_PROVIDER=codex` and
+  `CODEX_TRANSPORT=cli`; CF0 intentionally ran without a live provider.
+- Affected component: provider fault characterization
+- Core invariant affected: no
+- Severity: low for M0
+- Why deferred: CF0-CF2 must remain provider-free and prove the learning path
+  before fault-characterization work resumes.
+- Revisit trigger: CF8 bounded robustness or an explicit provider-fault phase.
+- Recommended future phase: CF8
+- Status: open

@@ -555,3 +555,63 @@ retroactive repair of the pre-change 45-batch artifact.
 - Every active worker is named in the current product scope.
 - No task-autonomy domain or worker is imported by the active epistemic path.
 - The report represents zero exposure as unknown, not success.
+
+## CF0 Core Fast-Path Reuse Checkpoint — 2026-07-18
+
+Three parallel read-only audits traced the current perception/episode,
+memory/truth and evaluation/harness paths before CF1 implementation. They
+confirmed that approximately 70-80% of the required CF2 path already exists and
+that no broad component replacement is justified.
+
+### Current reuse decisions
+
+| Core responsibility | Existing owner | Decision | Fast-path action |
+| --- | --- | --- | --- |
+| Persisted normalized evidence | `ObservationRow`, `ObservationRepository` | `reuse` | Preserve immutable tenant/source/time/evidence identity. |
+| Mention coordinates and fates | perception contracts, mention detection heads and grounding traces | `reuse` | Preserve exact spans, predecessor lineage and unresolved/review fates. |
+| Per-mention identity resolution | `GroundingEpisode`, entity resolver | `reuse` plus `wrap` | Feed its resolved/provisional/unresolved result into a semantic learning episode; do not repurpose it. |
+| T1 batching and barriers | `ThinkWorker`, company-learning barrier | `reuse` plus narrow `repair` | Add the missing tenant predicate to the observation read and preserve governed coordinates. |
+| Semantic episode grouping | context-packet fragment/scoped synthesis helpers | `wrap` plus narrow `repair` | Make grouping canonical-ref-first and transport-invariant behind one governed episode adapter. |
+| Retrieval and SAGE | primary retrieval, `ContextBundle`, accepted read shapes | `reuse` plus `wrap` | Bind exact accepted heads and retrieval provenance into one immutable snapshot. |
+| Canonical evidence | compiler manifest and truth-evidence contracts | `reuse` plus `wrap` | Add a typed role envelope; keep auxiliary context outside support. |
+| Model truth | truth-admission commands and `TruthKernelService` | `reuse` | No second Model writer or truth store. |
+| Relation truth | `RelationTruthKernel` and admissible-relation contracts | `reuse` | Admit only through an atomic composite/relation orchestration command. |
+| Lifecycle and dependent repair | exact-head CAS and dependent truth fences | `reuse` plus narrow `repair` | Compile transitions from the accepted snapshot instead of legacy rows. |
+| Projections | relation projection and post-commit projectors | `reuse` | Keep projections derived from canonical receipts. |
+| Provider-free mechanics | P5 PostgreSQL runner/oracles | `reuse` | Retain truth, evidence, relation, lifecycle and barrier primitives. |
+| Actual Think orchestration | P6 production Think runner | `wrap` | Inject a scripted production-interface provider for CF2; retain real batching/retrieval/compiler/validator/applier. |
+| Prefix evidence/scoring | P6 post-freeze extractor and metric functions | `reuse` plus `repair` | Add explicit 1/2/3/4 prefix states without weakening the full P6 scorer. |
+| Deterministic P6 runner | `p6_runner.py` | `defer` for CF2 | It opens gold and bypasses actual Think; do not use it as M0 proof. |
+
+### Accepted CF1 ownership
+
+- Lane A exclusively owns the new governed-learning-episode module, its tests,
+  and the T1 worker payload seam.
+- Lane B owns accepted-memory snapshot, typed evidence manifest and atomic
+  composite/relation contract work.
+- The integration owner controls shared execution types, `context_packet.py`
+  sequencing and the final `applier.py` convergence point.
+- Lane C owns the provider-free CF2 fixture, injected provider, prefix scorer and
+  black-box evidence tests without changing production truth semantics.
+- Existing observation, grounding, Model kernel, relation kernel and projection
+  modules remain reuse-first and frozen unless a focused invariant test proves
+  a narrow defect.
+
+### Core-only implementation blockers
+
+1. The T1 observation read lacks an explicit tenant predicate.
+2. Resolved versus provisional identity authority is not preserved as a typed
+   semantic contract after batch-payload construction.
+3. No transport-invariant governed learning episode carries canonical scope,
+   temporal bounds and exact assertion membership.
+4. No immutable accepted-memory snapshot binds reasoning and apply to the same
+   exact heads and retrieval provenance.
+5. Evidence roles are distributed across arrays and metadata rather than one
+   typed manifest envelope.
+6. Composite-plus-relation atomicity depends on transaction scope and
+   `atomic_with_synthesis` metadata rather than one command and receipt.
+7. No existing harness proves the actual Think path provider-free across
+   grounding, retrieval, synthesis, lifecycle and reopened accepted reads.
+
+All other discovered behavior is deferred unless it violates a non-negotiable
+truth invariant in the core fast-path coordinator.
