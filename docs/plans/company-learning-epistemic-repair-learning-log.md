@@ -1191,6 +1191,93 @@ invalidating prior digest-bound artifacts and requiring a fresh smoke.
 same tokens as a storyline but distinct identity; provisional versus resolved
 coordinate; rejected detection must not count as a positive mention fate.
 
+### 2026-07-18 — LOG-039 — Population-v3 smoke clears decisive P6 pre-run gate
+
+**Type:** observed + corrected + decided
+
+**Work package / commit:** P6 population-v3 smoke and independent audit;
+`19219aa8`, `c7d936a6`, `4a67493b`, `bd17c6f8`, `b946f10c`, `0d703818`,
+`36ccb3f8`.
+
+**What happened:** The first population-v3 run,
+`/tmp/p6-think-1batch-popv3-19219aa8.json`, failed closed after fourteen
+`no_match` reconciliation decisions. Candidate 15,
+`MDC_ATOM_cobalt_renewal_e5cd0847-2dad-5a63-832c-3dfa1a20f9e4`, authorized
+only observation `e5cd0847-2dad-5a63-832c-3dfa1a20f9e4` but arrived at
+admission with four foreign Cobalt siblings. No truth was committed. Forensics
+identified the remaining widening seam: semantic representation was resolved
+from same-scope observations before the singleton compiler manifest dominated
+synthetic/default evidence.
+
+The repair sequence routed questions and unresolved references outside truth
+formation (`c7d936a6`), prevented downgrade paths from advancing accepted truth
+or unioning transport evidence (`4a67493b`), made closed-atomic representation
+manifest-first (`bd17c6f8`), and expanded uncertainty recognition beyond the
+fixture's exact wording (`b946f10c`). The clean repinned run at `0d703818`,
+`/tmp/p6-think-1batch-popv3-0d703818.json`, completed one 25-signal batch and
+accepted exactly the twelve intended atomics: three each for Atlas, Beacon,
+Cobalt, and Delta. Every accepted claim had one exact supporting observation,
+one exact evidence signal, correct provisional scope, and no cross-storyline or
+distractor lineage. Eight nonassertable storyline signals were retained as
+four open questions and four clarification residuals; five distractors produced
+no canonical mutation.
+
+A post-freeze claim-by-claim audit then found a defect hidden by the headline
+lineage score. Four dashboard claims had correct canonical singleton evidence
+and `evidence_event_ids`, but their derived proposition metadata still said
+`evidence_status=needs_evidence`, `supporting_event_count=0`, and carried empty
+contextual-frame observation/source coordinates. `36ccb3f8` now normalizes
+those fields from the final authorized manifest and adds the fail-closed
+`semantic_evidence_metadata_coherent` evaluator gate.
+
+**Evidence:** The successful frozen score reported atomic precision 1.0,
+recall 1.0, F1 1.0; evidence-lineage coverage 1.0; scope precision and recall
+1.0; exact mention F1 1.0; entity-type accuracy 1.0; canonical-link precision
+and recall 1.0; uncertainty-fate precision and coverage 1.0; and zero false
+Models or relations from noise. Twenty storyline mention coordinates were
+correct, the two local work items remained distinct, and optional `Facilities`
+remained unresolved without entering scope or truth. The runner recorded two
+successful exact-usage Codex receipts: question planning used 15,327 input,
+1,036 output, and 10,624 cache tokens; main reasoning used 18,731 input, 2,854
+output, and 10,112 cache tokens. Focused post-audit validation passed 32 unit
+tests plus the manifest-bound PostgreSQL authority test; five unrelated DB
+tests were skipped when `DATABASE_URL` was absent in the unit lane.
+
+**Interpretation:** The smoke proves cold-start positive formation without
+weakening authority: exact atomic evidence, uncertainty separation, typed
+provisional entity coordinates, correct local-entity distinction, and zero
+noise truth. Zero relations are expected in batch one because the cold-start
+decision has no prior accepted endpoints and these candidates are singleton
+atomics; relation obligations require two bound Model endpoints and should
+emerge only as later batches establish and revisit the storylines. Provisional
+canonical-link scores prove coordinate consistency, not completed entity
+resolution.
+
+Headline 1.0 metrics are not a P6 exit. Boundary B-cubed F1 was 0.8247 against
+the 0.9 threshold. Direct thesis accuracy and mean thesis-facet completeness
+were zero because one batch cannot yet synthesize the four temporal theses.
+Relation, lifecycle, mature retrieval, historical reopening, latency-tail,
+barrier, and full-run economics gates remain unmeasured or fail closed until
+all twelve batches execute. Durable/exact receipt gates also require receipts
+for every decisive run even though both calls in this smoke were reported
+exactly.
+
+**Decision or next test:** **GO for decisive P6** on one clean pinned commit
+containing `36ccb3f8`. Run all twelve batches without changing the population,
+provider configuration, scorer, or evidence extractor. Require the final
+artifact to reopen all 300 signal fates, semantic evidence metadata, barriers,
+relations, lifecycle transitions, mature retrieval decisions, and exact call
+receipts before P6 may pass.
+
+**Coordinator impact:** The population-v3 smoke prerequisite is closed. P6 is
+no longer waiting for another one-batch semantic run; it is waiting only for
+the decisive pinned 12-batch execution and independent post-freeze scoring.
+
+**Edge cases added:** question paraphrase without punctuation; explicit
+ambiguity paraphrase; accepted-truth downgrade with full-batch siblings;
+manifest-first semantic partition; canonical evidence correct while derived
+evidence metadata is stale; optional local entity with no truth relevance.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:

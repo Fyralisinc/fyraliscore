@@ -2,8 +2,8 @@
 
 **Document type:** Central implementation and evaluation coordinator
 
-**Status:** In execution — P6 semantic formation is locally proven; entity
-instrumentation and population-v3 smoke are the final pre-freeze gates
+**Status:** In execution — population-v3 one-batch semantics are proven; P6 is
+GO for the decisive pinned 12-batch run
 
 **Active branch:** `codex/autonomous-company-learning`
 
@@ -26,15 +26,16 @@ instrumentation and population-v3 smoke are the final pre-freeze gates
 | P3 perception and grounding | Raw eligible probe evidence and strict P9 sidecar path ready; current-commit artifact regeneration remains required. | `b057a20e`, `5a7a30ce` |
 | P4 causal closure and feedback | Raw learning evidence and strict P9 sidecar path ready; bounded PostgreSQL evidence is not an integrated P6 substitute. | `e476f9fa` |
 | P5 zero-seed vertical | Strict member-derived P9 sidecar ready for the existing deterministic vertical. It proves a bounded vertical, not provider-semantic quality. | `ffaf1341` |
-| P6 12-batch mixed stream | Closed compiler-authored atomics, singleton evidence authorization, provisional typed scope, and population-scoped scoring are implemented. The latest one-batch smoke achieved atomic precision 1.0, recall 0.9167, F1 0.9565, scope precision/recall 1.0, and zero noise truth. Population v3 plus provisional mention instrumentation require one repinned smoke before the decisive 12-batch run. | `31bb8b3e`, `a9877010`, `ed40facf`, `4655c86a`, `32db1800` |
+| P6 12-batch mixed stream | **GO for decisive P6.** The first population-v3 smoke failed closed after 14 reconciled atomics when the fifteenth candidate attempted to carry four unauthorized same-scope siblings. Repairs separated questions/ambiguity before truth formation, kept downgraded evidence outside accepted truth, resolved closed-atomic representation strictly from the manifest, and broadened uncertainty paraphrase coverage. The repinned smoke accepted all 12 intended atomics with precision/recall/F1 1.0, evidence-lineage coverage 1.0, scope precision/recall 1.0, exact mention F1 1.0, entity-type accuracy 1.0, canonical-link precision/recall 1.0, uncertainty fate precision/coverage 1.0, and zero noise-derived Models or relations. A post-freeze audit found four dashboard claims whose canonical evidence was correct but whose derived evidence metadata was stale; `36ccb3f8` repairs production normalization and adds a fail-closed evaluator gate. | `19219aa8`, `c7d936a6`, `4a67493b`, `bd17c6f8`, `b946f10c`, `0d703818`, `36ccb3f8` |
 | P7 matched memory ablation | Historical 45-call run remains falsifying/insufficient evidence. The production lifecycle runner, raw-member oracle, strict P9 sidecar, reported-usage gate, clean-worktree preflight, and exclusive lock are ready; provider execution waits for P6. | `f8375cdf`, `ba800d97` |
 | P8 fault, scale, and characterization | Historical fault proofs remain bounded; the one-pass concurrency result remains red. Strict P9 sidecar and preregistered repeated warm-pair diagnostic are ready; the locked rerun waits for P6/P7 ownership. | `345eb31c`, `f594cc16` |
 | P9 release decision | Fail-closed manifest, exact phase gate/metric sets, content digests, evidence classes, independent reviewer reproduction receipt, and verdict precedence are implemented. No release manifest may be sealed until current-commit P0-P8 artifacts exist. | `63809479`, `ca850161` |
 
 The repository now has strict normalization paths for P0-P8, but code readiness
-is not evidence readiness. The decisive dependency is one population-v3
-25-signal semantic/entity smoke followed by the full P6 run on a pinned clean
-commit. P7 may start only after P6 produces a digest-bound exit artifact; P8
+is not evidence readiness. The population-v3 25-signal semantic/entity smoke
+has cleared the pre-run gate. The decisive dependency is now the full P6 run on
+a pinned clean commit containing `36ccb3f8`. P7 may start only after P6 produces
+a digest-bound exit artifact; P8
 warm-pair work must retain exclusive database ownership; P9 may consume only
 artifacts regenerated on the selected release commit.
 
@@ -55,6 +56,13 @@ granularity.
   contracts, not that current release-commit artifacts have been regenerated.
 - The active P6 execution is not scored as successful until its barrier,
   member-level evidence, oracle, and strict sidecar all reopen and agree.
+- The one-batch smoke proves cold-start atomic formation, exact evidence
+  authorization, uncertainty separation, entity extraction coordinates, and
+  zero distractor truth. It does not prove 12-batch thesis synthesis, relation
+  formation, lifecycle evolution, mature Model-first retrieval, latency tails,
+  or release economics. Its boundary B-cubed F1 was 0.8247, below the decisive
+  0.9 threshold; this remains an explicit risk that the decisive run must meet,
+  not a metric inferred from the otherwise-green smoke.
 - The prior P7 experiment did not apply the required adaptive lifecycle and did
   not earn memory complexity; only the locked production rerun may replace that
   strategic evidence.
