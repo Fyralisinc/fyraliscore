@@ -297,6 +297,38 @@ async def test_admission_persists_exact_version_head_event_and_idempotent_receip
 
 
 @pytest.mark.asyncio
+async def test_admission_rejects_batch_wrapper_even_if_quality_gate_is_bypassed(
+) -> None:
+    command = admission()
+    proposition = {
+        "kind": "belief", "about": "batch", "abstraction_level": "atomic",
+        "claim_role": "hypothesis", "domain_tags": ["generic_curiosity"],
+    }
+    natural = "The event batch may contain a broader recurring pattern."
+    candidate = command.candidate.model_copy(update={
+        "proposition": proposition, "natural": natural,
+    })
+    decision = command.decision.model_copy(update={
+        "candidate_digest": candidate.candidate_digest,
+    })
+    version = command.version.model_copy(update={
+        "proposition": proposition, "natural": natural,
+        "semantic_digest": ModelVersion.compute_semantic_digest(
+            proposition=proposition, natural=natural,
+            evidence=command.version.evidence, scope=command.version.scope,
+        ),
+    })
+    forged = command.model_copy(update={
+        "candidate": candidate, "decision": decision, "version": version,
+    })
+    service = TruthKernelService(storage=STORE)
+    with pytest.raises(InvariantViolation, match="coherent business scope"):
+        async with STORE.transaction() as tx:
+            await service.admit(tx=tx, command=forged)
+    assert STORE.versions == {}
+
+
+@pytest.mark.asyncio
 async def test_independently_keyed_exact_semantic_duplicate_is_absorbed() -> None:
     command = admission()
     service = TruthKernelService(storage=STORE)

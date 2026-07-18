@@ -109,6 +109,57 @@ def test_atomic_durable_correctly_kinded_state_accepts_high() -> None:
     assert side == []
 
 
+@pytest.mark.parametrize(
+    ("extra_prop", "reason"),
+    [
+        ({"about": "batch"}, "claim_scope_batch_wrapper"),
+        ({"claim_role": "hypothesis", "domain_tags": ["curiosity"]},
+         "claim_scope_generic_curiosity"),
+        ({"domain_tags": ["source_digest"]}, "claim_scope_source_only"),
+    ],
+)
+def test_claim_cohesion_rejects_unscoped_wrapper_memory(
+    extra_prop: dict, reason: str,
+) -> None:
+    op = _insert(
+        kind="state",
+        assertion="Slack source repeatedly contains unresolved operational questions.",
+        extra_prop={"abstraction_level": "atomic", **extra_prop},
+    )
+    verdict = score_quality(op, _ctx())
+    assert verdict.decision == "reject"
+    assert reason in verdict.rejection_reasons
+
+
+def test_claim_cohesion_accepts_explicit_typed_composite_mechanism() -> None:
+    op = _insert(
+        kind="situation",
+        extra_prop={
+            "abstraction_level": "composite",
+            "about": "batch",
+            "mechanism": {"action": "handoff", "outcome": "release delay"},
+            "member_model_ids": [str(uuid4()), str(uuid4())],
+        },
+        extra_entry={"natural": "Ownership handoff causes release delay."},
+    )
+    verdict = score_quality(op, _ctx())
+    assert "claim_scope_batch_wrapper" not in verdict.rejection_reasons
+
+
+def test_claim_cohesion_rejects_high_entropy_atomic_scope() -> None:
+    op = _insert(
+        kind="state",
+        assertion="The delivery workflow is constrained.",
+        extra_prop={"abstraction_level": "atomic"},
+        extra_entry={"scope_entities": [
+            {"id": str(uuid4()), "type": "workstream"} for _ in range(5)
+        ]},
+    )
+    verdict = score_quality(op, _ctx())
+    assert verdict.decision == "reject"
+    assert "claim_scope_high_entropy" in verdict.rejection_reasons
+
+
 def test_compound_op_lowers_atomicity_and_routes_review_or_downgrade() -> None:
     # Compound assertion that is otherwise durable + correctly kinded.
     op = _insert(

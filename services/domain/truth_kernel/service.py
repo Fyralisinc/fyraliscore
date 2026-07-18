@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Literal, Protocol, Sequence
 from uuid import UUID
 
+from lib.contracts.claim_cohesion import claim_cohesion_reasons
 from lib.contracts.kernel import canonical_sha256
 from lib.contracts.truth_admission import (
     AdmitModelCommand,
@@ -165,6 +166,22 @@ class TruthKernelService:
         replay = await self._idempotent_replay(tx=tx, command=command)
         if replay is not None:
             return replay
+
+        cohesion_reasons = claim_cohesion_reasons(
+            proposition=command.version.proposition,
+            natural=command.version.natural,
+            scope_coordinates=(
+                (binding.subject_kind.value, str(binding.subject_id))
+                for binding in command.version.scope
+            ),
+        )
+        if cohesion_reasons:
+            raise InvariantViolation(
+                "TRUTH_ADMISSION_CLAIM_COHESION",
+                "claim lacks a coherent business scope for canonical truth",
+                reason_codes=list(cohesion_reasons),
+                model_id=str(command.version.model_id),
+            )
 
         # The semantic digest binds proposition, representation, evidence and
         # typed scope. Serializing on that complete identity absorbs exact

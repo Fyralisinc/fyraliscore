@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
 
+from lib.contracts.claim_cohesion import claim_cohesion_reasons
 from lib.shared.memory_grammar import derive_memory_grammar
 from services.reasoning.think.diff_schema import ClaimOp
 
@@ -559,6 +560,32 @@ def score_quality(op: ClaimOp, context: QualityContext) -> QualityVerdict:
             kind_fit_score=1.0,
             overall_score=1.0,
             rejection_reasons=[],
+            downgrade_target=None,
+        )
+
+    entry = op.entry or {}
+    proposition = entry.get("proposition") or {}
+    scope_coordinates = []
+    for key in ("scope_entities", "scope_actors"):
+        for item in entry.get(key) or ():
+            if isinstance(item, dict):
+                identifier = item.get("id") or item.get("entity_id") or item.get("actor_id")
+                kind = item.get("type") or item.get("kind") or key
+                if identifier:
+                    scope_coordinates.append((str(kind), str(identifier)))
+    cohesion_reasons = claim_cohesion_reasons(
+        proposition=proposition,
+        natural=str(entry.get("natural") or _entry_text(op)),
+        scope_coordinates=scope_coordinates,
+    )
+    if cohesion_reasons:
+        return QualityVerdict(
+            decision="reject",
+            atomicity_score=0.0,
+            durability_score=0.0,
+            kind_fit_score=0.0,
+            overall_score=0.0,
+            rejection_reasons=list(cohesion_reasons),
             downgrade_target=None,
         )
 
