@@ -3226,7 +3226,7 @@ def _claim_op_from_batch_decision(
         "confidence": min(0.69, max(0.35, float(decision.confidence))),
         "confidence_at_assertion": min(0.69, max(0.35, float(decision.confidence))),
         "scope_actors": [str(actor_id) for actor_id in (trigger.scope_actors or [])],
-        "scope_entities": _scope_entities(trigger),
+        "scope_entities": _candidate_scope_entities(candidate) or _scope_entities(trigger),
         "scope_temporal": {},
         "falsifier": None,
     }
@@ -3236,7 +3236,43 @@ def _claim_op_from_batch_decision(
         ]
     if evidence_event_ids:
         entry["supporting_event_ids"] = evidence_event_ids
+    observation_manifest = _candidate_observation_manifest(
+        candidate,
+        allowed_ids=set(evidence_event_ids),
+    )
+    if observation_manifest:
+        entry["evidence_observation_manifest"] = observation_manifest
     return ClaimOp(op="insert", entry=entry), born_event, ""
+
+
+def _candidate_observation_manifest(
+    candidate: dict[str, Any],
+    *,
+    allowed_ids: set[str],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in candidate.get("observation_evidence") or []:
+        if not isinstance(raw, dict):
+            continue
+        observation_id = str(raw.get("observation_id") or "").strip()
+        body = str(raw.get("body") or "").strip()
+        if (
+            not observation_id
+            or observation_id not in allowed_ids
+            or observation_id in seen
+            or not body
+        ):
+            continue
+        seen.add(observation_id)
+        rows.append(
+            {
+                "observation_id": observation_id,
+                "body": body,
+                "source_channel": str(raw.get("source_channel") or ""),
+            }
+        )
+    return rows[:12]
 
 
 def _claim_update_op_from_batch_decision(
@@ -3345,12 +3381,14 @@ def _batch_claim_proposition(
     evidence_event_ids = [str(value) for value in _candidate_event_ids(candidate)]
     if role == "situation":
         members = _situation_member_ids(candidate, decision)
+        scope = _claim_about(candidate)
         return {
             "kind": "belief",
             "claim_role": "situation",
             "abstraction_level": "composite",
             "situation": _trunc(text, 180),
             "summary": text,
+            "subject": scope,
             "member_model_ids": [str(member) for member in members],
             "relationship_summary": _trunc(decision.reason, 360),
             "status": "forming",
@@ -3460,12 +3498,19 @@ def _affected_customers(candidate: dict[str, Any]) -> list[str]:
 
 def _situation_falsifier(text: str) -> str:
     return (
-        "Invalid if later authoritative evidence shows the batch-level "
+        "Invalid if later authoritative evidence shows the candidate-local "
         f"condition is not true: {_trunc(text, 180)}"
     )
 
 
 def _claim_about(candidate: dict[str, Any]) -> str:
+    semantic_scope = [
+        str(value).strip()
+        for value in (candidate.get("semantic_scope") or [])
+        if str(value).strip()
+    ]
+    if semantic_scope:
+        return semantic_scope[0]
     targets = [
         str(value)
         for key in ("target_model_ids", "target_act_ids", "evidence_model_ids")
@@ -3474,7 +3519,18 @@ def _claim_about(candidate: dict[str, Any]) -> str:
     ]
     if targets:
         return targets[0]
-    return "batch"
+    return "unscoped_candidate"
+
+
+def _candidate_scope_entities(candidate: dict[str, Any]) -> list[dict[str, str]]:
+    """Translate the compiled candidate coordinate into canonical Model scope."""
+
+    values = [
+        str(value).strip()
+        for value in (candidate.get("semantic_scope") or [])
+        if str(value).strip()
+    ]
+    return [{"type": "workstream", "id": value} for value in values[:1]]
 
 
 def _edge_op_from_batch_decision(
