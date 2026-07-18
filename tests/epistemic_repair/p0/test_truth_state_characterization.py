@@ -99,6 +99,32 @@ def test_derived_and_projection_writers_do_not_declare_canonical_tables() -> Non
     assert violations == []
 
 
+def test_evaluator_sql_surfaces_are_explicitly_evaluation_only() -> None:
+    inventory = _load("authority-writer-reader-inventory.json")
+    registered = set(inventory["evaluation_only_modules"])
+    canonical_tables = set(inventory["canonical_tables"])
+    direct_sql = re.compile(
+        rf"(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|FROM|JOIN)\s+"
+        rf"(?:public\.)?(?:{'|'.join(sorted(canonical_tables))})\b",
+        re.IGNORECASE,
+    )
+    discovered = {
+        path.relative_to(ROOT).as_posix()
+        for path in _production_python_files()
+        if path.relative_to(ROOT).as_posix().startswith("services/evaluation/")
+        and direct_sql.search(path.read_text(errors="replace"))
+    }
+    writer_classifications = {
+        record["module"]: record["classification"]
+        for record in inventory["writer_modules"]
+        if record["module"].startswith("services/evaluation/")
+    }
+
+    assert discovered == registered
+    assert set(writer_classifications) <= registered
+    assert set(writer_classifications.values()) == {"evaluation_only"}
+
+
 def test_all_registered_illegal_truth_classes_are_reproduced_and_owned() -> None:
     inventory = _load("truth-state-inventory.json")
     rules = inventory["state_rules"]
