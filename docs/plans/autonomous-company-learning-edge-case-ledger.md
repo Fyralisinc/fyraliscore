@@ -867,9 +867,10 @@ transport are excluded from this goal.
 - **Status:** `deferred after minimal governed-coordinate vertical`
 - **Trigger:** Synthesis now requires one exact nonempty canonical reference on
   the parsed scope surface across the conclusion and every auxiliary signal.
-- **Current behavior:** Current detection heads, consumer-resolved traces,
-  provisional detection references, and a unique typed-entity fallback are
-  supported. The sealed P6 envelope and direct assertion forms are covered.
+- **Current behavior:** Current detection heads, consumer-resolved traces, and
+  provisional detection references are supported. Untethered typed-entity
+  sidecars are deliberately not synthesis coordinates. The sealed P6 envelope
+  and direct assertion forms are covered.
 - **Risk:** Older fixtures or additional production phrasing without a governed
   surface coordinate will safely abstain from synthesis.
 - **Safe boundary:** Do not restore label-only synthesis to preserve legacy

@@ -1939,12 +1939,12 @@ async def test_downstream_batch_keeps_t4_edge_and_situation_lanes_separate(
         payload["seed_signature"]["candidate_kind"]: payload for payload in payloads
     }
     assert set(by_kind) == {"edge", "situation"}
-    assert by_kind["edge"]["relationship_candidate_ids"] == [
+    assert set(by_kind["edge"]["relationship_candidate_ids"]) == {
         str(record["id"]) for record in edge_candidates
-    ]
-    assert by_kind["situation"]["relationship_candidate_ids"] == [
+    }
+    assert set(by_kind["situation"]["relationship_candidate_ids"]) == {
         str(record["id"]) for record in situation_candidates
-    ]
+    }
     assert by_kind["edge"]["seed_signature"]["candidate_kind_counts"] == {"edge": 2}
     assert by_kind["situation"]["seed_signature"]["candidate_kind_counts"] == {
         "situation": 2

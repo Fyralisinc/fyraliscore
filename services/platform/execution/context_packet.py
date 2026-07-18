@@ -1342,7 +1342,7 @@ def _fragment_scope_ref(raw: Mapping[str, Any], scope: str | None) -> str:
         if matching_refs:
             return next(iter(matching_refs)) if len(matching_refs) == 1 else ""
         return ""
-    return _canonical_ref_or_empty(raw.get("canonical_ref"))
+    return ""
 
 
 def _is_unprefixed_scope_assertion(text: str, scope: str) -> bool:

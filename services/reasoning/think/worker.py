@@ -2168,20 +2168,6 @@ class ThinkWorker:
                     refs = {item["canonical_ref"] for item in grounded}
                     if len(refs) == 1:
                         fragment["canonical_ref"] = next(iter(refs))
-                else:
-                    fallback_refs = (
-                        {
-                            ref
-                            for entity in entities
-                            if isinstance(entity, dict)
-                            and str(entity.get("type") or "").casefold() != "actor"
-                            and (ref := _canonical_entity_ref(entity)) is not None
-                        }
-                        if isinstance(entities, list)
-                        else set()
-                    )
-                    if len(fallback_refs) == 1:
-                        fragment["canonical_ref"] = next(iter(fallback_refs))
                 signal_fragments.append(fragment)
                 compact = compact_full
                 if len(compact) > 280:

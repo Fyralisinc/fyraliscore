@@ -98,6 +98,18 @@ def _card(
     )
 
 
+def _grounded_scope(
+    scope: str,
+    canonical_ref: str | None = None,
+) -> list[dict[str, str]]:
+    return [{
+        "surface": scope,
+        "canonical_ref": canonical_ref or (
+            "workstream:" + "-".join(scope.casefold().split())
+        ),
+    }]
+
+
 def test_context_packet_helpers_keep_legacy_inquiry_identity() -> None:
     assert inquiry._rank_evidence is context_packet.rank_evidence
     assert (
@@ -448,16 +460,19 @@ def test_unprefixed_recognized_scope_assertion_becomes_closed_atomic() -> None:
                 "observation_id": prefixed_one,
                 "source_channel": "slack:message",
                 "text": "Orion delivery, update 4: The record links pending approval to rollout delay.",
+                "grounded_mentions": _grounded_scope("Orion delivery"),
             },
             {
                 "observation_id": prefixed_two,
                 "source_channel": "slack:message",
                 "text": "Orion delivery, update 4: The rollout window moved.",
+                "grounded_mentions": _grounded_scope("Orion delivery"),
             },
             {
                 "observation_id": conclusion,
                 "source_channel": "slack:message",
                 "text": "Orion delivery is ready.",
+                "grounded_mentions": _grounded_scope("Orion delivery"),
             },
         ]},
     )
@@ -533,6 +548,7 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
                     "observation_id": observation_id,
                     "source_channel": "slack:message",
                     "text": f"{scope}, update 1: {body}",
+                    "grounded_mentions": _grounded_scope(scope),
                 }
             )
     distractors = (
@@ -674,7 +690,7 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
         "observation_id": atlas_fragment["observation_id"],
         "source_channel": atlas_fragment["source_channel"],
         "body": atlas_fragment["text"],
-        "canonical_ref": "",
+        "canonical_ref": "workstream:atlas-release",
     },)
     assert len(with_synthesis_opportunity) == 14
     synthesis_request = build_compiled_batch_memory_decision_request(
@@ -887,6 +903,35 @@ def test_scoped_synthesis_rejects_missing_or_colliding_scope_refs() -> None:
     ) == []
 
 
+def test_scope_synthesis_rejects_unmatched_typed_entity_fallback() -> None:
+    scope = "Atlas release"
+    fragments = [
+        {
+            "observation_id": str(uuid4()),
+            "source_channel": "test",
+            "text": text,
+            "canonical_ref": "customer:acme",
+            "entities_mentioned": [{"type": "customer", "id": "acme"}],
+        }
+        for text in (
+            f"{scope}, update 4: A record links the open owner to delay.",
+            f"{scope}, update 4: Completion moved after ownership became unclear.",
+            f"{scope} is blocked.",
+        )
+    ]
+    trigger = TriggerContext(
+        kind="T1", subkind="event_batch", tenant_id=uuid4(),
+        observation_ids=[uuid4() for _ in fragments],
+        seed_signature={"batch_signal_fragments": fragments},
+    )
+    candidates, _ = context_packet._batch_fragment_candidates(trigger)
+    assert candidates
+    assert all(candidate.canonical_scope_ref is None for candidate in candidates)
+    assert context_packet._scoped_synthesis_candidates(
+        candidates, [_card(f"{scope} model one"), _card(f"{scope} model two")],
+    ) == []
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -1016,14 +1061,17 @@ async def test_conclusion_hydrates_scope_complete_memory_outside_selected_retrie
     for scope in scopes:
         fragments.extend([
             {"observation_id": str(uuid4()), "source_channel": "test",
-             "text": f"{scope}, update 4: A record links the open owner handoff to delayed completion."},
+             "text": f"{scope}, update 4: A record links the open owner handoff to delayed completion.",
+             "grounded_mentions": _grounded_scope(scope)},
             {"observation_id": str(uuid4()), "source_channel": "test",
-             "text": f"{scope}, update 4: Completion moved again."},
+             "text": f"{scope}, update 4: Completion moved again.",
+             "grounded_mentions": _grounded_scope(scope)},
         ])
     conclusion_id = str(uuid4())
     fragments.append({
         "observation_id": conclusion_id, "source_channel": "test",
         "text": "Delta handoff is blocked.",
+        "grounded_mentions": _grounded_scope("Delta handoff"),
     })
     trigger = TriggerContext(
         kind="T1", subkind="event_batch", tenant_id=uuid4(),
@@ -1169,11 +1217,14 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
             seed_natural_text="Orion delivery batch",
             seed_signature={"batch_signal_fragments": [
                 {"observation_id": str(link_id), "source_channel": "test",
-                 "text": signal_rows[0][1]},
+                 "text": signal_rows[0][1],
+                 "grounded_mentions": _grounded_scope(scope_label, scope_ref)},
                 {"observation_id": str(state_id), "source_channel": "test",
-                 "text": signal_rows[1][1]},
+                 "text": signal_rows[1][1],
+                 "grounded_mentions": _grounded_scope(scope_label, scope_ref)},
                 {"observation_id": str(conclusion_id), "source_channel": "test",
-                 "text": "Orion delivery is blocked."},
+                 "text": "Orion delivery is blocked.",
+                 "grounded_mentions": _grounded_scope(scope_label, scope_ref)},
             ]},
         )
         hydrated, receipt = await context_packet.hydrate_synthesis_scope_models(
