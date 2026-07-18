@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import asyncpg
 import pytest
@@ -27,8 +27,11 @@ from services.reasoning.think.compiled_reasoning import (
     BatchMemoryCandidateDecision,
     BatchMemoryDecisionSet,
     CompiledBatchMemoryDecisionRequest,
+    RelationObligation,
     build_compiled_batch_memory_decision_request,
 )
+from services.reasoning.think.applier import apply_diff
+from services.reasoning.think.diff_schema import ValidatedDiff
 from services.reasoning.think.truth_admission import admit_validated_think_claim
 
 
@@ -661,10 +664,14 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
     assert len(synthesis) == 1
     assert synthesis[0].semantic_scope == ("Atlas release",)
     assert synthesis[0].candidate_kind == "synthesis"
-    assert synthesis[0].allowed_operations == (
-        "situation", "situation_and_edge", "no_op",
-    )
+    assert synthesis[0].allowed_operations == ("situation_and_edge", "no_op")
     assert synthesis[0].evidence_model_ids
+    assert synthesis[0].proposed_text == "Atlas release, update 4: Atlas release is ready."
+    assert synthesis[0].observation_evidence == ({
+        "observation_id": atlas_fragment["observation_id"],
+        "source_channel": atlas_fragment["source_channel"],
+        "body": atlas_fragment["text"],
+    },)
     assert len(with_synthesis_opportunity) == 13
     synthesis_request = build_compiled_batch_memory_decision_request(
         synthesis_trigger,
@@ -681,6 +688,28 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
     assert synthesis_request is not None
     assert len(synthesis_request.candidates) == 13
     assert "MDC_SYNTH_" in synthesis_request.user
+    assert not any(
+        obligation.candidate_id == synthesis[0].candidate_id
+        and obligation.source_model_id is not None
+        and obligation.target_model_id is not None
+        for obligation in synthesis_request.relation_obligations
+    )
+    no_write = synthesis_request.to_raw_diff(
+        BatchMemoryDecisionSet(decisions=[BatchMemoryCandidateDecision(
+            candidate_id=synthesis[0].candidate_id,
+            decision="accept", operation="situation_and_edge", confidence=0.8,
+            claim_text="Atlas release is ready.",
+            edge_kind="blocks", reason="A relation was not explicitly bound.",
+        )]),
+        trigger=synthesis_trigger,
+        trigger_ref=uuid4(),
+    )
+    assert not any(
+        (op.entry or {}).get("proposition", {}).get("claim_role") == "situation"
+        for op in no_write.claim_ops
+    )
+    assert no_write.relation_claim_ops == []
+    assert "missing explicit bound relation obligation" in no_write.reasoning_trace
 
     uncertainty = context_packet.batch_fragment_uncertainty_signals(trigger)
     assert len(uncertainty) == 8
@@ -808,9 +837,7 @@ def test_scoped_synthesis_requires_conclusion_and_diverse_prior_models() -> None
     assert len(candidates) == 1
     assert candidates[0].semantic_scope == (scope,)
     assert len(candidates[0].evidence_model_ids) == 2
-    assert candidates[0].allowed_operations == (
-        "situation", "situation_and_edge", "no_op",
-    )
+    assert candidates[0].allowed_operations == ("situation_and_edge", "no_op")
 
 
 @pytest.mark.asyncio
@@ -931,7 +958,12 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
                         "id": scope_ref,
                         "canonical_ref": scope_ref,
                         "display_label": scope_label,
-                    }],
+                    }, *([{
+                        "type": "workstream",
+                        "id": "workstream:shared-platform",
+                        "canonical_ref": "workstream:shared-platform",
+                        "display_label": "Shared platform",
+                    }] if index == 0 else [])],
                     scope_temporal={},
                     confidence=0.7,
                     confidence_at_assertion=0.7,
@@ -973,21 +1005,32 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
         hydrated, receipt = await context_packet.hydrate_synthesis_scope_models(
             conn, trigger,
         )
+        hydrated_model_ids = [UUID(value) for value in hydrated[scope_label]]
         candidate = {
             "candidate_id": "MDC_SYNTH_orion",
             "candidate_kind": "synthesis",
-            "allowed_operations": ["situation", "situation_and_edge", "no_op"],
+            "allowed_operations": ["situation_and_edge", "no_op"],
             "op_family": "claim_insert",
             "proposed_text": "Orion delivery is blocked by a persistent ownership gap.",
             "semantic_scope": [scope_label],
             "member_observation_ids": [str(conclusion_id)],
-            "evidence_model_ids": [str(model_id) for model_id in model_ids],
+            "evidence_model_ids": [str(model_id) for model_id in hydrated_model_ids],
             "endpoint_model_versions": receipt["endpoint_model_versions"],
             "suggested_edge_kinds": ["blocks"],
             "reason": "Ownership ambiguity repeatedly delays Orion delivery completion.",
         }
         compiled = CompiledBatchMemoryDecisionRequest(
             system="system", user="user", candidates=(candidate,),
+            relation_obligations=(RelationObligation(
+                candidate_id="MDC_SYNTH_orion", edge_kind="blocks", confidence=0.78,
+                source_model_id=hydrated_model_ids[0],
+                target_model_id=hydrated_model_ids[1],
+                evidence_event_ids=(conclusion_id,),
+                evidence_model_ids=tuple(hydrated_model_ids),
+                evidence_text="Orion delivery is blocked by a persistent ownership gap.",
+                explanation="The exact conclusion opener states the blocking mechanism.",
+                matched_markers=("blocked",),
+            ),),
         ).to_raw_diff(
             BatchMemoryDecisionSet(decisions=[BatchMemoryCandidateDecision(
                 candidate_id="MDC_SYNTH_orion", decision="accept",
@@ -1000,29 +1043,15 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
         )
         assert len(compiled.claim_ops) == 1
         assert len(compiled.relation_claim_ops) == 1
-        entry = compiled.claim_ops[0].entry
-        assert entry is not None
-        synthesis = await admit_validated_think_claim(
+        validated = ValidatedDiff(**compiled.model_dump())
+        apply_result = await apply_diff(
+            validated,
             conn,
-            proposed=ModelCreate(
-                tenant_id=tenant_id,
-                born_from_event_id=conclusion_id,
-                proposition=entry["proposition"],
-                natural=entry["natural"],
-                embedding=[0.0] * 768,
-                scope_entities=[{
-                    "type": "workstream", "id": scope_ref,
-                    "canonical_ref": scope_ref, "display_label": scope_label,
-                }],
-                scope_temporal={},
-                confidence=0.69,
-                confidence_at_assertion=0.69,
-                supporting_event_ids=[conclusion_id],
-                supporting_model_ids=model_ids,
-            ),
-            evidence_observation_ids=(conclusion_id,),
+            trigger_kind="T1:event_batch",
+            trigger_cause_event_id=conclusion_id,
             models_repo=ModelsRepo(None, embedder=None),
         )
+        synthesis_id = UUID(str(apply_result["applied_model_ids"][0]))
         synthesis_evidence_count = await conn.fetchval(
             """
             SELECT count(*)
@@ -1033,22 +1062,37 @@ async def test_conclusion_hydrates_nonempty_accepted_current_models(
             WHERE head.tenant_id=$1 AND head.model_id=$2
             """,
             tenant_id,
-            synthesis.id,
+            synthesis_id,
+        )
+        accepted_relation_count = await conn.fetchval(
+            "SELECT count(*) FROM accepted_current_relations WHERE tenant_id=$1",
+            tenant_id,
+        )
+        relation_version_count = await conn.fetchval(
+            "SELECT count(*) FROM relation_truth_versions WHERE tenant_id=$1",
+            tenant_id,
+        )
+        projected_edge_count = await conn.fetchval(
+            "SELECT count(*) FROM model_edges WHERE tenant_id=$1",
+            tenant_id,
         )
     finally:
         await transaction.rollback()
         await conn.close()
 
-    assert set(hydrated[scope_label]) == {str(model_id) for model_id in model_ids}
-    assert synthesis_evidence_count == 4
+    assert set(hydrated[scope_label]) == {str(model_id) for model_id in model_ids[1:]}
+    assert synthesis_evidence_count == 3
+    assert accepted_relation_count == 1
+    assert relation_version_count == 1
+    assert projected_edge_count == 1
     assert set(receipt.pop("endpoint_model_versions")) == {
-        str(model_id) for model_id in model_ids
+        str(model_id) for model_id in model_ids[1:]
     }
     assert receipt == {
         "queried": True,
         "scope_count": 1,
         "limit_per_scope": 8,
-        "returned_model_count": 3,
+        "returned_model_count": 2,
         "ambiguous_scope_count": 0,
         "scopes": [scope_label],
     }

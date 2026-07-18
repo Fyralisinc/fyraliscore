@@ -908,6 +908,9 @@ def _scoped_synthesis_candidates(
             candidate for candidate in current_scope_candidates
             if _is_scope_level_synthesis_assertion(candidate, scope)
         ]
+        if len(conclusion_candidates) != 1:
+            continue
+        conclusion = conclusion_candidates[0]
         current_ids = tuple(dict.fromkeys(
             observation_id
             for candidate in conclusion_candidates
@@ -918,15 +921,13 @@ def _scoped_synthesis_candidates(
             candidate_id=_candidate_id("MDC_SYNTH", digest_basis),
             op_family="claim_insert",
             candidate_kind="synthesis",
-            allowed_operations=("situation", "situation_and_edge", "no_op"),
-            proposed_text=(
-                f"{scope}'s current state may reflect a coherent cross-time "
-                "pattern across its accepted memory and claim-local new evidence."
-            ),
+            allowed_operations=("situation_and_edge", "no_op"),
+            proposed_text=str(conclusion.entailed_claim_text or conclusion.proposed_text),
             source_observation_ids=current_ids,
             member_observation_ids=current_ids,
             semantic_scope=(scope,),
             evidence_model_ids=tuple(model_ids),
+            observation_evidence=conclusion.observation_evidence,
             uncertainty_slots=(
                 "whether prior phases are coherent enough for one thesis",
             ),
@@ -984,6 +985,13 @@ async def hydrate_synthesis_scope_models(
             WHERE model.tenant_id=$1
               AND binding.display_label=ANY($2::text[])
               AND binding.canonical_ref IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM model_truth_scope_bindings other
+                  WHERE other.tenant_id=binding.tenant_id
+                    AND other.model_version_id=binding.model_version_id
+                    AND other.scope_role='subject'
+                    AND other.canonical_ref IS DISTINCT FROM binding.canonical_ref
+              )
         ) scoped
         WHERE scope_rank <= $3
         ORDER BY scope_label,scope_ref,scope_rank

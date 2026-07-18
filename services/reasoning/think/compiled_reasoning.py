@@ -426,6 +426,30 @@ class CompiledBatchMemoryDecisionRequest:
             claim_placeholder: UUID | None = None
             synthesis_candidate = candidate.get("candidate_kind") == "synthesis"
             if synthesis_candidate:
+                obligation = next((
+                    item for item in self.relation_obligations
+                    if item.candidate_id == decision.candidate_id
+                    and item.source_model_id is not None
+                    and item.target_model_id is not None
+                ), None)
+                if obligation is None:
+                    blocked += 1
+                    trace_parts.append(
+                        f"{decision.candidate_id}: synthesis not promoted - "
+                        "missing explicit bound relation obligation"
+                    )
+                    continue
+                candidate = {
+                    **candidate,
+                    "explicit_relation_obligation": {
+                        "edge_kind": obligation.edge_kind,
+                        "source_model_id": str(obligation.source_model_id),
+                        "target_model_id": str(obligation.target_model_id),
+                        "evidence_event_ids": [str(x) for x in obligation.evidence_event_ids],
+                        "evidence_model_ids": [str(x) for x in obligation.evidence_model_ids],
+                        "evidence_text": obligation.evidence_text,
+                    },
+                }
                 claim_op, claim_placeholder, block_reason = (
                     _claim_op_from_batch_decision(
                         candidate,
@@ -3154,6 +3178,16 @@ def _relation_obligation_endpoints(
     *,
     edge_kind: str,
 ) -> tuple[UUID | None, UUID | None]:
+    if candidate.get("candidate_kind") == "synthesis":
+        source = _coerce_uuid(candidate.get("relation_source_model_id"))
+        target = _coerce_uuid(candidate.get("relation_target_model_id"))
+        members = set(_candidate_model_ids(candidate))
+        if (
+            source is None or target is None or source == target
+            or not {source, target}.issubset(members)
+        ):
+            return None, None
+        return source, target
     target_ids = _dedupe_uuids(_uuid_values(candidate.get("target_model_ids")))
     evidence_ids = _dedupe_uuids(_uuid_values(candidate.get("evidence_model_ids")))
     all_ids = _candidate_model_ids(candidate)
@@ -3762,16 +3796,10 @@ def _batch_claim_proposition(
 def _supported_synthesis_relation(
     candidate: dict[str, Any], decision: BatchMemoryCandidateDecision,
 ) -> dict[str, Any] | None:
-    edge_kind = str(decision.edge_kind or "").strip()
-    if not edge_kind:
-        edge_kind = next(
-            (
-                str(value).strip()
-                for value in candidate.get("suggested_edge_kinds") or ()
-                if str(value).strip() in _GOVERNED_BATCH_RELATIONS
-            ),
-            _default_batch_edge_kind(decision, candidate),
-        )
+    obligation = candidate.get("explicit_relation_obligation")
+    if not isinstance(obligation, dict):
+        return None
+    edge_kind = str(obligation.get("edge_kind") or "").strip()
     kind = {
         "blocks": "dependency_constraint", "depends_on": "dependency_constraint",
         "dependency_constraint": "dependency_constraint",
@@ -3781,8 +3809,11 @@ def _supported_synthesis_relation(
         "predictive_indicator": "predictive_indicator",
     }.get(edge_kind)
     members = _situation_member_ids(candidate, decision)
-    source_id = decision.source_model_id or (members[0] if len(members) >= 2 else None)
-    target_id = decision.target_model_id or (members[1] if len(members) >= 2 else None)
+    source_id = _coerce_uuid(obligation.get("source_model_id"))
+    target_id = _coerce_uuid(obligation.get("target_model_id"))
+    opener_ids = set(_candidate_event_ids(candidate))
+    obligation_event_ids = set(_uuid_values(obligation.get("evidence_event_ids")))
+    obligation_model_ids = set(_uuid_values(obligation.get("evidence_model_ids")))
     if (
         kind is None
         or source_id is None
@@ -3790,6 +3821,8 @@ def _supported_synthesis_relation(
         or source_id == target_id
         or source_id not in members
         or target_id not in members
+        or obligation_event_ids != opener_ids
+        or not {source_id, target_id}.issubset(obligation_model_ids)
     ):
         return None
     source_version_id, target_version_id = _candidate_relation_endpoint_versions(
@@ -3800,7 +3833,7 @@ def _supported_synthesis_relation(
     return {
         "kind": kind,
         "mechanism": _trunc(
-            str(candidate.get("reason") or decision.reason or candidate.get("proposed_text") or ""),
+            str(obligation.get("evidence_text") or ""),
             280,
         ),
         "source_model_id": str(source_id),
@@ -4147,7 +4180,11 @@ def _relation_claim_op_from_relation_hinted_batch_decision(
             object_ref={"kind": "model", "model_id": str(target_id),
                         "candidate_id": decision.candidate_id},
             predicate=str(relation["kind"]),
-            edge_kind=str(relation["kind"]),
+            edge_kind={
+                "dependency_constraint": "blocks",
+                "causal_influence": "causes",
+                "predictive_indicator": "predicts",
+            }[str(relation["kind"])],
             direction="source_to_target",
             endpoint_binding_status="bound",
             write_policy="accepted_edge",

@@ -7,6 +7,7 @@ from services.reasoning.think.compiled_reasoning import (
     BatchMemoryCandidateDecision,
     BatchMemoryDecisionSet,
     CompiledBatchMemoryDecisionRequest,
+    RelationObligation,
     _bind_synthesis_endpoint_versions,
 )
 
@@ -62,6 +63,15 @@ def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None
     }
     request = CompiledBatchMemoryDecisionRequest(
         system="system", user="user", candidates=(candidate,),
+        relation_obligations=(RelationObligation(
+            candidate_id="MDC_SYNTH_scope", edge_kind="blocks", confidence=0.72,
+            source_model_id=prior_models[0], target_model_id=prior_models[1],
+            evidence_event_ids=tuple(observation_ids),
+            evidence_model_ids=tuple(prior_models),
+            evidence_text="Ownership gaps block Harbor renewal completion.",
+            explanation="Exact conclusion opener names the blocking mechanism.",
+            matched_markers=("block",),
+        ),),
     )
     decisions = BatchMemoryDecisionSet(decisions=[
         BatchMemoryCandidateDecision(
@@ -91,6 +101,8 @@ def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None
     assert len(diff.relation_claim_ops) == 1
     assert diff.relation_claim_ops, diff.model_dump()
     relation = diff.relation_claim_ops[0]
+    assert relation.edge_kind == "blocks"
+    assert relation.predicate == "dependency_constraint"
     assert relation.write_policy == "accepted_edge"
     assert relation.status == "accepted"
     assert relation.source_model_version_id == prior_versions[0]
@@ -144,7 +156,7 @@ def test_ambiguous_synthesis_stays_pretruth_without_exact_endpoint_versions() ->
 
     assert diff.claim_ops == []
     assert diff.relation_claim_ops == []
-    assert "lacks exact accepted endpoints" in diff.reasoning_trace
+    assert "missing explicit bound relation obligation" in diff.reasoning_trace
 
 
 def test_rejected_synthesis_emits_neither_model_nor_relation() -> None:
