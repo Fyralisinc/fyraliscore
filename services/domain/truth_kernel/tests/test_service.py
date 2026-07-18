@@ -78,6 +78,8 @@ def admission() -> AdmitModelCommand:
             subject_id=uuid4(),
             subject_kind=ScopeSubjectKind.PROJECT,
             role=ClaimScopeRole.SUBJECT,
+            canonical_ref="workstream:project-ember",
+            display_label="Project Ember",
             claim_local_evidence_refs=(item.reference_id,),
         ),
     )

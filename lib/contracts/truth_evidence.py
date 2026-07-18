@@ -162,11 +162,18 @@ class ClaimScopeRole(StrEnum):
 
 
 class ClaimScopeBinding(_TruthEvidenceContract):
-    """A typed scope assertion proved by evidence local to this exact claim."""
+    """A typed scope assertion proved by evidence local to this exact claim.
+
+    ``canonical_ref`` is an unresolved, stable extracted coordinate. Its
+    presence does not claim that a canonical entity/resource row already
+    exists; ``subject_id`` remains the durable UUID identity.
+    """
 
     subject_id: UUID
     subject_kind: ScopeSubjectKind
     role: ClaimScopeRole
+    canonical_ref: str | None = Field(default=None, min_length=3, max_length=300)
+    display_label: str | None = Field(default=None, min_length=1, max_length=300)
     claim_local_evidence_refs: tuple[UUID, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -179,6 +186,24 @@ class ClaimScopeBinding(_TruthEvidenceContract):
             self.claim_local_evidence_refs
         ):
             raise ValueError("scope provenance references must be sorted")
+        if self.canonical_ref:
+            prefix, separator, value = self.canonical_ref.partition(":")
+            if not separator or not prefix or not value or prefix == "batch":
+                raise ValueError(
+                    "canonical_ref must be a typed non-batch coordinate"
+                )
+            compatible = {
+                ScopeSubjectKind.PERSON: {"actor", "person"},
+                ScopeSubjectKind.PROJECT: {"workstream", "project"},
+                ScopeSubjectKind.CUSTOMER: {"customer"},
+                ScopeSubjectKind.WORK_ITEM: {
+                    "commitment", "decision", "goal", "resource", "work_item"
+                },
+            }.get(self.subject_kind)
+            if compatible is not None and prefix not in compatible:
+                raise ValueError(
+                    "canonical_ref type must agree with subject_kind"
+                )
         return self
 
 

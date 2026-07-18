@@ -271,6 +271,11 @@ class EpistemicApplier:
                 subject_id=subject_id,
                 subject_kind=subject_kind,
                 role=ClaimScopeRole.SUBJECT,
+                canonical_ref=(raw_id if ":" in raw_id else None),
+                display_label=(
+                    str(selected_scope_entity.get("display_label") or "").strip()
+                    or None
+                ),
                 claim_local_evidence_refs=(evidence_reference_id,),
             )
         ]

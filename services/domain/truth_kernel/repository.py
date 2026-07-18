@@ -387,8 +387,8 @@ class AsyncpgTruthKernelStorage:
                 """
                 INSERT INTO model_truth_scope_bindings (
                   binding_id, tenant_id, model_version_id, subject_id,
-                  subject_kind, scope_role, created_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+                  subject_kind, scope_role, canonical_ref, display_label, created_at
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                 """,
                 binding_id,
                 version.tenant_id,
@@ -396,6 +396,8 @@ class AsyncpgTruthKernelStorage:
                 binding.subject_id,
                 binding.subject_kind.value,
                 binding.role.value,
+                binding.canonical_ref,
+                binding.display_label,
                 version.created_at,
             )
             await tx.executemany(

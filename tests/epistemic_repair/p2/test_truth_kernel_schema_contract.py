@@ -14,6 +14,9 @@ SEMANTIC_DUPLICATE_MIGRATION = (
 COMMAND_AUTHORITY_MIGRATION = (
     MIGRATIONS / "0227_truth_kernel_command_authority.sql"
 )
+SCOPE_PROVENANCE_MIGRATION = (
+    MIGRATIONS / "0234_truth_scope_canonical_provenance.sql"
+)
 
 
 def _sql() -> str:
@@ -73,6 +76,12 @@ def test_schema_defines_every_p2_truth_surface() -> None:
         assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
     assert "CREATE OR REPLACE VIEW accepted_current_models" in sql
     assert "CREATE OR REPLACE VIEW accepted_current_relations" in sql
+
+
+def test_scope_provenance_migration_is_idempotent() -> None:
+    sql = SCOPE_PROVENANCE_MIGRATION.read_text()
+    assert "ADD COLUMN IF NOT EXISTS canonical_ref TEXT" in sql
+    assert "ADD COLUMN IF NOT EXISTS display_label TEXT" in sql
 
 
 def test_admission_is_immutable_and_cannot_target_truth_when_nonaccepted() -> None:

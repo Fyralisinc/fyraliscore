@@ -19,10 +19,23 @@ from services.domain.models.repo import ModelsRepo
 from services.reasoning.think.applier import _with_claim_evidence_defaults
 from services.reasoning.think.diff_schema import ClaimOp
 from services.reasoning.think.truth_admission import (
+    _scope_canonical_ref,
+    _scope_display_label,
     admit_validated_think_claim,
     advance_validated_think_model,
 )
 from services.reasoning.think.validator import _validate_claim_op
+
+
+def test_candidate_scope_canonical_provenance_survives_uuid_derivation() -> None:
+    entity = {"type": "commitment", "id": "commitment:cobalt-renewal"}
+    proposition = {
+        "scope_ref": "commitment:cobalt-renewal",
+        "scope_label": "Cobalt renewal",
+    }
+
+    assert _scope_canonical_ref(entity) == "commitment:cobalt-renewal"
+    assert _scope_display_label(entity, proposition) == "Cobalt renewal"
 
 
 def _claim(*, supporting_event_ids=(), born_from_event_id=None) -> ClaimOp:

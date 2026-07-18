@@ -52,6 +52,33 @@ def _subject_kind(value: Any) -> ScopeSubjectKind:
         return ScopeSubjectKind.OTHER
 
 
+def _scope_canonical_ref(entity: dict[str, Any]) -> str | None:
+    explicit = entity.get("canonical_ref")
+    if isinstance(explicit, dict):
+        ref_type = str(explicit.get("type") or "").strip()
+        ref_id = str(explicit.get("id") or "").strip()
+        if ref_type and ref_id:
+            return f"{ref_type}:{ref_id}"
+    if explicit:
+        return str(explicit).strip() or None
+    raw_id = str(entity.get("id") or entity.get("referent_id") or "").strip()
+    return raw_id if ":" in raw_id else None
+
+
+def _scope_display_label(
+    entity: dict[str, Any],
+    proposition: dict[str, Any],
+) -> str | None:
+    explicit = entity.get("display_label") or entity.get("label")
+    if explicit:
+        return str(explicit).strip() or None
+    canonical_ref = _scope_canonical_ref(entity)
+    if canonical_ref and proposition.get("scope_ref") == canonical_ref:
+        label = proposition.get("scope_label")
+        return str(label).strip() if label else None
+    return None
+
+
 async def build_think_admission_command(
     conn: asyncpg.Connection, *, proposed: ModelCreate, model_id: UUID,
     evidence_observation_ids: tuple[UUID, ...], admitted_at: datetime,
@@ -109,6 +136,7 @@ async def build_think_admission_command(
         ))
     evidence_tuple = tuple(evidence)
     evidence_refs = tuple(sorted((item.reference_id for item in evidence), key=str))
+    proposition = dict(proposed.proposition)
     scopes: dict[tuple[UUID, ScopeSubjectKind, ClaimScopeRole], ClaimScopeBinding] = {}
     for actor in proposed.scope_actors:
         key = (actor, ScopeSubjectKind.PERSON, ClaimScopeRole.ACTOR)
@@ -127,11 +155,12 @@ async def build_think_admission_command(
         scopes[key] = ClaimScopeBinding(
             subject_id=subject_id, subject_kind=kind,
             role=ClaimScopeRole.SUBJECT, claim_local_evidence_refs=evidence_refs,
+            canonical_ref=_scope_canonical_ref(entity),
+            display_label=_scope_display_label(entity, proposition),
         )
     scope = tuple(sorted(scopes.values(), key=lambda item: (
         str(item.subject_id), item.subject_kind.value, item.role.value,
     )))
-    proposition = dict(proposed.proposition)
     raw_role = str(proposition.get("claim_role") or proposition.get("kind") or "")
     kind = (TruthCandidateKind.SYNTHESIS if raw_role in {
         "situation", "hypothesis", "synthesis", "pattern",
@@ -247,7 +276,8 @@ async def _current_truth_version(
         ), occurred_at=x["occurred_at"], recorded_at=x["recorded_at"], cutoff_at=x["cutoff_at"],
     ) for x in evidence_rows)
     binding_rows = await conn.fetch("""
-        SELECT binding_id,subject_id,subject_kind,scope_role
+        SELECT binding_id,subject_id,subject_kind,scope_role,
+               canonical_ref,display_label
         FROM model_truth_scope_bindings WHERE tenant_id=$1 AND model_version_id=$2
         ORDER BY subject_id,scope_role
     """, tenant_id, row["version_id"])
@@ -262,6 +292,8 @@ async def _current_truth_version(
             subject_id=binding["subject_id"],
             subject_kind=ScopeSubjectKind(binding["subject_kind"]),
             role=ClaimScopeRole(binding["scope_role"]),
+            canonical_ref=binding["canonical_ref"],
+            display_label=binding["display_label"],
             claim_local_evidence_refs=tuple(x["evidence_reference_id"] for x in refs),
         ))
     proposition = row["proposition"]

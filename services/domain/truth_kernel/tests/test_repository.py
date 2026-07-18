@@ -54,6 +54,13 @@ async def test_admission_adapter_persists_version_bound_evidence_and_scope() -> 
     )
     assert evidence_args[2] == command.version.version_id
     assert evidence_args[24] == command.version.evidence[0].reference_digest
+    scope_args = next(
+        args
+        for statement, args in tx.statements
+        if "INSERT INTO model_truth_scope_bindings" in statement
+    )
+    assert scope_args[6] == command.version.scope[0].canonical_ref
+    assert scope_args[7] == command.version.scope[0].display_label
 
 
 @pytest.mark.asyncio

@@ -107,10 +107,11 @@ async def extract_p6_postfreeze_evidence(
                   COALESCE((SELECT jsonb_agg(jsonb_build_object(
                     'id',binding.subject_id,'type',binding.subject_kind,
                     'role',binding.scope_role,
-                    'canonical_ref',CASE
+                    'canonical_ref',COALESCE(binding.canonical_ref, CASE
                       WHEN actor.id IS NOT NULL THEN 'actor:' || actor.id::text
                       WHEN resource.id IS NOT NULL THEN 'resource:' || resource.id::text
-                      ELSE NULL END) ORDER BY binding.binding_id)
+                      ELSE NULL END),
+                    'display_label',binding.display_label) ORDER BY binding.binding_id)
                     FROM model_truth_scope_bindings binding
                     LEFT JOIN actors actor
                       ON actor.tenant_id=binding.tenant_id
