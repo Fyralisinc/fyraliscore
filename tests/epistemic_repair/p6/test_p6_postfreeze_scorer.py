@@ -11,6 +11,7 @@ from lib.evaluation.epistemic_repair.p6_postfreeze_scorer import (
     _score_boundaries,
     _score_claims_and_theses,
     _score_context,
+    _score_mentions,
     score_p6_frozen_execution,
 )
 
@@ -126,6 +127,66 @@ def test_boundary_b_cubed_uses_all_exact_source_ids() -> None:
     assert score["value"] == 1.0
     assert score["denominator"] == 1
     assert len(score["source_ids"]) == 300
+
+
+def test_one_batch_source_metrics_use_only_executed_population() -> None:
+    population = build_p6_population()
+    batch_one_signals = [
+        signal for signal in population.signals if signal.batch_number == 1
+    ]
+    batch_one_ids = {signal.signal_id for signal in batch_one_signals}
+    gold = {
+        item.signal_id: item for item in population.gold
+        if item.signal_id in batch_one_ids
+    }
+    observation_map = {
+        f"observation-{index}": signal.signal_id
+        for index, signal in enumerate(batch_one_signals)
+    }
+    mentions = []
+    for item in gold.values():
+        if not item.entity_surface:
+            continue
+        text = next(
+            signal.text for signal in batch_one_signals
+            if signal.signal_id == item.signal_id
+        )
+        start = text.find(item.entity_surface)
+        mentions.append({
+            "signal_id": item.signal_id,
+            "surface": item.entity_surface,
+            "span_start": start,
+            "span_end": start + len(item.entity_surface),
+            "entity_type": item.entity_type,
+            "canonical_ref": item.canonical_ref,
+        })
+    # Preserve a genuine executed-batch type failure; population scoping must
+    # not turn missing values inside the measured slice into success.
+    mentions[0]["entity_type"] = None
+    mentions[1]["entity_type"] = None
+    evidence = {
+        "observed_source_ids": list(observation_map),
+        "observation_signal_map": observation_map,
+        "mentions": mentions,
+        "boundaries": [{
+            "signal_id": item.signal_id,
+            "predicted_boundary_id": item.storyline_id or item.signal_id,
+        } for item in gold.values()],
+    }
+    raw = _raw(population, evidence=evidence)
+    raw["waves"] = raw["waves"][:1]
+
+    mention_scores = _score_mentions(raw, population)
+    boundary = _score_boundaries(raw, population)["boundary_b_cubed_f1"]
+
+    assert mention_scores["exact_mention_f1"]["value"] == 1.0
+    assert mention_scores["entity_type_accuracy"]["numerator"] == 18
+    assert mention_scores["entity_type_accuracy"]["denominator"] == 20
+    assert mention_scores["entity_type_accuracy"]["status"] == "fail"
+    assert mention_scores["canonical_link_recall"]["denominator"] == 20
+    assert len(mention_scores["canonical_link_recall"]["source_ids"]) == 20
+    assert boundary["value"] == 1.0
+    assert len(boundary["source_ids"]) == 25
 
 
 def test_atomic_source_oracle_accepts_exact_ownership_one_ref() -> None:

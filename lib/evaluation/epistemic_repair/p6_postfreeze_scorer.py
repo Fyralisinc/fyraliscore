@@ -148,8 +148,11 @@ def _score_mentions(
     raw: dict[str, Any], population: P6Population,
 ) -> dict[str, dict[str, Any]]:
     rows = _record_index(raw, "mentions")
+    executed_source_ids = _executed_source_signal_ids(raw, population)
     expected = {
-        item.signal_id: item for item in population.gold if item.entity_surface
+        item.signal_id: item for item in population.gold
+        if item.entity_surface
+        and (executed_source_ids is None or item.signal_id in executed_source_ids)
     }
     if not rows:
         return {
@@ -337,10 +340,12 @@ def _score_boundaries(
         str(row.get("signal_id")): str(row.get("predicted_boundary_id"))
         for row in rows if row.get("signal_id") and row.get("predicted_boundary_id")
     }
+    executed_source_ids = _executed_source_signal_ids(raw, population)
     gold = {
         item.signal_id: (
             item.storyline_id if item.storyline_id is not None else item.signal_id
         ) for item in population.gold
+        if executed_source_ids is None or item.signal_id in executed_source_ids
     }
     if set(predicted) != set(gold):
         return {"boundary_b_cubed_f1": _metric(
