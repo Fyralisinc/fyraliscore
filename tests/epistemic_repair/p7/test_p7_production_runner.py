@@ -104,3 +104,39 @@ def test_receipt_guard_fails_when_identity_or_attempt_receipt_missing() -> None:
     )
     assert not result["valid"]
     assert result["missing_identity_receipts"] == ["logical:x"]
+
+
+@pytest.mark.parametrize("usage_exactness", ("estimated", "unavailable"))
+def test_receipt_guard_rejects_nonreported_codex_usage(
+    usage_exactness: str,
+) -> None:
+    result = assess_provider_identity_receipts(
+        logical_receipts=[{
+            "logical_call_id": "x", "provider": "codex", "model": "gpt-5.4",
+            "purpose": "think", "physical_attempt_count": 1,
+        }],
+        attempt_receipts=[{
+            "physical_attempt_id": "a", "logical_call_id": "x",
+            "provider": "codex", "model": "gpt-5.4", "purpose": "think",
+            "usage_exactness": usage_exactness,
+        }],
+        required_provider="codex", required_model="gpt-5.4",
+    )
+    assert not result["valid"]
+    assert result["nonreported_usage_attempts"] == ["a"]
+
+
+def test_receipt_guard_accepts_provider_reported_usage() -> None:
+    result = assess_provider_identity_receipts(
+        logical_receipts=[{
+            "logical_call_id": "x", "provider": "codex", "model": "gpt-5.4",
+            "purpose": "think", "physical_attempt_count": 1,
+        }],
+        attempt_receipts=[{
+            "physical_attempt_id": "a", "logical_call_id": "x",
+            "provider": "codex", "model": "gpt-5.4", "purpose": "think",
+            "usage_exactness": "reported",
+        }],
+        required_provider="codex", required_model="gpt-5.4",
+    )
+    assert result["valid"]

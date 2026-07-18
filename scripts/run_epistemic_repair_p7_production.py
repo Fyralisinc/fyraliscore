@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import contextmanager
 import os
 from pathlib import Path
+import subprocess
 import sys
+from typing import Iterator
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -28,9 +31,46 @@ from lib.evaluation.epistemic_repair.p7_population import (
 from lib.evaluation.epistemic_repair.p7_real_runner import _variant_population
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _clean_cli_provenance(repository: Path) -> dict[str, object]:
+    repository = repository.resolve()
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repository, text=True,
+    ).strip()
+    dirty = subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=repository, text=True,
+    ).strip()
+    if dirty:
+        raise SystemExit("P7 provider run requires an isolated clean worktree")
+    if os.environ.get("CODEX_TRANSPORT") != "cli":
+        raise SystemExit("P7 provider run requires CODEX_TRANSPORT=cli")
+    return {
+        "git_commit": commit, "worktree_clean": True,
+        "worktree_path": str(repository), "codex_transport": "cli",
+    }
+
+
+@contextmanager
+def _exclusive_run_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as exc:
+        raise SystemExit(f"P7 run lock already exists: {path}") from exc
+    try:
+        os.write(descriptor, f"pid={os.getpid()}\n".encode())
+        os.close(descriptor)
+        yield
+    finally:
+        path.unlink(missing_ok=True)
+
+
 async def _run(args: argparse.Namespace) -> int:
     if not args.database_url:
         raise SystemExit("DATABASE_URL or --database-url is required")
+    run_provenance = _clean_cli_provenance(args.repository)
     preregistered = build_p7_population()
     variants = tuple(
         (world.world_id, _variant_population(world, index))
@@ -47,6 +87,7 @@ async def _run(args: argparse.Namespace) -> int:
         worlds=initial_streams,
         per_batch_timeout_s=args.batch_timeout,
     )
+    artifact["run_provenance"] = run_provenance
     _write_checkpoint(args.output, artifact)
     executed = P7_INITIAL_WORLD_COUNT
     while True:
@@ -104,7 +145,13 @@ def main() -> int:
         "--score-output", type=Path, default=Path("/tmp/p7-production-scores.json")
     )
     parser.add_argument("--batch-timeout", type=float, default=180.0)
-    return asyncio.run(_run(parser.parse_args()))
+    parser.add_argument("--repository", type=Path, default=ROOT)
+    parser.add_argument(
+        "--lock-file", type=Path, default=Path("/tmp/fyralis-p7-production.lock"),
+    )
+    args = parser.parse_args()
+    with _exclusive_run_lock(args.lock_file):
+        return asyncio.run(_run(args))
 
 
 if __name__ == "__main__":

@@ -769,6 +769,103 @@ def evaluate_frozen_worlds(
         ),
         "zero_false_truth_from_noise": global_noise_truth == 0,
     }
+    def gate_member(member_id: str, raw: Any, conforms: bool) -> dict[str, Any]:
+        return {
+            "member_id": member_id, "conforms": bool(conforms),
+            "raw_source_digest": canonical_sha256(raw),
+        }
+
+    all_arms = [
+        arm for world in world_results for arm in world["arm_results"]
+    ]
+    reasoning_waves = [
+        (arm, wave) for arm in all_arms for wave in arm["waves"]
+        if wave["reasoning_executed"]
+    ]
+    hidden_waves = [
+        (arm, wave) for arm in all_arms
+        if arm["arm"] in {"memory_hidden", "observation_only"}
+        for wave in arm["waves"] if wave["reasoning_executed"]
+    ]
+    budget_reference = all_arms[0].get("budget_contract") if all_arms else None
+    tenant_counts: dict[str, int] = {}
+    for arm in all_arms:
+        tenant = str(arm["tenant_id"])
+        tenant_counts[tenant] = tenant_counts.get(tenant, 0) + 1
+    gate_members = {
+        "all_failures_preserved": [gate_member(
+            f"{arm['tenant_id']}:batch:{wave['batch_number']}", wave,
+            bool(wave.get("think_run_id")),
+        ) for arm, wave in reasoning_waves],
+        "corrupted_memory_safe_within_two_batches": [gate_member(
+            str(arm["tenant_id"]), arm,
+            bool(arm["corruption_recovered_within_two_batches"]),
+        ) for arm in corrupted],
+        "corrupted_memory_unsafe_accepted_persistence_zero": [gate_member(
+            str(arm["tenant_id"]), arm,
+            not bool(
+                set(map(str, arm.get("corruption_model_ids") or ()))
+                & {str(model.get("id")) for model in
+                   (arm.get("frozen_outputs") or {}).get("accepted_models", ())}
+            ),
+        ) for arm in corrupted],
+        "durable_attempt_receipts": [gate_member(
+            f"{arm['tenant_id']}:batch:{wave['batch_number']}:provider-ledger",
+            wave.get("provider_identity_ledger") or {},
+            (wave.get("provider_identity_ledger") or {}).get("valid") is True,
+        ) for arm, wave in reasoning_waves],
+        "exact_bootstrap_clones": [gate_member(
+            str(world["world_id"]), world,
+            bool(world.get("population_digest"))
+            and len(world["arm_results"]) == len(P7_ARMS),
+        ) for world in world_results],
+        "exact_paired_population": [gate_member(
+            ":".join(map(str, key)), endpoint,
+            endpoint_keys.count(key) == 1 and key in expected_keys,
+        ) for key, endpoint in zip(endpoint_keys, endpoints, strict=True)],
+        "identical_budgets": [gate_member(
+            str(arm["tenant_id"]), arm.get("budget_contract"),
+            isinstance(arm.get("budget_contract"), dict)
+            and arm.get("budget_contract") == budget_reference,
+        ) for arm in all_arms],
+        "isolated_tenants": [gate_member(
+            str(arm["tenant_id"]), {"tenant_id": arm["tenant_id"]},
+            tenant_counts[str(arm["tenant_id"])] == 1,
+        ) for arm in all_arms],
+        "no_frozen_or_observation_mutation": [gate_member(
+            str(arm["tenant_id"]), arm,
+            bool(arm["arm_contract_satisfied"]),
+        ) for arm in all_arms if arm["arm"] in {"frozen", "observation_only"}],
+        "no_hidden_model_access": [gate_member(
+            f"{arm['tenant_id']}:batch:{wave['batch_number']}:retrieval-policy",
+            {"retrieval_policy": wave.get("retrieval_policy")},
+            wave.get("retrieval_policy") == "hide_models",
+        ) for arm, wave in hidden_waves],
+        "semantic_outcome_calibration": [gate_member(
+            f"{row['world_id']}:{row['arm_id']}:{row['storyline_id']}:calibration",
+            row.get("external_outcome_calibration_ece") or {},
+            bool(row.get("external_outcome_calibration_ece", {}).get("measured")),
+        ) for row in endpoints if row["stage_batch"] == 12],
+        "zero_false_truth_from_noise": [gate_member(
+            f"{row['world_id']}:{row['arm_id']}:{row['stage_batch']}:{row['storyline_id']}:noise",
+            {"false_truth_from_noise": row["false_truth_from_noise"]},
+            int(row["false_truth_from_noise"]) == 0,
+        ) for row in endpoints],
+    }
+    if set(gate_members) != set(gates) or any(not members for members in gate_members.values()):
+        raise InvariantViolation(
+            "P7_POSTFREEZE_GATE_MEMBERS_INCOMPLETE",
+            "every hard gate requires a nonempty raw member denominator",
+        )
+    derived_gates = {
+        name: all(member["conforms"] for member in members)
+        for name, members in gate_members.items()
+    }
+    if derived_gates != gates:
+        raise InvariantViolation(
+            "P7_POSTFREEZE_GATE_SUMMARY_MISMATCH",
+            "hard gate summaries must agree with raw member evidence",
+        )
     verdict, decision = _strategic_decision(
         endpoints=endpoints, intervals=intervals,
         correction_by_arm=correction_by_arm,
@@ -786,6 +883,8 @@ def evaluate_frozen_worlds(
         "correction_and_stale_exposure": corruption_metrics,
         "tokens_calls_and_wall_time": arm_economics,
         "hard_gates": gates,
+        "hard_gate_members": gate_members,
+        "run_provenance": execution_artifact.get("run_provenance"),
         "memory_earns_decision": decision,
         "stopping_rule": {
             "continue": continue_worlds and len(world_results) < P7_MAX_WORLD_COUNT,

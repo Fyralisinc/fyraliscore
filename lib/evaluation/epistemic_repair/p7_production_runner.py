@@ -117,6 +117,10 @@ def assess_provider_identity_receipts(
         for row in attempt_receipts
         if str(row.get("logical_call_id")) not in call_ids
     ]
+    nonreported_usage = [
+        str(row.get("physical_attempt_id")) for row in attempt_receipts
+        if row.get("usage_exactness") != "reported"
+    ]
     errors = []
     if not logical_receipts or not attempt_receipts:
         errors.append("missing durable logical or physical provider receipts")
@@ -130,6 +134,8 @@ def assess_provider_identity_receipts(
         errors.append("provider/model identity mismatch")
     if orphan_attempts:
         errors.append("physical attempts lack a matching logical receipt")
+    if nonreported_usage:
+        errors.append("Codex economics require provider-reported token usage")
     return {
         "valid": not errors,
         "required_provider": required_provider,
@@ -142,6 +148,7 @@ def assess_provider_identity_receipts(
         "missing_identity_receipts": missing_identity,
         "identity_mismatches": mismatches,
         "orphan_attempts": orphan_attempts,
+        "nonreported_usage_attempts": nonreported_usage,
         "errors": errors,
     }
 
@@ -160,7 +167,7 @@ async def _validate_provider_identity_ledger(
     )]
     attempts = [dict(row) for row in await conn.fetch(
         """SELECT physical_attempt_id,logical_call_id,provider,model,purpose,
-                  input_tokens,output_tokens
+                  input_tokens,output_tokens,usage_exactness
            FROM llm_provider_attempt_receipts WHERE tenant_id=$1""",
         tenant_id,
     )]
