@@ -43,6 +43,37 @@ def _json_object(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _resolve_claim_lineage(claims: list[dict[str, Any]]) -> None:
+    """Attach canonical source Models and transitive observation lineage."""
+
+    claims_by_id = {str(claim["id"]): claim for claim in claims}
+    version_to_claim = {
+        str(claim["truth_version_id"]): str(claim["id"]) for claim in claims
+    }
+
+    def signals(claim_id: str, visiting: frozenset[str] = frozenset()) -> list[str]:
+        if claim_id in visiting:
+            return []
+        claim = claims_by_id[claim_id]
+        values = set(claim["direct_evidence_signal_ids"])
+        for version_id in claim["source_model_version_ids"]:
+            source_claim_id = version_to_claim.get(version_id)
+            if source_claim_id is not None:
+                values.update(signals(source_claim_id, visiting | {claim_id}))
+        return sorted(values)
+
+    for claim in claims:
+        claim["source_model_ids"] = sorted({
+            version_to_claim[version_id]
+            for version_id in claim["source_model_version_ids"]
+            if version_id in version_to_claim
+        })
+        claim["evidence_signal_ids"] = signals(str(claim["id"]))
+        claim["is_canonical_synthesis"] = (
+            claim.get("truth_candidate_kind") == "synthesis"
+        )
+
+
 def _signal_fate_rows(
     observation_to_signal: dict[str, str],
     *,
@@ -170,6 +201,7 @@ async def extract_p6_postfreeze_evidence(
     claim_rows = _rows(await conn.fetch(
         """SELECT model.id,model.truth_version_id,model.natural_text,
                   model.proposition,model.confidence,model.truth_lifecycle,
+                  candidate.kind AS truth_candidate_kind,
                   COALESCE((SELECT jsonb_agg(jsonb_build_object(
                     'kind',ref.evidence_kind,'id',ref.evidence_id,
                     'role',ref.evidence_role,'reference_id',ref.reference_id)
@@ -200,17 +232,24 @@ async def extract_p6_postfreeze_evidence(
                     WHERE binding.tenant_id=model.tenant_id
                       AND binding.model_version_id=model.truth_version_id),'[]'::jsonb)
                     AS scope_entities
-           FROM accepted_current_models model WHERE model.tenant_id=$1
+           FROM accepted_current_models model
+           JOIN model_truth_versions version
+             ON version.tenant_id=model.tenant_id
+            AND version.version_id=model.truth_version_id
+           JOIN truth_candidates candidate
+             ON candidate.tenant_id=version.tenant_id
+            AND candidate.candidate_id=version.source_candidate_id
+            AND candidate.candidate_version=version.source_candidate_version
+           WHERE model.tenant_id=$1
            ORDER BY model.truth_advanced_at,model.id""",
         tenant_id,
     ))
     claims = []
-    version_to_claim: dict[str, str] = {}
     for row in claim_rows:
         evidence = _json_list(row.pop("evidence"))
         row["proposition"] = _json_object(row.get("proposition"))
         row["scope_entities"] = _json_list(row.get("scope_entities"))
-        evidence_signal_ids = [
+        direct_evidence_signal_ids = [
             observation_to_signal[str(item.get("id"))]
             for item in evidence
             if item.get("kind") == "observation"
@@ -218,16 +257,32 @@ async def extract_p6_postfreeze_evidence(
         ]
         claim = {
             **row,
-            "evidence_signal_ids": evidence_signal_ids,
+            "direct_evidence_signal_ids": direct_evidence_signal_ids,
+            "evidence_signal_ids": direct_evidence_signal_ids,
+            "source_model_version_ids": [
+                str(item.get("id")) for item in evidence
+                if item.get("kind") == "model_version" and item.get("id")
+            ],
             "evidence_references": evidence,
         }
         claims.append(claim)
-        version_to_claim[str(row["truth_version_id"])] = str(row["id"])
+    _resolve_claim_lineage(claims)
 
     relation_rows = _rows(await conn.fetch(
         """SELECT relation.id,relation.truth_relation_version_id,
                   relation.truth_relation_kind AS relation_kind,
                   relation.truth_rationale AS rationale,
+                  COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                    'evidence_reference_id',evidence.evidence_reference_id,
+                    'model_version_id',evidence.model_version_id,
+                    'evidence_digest',evidence.evidence_digest,
+                    'polarity',evidence.polarity,'weight',evidence.weight)
+                    ORDER BY evidence.evidence_reference_id)
+                    FROM relation_truth_evidence evidence
+                    WHERE evidence.tenant_id=relation.tenant_id
+                      AND evidence.relation_version_id=
+                          relation.truth_relation_version_id),'[]'::jsonb)
+                    AS truth_evidence,
                   COALESCE((SELECT jsonb_agg(jsonb_build_object(
                     'claim_id',participant.model_id,'model_version_id',
                     participant.model_version_id,'role',participant.role,
@@ -243,6 +298,7 @@ async def extract_p6_postfreeze_evidence(
     ))
     for row in relation_rows:
         row["participants"] = _json_list(row.get("participants"))
+        row["truth_evidence"] = _json_list(row.get("truth_evidence"))
 
     lifecycle = _rows(await conn.fetch(
         """SELECT event.lifecycle_event_id AS id,event.model_id,event.transition AS action,

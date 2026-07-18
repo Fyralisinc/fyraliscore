@@ -198,6 +198,29 @@ async def _snapshot(pool: asyncpg.Pool, tenant_id: UUID) -> dict[str, Any]:
         }
 
 
+async def _freeze_zero_seed_preflight(
+    conn: asyncpg.Connection, tenant_id: UUID,
+) -> dict[str, Any]:
+    """Freeze database-observed canonical truth before the first signal."""
+
+    counts = {
+        "accepted_model_count": int(await conn.fetchval(
+            "SELECT count(*) FROM accepted_current_models WHERE tenant_id=$1",
+            tenant_id,
+        )),
+        "accepted_relation_count": int(await conn.fetchval(
+            "SELECT count(*) FROM accepted_current_relations WHERE tenant_id=$1",
+            tenant_id,
+        )),
+    }
+    captured_at = datetime.now(timezone.utc).isoformat()
+    return {
+        **counts,
+        "captured_at": captured_at,
+        "source": "database_preflight_before_first_signal",
+    }
+
+
 async def _complete_and_reopen_barrier(
     conn: asyncpg.Connection, *, tenant_id: UUID, batch_number: int,
     previous_model_versions: set[UUID],
@@ -532,10 +555,12 @@ async def run_p6_production_think(
     observation_to_signal: dict[str, str] = {}
     boundary_decisions: list[dict[str, str]] = []
     terminal_reason: str | None = None
+    zero_seed_preflight: dict[str, Any] | None = None
     try:
         async with pool.acquire() as conn:
             await conn.execute("INSERT INTO tenants(id,name,is_demo) VALUES($1,$2,FALSE)",
                                tenant_id, f"p6-production-{tenant_id}")
+            zero_seed_preflight = await _freeze_zero_seed_preflight(conn, tenant_id)
         # Imports are delayed because this evaluator reuses benchmark transport
         # orchestration, not its scenario/gold construction.
         from scripts.run_1000_signal_model_layer_probe import enqueue_t1_for_observations
@@ -646,6 +671,7 @@ async def run_p6_production_think(
                 "waves": waves, "terminal_reason": terminal_reason,
                 "elapsed_s": round(time.monotonic() - started, 3),
                 "run_provenance": run_provenance,
+                "zero_seed_preflight": zero_seed_preflight,
                 "timeout_budget": {
                     "attempt_timeout_s": attempt_timeout_s, "max_attempts": 2,
                     "batch_deadline_s": per_batch_timeout_s,
@@ -686,6 +712,7 @@ async def run_p6_production_think(
             "gold_visible_during_execution": False,
             "boundary_decisions": boundary_decisions,
             "run_provenance": run_provenance,
+            "zero_seed_preflight": zero_seed_preflight,
             "timeout_budget": {
                 "attempt_timeout_s": attempt_timeout_s, "max_attempts": 2,
                 "batch_deadline_s": per_batch_timeout_s,
