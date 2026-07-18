@@ -7,6 +7,7 @@ import pytest
 from pydantic import BaseModel
 
 from lib.llm.telemetry import InMemoryLLMReceiptSink
+from lib.shared.ids import uuid7
 from services.domain.entity_grounding.learned_discovery import LearnedMentionBatch
 from services.evaluation.epistemic_repair.cf2_provider import (
     CF2ProviderFreeLLM,
@@ -129,7 +130,7 @@ async def test_raw_diff_noop_uses_runtime_ids_and_emits_receipts() -> None:
 
 async def test_repair_prompt_exposes_required_raw_diff_coordinates() -> None:
     provider = CF2ProviderFreeLLM()
-    tenant_id, trigger_id = uuid4(), uuid4()
+    tenant_id, trigger_id = uuid4(), uuid7()
     pair = build_prompt(
         TriggerContext(
             kind="T4",
