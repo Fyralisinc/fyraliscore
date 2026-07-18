@@ -6,8 +6,11 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** M0 and CF3-A are green; the fresh founder-assisted
-CF3-B rerun is red only on material prior-Model use. Tenant
+**Current checkpoint:** M0 and CF3-A are green. The exact-scope prior-memory
+effect contract is implemented and deterministically proven through production
+compile, validate, and PostgreSQL apply boundaries; a fresh provider CF3-B
+rerun is now the only remaining proof for that repair. The previous
+founder-assisted CF3-B rerun was red only on material prior-Model use. Tenant
 `cb3a8a53-5222-4b31-90ee-f86bf1b68589` completed two production ThinkWorker
 Codex batches in `414.720s` (`259.934s` and `154.671s`). Its receipted founder
 bootstrap established four exact aliases before enqueue, seeded zero semantic
@@ -18,9 +21,15 @@ batch-1 versions and durably referenced two, but its reasoning trace referenced
 zero and materially used zero. Both barriers closed complete with zero pending
 work. All other CF3-B gates are green. The run carried 26 matching provider
 receipts totaling 376,056 input, 38,852 output, and 248,064 cache tokens.
-Retrieval and founder grounding are therefore healthy; the active P0 is the
-missing exact-scope join/prompt/application effect contract that makes prior
-truth change a batch-2 decision. Exact-envelope deduplication is deferred
+Retrieval and founder grounding are therefore healthy. The former missing
+exact-scope join/prompt/application effect contract now binds exact same-scope
+prior Models, requires an explicit supports/weakens/contradicts/none decision,
+authorizes only claim-local evidence, compiles that decision into the existing
+lifecycle boundary, and reports material use only when the provider trace and
+applied effect agree. A PostgreSQL proof advances the exact prior truth head,
+attaches the new evidence, and preserves the new singleton atomic Model. The
+fresh two-wave run must now prove the real provider uses this contract.
+Exact-envelope deduplication is deferred
 because collapsing repeated evidence requires explicit temporal semantics.
 CF3-C remains locked.
 

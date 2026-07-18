@@ -2263,3 +2263,34 @@ of an exact prior Model version. Keep CF3-C locked until that contract passes.
 deduplicated before reasoning, but repetition can mean corroboration, continued
 state, or a later recurrence. Exact-envelope deduplication is therefore not the
 current fix and remains deferred until its temporal semantics are specified.
+
+### 2026-07-19 — LOG-066 — Exact-scope prior memory now has a governed application path
+
+**Repair:** Atomic decision candidates now bind only to active prior Models
+whose explicit canonical scope exactly matches the candidate. The provider must
+classify each comparison as `supports`, `weakens`, `contradicts`, or `none` and
+cite claim-local evidence. The compiler authorizes the prior Model and evidence
+against the candidate, then maps accepted effects into the existing lifecycle
+boundary. `supersedes` remains blocked until an accepted successor Model exists
+rather than being approximated as revision.
+
+**Telemetry and evaluator:** Material prior-memory use now requires agreement
+between exact selected prior identity, authorized effect metadata, a coherent
+applied lifecycle action, and a provider/compiler reasoning trace naming the
+prior Model, candidate, and relation. Retrieval presence, durable reference,
+unchanged output, or generic lifecycle pressure cannot independently count.
+
+**Deterministic proof:** Focused contract and telemetry suites passed, and the
+PostgreSQL vertical in
+`services/reasoning/think/tests/test_prior_memory_effect_apply.py` passed
+compile → validate → apply. A `supports` decision advanced the exact prior
+Model truth head from version 1 to version 2, attached only the new claim-local
+observation, and simultaneously preserved the new observation as a separate
+version-1 singleton atomic Model. Ruff and diff checks are green.
+
+**Reflection:** This repair targets the actual failed boundary instead of
+increasing retrieval, changing identity policy, or deduplicating temporal
+evidence. It is not yet proof that the real provider follows the new output
+contract. Run exactly one fresh two-wave CF3-B canary next; if it fails, inspect
+that artifact and repair only the single governing defect. Keep all unrelated
+worker-suite and temporal-compaction issues in the ledger.
