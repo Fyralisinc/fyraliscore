@@ -945,6 +945,49 @@ work. The 27-cell exit remains fail-closed.
 statement/table-page path; later concurrent barrier tail spikes; arm-order and
 host-load confounding.
 
+### 2026-07-18 — LOG-033 — A live run is evidence only when its proof harness is causal
+
+**Type:** observed + corrected
+
+**Work package / commit:** P6 production Think; `a81045b5`, `8cfdf62a`,
+`fb5402e3`, `b2ce3138`, `ec0bb334`, and `5382f2da`.
+
+**What happened:** The original live runner reported a generic pending-work
+count but never completed a durable company-learning barrier. A long run from
+the shared agent worktree was also vulnerable to code changing beneath it.
+After causal barriers were added, downstream repair processing exposed three
+accepted-model readers that still expected legacy columns from the truth-only
+view. The initial 300-second outer batch deadline was identical to the worker
+attempt timeout, preventing the established one-retry owner from running.
+Finally, Codex CLI receipts estimated tokens even though `codex exec --json`
+reports exact turn usage.
+
+**Evidence:** `/tmp/p6-think-invalid-no-barrier-partial.json`;
+`/tmp/p6-think-1batch-barrier-smoke-ec0bb334.json`; failed pinned smoke
+exceptions for `proposition_kind`; `/tmp/p6-think-12batch-pinned-ec0bb334.json`.
+
+**Interpretation:** Production-shaped execution alone is not proof. The runner
+must have a stable code identity, drain truth-changing work, atomically fence
+exact accepted versions, reopen the receipt, preserve retry ownership, and
+record provider-reported economics. Compatibility adapters must cover every
+reader of fields not yet present in immutable truth versions.
+
+**Decision or next test:** Run only from a detached clean worktree and record
+its commit. Use one 300-second provider attempt retry within a distinct
+650-second batch deadline. Require zero truth-critical triggers at each
+barrier, split eventual sidecars explicitly, and require reported Codex CLI
+usage. Validate the independent evidence extractor and scorer on a fresh
+one-batch run before another 12-batch spend.
+
+**Coordinator impact:** P6 raw runs are frozen execution artifacts, never exit
+artifacts. The independent scorer remains fail-closed until boundary, signal
+fate, retrieval opportunity, scope, lifecycle, relation, calibration, and
+contamination evidence is complete.
+
+**Edge cases added:** missing barrier invocation; shared-worktree drift; stale
+accepted readers; retry budget shadowing; estimated usage despite reported
+provider telemetry.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
