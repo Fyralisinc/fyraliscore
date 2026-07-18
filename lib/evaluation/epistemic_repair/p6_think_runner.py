@@ -142,6 +142,58 @@ async def _complete_and_reopen_barrier(
     }, current_models)
 
 
+async def _drain_truth_critical_work(
+    pool: asyncpg.Pool, worker: ThinkWorker, *, tenant_id: UUID,
+    max_cycles: int = 8,
+) -> dict[str, Any]:
+    """Process batched downstream truth work until the barrier can close."""
+
+    cycle_receipts: list[dict[str, int]] = []
+    for cycle in range(1, max_cycles + 1):
+        async with pool.acquire() as conn:
+            pending_before = int(await conn.fetchval("""
+                SELECT count(*) FROM think_trigger_queue
+                WHERE tenant_id=$1 AND completed_at IS NULL
+            """, tenant_id))
+            if pending_before == 0:
+                return {
+                    "complete": True, "cycles": cycle - 1,
+                    "cycle_receipts": cycle_receipts, "pending_after": 0,
+                }
+            # Preserve semantic batching while making the finite proof runner
+            # independent of wall-clock batch-window sleeps.
+            await conn.execute("""
+                UPDATE think_trigger_queue
+                SET enqueued_at=now()-interval '2 seconds', scheduled_for=now()
+                WHERE tenant_id=$1 AND completed_at IS NULL
+            """, tenant_id)
+        await worker._poll_and_dispatch()
+        tasks = tuple(worker._in_flight)
+        if tasks:
+            await asyncio.gather(*tasks)
+        async with pool.acquire() as conn:
+            pending_after = int(await conn.fetchval("""
+                SELECT count(*) FROM think_trigger_queue
+                WHERE tenant_id=$1 AND completed_at IS NULL
+            """, tenant_id))
+        cycle_receipts.append({
+            "cycle": cycle, "pending_before": pending_before,
+            "dispatched_batches": len(tasks), "pending_after": pending_after,
+        })
+        if pending_after == 0:
+            return {
+                "complete": True, "cycles": cycle,
+                "cycle_receipts": cycle_receipts, "pending_after": 0,
+            }
+        if not tasks and pending_after >= pending_before:
+            break
+    return {
+        "complete": False, "cycles": len(cycle_receipts),
+        "cycle_receipts": cycle_receipts,
+        "pending_after": cycle_receipts[-1]["pending_after"] if cycle_receipts else 0,
+    }
+
+
 async def _llm_receipts(pool: asyncpg.Pool, tenant_id: UUID) -> list[dict[str, Any]]:
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
@@ -256,7 +308,10 @@ async def run_p6_production_think(
             tenant_filter=tenant_id, worker_id=f"p6-{tenant_id}",
             t1_batch_window_s=1.0, t1_batch_min_size=25,
             t1_batch_max_size=25, run_timeout_s=per_batch_timeout_s,
-            process_background_triggers=False,
+            downstream_batch_window_s=1.0,
+            downstream_batch_min_size=2,
+            t4_batch_max_size=4,
+            process_background_triggers=True,
         ),
         llm_provider=provider, mention_discovery_provider=provider,
         embedder=embedder,
@@ -305,7 +360,16 @@ async def run_p6_production_think(
                 break
             run = execution.get("run") or {}
             barrier_receipt: dict[str, Any] | None = None
+            truth_drain: dict[str, Any] | None = None
             if run.get("status") == "success":
+                async with asyncio.timeout(min(per_batch_timeout_s, remaining)):
+                    truth_drain = await _drain_truth_critical_work(
+                        pool, worker, tenant_id=tenant_id,
+                    )
+                if not truth_drain["complete"]:
+                    terminal_reason = (
+                        f"batch_{batch.batch_number}_truth_drain_incomplete"
+                    )
                 async with pool.acquire() as conn, conn.transaction():
                     barrier_receipt, previous_model_versions = (
                         await _complete_and_reopen_barrier(
@@ -319,6 +383,7 @@ async def run_p6_production_think(
                 "batch_number": batch.batch_number,
                 "status": run.get("status") or "missing_run",
                 "execution": execution,
+                "truth_critical_drain": truth_drain,
                 "barrier_receipt": barrier_receipt,
                 "snapshot": snapshot,
                 "elapsed_s": round(time.monotonic() - batch_started, 3),

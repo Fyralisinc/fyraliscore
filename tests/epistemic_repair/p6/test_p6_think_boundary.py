@@ -39,6 +39,8 @@ def test_production_think_runner_requires_real_batch_worker() -> None:
     assert "t1_batch_max_size=25" in source
     assert "DeepSeek" not in source
     assert "P6 production proof requires a clean pinned worktree" in source
+    assert "_drain_truth_critical_work" in source
+    assert "process_background_triggers=True" in source
 
 
 @pytest.mark.asyncio
