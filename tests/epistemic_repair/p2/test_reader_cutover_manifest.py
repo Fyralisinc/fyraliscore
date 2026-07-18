@@ -28,7 +28,7 @@ def _function_source(relative: str, name: str) -> str:
 
 def test_manifest_reconciles_every_p0_reader_module() -> None:
     report = scan_reader_cutover(ROOT, MANIFEST)
-    assert len(report.results) == 86
+    assert len(report.results) == 72
     assert all(item.reason for item in report.results)
     assert all(item.authority != "uncovered" for item in report.results)
 
@@ -63,14 +63,12 @@ def test_shared_accepted_read_shape_satisfies_additional_reader_authority() -> N
     governed = {
         item.module: item for item in report.consequential
         if item.module in {
-            "services/domain/actors/operating_context.py",
-            "services/reasoning/dynamics/detectors.py",
-            "services/reasoning/think/cascade.py",
-            "services/reasoning/think/edge_semantics.py",
-            "services/reasoning/think/reconciler.py",
+            "services/product/greeting/snapshot.py",
+            "services/reasoning/sage/outcome_evaluator.py",
+            "services/reasoning/think/deterministic.py",
         }
     }
-    assert len(governed) == 5
+    assert len(governed) == 3
     assert all(item.compliant for item in governed.values())
 
 

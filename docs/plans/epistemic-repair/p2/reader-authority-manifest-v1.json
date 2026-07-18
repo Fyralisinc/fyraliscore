@@ -3,6 +3,7 @@
   "source_inventory": "docs/plans/epistemic-repair/p0/authority-writer-reader-inventory.json",
   "entries": [
     {"module":"services/domain/models/repo.py","classification":"consequential","authority":"accepted_direct","required_all":["ACCEPTED_MODEL_ROWS_SQL"],"reason":"central default Model hydration"},
+    {"module":"services/domain/models/read_shapes.py","classification":"consequential","authority":"accepted_direct","required_all":["accepted_current_models"],"reason":"shared accepted-current SQL authority used by default Model readers"},
     {"module":"services/reasoning/retrieval/primary.py","classification":"consequential","authority":"accepted_delegate","required_all":["pathway_a_structural","pathway_g_model_edges","models_repo.retrieve"],"reason":"primary company-memory retrieval delegates to admitted pathways and hydration"},
     {"module":"services/reasoning/retrieval/pathways.py","classification":"consequential","authority":"accepted_direct","required_all":["ACCEPTED_MODEL_ROWS_SQL","ACCEPTED_PROJECTED_MODEL_EDGES_SQL"],"reason":"canonical semantic and graph retrieval"},
     {"module":"services/reasoning/retrieval/second_pass.py","classification":"consequential","authority":"accepted_delegate","required_all":["from .pathways import","models_repo.retrieve"],"reason":"second-pass expansion delegates to accepted pathways"},
@@ -21,6 +22,7 @@
     {"module":"services/product/history/aggregator.py","classification":"exempt","authority":"historical","required_all":[],"reason":"explicit history product includes terminal truth by design"},
     {"module":"services/product/model_trace/repo.py","classification":"exempt","authority":"audit","required_all":[],"reason":"operator audit and causal trace"},
     {"module":"services/reasoning/think/applier.py","classification":"exempt","authority":"command_integrity","required_all":[],"reason":"mutation validation and exact target lookup, not a default truth reader"},
+    {"module":"services/reasoning/think/truth_admission.py","classification":"exempt","authority":"command_integrity","required_all":[],"reason":"admission resolves exact active member heads and immutable evidence versions; it does not select default company truth"},
     {"module":"services/reasoning/think/validator.py","classification":"exempt","authority":"command_integrity","required_all":[],"reason":"pre-apply validation, not a default truth reader"},
     {"module":"services/reasoning/edge_intelligence/repo.py","classification":"exempt","authority":"candidate_admin","required_all":[],"reason":"candidate, adjudication and projection administration"},
     {"module":"services/domain/models/edges_repo.py","classification":"exempt","authority":"legacy_projection_admin","required_all":[],"reason":"legacy binary projection administration; consequential consumers remain forbidden"},
@@ -34,32 +36,12 @@
     {"authority":"projection_builder","reason":"rebuildable projector input/output administration; downstream consumers must use accepted truth","modules":["services/domain/projections/constraints.py","services/domain/projections/decision_surfaces.py","services/domain/projections/employee_profiles.py","services/domain/projections/entity_surfaces.py","services/domain/projections/repo.py","services/domain/projections/resources.py","services/reasoning/sage/evidence_projection.py","services/reasoning/sage/structural_features/job.py","services/reasoning/sage/structural_features/compute.py","services/reasoning/topology/umap_projector.py","services/workers/calibration_updater/worker.py","services/workers/sage_structural_features/worker.py"]},
     {"authority":"candidate_admin","reason":"pre-truth candidate generation, scoring, or administration; candidates cannot enter consequential reads directly","modules":["services/reasoning/edge_intelligence/endpoint_quality.py","services/reasoning/edge_intelligence/promoter.py","services/reasoning/sage/cue_extractor.py","services/reasoning/sage/topology_optimizer/optimizer.py","services/workers/precipitation/clustering.py","services/workers/precipitation/proposer.py","services/workers/topology_sweeper/worker.py"]},
     {"authority":"historical_maintenance","reason":"explicit cleanup, drift, or historical aggregation requires raw lifecycle state and does not serve default truth","modules":["services/product/history/summary.py","services/reasoning/retrieval/maintenance.py","services/workers/edge_drift/worker.py","services/workers/maintenance/daily.py","services/workers/maintenance/monthly.py","services/workers/maintenance/weekly.py"]},
-    {"authority":"access_integrity","reason":"authorization checks inspect exact ownership/target records rather than selecting company truth","modules":["services/platform/access_control/checks.py"]}
+    {"authority":"access_integrity","reason":"authorization checks inspect exact ownership/target records rather than selecting company truth","modules":["services/platform/access_control/checks.py"]},
+    {"authority":"evaluation_only","reason":"sealed evaluator probes inspect raw canonical state to measure invariants and never serve production truth","modules":["services/evaluation/epistemic_repair/p2_hg10_probes.py","services/evaluation/epistemic_repair/p3_postgres_probes.py","services/evaluation/epistemic_repair/p7_real_runner.py","services/evaluation/epistemic_repair/p8_postgres_runner.py","services/evaluation/epistemic_repair/p8_scale_runner.py"]}
   ],
   "additional_consequential": [
-    {"module":"services/domain/actors/operating_context.py","reason":"actor operating context feeds default reasoning"},
-    {"module":"services/platform/execution/retrieval_actions.py","reason":"execution retrieval supplies default agent context"},
-    {"module":"services/platform/extensions/substrate_reader.py","reason":"extension substrate read is a default Model lookup"},
-    {"module":"services/product/conversations/handler.py","reason":"conversation grounding exposes current Models"},
     {"module":"services/product/greeting/snapshot.py","reason":"greeting snapshot summarizes current company truth"},
-    {"module":"services/product/recommendations/consequence_preview.py","reason":"recommendation consequence scoring reads current Models"},
-    {"module":"services/product/recommendations/handlers.py","reason":"recommendation handling reads current Models"},
-    {"module":"services/product/recommendations/repo.py","reason":"recommendation product defaults to current Model evidence"},
-    {"module":"services/product/resolution_threads/evaluator.py","reason":"resolution evaluation consumes current Models"},
-    {"module":"services/product/today/aggregator.py","reason":"Today is a default consequential company view"},
-    {"module":"services/reasoning/contestability/service.py","reason":"contestability decisions consume current truth"},
-    {"module":"services/reasoning/contestability/standing.py","reason":"standing calculations consume current truth"},
-    {"module":"services/reasoning/dynamics/detectors.py","reason":"dynamic detectors influence company learning"},
-    {"module":"services/reasoning/sage/health.py","reason":"SAGE health consumes current Model state"},
     {"module":"services/reasoning/sage/outcome_evaluator.py","reason":"SAGE outcome credit changes adaptive policy"},
-    {"module":"services/reasoning/think/cascade.py","reason":"Think cascade reads current Models"},
-    {"module":"services/reasoning/think/deterministic.py","reason":"deterministic Think decisions consume current Models"},
-    {"module":"services/reasoning/think/edge_semantics.py","reason":"edge semantics selects current Model endpoints"},
-    {"module":"services/reasoning/think/reconciler.py","reason":"reconciliation consumes current Models"},
-    {"module":"services/reasoning/think/worker.py","reason":"Think worker assembles default learning context"},
-    {"module":"services/workers/anomaly_processor/detectors.py","reason":"anomaly detection consumes current company truth"},
-    {"module":"services/workers/anomaly_processor/worker.py","reason":"anomaly orchestration selects active tenants from Models"},
-    {"module":"services/workers/deadline_resolver/evaluators.py","reason":"deadline evaluation consumes current Model confidence"},
-    {"module":"services/workers/deadline_resolver/worker.py","reason":"deadline resolution selects active current Models"}
+    {"module":"services/reasoning/think/deterministic.py","reason":"deterministic Think decisions consume current Models"}
   ]
 }

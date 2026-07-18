@@ -146,6 +146,7 @@
     "services/reasoning/think/applier.py",
     "services/reasoning/think/deterministic.py",
     "services/reasoning/think/mutation_compiler.py",
+    "services/reasoning/think/truth_admission.py",
     "services/reasoning/think/validator.py",
     "services/reasoning/topology/field.py",
     "services/reasoning/topology/umap_projector.py",

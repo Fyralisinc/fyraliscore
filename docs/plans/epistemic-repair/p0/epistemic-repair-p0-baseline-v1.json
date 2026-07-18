@@ -18,8 +18,8 @@
   },
   "inventories": {
     "canonical_tables": 7,
-    "direct_writer_modules": 22,
-    "direct_reader_modules": 86,
+    "direct_writer_modules": 28,
+    "direct_reader_modules": 67,
     "known_authority_bypasses": 6,
     "illegal_truth_state_classes": 15,
     "legal_truth_state_controls": 4,
