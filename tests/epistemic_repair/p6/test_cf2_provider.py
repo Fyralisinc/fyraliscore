@@ -21,6 +21,7 @@ from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.compiled_reasoning import BatchMemoryDecisionSet
 from services.reasoning.think.diff_schema import RawDiff, RawDiffClaimsOnly
 from services.reasoning.think.prompt import build_prompt
+from services.workers.entity_resolver.worker import EntityResolution
 
 
 pytestmark = pytest.mark.asyncio
@@ -67,6 +68,32 @@ async def test_provider_supports_planner_and_conservative_main_defaults() -> Non
     assert [call.schema_name for call in provider.calls] == [
         "LLMCompactQuestionPlan", "BatchMemoryDecisionSet",
     ]
+
+
+async def test_provider_returns_conservative_unresolved_entity_resolution() -> None:
+    provider = CF2ProviderFreeLLM()
+
+    result = await provider.structured(
+        system="Resolve only from authoritative identity evidence.",
+        user=json.dumps({
+            "phrase": "Atlas release",
+            "candidates": [{
+                "candidate_id": "runtime-candidate",
+                "canonical_ref": {"type": "project", "id": "atlas-release"},
+            }],
+        }),
+        schema=EntityResolution,
+    )
+
+    assert result.candidate_id is None
+    assert result.canonical_ref is None
+    assert result.confidence == 0.0
+    assert result.reasoning == (
+        "CF2 provider-free unresolved: no authoritative identity evidence"
+    )
+    assert result.decision_source == "cf2_provider_free_conservative_unresolved"
+    assert result.resolution_scope == "request_local_unresolved"
+    assert provider.calls[0].schema_name == "EntityResolution"
 
 
 async def test_runtime_handler_can_decide_from_prompt_without_gold_import() -> None:

@@ -84,6 +84,11 @@ def _schema_name(schema: Mapping[str, Any]) -> str:
             return "BatchMemoryDecisionSet"
         if "RelationshipCandidateDecision" in definitions:
             return "RelationshipCandidateDecisionSet"
+    if {
+        "candidate_id", "canonical_ref", "confidence", "reasoning",
+        "decision_source", "resolution_scope",
+    } <= properties:
+        return "EntityResolution"
     if {"trigger_ref", "tenant_id", "claim_ops"} <= properties:
         return "RawDiff" if "edge_ops" in properties else "RawDiffClaimsOnly"
     raise UnsupportedCF2StructuredCall(
@@ -171,6 +176,16 @@ _SAFE_DEFAULTS: dict[str, CF2ResponseHandler] = {
     },
     "RelationshipCandidateDecisionSet": lambda _request: {
         "decisions": [], "reasoning_trace": "CF2 conservative no-op",
+    },
+    "EntityResolution": lambda _request: {
+        "candidate_id": None,
+        "canonical_ref": None,
+        "confidence": 0.0,
+        "reasoning": (
+            "CF2 provider-free unresolved: no authoritative identity evidence"
+        ),
+        "decision_source": "cf2_provider_free_conservative_unresolved",
+        "resolution_scope": "request_local_unresolved",
     },
     "RawDiff": _empty_raw_diff,
     "RawDiffClaimsOnly": _empty_raw_diff,
