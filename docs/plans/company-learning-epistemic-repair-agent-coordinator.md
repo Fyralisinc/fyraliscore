@@ -2,8 +2,8 @@
 
 **Document type:** Central implementation and evaluation coordinator
 
-**Status:** In execution — normalization contracts ready through P8; P6 decisive
-evidence run active; P7 and P8 reruns gated behind it
+**Status:** In execution — P6 semantic formation is locally proven; entity
+instrumentation and population-v3 smoke are the final pre-freeze gates
 
 **Active branch:** `codex/autonomous-company-learning`
 
@@ -26,16 +26,17 @@ evidence run active; P7 and P8 reruns gated behind it
 | P3 perception and grounding | Raw eligible probe evidence and strict P9 sidecar path ready; current-commit artifact regeneration remains required. | `b057a20e`, `5a7a30ce` |
 | P4 causal closure and feedback | Raw learning evidence and strict P9 sidecar path ready; bounded PostgreSQL evidence is not an integrated P6 substitute. | `e476f9fa` |
 | P5 zero-seed vertical | Strict member-derived P9 sidecar ready for the existing deterministic vertical. It proves a bounded vertical, not provider-semantic quality. | `ffaf1341` |
-| P6 12-batch mixed stream | Barrier reopen, retry ownership, pinned Codex CLI, reported usage, batch-level context scoring, independent post-freeze scoring, and strict P9 normalization are implemented. A clean pinned diagnostic/decisive run is active; no exit claim exists yet. | `5382f2da`, `fdb6796d`, `73fc8059` |
+| P6 12-batch mixed stream | Closed compiler-authored atomics, singleton evidence authorization, provisional typed scope, and population-scoped scoring are implemented. The latest one-batch smoke achieved atomic precision 1.0, recall 0.9167, F1 0.9565, scope precision/recall 1.0, and zero noise truth. Population v3 plus provisional mention instrumentation require one repinned smoke before the decisive 12-batch run. | `31bb8b3e`, `a9877010`, `ed40facf`, `4655c86a`, `32db1800` |
 | P7 matched memory ablation | Historical 45-call run remains falsifying/insufficient evidence. The production lifecycle runner, raw-member oracle, strict P9 sidecar, reported-usage gate, clean-worktree preflight, and exclusive lock are ready; provider execution waits for P6. | `f8375cdf`, `ba800d97` |
 | P8 fault, scale, and characterization | Historical fault proofs remain bounded; the one-pass concurrency result remains red. Strict P9 sidecar and preregistered repeated warm-pair diagnostic are ready; the locked rerun waits for P6/P7 ownership. | `345eb31c`, `f594cc16` |
 | P9 release decision | Fail-closed manifest, exact phase gate/metric sets, content digests, evidence classes, independent reviewer reproduction receipt, and verdict precedence are implemented. No release manifest may be sealed until current-commit P0-P8 artifacts exist. | `63809479`, `ca850161` |
 
 The repository now has strict normalization paths for P0-P8, but code readiness
-is not evidence readiness. The decisive dependency is the active P6 run on one
-pinned clean commit. P7 may start only after P6 produces a digest-bound exit
-artifact; P8 warm-pair work must retain exclusive database ownership; P9 may
-consume only artifacts regenerated on the selected release commit.
+is not evidence readiness. The decisive dependency is one population-v3
+25-signal semantic/entity smoke followed by the full P6 run on a pinned clean
+commit. P7 may start only after P6 produces a digest-bound exit artifact; P8
+warm-pair work must retain exclusive database ownership; P9 may consume only
+artifacts regenerated on the selected release commit.
 
 Every real-model phase, including P7 ablations, must use only
 `CODEX_TRANSPORT=cli` and prove `provider=codex`, the pinned model, and

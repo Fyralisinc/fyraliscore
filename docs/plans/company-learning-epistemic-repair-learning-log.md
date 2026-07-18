@@ -1118,6 +1118,79 @@ contamination and positive, workstream-local Model formation.
 claim rolling back siblings; first-twelve batch ID inheritance; `about=batch`;
 batch-level ownership aggregation; successful zero-Model barrier.
 
+### 2026-07-18 — LOG-037 — Claim locality must survive every transformation seam
+
+**Type:** observed + corrected
+
+**Work package / commit:** P6 semantic formation; `b70b3b11`, `6e84b32f`,
+`31bb8b3e`, and `a9877010`.
+
+**What happened:** Closed one-observation candidates were correct at formation,
+but same-scope reconciliation and a second evidence-defaulting pass resurrected
+sibling evidence. Strict canonical manifest authorization rejected both runs
+before truth was written. After repairing the complete compiler -> splitter ->
+reconciler -> apply -> truth path, a clean 25-signal Codex smoke accepted 11
+Models with one exact observation each and no noise truth. A final audit found
+group-wide contextual metadata even though canonical evidence was local; that
+metadata is now rebuilt from the same singleton manifest.
+
+**Evidence:** `/tmp/p6-think-1batch-closed-b70b3b11.json` and
+`/tmp/p6-think-1batch-closed-6e84b32f.json` are immutable failed safety
+diagnostics. `/tmp/p6-think-1batch-closed-31bb8b3e.json` completed with atomic
+precision 1.0, recall 0.9167, F1 0.9565, scope precision/recall 1.0, and zero
+noise-derived Models or relations after population-scoped rescoring.
+
+**Interpretation:** Claim-local evidence is an end-to-end invariant, not a
+compiler property. IDs, bodies, semantic evidence counts, contextual frames,
+watch selectors, and source channels must all remain aligned through every
+mutation seam. Canonical admission must continue to fail closed on any drift.
+
+**Decision or next test:** Keep compiler-authored closed assertions immutable;
+let the model accept or reject but not rewrite them. Require full-path DB tests
+for evidence locality before any provider rerun. Repin the next smoke after
+population-v3 mention instrumentation, then freeze the full P6 release commit.
+
+**Coordinator impact:** P6 now has a positive semantic readiness gate rather
+than treating transport completion or evidence-row existence as success.
+
+**Edge cases added:** same-scope distinct atomics; stale proposition evidence;
+post-split evidence resurrection; semantic metadata wider than canonical refs;
+same assertion confirmed by a later observation.
+
+### 2026-07-18 — LOG-038 — Entity existence, identity, and relevance are different
+
+**Type:** observed + corrected
+
+**Work package / commit:** P6 perception/evaluation; `4655c86a`, `32db1800`.
+
+**What happened:** The first mention report exposed useful surfaces but lost
+their persisted nested spans and type assessments, while the evaluator treated
+`Facilities` and `Beacon office ticket` as false mentions because their signals
+were distractors. That would reward erasing legitimate local company entities.
+
+**Evidence:** The population-v2 smoke produced correct storyline surfaces plus
+local distractor surfaces, but reported null spans/types/fates. Repository
+inspection proved span and type live in candidate-plane detection structures;
+canonical resolution did not yet exist. Population v3 now distinguishes
+required storyline mentions, optional organizational units, required local
+work items, identity-link correctness, and zero truth contamination.
+
+**Interpretation:** Extraction answers whether text names an entity; resolution
+answers which entity it is; relevance answers whether it matters to the current
+storyline; truth admission answers whether it supports a durable Model. These
+must never be collapsed into one binary label.
+
+**Decision or next test:** Persist provisional extraction coordinates and
+explicit unresolved fate, report them without fabricating canonical resolution,
+and require local distractor entities to remain distinct from storyline refs.
+
+**Coordinator impact:** P6 population advanced to v3, intentionally
+invalidating prior digest-bound artifacts and requiring a fresh smoke.
+
+**Edge cases added:** optional organizational-unit mention; named local ticket;
+same tokens as a storyline but distinct identity; provisional versus resolved
+coordinate; rejected detection must not count as a positive mention fate.
+
 ## 13. Entry Template
 
 Copy this section for every new learning:
