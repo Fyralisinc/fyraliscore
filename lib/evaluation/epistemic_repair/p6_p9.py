@@ -73,13 +73,26 @@ def _passes(value: float, operator: str, threshold: float) -> bool:
     return value >= threshold if operator == ">=" else value <= threshold if operator == "<=" else value == threshold
 
 
-def build_p6_p9_sidecar(*, execution_path: Path, score_path: Path) -> dict[str, Any]:
+def build_p6_p9_sidecar(
+    *, execution_path: Path, evidence_path: Path, score_path: Path,
+) -> dict[str, Any]:
     execution, execution_sha = _read(execution_path)
+    evidence_artifact, evidence_sha = _read(evidence_path)
     score, score_sha = _read(score_path)
     if execution.get("schema_version") != "epistemic-repair-p6-production-think-v1":
         raise ValueError("unexpected P6 execution schema")
+    if evidence_artifact.get("schema_version") != "epistemic-repair-p6-postfreeze-evidence-artifact-v1":
+        raise ValueError("unexpected P6 post-freeze evidence artifact schema")
     if score.get("schema_version") != "epistemic-repair-p6-postfreeze-score-v1":
         raise ValueError("unexpected P6 post-freeze score schema")
+    evidence_artifact_body = dict(evidence_artifact)
+    evidence_artifact_digest = evidence_artifact_body.pop("content_digest", None)
+    if (
+        not isinstance(evidence_artifact_digest, str)
+        or evidence_artifact_digest != canonical_sha256(evidence_artifact_body)
+        or evidence_artifact.get("raw_execution_digest") != canonical_sha256(execution)
+    ):
+        raise ValueError("P6 evidence artifact digest or raw execution binding is invalid")
     score_body = dict(score)
     score_digest = score_body.pop("content_digest", None)
     if not isinstance(score_digest, str) or score_digest != canonical_sha256(score_body):
@@ -89,11 +102,12 @@ def build_p6_p9_sidecar(*, execution_path: Path, score_path: Path) -> dict[str, 
         "raw_execution", "sealed_population", "preregistration",
     } or any(not _HEX64.fullmatch(str(value or "")) for value in input_digests.values()):
         raise ValueError("P6 score input digest contract is incomplete")
-    if input_digests["raw_execution"] != canonical_sha256(execution):
-        raise ValueError("P6 score is not bound to the reopened raw execution")
+    frozen_execution = {**execution, "postfreeze_evidence": evidence_artifact.get("postfreeze_evidence")}
+    if input_digests["raw_execution"] != canonical_sha256(frozen_execution):
+        raise ValueError("P6 score is not bound to the canonical raw-plus-evidence composition")
     if execution.get("population_digest") != input_digests["sealed_population"]:
         raise ValueError("P6 execution and score bind different sealed populations")
-    evidence = execution.get("postfreeze_evidence")
+    evidence = evidence_artifact.get("postfreeze_evidence")
     if not isinstance(evidence, dict):
         raise ValueError("P6 post-freeze evidence is missing")
     evidence_body = dict(evidence)
@@ -127,6 +141,8 @@ def build_p6_p9_sidecar(*, execution_path: Path, score_path: Path) -> dict[str, 
         or execution.get("mixed_llm_attempt_count") != 0
     ):
         raise ValueError("P6 execution has missing or mixed commit/provider/model/transport identity")
+    if evidence_artifact.get("commit") != commit:
+        raise ValueError("P6 evidence artifact has mixed commit identity")
     attempts = execution.get("llm_attempt_receipts")
     if not isinstance(attempts, list) or not attempts or any(
         row.get("provider") != provider or row.get("model") != model
@@ -150,12 +166,12 @@ def build_p6_p9_sidecar(*, execution_path: Path, score_path: Path) -> dict[str, 
             eligible = row.get("denominator")
             if name not in CALIBRATION_METRICS or not isinstance(eligible, int) or not 0 < eligible < 20 or row.get("numerator") is not None:
                 raise ValueError(f"invalid calibration insufficient-population state: {name}")
-            numerator, denominator = 0, eligible
+            numerator, denominator = None, eligible
             uncertainty = {
                 "status": "insufficient_population", "eligible_population": eligible,
-                "minimum_required": 20, "value_interpretation": "policy_sentinel_not_observed",
+                "minimum_required": 20, "value_interpretation": "not_observed",
             }
-            normalized_status = "pass"
+            normalized_status = "insufficient_population"
         else:
             numerator, denominator = row.get("numerator"), row.get("denominator")
             if status not in {"pass", "fail"} or not isinstance(numerator, (int, float)) or not isinstance(denominator, (int, float)) or denominator <= 0:
@@ -175,7 +191,8 @@ def build_p6_p9_sidecar(*, execution_path: Path, score_path: Path) -> dict[str, 
         metric_members[name] = [member]
         normalized_metrics.append({
             "name": name, "numerator": numerator, "denominator": denominator,
-            "value": numerator / denominator, "coverage": 1.0, "uncertainty": uncertainty,
+            "value": None if numerator is None else numerator / denominator,
+            "coverage": 1.0, "uncertainty": uncertainty,
             "status": normalized_status, "operator": operator, "threshold": threshold,
             "source_artifact_digest": score_digest, "source_ids": deepcopy(source_ids),
             "worst_cases": deepcopy(worst_cases),
@@ -184,7 +201,9 @@ def build_p6_p9_sidecar(*, execution_path: Path, score_path: Path) -> dict[str, 
     contributions = {
         "schema_version": "epistemic-repair-p9-member-contributions-v1",
         "preregistered_contract_digest": canonical_sha256({"gates": GATE_IDS, "metrics": METRIC_SPECS}),
-        "source_artifact_sha256": {"execution": execution_sha, "score": score_sha},
+        "source_artifact_sha256": {
+            "execution": execution_sha, "evidence": evidence_sha, "score": score_sha,
+        },
         "gate_members": {name: [{
             "member_id": name, "raw_source_digest": score_sha, "conforms": gates[name],
         }] for name in GATE_IDS},
@@ -202,7 +221,9 @@ def build_p6_p9_sidecar(*, execution_path: Path, score_path: Path) -> dict[str, 
             "git_commit": commit, "worktree_clean": True, "provider": provider,
             "model": model, "transport": transport,
         },
-        "source_execution_sha256": execution_sha, "source_score_sha256": score_sha,
+        "source_execution_sha256": execution_sha, "source_evidence_sha256": evidence_sha,
+        "source_score_sha256": score_sha,
+        "source_evidence_content_digest": evidence_artifact_digest,
         "source_score_content_digest": score_digest, "source_postfreeze_evidence_digest": evidence_digest,
     }
     return {**body, "content_digest": canonical_sha256(body)}

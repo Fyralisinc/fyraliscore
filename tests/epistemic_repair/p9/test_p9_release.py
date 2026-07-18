@@ -97,6 +97,47 @@ def test_adversarial_metric_and_gate_shapes_fail_closed(tmp_path: Path):
     assert reproduce(manifest)["required_evidence_green"] is False
 
 
+def test_insufficient_calibration_is_valid_evidence_but_never_authorizes(tmp_path: Path):
+    commit, entries, _, _ = _setup(tmp_path)
+    path = Path(entries["p6"].path)
+    artifact = json.loads(path.read_text())
+    artifact["phase_exit_ready"] = False
+    artifact["p9_continuous_metrics"] = [{
+        "name": "resolved_outcome_model_ece", "numerator": None,
+        "denominator": 19, "value": None, "coverage": 1.0,
+        "uncertainty": {
+            "status": "insufficient_population", "eligible_population": 19,
+            "minimum_required": 20,
+        },
+        "status": "insufficient_population", "operator": "<=", "threshold": .15,
+        "source_artifact_digest": "a" * 64, "worst_cases": [],
+    }]
+    artifact["content_digest"] = _digest({k: v for k, v in artifact.items() if k != "content_digest"})
+    path.write_text(json.dumps(artifact, sort_keys=True))
+    changed = dict(entries)
+    changed["p6"] = ManifestEvidence(**{
+        **changed["p6"].__dict__, "sha256": sha256(path.read_bytes()).hexdigest(),
+        "content_digest": artifact["content_digest"],
+        "required_metric_ids": ("resolved_outcome_model_ece",),
+    })
+    manifest = seal_manifest(
+        coordinator_id="coordinator", release_commit=commit, required_current=changed,
+    )
+    reproduction = reproduce(manifest)
+    assert reproduction["evidence_contract_complete"] is True
+    assert reproduction["phase_green"]["p6"] is False
+    receipt_body = {
+        "schema_version": REVIEW_SCHEMA_VERSION, "reviewer_id": "independent-reviewer",
+        "status": "reproduced", "reviewed_manifest_digest": manifest["manifest_digest"],
+        "reproduced_report_digest": reproduction["reproduced_report_digest"],
+    }
+    report = build_release_report(
+        manifest=manifest, verified_release_commit=commit, verified_worktree_clean=True,
+        reviewer_receipt={**receipt_body, "receipt_digest": _digest(receipt_body)},
+    )
+    assert report["completion_authorized"] is False
+
+
 def test_embedded_digest_and_reviewer_identity_are_mandatory(tmp_path: Path):
     commit, entries, manifest, receipt = _setup(tmp_path)
     path = Path(entries["p2"].path)

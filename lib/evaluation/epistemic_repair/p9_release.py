@@ -25,6 +25,9 @@ DIAGNOSTIC_EVIDENCE_CLASSES = {"historical_falsifying", "unmeasured"}
 CONTENT_DIGEST_ALGORITHM = "canonical-json-sha256-excluding-declared-field"
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+_INSUFFICIENT_POPULATION_METRICS = {
+    "resolved_outcome_model_ece", "resolved_outcome_model_brier",
+}
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -113,8 +116,6 @@ def _metric_valid(metric: Any) -> tuple[bool, bool]:
     denominator, numerator = metric["denominator"], metric["numerator"]
     if not isinstance(denominator, (int, float)) or denominator <= 0:
         return False, False
-    if not isinstance(numerator, (int, float)) or not isinstance(metric["value"], (int, float)):
-        return False, False
     coverage = metric["coverage"]
     if not isinstance(coverage, (int, float)) or not 0 <= coverage <= 1:
         return False, False
@@ -125,11 +126,24 @@ def _metric_valid(metric: Any) -> tuple[bool, bool]:
         return False, False
     if not isinstance(metric["worst_cases"], list):
         return False, False
-    computed = numerator / denominator
-    if abs(float(metric["value"]) - computed) > 1e-12:
-        return False, False
     operator, threshold = metric["operator"], metric["threshold"]
     if operator not in {">=", "<=", "="} or not isinstance(threshold, (int, float)):
+        return False, False
+    if metric["status"] == "insufficient_population":
+        valid_insufficient = bool(
+            metric.get("name") in _INSUFFICIENT_POPULATION_METRICS
+            and numerator is None and metric["value"] is None
+            and isinstance(denominator, int) and 0 < denominator < 20
+            and isinstance(uncertainty, Mapping)
+            and uncertainty.get("status") == "insufficient_population"
+            and uncertainty.get("eligible_population") == denominator
+            and uncertainty.get("minimum_required") == 20
+        )
+        return valid_insufficient, False
+    if not isinstance(numerator, (int, float)) or not isinstance(metric["value"], (int, float)):
+        return False, False
+    computed = numerator / denominator
+    if abs(float(metric["value"]) - computed) > 1e-12:
         return False, False
     passed = computed >= threshold if operator == ">=" else computed <= threshold if operator == "<=" else computed == threshold
     if metric["status"] not in {"pass", "fail"} or (metric["status"] == "pass") != passed:
