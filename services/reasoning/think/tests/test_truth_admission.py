@@ -16,7 +16,10 @@ from lib.contracts.truth_evidence import (
 )
 from lib.contracts.truth_admission import ModelTruthLifecycle, ModelTruthTransition
 from services.domain.models.repo import ModelsRepo
-from services.reasoning.think.applier import _with_claim_evidence_defaults
+from services.reasoning.think.applier import (
+    _prepare_claim_insert_model,
+    _with_claim_evidence_defaults,
+)
 from services.reasoning.think.diff_schema import ClaimOp
 from services.reasoning.think.truth_admission import (
     _scope_canonical_ref,
@@ -74,6 +77,51 @@ def test_explicit_claim_local_evidence_is_not_widened_to_batch() -> None:
     assert result.entry is not None
     assert result.entry["supporting_event_ids"] == [local_id]
     assert result.entry["born_from_event_id"] == synthetic_born_id
+
+
+def test_manifest_bound_atomic_cannot_resurrect_stale_sibling_evidence() -> None:
+    tenant_id = uuid4()
+    observation_ids = [uuid4() for _ in range(12)]
+
+    for local_id in observation_ids:
+        entry = {
+            "tenant_id": str(tenant_id),
+            "proposition": {
+                "kind": "state",
+                "subject": "Cobalt renewal",
+                "assertion": f"Atomic signal {local_id}",
+                # Deliberately emulate the stale pre-split proposition state.
+                "evidence_event_ids": [str(value) for value in observation_ids],
+                "evidence_observation_manifest": [{
+                    "observation_id": str(local_id),
+                    "body": f"Atomic signal {local_id}",
+                    "source_channel": "test",
+                }],
+            },
+            "natural": f"Atomic signal {local_id}",
+            "supporting_event_ids": [str(local_id)],
+            "evidence_observation_manifest": [{
+                "observation_id": str(local_id),
+                "body": f"Atomic signal {local_id}",
+                "source_channel": "test",
+            }],
+            "scope_actors": [],
+            "scope_entities": [],
+            "scope_temporal": {},
+            "confidence": 0.58,
+            "confidence_at_assertion": 0.58,
+        }
+        op = ClaimOp(op="insert", entry=entry)
+
+        prepared = _prepare_claim_insert_model(
+            op,
+            tenant_id,
+            cause_event_id=None,
+            trigger_supporting_event_ids=observation_ids,
+        )
+
+        assert prepared.supporting_event_ids == [local_id]
+        assert prepared.proposition["evidence_event_ids"] == [str(local_id)]
 
 
 def test_single_signal_trigger_may_supply_evidence_fallback() -> None:

@@ -3052,6 +3052,24 @@ def _with_claim_evidence_defaults(
         entry.get("supporting_event_ids"),
         prop.get("evidence_event_ids"),
     )
+    manifest = entry.get("evidence_observation_manifest")
+    if not isinstance(manifest, list):
+        manifest = prop.get("evidence_observation_manifest")
+    if isinstance(manifest, list):
+        authorized_ids = set(
+            _merge_supporting_event_ids(
+                [
+                    row.get("observation_id")
+                    for row in manifest
+                    if isinstance(row, dict) and row.get("observation_id")
+                ]
+            )
+        )
+        # The splitter may already have narrowed top-level support while the
+        # proposition still carries its pre-split batch evidence.  A later
+        # defaults pass must never resurrect those siblings.  The compiler
+        # manifest is the authority boundary at every transformation seam.
+        event_ids = [event_id for event_id in event_ids if event_id in authorized_ids]
     if not event_ids and len(set(trigger_supporting_event_ids)) == 1:
         event_ids = _merge_supporting_event_ids(trigger_supporting_event_ids)
     if not event_ids:
@@ -3061,6 +3079,9 @@ def _with_claim_evidence_defaults(
     # grounded only in the explicit claim-local lists above.
     entry.setdefault("born_from_event_id", event_ids[0])
     entry["supporting_event_ids"] = event_ids
+    if isinstance(manifest, list):
+        prop["evidence_event_ids"] = [str(uid) for uid in event_ids]
+        entry["proposition"] = prop
     if prop and (
         prop.get("claim_role") == "situation"
         or prop.get("legacy_kind") == "situation"

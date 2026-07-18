@@ -123,6 +123,97 @@ async def test_apply_diff_acquires_tenant_model_write_lock(
     assert calls[0] == [("tenant_model_write", str(tenant))]
 
 
+async def test_twelve_manifest_bound_atomics_apply_without_sibling_evidence(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Reconcile -> apply -> truth admission preserves singleton locality."""
+    from services.reasoning.think.tests.conftest import make_embedding
+
+    async with fresh_db.acquire() as conn:
+        observation_ids = [uuid7() for _ in range(12)]
+        entries = []
+        for index, observation_id in enumerate(observation_ids):
+            body = (
+                "Cobalt renewal: the structural approval record field "
+                f"{index} remains incomplete."
+            )
+            await conn.execute(
+                """
+                INSERT INTO observations
+                  (id, tenant_id, occurred_at, kind, source_channel,
+                   content, content_text, embedding, embedding_pending, trust_tier)
+                VALUES ($1, $2, now(), 'signal', 'test', '{}'::jsonb, $3,
+                        $4, FALSE, 'authoritative')
+                """,
+                observation_id,
+                tenant,
+                body,
+                make_embedding(body),
+            )
+            manifest = [{
+                "observation_id": str(observation_id),
+                "body": body,
+                "source_channel": "test",
+            }]
+            entries.append({
+                "tenant_id": str(tenant),
+                "proposition": {
+                    "kind": "state",
+                    "subject": "Cobalt renewal",
+                    "assertion": body,
+                    "compiled_memory_candidate_id": f"MDC_ATOM_{index}",
+                    # This stale batch-wide residue is the production failure
+                    # shape; the singleton manifest must dominate it.
+                    "evidence_event_ids": [str(value) for value in observation_ids],
+                    "evidence_observation_manifest": manifest,
+                },
+                "natural": body,
+                "supporting_event_ids": [str(observation_id)],
+                "evidence_observation_manifest": manifest,
+                "scope_actors": [],
+                "scope_entities": [],
+                "scope_temporal": {},
+                "confidence": 0.58,
+                "confidence_at_assertion": 0.58,
+            })
+
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[ClaimOp(op="insert", entry=entry) for entry in entries],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1:event_batch",
+                trigger_supporting_event_ids=observation_ids,
+            )
+
+        rows = await conn.fetch(
+            """
+            SELECT head.model_id,
+                   array_agg(evidence.evidence_id ORDER BY evidence.evidence_id) AS refs
+            FROM model_truth_heads head
+            JOIN model_truth_evidence_references evidence
+              ON evidence.tenant_id=head.tenant_id
+             AND evidence.model_version_id=head.version_id
+            WHERE head.tenant_id=$1 AND head.model_id=ANY($2::uuid[])
+            GROUP BY head.model_id
+            ORDER BY head.model_id
+            """,
+            tenant,
+            result["applied_model_ids"],
+        )
+
+    assert len(rows) == 12
+    for row in rows:
+        assert len(row["refs"]) == 1
+        assert UUID(row["refs"][0]) in observation_ids
+
+
 async def test_reconciler_db_error_does_not_poison_apply_transaction(
     fresh_db,
     tenant,
