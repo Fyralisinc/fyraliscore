@@ -882,10 +882,11 @@ def _scoped_synthesis_candidates(
         out.append(MemoryDecisionCandidate(
             candidate_id=_candidate_id("MDC_SYNTH", digest_basis),
             op_family="claim_insert",
+            candidate_kind="synthesis",
+            allowed_operations=("situation", "situation_and_edge", "no_op"),
             proposed_text=(
-                f"Synthesize the current durable state of {scope} from its "
-                "accepted Models and claim-local new evidence, preserving "
-                "corrections, contradictions, and unresolved uncertainty."
+                f"{scope}'s current state may reflect a coherent cross-time "
+                "pattern across its accepted memory and claim-local new evidence."
             ),
             source_observation_ids=current_ids,
             member_observation_ids=current_ids,

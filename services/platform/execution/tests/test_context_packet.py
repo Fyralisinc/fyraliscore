@@ -553,6 +553,10 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
     ]
     assert len(synthesis) == 1
     assert synthesis[0].semantic_scope == ("Atlas release",)
+    assert synthesis[0].candidate_kind == "synthesis"
+    assert synthesis[0].allowed_operations == (
+        "situation", "situation_and_edge", "no_op",
+    )
     assert synthesis[0].evidence_model_ids
     assert len(with_prior_model) == 13
     synthesis_request = build_compiled_batch_memory_decision_request(

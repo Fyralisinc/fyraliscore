@@ -5062,6 +5062,165 @@ async def _apply_model_update_side_effects(
             changed_fields_for_summary.add("model_predictions")
 
 
+async def _admit_canonical_relation_claim(
+    op: RelationClaimOp,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    *,
+    claim: dict[str, Any],
+) -> UUID | None:
+    """Bridge a governed, fully-bound Think relation into canonical truth.
+
+    Legacy-only Models are intentionally left on the legacy projection path. If
+    either endpoint has entered canonical truth, however, both exact current
+    versions must exist; this prevents a partially canonical accepted edge.
+    """
+    from uuid import uuid5
+
+    from services.domain.truth_kernel.relations.contracts import (
+        DirectionAssertion,
+        RelationCandidate,
+        RelationDisposition,
+        RelationEvidence,
+        RelationKind,
+        RelationParticipant as TruthRelationParticipant,
+        ROLE_SCHEMA,
+    )
+    from services.domain.truth_kernel.relations.repository import (
+        AsyncpgRelationKernelStorage,
+    )
+    from services.domain.truth_kernel.relations.service import (
+        AdmitRelationCommand,
+        RelationTruthKernel,
+    )
+
+    source_id = op.source_model_id
+    target_id = op.target_model_id
+    if source_id is None or target_id is None:
+        return None
+    rows = await conn.fetch(
+        """
+        SELECT id, truth_version_id
+        FROM accepted_current_models
+        WHERE tenant_id=$1 AND id=ANY($2::uuid[])
+        """,
+        tenant_id,
+        [source_id, target_id],
+    )
+    versions = {row["id"]: row["truth_version_id"] for row in rows}
+    if not versions:
+        return None
+    if set(versions) != {source_id, target_id}:
+        raise InvariantViolation(
+            "RELATION_ENDPOINT_PARTIALLY_CANONICAL",
+            "accepted relation endpoints must both bind accepted canonical Models",
+            relation_claim_id=str(claim["id"]),
+        )
+
+    # Normalize the high-cardinality edge vocabulary into the deliberately
+    # small admitted relation vocabulary. Unknown semantics remain legacy/pre-truth.
+    aliases: dict[str, tuple[RelationKind, bool]] = {
+        "blocks": (RelationKind.DEPENDENCY_CONSTRAINT, True),
+        "depends_on": (RelationKind.DEPENDENCY_CONSTRAINT, False),
+        "enables": (RelationKind.ENABLEMENT, False),
+        "supports": (RelationKind.ENABLEMENT, False),
+        "causes": (RelationKind.CAUSAL_INFLUENCE, False),
+        "influences": (RelationKind.CAUSAL_INFLUENCE, False),
+        "predicts": (RelationKind.PREDICTIVE_INDICATOR, False),
+    }
+    try:
+        kind, reverse_roles = RelationKind(op.edge_kind), False
+    except ValueError:
+        mapped = aliases.get(op.edge_kind)
+        if mapped is None:
+            return None
+        kind, reverse_roles = mapped
+
+    left_id, right_id = source_id, target_id
+    if op.direction == "target_to_source":
+        left_id, right_id = right_id, left_id
+    if reverse_roles:
+        left_id, right_id = right_id, left_id
+    roles = ROLE_SCHEMA[kind]
+    participants = (
+        TruthRelationParticipant(
+            model_id=left_id,
+            model_version_id=versions[left_id],
+            role=roles[0],
+            ordinal=0,
+        ),
+        TruthRelationParticipant(
+            model_id=right_id,
+            model_version_id=versions[right_id],
+            role=roles[1],
+            ordinal=1,
+        ),
+    )
+    evidence_rows = await conn.fetch(
+        """
+        SELECT DISTINCT ON (model_version_id)
+               model_version_id, reference_id, evidence_digest
+        FROM model_truth_evidence_references
+        WHERE tenant_id=$1 AND model_version_id=ANY($2::uuid[])
+        ORDER BY model_version_id, reference_id
+        """,
+        tenant_id,
+        [versions[left_id], versions[right_id]],
+    )
+    if not evidence_rows:
+        raise InvariantViolation(
+            "RELATION_EVIDENCE_MISSING",
+            "accepted canonical relation requires version-bound evidence",
+            relation_claim_id=str(claim["id"]),
+        )
+    evidence = tuple(
+        RelationEvidence(
+            evidence_reference_id=row["reference_id"],
+            model_version_id=row["model_version_id"],
+            evidence_digest=row["evidence_digest"],
+            polarity=1,
+            weight=op.confidence,
+        )
+        for row in evidence_rows
+    )
+    relation_id = claim["id"]
+    issued_at = claim["created_at"]
+    candidate = RelationCandidate(
+        candidate_relation_id=relation_id,
+        tenant_id=tenant_id,
+        proposed_kind=kind.value,
+        participants=participants,
+        rationale=op.explanation or op.evidence_text or op.predicate,
+        assertion=DirectionAssertion(
+            kind=kind,
+            source_model_version_id=participants[0].model_version_id,
+            target_model_version_id=participants[1].model_version_id,
+            polarity=1,
+        ),
+        evidence=evidence,
+        created_at=issued_at,
+    )
+    receipt = await RelationTruthKernel(AsyncpgRelationKernelStorage()).admit(
+        tx=conn,
+        command=AdmitRelationCommand(
+            command_id=uuid5(relation_id, "canonical-relation-command"),
+            idempotency_key=f"think-relation-claim:{relation_id}",
+            candidate=candidate,
+            relation_version_id=uuid5(relation_id, "canonical-relation-version:1"),
+            admission_decision_id=uuid5(relation_id, "canonical-relation-decision:1"),
+            issued_at=issued_at,
+        ),
+    )
+    if receipt.disposition is not RelationDisposition.ACCEPTED:
+        raise InvariantViolation(
+            "RELATION_CANONICAL_ADMISSION_REJECTED",
+            "accepted Think relation was rejected by canonical truth",
+            relation_claim_id=str(relation_id),
+            rejection_code=receipt.rejection_code,
+        )
+    return receipt.relation_version_id
+
+
 async def _apply_relation_claim_op(
     op: RelationClaimOp,
     conn: asyncpg.Connection,
@@ -5124,6 +5283,7 @@ async def _apply_relation_claim_op(
     )
     edge_ids: list[UUID] = []
     edge_summary: dict[str, Any] | None = None
+    canonical_relation_version_id: UUID | None = None
     retired_edge_summaries: list[dict[str, Any]] = []
     retired_relation_ids: list[UUID] = []
     if (
@@ -5305,6 +5465,12 @@ async def _apply_relation_claim_op(
                     metadata={"relation_claim_id": str(row["id"])},
                 ),
             )
+        canonical_relation_version_id = await _admit_canonical_relation_claim(
+            op,
+            conn,
+            tenant_id,
+            claim=row,
+        )
         row = await repo.mark_relation_claim_decided(
             conn,
             claim_id=row["id"],
@@ -5314,6 +5480,11 @@ async def _apply_relation_claim_op(
             decision_metadata={
                 "reason": "accepted_relation_claim_created_edge",
                 "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
+                "canonical_relation_version_id": (
+                    str(canonical_relation_version_id)
+                    if canonical_relation_version_id is not None
+                    else None
+                ),
                 "superseded_edges": retired_edge_summaries,
             },
         ) or row
@@ -5347,6 +5518,11 @@ async def _apply_relation_claim_op(
             "status": row["status"],
             "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
             "relation_instance_id": str(row["id"]) if edge_ids else None,
+            "canonical_relation_version_id": (
+                str(canonical_relation_version_id)
+                if edge_ids and canonical_relation_version_id is not None
+                else None
+            ),
             "retired_relation_ids": [
                 str(relation_id) for relation_id in dict.fromkeys(retired_relation_ids)
             ],

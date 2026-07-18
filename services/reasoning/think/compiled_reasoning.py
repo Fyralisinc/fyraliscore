@@ -56,7 +56,7 @@ BatchMemoryOperation = Literal[
     "memory_lifecycle",
     "no_op",
 ]
-BatchClaimRole = Literal["fact", "concern", "pattern", "situation"]
+BatchClaimRole = Literal["fact", "concern", "hypothesis", "pattern", "situation"]
 BatchActType = Literal["commitment", "goal", "decision"]
 
 
@@ -103,6 +103,10 @@ class BatchMemoryCandidateDecision(BaseModel):
     act_target_id: UUID | None = None
     act_new_state: str | None = Field(default=None, max_length=40)
     lifecycle_action: MemoryLifecycleAction | None = None
+    claim_local_evidence_event_ids: list[UUID] = Field(
+        default_factory=list,
+        max_length=12,
+    )
     confidence_delta: float | None = Field(default=None, ge=-1.0, le=1.0)
     resolution_outcome: bool | None = None
     archive_reason: str | None = Field(default=None, max_length=60)
@@ -401,7 +405,26 @@ class CompiledBatchMemoryDecisionRequest:
                 continue
 
             claim_placeholder: UUID | None = None
-            if decision.operation == "memory_lifecycle":
+            synthesis_candidate = candidate.get("candidate_kind") == "synthesis"
+            if synthesis_candidate:
+                claim_op, claim_placeholder, block_reason = (
+                    _claim_op_from_batch_decision(
+                        candidate,
+                        decision,
+                        trigger,
+                        force_role="hypothesis",
+                    )
+                )
+                if claim_op is None or claim_placeholder is None:
+                    blocked += 1
+                    trace_parts.append(
+                        f"{decision.candidate_id}: synthesis not promoted - "
+                        f"{block_reason}"
+                    )
+                    continue
+                claim_ops.append(claim_op)
+                candidate_claim_placeholders[decision.candidate_id] = claim_placeholder
+            elif decision.operation == "memory_lifecycle":
                 lifecycle_op, block_reason = _memory_lifecycle_op_from_batch_decision(
                     candidate,
                     decision,
@@ -979,7 +1002,9 @@ def _build_batch_memory_decision_user_prompt(
             "For claim/claim_and_edge/claim_and_act, claim_text must be a single durable atomic sentence under 500 chars.",
             "Use claim_update when the candidate mainly confirms, weakens, or adds evidence to an existing target/evidence Model.",
             "Use memory_lifecycle when the candidate tests, confirms, falsifies, revises, archives, or supersedes an existing model_id; provide lifecycle_action.",
+            "For claim_update or memory_lifecycle, claim_local_evidence_event_ids must contain only candidate observation UUIDs whose text directly supports the exact target Model proposition. Omit siblings, background, uncertainty, and distractors; an empty list means review without attaching new claim evidence.",
             "Use situation when one candidate-local episode exposes a composite condition across its member signals or selected Models; provide 2-8 situation_member_model_ids when available.",
+            "For candidate_kind=synthesis, accept only with situation or situation_and_edge and author a scope-level claim_text; an edge may accompany but never replace the synthesis Model.",
             "Use claim_role=concern for blockers, risks, waiting states, churn, trust, or negative pressure.",
             "Use claim_role=fact for neutral observed progress or state.",
             "Use claim_role=pattern only for repeated behavior directly supported in candidate_evidence.",
@@ -1003,6 +1028,8 @@ def _build_batch_memory_decision_user_prompt(
 def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
     keys = (
         "candidate_id",
+        "candidate_kind",
+        "allowed_operations",
         "op_family",
         "confidence",
         "proposed_text",
@@ -3337,7 +3364,13 @@ def _claim_update_op_from_batch_decision(
     )
     if model_id is None:
         return None, None, "missing model_id for update"
-    evidence_event_ids = _candidate_event_ids(candidate)
+    candidate_event_ids = _candidate_event_ids(candidate)
+    candidate_event_id_set = set(candidate_event_ids)
+    evidence_event_ids = [
+        event_id
+        for event_id in _dedupe_uuids(decision.claim_local_evidence_event_ids)
+        if event_id in candidate_event_id_set
+    ]
     changes: dict[str, Any] = {
         "confidence": min(0.74, max(0.35, float(decision.confidence))),
     }
@@ -3363,6 +3396,12 @@ def _memory_lifecycle_op_from_batch_decision(
         return None, "missing model_id for lifecycle reconciliation"
     action = decision.lifecycle_action or _infer_batch_lifecycle_action(candidate, decision)
     evidence_event_ids = _candidate_event_ids(candidate)
+    candidate_event_id_set = set(evidence_event_ids)
+    claim_local_evidence_event_ids = [
+        event_id
+        for event_id in _dedupe_uuids(decision.claim_local_evidence_event_ids)
+        if event_id in candidate_event_id_set
+    ]
     evidence_model_ids = _dedupe_uuids(
         [
             *_uuid_values(candidate.get("evidence_model_ids")),
@@ -3381,6 +3420,7 @@ def _memory_lifecycle_op_from_batch_decision(
         model_id=model_id,
         action=action,
         evidence_event_ids=evidence_event_ids,
+        claim_local_evidence_event_ids=claim_local_evidence_event_ids,
         evidence_model_ids=evidence_model_ids,
         confidence_delta=decision.confidence_delta,
         confidence=min(0.95, max(0.05, float(decision.confidence))),
@@ -3474,6 +3514,23 @@ def _batch_claim_proposition(
         )
     if role == "concern":
         base.update({"about": _claim_about(candidate), "nature": text})
+    elif role == "hypothesis":
+        base.update({
+            "subject": _claim_about(candidate),
+            "hypothesis_text": text,
+            "test_conditions": (
+                "Confirm, revise, or reject this synthesis as additional "
+                "scope-local evidence and outcomes arrive."
+            ),
+            "member_model_ids": [
+                str(value)
+                for value in _dedupe_uuids([
+                    *_uuid_values(candidate.get("evidence_model_ids")),
+                    *_uuid_values(candidate.get("target_model_ids")),
+                ])
+            ][:8],
+            "synthesis_contract": True,
+        })
     elif role == "pattern":
         base.update(
             {
