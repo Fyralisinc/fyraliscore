@@ -384,17 +384,34 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
             "DELETE FROM resources WHERE tenant_id = $1", tenant,
         )
         await conn.execute(
-            "DELETE FROM models WHERE tenant_id = $1", tenant,
+            """DELETE FROM models model WHERE tenant_id = $1
+               AND NOT EXISTS (
+                 SELECT 1 FROM model_truth_heads head
+                 WHERE head.tenant_id=model.tenant_id AND head.model_id=model.id
+               )""",
+            tenant,
         )
         await conn.execute(
-            "DELETE FROM observations WHERE tenant_id = $1", tenant,
+            """DELETE FROM observations observation WHERE tenant_id = $1
+               AND NOT EXISTS (
+                 SELECT 1 FROM models model
+                 WHERE model.tenant_id=observation.tenant_id
+                   AND model.born_from_event_id=observation.id
+               )""",
+            tenant,
         )
         await conn.execute(
             "DELETE FROM actor_identity_mappings WHERE actor_id IN "
             "(SELECT id FROM actors WHERE tenant_id = $1)", tenant,
         )
         await conn.execute(
-            "DELETE FROM actors WHERE tenant_id = $1", tenant,
+            """DELETE FROM actors actor WHERE tenant_id = $1
+               AND NOT EXISTS (
+                 SELECT 1 FROM observations observation
+                 WHERE observation.tenant_id=actor.tenant_id
+                   AND observation.actor_id=actor.id
+               )""",
+            tenant,
         )
 
 

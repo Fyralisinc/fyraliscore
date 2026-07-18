@@ -29,6 +29,8 @@ import pytest
 
 from lib.llm.provider import CodexProvider, LLMConfig
 from lib.shared.ids import uuid7
+from lib.shared.types import ModelCreate
+from services.domain.models.repo import ModelsRepo
 
 from services.reasoning.relationships import (
     JudgmentScores,
@@ -41,6 +43,7 @@ from services.reasoning.think.tests.conftest import ScriptedProvider, make_embed
 from services.reasoning.think.lanes import ThinkLane
 from services.reasoning.think.observability import record_think_run_cost
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
+from services.reasoning.think.truth_admission import admit_validated_think_claim
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -286,25 +289,20 @@ async def _seed_model(
         scope_entities = [{"type": "customer", "id": str(customer_id)}]
     scope_actors = scope_actors or []
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO models
-              (id, tenant_id, born_from_event_id, proposition, "natural",
-               embedding, scope_actors, scope_entities, scope_temporal,
-               confidence, activation, status, confidence_at_assertion,
-               activation_coefficient)
-            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7::uuid[], $8::jsonb,
-                    '{}'::jsonb, 0.6, 1.0, 'active', 0.6, 1.0)
-            """,
-            mid,
-            tenant,
-            born_event,
-            json.dumps(proposition),
-            natural,
-            make_embedding(natural),
-            scope_actors,
-            json.dumps(scope_entities),
-        )
+        async with conn.transaction():
+            await admit_validated_think_claim(
+                conn,
+                proposed=ModelCreate(
+                    id=mid, tenant_id=tenant, born_from_event_id=born_event,
+                    proposition=proposition, natural=natural,
+                    embedding=make_embedding(natural), scope_actors=scope_actors,
+                    scope_entities=scope_entities, scope_temporal={},
+                    confidence=0.6, confidence_at_assertion=0.6,
+                    supporting_event_ids=[born_event],
+                ),
+                evidence_observation_ids=(born_event,),
+                models_repo=ModelsRepo(None, embedder=None),
+            )
     return mid
 
 
