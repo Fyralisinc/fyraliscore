@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
 import re
 from typing import Any, Mapping
 
@@ -71,10 +73,21 @@ def _validate_source(score: Mapping[str, Any]) -> None:
         raise ValueError("P7 P9 sidecar requires CODEX_TRANSPORT=cli")
 
 
-def build_p7_p9_sidecar(score: Mapping[str, Any]) -> dict[str, Any]:
+def build_p7_p9_sidecar(
+    score: Mapping[str, Any], *, raw_execution_artifact_path: Path,
+) -> dict[str, Any]:
     """Normalize only audited member evidence; never trust scalar summaries."""
 
     _validate_source(score)
+    try:
+        raw_execution = json.loads(
+            raw_execution_artifact_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("P7 raw execution artifact is missing or unreadable") from exc
+    reopened_execution_digest = canonical_sha256(raw_execution)
+    if reopened_execution_digest != score.get("execution_artifact_digest"):
+        raise ValueError("P7 raw execution artifact digest does not match oracle")
     gate_members = score.get("hard_gate_members")
     if not isinstance(gate_members, Mapping) or set(gate_members) != set(P7_ORACLE_GATES):
         raise ValueError("P7 oracle gate member set is incomplete")
@@ -189,7 +202,8 @@ def build_p7_p9_sidecar(score: Mapping[str, Any]) -> dict[str, Any]:
         "schema_version": "epistemic-repair-p7-p9-normalized-v1",
         "commit": provenance["git_commit"], "run_provenance": provenance,
         "source_oracle_digest": source_digest,
-        "source_execution_artifact_digest": score.get("execution_artifact_digest"),
+        "source_execution_artifact_digest": reopened_execution_digest,
+        "source_execution_artifact_path": str(raw_execution_artifact_path.resolve()),
         "preregistered_metric_contract_digest": p7_metric_contract_digest(),
         "hard_gates": normalized_gates,
         "p9_continuous_metrics": metrics,

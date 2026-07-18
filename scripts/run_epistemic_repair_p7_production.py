@@ -11,12 +11,15 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Iterator
+from uuid import uuid4
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.evaluation.epistemic_repair.p6_think_runner import _write_checkpoint
 from services.evaluation.epistemic_repair.p7_production_runner import (
+    P7_ATTEMPT_TIMEOUT_S,
+    P7_BATCH_DEADLINE_S,
     run_p7_production_staged,
     run_p7_production_worlds,
     seal_execution_stream,
@@ -32,6 +35,17 @@ from services.evaluation.epistemic_repair.p7_real_runner import _variant_populat
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _require_restart_from_zero(*paths: Path) -> None:
+    """P7 checkpoints are evidence, never resumable execution state."""
+
+    existing = [str(path) for path in paths if path.exists()]
+    if existing:
+        raise SystemExit(
+            "P7 does not resume partial executions; remove old artifacts and "
+            f"restart from zero: {', '.join(existing)}"
+        )
 
 
 def _clean_cli_provenance(repository: Path) -> dict[str, object]:
@@ -70,6 +84,7 @@ def _exclusive_run_lock(path: Path) -> Iterator[None]:
 async def _run(args: argparse.Namespace) -> int:
     if not args.database_url:
         raise SystemExit("DATABASE_URL or --database-url is required")
+    _require_restart_from_zero(args.output, args.score_output)
     run_provenance = _clean_cli_provenance(args.repository)
     preregistered = build_p7_population()
     variants = tuple(
@@ -81,11 +96,14 @@ async def _run(args: argparse.Namespace) -> int:
         for world_id, population in variants
     )
     initial_streams = streams[:P7_INITIAL_WORLD_COUNT]
+    execution_id = uuid4()
     del variants, preregistered
     artifact = await run_p7_production_worlds(
         database_url=args.database_url,
         worlds=initial_streams,
-        per_batch_timeout_s=args.batch_timeout,
+        attempt_timeout_s=args.attempt_timeout,
+        batch_deadline_s=args.batch_deadline,
+        execution_id=execution_id,
     )
     artifact["run_provenance"] = run_provenance
     _write_checkpoint(args.output, artifact)
@@ -109,8 +127,10 @@ async def _run(args: argparse.Namespace) -> int:
         next_world = await run_p7_production_staged(
             database_url=args.database_url,
             population=stream,
-            per_batch_timeout_s=args.batch_timeout,
+            attempt_timeout_s=args.attempt_timeout,
+            batch_deadline_s=args.batch_deadline,
             world_id=world_id,
+            execution_id=execution_id,
         )
         world_results = [*artifact["world_results"], next_world]
         tenant_ids = [
@@ -144,7 +164,12 @@ def main() -> int:
     parser.add_argument(
         "--score-output", type=Path, default=Path("/tmp/p7-production-scores.json")
     )
-    parser.add_argument("--batch-timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--attempt-timeout", type=float, default=P7_ATTEMPT_TIMEOUT_S,
+    )
+    parser.add_argument(
+        "--batch-deadline", type=float, default=P7_BATCH_DEADLINE_S,
+    )
     parser.add_argument("--repository", type=Path, default=ROOT)
     parser.add_argument(
         "--lock-file", type=Path, default=Path("/tmp/fyralis-p7-production.lock"),

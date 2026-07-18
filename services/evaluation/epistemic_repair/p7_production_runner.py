@@ -11,7 +11,7 @@ import asyncio
 from dataclasses import dataclass
 import time
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import asyncpg
 
@@ -43,6 +43,32 @@ from services.reasoning.retrieval.config import CONFIG as RETRIEVAL_CONFIG
 P7_ARMS: tuple[P7EvolutionArm, ...] = (
     "adaptive", "frozen", "observation_only", "memory_hidden", "corrupted"
 )
+P7_ATTEMPT_TIMEOUT_S = 300.0
+P7_BATCH_DEADLINE_S = 650.0
+P7_MAX_ATTEMPTS = 2
+
+
+def _arm_tenant_id(
+    *, execution_id: UUID, world_id: str, arm: P7EvolutionArm,
+    population_digest: str,
+) -> UUID:
+    """Keep preregistered world/arm membership stable across orchestration retries."""
+
+    return uuid5(
+        NAMESPACE_URL,
+        f"fyralis:p7:{execution_id}:{population_digest}:{world_id}:{arm}",
+    )
+
+
+def _validate_deadlines(*, attempt_timeout_s: float, batch_deadline_s: float) -> None:
+    """Prevent the outer envelope from shadowing the one bounded retry."""
+
+    if attempt_timeout_s <= 0:
+        raise ValueError("attempt_timeout_s must be positive")
+    if batch_deadline_s <= attempt_timeout_s * P7_MAX_ATTEMPTS:
+        raise ValueError(
+            "batch_deadline_s must exceed the two-attempt timeout budget"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +143,19 @@ def assess_provider_identity_receipts(
         for row in attempt_receipts
         if str(row.get("logical_call_id")) not in call_ids
     ]
+    duplicate_attempt_ids = sorted({
+        str(row.get("physical_attempt_id"))
+        for row in attempt_receipts
+        if sum(
+            str(other.get("physical_attempt_id"))
+            == str(row.get("physical_attempt_id"))
+            for other in attempt_receipts
+        ) > 1
+    })
+    over_budget_calls = [
+        str(row.get("logical_call_id")) for row in logical_receipts
+        if int(row.get("physical_attempt_count") or 0) > P7_MAX_ATTEMPTS
+    ]
     nonreported_usage = [
         str(row.get("physical_attempt_id")) for row in attempt_receipts
         if row.get("usage_exactness") != "reported"
@@ -134,6 +173,10 @@ def assess_provider_identity_receipts(
         errors.append("provider/model identity mismatch")
     if orphan_attempts:
         errors.append("physical attempts lack a matching logical receipt")
+    if duplicate_attempt_ids:
+        errors.append("duplicate physical attempt receipts")
+    if over_budget_calls:
+        errors.append("logical calls exceed the two-attempt budget")
     if nonreported_usage:
         errors.append("Codex economics require provider-reported token usage")
     return {
@@ -148,6 +191,8 @@ def assess_provider_identity_receipts(
         "missing_identity_receipts": missing_identity,
         "identity_mismatches": mismatches,
         "orphan_attempts": orphan_attempts,
+        "duplicate_attempt_ids": duplicate_attempt_ids,
+        "over_budget_logical_calls": over_budget_calls,
         "nonreported_usage_attempts": nonreported_usage,
         "errors": errors,
     }
@@ -217,7 +262,7 @@ async def _run_arm(
     pool: asyncpg.Pool,
     runtime: P7ArmRuntime,
     population: P7SealedExecutionStream,
-    per_batch_timeout_s: float,
+    batch_deadline_s: float,
     required_provider: str,
     required_model: str,
 ) -> dict[str, Any]:
@@ -250,13 +295,13 @@ async def _run_arm(
                 else "normal"
             )
             async with production_retrieval_policy(policy):
-                async with asyncio.timeout(per_batch_timeout_s):
+                async with asyncio.timeout(batch_deadline_s):
                     execution = await _process_one_t1_batch(
                         pool,
                         runtime.worker,
                         tenant_id=runtime.tenant_id,
                         force_window_elapsed_s=1.0,
-                        retry_attempts=0,
+                        retry_attempts=P7_MAX_ATTEMPTS - 1,
                     )
             run_id = _run_id(execution)
             async with pool.acquire() as conn:
@@ -405,7 +450,9 @@ async def _run_arm(
                 getattr(getattr(runtime.worker, "llm_provider", None), "config", None).max_retries
             ),
             "batch_signal_count": 25,
-            "per_batch_timeout_s": float(per_batch_timeout_s),
+            "attempt_timeout_s": float(runtime.worker.config.run_timeout_s),
+            "max_attempts": P7_MAX_ATTEMPTS,
+            "batch_deadline_s": float(batch_deadline_s),
         },
         "waves": waves,
         "corruption_model_ids": tuple(map(str, corruption_model_ids)),
@@ -419,12 +466,19 @@ async def run_p7_production_staged(
     *,
     database_url: str,
     population: P7SealedExecutionStream,
-    per_batch_timeout_s: float = 180.0,
+    attempt_timeout_s: float = P7_ATTEMPT_TIMEOUT_S,
+    batch_deadline_s: float = P7_BATCH_DEADLINE_S,
     required_provider: str = "codex",
     required_model: str = "gpt-5.4",
     world_id: str = "p7-world-01",
+    execution_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Run five isolated production arms concurrently, each ordered 1 through 12."""
+
+    _validate_deadlines(
+        attempt_timeout_s=attempt_timeout_s, batch_deadline_s=batch_deadline_s,
+    )
+    execution_id = execution_id or uuid4()
 
     pool = await asyncpg.create_pool(
         database_url, min_size=5, max_size=12, init=_init_p6_connection
@@ -435,6 +489,7 @@ async def run_p7_production_staged(
     provider_config = getattr(provider, "config", None)
     observed_provider = str(getattr(provider_config, "provider", ""))
     observed_model = str(getattr(provider_config, "model", ""))
+    observed_max_retries = int(getattr(provider_config, "max_retries", -1))
     if (observed_provider, observed_model) != (required_provider, required_model):
         await embedder.close()
         await pool.close()
@@ -446,10 +501,22 @@ async def run_p7_production_staged(
             observed_provider=observed_provider,
             observed_model=observed_model,
         )
+    if observed_max_retries != P7_MAX_ATTEMPTS - 1:
+        await embedder.close()
+        await pool.close()
+        raise InvariantViolation(
+            "P7_PROVIDER_RETRY_BUDGET_MISMATCH",
+            "P7 requires exactly one bounded retry per logical provider call",
+            expected_max_retries=P7_MAX_ATTEMPTS - 1,
+            observed_max_retries=observed_max_retries,
+        )
     runtimes: list[P7ArmRuntime] = []
     try:
         for arm in P7_ARMS:
-            tenant_id = uuid4()
+            tenant_id = _arm_tenant_id(
+                execution_id=execution_id, world_id=world_id, arm=arm,
+                population_digest=population.population_digest,
+            )
             async with pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO tenants(id,name,is_demo) VALUES($1,$2,FALSE)",
@@ -466,7 +533,7 @@ async def run_p7_production_staged(
                         t1_batch_window_s=1.0,
                         t1_batch_min_size=25,
                         t1_batch_max_size=25,
-                        run_timeout_s=per_batch_timeout_s,
+                        run_timeout_s=attempt_timeout_s,
                         process_background_triggers=False,
                     ),
                     llm_provider=provider,
@@ -484,7 +551,7 @@ async def run_p7_production_staged(
                 pool=pool,
                 runtime=runtime,
                 population=population,
-                per_batch_timeout_s=per_batch_timeout_s,
+                batch_deadline_s=batch_deadline_s,
                 required_provider=required_provider,
                 required_model=required_model,
             )
@@ -495,6 +562,7 @@ async def run_p7_production_staged(
             "population_version": population.version,
             "population_digest": population.population_digest,
             "world_id": world_id,
+            "execution_id": str(execution_id),
             "gold_visible_during_execution": False,
             "provider_identity": {
                 "provider": observed_provider,
@@ -515,9 +583,11 @@ async def run_p7_production_worlds(
     *,
     database_url: str,
     worlds: tuple[tuple[str, P7SealedExecutionStream], ...],
-    per_batch_timeout_s: float = 180.0,
+    attempt_timeout_s: float = P7_ATTEMPT_TIMEOUT_S,
+    batch_deadline_s: float = P7_BATCH_DEADLINE_S,
     required_provider: str = "codex",
     required_model: str = "gpt-5.4",
+    execution_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Execute preregistered world variants concurrently with isolated tenants."""
 
@@ -527,14 +597,17 @@ async def run_p7_production_worlds(
             "P7 requires at least three unique preregistered world variants",
             world_count=len(worlds),
         )
+    execution_id = execution_id or uuid4()
     results = await asyncio.gather(*(
         run_p7_production_staged(
             database_url=database_url,
             population=stream,
-            per_batch_timeout_s=per_batch_timeout_s,
+            attempt_timeout_s=attempt_timeout_s,
+            batch_deadline_s=batch_deadline_s,
             required_provider=required_provider,
             required_model=required_model,
             world_id=world_id,
+            execution_id=execution_id,
         )
         for world_id, stream in worlds
     ))
@@ -545,6 +618,7 @@ async def run_p7_production_worlds(
     ]
     return {
         "schema_version": "epistemic-repair-p7-production-worlds-v1",
+        "execution_id": str(execution_id),
         "world_count": len(results),
         "arm_execution_count": len(tenant_ids),
         "isolated_tenant_count": len(set(tenant_ids)),
@@ -561,6 +635,9 @@ async def run_p7_production_worlds(
 
 __all__ = [
     "P7_ARMS",
+    "P7_ATTEMPT_TIMEOUT_S",
+    "P7_BATCH_DEADLINE_S",
+    "P7_MAX_ATTEMPTS",
     "P7ArmRuntime",
     "P7SealedExecutionStream",
     "assess_provider_identity_receipts",

@@ -6,7 +6,12 @@ import pytest
 
 from services.evaluation.epistemic_repair.p7_production_runner import (
     P7_ARMS,
+    P7_ATTEMPT_TIMEOUT_S,
+    P7_BATCH_DEADLINE_S,
+    P7_MAX_ATTEMPTS,
+    _arm_tenant_id,
     _run_id,
+    _validate_deadlines,
     assess_provider_identity_receipts,
     seal_execution_stream,
 )
@@ -140,3 +145,90 @@ def test_receipt_guard_accepts_provider_reported_usage() -> None:
         required_provider="codex", required_model="gpt-5.4",
     )
     assert result["valid"]
+
+
+def test_timeout_then_success_has_two_exact_nonduplicate_attempt_receipts() -> None:
+    logical = [{
+        "logical_call_id": "logical-1", "provider": "codex", "model": "gpt-5.4",
+        "purpose": "think", "physical_attempt_count": 2,
+    }]
+    attempts = [{
+        "physical_attempt_id": "attempt-timeout", "logical_call_id": "logical-1",
+        "provider": "codex", "model": "gpt-5.4", "purpose": "think",
+        "outcome": "timeout", "input_tokens": 10, "output_tokens": 1,
+        "usage_exactness": "reported",
+    }, {
+        "physical_attempt_id": "attempt-success", "logical_call_id": "logical-1",
+        "provider": "codex", "model": "gpt-5.4", "purpose": "think",
+        "outcome": "success", "input_tokens": 12, "output_tokens": 3,
+        "usage_exactness": "reported",
+    }]
+    result = assess_provider_identity_receipts(
+        logical_receipts=logical, attempt_receipts=attempts,
+        required_provider="codex", required_model="gpt-5.4",
+    )
+    assert result["valid"]
+    assert result["physical_attempt_count"] == P7_MAX_ATTEMPTS
+    assert result["input_tokens"] == 22
+    assert result["output_tokens"] == 4
+    assert len({row["physical_attempt_id"] for row in attempts}) == 2
+
+
+def test_retry_envelope_cannot_be_shadowed_by_attempt_timeout() -> None:
+    _validate_deadlines(
+        attempt_timeout_s=P7_ATTEMPT_TIMEOUT_S,
+        batch_deadline_s=P7_BATCH_DEADLINE_S,
+    )
+    with pytest.raises(ValueError, match="must exceed the two-attempt"):
+        _validate_deadlines(attempt_timeout_s=300.0, batch_deadline_s=600.0)
+
+
+def test_world_arm_membership_is_stable_and_isolated() -> None:
+    digest = "population-digest"
+    execution_id = uuid4()
+    first = {
+        arm: _arm_tenant_id(
+            execution_id=execution_id, world_id="world-1", arm=arm,
+            population_digest=digest,
+        )
+        for arm in P7_ARMS
+    }
+    second = {
+        arm: _arm_tenant_id(
+            execution_id=execution_id, world_id="world-1", arm=arm,
+            population_digest=digest,
+        )
+        for arm in P7_ARMS
+    }
+    assert first == second
+    assert len(set(first.values())) == len(P7_ARMS)
+
+
+def test_restart_from_zero_gets_new_isolated_tenant_membership() -> None:
+    first_execution, second_execution = uuid4(), uuid4()
+    kwargs = {
+        "world_id": "world-1", "arm": P7_ARMS[0],
+        "population_digest": "population-digest",
+    }
+    first = _arm_tenant_id(execution_id=first_execution, **kwargs)
+    assert first == _arm_tenant_id(execution_id=first_execution, **kwargs)
+    assert first != _arm_tenant_id(execution_id=second_execution, **kwargs)
+
+
+def test_receipt_guard_rejects_duplicate_or_over_budget_attempts() -> None:
+    logical = [{
+        "logical_call_id": "logical-1", "provider": "codex", "model": "gpt-5.4",
+        "purpose": "think", "physical_attempt_count": 3,
+    }]
+    attempt = {
+        "physical_attempt_id": "duplicate", "logical_call_id": "logical-1",
+        "provider": "codex", "model": "gpt-5.4", "purpose": "think",
+        "usage_exactness": "reported",
+    }
+    result = assess_provider_identity_receipts(
+        logical_receipts=logical, attempt_receipts=[attempt, attempt, attempt],
+        required_provider="codex", required_model="gpt-5.4",
+    )
+    assert not result["valid"]
+    assert result["duplicate_attempt_ids"] == ["duplicate"]
+    assert result["over_budget_logical_calls"] == ["logical-1"]

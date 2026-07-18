@@ -24,6 +24,7 @@ from lib.llm.provider import (
     _codex_transport, build_provider, close_codex_app_server_client,
     set_response_cache,
 )
+from lib.shared.errors import InvariantViolation
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.domain.company_learning.barrier import CompanyLearningBarrierService
 from services.domain.conversation_context.episode_boundaries import (
@@ -234,11 +235,38 @@ async def _persist_runtime_batch(
         rows.append((observation_id, tenant_id, occurred_at,
                      signal.source_channel, json.dumps({"text": signal.text}),
                      signal.text))
+    ids = [row[0] for row in rows]
+    existing = await conn.fetch(
+        """SELECT id,tenant_id,occurred_at,source_channel,content,content_text
+           FROM observations WHERE id=ANY($1::uuid[])""",
+        ids,
+    )
+    expected = {
+        row[0]: {
+            "tenant_id": row[1], "occurred_at": row[2],
+            "source_channel": row[3], "content": json.loads(row[4]),
+            "content_text": row[5],
+        }
+        for row in rows
+    }
+    for prior in existing:
+        actual = {
+            "tenant_id": prior["tenant_id"], "occurred_at": prior["occurred_at"],
+            "source_channel": prior["source_channel"],
+            "content": prior["content"], "content_text": prior["content_text"],
+        }
+        if actual != expected[prior["id"]]:
+            raise InvariantViolation(
+                "P6_OBSERVATION_IDEMPOTENCY_CONFLICT",
+                "stable observation identity resolved to different signal content",
+                observation_id=str(prior["id"]),
+            )
     await conn.executemany("""
         INSERT INTO observations (
           id,tenant_id,occurred_at,kind,source_channel,content,content_text,
           embedding_pending,trust_tier,entities_mentioned
         ) VALUES ($1,$2,$3,'signal',$4,$5::jsonb,$6,TRUE,'unvetted','[]'::jsonb)
+        ON CONFLICT (id) DO NOTHING
     """, rows)
     return result
 

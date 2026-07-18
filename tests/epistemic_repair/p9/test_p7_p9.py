@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +14,8 @@ from lib.evaluation.epistemic_repair.p7_p9 import (
 )
 
 
-def _score() -> dict:
+def _score(raw_execution: dict | None = None) -> dict:
+    raw_execution = raw_execution or {"execution": "raw", "worlds": 3}
     endpoints = []
     for world in ("w1", "w2", "w3"):
         for storyline in ("atlas", "beacon", "cobalt", "delta"):
@@ -34,7 +37,7 @@ def _score() -> dict:
     }
     payload = {
         "schema_version": "epistemic-repair-p7-postfreeze-oracle-v1",
-        "execution_artifact_digest": "e" * 64,
+        "execution_artifact_digest": canonical_sha256(raw_execution),
         "world_count": 3, "endpoint_denominator": 3 * 5 * 3 * 4,
         "endpoints": endpoints,
         "hard_gates": {gate: True for gate in P7_ORACLE_GATES},
@@ -50,14 +53,22 @@ def _score() -> dict:
     return {**payload, "content_digest": canonical_sha256(payload)}
 
 
+def _raw_path(tmp_path: Path, raw: dict | None = None) -> Path:
+    path = tmp_path / "p7-execution.json"
+    path.write_text(json.dumps(raw or {"execution": "raw", "worlds": 3}))
+    return path
+
+
 def _reseal(score: dict) -> dict:
     body = deepcopy(score)
     body.pop("content_digest", None)
     return {**body, "content_digest": canonical_sha256(body)}
 
 
-def test_p7_sidecar_has_exact_gates_metrics_members_and_decision() -> None:
-    sidecar = build_p7_p9_sidecar(_score())
+def test_p7_sidecar_has_exact_gates_metrics_members_and_decision(tmp_path: Path) -> None:
+    sidecar = build_p7_p9_sidecar(
+        _score(), raw_execution_artifact_path=_raw_path(tmp_path),
+    )
     assert set(sidecar["hard_gates"]) == set(P7_P9_GATES)
     assert len(sidecar["p9_continuous_metrics"]) == 6
     assert all(item["status"] == "pass" for item in sidecar["p9_continuous_metrics"])
@@ -67,16 +78,18 @@ def test_p7_sidecar_has_exact_gates_metrics_members_and_decision() -> None:
     assert len(sidecar["content_digest"]) == 64
 
 
-def test_gate_summary_cannot_override_failed_raw_member() -> None:
+def test_gate_summary_cannot_override_failed_raw_member(tmp_path: Path) -> None:
     score = _score()
     score["hard_gate_members"]["durable_attempt_receipts"][0]["conforms"] = False
     score = _reseal(score)
     with pytest.raises(ValueError, match="contradicts raw members"):
-        build_p7_p9_sidecar(score)
+        build_p7_p9_sidecar(score, raw_execution_artifact_path=_raw_path(tmp_path))
 
 
 @pytest.mark.parametrize("attack", ("dirty", "app_server", "missing_gate", "dropped_endpoint"))
-def test_p7_sidecar_adversarial_evidence_fails_closed(attack: str) -> None:
+def test_p7_sidecar_adversarial_evidence_fails_closed(
+    attack: str, tmp_path: Path,
+) -> None:
     score = _score()
     if attack == "dirty":
         score["run_provenance"]["worktree_clean"] = False
@@ -87,12 +100,30 @@ def test_p7_sidecar_adversarial_evidence_fails_closed(attack: str) -> None:
     else:
         score["endpoints"].pop()
     with pytest.raises(ValueError):
-        build_p7_p9_sidecar(_reseal(score))
+        build_p7_p9_sidecar(
+            _reseal(score), raw_execution_artifact_path=_raw_path(tmp_path),
+        )
 
 
-def test_unmeasured_metric_cannot_be_promoted_by_phase_summary() -> None:
+def test_unmeasured_metric_cannot_be_promoted_by_phase_summary(tmp_path: Path) -> None:
     score = _score()
     score["endpoints"][0]["atomic_claim_f1"] = {"value": None, "measured": False}
     score["phase_exit_ready"] = True
     with pytest.raises(ValueError, match="unmeasured"):
-        build_p7_p9_sidecar(_reseal(score))
+        build_p7_p9_sidecar(
+            _reseal(score), raw_execution_artifact_path=_raw_path(tmp_path),
+        )
+
+
+def test_p7_sidecar_rejects_missing_raw_execution_artifact(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="missing or unreadable"):
+        build_p7_p9_sidecar(
+            _score(), raw_execution_artifact_path=tmp_path / "missing.json",
+        )
+
+
+def test_p7_sidecar_rejects_tampered_raw_execution_artifact(tmp_path: Path) -> None:
+    path = _raw_path(tmp_path)
+    path.write_text(json.dumps({"execution": "tampered", "worlds": 3}))
+    with pytest.raises(ValueError, match="does not match oracle"):
+        build_p7_p9_sidecar(_score(), raw_execution_artifact_path=path)

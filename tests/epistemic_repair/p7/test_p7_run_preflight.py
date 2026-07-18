@@ -39,3 +39,12 @@ def test_p7_preflight_rejects_dirty_worktree(monkeypatch, tmp_path: Path) -> Non
     monkeypatch.setenv("CODEX_TRANSPORT", "cli")
     with pytest.raises(SystemExit, match="isolated clean worktree"):
         MODULE._clean_cli_provenance(tmp_path)
+
+
+def test_p7_partial_artifacts_require_restart_from_zero(tmp_path: Path) -> None:
+    output = tmp_path / "execution.json"
+    scores = tmp_path / "scores.json"
+    MODULE._require_restart_from_zero(output, scores)
+    output.write_text("partial")
+    with pytest.raises(SystemExit, match="does not resume partial executions"):
+        MODULE._require_restart_from_zero(output, scores)

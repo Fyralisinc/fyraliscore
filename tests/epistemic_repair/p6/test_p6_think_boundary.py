@@ -46,6 +46,8 @@ def test_production_think_runner_requires_real_batch_worker() -> None:
     assert "_drain_truth_critical_work" in source
     assert "process_background_triggers=True" in source
     assert 'expected_transport != "cli"' in source
+    assert "P6_OBSERVATION_IDEMPOTENCY_CONFLICT" in source
+    assert "ON CONFLICT (id) DO NOTHING" in source
 
 
 @pytest.mark.asyncio
