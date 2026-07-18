@@ -34,7 +34,14 @@ def _read_reopened(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 def _metrics_complete(value: Any) -> bool:
     if isinstance(value, dict):
         if "denominator" in value and any(key in value for key in ("score", "f1")):
-            if not value.get("worst_example_ids") or len(value.get("source_artifact_digest", "")) != 64:
+            source_ids = value.get("source_example_ids")
+            if (
+                not value.get("worst_example_ids")
+                or not isinstance(source_ids, list)
+                or len(source_ids) != value["denominator"]
+                or value.get("source_artifact_digest") != canonical_sha256(source_ids)
+                or not set(value["worst_example_ids"]).issubset(source_ids)
+            ):
                 return False
         return all(_metrics_complete(item) for item in value.values())
     if isinstance(value, list):

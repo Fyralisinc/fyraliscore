@@ -5,6 +5,8 @@ from lib.evaluation.epistemic_repair.p8_characterization_population import (
     build_all_characterization_populations,
     population_manifest,
 )
+from lib.contracts.kernel import canonical_sha256
+from lib.evaluation.epistemic_repair.p8_characterization_runner import _metric
 from lib.evaluation.epistemic_repair.p8_characterization_runner import (
     _predict_boundary,
     _run_boundary,
@@ -39,6 +41,15 @@ def test_runtime_payloads_never_contain_evaluator_labels() -> None:
             assert "evaluator_labels" not in payload
             assert "gold" not in payload
             assert "maturity" not in payload
+
+
+def test_metric_provenance_is_recomputable_and_contains_worst_examples() -> None:
+    metric = _metric("proof", [("a", True), ("b", False)], slices={"hard": [("b", False)]})
+    assert metric["source_artifact_digest"] == canonical_sha256(metric["source_example_ids"])
+    assert set(metric["worst_example_ids"]).issubset(metric["source_example_ids"])
+    assert metric["slices"]["hard"]["source_artifact_digest"] == canonical_sha256(
+        metric["slices"]["hard"]["source_example_ids"]
+    )
 
 
 def test_boundary_discovery_executes_full_frozen_population_and_registered_slices() -> None:

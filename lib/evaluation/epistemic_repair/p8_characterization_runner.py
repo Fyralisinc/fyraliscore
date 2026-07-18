@@ -59,12 +59,14 @@ def _metric(name: str, outcomes: list[tuple[str, bool]], *, slices: dict[str, li
             "score": passed / len(rows), "ci95": _wilson(passed, len(rows)),
             "worst_example_ids": [case_id for case_id, _ in sorted(rows, key=lambda row: (row[1], row[0]))[:5]],
             "source_artifact_digest": canonical_sha256([case_id for case_id, _ in rows]),
+            "source_example_ids": [case_id for case_id, _ in rows],
         }
     return {
         "metric": name, "numerator": successes, "denominator": len(outcomes),
         "score": successes / len(outcomes), "ci95": _wilson(successes, len(outcomes)),
         "worst_example_ids": list(worst),
         "source_artifact_digest": canonical_sha256([case_id for case_id, _ in outcomes]),
+        "source_example_ids": [case_id for case_id, _ in outcomes],
         "slices": slice_rows,
     }
 
@@ -173,7 +175,8 @@ async def _run_boundary(population: SealedPopulation) -> dict[str, Any]:
         return {"denominator": len(ids), "precision": precision, "precision_ci95": precision_ci,
                 "recall": recall, "recall_ci95": recall_ci, "f1": f1, "f1_ci95": f1_ci,
                 "false_merge_clusters": false_merges, "worst_example_ids": worst,
-                "source_artifact_digest": canonical_sha256(ids)}
+                "source_artifact_digest": canonical_sha256(ids),
+                "source_example_ids": list(ids)}
 
     overall_ids = [case.case_id for case in population.cases]
     labels = sorted({label for case in population.cases for label in case.evaluator_labels if not label.startswith("episode:")})
