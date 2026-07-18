@@ -131,6 +131,12 @@ def test_semantic_scope_ref_survives_substrate_entity_normalization() -> None:
     prior.proposition = {
         **prior.proposition,
         "scope_ref": "workstream:atlas-release",
+        "compiled_memory_candidate_id": "MDC_ATOM_atlas_owner_prior",
+        "closed_atomic_contract": {
+            "compiler_entails_exact_text": True,
+            "evidence_cardinality": "singleton",
+            "version": "v1",
+        },
     }
 
     _, request = _request(
@@ -143,6 +149,25 @@ def test_semantic_scope_ref_survives_substrate_entity_normalization() -> None:
     assert candidate["prior_same_scope_model_ids"] == [str(prior.id)]
 
 
+def test_untrusted_proposition_scope_ref_cannot_authorize_prior_effect() -> None:
+    tenant_id, observation_id = uuid4(), uuid4()
+    prior = _model(tenant_id=tenant_id)
+    prior.scope_entities = [{"type": "project", "id": str(uuid4())}]
+    prior.proposition = {
+        **prior.proposition,
+        "scope_ref": "workstream:atlas-release",
+    }
+
+    _, request = _request(
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        models=[prior],
+    )
+
+    candidate = request.candidates[0]
+    assert "prior_same_scope_model_ids" not in candidate
+
+
 def test_semantic_scope_ref_requires_exact_type_and_ref() -> None:
     tenant_id, observation_id = uuid4(), uuid4()
     wrong_ref = _model(tenant_id=tenant_id)
@@ -150,12 +175,16 @@ def test_semantic_scope_ref_requires_exact_type_and_ref() -> None:
     wrong_ref.proposition = {
         **wrong_ref.proposition,
         "scope_ref": "workstream:beacon-migration",
+        "compiled_memory_candidate_id": "MDC_ATOM_wrong_ref",
+        "closed_atomic_contract": {"compiler_entails_exact_text": True},
     }
     wrong_type = _model(tenant_id=tenant_id)
     wrong_type.scope_entities = [{"type": "project", "id": str(uuid4())}]
     wrong_type.proposition = {
         **wrong_type.proposition,
         "scope_ref": "commitment:atlas-release",
+        "compiled_memory_candidate_id": "MDC_ATOM_wrong_type",
+        "closed_atomic_contract": {"compiler_entails_exact_text": True},
     }
 
     _, request = _request(

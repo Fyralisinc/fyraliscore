@@ -54,6 +54,14 @@ async def test_prior_memory_effect_survives_compile_validate_apply(
                             "kind": "belief",
                             "claim_role": "fact",
                             "abstraction_level": "atomic",
+                            "compiled_memory_candidate_id": (
+                                "MDC_ATOM_atlas_owner_prior"
+                            ),
+                            "closed_atomic_contract": {
+                                "compiler_entails_exact_text": True,
+                                "evidence_cardinality": "singleton",
+                                "version": "v1",
+                            },
                             "subject": "Atlas release",
                             "assertion": prior_text,
                             "scope_ref": scope_ref,

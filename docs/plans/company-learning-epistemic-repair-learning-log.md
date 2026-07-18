@@ -2312,6 +2312,11 @@ under its entity-only exact-scope comparison.
 
 **Bounded repair direction:** Treat matching semantic scope type plus exact
 `proposition.scope_ref` as a fallback only when the substrate-normalized entity
-coordinate does not directly match. That minimal fallback is locally tested;
-a fresh CF3-B rerun is still required. Do not broaden matching by label or
-similarity, and do not reopen the deferred temporal-deduplication work.
+coordinate does not directly match and the prior Model carries the compiler's
+closed-atomic provenance contract. An independent safety audit rejected a
+broader string-only fallback before rerun. The provenance-bound fallback is
+locally tested, including an untrusted-proposition negative case; a fresh CF3-B
+rerun is still required. Do not broaden matching by label or similarity, and do
+not reopen the deferred temporal-deduplication work. Legacy/composite semantic
+scope authorization remains deferred until it has its own explicit authority
+contract.

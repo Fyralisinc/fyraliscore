@@ -1078,11 +1078,20 @@ def _active_model_has_exact_scope(
     # Representation admission may promote a semantic workstream coordinate
     # into a substrate entity UUID in ``scope_entities``.  The accepted Model's
     # proposition retains the compiler-owned semantic coordinate used by later
-    # batch candidates.  Treat it as an exact authorization surface only when
-    # both the complete ref and its declared type match; never fall back to a
-    # display label or fuzzy similarity.
+    # batch candidates.  Treat it as an exact authorization surface only for a
+    # compiler-proven closed atomic and only when both the complete ref and its
+    # declared type match; never trust an arbitrary proposition field, display
+    # label, or fuzzy similarity.
     proposition = getattr(model, "proposition", None)
     if not isinstance(proposition, dict):
+        return False
+    closed_atomic_contract = proposition.get("closed_atomic_contract")
+    compiler_scope_authoritative = (
+        bool(str(proposition.get("compiled_memory_candidate_id") or "").strip())
+        and isinstance(closed_atomic_contract, dict)
+        and closed_atomic_contract.get("compiler_entails_exact_text") is True
+    )
+    if not compiler_scope_authoritative:
         return False
     proposition_scope_ref = str(proposition.get("scope_ref") or "").strip()
     proposition_scope_type = (

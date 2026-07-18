@@ -1289,8 +1289,9 @@ transport are excluded from this goal.
   and attempted eight explicit effects. Every effect was compiler-blocked
   because production `scope_entities` were substrate-normalized while semantic
   `proposition.scope_ref` retained the exact candidate coordinate. A minimal
-  exact type-plus-ref fallback is locally tested; fresh provider proof remains
-  pending.
+  provenance-bound exact type-plus-ref fallback is locally tested; fresh
+  provider proof remains pending. Arbitrary proposition scope strings cannot
+  authorize an effect.
 - **Desired behavior:** For a scope with relevant prior truth, the runtime
   records the exact selected version, exposes a scope-matched comparison to the
   provider, and validates a decision-level effect on conclusion, confidence,
