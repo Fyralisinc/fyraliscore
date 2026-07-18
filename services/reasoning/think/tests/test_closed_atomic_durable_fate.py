@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from lib.shared.ids import uuid7
 
 from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.think.applier import _lifecycle_confidence
 from services.reasoning.think.compiled_reasoning import (
     BatchMemoryCandidateDecision,
     BatchMemoryDecisionSet,
@@ -113,6 +114,8 @@ def test_exact_same_scope_binding_compiles_confirm_instead_of_insert() -> None:
     assert op.model_id == model_id
     assert op.action == "confirm"
     assert op.claim_local_evidence_event_ids == [observation_id]
+    assert op.confidence is None
+    assert _lifecycle_confidence(op, current_confidence=0.90) == 0.95
 
 
 def test_exact_bound_confirm_excludes_transport_sibling() -> None:

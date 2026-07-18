@@ -3453,7 +3453,6 @@ def _closed_atomic_durable_fate(
             action="confirm",
             evidence_event_ids=evidence_event_ids,
             claim_local_evidence_event_ids=evidence_event_ids,
-            confidence=confidence,
             rationale=(
                 "Compiler-confirmed exact same-tenant, same-scope atomic identity "
                 f"for {candidate_id}."

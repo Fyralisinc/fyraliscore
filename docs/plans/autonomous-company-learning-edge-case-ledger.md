@@ -847,6 +847,21 @@ transport are excluded from this goal.
 - **Return condition:** Repeat on a newly sealed organization/entity/time split
   with independent hidden truth and retain Model-reference and terminal lift.
 
+### EDGE-038 — Exact truth replay can double-count confirmation sidecars
+
+- **Status:** `deferred to P8 fault/idempotency`
+- **Trigger:** The canonical truth command correctly replays the same target,
+  transition and exact evidence without advancing its head, but the legacy
+  applier can still increment `confirmed_count` and update confirmation audit
+  sidecars after receiving the replayed command receipt.
+- **Risk:** Canonical truth remains correct while compatibility counters and
+  operational telemetry overstate independent corroboration.
+- **Safe boundary:** Do not interpret legacy confirmation counters as unique
+  epistemic evidence; canonical signed evidence and truth versions govern.
+- **Return condition:** The P8 duplicate-delivery probe demonstrates that exact
+  replay leaves both the canonical head and every confirmation sidecar/audit
+  count unchanged, while distinct evidence advances once.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title
