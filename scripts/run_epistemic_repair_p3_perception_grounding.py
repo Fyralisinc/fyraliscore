@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import json
+import subprocess
 from pathlib import Path
 
 from lib.evaluation.epistemic_repair.p3_runner import (
@@ -27,6 +29,7 @@ from services.domain.entity_grounding.mentions import (
     prepare_entity_mention_detection,
 )
 from lib.evaluation.epistemic_repair.p3_postgres_probes import run_p3_postgres_probes
+from lib.evaluation.epistemic_repair.p3_p9 import build_p3_p9_sidecar
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +70,7 @@ def main() -> int:
         "--dsn", default=os.environ.get("DATABASE_URL"),
         help="optional PostgreSQL DSN enabling HG-02/HG-06/HG-14 closure",
     )
+    parser.add_argument("--p9-output", type=Path)
     parser.add_argument(
         "--repository-root",
         type=Path,
@@ -85,12 +89,20 @@ def main() -> int:
         help="optional path for the P3 artifact JSON Schema",
     )
     args = parser.parse_args()
+    postgres_proof = asyncio.run(_postgres_proof(args.dsn)) if args.dsn else None
     report = run_p3_perception_grounding(
         repository_root=args.repository_root.resolve(),
         runtime=_production_runtime(),
-        postgres_proof=(asyncio.run(_postgres_proof(args.dsn)) if args.dsn else None),
+        postgres_proof=postgres_proof,
     )
     write_p3_artifact(report, args.output)
+    if args.p9_output is not None:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        clean = not subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, text=True).strip()
+        sidecar = build_p3_p9_sidecar(report=report, postgres_proof=postgres_proof,
+                                      commit=commit, worktree_clean=clean)
+        args.p9_output.parent.mkdir(parents=True, exist_ok=True)
+        args.p9_output.write_text(json.dumps(sidecar, indent=2, sort_keys=True) + "\n")
     if args.schema_output is not None:
         write_p3_artifact_schema(args.schema_output)
     return 0
