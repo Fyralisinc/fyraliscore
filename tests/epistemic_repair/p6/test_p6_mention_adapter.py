@@ -38,3 +38,23 @@ def test_p6_adapter_keeps_same_surface_signal_local() -> None:
     assert {(item.signal_id, item.surface) for item in candidates} == {
         (left_id, "Atlas release"), (right_id, "Atlas release"),
     }
+
+
+def test_p6_adapter_extracts_distinct_local_work_items_without_storyline_collision() -> None:
+    signal_id = uuid4()
+    text = "Week 1: Cobalt paint approval is listed in the Beacon office ticket."
+    candidates = _p6_simulation_mention_adapter((
+        PersistedSignalText(signal_id, "jira:comment", text),
+    ))
+    by_surface = {item.surface: item for item in candidates}
+
+    assert set(by_surface) == {"Cobalt paint approval", "Beacon office ticket"}
+    for surface, candidate in by_surface.items():
+        assert text[candidate.span_start:candidate.span_end] == surface
+        assert candidate.entity_type == "work_item"
+        assert candidate.provisional_canonical_ref == (
+            "work_item:" + surface.casefold().replace(" ", "-")
+        )
+    assert by_surface["Cobalt paint approval"].provisional_canonical_ref != (
+        by_surface["Beacon office ticket"].provisional_canonical_ref
+    )

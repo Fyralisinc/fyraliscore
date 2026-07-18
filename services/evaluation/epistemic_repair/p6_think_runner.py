@@ -50,6 +50,11 @@ _P6_SCOPE_TYPES = {
     "release": "workstream", "migration": "workstream",
     "handoff": "workstream", "renewal": "commitment",
 }
+_P6_LOCAL_WORK_ITEMS_RE = re.compile(
+    r"(?P<approval>[A-Z][A-Za-z0-9-]+(?: [A-Za-z0-9-]+){0,3} approval)"
+    r" is listed in the "
+    r"(?P<ticket>[A-Z][A-Za-z0-9-]+(?: [A-Za-z0-9-]+){0,3} ticket)",
+)
 
 
 def _p6_simulation_mention_adapter(
@@ -58,27 +63,44 @@ def _p6_simulation_mention_adapter(
     candidates: list[VerifiedMentionCandidate] = []
     for signal in signals:
         match = _P6_ENVELOPE_RE.search(signal.content_text)
-        if match is None:
-            continue
-        surface = match.group("surface")
-        entity_type = _P6_SCOPE_TYPES.get(surface.rsplit(" ", 1)[-1].casefold())
-        if entity_type is None:
-            continue
-        slug = re.sub(r"[^a-z0-9]+", "-", surface.casefold()).strip("-")
-        candidates.append(VerifiedMentionCandidate(
-            signal_id=signal.signal_id,
-            surface=surface,
-            span_start=match.start("surface"),
-            span_end=match.end("surface"),
-            entity_type=entity_type,
-            confidence=0.99,
-            fate=EntityMentionDetectionFate.DETECTED,
-            reason_codes=("p6_sealed_business_envelope",),
-            type_confidence=0.99,
-            extractor_version="p6-simulation-envelope-v1",
-            provisional_canonical_ref=f"{entity_type}:{slug}",
-            normalization_version=1,
-        ))
+        if match is not None:
+            surface = match.group("surface")
+            entity_type = _P6_SCOPE_TYPES.get(surface.rsplit(" ", 1)[-1].casefold())
+            if entity_type is not None:
+                slug = re.sub(r"[^a-z0-9]+", "-", surface.casefold()).strip("-")
+                candidates.append(VerifiedMentionCandidate(
+                    signal_id=signal.signal_id,
+                    surface=surface,
+                    span_start=match.start("surface"),
+                    span_end=match.end("surface"),
+                    entity_type=entity_type,
+                    confidence=0.99,
+                    fate=EntityMentionDetectionFate.DETECTED,
+                    reason_codes=("p6_sealed_business_envelope",),
+                    type_confidence=0.99,
+                    extractor_version="p6-simulation-envelope-v1",
+                    provisional_canonical_ref=f"{entity_type}:{slug}",
+                    normalization_version=1,
+                ))
+        local_match = _P6_LOCAL_WORK_ITEMS_RE.search(signal.content_text)
+        if local_match is not None:
+            for group in ("approval", "ticket"):
+                surface = local_match.group(group)
+                slug = re.sub(r"[^a-z0-9]+", "-", surface.casefold()).strip("-")
+                candidates.append(VerifiedMentionCandidate(
+                    signal_id=signal.signal_id,
+                    surface=surface,
+                    span_start=local_match.start(group),
+                    span_end=local_match.end(group),
+                    entity_type="work_item",
+                    confidence=0.99,
+                    fate=EntityMentionDetectionFate.DETECTED,
+                    reason_codes=("p6_sealed_local_work_item_relation",),
+                    type_confidence=0.99,
+                    extractor_version="p6-simulation-envelope-v1",
+                    provisional_canonical_ref=f"work_item:{slug}",
+                    normalization_version=1,
+                ))
     return tuple(candidates)
 
 

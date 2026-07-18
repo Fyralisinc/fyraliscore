@@ -92,11 +92,30 @@ async def run_p6_provider_entity_evaluation(
         source_type=s.source_channel.split(":", 1)[0], text=s.text,
         slack_context="temporally_distributed" if s.source_channel.startswith("slack:") else "not_slack",
     ) for s in population.signals]
-    gold = [GoldMention(
-        mention_id=f"p6-gold-{item.signal_id}", signal_id=item.signal_id,
-        start=0, end=len(item.entity_surface or ""),
-        entity_type=item.entity_type or "other", canonical_referent=None,
-    ) for item in population.gold if item.entity_surface is not None]
+    gold: list[GoldMention] = []
+    for item in population.gold:
+        signal = signal_by_id[item.signal_id]
+        expected = []
+        if item.entity_surface is not None:
+            expected.append((item.entity_surface, item.entity_type or "other"))
+        expected.extend(
+            (mention.surface, mention.entity_types[0])
+            for mention in item.local_mentions if mention.required
+        )
+        for index, (surface, entity_type) in enumerate(expected, start=1):
+            start = signal.text.find(surface)
+            if start < 0:
+                raise ValueError(
+                    f"required mention {surface!r} absent from {item.signal_id}"
+                )
+            gold.append(GoldMention(
+                mention_id=f"p6-gold-{item.signal_id}-{index}",
+                signal_id=item.signal_id,
+                start=start,
+                end=start + len(surface),
+                entity_type=entity_type,
+                canonical_referent=None,
+            ))
     report = evaluate_gold_entity_extraction(
         signals=signals, gold_mentions=gold, predictions=predictions,
     ).model_dump(mode="json")
