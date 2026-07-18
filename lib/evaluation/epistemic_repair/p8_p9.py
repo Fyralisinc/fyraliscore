@@ -188,6 +188,7 @@ def build_p8_p9_sidecar(
             } for source in metric_sources[name]]
             for name in METRIC_CONTRACTS
         },
+        "member_source_digests": sorted(set(shas.values())),
     }
     body = {"schema_version": "epistemic-repair-p8-p9-normalized-v1", "commit": exit_commit,
             "phase_exit_ready": all(normalized_gates.values()) and all(row["status"] == "pass" for row in metrics),

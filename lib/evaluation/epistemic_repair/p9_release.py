@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
+from lib.evaluation.epistemic_repair.p9_contracts import PHASE_EVIDENCE_CONTRACTS
+
 
 SCHEMA_VERSION = "epistemic-repair-p9-release-candidate-v2"
 MANIFEST_SCHEMA_VERSION = "epistemic-repair-p9-release-manifest-v1"
@@ -79,6 +81,14 @@ def seal_manifest(
         raise ValueError("required phase has non-current evidence class")
     if any(item.commit != release_commit for item in required_current.values()):
         raise ValueError("every required phase must bind the release commit")
+    for phase, item in required_current.items():
+        contract = PHASE_EVIDENCE_CONTRACTS[phase]
+        if (
+            item.schema_version != contract["schema_version"]
+            or item.required_gate_ids != contract["gates"]
+            or item.required_metric_ids != contract["metrics"]
+        ):
+            raise ValueError(f"{phase} manifest entry weakens the canonical evidence contract")
     if any(
         len(set(item.required_gate_ids)) != len(item.required_gate_ids)
         or len(set(item.required_metric_ids)) != len(item.required_metric_ids)
@@ -151,6 +161,79 @@ def _metric_valid(metric: Any) -> tuple[bool, bool]:
     return True, passed
 
 
+def _contributions_valid(
+    artifact: Mapping[str, Any], contract: Mapping[str, Any],
+    metrics: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    contributions = artifact.get("p9_member_contributions")
+    if not isinstance(contributions, Mapping) or (
+        contributions.get("schema_version") != contract["contribution_schema"]
+        or not _HEX64.fullmatch(str(contributions.get("preregistered_contract_digest") or ""))
+    ):
+        return False
+    gate_members = contributions.get("gate_members")
+    metric_members = contributions.get("metric_members")
+    if (
+        not isinstance(gate_members, Mapping)
+        or set(gate_members) != set(contract["gates"])
+        or not isinstance(metric_members, Mapping)
+        or set(metric_members) != set(contract["metrics"])
+    ):
+        return False
+    observed_source_digests: set[str] = set()
+    for name in contract["gates"]:
+        members = gate_members[name]
+        if not isinstance(members, list) or not members:
+            return False
+        ids = [str(item.get("member_id") or "") for item in members if isinstance(item, Mapping)]
+        if len(ids) != len(members) or not all(ids) or len(ids) != len(set(ids)) or any(
+            not isinstance(item.get("conforms"), bool)
+            or not _HEX64.fullmatch(str(item.get("raw_source_digest") or ""))
+            for item in members
+        ):
+            return False
+        if all(bool(item["conforms"]) for item in members) != _gate_value(
+            artifact.get("hard_gates", {}).get(name)
+        ):
+            return False
+        observed_source_digests.update(str(item["raw_source_digest"]) for item in members)
+    for name in contract["metrics"]:
+        members = metric_members[name]
+        if not isinstance(members, list) or not members:
+            return False
+        ids = [str(item.get("member_id") or "") for item in members if isinstance(item, Mapping)]
+        if len(ids) != len(members) or not all(ids) or len(ids) != len(set(ids)):
+            return False
+        insufficient = metrics.get(name, {}).get("status") == "insufficient_population"
+        if any(
+            not _HEX64.fullmatch(str(item.get("raw_source_digest") or ""))
+            or (item.get("numerator") is None) != insufficient
+            or not isinstance(item.get("denominator"), (int, float))
+            or item["denominator"] <= 0
+            for item in members
+        ):
+            return False
+        metric = metrics.get(name, {})
+        denominator = sum(float(item["denominator"]) for item in members)
+        if insufficient:
+            if metric.get("numerator") is not None or denominator != float(metric.get("denominator", 0)):
+                return False
+        else:
+            numerator = sum(float(item["numerator"]) for item in members)
+            if (
+                numerator != float(metric.get("numerator", float("nan")))
+                or denominator != float(metric.get("denominator", 0))
+            ):
+                return False
+        observed_source_digests.update(str(item["raw_source_digest"]) for item in members)
+    declared_source_digests = contributions.get("member_source_digests")
+    return bool(
+        isinstance(declared_source_digests, list)
+        and len(declared_source_digests) == len(set(declared_source_digests))
+        and set(declared_source_digests) == observed_source_digests
+    )
+
+
 def _read_entry(entry: Mapping[str, Any], *, phase: str | None) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     record = {"phase": phase, "path": entry.get("path"), "evidence_class": entry.get("evidence_class")}
     try:
@@ -169,6 +252,10 @@ def _read_entry(entry: Mapping[str, Any], *, phase: str | None) -> tuple[dict[st
         } if isinstance(metrics, list) else set()
         gate_values = [_gate_value(gates[key]) for key in sorted(gate_ids)] if isinstance(gates, Mapping) else []
         metric_results = [_metric_valid(item) for item in metrics] if isinstance(metrics, list) else []
+        metric_map = {
+            str(item.get("name")): item for item in metrics if isinstance(item, Mapping)
+        } if isinstance(metrics, list) else {}
+        contract = PHASE_EVIDENCE_CONTRACTS.get(str(phase))
         embedded = _embedded_digest(
             artifact, str(entry["content_digest_field"]), str(entry["content_digest_algorithm"]),
         )
@@ -183,6 +270,9 @@ def _read_entry(entry: Mapping[str, Any], *, phase: str | None) -> tuple[dict[st
             "metrics_present": isinstance(metrics, list),
             "exact_metric_set": metric_ids == required_metrics and len(metric_ids) == len(metrics or ()),
             "metrics_valid": len(metric_results) == len(required_metrics) and all(valid for valid, _ in metric_results),
+            "contributions_valid": bool(contract) and _contributions_valid(
+                artifact, contract, metric_map,
+            ),
             "all_metrics_green": all(passed for _, passed in metric_results),
             "phase_ready": artifact.get("phase_exit_ready") is True,
         }
@@ -204,7 +294,10 @@ def _manifest_valid(manifest: Mapping[str, Any]) -> bool:
             entry.get("commit") == manifest.get("release_commit")
             and entry.get("evidence_class") in CURRENT_EVIDENCE_CLASSES
             and entry.get("content_digest_algorithm") == CONTENT_DIGEST_ALGORITHM
-            for entry in manifest.get("required_current", {}).values()
+            and entry.get("schema_version") == PHASE_EVIDENCE_CONTRACTS[phase]["schema_version"]
+            and tuple(entry.get("required_gate_ids", ())) == PHASE_EVIDENCE_CONTRACTS[phase]["gates"]
+            and tuple(entry.get("required_metric_ids", ())) == PHASE_EVIDENCE_CONTRACTS[phase]["metrics"]
+            for phase, entry in manifest.get("required_current", {}).items()
         )
         and digest == _digest(body)
     )
@@ -225,6 +318,7 @@ def reproduce(manifest: Mapping[str, Any]) -> dict[str, Any]:
         and row.get("commit_matches") and row.get("embedded_digest_matches")
         and row.get("exact_gate_set") and row.get("gates_decodable") and row.get("metrics_present")
         and row.get("exact_metric_set") and row.get("metrics_valid")
+        and row.get("contributions_valid")
         for row in records
     )
     phase_green = {

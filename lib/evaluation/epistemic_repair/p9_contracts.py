@@ -1,0 +1,107 @@
+"""Canonical, non-weakenable P0-P8 release evidence contracts."""
+
+from __future__ import annotations
+
+
+PHASE_EVIDENCE_CONTRACTS = {
+    "p0": {
+        "schema_version": "epistemic-repair-p0-regeneration-v1",
+        "gates": ("P0-baseline-integrity", "P0-preregistration-integrity", "P0-inventory-completeness"),
+        "metrics": (),
+        "contribution_schema": "epistemic-repair-p9-member-contributions-v1",
+    },
+    "p1": {
+        "schema_version": "epistemic-repair-p1-observability-v1",
+        "gates": ("HG-01_benchmark_blindness", "HG-13_observability_integrity"),
+        "metrics": ("attempt_receipt_coverage", "count_reconciliation", "cost_coverage", "timing_reconciliation"),
+        "contribution_schema": "epistemic-repair-p9-member-contributions-v1",
+    },
+    "p2": {
+        "schema_version": "epistemic-repair-p2-truth-kernel-v1",
+        "gates": tuple(f"HG-{index:02d}" for index in range(4, 11)),
+        "metrics": ("active_unexplained_perfect_confidence_relation_rate", "active_wrapper_contamination",
+                    "background_repair_latency_ms", "evidence_lineage_coverage", "lifecycle_transition_latency_ms",
+                    "relation_joint_accuracy", "scope_precision", "semantic_duplicate_absorption"),
+        "contribution_schema": "epistemic-repair-p9-member-contributions-v1",
+    },
+    "p3": {
+        "schema_version": "epistemic-repair-p3-p9-normalized-v1",
+        "gates": ("HG-02", "HG-03", "HG-06", "HG-14"),
+        "metrics": ("b_cubed_boundary_f1", "canonical_link_precision", "canonical_link_recall",
+                    "context_budget_adherence", "correction_replay_convergence_coverage", "exact_mention_f1",
+                    "future_context_exclusion", "grounding_fate_accuracy", "pairwise_boundary_precision",
+                    "pairwise_boundary_recall", "safe_abstention_precision", "selected_context_contamination",
+                    "sufficient_context_recall", "type_accuracy"),
+        "contribution_schema": "epistemic-repair-p9-member-contributions-v1",
+    },
+    "p4": {
+        "schema_version": "epistemic-repair-p4-p9-normalized-v1",
+        "gates": ("HG-10", "HG-11", "HG-12", "HG-13"),
+        "metrics": ("causal_barrier_p95_seconds", "delayed_attribution_coverage",
+                    "duplicate_refresh_key_processing_ratio", "immediate_attribution_coverage",
+                    "late_actual_model_use_share", "late_historical_observation_selected_count",
+                    "late_unnecessary_historical_observation_count", "late_unnecessary_historical_observation_use",
+                    "optional_queue_growth_slope_after_drain", "selected_context_utilization"),
+        "contribution_schema": "epistemic-repair-p9-member-contributions-v1",
+    },
+    "p5": {
+        "schema_version": "epistemic-repair-p5-p9-normalized-v1",
+        "gates": tuple(f"P5-HG-{index:02d}" for index in range(1, 11)),
+        "metrics": ("accepted_model_retrieval_and_reference", "barrier_completion", "batch_cardinality",
+                    "corrected_state_reuse", "cross_tenant_contamination", "exact_model_falsification",
+                    "explicit_signal_fate_coverage", "normalized_signal_persistence", "provider_independence",
+                    "relation_or_no_relation_correctness", "semantic_restraint", "stale_truth_exclusion"),
+        "contribution_schema": "epistemic-repair-p9-member-contributions-v1",
+    },
+    "p6": {
+        "schema_version": "epistemic-repair-p6-p9-normalized-v1",
+        "gates": ("immutable_inputs_match", "complete_execution", "exact_300_signals_12_batches",
+                  "complete_signal_fates", "complete_boundary_mention_mutation_fates",
+                  "high_consequence_incidents_zero", "wrapper_control_models_zero",
+                  "active_candidate_review_leakage_zero", "invalid_relations_zero",
+                  "external_outcome_instruction_leakage_zero", "one_coherent_synthesis_per_thesis",
+                  "all_truth_critical_barriers_close", "single_commit_provider_configuration",
+                  "postfreeze_evidence_digest_valid", "durable_call_receipts", "exact_token_usage_receipts",
+                  "all_hg_gates"),
+        "metrics": ("boundary_b_cubed_f1", "selected_context_contamination", "sufficient_context_recall",
+                    "exact_mention_f1", "entity_type_accuracy", "canonical_link_precision", "canonical_link_recall",
+                    "atomic_claim_precision", "atomic_claim_recall", "atomic_claim_f1", "evidence_lineage_coverage",
+                    "scope_precision", "scope_recall", "direct_thesis_accuracy", "mean_thesis_facet_completeness",
+                    "relation_joint_precision", "relation_joint_recall", "lifecycle_expected_transition_accuracy",
+                    "historical_reopening_reason_coverage", "mature_actual_model_use_share",
+                    "mature_unnecessary_historical_observation_use", "resolved_outcome_model_ece",
+                    "resolved_outcome_model_brier", "selected_context_utilization", "false_model_relation_from_noise",
+                    "duplicate_causal_credit_fanout", "clean_t1_p95_seconds", "clean_max_over_median",
+                    "metered_llm_calls_per_signal", "question_planning_batch_share",
+                    "truth_critical_pending_at_barriers", "refresh_key_duplicate_processing_ratio"),
+        "contribution_schema": "epistemic-repair-p9-member-contributions-v1",
+    },
+    "p7": {
+        "schema_version": "epistemic-repair-p7-p9-normalized-v1",
+        "gates": ("all_failures_preserved", "corrupted_memory_safe_within_two_batches",
+                  "corrupted_memory_unsafe_accepted_persistence_zero", "durable_attempt_receipts",
+                  "exact_bootstrap_clones", "exact_paired_population", "identical_budgets", "isolated_tenants",
+                  "no_frozen_or_observation_mutation", "no_hidden_model_access", "semantic_outcome_calibration",
+                  "zero_false_truth_from_noise", "codex_cli_transport"),
+        "metrics": ("adaptive_direct_thesis_accuracy", "adaptive_atomic_claim_f1",
+                    "adaptive_boundary_entity_safety", "adaptive_relation_joint_precision",
+                    "adaptive_external_outcome_calibration_ece", "adaptive_false_truth_from_noise_rate"),
+        "contribution_schema": "epistemic-repair-p7-p9-member-contributions-v1",
+    },
+    "p8": {
+        "schema_version": "epistemic-repair-p8-p9-normalized-v1",
+        "gates": tuple(f"P8-G{index:02d}-{name}" for index, name in enumerate((
+            "single-commit", "fault-receipt-coverage", "fault-invariants", "isolated-scale-matrix",
+            "scale-latency", "scale-resource-evidence", "shared-contention", "characterization",
+            "authorized-canaries", "hash-reopen",
+        ), start=1)),
+        "metrics": ("fault_receipt_coverage", "fault_invariant_violation_rate",
+                    "scale_max_retrieval_horizon_ratio", "scale_max_prompt_horizon_ratio",
+                    "scale_max_concurrency_latency_ratio", "scale_max_semantic_quality_delta",
+                    "scale_minimum_fairness_ratio", "characterization_provenance_coverage"),
+        "contribution_schema": "epistemic-repair-p9-member-contributions-v1",
+    },
+}
+
+
+__all__ = ["PHASE_EVIDENCE_CONTRACTS"]

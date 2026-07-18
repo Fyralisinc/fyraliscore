@@ -118,6 +118,11 @@ def attach_p9_member_evidence(
         "preregistered_contract_digest": contract_digest,
         "gate_members": deepcopy(dict(gate_members)),
         "metric_members": deepcopy(dict(metric_members)),
+        "member_source_digests": sorted({
+            str(item["raw_source_digest"])
+            for group in (*gate_members.values(), *metric_members.values())
+            for item in group
+        }),
     }
     contribution_digest = canonical_sha256(contributions)
     metrics = []

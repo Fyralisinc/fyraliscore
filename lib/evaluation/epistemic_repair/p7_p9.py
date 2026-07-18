@@ -197,6 +197,11 @@ def build_p7_p9_sidecar(
         "preregistered_contract_digest": p7_metric_contract_digest(),
         "gate_members": normalized_gate_members,
         "metric_members": metric_members,
+        "member_source_digests": sorted({
+            str(item["raw_source_digest"])
+            for group in (*normalized_gate_members.values(), *metric_members.values())
+            for item in group
+        }),
     }
     payload = {
         "schema_version": "epistemic-repair-p7-p9-normalized-v1",

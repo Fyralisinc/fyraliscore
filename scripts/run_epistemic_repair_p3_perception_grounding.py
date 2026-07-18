@@ -30,6 +30,7 @@ from services.domain.entity_grounding.mentions import (
 )
 from services.evaluation.epistemic_repair.p3_postgres_probes import run_p3_postgres_probes
 from lib.evaluation.epistemic_repair.p3_p9 import build_p3_p9_sidecar
+from lib.contracts.kernel import canonical_sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +72,7 @@ def main() -> int:
         help="optional PostgreSQL DSN enabling HG-02/HG-06/HG-14 closure",
     )
     parser.add_argument("--p9-output", type=Path)
+    parser.add_argument("--postgres-proof-output", type=Path)
     parser.add_argument(
         "--repository-root",
         type=Path,
@@ -97,10 +99,26 @@ def main() -> int:
     )
     write_p3_artifact(report, args.output)
     if args.p9_output is not None:
+        if postgres_proof is None:
+            raise ValueError("P3 P9 output requires --dsn PostgreSQL proof evidence")
+        proof_output = args.postgres_proof_output or args.output.with_name(
+            args.output.stem + ".postgres-proof.json"
+        )
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        proof_body = {
+            "schema_version": "epistemic-repair-p3-postgres-proof-v1",
+            "commit": commit,
+            "proof": postgres_proof,
+        }
+        proof_output.parent.mkdir(parents=True, exist_ok=True)
+        proof_output.write_text(json.dumps({
+            **proof_body, "content_digest": canonical_sha256(proof_body),
+        }, indent=2, sort_keys=True) + "\n")
         clean = not subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, text=True).strip()
-        sidecar = build_p3_p9_sidecar(report=report, postgres_proof=postgres_proof,
-                                      commit=commit, worktree_clean=clean)
+        sidecar = build_p3_p9_sidecar(
+            report_path=args.output, postgres_proof_path=proof_output,
+            commit=commit, worktree_clean=clean,
+        )
         args.p9_output.parent.mkdir(parents=True, exist_ok=True)
         args.p9_output.write_text(json.dumps(sidecar, indent=2, sort_keys=True) + "\n")
     if args.schema_output is not None:

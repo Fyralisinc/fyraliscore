@@ -40,18 +40,23 @@ def build_p5_p9_sidecar(*, artifact: P5Artifact, commit: str, worktree_clean: bo
         "source_artifact_digest": source_digest, "worst_cases": [],
     } for key, value in sorted(artifact.continuous_metrics.items())]
     contributions = {
+        "schema_version": "epistemic-repair-p9-member-contributions-v1",
         "preregistered_contract_digest": canonical_sha256({
             "gates": sorted(hard_gates), "metrics": [row["name"] for row in metrics],
             "population": artifact.population_digest,
         }),
         "gate_members": {
-            key: {"source_member_ids": member_ids, "source_member_digest": source_digest}
+            key: [{"member_id": f"{key}:population", "source_member_ids": member_ids,
+                   "raw_source_digest": source_digest, "conforms": hard_gates[key]["status"] == "pass"}]
             for key in hard_gates
         },
         "metric_members": {
-            row["name"]: {"source_member_ids": member_ids, "source_member_digest": source_digest}
+            row["name"]: [{"member_id": f"{row['name']}:population", "source_member_ids": member_ids,
+                           "raw_source_digest": source_digest, "numerator": row["numerator"],
+                           "denominator": row["denominator"]}]
             for row in metrics
         },
+        "member_source_digests": [source_digest],
     }
     body = {
         "schema_version": "epistemic-repair-p5-p9-normalized-v1", "commit": commit,

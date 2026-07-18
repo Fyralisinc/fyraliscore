@@ -167,7 +167,11 @@ def test_missing_canary_authorization_is_explicit_red_gate(tmp_path: Path) -> No
 def test_exit_cli_emits_wired_p9_sidecar(tmp_path: Path) -> None:
     paths = _fixtures(tmp_path)
     canary = tmp_path / "canary.jsonl"
-    canary.write_text(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 3, "output_tokens": 1}}) + "\n")
+    canary.write_text("\n".join(json.dumps(row) for row in ({
+        "type": "p8.canary.authorization", "authorization_id": "approved-1",
+        "provider": "codex", "model": "gpt-5.4", "transport": "cli",
+        "commit": COMMIT,
+    }, {"type": "turn.completed", "usage": {"input_tokens": 3, "output_tokens": 1}})) + "\n")
     output, p9_output = tmp_path / "composed.json", tmp_path / "p9.json"
     result = subprocess.run([
         sys.executable, str(ROOT / "scripts/build_epistemic_repair_p8_exit.py"),

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import json
+from pathlib import Path
 from typing import Any
 
 from lib.contracts.kernel import canonical_sha256
@@ -18,7 +20,14 @@ _CONTRACTS = {
 }
 
 
-def build_p4_p9_sidecar(*, report: dict[str, Any], commit: str, worktree_clean: bool) -> dict[str, Any]:
+def build_p4_p9_sidecar(*, report_path: Path, commit: str, worktree_clean: bool) -> dict[str, Any]:
+    report = json.loads(report_path.read_text())
+    digest_body = {
+        key: value for key, value in report.items()
+        if key not in {"generated_at", "artifact_content_digest"}
+    }
+    if report.get("artifact_content_digest") != canonical_sha256(digest_body):
+        raise ValueError("P4 reopened source artifact digest is invalid")
     if not _HEX40.fullmatch(commit) or not worktree_clean:
         raise ValueError("P4 P9 evidence requires a clean full release commit")
     raw = report.get("raw_p9_evidence")
@@ -41,9 +50,17 @@ def build_p4_p9_sidecar(*, report: dict[str, Any], commit: str, worktree_clean: 
                         "status": "pass" if passed else "fail", "operator": operator,
                         "threshold": threshold, "source_artifact_digest": source_digest, "worst_cases": []})
     contributions = {
+        "schema_version": "epistemic-repair-p9-member-contributions-v1",
         "preregistered_contract_digest": canonical_sha256(_CONTRACTS),
-        "gate_members": {key: {"source_member_digest": source_digest} for key in gates},
-        "metric_members": {row["name"]: {"source_member_digest": source_digest} for row in metrics},
+        "gate_members": {key: [{
+            "member_id": f"{key}:raw-evidence", "raw_source_digest": source_digest,
+            "conforms": gates[key],
+        }] for key in gates},
+        "metric_members": {row["name"]: [{
+            "member_id": f"{row['name']}:raw-evidence", "raw_source_digest": source_digest,
+            "numerator": row["numerator"], "denominator": row["denominator"],
+        }] for row in metrics},
+        "member_source_digests": [source_digest],
     }
     body = {"schema_version": "epistemic-repair-p4-p9-normalized-v1", "commit": commit,
             "phase_exit_ready": all(gates.values()) and all(x["status"] == "pass" for x in metrics),

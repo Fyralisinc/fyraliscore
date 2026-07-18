@@ -46,7 +46,9 @@ def main() -> int:
         root = Path(__file__).resolve().parents[1]
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
         clean = not subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root, text=True).strip()
-        sidecar = build_p4_p9_sidecar(report=report, commit=commit, worktree_clean=clean)
+        sidecar = build_p4_p9_sidecar(
+            report_path=args.output, commit=commit, worktree_clean=clean,
+        )
         args.p9_output.parent.mkdir(parents=True, exist_ok=True)
         args.p9_output.write_text(json.dumps(sidecar, indent=2, sort_keys=True, default=str) + "\n")
     print(args.output)

@@ -208,6 +208,7 @@ def build_p6_p9_sidecar(
             "member_id": name, "raw_source_digest": score_sha, "conforms": gates[name],
         }] for name in GATE_IDS},
         "metric_members": metric_members,
+        "member_source_digests": sorted({score_sha}),
     }
     body = {
         "schema_version": "epistemic-repair-p6-p9-normalized-v1", "commit": commit,
