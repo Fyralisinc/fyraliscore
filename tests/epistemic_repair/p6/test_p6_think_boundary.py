@@ -10,6 +10,8 @@ from lib.shared.errors import InvariantViolation
 from lib.evaluation.epistemic_repair.p6_think_runner import (
     _complete_and_reopen_barrier, _snapshot,
 )
+from services.reasoning.think.lanes import ThinkLane
+from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
 
 def test_production_think_runner_cannot_import_or_read_sealed_gold() -> None:
@@ -106,4 +108,56 @@ async def test_p6_barrier_separates_eventual_work_and_rejects_truth_pending() ->
                 "DELETE FROM think_trigger_queue WHERE tenant_id=$1", tenant_id,
             )
             await conn.execute("DELETE FROM tenants WHERE id=$1", tenant_id)
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_downstream_pruner_reads_legacy_fields_through_accepted_adapter() -> None:
+    """Regression: truth-only view has no proposition_kind/falsifier sidecars."""
+
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL is required for the accepted-reader DB proof")
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=1)
+    try:
+        worker = ThinkWorker(
+            pool,
+            config=WorkerConfig(
+                allowed_lanes=frozenset({ThinkLane.REFLEX}),
+                tenant_filter=uuid4(),
+            ),
+            embedder=object(),
+        )
+        async with pool.acquire() as conn, conn.transaction():
+            # Preparing/executing the exact production pruning SQL used to
+            # raise UndefinedColumnError even when no queue row matched.
+            await worker._prune_low_value_downstream_rows(conn)
+            model_id = uuid4()
+            await worker._t2_belief_batch_lanes(conn, [{
+                "id": uuid4(), "trigger_kind": "T2",
+                "trigger_subkind": "belief_updated", "model_id": model_id,
+            }])
+
+            candidate_id, trigger_id = uuid4(), uuid4()
+
+            class CandidateThenDatabase:
+                async def fetch(self, query, *args):
+                    if "FROM relationship_candidates" in query:
+                        return [{
+                            "id": candidate_id, "candidate_kind": "edge",
+                            "member_model_ids": [model_id],
+                            "source_model_id": None, "target_model_id": None,
+                        }]
+                    return await conn.fetch(query, *args)
+
+            await worker._t4_candidate_batch_lanes(CandidateThenDatabase(), [{
+                "id": trigger_id, "trigger_kind": "T4",
+                "trigger_subkind": "latent_relationship_candidate",
+                "model_id": None,
+                "payload": {
+                    "relationship_candidate_id": str(candidate_id),
+                    "member_model_ids": [str(model_id)],
+                },
+            }])
+    finally:
         await pool.close()
