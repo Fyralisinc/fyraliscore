@@ -67,3 +67,25 @@ async def test_coordinator_refuses_busy_database_lock(tmp_path: Path) -> None:
             _plan(repository, head, [["never"]]), environment={},
             lock_connection=_Lock(acquired=False), runner=lambda *_: None,
         )
+
+
+@pytest.mark.asyncio
+async def test_scale_guard_failure_stops_before_provider_canary(tmp_path: Path) -> None:
+    repository, head = _repository(tmp_path)
+    commands_seen = []
+    commands = [
+        ["scale"], ["warm"],
+        [".venv/bin/python", "scripts/check_epistemic_repair_p8_scale_ready.py"],
+        [".venv/bin/python", "scripts/run_epistemic_repair_p8_provider_canary.py"],
+    ]
+
+    async def runner(command, cwd):
+        commands_seen.append(command)
+        return 1 if any(token.endswith("check_epistemic_repair_p8_scale_ready.py") for token in command) else 0
+
+    with pytest.raises(RuntimeError, match="stage 3"):
+        await execute_plan(
+            _plan(repository, head, commands), environment={},
+            lock_connection=_Lock(), runner=runner,
+        )
+    assert commands_seen == commands[:3]

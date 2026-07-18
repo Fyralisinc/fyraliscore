@@ -35,6 +35,7 @@ def build_plan(
     characterization = output_dir / "p8-component-characterization.json"
     scale = output_dir / "p8-postgres-scale-matrix.json"
     contention = output_dir / "p8-shared-contention.json"
+    warm = output_dir / "p8-repeated-warm-pairs.json"
     exit_artifact = output_dir / "epistemic-repair-p8-fault-scale.json"
     canary = output_dir / "p8-provider-canary.jsonl"
     normalized = output_dir / "p8.normalized.json"
@@ -50,11 +51,17 @@ def build_plan(
          "--template-database", "${P8_TEMPLATE_DATABASE}",
          "--expected-head", "${P8_EXPECTED_HEAD}", "--output", str(scale),
          "--contention-output", str(contention)],
+        [".venv/bin/python", "scripts/run_epistemic_repair_p8_repeated_warm_pairs.py",
+         "--database-url", "${P8_DATABASE_URL}", "--repetitions", "5",
+         "--output", str(warm)],
+        [".venv/bin/python", "scripts/check_epistemic_repair_p8_scale_ready.py",
+         "--scale", str(scale), "--expected-head", "${P8_EXPECTED_HEAD}"],
         [".venv/bin/python", "scripts/run_epistemic_repair_p8_provider_canary.py",
          "--authorization-id", canary_authorization_id, "--output", str(canary)],
         [".venv/bin/python", "scripts/build_epistemic_repair_p8_exit.py",
          "--fault", str(fault), "--scale", str(scale),
          "--characterization", str(characterization), "--contention", str(contention),
+         "--repeated-warm", str(warm),
          "--provider-canary", str(canary), "--output", str(exit_artifact),
          "--p9-output", str(normalized)],
     ]
@@ -73,7 +80,7 @@ def build_plan(
         },
         "commands": commands,
         "expected_artifacts": [str(fault), str(characterization), str(scale),
-                               str(contention), str(canary), str(exit_artifact), str(normalized)],
+                               str(contention), str(warm), str(canary), str(exit_artifact), str(normalized)],
     }
     plan["plan_digest"] = canonical_sha256(plan)
     return plan

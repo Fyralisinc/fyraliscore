@@ -23,6 +23,14 @@ def test_coherent_plan_is_pinned_and_wires_authorized_canary_and_p9(tmp_path: Pa
     flattened = [token for command in plan["commands"] for token in command]
     assert "scripts/run_epistemic_repair_p8_provider_canary.py" in flattened
     assert "--provider-canary" in flattened and "--p9-output" in flattened
+    scripts = [command[1] for command in plan["commands"]]
+    warm = scripts.index("scripts/run_epistemic_repair_p8_repeated_warm_pairs.py")
+    guard = scripts.index("scripts/check_epistemic_repair_p8_scale_ready.py")
+    canary = scripts.index("scripts/run_epistemic_repair_p8_provider_canary.py")
+    assert warm < guard < canary
+    warm_command = plan["commands"][warm]
+    assert warm_command[warm_command.index("--repetitions") + 1] == "5"
+    assert "--repeated-warm" in flattened
     (tmp_path / "tracked").write_text("dirty")
     with pytest.raises(ValueError, match="clean tracked worktree"):
         build_plan(repository=tmp_path, output_dir=tmp_path / "out", expected_head=head,

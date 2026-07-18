@@ -22,6 +22,7 @@ def main() -> int:
     parser.add_argument("--scale", type=Path, required=True)
     parser.add_argument("--characterization", type=Path, required=True)
     parser.add_argument("--contention", type=Path, required=True)
+    parser.add_argument("--repeated-warm", type=Path, required=True)
     parser.add_argument("--provider-canary", type=Path)
     parser.add_argument("--output", type=Path, default=Path("docs/plans/epistemic-repair/p8/epistemic-repair-p8-fault-scale-v1.json"))
     parser.add_argument("--p9-output", type=Path)
@@ -29,7 +30,8 @@ def main() -> int:
     artifact = compose_p8_exit(
         fault_path=args.fault, scale_path=args.scale,
         characterization_path=args.characterization,
-        contention_path=args.contention, provider_canary_path=args.provider_canary,
+        contention_path=args.contention, repeated_warm_path=args.repeated_warm,
+        provider_canary_path=args.provider_canary,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")

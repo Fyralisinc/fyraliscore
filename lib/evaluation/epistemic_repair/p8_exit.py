@@ -72,12 +72,14 @@ def _contention_complete(artifact: dict[str, Any]) -> bool:
 
 def compose_p8_exit(
     *, fault_path: Path, scale_path: Path, characterization_path: Path,
-    contention_path: Path, provider_canary_path: Path | None = None,
+    contention_path: Path, repeated_warm_path: Path,
+    provider_canary_path: Path | None = None,
 ) -> dict[str, Any]:
     artifacts, reviews = {}, []
     for name, path in (
         ("fault", fault_path), ("scale", scale_path),
         ("characterization", characterization_path), ("contention", contention_path),
+        ("repeated_warm", repeated_warm_path),
     ):
         artifacts[name], review = _read_reopened(path)
         reviews.append(review)
@@ -119,6 +121,17 @@ def compose_p8_exit(
     commits = {artifact.get("commit") for artifact in artifacts.values()}
     coherent_commit = next(iter(commits)) if len(commits) == 1 else None
     single_commit = isinstance(coherent_commit, str) and bool(_HEX40.fullmatch(coherent_commit))
+    warm = artifacts["repeated_warm"]
+    warm_preregistration = warm.get("preregistration", {})
+    warm_complete = bool(
+        warm.get("schema_version") == "p8-repeated-warm-pair-v1"
+        and warm.get("analysis", {}).get("diagnostic_complete") is True
+        and warm_preregistration.get("controls") == [[25, 12], [25, 100]]
+        and warm_preregistration.get("repetitions", 0) >= 5
+        and warm_preregistration.get("concurrencies") == [1, 20]
+        and warm_preregistration.get("warmups_excluded") is True
+        and warm.get("commit") == coherent_commit
+    )
     canary_completed = bool(
         provider_canary_path is not None
         and canary_usage is not None
@@ -141,6 +154,7 @@ def compose_p8_exit(
         )),
         "deterministic_token_status_exact_not_estimated": scale_gates.get("exact_provider_prompt_token_measurement") is False,
         "shared_contention_separate": _contention_complete(artifacts["contention"]),
+        "repeated_warm_25_signal_provenance": warm_complete,
         "characterization_reporting_complete": characterization_complete,
         "authorized_provider_canaries": latency_green and canary_completed,
         "provider_usage_observability": isinstance(usage, dict) and usage.get("input_tokens", 0) > 0,
