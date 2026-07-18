@@ -3,9 +3,12 @@ from __future__ import annotations
 from uuid import uuid4
 
 from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.think.compiled_reasoning import (
     BatchMemoryCandidateDecision,
+    BatchMemoryDecisionSet,
     _claim_op_from_batch_decision,
+    build_compiled_batch_memory_decision_request,
 )
 from services.reasoning.think.applier import _prepare_claim_insert_model
 from services.reasoning.think.diff_schema import ClaimOp
@@ -93,6 +96,121 @@ def test_compiled_workstreams_cannot_reconcile_across_scope() -> None:
     }
     assert not _generic_model_scope_compatible(atlas, beacon)
     assert not _generic_model_scope_compatible(beacon, atlas)
+
+
+def test_closed_atomic_candidate_ignores_provider_rewrite_and_keeps_one_ref() -> None:
+    observation_id = uuid4()
+    candidate = {
+        "candidate_id": "MDC_ATOM_atlas",
+        "proposed_text": "Atlas release: The certificate has no recorded owner.",
+        "entailed_claim_text": (
+            "Atlas release: The certificate has no recorded owner."
+        ),
+        "semantic_scope": ["Atlas release"],
+        "source_observation_ids": [str(observation_id)],
+        "member_observation_ids": [str(observation_id)],
+        "observation_evidence": [
+            {
+                "observation_id": str(observation_id),
+                "body": (
+                    "Atlas release, update 1: The certificate has no recorded owner."
+                ),
+                "source_channel": "slack:message",
+            }
+        ],
+    }
+    decision = BatchMemoryCandidateDecision(
+        candidate_id=candidate["candidate_id"],
+        decision="accept",
+        operation="claim",
+        confidence=0.7,
+        claim_role="concern",
+        claim_text="Atlas release has unseen schedule churn and delay.",
+        reason="Attempted broad rewrite.",
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=uuid4(),
+        observation_id=observation_id,
+        observation_ids=[observation_id],
+        seed_natural_text="One batch.",
+    )
+
+    op, _, error = _claim_op_from_batch_decision(
+        candidate, decision, trigger, force_role="fact"
+    )
+
+    assert error == ""
+    assert op is not None and op.entry is not None
+    assert op.entry["natural"] == candidate["entailed_claim_text"]
+    assert op.entry["supporting_event_ids"] == [str(observation_id)]
+    assert op.entry["proposition"]["claim_role"] == "fact"
+    assert "churn" not in op.entry["natural"]
+    assert "delay" not in op.entry["natural"]
+
+
+def test_closed_atomic_batch_is_not_truncated_to_six_candidates() -> None:
+    observations = [uuid4() for _ in range(20)]
+    candidates = [
+        {
+            "candidate_id": f"MDC_ATOM_{index}",
+            "op_family": "claim_insert",
+            "proposed_text": f"Atlas release: exact fact {index}.",
+            "entailed_claim_text": f"Atlas release: exact fact {index}.",
+            "semantic_scope": ["Atlas release"],
+            "source_observation_ids": [str(observation_id)],
+            "member_observation_ids": [str(observation_id)],
+            "observation_evidence": [
+                {
+                    "observation_id": str(observation_id),
+                    "body": f"Atlas release, update 1: exact fact {index}.",
+                    "source_channel": "slack:message",
+                }
+            ],
+        }
+        for index, observation_id in enumerate(observations)
+    ]
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=uuid4(),
+        observation_id=observations[0],
+        observation_ids=[*observations, *(uuid4() for _ in range(5))],
+        seed_natural_text="One physical 25-signal batch.",
+    )
+    bundle = ContextBundle(
+        notes={
+            "inquiry_context_packet": {
+                "signal_summary": "Twenty exact business facts and five noise signals.",
+                "memory_decision_candidates": candidates,
+            }
+        }
+    )
+
+    request = build_compiled_batch_memory_decision_request(trigger, bundle)
+
+    assert request is not None
+    assert len(request.candidates) == 20
+    assert "immutable claim wording" in request.system
+    decision = BatchMemoryCandidateDecision(
+        candidate_id="MDC_ATOM_0",
+        decision="accept",
+        operation="claim",
+        confidence=0.7,
+        claim_role="concern",
+        claim_text="Atlas release has unseen churn and delay.",
+        reason="Attempted rewrite.",
+    )
+    diff = request.to_raw_diff(
+        BatchMemoryDecisionSet(decisions=[decision]),
+        trigger=trigger,
+        trigger_ref=uuid4(),
+    )
+    assert len(diff.claim_ops) == 1
+    assert diff.claim_ops[0].entry is not None
+    assert diff.claim_ops[0].entry["natural"] == "Atlas release: exact fact 0."
+    assert diff.claim_ops[0].entry["proposition"]["claim_role"] == "fact"
 
 
 def test_compiler_evidence_manifest_is_consumed_before_model_create() -> None:

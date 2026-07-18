@@ -391,7 +391,7 @@ def test_compile_context_packet_emits_memory_decision_candidates() -> None:
     assert by_family["no_op"]["reason"].startswith("Batch may contain")
 
 
-def test_batch_fragments_compile_four_local_candidates_without_distractors() -> None:
+def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> None:
     storylines = {
         "Atlas release": (
             "The release certificate still has no clearly recorded owner.",
@@ -482,15 +482,17 @@ def test_batch_fragments_compile_four_local_candidates_without_distractors() -> 
         SufficiencyVerdict("sufficient_for_reasoning", "ready", 0, 0, ()),
     )
 
-    assert len(candidates) == 4
+    assert len(candidates) == 20
     assert {candidate.semantic_scope[0] for candidate in candidates} == set(storylines)
     for candidate in candidates:
         scope = candidate.semantic_scope[0]
-        assert set(candidate.member_observation_ids) == expected[scope]
+        assert len(candidate.member_observation_ids) == 1
+        assert set(candidate.member_observation_ids) <= expected[scope]
         assert candidate.source_observation_ids == candidate.member_observation_ids
+        assert len(candidate.observation_evidence) == 1
         assert {
             row["observation_id"] for row in candidate.observation_evidence
-        } == expected[scope]
+        } == set(candidate.member_observation_ids)
         assert all(
             row["body"].startswith(f"{scope}, update 1:")
             for row in candidate.observation_evidence
@@ -499,8 +501,61 @@ def test_batch_fragments_compile_four_local_candidates_without_distractors() -> 
             row["source_channel"] == "slack:message"
             for row in candidate.observation_evidence
         )
+        assert candidate.entailed_claim_text == candidate.proposed_text
+        assert candidate.entailed_claim_text.startswith(f"{scope}: ")
+        assert "churn" not in candidate.entailed_claim_text.casefold()
+        assert "delay" not in candidate.entailed_claim_text.casefold()
         assert not (set(candidate.member_observation_ids) & distractor_ids)
     assert all(candidate.candidate_id != "MDC_H2" for candidate in candidates)
+
+    reordered = context_packet.memory_decision_candidates(
+        TriggerContext(
+            kind="T1",
+            subkind="event_batch",
+            tenant_id=trigger.tenant_id,
+            observation_id=trigger.observation_id,
+            observation_ids=list(reversed(trigger.observation_ids)),
+            seed_natural_text=trigger.seed_natural_text,
+            seed_signature={"batch_signal_fragments": list(reversed(fragments))},
+        ),
+        (),
+        [],
+        [],
+        [],
+        SufficiencyVerdict("sufficient_for_reasoning", "ready", 0, 0, ()),
+    )
+    def atom_projection(values):
+        return {
+            (
+                item.candidate_id,
+                item.entailed_claim_text,
+                item.member_observation_ids,
+            )
+            for item in values
+        }
+    assert atom_projection(reordered) == atom_projection(candidates)
+
+    duplicate = dict(fragments[0])
+    duplicate["observation_id"] = str(uuid4())
+    duplicated = context_packet.memory_decision_candidates(
+        TriggerContext(
+            kind="T1",
+            subkind="event_batch",
+            tenant_id=trigger.tenant_id,
+            observation_id=trigger.observation_id,
+            observation_ids=[*trigger.observation_ids, uuid4()],
+            seed_natural_text=trigger.seed_natural_text,
+            seed_signature={"batch_signal_fragments": [*fragments, duplicate]},
+        ),
+        (),
+        [],
+        [],
+        [],
+        SufficiencyVerdict("sufficient_for_reasoning", "ready", 0, 0, ()),
+    )
+    assert atom_projection(candidates) <= atom_projection(duplicated)
+    assert all(len(item.member_observation_ids) == 1 for item in duplicated)
+    assert all(len(item.observation_evidence) == 1 for item in duplicated)
 
 
 def test_compile_context_packet_carries_bounded_residual_spine() -> None:

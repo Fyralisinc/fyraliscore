@@ -119,6 +119,7 @@ class MemoryDecisionCandidate:
     candidate_id: str
     op_family: MemoryDecisionOpFamily
     proposed_text: str
+    entailed_claim_text: str | None = None
     target_model_ids: tuple[str, ...] = ()
     target_act_ids: tuple[str, ...] = ()
     source_observation_ids: tuple[str, ...] = ()

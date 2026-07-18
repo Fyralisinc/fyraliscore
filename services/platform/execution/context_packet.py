@@ -733,7 +733,10 @@ def memory_decision_candidates(
 
     local_candidates, material_local_coverage = _batch_fragment_candidates(trigger)
     if material_local_coverage:
-        return local_candidates[:max_candidates]
+        # Closed atomics are bounded by the physical batch and cheap in prompt
+        # shape. The generic six-candidate cap would silently drop most of a
+        # mixed 25-signal batch before compiled adjudication.
+        return local_candidates[: max(max_candidates, 24)]
 
     candidates: list[MemoryDecisionCandidate] = []
     used_ids: set[str] = set()
@@ -897,35 +900,35 @@ def _batch_fragment_candidates(
         if len(members) < 2 or len(payloads) < 2:
             continue
         scope = scope_labels[scope_key]
-        member_ids = tuple(dict.fromkeys(row["observation_id"] for row in members))[:12]
-        member_evidence = tuple(
-            row for row in members if row["observation_id"] in set(member_ids)
-        )[:12]
-        covered_ids.update(member_ids)
-        candidates.append(
-            MemoryDecisionCandidate(
-                candidate_id=_candidate_id("MDC_WS", scope_key),
-                op_family="claim_insert",
-                proposed_text=(
-                    "Workstream-local signals may indicate a material change in "
-                    f"{scope}; adjudicate the exact durable claim from only the "
-                    "listed member observations."
-                ),
-                source_observation_ids=member_ids,
-                member_observation_ids=member_ids,
-                semantic_scope=(scope,),
-                observation_evidence=member_evidence,
-                uncertainty_slots=(
-                    f"which claim about {scope} is supported by these observations",
-                    "whether the repeated signals are material rather than background",
-                ),
-                confidence=0.58,
-                reason=(
-                    f"Provider-blind semantic partition found {len(member_ids)} "
-                    f"distinct observations for {scope}"
-                ),
+        for member in sorted(members, key=lambda row: row["observation_id"]):
+            observation_id = member["observation_id"]
+            match = _BATCH_SCOPE_PREFIX_RE.match(member["body"])
+            if match is None:  # guarded during grouping
+                continue
+            assertion = " ".join(match.group("body").split())
+            if not assertion:
+                continue
+            entailed_text = f"{scope}: {assertion}"
+            covered_ids.add(observation_id)
+            candidates.append(
+                MemoryDecisionCandidate(
+                    candidate_id=_candidate_id(
+                        "MDC_ATOM", f"{scope_key}_{observation_id}"
+                    ),
+                    op_family="claim_insert",
+                    proposed_text=entailed_text,
+                    entailed_claim_text=entailed_text,
+                    source_observation_ids=(observation_id,),
+                    member_observation_ids=(observation_id,),
+                    semantic_scope=(scope,),
+                    observation_evidence=(member,),
+                    confidence=0.58,
+                    reason=(
+                        "Compiler-extracted exact assertion from one recognized "
+                        "workstream observation"
+                    ),
+                )
             )
-        )
 
     eligible_count = sum(
         1

@@ -393,6 +393,12 @@ class CompiledBatchMemoryDecisionRequest:
                     f"{decision.candidate_id}: rejected - {decision.reason}"
                 )
                 continue
+            if candidate.get("entailed_claim_text") and decision.operation != "claim":
+                blocked += 1
+                trace_parts.append(
+                    f"{decision.candidate_id}: closed atomic candidate only permits claim"
+                )
+                continue
 
             claim_placeholder: UUID | None = None
             if decision.operation == "memory_lifecycle":
@@ -450,6 +456,9 @@ class CompiledBatchMemoryDecisionRequest:
                         candidate,
                         decision,
                         trigger,
+                        force_role=(
+                            "fact" if candidate.get("entailed_claim_text") else None
+                        ),
                     )
                 )
                 if claim_op is None or claim_placeholder is None:
@@ -673,6 +682,14 @@ def build_compiled_batch_memory_decision_request(
     if not candidates:
         return None
     max_candidates = _env_int("THINK_COMPILED_BATCH_MEMORY_MAX_CANDIDATES", 6)
+    if all(
+        str(candidate.get("entailed_claim_text") or "").strip()
+        for candidate in candidates
+    ):
+        max_candidates = max(
+            max_candidates,
+            _env_int("THINK_COMPILED_BATCH_ATOMIC_MAX_CANDIDATES", 24),
+        )
     candidates = candidates[:max_candidates]
     if _compiled_batch_requires_open_writer_surface(packet, candidates):
         return None
@@ -695,6 +712,8 @@ def build_compiled_batch_memory_decision_request(
         "The batch is one physical transport unit, never a semantic unit. "
         "Reason independently within each candidate's explicit semantic scope "
         "and member observations; never combine unrelated candidates. "
+        "For candidates with entailed_claim_text, decide only accept or no-op; "
+        "the compiler owns the immutable claim wording and evidence membership. "
         "Prefer updates over duplicate inserts, situations for composite "
         "candidate-local understanding, and edges when selected graph context is "
         "decision-relevant. Reject/no-op only when uncertainty is decisive, "
@@ -970,6 +989,7 @@ def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
         "op_family",
         "confidence",
         "proposed_text",
+        "entailed_claim_text",
         "target_model_ids",
         "target_act_ids",
         "evidence_model_ids",
@@ -3202,7 +3222,12 @@ def _claim_op_from_batch_decision(
     confidence_floor = _env_float("THINK_COMPILED_BATCH_ACCEPT_MIN_CONFIDENCE", 0.55)
     if decision.confidence < confidence_floor:
         return None, None, "decision confidence below promotion floor"
-    text = str(decision.claim_text or candidate.get("proposed_text") or "").strip()
+    text = str(
+        candidate.get("entailed_claim_text")
+        or decision.claim_text
+        or candidate.get("proposed_text")
+        or ""
+    ).strip()
     if len(text) < 12:
         return None, None, "claim_text is too short"
     born_event = uuid7()
