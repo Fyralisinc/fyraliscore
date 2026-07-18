@@ -65,20 +65,20 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | First 12 x 25 P6 execution failed semantic synthesis; focused repairs through `c04a0445` are implemented but not yet integrated-run proof |
-| Repair implementation | P0-P8 normalization plus P6 synthesis/lifecycle/relation repairs implemented; decisive integrated evidence remains red |
-| Current phase | Focused post-repair P6 proof; repeat the expensive decisive run only after the semantic core is green |
+| Latest verified coordination checkpoint | Clean four-batch P6 core pass at `bf26d622`; full twelve-batch evidence remains outstanding |
+| Repair implementation | Exact atomic, uncertainty, scope, lineage, and first mature synthesis contracts are integrated through batch four |
+| Current phase | Advance from bounded four-batch proof to the clean decisive twelve-batch P6 run |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
 | Current execution boundary | Begins with normalized, source-attributed signals already persisted in PostgreSQL |
 | Explicitly excluded | Connectors/listeners, OAuth/webhooks, task autonomy, external consequential action, second 45-batch run |
 | P0-P5 evidence state | Strict raw-member P9 regeneration/sidecar paths ready; current-release artifacts still require clean regeneration |
-| P6 evidence state | Complete 300-signal run preserved as a semantic failure: atomic F1 0.603 and 0/4 coherent theses; four-batch diagnostic isolated edge-only synthesis |
+| P6 evidence state | Historical 300-signal failure preserved; clean four-batch rerun now has atomic/uncertainty/lineage/scope metrics 1.0 and one claim-local Atlas composite |
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
-| Highest-priority outcome | Prove coherent claim-local synthesis and lifecycle evolution in focused batches, then rerun P6 honestly |
+| Highest-priority outcome | Run all twelve batches without weakening the clean four-batch contracts; measure all four theses and terminal lifecycle behavior |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -1330,6 +1330,53 @@ absorption; extracted proposition encoded as JSON text; replayed accepted
 relation missing from projections; explicit no-write veto mistaken for missing
 grounding.
 
+### 2026-07-18 — LOG-041 — Clean four-batch core closes the semantic repair gate
+
+**Type:** observed and corrected
+
+**Work package / commit:** P6 clean four-batch integrated proof; repairs
+`1e089459`, `7a268344`, `9ddf2970`, `70247268`, `49c853e0`, and `bf26d622`.
+
+**What happened:** A clean zero-seed run completed four batches and produced 56
+atomic Models plus one Atlas composite. No synthesis was created in B2. The
+Atlas composite appeared at the first mature conclusion opportunity and bound
+only `p6-b04-s09` directly; earlier evidence arrives through its two member
+Models rather than through same-scope sibling observations.
+
+**Evidence:** `/tmp/p6-think-4batch-core-bf26d622.json`,
+`/tmp/p6-think-4batch-core-bf26d622-evidence.json`, and
+`/tmp/p6-think-4batch-core-bf26d622-score.json`. Atomic precision was 56/56,
+atomic recall 32/32, and atomic F1 1.0. Uncertainty fate precision and coverage
+were 24/24. Evidence-lineage coverage was 57/57. Scope precision and recall
+were 4/4. The `zero_seed_canonical_truth` hard gate was true.
+
+**Interpretation:** Closed compiler-authorized atomics now survive downstream
+splitting even when their predicate is a status, timestamp corroboration, or
+referent clarification. The evaluator separates legitimate composite synthesis
+from the atomic denominator without losing its lineage. Synthesis maturity and
+claim-local evidence boundaries now behave correctly over the first four
+batches.
+
+Zero canonical relations are correct for this prefix: the observed adaptive
+support edge remained candidate-only and therefore could not enter governed
+relation truth. Lifecycle accuracy is correctly unmeasured because no
+correction-phase terminal transition is available. Direct-thesis accuracy and
+thesis-facet completeness are also unmeasured because the four-batch prefix has
+not executed every preregistered synthesis opportunity.
+
+**Decision or next test:** Preserve these artifacts as the bounded core exit
+evidence and proceed to the clean twelve-batch P6 run. The full run must retain
+all prefix invariants while proving Beacon, Cobalt, and Delta synthesis,
+contradiction/correction/outcome lifecycle, mature retrieval, governed
+relations when an opportunity exists, barriers, and complete receipts.
+
+**Coordinator impact:** The focused semantic-repair gate is closed. P6 remains
+open only because four batches cannot qualify the twelve-batch phase exit.
+
+**Edge cases added:** `EDGE-038` — candidate-only adaptive support edges must
+remain outside canonical relation truth and relation metrics until a governed,
+bound relation opportunity is accepted.
+
 ## 13. DEFERRED BACKLOG
 
 This ledger is deliberately quarantined from the core milestone. The milestone
@@ -1351,6 +1398,9 @@ these items and continue core work unless one directly blocks semantic proof.
 - Broad framework/schema refactors and non-blocking edge-case fixes.
 - Another expensive P6 replay before focused synthesis/lifecycle/relation tests
   are green.
+- `EDGE-038`: candidate-only adaptive support edges require separate
+  characterization; they must not be promoted or scored as canonical relation
+  truth without a governed, bound semantic relation decision.
 
 Evaluator work required to make the eventual core verdict truthful is not
 permanently deferred. In particular, relation joint precision/recall, scope
