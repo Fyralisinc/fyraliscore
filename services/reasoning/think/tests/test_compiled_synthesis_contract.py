@@ -247,3 +247,74 @@ def test_rejected_synthesis_emits_neither_model_nor_relation() -> None:
 
     assert diff.claim_ops == []
     assert diff.relation_claim_ops == []
+
+
+def test_authoritative_reconciliation_builds_revision_proposition() -> None:
+    tenant_id, trigger_id, target_id, observation_id = (
+        uuid4(), uuid4(), uuid4(), uuid4(),
+    )
+    member_ids = [uuid4(), uuid4()]
+    prior = {
+        "kind": "belief",
+        "claim_role": "situation",
+        "abstraction_level": "composite",
+        "synthesis_contract": True,
+        "subject": "Harbor release",
+        "scope_label": "Harbor release",
+        "scope_ref": "workstream:harbor-release",
+        "situation": "Harbor release is blocked by incomplete certificate renewal.",
+        "summary": "Harbor release is blocked by incomplete certificate renewal.",
+        "member_model_ids": [str(value) for value in member_ids],
+        "supported_relation": {"kind": "dependency_constraint"},
+    }
+    candidate = {
+        "candidate_id": "MDC_RECON_harbor",
+        "candidate_kind": "reconciliation",
+        "allowed_operations": ["memory_lifecycle", "no_op"],
+        "proposed_text": (
+            "Harbor release is no longer blocked after certificate renewal completed."
+        ),
+        "semantic_scope": ["Harbor release"],
+        "canonical_scope_ref": "workstream:harbor-release",
+        "target_model_ids": [str(target_id)],
+        "evidence_model_ids": [str(value) for value in member_ids],
+        "member_observation_ids": [str(observation_id)],
+        "counterevidence_ids": [str(observation_id)],
+        "target_proposition": prior,
+        "lifecycle_phase": "correction",
+    }
+    request = CompiledBatchMemoryDecisionRequest(
+        system="system", user="user", candidates=(candidate,),
+    )
+    decision = BatchMemoryCandidateDecision(
+        candidate_id="MDC_RECON_harbor",
+        decision="accept",
+        operation="memory_lifecycle",
+        confidence=0.95,
+        model_id=target_id,
+        lifecycle_action="revise",
+        claim_role="situation",
+        claim_text=candidate["proposed_text"],
+        situation_member_model_ids=member_ids,
+        claim_local_evidence_event_ids=[observation_id],
+        reason="Authoritative correction revises the active situation.",
+    )
+
+    diff = request.to_raw_diff(
+        BatchMemoryDecisionSet(decisions=[decision]),
+        trigger=TriggerContext(
+            kind="T1", tenant_id=tenant_id, observation_ids=[observation_id],
+        ),
+        trigger_ref=trigger_id,
+    )
+
+    assert len(diff.memory_lifecycle_ops) == 1
+    op = diff.memory_lifecycle_ops[0]
+    assert op.action == "revise"
+    assert op.model_id == target_id
+    assert op.claim_local_evidence_event_ids == [observation_id]
+    revised = op.metadata["next_proposition"]
+    assert revised["summary"] == candidate["proposed_text"]
+    assert revised["lifecycle_phase"] == "correction"
+    assert revised["member_model_ids"] == prior["member_model_ids"]
+    assert revised["supported_relation"] == prior["supported_relation"]

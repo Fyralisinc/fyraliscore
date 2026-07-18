@@ -540,6 +540,82 @@ def test_governed_episodes_are_canonical_first_and_authority_gated() -> None:
     ]
 
 
+def test_authoritative_scope_reversal_compiles_exact_reconciliation_candidate() -> None:
+    tenant_id = uuid4()
+    auxiliary, correction = uuid4(), uuid4()
+    episode = _governed_episode(tenant_id, [
+        (
+            auxiliary,
+            "Harbor release, update 4: The certificate ticket closed.",
+            "resolved",
+        ),
+        (
+            correction,
+            "Harbor release is no longer blocked after certificate renewal completed.",
+            "resolved",
+        ),
+    ])
+    for assertion in episode["assertions"]:
+        assertion["trust_tier"] = (
+            "authoritative"
+            if assertion["observation_id"] == str(correction)
+            else "unvetted"
+        )
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_ids=[auxiliary, correction],
+        seed_signature={"governed_learning_episodes": [episode]},
+    )
+    target_id = uuid4()
+    member_ids = [uuid4(), uuid4()]
+    prior_proposition = {
+        "kind": "belief",
+        "claim_role": "situation",
+        "abstraction_level": "composite",
+        "synthesis_contract": True,
+        "scope_label": "Harbor release",
+        "scope_ref": "workstream:harbor-release",
+        "situation": "Harbor release is blocked by incomplete certificate renewal.",
+        "summary": "Harbor release is blocked by incomplete certificate renewal.",
+        "member_model_ids": [str(value) for value in member_ids],
+    }
+    candidates = context_packet.memory_decision_candidates(
+        trigger,
+        (),
+        [],
+        [],
+        [],
+        SufficiencyVerdict("sufficient_for_reasoning", "ready", 2, 0, ()),
+        synthesis_scope_models={"Harbor release": (str(target_id),)},
+        synthesis_scope_model_cards={
+            str(target_id): {
+                "id": str(target_id),
+                "version_id": str(uuid4()),
+                "natural": prior_proposition["summary"],
+                "proposition": prior_proposition,
+                "canonical_scope": {
+                    "label": "Harbor release",
+                    "ref": "workstream:harbor-release",
+                },
+            }
+        },
+    )
+
+    reconciliations = [
+        item for item in candidates if item.candidate_kind == "reconciliation"
+    ]
+    assert len(reconciliations) == 1
+    candidate = reconciliations[0]
+    assert candidate.target_model_ids == (str(target_id),)
+    assert candidate.member_observation_ids == (str(correction),)
+    assert candidate.evidence_model_ids == tuple(map(str, member_ids))
+    assert candidate.counterevidence_ids == (str(correction),)
+    assert candidate.lifecycle_phase == "correction"
+    assert candidate.target_proposition == prior_proposition
+
+
 def test_governed_provisional_episode_cannot_fall_back_into_truth() -> None:
     tenant_id = uuid4()
     first, second = uuid4(), uuid4()

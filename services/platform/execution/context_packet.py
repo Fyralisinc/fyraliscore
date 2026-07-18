@@ -7,6 +7,7 @@ import json
 import re
 from dataclasses import asdict, is_dataclass
 from typing import Any, Callable, Literal, Mapping
+from uuid import UUID
 
 import asyncpg
 
@@ -660,6 +661,11 @@ def compile_context_packet(
         packet_evidence,
         sufficiency,
         synthesis_scope_models=synthesis_scope_models,
+        synthesis_scope_model_cards=(
+            synthesis_hydration_receipt.get("endpoint_model_cards")
+            if isinstance(synthesis_hydration_receipt, Mapping)
+            else None
+        ),
     )
     uncertainty_signals = batch_fragment_uncertainty_signals(trigger)
     return {
@@ -727,6 +733,7 @@ def memory_decision_candidates(
     *,
     max_candidates: int = 6,
     synthesis_scope_models: Mapping[str, tuple[str, ...]] | None = None,
+    synthesis_scope_model_cards: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[MemoryDecisionCandidate]:
     """Compile inquiry output into Think-facing memory decision candidates.
 
@@ -754,9 +761,15 @@ def memory_decision_candidates(
             evidence,
             scope_models=synthesis_scope_models,
         )
+        reconciliation_candidates = _scoped_reconciliation_candidates(
+            local_candidates,
+            scope_models=synthesis_scope_models,
+            model_cards=synthesis_scope_model_cards,
+        )
         return [
             *local_candidates[: max(max_candidates, 24)],
             *synthesis_candidates[:4],
+            *reconciliation_candidates[:2],
         ]
 
     candidates: list[MemoryDecisionCandidate] = []
@@ -972,6 +985,126 @@ def _scoped_synthesis_candidates(
                 "Entity-scoped accepted memory and new evidence require a "
                 "separate cross-time synthesis decision"
             ),
+        ))
+    return out
+
+
+_NEGATIVE_SCOPE_STATE_RE = re.compile(
+    r"\b(?:blocked|incomplete|open|pending|waiting|delayed|stalled)\b",
+    re.IGNORECASE,
+)
+_RESOLVED_SCOPE_STATE_RE = re.compile(
+    r"\b(?:no longer blocked|unblocked|completed|closed|reopened|resolved)\b",
+    re.IGNORECASE,
+)
+
+
+def _valid_uuid_text(value: Any) -> str | None:
+    try:
+        return str(UUID(str(value)))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _scoped_reconciliation_candidates(
+    atomic_candidates: list[MemoryDecisionCandidate],
+    *,
+    scope_models: Mapping[str, tuple[str, ...]] | None,
+    model_cards: Mapping[str, Mapping[str, Any]] | None,
+) -> list[MemoryDecisionCandidate]:
+    """Compile one exact authoritative revision against an active situation.
+
+    This is deliberately narrower than fuzzy contradiction detection. The new
+    assertion must be a scope-level conclusion from an authoritative source,
+    and exactly one accepted composite in the same canonical scope must express
+    the opposite unresolved state.
+    """
+
+    cards = model_cards if isinstance(model_cards, Mapping) else {}
+    out: list[MemoryDecisionCandidate] = []
+    for conclusion in atomic_candidates:
+        if (
+            len(conclusion.semantic_scope) != 1
+            or not conclusion.canonical_scope_ref
+            or not _is_scope_level_synthesis_assertion(
+                conclusion, conclusion.semantic_scope[0]
+            )
+            or len(conclusion.member_observation_ids) != 1
+            or not conclusion.observation_evidence
+            or str(
+                conclusion.observation_evidence[0].get("trust_tier") or ""
+            ).casefold() != "authoritative"
+        ):
+            continue
+        next_text = str(
+            conclusion.entailed_claim_text or conclusion.proposed_text or ""
+        ).strip()
+        if not _RESOLVED_SCOPE_STATE_RE.search(next_text):
+            continue
+        scope = conclusion.semantic_scope[0]
+        target_rows: list[tuple[str, dict[str, Any]]] = []
+        for raw_model_id in (scope_models or {}).get(scope, ()):
+            card = cards.get(str(raw_model_id))
+            if not isinstance(card, Mapping):
+                continue
+            canonical_scope = card.get("canonical_scope")
+            if (
+                not isinstance(canonical_scope, Mapping)
+                or canonical_scope.get("ref") != conclusion.canonical_scope_ref
+            ):
+                continue
+            proposition = card.get("proposition")
+            if not isinstance(proposition, Mapping) or (
+                proposition.get("abstraction_level") != "composite"
+                and proposition.get("claim_role") != "situation"
+            ):
+                continue
+            prior_text = " ".join(str(value or "") for value in (
+                card.get("natural"),
+                proposition.get("situation"),
+                proposition.get("summary"),
+            ))
+            if not _NEGATIVE_SCOPE_STATE_RE.search(prior_text):
+                continue
+            target_rows.append((str(raw_model_id), dict(proposition)))
+        if len(target_rows) != 1:
+            continue
+        target_model_id, prior_proposition = target_rows[0]
+        member_model_ids = tuple(dict.fromkeys(
+            normalized
+            for value in (prior_proposition.get("member_model_ids") or ())
+            if (normalized := _valid_uuid_text(value)) is not None
+        ))[:8]
+        if len(member_model_ids) < 2:
+            continue
+        observation_id = conclusion.member_observation_ids[0]
+        out.append(MemoryDecisionCandidate(
+            candidate_id=_candidate_id(
+                "MDC_RECON", f"{target_model_id}_{observation_id}"
+            ),
+            op_family="claim_update",
+            candidate_kind="reconciliation",
+            allowed_operations=("memory_lifecycle", "no_op"),
+            proposed_text=next_text,
+            target_model_ids=(target_model_id,),
+            source_observation_ids=(observation_id,),
+            member_observation_ids=(observation_id,),
+            semantic_scope=(scope,),
+            canonical_scope_ref=conclusion.canonical_scope_ref,
+            observation_evidence=conclusion.observation_evidence,
+            evidence_model_ids=member_model_ids,
+            counterevidence_ids=(observation_id,),
+            write_preconditions=(
+                "scope-level correction evidence is authoritative",
+                "exactly one opposite active composite exists in the same scope",
+            ),
+            confidence=0.95,
+            reason=(
+                "Authoritative scope-level evidence explicitly contradicts the "
+                "prior active situation and requires revision."
+            ),
+            target_proposition=prior_proposition,
+            lifecycle_phase="correction",
         ))
     return out
 
@@ -1343,6 +1476,7 @@ def _governed_episode_candidates(
                 "canonical_ref": canonical_ref,
                 "governed_surface": surface,
                 "coordinate_authority": "resolved",
+                "trust_tier": str(assertion.get("trust_tier") or "unvetted"),
                 "evidence_address": str(assertion.get("evidence_address") or ""),
                 "evidence_field_path": str(
                     assertion.get("evidence_field_path") or ""

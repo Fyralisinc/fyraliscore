@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -117,3 +119,40 @@ async def test_runner_preserves_authoritative_trust_and_source_space(
     payloads = [(row[2], row[3]) for row in conn.metadata_rows]
     assert sum(trust == "authoritative" for _source, trust in payloads) == 3
     assert all("source_space" in source for source, _trust in payloads)
+
+
+async def test_returned_artifact_matches_checkpoint_with_nested_runtime_types(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    tenant_id = uuid4()
+    nested_id = uuid4()
+    captured_at = datetime(2026, 7, 18, 12, 30, tzinfo=timezone.utc)
+    checkpoint = tmp_path / "cf2.json"
+
+    async def fake_run(**_kwargs):
+        return {
+            "waves": [{
+                "batch_number": 1,
+                "snapshot": {
+                    "model_ids": (nested_id,),
+                    "captured_at": captured_at,
+                },
+            }],
+            "complete": True,
+        }
+
+    monkeypatch.setattr(cf2_runner, "run_p6_think_with_dependencies", fake_run)
+
+    artifact = await cf2_runner.run_cf2_provider_free(
+        database_url="postgresql://unused",
+        checkpoint_path=checkpoint,
+        tenant_id=tenant_id,
+        max_batches=1,
+    )
+
+    persisted = json.loads(checkpoint.read_text())
+    assert artifact == persisted
+    assert artifact["waves"][0]["snapshot"] == {
+        "model_ids": [str(nested_id)],
+        "captured_at": captured_at.isoformat(),
+    }

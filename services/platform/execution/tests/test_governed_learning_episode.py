@@ -14,9 +14,10 @@ def test_episode_identity_is_canonical_ref_first_and_transport_invariant() -> No
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
     rows = [
         {"id": first_id, "occurred_at": start, "source_channel": "slack:message",
-         "content_text": "Atlas ownership is open."},
+         "content_text": "Atlas ownership is open.", "trust_tier": "unvetted"},
         {"id": second_id, "occurred_at": start + timedelta(hours=2),
-         "source_channel": "jira:issue", "content_text": "Atlas rollout moved."},
+         "source_channel": "jira:issue", "content_text": "Atlas rollout moved.",
+         "trust_tier": "authoritative"},
     ]
     mentions = {
         first_id: [{"surface": "Atlas release", "canonical_ref":
@@ -48,6 +49,9 @@ def test_episode_identity_is_canonical_ref_first_and_transport_invariant() -> No
     ]
     assert [item.coordinate_authority for item in together[0].assertions] == [
         "resolved", "provisional",
+    ]
+    assert [item.trust_tier for item in together[0].assertions] == [
+        "unvetted", "authoritative",
     ]
     assert together[0].uncertainty == ("provisional_entity_coordinate",)
 

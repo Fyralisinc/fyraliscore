@@ -216,15 +216,30 @@ def _authority_contradiction(candidate: Mapping[str, Any]) -> dict[str, Any] | N
         or not _CONTRADICTION.search(text)
     ):
         return None
+    revision = (
+        candidate.get("candidate_kind") == "reconciliation"
+        and bool(str(candidate.get("proposed_text") or "").strip())
+    )
     return {
         "candidate_id": str(candidate["candidate_id"]),
         "decision": "accept",
         "operation": "memory_lifecycle",
         "confidence": 0.95,
         "model_id": targets[0],
-        "lifecycle_action": "supersede",
+        "lifecycle_action": "revise" if revision else "supersede",
+        **({
+            "claim_role": "situation",
+            "claim_text": str(candidate.get("proposed_text") or "").strip(),
+            "situation_member_model_ids": _uuid_strings(
+                candidate.get("evidence_model_ids")
+            ),
+        } if revision else {}),
         "claim_local_evidence_event_ids": events,
-        "reason": "Explicit higher-authority counterevidence supersedes the bound head.",
+        "reason": (
+            "Explicit higher-authority counterevidence revises the bound active head."
+            if revision else
+            "Explicit higher-authority counterevidence supersedes the bound head."
+        ),
     }
 
 

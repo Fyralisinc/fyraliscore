@@ -1270,11 +1270,47 @@ def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
         if key == "endpoint_model_cards" and isinstance(value, list):
             lines.append("    endpoint_model_cards:")
             for card in value[:8]:
-                lines.append(f"      - {_trunc(_jsonish(card), 900)}")
+                lines.append(f"      - {_endpoint_model_card_json(card)}")
             continue
         lines.append(f"    {key}: {_trunc(_jsonish(value), 900)}")
     lines.append("  </candidate>")
     return lines
+
+
+def _endpoint_model_card_json(card: Any) -> str:
+    """Render one bounded endpoint card without truncating serialized JSON.
+
+    Endpoint coordinates and scope remain exact.  Potentially large semantic
+    fields are bounded before serialization so the resulting line is always a
+    complete JSON object that request-only decision adapters can parse.
+    """
+
+    if not isinstance(card, dict):
+        return _jsonish(card)
+    compact = {
+        key: card[key]
+        for key in ("id", "version_id", "canonical_scope")
+        if card.get(key) not in (None, "", {}, [])
+    }
+    natural = str(card.get("natural") or "").strip()
+    if natural:
+        compact["natural"] = _trunc(natural, 360)
+    proposition = card.get("proposition")
+    if proposition not in (None, "", {}, []):
+        if isinstance(proposition, dict):
+            assertion = next(
+                (
+                    str(proposition[key]).strip()
+                    for key in ("assertion", "statement", "claim", "text", "summary")
+                    if proposition.get(key) not in (None, "", {}, [])
+                ),
+                "",
+            )
+            semantic = assertion or _jsonish(proposition)
+        else:
+            semantic = str(proposition)
+        compact["proposition"] = _trunc(semantic, 420)
+    return _jsonish(compact)
 
 
 def _batch_candidate_evidence_lines(
@@ -3731,6 +3767,38 @@ def _memory_lifecycle_op_from_batch_decision(
         "candidate_id": decision.candidate_id,
         "operation": decision.operation,
     }
+    if action == "revise" and str(decision.claim_text or "").strip():
+        next_proposition = _batch_claim_proposition(
+            decision.claim_role or "situation",
+            str(decision.claim_text).strip(),
+            candidate,
+            decision,
+        )
+        prior_proposition = candidate.get("target_proposition")
+        if isinstance(prior_proposition, dict):
+            # Revision changes the judgment while preserving the identity and
+            # compositional contract of the accepted situation it updates.
+            for key in (
+                "kind",
+                "claim_role",
+                "abstraction_level",
+                "synthesis_contract",
+                "subject",
+                "scope_label",
+                "scope_ref",
+                "member_model_ids",
+                "supported_relation",
+                "pressure_type",
+                "affected_decisions",
+                "affected_customers",
+                "affected_teams",
+            ):
+                if key in prior_proposition:
+                    next_proposition[key] = prior_proposition[key]
+        next_proposition["lifecycle_phase"] = (
+            candidate.get("lifecycle_phase") or "correction"
+        )
+        metadata["next_proposition"] = next_proposition
     op = MemoryLifecycleOp(
         op="reconcile",
         model_id=model_id,

@@ -33,6 +33,7 @@ from services.evaluation.epistemic_repair.cf2_source_grounding import (
 )
 from services.evaluation.epistemic_repair.p6_think_runner import (
     P6ThinkExecutionDependencies,
+    _jsonable,
     _persist_runtime_batch,
     _signal_occurred_at,
     _write_checkpoint,
@@ -196,8 +197,9 @@ async def run_cf2_provider_free(
             "gold_visible_during_execution": False,
             "zero_seed_requested": True,
         })
-        _write_checkpoint(checkpoint_path, artifact)
-        return artifact
+        normalized_artifact = _jsonable(artifact)
+        _write_checkpoint(checkpoint_path, normalized_artifact)
+        return normalized_artifact
     finally:
         close = getattr(runtime_embedder, "close", None)
         if owns_embedder and close is not None:

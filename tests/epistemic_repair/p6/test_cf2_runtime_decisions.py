@@ -7,7 +7,10 @@ from services.evaluation.epistemic_repair.cf2_decisions import (
     compiled_batch_memory_decisions,
 )
 from services.evaluation.epistemic_repair.cf2_provider import CF2StructuredRequest
-from services.reasoning.think.compiled_reasoning import BatchMemoryDecisionSet
+from services.reasoning.think.compiled_reasoning import (
+    BatchMemoryDecisionSet,
+    _batch_candidate_lines,
+)
 
 
 def _request(*candidates: dict) -> CF2StructuredRequest:
@@ -122,6 +125,73 @@ def test_admits_at_most_one_exact_evidenced_mechanistic_synthesis() -> None:
     assert rejected.decision == "reject"
 
 
+def test_compiled_parser_accepts_long_production_shaped_endpoint_cards() -> None:
+    model_ids = [uuid4(), uuid4()]
+    version_ids = [uuid4(), uuid4()]
+    observation_ids = [uuid4(), uuid4()]
+    candidate = {
+        "candidate_id": "synthesis-long-endpoints",
+        "candidate_kind": "synthesis",
+        "allowed_operations": ["situation", "situation_and_edge", "no_op"],
+        "confidence": 0.84,
+        "proposed_text": "Incomplete certificate renewal blocks the rollout gate.",
+        "canonical_scope_ref": "workstream:harbor-release",
+        "member_observation_ids": [str(value) for value in observation_ids],
+        "evidence_model_ids": [str(value) for value in model_ids],
+        "endpoint_model_cards": [
+            {
+                "id": str(model_ids[0]),
+                "version_id": str(version_ids[0]),
+                "natural": "Certificate renewal remains incomplete and is the prerequisite.",
+                "proposition": {
+                    "kind": "belief",
+                    "assertion": "Certificate renewal remains incomplete and open.",
+                    "production_metadata": "x" * 4000,
+                },
+                "canonical_scope": {
+                    "label": "Harbor release",
+                    "ref": "workstream:harbor-release",
+                },
+            },
+            {
+                "id": str(model_ids[1]),
+                "version_id": str(version_ids[1]),
+                "natural": "The rollout gate is blocked and the launch window is delayed.",
+                "proposition": {
+                    "kind": "belief",
+                    "assertion": "The rollout gate is blocked and launch is delayed.",
+                    "production_metadata": "y" * 4000,
+                },
+                "canonical_scope": {
+                    "label": "Harbor release",
+                    "ref": "workstream:harbor-release",
+                },
+            },
+        ],
+    }
+    user = "\n".join([
+        "<memory_decision_candidates>",
+        *_batch_candidate_lines(candidate),
+        "</memory_decision_candidates>",
+    ])
+    request = CF2StructuredRequest(
+        schema_name="BatchMemoryDecisionSet",
+        system="compiled closed-world task",
+        user=user,
+        schema=BatchMemoryDecisionSet.model_json_schema(),
+    )
+
+    result = BatchMemoryDecisionSet.model_validate(
+        compiled_batch_memory_decisions(request)
+    )
+
+    decision = result.decisions[0]
+    assert decision.decision == "accept"
+    assert decision.operation == "situation_and_edge"
+    assert decision.source_model_id == model_ids[0]
+    assert decision.target_model_id == model_ids[1]
+
+
 def test_synthesis_fails_closed_without_exact_heads_evidence_or_mechanism() -> None:
     model_ids = [uuid4(), uuid4()]
     common = {
@@ -192,3 +262,38 @@ def test_generic_contradiction_without_explicit_authority_fails_closed() -> None
 
     assert result.decisions[0].decision == "reject"
     assert result.decisions[0].operation == "no_op"
+
+
+def test_authoritative_reconciliation_revises_exact_active_situation() -> None:
+    model_id, observation_id = uuid4(), uuid4()
+    member_ids = [uuid4(), uuid4()]
+    result = _validated({
+        "candidate_id": "authority-revision",
+        "candidate_kind": "reconciliation",
+        "allowed_operations": ["memory_lifecycle", "no_op"],
+        "proposed_text": (
+            "Harbor release is no longer blocked after certificate renewal completed."
+        ),
+        "target_model_ids": [str(model_id)],
+        "evidence_model_ids": [str(value) for value in member_ids],
+        "member_observation_ids": [str(observation_id)],
+        "counterevidence_ids": [str(observation_id)],
+        "observation_evidence": [{
+            "observation_id": str(observation_id),
+            "trust_tier": "authoritative",
+            "body": "The authoritative record contradicts the prior blocked state.",
+        }],
+        "reason": (
+            "Authoritative scope-level evidence contradicts the prior active "
+            "situation and requires revision."
+        ),
+    })
+
+    decision = result.decisions[0]
+    assert decision.decision == "accept"
+    assert decision.operation == "memory_lifecycle"
+    assert decision.lifecycle_action == "revise"
+    assert decision.model_id == model_id
+    assert decision.claim_role == "situation"
+    assert decision.situation_member_model_ids == member_ids
+    assert decision.claim_local_evidence_event_ids == [observation_id]

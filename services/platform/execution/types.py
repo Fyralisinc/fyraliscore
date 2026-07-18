@@ -141,6 +141,11 @@ class MemoryDecisionCandidate:
     answer_summary: str = ""
     confidence: float = 0.0
     reason: str = ""
+    # Internal closed-world revision material. These fields are not authority
+    # by themselves; candidate compilation still requires an exact target,
+    # authoritative evidence, and downstream validation/admission.
+    target_proposition: dict[str, Any] | None = None
+    lifecycle_phase: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

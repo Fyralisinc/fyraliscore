@@ -34,6 +34,7 @@ class GovernedObservationAssertion:
     canonical_ref: str | None
     coordinate_authority: CoordinateAuthority
     detection_id: UUID | None
+    trust_tier: str = "unvetted"
     uncertainty: tuple[str, ...] = ()
 
     def as_payload(self) -> dict[str, Any]:
@@ -122,6 +123,7 @@ def build_governed_learning_episodes(
                 canonical_ref=canonical_ref,
                 coordinate_authority=authority,
                 detection_id=_uuid(mention.get("detection_id")),
+                trust_tier=str(row.get("trust_tier") or "unvetted"),
                 uncertainty=(
                     ("provisional_entity_coordinate",)
                     if authority == "provisional" else ()
@@ -144,6 +146,7 @@ def build_governed_learning_episodes(
                 canonical_ref=None,
                 coordinate_authority="unresolved",
                 detection_id=None,
+                trust_tier=str(row.get("trust_tier") or "unvetted"),
                 uncertainty=("missing_governed_entity_coordinate",),
             )
             grouped.setdefault(f"unresolved:{observation_id}", []).append(assertion)
