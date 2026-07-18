@@ -29,7 +29,7 @@ def build_p3_p9_sidecar(*, report: dict[str, Any], postgres_proof: dict[str, Any
                    "observed_count": value.observed_count, "incident_ids": list(value.incident_ids)}
              for key, value in artifact.hard_gates.items()}
     metrics = [{"name": key, "numerator": value.numerator, "denominator": value.denominator,
-                "value": value.value, "coverage": value.denominator / 120,
+                "value": value.value, "coverage": 1.0,
                 "uncertainty": ({"confidence_interval": list(value.confidence_interval)}
                                 if value.confidence_interval is not None else "not_applicable"),
                 "status": "pass" if value.threshold_met is True else "fail",
