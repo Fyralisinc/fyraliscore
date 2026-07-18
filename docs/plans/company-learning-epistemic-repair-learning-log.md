@@ -65,9 +65,9 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | CF2 Run 10 tenant `43e56d9c-faf2-4896-9d61-7fca4e84e34b`: batches 1–3 succeeded; batch 4 correctly rolled back when explicit relation retirement collided with an inferred accepted reassertion of the same identity |
-| Repair implementation | Run-9 correction coherence is repaired; authoritative-retirement precedence in compiler obligation normalization remains open |
-| Current phase | Suppress only the duplicate inferred relation in compiler normalization and validate the focused regression before another bounded four-batch proof; determinism replay remains deferred |
+| Latest verified coordination checkpoint | Run 11 tenant `7cb7ae59-5954-44b1-8c0c-e944525616a5`: same batch-4 immutable-projection rollback after `26.483s`; obligation-local suppression was too narrow |
+| Repair implementation | Final compiler-wide authoritative-retirement fold after all relation operations, with normalized alias/direction identity; focused `14`-test proof green |
+| Current phase | Validate the compiler-wide fold on the bounded four-batch path; determinism replay remains deferred |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
@@ -2002,13 +2002,14 @@ identity under another candidate origin. Candidate-aware deduplication treated
 the two intents as independent. The immutable accepted-edge projection trigger
 correctly rejected the conflicting second mutation.
 
-**Bounded fix and test:** In `relation_claim_ops_from_obligations`, after the
-inferred operation is formed and before ordinary candidate-scoped deduplication,
-suppress it when an existing `composite_correction_retirement` has the same
-normalized kind, source and target. Keep the retirement unchanged. A focused
-compiled-synthesis test uses distinct candidate IDs and requires exactly one
-`retired`/`no_edge` operation with exact correction evidence and no inferred
-accepted or candidate duplicate.
+**Superseded repair hypothesis:** Obligation-local suppression did not cover all
+compiler relation paths. Run 11 tenant `7cb7ae59-5954-44b1-8c0c-e944525616a5`
+repeated the same batch-4 failure after `26.483s`.
+
+**Replacement:** Fold all assembled compiler relation operations once, using
+normalized alias and direction identity. An authoritative correction retirement
+dominates every same-identity inferred reassertion. A focused `14`-test proof is
+green; validator-wide and apply-time defenses remain backlog.
 
 **Reflection:** This is compiler normalization, not permission for validator or
 applier redesign. Validator-wide normalization and apply-time defense remain

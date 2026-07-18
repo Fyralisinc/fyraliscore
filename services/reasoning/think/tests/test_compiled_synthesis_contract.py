@@ -357,5 +357,4 @@ def test_authoritative_reconciliation_builds_revision_proposition() -> None:
     assert retirement.metadata["relation_claim_origin"] == (
         "composite_correction_retirement"
     )
-    assert "emitted:0" in diff.reasoning_trace
-    assert "deduped:1" in diff.reasoning_trace
+    assert "authoritative_relation_retirement_suppressed=1" in diff.reasoning_trace

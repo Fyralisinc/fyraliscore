@@ -6,11 +6,11 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** Run 10 repaired Run 9's semantic false-positive and
-completed batches 1–3, but batch 4 rolled back correctly after an explicit
-correction retirement was followed by an inferred accepted reassertion of the
-same `blocks` identity. CF2 remains open for one compiler-local obligation
-suppression fix; the independent determinism replay remains separately deferred.
+**Current checkpoint:** Run 11 tenant `7cb7ae59-5954-44b1-8c0c-e944525616a5`
+repeated Run 10's batch-4 immutable-projection rollback after `26.483s`, proving
+obligation-local suppression was too narrow. The replacement is one final
+compiler-wide authoritative-retirement fold after all relation operations are
+assembled; determinism replay remains separately deferred.
 
 **Last updated:** 2026-07-18
 
@@ -2059,13 +2059,23 @@ matched feedback quality and objective entity v6.
 - The immutable projection trigger correctly rejected the second mutation and
   rolled back the transaction. No partial correction, retirement, inferred
   reassertion or barrier committed.
-- The bounded fix is compiler-local: when an existing
-  `composite_correction_retirement` has the same normalized kind, source and
-  target, suppress the inferred obligation regardless of candidate ID,
-  evidence wording, confidence or list order, preserving the retirement.
+- The initial obligation-local suppression hypothesis was too narrow; Run 11
+  reproduced the failure through another compiler relation path.
 - Add one focused compiled-synthesis regression with distinct candidate IDs
   that requires exactly one `retired`/`no_edge` operation and no inferred
   accepted or candidate duplicate. Validator-wide normalization and apply-time
   defense remain backlog unless a non-compiler producer reproduces the case.
 - Do not expand this repair into immutable-edge redesign, retry policy,
   relation-lifecycle generalization or unrelated edge cases.
+
+### 2026-07-18 — Run 11 requires one final compiler-wide retirement fold
+
+- Tenant `7cb7ae59-5954-44b1-8c0c-e944525616a5` repeated the same batch-4
+  immutable-projection failure after `26.483s`; obligation-local suppression
+  did not see every relation operation assembled by the compiler.
+- The replacement fold runs once after all relation operations exist. It
+  normalizes relation aliases and direction, then lets an authoritative
+  correction retirement dominate every same-identity inferred reassertion.
+- A focused `14`-test compiler proof covers alias/direction normalization,
+  ordering independence and preservation of unrelated relations. Validator and
+  apply defenses remain backlog.

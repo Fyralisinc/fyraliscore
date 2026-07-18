@@ -753,6 +753,14 @@ class CompiledBatchMemoryDecisionRequest:
             relation_claim_ops.extend(obligation_ops)
         if obligation_summary:
             trace_parts.append(obligation_summary)
+        relation_claim_ops, suppressed_relation_reassertions = (
+            _apply_authoritative_relation_retirements(relation_claim_ops)
+        )
+        if suppressed_relation_reassertions:
+            trace_parts.append(
+                "authoritative_relation_retirement_suppressed="
+                f"{suppressed_relation_reassertions}"
+            )
         frame_ops, frame_summary = relation_frame_ops_from_obligations(
             self.relation_frame_obligations,
             tenant_id=trigger.tenant_id,
@@ -1993,12 +2001,6 @@ def relation_claim_ops_from_obligations(
             decision=decision,
             claim_placeholder=claim_placeholders.get(obligation.candidate_id),
         )
-        if any(
-            _authoritative_retirement_dominates(existing, op)
-            for existing in existing_ops
-        ):
-            blocked += 1
-            continue
         if (
             op.source_model_id is not None
             and op.target_model_id is not None
@@ -2027,25 +2029,54 @@ def relation_claim_ops_from_obligations(
     return emitted, summary
 
 
-def _authoritative_retirement_dominates(
-    existing: RelationClaimOp,
-    inferred: RelationClaimOp,
-) -> bool:
-    """Keep an explicit correction from being reasserted by stale inference."""
+def _apply_authoritative_relation_retirements(
+    ops: list[RelationClaimOp],
+) -> tuple[list[RelationClaimOp], int]:
+    """Let an explicit correction retirement dominate same-diff inference."""
 
-    metadata = existing.metadata or {}
-    return bool(
-        existing.status == "retired"
-        and existing.write_policy == "no_edge"
-        and metadata.get("relation_claim_origin")
+    retirement_keys = {
+        key
+        for op in ops
+        if op.status == "retired"
+        and op.write_policy == "no_edge"
+        and (op.metadata or {}).get("relation_claim_origin")
         == "composite_correction_retirement"
-        and existing.edge_kind == inferred.edge_kind
-        and existing.direction == inferred.direction
-        and existing.source_model_id is not None
-        and existing.source_model_id == inferred.source_model_id
-        and existing.target_model_id is not None
-        and existing.target_model_id == inferred.target_model_id
-    )
+        if (key := _effective_relation_identity(op)) is not None
+    }
+    if not retirement_keys:
+        return ops, 0
+    retained: list[RelationClaimOp] = []
+    suppressed = 0
+    for op in ops:
+        key = _effective_relation_identity(op)
+        authoritative_retirement = bool(
+            op.status == "retired"
+            and op.write_policy == "no_edge"
+            and (op.metadata or {}).get("relation_claim_origin")
+            == "composite_correction_retirement"
+        )
+        if key in retirement_keys and not authoritative_retirement:
+            suppressed += 1
+            continue
+        retained.append(op)
+    return retained, suppressed
+
+
+def _effective_relation_identity(
+    op: RelationClaimOp,
+) -> tuple[str, UUID, UUID] | None:
+    if op.source_model_id is None or op.target_model_id is None:
+        return None
+    kind = {
+        "dependency_constraint": "blocks",
+        "enablement": "enables",
+        "causal_influence": "causes",
+        "predictive_indicator": "predicts",
+    }.get(op.edge_kind, op.edge_kind)
+    source, target = op.source_model_id, op.target_model_id
+    if op.direction == "target_to_source":
+        source, target = target, source
+    return kind, source, target
 
 
 def relation_frame_obligations_from_obligations(

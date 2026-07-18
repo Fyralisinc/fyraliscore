@@ -1051,10 +1051,11 @@ transport are excluded from this goal.
 
 ### EDGE-046 — Inferred relation obligation reasserts an explicitly retired identity
 
-- **Status:** `open; bounded CF2 compiler blocker from Run 10`
-- **Trigger:** Run 10 tenant `43e56d9c-faf2-4896-9d61-7fca4e84e34b`
-  completed batches 1–3; batch 4 failed after `27.310s` with `accepted relation
-  edge is an immutable projection`.
+- **Status:** `compiler-wide fold implemented; bounded rerun pending`
+- **Trigger:** Run 10 first exposed the collision. Run 11 tenant
+  `7cb7ae59-5954-44b1-8c0c-e944525616a5` repeated the batch-4 immutable
+  projection failure after `26.483s`, proving obligation-local suppression was
+  too narrow.
 - **Current behavior:** Composite correction emits an authoritative
   `retired`/`no_edge` operation for the accepted `blocks` relation. Mandatory
   relation-obligation compilation can then infer an accepted operation for the
@@ -1067,17 +1068,16 @@ transport are excluded from this goal.
 - **Risk:** A valid correction cannot commit, although canonical truth remains
   protected. Weakening the immutable projection trigger would risk partial or
   contradictory relation truth.
-- **Safe boundary:** Suppress the inferred obligation in
-  `relation_claim_ops_from_obligations` after forming its normalized identity
-  and before ordinary candidate-scoped deduplication. Require an existing
-  `composite_correction_retirement` with exact kind, source and target. Do not
-  globally collapse independent evidence or alter immutable-edge enforcement.
+- **Safe boundary:** After every compiler relation path has assembled its
+  operations, perform one authoritative-retirement fold using normalized
+  relation aliases and direction identity. Preserve unrelated relations and do
+  not alter immutable-edge enforcement.
 - **Return condition:** A focused compiled-synthesis regression with distinct
   candidate IDs yields exactly one `retired`/`no_edge` operation with exact
   correction evidence, followed by green bounded batch-4 validation.
-- **Evidence:** Run 10 artifact and correct immutable-projection rollback.
-  Validator-wide normalization and apply-time defense remain backlog and become
-  active only if a non-compiler producer reproduces the same conflict.
+- **Evidence:** Run 10 and Run 11 rollback artifacts; focused compiler fold
+  `14/14` green. Validator-wide normalization and apply-time defense remain
+  backlog and activate only for a non-compiler reproduction.
 
 ## Entry Template
 
