@@ -65,9 +65,9 @@ Rules:
 
 | Item | Current state |
 | --- | --- |
-| Latest verified coordination checkpoint | Run 13 at commit `27e37b5e`, tenant `2a14a6bf-fe59-4efd-a52d-ad7ffcfa7d30`, completed all four clean zero-seed batches with every authorized CF2 single-execution gate green |
+| Latest verified coordination checkpoint | CF3-A one-batch attempt at commit `f869dd82`, tenant `50270994-753d-465f-b87e-7d794cf2d3a7`, failed at the provider boundary after `124.181s`; installed Codex CLI rejected `gpt-5.6-terra` as requiring a newer version, with no semantic output and zero accepted Models |
 | Repair implementation | Validator preserves explicit retirement; the evaluator now reads the exact historical relation instance required to verify retirement instead of relying only on the current-instance surface; focused evaluator suite `14/14` green |
-| Current phase | M0 single-execution milestone complete with independent receipt and canonical DB audits; determinism remains explicitly deferred and unproven (`replay_count=1`) |
+| Current phase | CF3-A remains red due to infrastructure/configuration, not a scored semantic failure. Retry the same one-batch rung with an explicitly supported model; M0/CF2 evidence remains intact |
 | Historical large run | `autonomous-learning-cold-start-45-be401f25`; 45 batches x 25 signals = 1,125 signals |
 | Historical large-run verdict | `not_credible` for system/product proof |
 | Historical run role now | Immutable forensic baseline; not a benchmark to optimize or rerender into new semantic proof |
@@ -78,7 +78,7 @@ Rules:
 | P7 evidence state | Historical run preserved as insufficient; strict sidecar plus clean-worktree CLI lock ready, not launched |
 | P8 evidence state | Strict sidecar and repeated warm-pair plan ready; historical scale ratio remains red |
 | P9 evidence state | Manifest and independent reviewer-reproduction contract ready; no final manifest sealed |
-| Highest-priority outcome | Prove the validator retirement guard in one fresh clean zero-seed four-batch run and canonical score; do not reopen the full P6 loop |
+| Highest-priority outcome | Retry the identical CF3-A one-batch rung with an explicitly supported Codex model; do not widen the run or diagnose semantic quality until a provider call produces semantic output |
 
 The repository contains meaningful bounded component proofs, especially around
 entity extraction, corrective entity memory, structured source identity, and
@@ -2024,3 +2024,20 @@ evaluator suite passed `14/14`.
 is complete for the authorized single-execution scope. This run does not prove
 determinism; the replay count is one, so determinism remains explicitly deferred
 and unproven.
+
+### 2026-07-18 — LOG-056 — CF3-A failed before semantic output
+
+**Observed:** At commit `f869dd82`, tenant
+`50270994-753d-465f-b87e-7d794cf2d3a7`, the one-batch attempt used Codex model
+`gpt-5.6-terra`. The installed CLI said the model requires a newer Codex
+version. Batch 1 consumed `124.181s`; no semantic output was produced and zero
+Models were accepted.
+
+**Classification:** Infrastructure/configuration failure. CF3-A remains red;
+this artifact neither falsifies nor supports semantic company-learning quality.
+
+**Next hypothesis:** Run the identical one-batch rung with an explicitly
+supported model, keeping the population fixed so compatibility is the only
+intended variable.
+
+**Artifact:** `/tmp/fyralis-cf3a-codex-one-batch.json`.

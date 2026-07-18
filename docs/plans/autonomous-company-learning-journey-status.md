@@ -6,12 +6,13 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** Run 13 at commit `27e37b5e`, tenant
-`2a14a6bf-fe59-4efd-a52d-ad7ffcfa7d30`, completed all four clean zero-seed
-batches. Every authorized CF2 single-execution gate is green, including
-relation retirement and relation atomicity. Independent receipt and canonical
-database audits passed. M0 is complete for the authorized single-execution
-scope. Determinism remains explicitly deferred and unproven (`replay_count=1`).
+**Current checkpoint:** CF3-A one-batch attempt at commit `f869dd82`, tenant
+`50270994-753d-465f-b87e-7d794cf2d3a7`, failed at the provider boundary after
+`124.181s`: the installed Codex CLI reported that `gpt-5.6-terra` requires a
+newer version. No semantic output was produced and zero Models were accepted.
+This is an infrastructure/configuration failure, so CF3-A remains red. Run 13
+continues to govern the completed CF2 single-execution proof; determinism
+remains deferred and unproven (`replay_count=1`).
 
 **Last updated:** 2026-07-18
 
@@ -2088,3 +2089,12 @@ matched feedback quality and objective entity v6.
   implementation milestone is complete for the authorized single-execution scope.
   Determinism is neither waived nor inferred: it remains deferred and unproven
   because only one replay exists (`replay_count=1`).
+
+### 2026-07-18 — CF3-A stopped at provider compatibility
+
+- Commit `f869dd82`, tenant `50270994-753d-465f-b87e-7d794cf2d3a7`, attempted
+  the one-batch rung with `gpt-5.6-terra`.
+- After `124.181s`, the installed Codex CLI reported that the model requires a
+  newer version. No semantic output was produced and zero Models were accepted.
+- This is infrastructure/configuration evidence, not a semantic-quality result.
+  CF3-A stays red. Next, repeat the same rung with an explicitly supported model.

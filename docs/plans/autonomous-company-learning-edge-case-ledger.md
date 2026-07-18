@@ -1074,6 +1074,24 @@ transport are excluded from this goal.
   focused evaluator suite `14/14` green. Determinism remains outside this
   closure and unproven at `replay_count=1`.
 
+### EDGE-047 — Provider model requires a newer Codex CLI
+
+- **Status:** `active infrastructure/configuration blocker; CF3-A red`
+- **Trigger:** CF3-A one-batch attempt at commit `f869dd82`, tenant
+  `50270994-753d-465f-b87e-7d794cf2d3a7`, used `gpt-5.6-terra`.
+- **Current behavior:** The installed Codex CLI rejected every provider attempt
+  before semantic output because the model requires a newer version. Batch 1
+  ended after `124.181s` with zero accepted Models.
+- **Desired behavior:** Verify a model supported by the installed transport
+  before beginning the bounded semantic run.
+- **Risk:** Compatibility failure can be mistaken for company-learning quality
+  failure despite producing no semantic evidence.
+- **Safe boundary:** Preserve the artifact as infrastructure evidence only; do
+  not score zero Models as semantic behavior or advance CF3-A.
+- **Return condition:** Retry the same one-batch rung with an explicitly
+  supported model and obtain semantic output suitable for evaluation.
+- **Evidence:** `/tmp/fyralis-cf3a-codex-one-batch.json`.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title
