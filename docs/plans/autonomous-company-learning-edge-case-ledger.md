@@ -1186,6 +1186,27 @@ transport are excluded from this goal.
   truth-critical accounting in
   `services/evaluation/epistemic_repair/p6_think_runner.py`.
 
+### EDGE-052 — Founder-bootstrap quality and staleness are not yet evaluated
+
+- **Status:** `deferred; product qualification after core reuse proof`
+- **Trigger:** Cold-start review after CF3-B produced zero Models without
+  canonical entity seed state.
+- **Current behavior:** The development ladder deliberately starts from zero
+  semantic seed to prove safe fallback behavior. It does not measure a
+  founder-assisted company-map onboarding path.
+- **Desired behavior:** Founders can establish a vivid, versioned initial
+  entity and relationship map; the runtime resolves ordinary signals against
+  it while detecting and safely routing novel or stale concepts.
+- **Risk:** Treating zero-seed inference as the normal product path can make
+  early company understanding slower and less useful. Treating founder input
+  as permanent truth can instead freeze mistakes and stale structure.
+- **Safe boundary:** Finish the zero-seed fallback and CF3-B memory-reuse gate;
+  do not build onboarding during the active repair.
+- **Return condition:** After M1, preregister a founder-bootstrap simulation and
+  compare time-to-useful-model, resolution accuracy, correction behavior, and
+  novel-entity handling against zero seed.
+- **Evidence:** LOG-061 and LOG-062.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title

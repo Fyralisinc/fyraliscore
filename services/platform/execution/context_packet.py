@@ -1199,6 +1199,7 @@ def synthesis_conclusion_coordinates(
         if (
             len(candidate.semantic_scope) != 1
             or not candidate.canonical_scope_ref
+            or candidate.canonical_scope_ref.startswith("mention:")
             or not _is_scope_level_synthesis_assertion(
                 candidate, candidate.semantic_scope[0]
             )
@@ -1416,7 +1417,12 @@ def _batch_fragment_candidates(
 def _governed_episode_candidates(
     trigger: TriggerContext,
 ) -> tuple[list[MemoryDecisionCandidate], bool]:
-    """Compile exact atomics only from resolved, tenant-bound episodes."""
+    """Compile exact atomics from governed, tenant-bound coordinates.
+
+    Resolved coordinates retain their existing episode grouping contract.
+    Exact provisional mentions are narrower: each detection can authorize only
+    one observation-local atomic under a mention-scoped coordinate.
+    """
 
     if not isinstance(trigger.seed_signature, dict):
         return [], False
@@ -1433,6 +1439,8 @@ def _governed_episode_candidates(
     scoped_assertion_ids: set[str] = set()
     resolved_ids: set[str] = set()
     candidates: list[MemoryDecisionCandidate] = []
+    provisional_candidates: list[MemoryDecisionCandidate] = []
+    provisional_detection_owners: dict[str, str] = {}
     for episode in sorted(
         (row for row in raw_episodes if isinstance(row, Mapping)),
         key=lambda row: str(row.get("episode_id") or ""),
@@ -1446,9 +1454,13 @@ def _governed_episode_candidates(
         if not canonical_ref:
             continue
         resolved_by_observation: dict[str, dict[str, str]] = {}
-        for assertion in assertions:
-            if not isinstance(assertion, Mapping):
-                continue
+        for assertion in sorted(
+            (row for row in assertions if isinstance(row, Mapping)),
+            key=lambda row: (
+                str(row.get("observation_id") or ""),
+                str(row.get("detection_id") or ""),
+            ),
+        ):
             observation_id = str(assertion.get("observation_id") or "").strip()
             if (
                 str(assertion.get("tenant_id") or "") != tenant_id
@@ -1463,7 +1475,76 @@ def _governed_episode_candidates(
             # in the denominator so partial canonical episodes still fail
             # closed.
             scoped_assertion_ids.add(observation_id)
-            if str(assertion.get("coordinate_authority") or "") != "resolved":
+            authority = str(assertion.get("coordinate_authority") or "")
+            if authority == "provisional":
+                detection_id = _valid_uuid_text(assertion.get("detection_id"))
+                body = str(assertion.get("assertion_text") or "")
+                surface = str(assertion.get("governed_surface") or "").strip()
+                span_start = assertion.get("evidence_span_start")
+                span_end = assertion.get("evidence_span_end")
+                exact_span = (
+                    detection_id is not None
+                    and str(assertion.get("evidence_field_path") or "")
+                    == "content_text"
+                    and isinstance(span_start, int)
+                    and not isinstance(span_start, bool)
+                    and isinstance(span_end, int)
+                    and not isinstance(span_end, bool)
+                    and 0 <= span_start < span_end <= len(body)
+                    and bool(body.strip())
+                    and bool(surface)
+                    and body[span_start:span_end] == surface
+                )
+                if not exact_span:
+                    continue
+                prior_owner = provisional_detection_owners.get(detection_id)
+                if prior_owner is not None:
+                    # A detection is an observation-local coordinate. Reuse
+                    # across observations is malformed and cannot authorize a
+                    # wider episode or a second atomic.
+                    continue
+                provisional_detection_owners[detection_id] = observation_id
+                mention_ref = f"mention:{detection_id}"
+                member = {
+                    "observation_id": observation_id,
+                    "body": body,
+                    "source_channel": str(assertion.get("source_channel") or ""),
+                    "canonical_ref": mention_ref,
+                    "governed_surface": surface,
+                    "coordinate_authority": "provisional",
+                    "detection_id": str(detection_id),
+                    "trust_tier": str(assertion.get("trust_tier") or "unvetted"),
+                    "evidence_address": str(assertion.get("evidence_address") or ""),
+                    "evidence_field_path": "content_text",
+                    "evidence_span_start": str(span_start),
+                    "evidence_span_end": str(span_end),
+                }
+                if _batch_fragment_uncertainty_kind(body) is not None:
+                    continue
+                provisional_candidates.append(MemoryDecisionCandidate(
+                    candidate_id=_candidate_id("MDC_ATOM", mention_ref),
+                    op_family="claim_insert",
+                    proposed_text=body,
+                    entailed_claim_text=body,
+                    source_observation_ids=(observation_id,),
+                    member_observation_ids=(observation_id,),
+                    semantic_scope=(surface,),
+                    canonical_scope_ref=mention_ref,
+                    observation_evidence=(member,),
+                    write_preconditions=(
+                        "provisional mention has an exact tenant-bound "
+                        "observation span",
+                        "scope is isolated to one detection and cannot group "
+                        "observations",
+                    ),
+                    confidence=0.60,
+                    reason=(
+                        "Compiler-extracted singleton assertion under an exact "
+                        "provisional mention coordinate"
+                    ),
+                ))
+                continue
+            if authority != "resolved":
                 continue
             body = str(assertion.get("assertion_text") or "").strip()
             surface = str(assertion.get("governed_surface") or "").strip()
@@ -1541,8 +1622,10 @@ def _governed_episode_candidates(
             ))
 
     coverage = len(resolved_ids) / max(1, len(scoped_assertion_ids))
-    material = len(candidates) >= 2 and coverage >= 0.60
-    return candidates, material
+    material = bool(provisional_candidates) or (
+        len(candidates) >= 2 and coverage >= 0.60
+    )
+    return [*candidates, *provisional_candidates], material
 
 
 def batch_fragment_uncertainty_signals(trigger: TriggerContext) -> list[dict[str, str]]:

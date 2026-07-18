@@ -521,16 +521,22 @@ def test_governed_episodes_are_canonical_first_and_authority_gated() -> None:
 
     assert material
     assert {item.member_observation_ids for item in candidates} == {
-        (str(resolved_one),), (str(resolved_two),),
+        (str(resolved_one),), (str(resolved_two),), (str(provisional),),
     }
-    assert {item.canonical_scope_ref for item in candidates} == {
+    resolved_candidates = [
+        item for item in candidates
+        if item.observation_evidence[0]["coordinate_authority"] == "resolved"
+    ]
+    provisional_candidates = [
+        item for item in candidates
+        if item.observation_evidence[0]["coordinate_authority"] == "provisional"
+    ]
+    assert {item.canonical_scope_ref for item in resolved_candidates} == {
         "workstream:harbor-release"
     }
     assert all(item.semantic_scope == ("Harbor release",) for item in candidates)
-    assert all(
-        item.observation_evidence[0]["coordinate_authority"] == "resolved"
-        for item in candidates
-    )
+    assert len(provisional_candidates) == 1
+    assert provisional_candidates[0].canonical_scope_ref.startswith("mention:")
     assert context_packet.synthesis_conclusion_coordinates(trigger) == (
         ("Harbor release", "workstream:harbor-release"),
     )
@@ -616,7 +622,7 @@ def test_authoritative_scope_reversal_compiles_exact_reconciliation_candidate() 
     assert candidate.target_proposition == prior_proposition
 
 
-def test_governed_provisional_episode_cannot_fall_back_into_truth() -> None:
+def test_governed_exact_provisional_mentions_compile_as_isolated_atomics() -> None:
     tenant_id = uuid4()
     first, second = uuid4(), uuid4()
     trigger = TriggerContext(
@@ -642,8 +648,68 @@ def test_governed_provisional_episode_cannot_fall_back_into_truth() -> None:
         },
     )
 
+    candidates, material = context_packet._batch_fragment_candidates(trigger)
+
+    assert material
+    assert len(candidates) == 2
+    assert {item.member_observation_ids for item in candidates} == {
+        (str(first),), (str(second),),
+    }
+    assert all(
+        item.canonical_scope_ref.startswith("mention:")
+        for item in candidates
+    )
+    assert len({item.canonical_scope_ref for item in candidates}) == 2
+    assert all(len(item.source_observation_ids) == 1 for item in candidates)
+    assert len(context_packet.batch_fragment_uncertainty_signals(trigger)) == 2
+
+
+def test_governed_provisional_without_exact_detection_span_stays_outside_truth(
+) -> None:
+    tenant_id = uuid4()
+    missing_detection, wrong_span = uuid4(), uuid4()
+    episode = _governed_episode(tenant_id, [
+        (missing_detection, "Harbor release is delayed.", "provisional"),
+        (wrong_span, "Harbor release is blocked.", "provisional"),
+    ])
+    episode["assertions"][0]["detection_id"] = None
+    episode["assertions"][1]["evidence_span_end"] = 3
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_ids=[missing_detection, wrong_span],
+        seed_signature={"governed_learning_episodes": [episode]},
+    )
+
     assert context_packet._batch_fragment_candidates(trigger) == ([], False)
     assert len(context_packet.batch_fragment_uncertainty_signals(trigger)) == 2
+
+
+def test_provisional_detection_never_groups_across_observations() -> None:
+    tenant_id = uuid4()
+    first, second = uuid4(), uuid4()
+    episode = _governed_episode(tenant_id, [
+        (first, "Harbor release is delayed.", "provisional"),
+        (second, "Harbor release is blocked.", "provisional"),
+    ])
+    detection_id = str(uuid4())
+    for assertion in episode["assertions"]:
+        assertion["detection_id"] = detection_id
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_ids=[first, second],
+        seed_signature={"governed_learning_episodes": [episode]},
+    )
+
+    candidates, material = context_packet._batch_fragment_candidates(trigger)
+
+    assert material
+    assert len(candidates) == 1
+    assert candidates[0].canonical_scope_ref == f"mention:{detection_id}"
+    assert len(candidates[0].member_observation_ids) == 1
 
 
 def test_unresolved_episodes_do_not_veto_resolved_canonical_atomics() -> None:

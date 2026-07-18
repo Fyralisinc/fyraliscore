@@ -2125,3 +2125,44 @@ work identity must follow the current detection version. A fixed generation and
 phrase-only correlation can let stale terminal work mask a superseding
 detection. These cases remain explicitly deferred in EDGE-049 through EDGE-051
 and are not part of the current narrow readiness repair.
+
+### 2026-07-18 — LOG-061 — Cold-start fact memory must not require resolved identity
+
+**Failure:** The first CF3-B batch completed mechanically but admitted zero
+Models. Its provider trace correctly refused canonical writes because every
+entity coordinate remained provisional. Batch 2 could therefore not prove
+retrieval or material reuse, and the run was stopped rather than spending a
+second provider batch on an impossible gate.
+
+**Root cause:** The runtime coupled two distinct judgments: whether an exact
+source assertion is safe to remember, and whether the mentioned company entity
+has a resolved canonical identity. A zero-seed company could detect mentions
+but could not accumulate its first reusable factual memory.
+
+**Bounded repair:** A provisional assertion with an exact current detection
+UUID and exact `content_text` span may compile into one singleton atomic scoped
+to `mention:<detection UUID>`. The scope grants no canonical identity, entity
+type, alias, relation, or cross-observation grouping authority. The final
+validator reopens PostgreSQL and verifies the current same-tenant detection
+head, sole observation, exact anchor, compiler-owned nonidentity contract, and
+exact assertion before admission. Mention scopes are excluded explicitly from
+synthesis hydration and relation obligations.
+
+**Proof boundary:** `69/69` focused compiler, homonym-isolation,
+truth-admission, and PostgreSQL tests pass. This is not yet an end-to-end
+runtime result; a provider-free one-batch vertical and fresh CF3-B run are the
+next gates.
+
+### 2026-07-18 — LOG-062 — Founder bootstrap is the preferred operating mode
+
+**Product insight:** A founder-assisted onboarding that establishes people,
+teams, workstreams, products, customers, systems, aliases, source identities,
+and key relationships gives entity resolution a vivid company-specific prior.
+This should be the preferred product cold start, with versioned and revisable
+authority rather than infallible seed truth.
+
+**Scope decision:** Do not pivot the active fast path into a new onboarding
+subsystem. Mention-scoped atomics remain the bounded fallback for absent,
+incomplete, or newly outdated bootstrap knowledge. Evaluate founder-bootstrap
+usefulness and zero-seed safety as separate modes after the core reuse loop is
+green.

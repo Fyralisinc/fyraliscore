@@ -12,6 +12,8 @@ from services.reasoning.think.compiled_reasoning import (
     CompiledBatchMemoryDecisionRequest,
     RelationObligation,
     _bind_exact_closed_atomic_targets,
+    _candidate_scope_coordinate,
+    relation_obligations_from_packet,
 )
 
 
@@ -47,6 +49,25 @@ def _request(candidate: dict) -> CompiledBatchMemoryDecisionRequest:
     )
 
 
+def test_candidate_scope_coordinate_prefers_well_formed_canonical_scope_ref() -> None:
+    detection_id = uuid7()
+    candidate = _candidate(uuid7())
+    candidate["canonical_scope_ref"] = f"mention:{detection_id}"
+
+    assert _candidate_scope_coordinate(candidate) == (
+        "mention", f"mention:{detection_id}",
+    )
+
+
+def test_candidate_scope_coordinate_rejects_malformed_ref_before_label_fallback() -> None:
+    candidate = _candidate(uuid7())
+    candidate["canonical_scope_ref"] = "mention:bad scope"
+
+    assert _candidate_scope_coordinate(candidate) == (
+        "workstream", "workstream:atlas-release",
+    )
+
+
 def test_closed_atomic_without_bound_target_is_deterministic_insert() -> None:
     tenant_id = uuid7()
     observation_id = uuid7()
@@ -61,6 +82,31 @@ def test_closed_atomic_without_bound_target_is_deterministic_insert() -> None:
     assert diff.claim_ops[0].op == "insert"
     assert diff.claim_ops[0].entry["supporting_event_ids"] == [str(observation_id)]
     assert diff.memory_lifecycle_ops == []
+
+
+def test_mention_scoped_atomic_preserves_nonidentity_authority_contract() -> None:
+    tenant_id = uuid7()
+    observation_id = uuid7()
+    detection_id = uuid7()
+    candidate = _candidate(observation_id)
+    candidate["canonical_scope_ref"] = f"mention:{detection_id}"
+
+    diff = _request(candidate).to_raw_diff(
+        BatchMemoryDecisionSet(decisions=[]),
+        trigger=_trigger(tenant_id, observation_id),
+        trigger_ref=uuid7(),
+    )
+
+    entry = diff.claim_ops[0].entry
+    assert entry["scope_entities"] == [
+        {"type": "mention", "id": f"mention:{detection_id}"}
+    ]
+    assert entry["proposition"]["mention_scope_contract"] == {
+        "version": "v1",
+        "detection_ref": f"mention:{detection_id}",
+        "canonical_identity_authority": False,
+        "cross_observation_grouping_authority": False,
+    }
 
 
 def test_llm_noop_cannot_suppress_closed_atomic_durable_fate() -> None:
@@ -117,6 +163,46 @@ def test_exact_same_scope_binding_compiles_confirm_instead_of_insert() -> None:
     assert op.claim_local_evidence_event_ids == [observation_id]
     assert op.confidence is None
     assert _lifecycle_confidence(op, current_confidence=0.90) == 0.95
+
+
+def test_same_surface_different_mention_scope_never_confirms_existing_model() -> None:
+    tenant_id = uuid7()
+    observation_id = uuid7()
+    first_detection, second_detection = uuid7(), uuid7()
+    candidate = _candidate(observation_id)
+    candidate["canonical_scope_ref"] = f"mention:{second_detection}"
+    model = SimpleNamespace(
+        id=uuid7(),
+        tenant_id=tenant_id,
+        status="active",
+        abstraction_level="atomic",
+        natural="Atlas release is waiting for approval.",
+        scope_entities=[{
+            "type": "mention",
+            "id": f"mention:{first_detection}",
+            "display_label": "Atlas release",
+        }],
+        proposition={"scope_label": "Atlas release"},
+    )
+
+    [bound] = _bind_exact_closed_atomic_targets(
+        [candidate], models=[model], tenant_id=tenant_id,
+    )
+
+    assert "target_model_ids" not in bound
+    assert "allowed_operations" not in bound
+
+
+def test_mention_scope_cannot_open_relation_obligation() -> None:
+    observation_id = uuid7()
+    candidate = _candidate(observation_id)
+    candidate.update({
+        "canonical_scope_ref": f"mention:{uuid7()}",
+        "evidence_model_ids": [str(uuid7()), str(uuid7())],
+        "suggested_edge_kinds": ["blocks"],
+    })
+
+    assert relation_obligations_from_packet({}, [candidate]) == ()
 
 
 def test_exact_bound_confirm_excludes_transport_sibling() -> None:

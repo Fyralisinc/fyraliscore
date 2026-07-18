@@ -6,13 +6,14 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** CF3-A is green on the receipted rerun at commit
-`e7de1c3a`, tenant `08d19975-2c39-4fef-a820-27d29c30fd9b`. One batch processed
-exactly 25 signals in `269.295s`; all 24 detected mentions have explicit trace
-fates. Truth-critical work drained `27 -> 3 -> 0`, and the barrier closed with
-zero pending. The run recorded 28 logical and 29 physical attempts, all with
-exact reported usage. No active reviews, candidates, Models, or relations
-remained. CF3-B is unlocked.
+**Current checkpoint:** M0 and CF3-A are green. The first CF3-B attempt reached
+batch 1 mechanically but created zero accepted Models, so it was stopped before
+an impossible batch-2 reuse claim. The bounded repair now preserves an exact
+provisional assertion as one evidence-bound `mention:<detection UUID>` atomic
+without granting canonical identity, relation, or cross-observation synthesis
+authority. Focused compiler, isolation, truth-admission, and PostgreSQL
+authority tests pass `69/69`; a provider-free vertical and fresh CF3-B rerun
+remain required before CF3-C is authorized.
 
 **Last updated:** 2026-07-18
 

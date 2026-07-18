@@ -45,6 +45,7 @@ commitments table to verify the ref exists.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 from typing import Any, Sequence, get_args
 from uuid import UUID
@@ -1493,6 +1494,149 @@ async def _validate_claim_local_observation_evidence(
         )
 
 
+async def _validate_provisional_mention_scope(
+    entry: dict[str, Any],
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID | None,
+) -> None:
+    """Reopen mention-scoped atomic authority at the final validation seam."""
+
+    scopes = [
+        item for item in (entry.get("scope_entities") or ())
+        if isinstance(item, dict)
+    ]
+    mention_scopes = [
+        item for item in scopes
+        if str(item.get("type") or "").strip().casefold() == "mention"
+    ]
+    if not mention_scopes:
+        return
+    if tenant_id is None:
+        raise ValidationError(
+            "mention-scoped claim cannot be authorized without tenant_id"
+        )
+    if len(mention_scopes) != len(scopes):
+        raise ValidationError(
+            "mention-scoped claim cannot mix provisional and canonical scopes"
+        )
+    refs = {str(item.get("id") or "").strip() for item in mention_scopes}
+    if len(mention_scopes) != 1 or len(refs) != 1:
+        raise ValidationError(
+            "mention-scoped claim requires exactly one provisional coordinate"
+        )
+    raw_ref = next(iter(refs))
+    if not raw_ref.startswith("mention:"):
+        raise ValidationError("mention scope requires mention:<uuid> identity")
+    try:
+        detection_id = UUID(raw_ref.removeprefix("mention:"))
+    except ValueError as exc:
+        raise ValidationError("mention scope requires mention:<uuid> identity") from exc
+
+    proposition = entry.get("proposition")
+    proposition = proposition if isinstance(proposition, dict) else {}
+    if (
+        str(proposition.get("abstraction_level") or "") != "atomic"
+        or str(proposition.get("claim_role") or "") != "fact"
+    ):
+        raise ValidationError("mention-scoped claim must remain an atomic fact")
+    mention_contract = proposition.get("mention_scope_contract")
+    closed_contract = proposition.get("closed_atomic_contract")
+    if not (
+        isinstance(mention_contract, dict)
+        and mention_contract.get("detection_ref") == raw_ref
+        and mention_contract.get("canonical_identity_authority") is False
+        and mention_contract.get("cross_observation_grouping_authority") is False
+        and isinstance(closed_contract, dict)
+        and closed_contract.get("compiler_entails_exact_text") is True
+        and closed_contract.get("evidence_cardinality") == "singleton"
+    ):
+        raise ValidationError(
+            "mention-scoped claim requires compiler-owned nonidentity authority"
+        )
+    if (
+        entry.get("supporting_model_ids")
+        or entry.get("contributing_models")
+        or proposition.get("member_model_ids")
+        or proposition.get("supported_relation")
+    ):
+        raise ValidationError(
+            "mention-scoped claim cannot depend on supporting Models"
+        )
+    evidence_ids: set[UUID] = set()
+    for raw in (
+        *(entry.get("supporting_event_ids") or ()),
+        *(proposition.get("evidence_event_ids") or ()),
+    ):
+        try:
+            evidence_ids.add(raw if isinstance(raw, UUID) else UUID(str(raw)))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "mention-scoped claim requires UUID observation evidence"
+            ) from exc
+    if len(evidence_ids) != 1:
+        raise ValidationError(
+            "mention-scoped claim requires exactly one supporting observation"
+        )
+    observation_id = next(iter(evidence_ids))
+    row = await conn.fetchrow(
+        """
+        SELECT detection.source_observation_id,detection.fate,
+               detection.candidate_surface,detection.mention,
+               observation.content_text
+        FROM entity_mention_detection_heads head
+        JOIN entity_mention_detections detection
+          ON detection.tenant_id=head.tenant_id
+         AND detection.id=head.current_detection_id
+        JOIN observations observation
+          ON observation.tenant_id=detection.tenant_id
+         AND observation.id=detection.source_observation_id
+        WHERE head.tenant_id=$1
+          AND head.current_detection_id=$2
+          AND head.source_observation_id=$3
+        """,
+        tenant_id,
+        detection_id,
+        observation_id,
+    )
+    if row is None or row["fate"] != "detected":
+        raise ValidationError(
+            "mention scope is not the current detected head for its observation"
+        )
+    mention = row["mention"] or {}
+    if isinstance(mention, str):
+        try:
+            mention = json.loads(mention)
+        except json.JSONDecodeError as exc:
+            raise ValidationError("mention scope has malformed anchor evidence") from exc
+    anchor = mention.get("primary_anchor") if isinstance(mention, dict) else None
+    coordinate = anchor.get("coordinate") if isinstance(anchor, dict) else None
+    text = str(row["content_text"] or "")
+    surface = str(
+        (mention.get("surface") if isinstance(mention, dict) else None)
+        or row["candidate_surface"]
+        or ""
+    )
+    start = coordinate.get("span_start") if isinstance(coordinate, dict) else None
+    end = coordinate.get("span_end") if isinstance(coordinate, dict) else None
+    field_path = coordinate.get("field_path") if isinstance(coordinate, dict) else None
+    if not (
+        field_path == "content_text"
+        and isinstance(start, int) and not isinstance(start, bool)
+        and isinstance(end, int) and not isinstance(end, bool)
+        and 0 <= start < end <= len(text)
+        and surface
+        and text[start:end] == surface
+    ):
+        raise ValidationError(
+            "mention scope does not reconstruct an exact content_text anchor"
+        )
+    if " ".join(str(entry.get("natural") or "").split()) != " ".join(text.split()):
+        raise ValidationError(
+            "mention-scoped atomic must preserve the exact observation assertion"
+        )
+
+
 async def _validate_claim_op(
     op: ClaimOp,
     retrieval_result: Any,
@@ -1566,6 +1710,9 @@ async def _validate_claim_op(
         _normalize_hypothesis_assertion_alias(entry)
         validate_proposition(entry.get("proposition"))
         await _validate_claim_local_observation_evidence(
+            entry, conn, tenant_id=tenant_id,
+        )
+        await _validate_provisional_mention_scope(
             entry, conn, tenant_id=tenant_id,
         )
         # confidence_at_assertion — if the LLM doesn't supply one, use

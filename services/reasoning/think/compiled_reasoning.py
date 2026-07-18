@@ -1012,6 +1012,23 @@ def _model_is_exact_closed_atomic_target(
     actual = " ".join(str(getattr(model, "natural", "")).casefold().split())
     if not expected or actual != expected:
         return False
+    declared_scope_ref = str(candidate.get("canonical_scope_ref") or "").strip()
+    candidate_coordinate = _candidate_scope_coordinate(candidate)
+    if declared_scope_ref and candidate_coordinate is not None:
+        candidate_type, candidate_ref = candidate_coordinate
+        model_coordinates = {
+            (
+                str(entity.get("type") or "").strip().casefold(),
+                str(entity.get("id") or entity.get("canonical_ref") or "").strip(),
+            )
+            for entity in getattr(model, "scope_entities", ()) or ()
+            if isinstance(entity, dict)
+        }
+        # A compiler-owned coordinate is an identity boundary. In particular,
+        # two provisional detections with the same surface must never confirm
+        # one another's mention-scoped atomic.
+        if (candidate_type, candidate_ref) not in model_coordinates:
+            return False
     candidate_scopes = {
         " ".join(str(value).casefold().split())
         for value in candidate.get("semantic_scope") or ()
@@ -1902,6 +1919,8 @@ def relation_obligations_from_packet(
     for candidate in candidates:
         candidate_id = str(candidate.get("candidate_id") or "").strip()
         if not candidate_id:
+            continue
+        if str(candidate.get("canonical_scope_ref") or "").startswith("mention:"):
             continue
         if not _candidate_model_ids(candidate):
             continue
@@ -4154,6 +4173,13 @@ def _batch_claim_proposition(
                 "scope_ref": scope_coordinate[1],
             }
         )
+        if scope_coordinate[0] == "mention":
+            base["mention_scope_contract"] = {
+                "version": "v1",
+                "detection_ref": scope_coordinate[1],
+                "canonical_identity_authority": False,
+                "cross_observation_grouping_authority": False,
+            }
     if role == "concern":
         base.update({"about": _claim_about(candidate), "nature": text})
     elif role == "hypothesis":
@@ -4347,6 +4373,17 @@ def _candidate_scope_entities(candidate: dict[str, Any]) -> list[dict[str, str]]
 def _candidate_scope_coordinate(
     candidate: dict[str, Any],
 ) -> tuple[str, str] | None:
+    canonical_ref = str(candidate.get("canonical_scope_ref") or "").strip()
+    if ":" in canonical_ref:
+        scope_type, scope_id = canonical_ref.split(":", 1)
+        normalized_type = scope_type.strip().casefold()
+        normalized_id = scope_id.strip()
+        if (
+            re.fullmatch(r"[a-z][a-z0-9_-]*", normalized_type)
+            and normalized_id
+            and not any(character.isspace() for character in normalized_id)
+        ):
+            return normalized_type, f"{normalized_type}:{normalized_id}"
     values = [
         str(value).strip()
         for value in (candidate.get("semantic_scope") or [])

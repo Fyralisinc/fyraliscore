@@ -2,7 +2,7 @@
 
 **Document type:** Executable multi-agent implementation and evaluation plan
 
-**Status:** CF1 integration checkpoint reached; CF2 active
+**Status:** M0 and CF3-A complete; CF3-B repair active after batch-1 zero-Model failure
 
 **Active branch:** `codex/autonomous-company-learning`
 
