@@ -97,6 +97,13 @@ def test_manifest_bound_atomic_cannot_resurrect_stale_sibling_evidence() -> None
                     "body": f"Atomic signal {local_id}",
                     "source_channel": "test",
                 }],
+                "contextual_frame": {
+                    "observation_ids": [], "source_channels": [],
+                },
+                "evidence_contract": {
+                    "evidence_status": "needs_evidence",
+                    "supporting_event_count": 0,
+                },
             },
             "natural": f"Atomic signal {local_id}",
             "supporting_event_ids": [str(local_id)],
@@ -122,6 +129,18 @@ def test_manifest_bound_atomic_cannot_resurrect_stale_sibling_evidence() -> None
 
         assert prepared.supporting_event_ids == [local_id]
         assert prepared.proposition["evidence_event_ids"] == [str(local_id)]
+        assert prepared.proposition["contextual_frame"]["observation_ids"] == [
+            str(local_id)
+        ]
+        assert prepared.proposition["contextual_frame"]["source_channels"] == [
+            "test"
+        ]
+        assert prepared.proposition["evidence_contract"]["evidence_status"] == (
+            "evidence_bound"
+        )
+        assert prepared.proposition["evidence_contract"][
+            "supporting_event_count"
+        ] == 1
 
 
 def test_single_signal_trigger_may_supply_evidence_fallback() -> None:

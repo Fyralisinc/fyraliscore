@@ -733,6 +733,33 @@ def test_postfreeze_evidence_digest_and_receipts_are_a_hard_gate() -> None:
     assert not report["hard_gates"]["postfreeze_evidence_digest_valid"]
 
 
+def test_semantic_evidence_metadata_incoherence_is_a_hard_gate() -> None:
+    population = build_p6_population()
+    evidence = {
+        "claims": [{
+            "id": "claim-1",
+            "proposition": {
+                "evidence_event_ids": ["observation-1"],
+                "evidence_contract": {
+                    "evidence_status": "needs_evidence",
+                    "supporting_event_count": 0,
+                },
+                "contextual_frame": {"observation_ids": []},
+            },
+        }],
+        "query_receipts": [{
+            "query_name": "claims", "row_count": 1,
+            "result_digest": "a" * 64,
+        }],
+    }
+    evidence["source_digest"] = canonical_sha256(evidence)
+    report = score_p6_frozen_execution(
+        raw_execution=_raw(population, evidence=evidence),
+        sealed_population=population,
+    )
+    assert not report["hard_gates"]["semantic_evidence_metadata_coherent"]
+
+
 @pytest.mark.parametrize("usage_exactness", ("estimated", "unavailable"))
 def test_nonreported_usage_cannot_pass_exact_token_receipt_gate(
     usage_exactness: str,

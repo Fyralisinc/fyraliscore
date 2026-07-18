@@ -8,6 +8,7 @@ member-level evidence is never converted into a zero-denominator pass.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from statistics import mean, median
@@ -1234,6 +1235,27 @@ def score_p6_frozen_execution(
     evidence_digest_valid = bool(evidence_digest) and evidence_digest == canonical_sha256(
         evidence_without_digest
     ) and bool(evidence.get("query_receipts"))
+    semantic_evidence_metadata_coherent = True
+    for row in claim_rows:
+        proposition = row.get("proposition")
+        if isinstance(proposition, str):
+            try:
+                proposition = json.loads(proposition)
+            except json.JSONDecodeError:
+                proposition = {}
+        proposition = proposition if isinstance(proposition, dict) else {}
+        evidence_ids = [
+            str(value) for value in proposition.get("evidence_event_ids") or ()
+        ]
+        contract = proposition.get("evidence_contract") or {}
+        frame = proposition.get("contextual_frame") or {}
+        if evidence_ids and (
+            contract.get("evidence_status") != "evidence_bound"
+            or contract.get("supporting_event_count") != len(evidence_ids)
+            or set(map(str, frame.get("observation_ids") or ())) != set(evidence_ids)
+        ):
+            semantic_evidence_metadata_coherent = False
+            break
     hard_gates = {
         "immutable_inputs_match": digest_match,
         "complete_execution": raw_execution.get("complete") is True,
@@ -1271,6 +1293,10 @@ def score_p6_frozen_execution(
             and raw_execution.get("mixed_llm_attempt_count") == 0
         ),
         "postfreeze_evidence_digest_valid": evidence_digest_valid,
+        "semantic_evidence_metadata_coherent": (
+            _evidence_has(raw_execution, "claims")
+            and semantic_evidence_metadata_coherent
+        ),
         "durable_call_receipts": receipt_identity_complete and all(
             row.get("physical_attempt_id") and row.get("think_run_id")
             and row.get("provider")

@@ -3081,6 +3081,9 @@ def _with_claim_evidence_defaults(
     entry["supporting_event_ids"] = event_ids
     if isinstance(manifest, list):
         prop["evidence_event_ids"] = [str(uid) for uid in event_ids]
+        _normalize_manifest_bound_semantic_evidence(
+            prop, manifest=manifest, event_ids=event_ids,
+        )
         entry["proposition"] = prop
     if prop and (
         prop.get("claim_role") == "situation"
@@ -3097,6 +3100,45 @@ def _with_claim_evidence_defaults(
         ]
         entry["proposition"] = prop
     return op.model_copy(update={"entry": entry})
+
+
+def _normalize_manifest_bound_semantic_evidence(
+    prop: dict[str, Any],
+    *,
+    manifest: list[Any],
+    event_ids: list[UUID],
+) -> None:
+    """Align derived semantic metadata with final authorized evidence IDs."""
+    selected = {str(value) for value in event_ids}
+    rows = [
+        row for row in manifest
+        if isinstance(row, dict) and str(row.get("observation_id") or "") in selected
+    ]
+    source_channels = list(dict.fromkeys(
+        re.sub(
+            r"[^a-z0-9]+", "_",
+            str(row.get("source_channel") or "").casefold(),
+        ).strip("_")
+        for row in rows
+        if str(row.get("source_channel") or "").strip()
+    ))
+    frame = dict(prop.get("contextual_frame") or {})
+    frame["observation_ids"] = [str(value) for value in event_ids]
+    frame["source_channels"] = source_channels
+    prop["contextual_frame"] = frame
+
+    contract = dict(prop.get("evidence_contract") or {})
+    contract["evidence_status"] = "evidence_bound" if event_ids else "needs_evidence"
+    contract["supporting_event_count"] = len(event_ids)
+    if source_channels:
+        contract["source_channels"] = source_channels
+    else:
+        contract.pop("source_channels", None)
+    prop["evidence_contract"] = contract
+
+    selectors = dict(prop.get("watch_selectors") or {})
+    selectors["source_channels"] = source_channels
+    prop["watch_selectors"] = selectors
 
 
 def _coerce_update_value(column: str, value: Any) -> Any:
