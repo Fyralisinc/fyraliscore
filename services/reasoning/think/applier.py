@@ -3254,6 +3254,12 @@ _EVIDENCE_TOKEN_STOPWORDS = {
 }
 
 
+def _claim_local_absorption_event_ids(entry: dict[str, Any]) -> list[UUID]:
+    """Return observation evidence only, excluding transport/provenance IDs."""
+
+    return _merge_event_ids(entry.get("supporting_event_ids"))
+
+
 async def _apply_evidence_downgrade(
     op: ClaimOp,
     conn: asyncpg.Connection,
@@ -3276,7 +3282,7 @@ async def _apply_evidence_downgrade(
     # A downgrade is a sidecar observation, not semantic confirmation.  Its
     # evidence authority is therefore exactly the incoming claim-local support;
     # transport/episode IDs must never be unioned into the anchored Model.
-    source_event_ids = _merge_event_ids(entry.get("supporting_event_ids"))
+    source_event_ids = _claim_local_absorption_event_ids(entry)
     source_event_id = source_event_ids[0] if source_event_ids else None
     anchor_id = await _select_evidence_anchor_model(
         conn,
@@ -3637,12 +3643,10 @@ async def _apply_near_duplicate_absorption(
         }
 
     entry = dict(op.entry or {})
-    source_event_ids = _merge_event_ids(
-        entry.get("supporting_event_ids"),
-        entry.get("born_from_event_id"),
-        cause_event_id,
-        trigger_supporting_event_ids,
-    )
+    # Near-duplicate absorption confirms an existing Model, so only the exact
+    # claim-local observations may become canonical support.  Transport batch,
+    # episode, and synthetic provenance IDs are audit context, not evidence.
+    source_event_ids = _claim_local_absorption_event_ids(entry)
     source_event_id = source_event_ids[0] if source_event_ids else None
     row = await conn.fetchrow(
         """

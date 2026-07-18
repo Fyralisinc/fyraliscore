@@ -16,7 +16,8 @@ from lib.shared.ids import uuid7
 
 from services.domain.models.repo import ModelsRepo
 from services.reasoning.think.applier import (
-    AlreadyAppliedError, _apply_evidence_downgrade, apply_diff, hash_diff,
+    AlreadyAppliedError, _apply_evidence_downgrade,
+    _claim_local_absorption_event_ids, apply_diff, hash_diff,
 )
 from services.reasoning.think.diff_schema import (
     ActOp,
@@ -47,6 +48,19 @@ from services.reasoning.think.validator import validate
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+async def test_absorption_evidence_excludes_transport_and_provenance_ids() -> None:
+    claim_observation = uuid7()
+    synthetic_provenance = uuid7()
+    transport_sibling = uuid7()
+    entry = {
+        "supporting_event_ids": [str(claim_observation)],
+        "born_from_event_id": str(synthetic_provenance),
+        "transport_supporting_event_ids": [str(transport_sibling)],
+    }
+
+    assert _claim_local_absorption_event_ids(entry) == [claim_observation]
 
 
 async def _insert_applier_model(conn, tenant, observation_id, natural: str):
