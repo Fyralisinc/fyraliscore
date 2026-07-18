@@ -3239,7 +3239,6 @@ async def test_apply_edge_op_attaches_trigger_event_as_edge_evidence(
             a,
             b,
         )
-
     assert row is not None
     assert row["created_by_event_id"] == oid
     assert row["evidence_event_ids"] == [oid]
@@ -3310,6 +3309,32 @@ async def test_apply_relation_claim_op_persists_claim_and_creates_edge(
             a,
             b,
         )
+        relation = await conn.fetchrow(
+            """
+            SELECT id, relation_kind, status, participant_binding_status,
+                   write_policy, metadata
+            FROM relation_instances
+            WHERE tenant_id = $1
+            """,
+            tenant,
+        )
+        participants = await conn.fetch(
+            """
+            SELECT role, model_id
+            FROM relation_participants
+            WHERE tenant_id = $1
+            ORDER BY role
+            """,
+            tenant,
+        )
+        projection = await conn.fetchrow(
+            """
+            SELECT relation_id, edge_id, projection_rule, status
+            FROM relation_edge_projections
+            WHERE tenant_id = $1
+            """,
+            tenant,
+        )
 
     assert len(result["relation_claim_ops"]) == 1
     assert result["relation_claim_ops"][0]["status"] == "accepted"
@@ -3330,6 +3355,22 @@ async def test_apply_relation_claim_op_persists_claim_and_creates_edge(
         else edge["metadata"]
     )
     assert edge_metadata["relation_claim_id"] == str(claim["id"])
+    assert edge_metadata["relation_instance_id"] == str(claim["id"])
+    assert relation is not None
+    assert relation["id"] == claim["id"]
+    assert relation["relation_kind"] == "blocks"
+    assert relation["status"] == "accepted"
+    assert relation["participant_binding_status"] == "bound"
+    assert relation["write_policy"] == "project_edges"
+    assert [(row["role"], row["model_id"]) for row in participants] == [
+        ("source", a),
+        ("target", b),
+    ]
+    assert projection is not None
+    assert projection["relation_id"] == relation["id"]
+    assert projection["edge_id"] in claim["accepted_edge_ids"]
+    assert projection["projection_rule"] == "pairwise_relation_claim"
+    assert projection["status"] == "active"
 
 
 async def test_apply_retired_relation_claim_retires_projected_edge(
@@ -3423,6 +3464,22 @@ async def test_apply_retired_relation_claim_retires_projected_edge(
             """,
             tenant,
         )
+        canonical_relation = await conn.fetchrow(
+            """
+            SELECT status, metadata
+            FROM relation_instances
+            WHERE tenant_id = $1
+            """,
+            tenant,
+        )
+        projection = await conn.fetchrow(
+            """
+            SELECT status
+            FROM relation_edge_projections
+            WHERE tenant_id = $1
+            """,
+            tenant,
+        )
 
     assert retire_result["relation_claim_ops"][0]["status"] == "retired"
     assert retire_result["edge_ops"][0]["op"] == "retire"
@@ -3434,6 +3491,62 @@ async def test_apply_retired_relation_claim_retires_projected_edge(
     assert edge["status_reason"] == "Future validation retired the blocker relation."
     assert retired_claim is not None
     assert retired_claim["write_policy"] == "no_edge"
+    assert canonical_relation is not None
+    assert canonical_relation["status"] == "retired"
+    assert projection is not None
+    assert projection["status"] == "retired"
+
+
+@pytest.mark.parametrize("status", ["candidate", "needs_review"])
+async def test_apply_unaccepted_relation_claim_remains_pretruth(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+    status,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="The possible dependency is not yet accepted",
+            external_id=f"relation-claim-pretruth-{status}-{uuid7()}",
+        )
+        a = await _insert_applier_model(conn, tenant, oid, "Possible blocker")
+        b = await _insert_applier_model(conn, tenant, oid, "Possibly blocked work")
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    source_model_id=a,
+                    target_model_id=b,
+                    predicate="blocks",
+                    edge_kind="blocks",
+                    endpoint_binding_status="bound",
+                    write_policy=status,
+                    status=status,
+                    binding_confidence=0.8,
+                    evidence_event_ids=[oid],
+                )
+            ],
+        )
+        async with conn.transaction():
+            await apply_diff(diff, conn, "T1", oid)
+        claim_count = await conn.fetchval(
+            "SELECT count(*) FROM relation_claims WHERE tenant_id = $1", tenant
+        )
+        relation_count = await conn.fetchval(
+            "SELECT count(*) FROM relation_instances WHERE tenant_id = $1", tenant
+        )
+        edge_count = await conn.fetchval(
+            "SELECT count(*) FROM model_edges WHERE tenant_id = $1", tenant
+        )
+
+    assert claim_count == 1
+    assert relation_count == 0
+    assert edge_count == 0
 
 
 async def test_apply_weighted_relation_claim_creates_weighted_edge(

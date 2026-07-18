@@ -4909,7 +4909,13 @@ async def _apply_relation_claim_op(
     think_run_id: UUID | None,
 ) -> dict[str, Any]:
     from services.domain.models.edges_repo import EdgesRepo
-    from services.reasoning.edge_intelligence import EdgeIntelligenceRepo, RelationClaim
+    from services.reasoning.edge_intelligence import (
+        EdgeIntelligenceRepo,
+        RelationClaim,
+        RelationEdgeProjection,
+        RelationFrame,
+        RelationParticipant,
+    )
 
     edges_repo = EdgesRepo()
     evidence_event_ids = tuple(
@@ -4957,6 +4963,7 @@ async def _apply_relation_claim_op(
     edge_ids: list[UUID] = []
     edge_summary: dict[str, Any] | None = None
     retired_edge_summaries: list[dict[str, Any]] = []
+    retired_relation_ids: list[UUID] = []
     if (
         op.status == "retired"
         and op.source_model_id is not None
@@ -4980,6 +4987,16 @@ async def _apply_relation_claim_op(
                 "source": "relation_claim_op",
             }
         )
+        retired_relation_ids.extend(
+            await repo.retire_pairwise_relation_frames(
+                conn,
+                tenant_id=tenant_id,
+                source_model_id=op.source_model_id,
+                target_model_id=op.target_model_id,
+                relation_kind=op.edge_kind,
+                reason=op.explanation or "relation_claim_retired",
+            )
+        )
     if (
         op.write_policy == "accepted_edge"
         and op.source_model_id is not None
@@ -4989,6 +5006,7 @@ async def _apply_relation_claim_op(
         edge_metadata = {
             **dict(op.metadata or {}),
             "relation_claim_id": str(row["id"]),
+            "relation_instance_id": str(row["id"]),
             "source": "relation_claim_op",
         }
         try:
@@ -5022,6 +5040,19 @@ async def _apply_relation_claim_op(
             )
             if not retired_edge_summaries:
                 raise
+            superseded_edge_ids = [
+                UUID(edge_id)
+                for summary in retired_edge_summaries
+                for edge_id in summary.get("retired_edge_ids", ())
+            ]
+            retired_relation_ids.extend(
+                await repo.retire_relation_frames_for_projection_edges(
+                    conn,
+                    tenant_id=tenant_id,
+                    edge_ids=superseded_edge_ids,
+                    reason=f"superseded_by_relation_claim:{op.edge_kind}:{row['id']}",
+                )
+            )
             edge_metadata["superseded_edge_count"] = sum(
                 int(item.get("retired_edges") or 0)
                 for item in retired_edge_summaries
@@ -5041,6 +5072,76 @@ async def _apply_relation_claim_op(
                 evidence_model_ids=op.evidence_model_ids,
                 explanation=op.explanation or op.evidence_text,
                 review_status="accepted",
+            )
+        retired_relation_ids.extend(
+            await repo.retire_pairwise_relation_frames(
+                conn,
+                tenant_id=tenant_id,
+                source_model_id=op.source_model_id,
+                target_model_id=op.target_model_id,
+                relation_kind=op.edge_kind,
+                reason=f"superseded_by_relation_claim:{row['id']}",
+                exclude_relation_id=row["id"],
+            )
+        )
+        frame = await repo.insert_relation_frame(
+            conn,
+            RelationFrame(
+                id=row["id"],
+                tenant_id=tenant_id,
+                source_observation_id=(
+                    evidence_event_ids[0] if evidence_event_ids else None
+                ),
+                think_run_id=think_run_id,
+                relation_kind=op.edge_kind,
+                status="accepted",
+                participant_binding_status="bound",
+                write_policy="project_edges",
+                confidence=op.confidence,
+                evidence_event_ids=evidence_event_ids,
+                evidence_model_ids=tuple(
+                    _merge_event_ids(
+                        op.evidence_model_ids,
+                        (op.source_model_id, op.target_model_id),
+                    )
+                ),
+                evidence_text=op.evidence_text,
+                explanation=op.explanation,
+                temporal_bounds=op.temporal_bounds,
+                metadata={
+                    **dict(op.metadata or {}),
+                    "relation_claim_id": str(row["id"]),
+                    "source": "relation_claim_op",
+                },
+            ),
+            participants=(
+                RelationParticipant(
+                    model_id=op.source_model_id,
+                    role="source",
+                    binding_confidence=op.binding_confidence,
+                ),
+                RelationParticipant(
+                    model_id=op.target_model_id,
+                    role="target",
+                    binding_confidence=op.binding_confidence,
+                ),
+            ),
+        )
+        for edge_id in edge_ids:
+            await repo.insert_relation_edge_projection(
+                conn,
+                RelationEdgeProjection(
+                    relation_id=frame["id"],
+                    tenant_id=tenant_id,
+                    edge_id=edge_id,
+                    projection_rule="pairwise_relation_claim",
+                    source_role="source",
+                    target_role="target",
+                    source_model_id=op.source_model_id,
+                    target_model_id=op.target_model_id,
+                    edge_kind=op.edge_kind,
+                    metadata={"relation_claim_id": str(row["id"])},
+                ),
             )
         row = await repo.mark_relation_claim_decided(
             conn,
@@ -5083,6 +5184,10 @@ async def _apply_relation_claim_op(
             "write_policy": row["write_policy"],
             "status": row["status"],
             "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
+            "relation_instance_id": str(row["id"]) if edge_ids else None,
+            "retired_relation_ids": [
+                str(relation_id) for relation_id in dict.fromkeys(retired_relation_ids)
+            ],
             "superseded_edge_count": sum(
                 int(item.get("retired_edges") or 0)
                 for item in retired_edge_summaries

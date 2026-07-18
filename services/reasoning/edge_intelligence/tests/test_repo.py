@@ -250,3 +250,62 @@ async def test_relation_frame_round_trips_participants_projections_and_metrics(
     assert metrics.relation_frames_accepted == 1
     assert metrics.relation_edge_projections_total == 1
     assert metrics.relation_frames_by_kind == {"blocked_workstream": 1}
+
+
+async def test_retire_pairwise_relation_frame_retires_projection(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    repo = EdgeIntelligenceRepo()
+    tenant_id = uuid7()
+    source_model_id = uuid7()
+    target_model_id = uuid7()
+
+    async with fresh_db.acquire() as conn:
+        frame = await repo.insert_relation_frame(
+            conn,
+            RelationFrame(
+                tenant_id=tenant_id,
+                relation_kind="blocks",
+                status="accepted",
+                participant_binding_status="bound",
+                write_policy="project_edges",
+            ),
+            participants=(
+                RelationParticipant(model_id=source_model_id, role="source"),
+                RelationParticipant(model_id=target_model_id, role="target"),
+            ),
+        )
+        await repo.insert_relation_edge_projection(
+            conn,
+            RelationEdgeProjection(
+                relation_id=frame["id"],
+                tenant_id=tenant_id,
+                edge_id=uuid7(),
+                projection_rule="pairwise_relation_claim",
+                source_role="source",
+                target_role="target",
+                source_model_id=source_model_id,
+                target_model_id=target_model_id,
+                edge_kind="blocks",
+            ),
+        )
+        retired = await repo.retire_pairwise_relation_frames(
+            conn,
+            tenant_id=tenant_id,
+            source_model_id=source_model_id,
+            target_model_id=target_model_id,
+            relation_kind="blocks",
+            reason="superseded by accepted correction",
+        )
+        loaded = await repo.get_relation_frame(
+            conn,
+            tenant_id=tenant_id,
+            relation_id=frame["id"],
+        )
+
+    assert retired == (frame["id"],)
+    assert loaded["status"] == "retired"
+    assert loaded["metadata"]["retirement_reason"] == (
+        "superseded by accepted correction"
+    )
+    assert loaded["edge_projections"][0]["status"] == "retired"

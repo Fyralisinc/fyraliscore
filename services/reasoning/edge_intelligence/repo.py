@@ -549,6 +549,130 @@ class EdgeIntelligenceRepo:
         )
         return [_row_to_projection_dict(row) for row in rows]
 
+    async def retire_pairwise_relation_frames(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        source_model_id: UUID,
+        target_model_id: UUID,
+        relation_kind: str,
+        reason: str,
+        exclude_relation_id: UUID | None = None,
+    ) -> tuple[UUID, ...]:
+        """Retire canonical pairwise truth and all of its edge projections."""
+        rows = await conn.fetch(
+            """
+            UPDATE relation_instances relation
+            SET status = 'retired',
+                metadata = relation.metadata || jsonb_build_object(
+                  'retirement_reason', $5::text
+                ),
+                decided_at = COALESCE(relation.decided_at, now()),
+                updated_at = now()
+            WHERE relation.tenant_id = $1
+              AND relation.relation_kind = $4
+              AND relation.status IN ('active', 'accepted', 'disputed')
+              AND ($6::uuid IS NULL OR relation.id <> $6)
+              AND EXISTS (
+                SELECT 1 FROM relation_participants source_participant
+                WHERE source_participant.tenant_id = $1
+                  AND source_participant.relation_id = relation.id
+                  AND source_participant.model_id = $2
+                  AND source_participant.role = 'source'
+              )
+              AND EXISTS (
+                SELECT 1 FROM relation_participants target_participant
+                WHERE target_participant.tenant_id = $1
+                  AND target_participant.relation_id = relation.id
+                  AND target_participant.model_id = $3
+                  AND target_participant.role = 'target'
+              )
+            RETURNING relation.id
+            """,
+            tenant_id,
+            source_model_id,
+            target_model_id,
+            relation_kind.strip(),
+            reason,
+            exclude_relation_id,
+        )
+        relation_ids = tuple(row["id"] for row in rows)
+        if relation_ids:
+            await conn.execute(
+                """
+                UPDATE relation_edge_projections
+                SET status = 'retired',
+                    metadata = metadata || jsonb_build_object(
+                      'retirement_reason', $3::text
+                    ),
+                    updated_at = now()
+                WHERE tenant_id = $1
+                  AND relation_id = ANY($2::uuid[])
+                  AND status = 'active'
+                """,
+                tenant_id,
+                list(relation_ids),
+                reason,
+            )
+        return relation_ids
+
+    async def retire_relation_frames_for_projection_edges(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        edge_ids: Iterable[UUID],
+        reason: str,
+    ) -> tuple[UUID, ...]:
+        """Retire canonical truth whose compatibility projection was superseded."""
+        normalized_edge_ids = tuple(dict.fromkeys(edge_ids))
+        if not normalized_edge_ids:
+            return ()
+        rows = await conn.fetch(
+            """
+            UPDATE relation_instances relation
+            SET status = 'retired',
+                metadata = relation.metadata || jsonb_build_object(
+                  'retirement_reason', $3::text
+                ),
+                decided_at = COALESCE(relation.decided_at, now()),
+                updated_at = now()
+            WHERE relation.tenant_id = $1
+              AND relation.status IN ('active', 'accepted', 'disputed')
+              AND EXISTS (
+                SELECT 1 FROM relation_edge_projections projection
+                WHERE projection.tenant_id = $1
+                  AND projection.relation_id = relation.id
+                  AND projection.edge_id = ANY($2::uuid[])
+                  AND projection.status = 'active'
+              )
+            RETURNING relation.id
+            """,
+            tenant_id,
+            list(normalized_edge_ids),
+            reason,
+        )
+        relation_ids = tuple(row["id"] for row in rows)
+        if relation_ids:
+            await conn.execute(
+                """
+                UPDATE relation_edge_projections
+                SET status = 'retired',
+                    metadata = metadata || jsonb_build_object(
+                      'retirement_reason', $3::text
+                    ),
+                    updated_at = now()
+                WHERE tenant_id = $1
+                  AND relation_id = ANY($2::uuid[])
+                  AND status = 'active'
+                """,
+                tenant_id,
+                list(relation_ids),
+                reason,
+            )
+        return relation_ids
+
     async def record_pair_observation(
         self,
         conn: asyncpg.Connection,
