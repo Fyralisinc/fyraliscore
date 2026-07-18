@@ -1351,6 +1351,54 @@ transport are excluded from this goal.
   `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1.json`, and its strict
   CF3-B report.
 
+### EDGE-060 — Open-world mention precision needs denominator-complete gold
+
+- **Status:** `bounded CF3 metric resolved; broad exhaustive gold remains backlog`
+- **Trigger:** CF3-C recovered all 88 required mentions with perfect type and
+  canonical-link accuracy, but sparse gold treated roughly 39 legitimate
+  nested company-object spans as false positives and reported exact mention F1
+  `0.818605`.
+- **Current behavior:** The detector recognizes useful nested objects such as
+  certificates, reviews, dashboards, and outcomes that the storyline-level
+  fixture does not exhaustively annotate. A small number of high-similarity
+  distractor detections are also present and must remain measurable.
+- **Desired behavior:** Mention precision is scored against exhaustive span
+  gold or an explicit open-world review denominator, while required-mention
+  recall, type accuracy, canonical linking, and consequential write safety stay
+  separately visible.
+- **Risk:** Suppressing legitimate mentions to satisfy incomplete closed-world
+  gold would make company physics worse; ignoring all extra spans would hide
+  real over-extraction.
+- **Safe boundary:** Do not tune the detector to this sparse gold. Keep every
+  consequential admission guarded independently and preserve extra spans for
+  review. CF3 now scores required recall and adjudicated precision separately:
+  recall `1.0`, precision `0.967033`, three confirmed false positives, and 36
+  open-world review spans.
+- **Return condition:** Before claiming broad entity-extraction precision or
+  sealed holdout generalization, seal exhaustive nested-mention gold or a
+  blinded review protocol with confidence intervals.
+- **Evidence:** CF3-C v2 report and LOG-069.
+
+### EDGE-061 — Mature retrieval still reopens broad observation context
+
+- **Status:** `efficiency backlog after CF3-C/CF4 semantics`
+- **Trigger:** CF3-C retrieval moved from zero Models in batch 1 to 13, 19, and
+  17 Models in batches 2-4, but observation retrieval remained 25, 25, 45, and
+  52 respectively.
+- **Current behavior:** Accepted Models are materially used, yet historical
+  observations do not monotonically fall as memory matures.
+- **Desired behavior:** Mature scopes primarily use accepted current Models and
+  reopen observations only for insufficiency, contradiction, provenance, or
+  explicit historical questions.
+- **Risk:** Excess observation reopening increases cost and can dilute the
+  compressed company model, but it did not cause the classified CF3-C
+  synthesis failure.
+- **Safe boundary:** Measure and retain the context-use trace. Do not change
+  retrieval policy until synthesis and correction are green.
+- **Return condition:** Revisit in CF5/CF7 when mature unnecessary historical
+  observation use and memory-value ablation become binding metrics.
+- **Evidence:** `/tmp/fyralis-cf3c-four-batch-spark-r1.json` and LOG-069.
+
 ## Entry Template
 
 ### EDGE-NNN — Short title

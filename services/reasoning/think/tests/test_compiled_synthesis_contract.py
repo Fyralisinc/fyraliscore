@@ -9,6 +9,7 @@ from services.reasoning.think.compiled_reasoning import (
     CompiledBatchMemoryDecisionRequest,
     RelationObligation,
     _bind_synthesis_endpoint_versions,
+    _infer_relation_obligation_edge_kind,
 )
 from services.reasoning.think.validator import (
     _resolve_authoritative_relation_retirements,
@@ -48,6 +49,31 @@ def test_scoped_hydration_receipt_binds_exact_synthesis_head_versions() -> None:
         str(model_id): str(version_id)
         for model_id, version_id in zip(models, versions, strict=True)
     }
+
+
+def test_distributed_synthesis_link_is_causal_not_generic_blocking() -> None:
+    edge_kind, markers, evidence = _infer_relation_obligation_edge_kind(
+        {"candidate_kind": "synthesis"},
+        (
+            "Two independent records connect certificate ownership with rollout delay.",
+            "A ticket records another ownership handoff just before status moved.",
+        ),
+    )
+
+    assert edge_kind == "causes"
+    assert "connect" in " ".join(markers)
+    assert "ownership" in evidence
+
+
+def test_atomic_link_text_does_not_gain_synthesis_causal_authority() -> None:
+    edge_kind, _markers, _evidence = _infer_relation_obligation_edge_kind(
+        {"candidate_kind": "atomic"},
+        (
+            "A record connects certificate ownership with rollout delay.",
+        ),
+    )
+
+    assert edge_kind == "blocks"
 
 
 def test_accepted_synthesis_edge_also_materializes_composite_situation() -> None:

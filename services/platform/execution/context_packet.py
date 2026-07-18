@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import json
 import re
 from dataclasses import asdict, is_dataclass
@@ -2773,9 +2774,21 @@ def _retrieval_targets(
 
 
 def _candidate_id(prefix: str, raw: str) -> str:
+    """Return a short, stable opaque id that a decision model can copy exactly.
+
+    The old representation truncated the human-readable raw basis at 80
+    characters.  Cross-time synthesis bases contain several UUIDs, so the
+    significant suffix was routinely cut off and the provider could return a
+    visually similar but non-identical identifier.  That silently detached an
+    otherwise valid synthesis decision from its closed candidate.  Keep a
+    small diagnostic hint and bind identity to the complete basis digest.
+    """
+
     clean = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw)
     clean = clean.strip("_") or "candidate"
-    return f"{prefix}_{clean}"[:80]
+    hint = clean[:24].rstrip("_-") or "candidate"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+    return f"{prefix}_{hint}_{digest}"
 
 
 def candidate_state_changes(

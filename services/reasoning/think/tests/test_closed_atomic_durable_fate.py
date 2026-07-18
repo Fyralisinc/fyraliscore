@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from lib.shared.ids import uuid7
 
+from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.applier import _lifecycle_confidence
 from services.reasoning.think.compiled_reasoning import (
@@ -13,6 +14,7 @@ from services.reasoning.think.compiled_reasoning import (
     RelationObligation,
     _bind_exact_closed_atomic_targets,
     _candidate_scope_coordinate,
+    build_compiled_batch_memory_decision_request,
     relation_obligations_from_packet,
 )
 
@@ -47,6 +49,20 @@ def _request(candidate: dict) -> CompiledBatchMemoryDecisionRequest:
         user="user",
         candidates=(candidate,),
     )
+
+
+def _compiled_request(trigger: TriggerContext, candidates: list[dict]):
+    request = build_compiled_batch_memory_decision_request(
+        trigger,
+        ContextBundle(notes={
+            "inquiry_context_packet": {
+                "signal_summary": "Provider-free exact atomics.",
+                "memory_decision_candidates": candidates,
+            }
+        }),
+    )
+    assert request is not None
+    return request
 
 
 def test_candidate_scope_coordinate_prefers_well_formed_canonical_scope_ref() -> None:
@@ -107,6 +123,141 @@ def test_mention_scoped_atomic_preserves_nonidentity_authority_contract() -> Non
         "canonical_identity_authority": False,
         "cross_observation_grouping_authority": False,
     }
+
+
+def test_multiple_unresolved_mentions_cannot_duplicate_one_full_observation() -> None:
+    tenant_id = uuid7()
+    observation_id = uuid7()
+    text = "Cobalt paint approval is listed in the Beacon office ticket."
+    candidates = []
+    for label in ("Cobalt paint approval", "Beacon office ticket"):
+        candidate = _candidate(observation_id)
+        candidate.update({
+            "candidate_id": f"MDC_{label.replace(' ', '_')}",
+            "proposed_text": text,
+            "entailed_claim_text": text,
+            "canonical_scope_ref": f"mention:{uuid7()}",
+            "semantic_scope": [label],
+            "observation_evidence": [{
+                "observation_id": str(observation_id),
+                "body": text,
+            }],
+        })
+        candidates.append(candidate)
+
+    request = _compiled_request(_trigger(tenant_id, observation_id), candidates)
+    diff = request.to_raw_diff(
+        BatchMemoryDecisionSet(),
+        trigger=_trigger(tenant_id, observation_id),
+        trigger_ref=uuid7(),
+    )
+
+    assert len(request.candidates) == 2
+    assert all(
+        candidate.get("admission_suppressed_reason")
+        for candidate in request.candidates
+    )
+    assert diff.claim_ops == []
+    assert diff.memory_lifecycle_ops == []
+    assert (diff.reasoning_trace or "").count(
+        "multiple unresolved mention subjects claim the same full observation"
+    ) == 2
+
+
+def test_single_novel_mention_atomic_still_enters_accepted_memory() -> None:
+    tenant_id = uuid7()
+    observation_id = uuid7()
+    text = "Zephyr rollout has no recorded owner."
+    candidate = _candidate(observation_id)
+    candidate.update({
+        "proposed_text": text,
+        "entailed_claim_text": text,
+        "canonical_scope_ref": f"mention:{uuid7()}",
+        "semantic_scope": ["Zephyr rollout"],
+        "observation_evidence": [{
+            "observation_id": str(observation_id),
+            "body": text,
+        }],
+    })
+
+    request = _compiled_request(_trigger(tenant_id, observation_id), [candidate])
+    diff = request.to_raw_diff(
+        BatchMemoryDecisionSet(),
+        trigger=_trigger(tenant_id, observation_id),
+        trigger_ref=uuid7(),
+    )
+
+    assert "admission_suppressed_reason" not in request.candidates[0]
+    assert len(diff.claim_ops) == 1
+
+
+def test_canonical_candidates_are_not_suppressed_by_duplicate_text() -> None:
+    tenant_id = uuid7()
+    observation_id = uuid7()
+    text = "Atlas release is waiting for approval."
+    candidates = []
+    for candidate_id in ("atlas-a", "atlas-b"):
+        candidate = _candidate(observation_id)
+        candidate.update({
+            "candidate_id": candidate_id,
+            "entailed_claim_text": text,
+            "canonical_scope_ref": "workstream:atlas-release",
+            "observation_evidence": [{
+                "observation_id": str(observation_id),
+                "body": text,
+            }],
+        })
+        candidates.append(candidate)
+
+    request = _compiled_request(_trigger(tenant_id, observation_id), candidates)
+    diff = request.to_raw_diff(
+        BatchMemoryDecisionSet(),
+        trigger=_trigger(tenant_id, observation_id),
+        trigger_ref=uuid7(),
+    )
+
+    assert all(
+        "admission_suppressed_reason" not in candidate
+        for candidate in request.candidates
+    )
+    assert len(diff.claim_ops) == 2
+
+
+def test_distinct_or_partial_unresolved_claims_are_not_suppressed() -> None:
+    tenant_id = uuid7()
+    observation_id = uuid7()
+    body = "Zephyr rollout depends on the Nimbus approval."
+    candidates = []
+    for label, claim in (
+        ("Zephyr rollout", "Zephyr rollout depends on an approval."),
+        ("Nimbus approval", "Nimbus approval is required for rollout."),
+    ):
+        candidate = _candidate(observation_id)
+        candidate.update({
+            "candidate_id": f"MDC_{label.replace(' ', '_')}",
+            "proposed_text": claim,
+            "entailed_claim_text": claim,
+            "canonical_scope_ref": f"mention:{uuid7()}",
+            "semantic_scope": [label],
+            "observation_evidence": [{
+                "observation_id": str(observation_id),
+                "body": body,
+            }],
+        })
+        candidates.append(candidate)
+
+    request = _compiled_request(_trigger(tenant_id, observation_id), candidates)
+    diff = request.to_raw_diff(
+        BatchMemoryDecisionSet(),
+        trigger=_trigger(tenant_id, observation_id),
+        trigger_ref=uuid7(),
+    )
+
+    assert all(
+        "admission_suppressed_reason" not in candidate
+        for candidate in request.candidates
+    )
+    assert len(diff.claim_ops) == 2
 
 
 def test_llm_noop_cannot_suppress_closed_atomic_durable_fate() -> None:

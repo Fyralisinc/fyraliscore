@@ -60,7 +60,10 @@ async def _run(args: argparse.Namespace) -> int:
         **evidence_body,
         "content_digest": canonical_sha256(evidence_body),
     }
-    report = evaluate_cf3c_four_wave(frozen)
+    report = evaluate_cf3c_four_wave(
+        frozen,
+        evidence_artifact=evidence_artifact,
+    )
     args.evidence_output.parent.mkdir(parents=True, exist_ok=True)
     args.evidence_output.write_text(
         json.dumps(evidence_artifact, indent=2, sort_keys=True) + "\n",

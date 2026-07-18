@@ -6,16 +6,15 @@
 
 **Worktree:** `/Users/rachinkalakheti/fyraliscore-autonomous-learning`
 
-**Current checkpoint:** M0, CF3-A, and CF3-B are green. The provenance-bound
-exact-scope join is proven in a fresh provider run for tenant
-`e188354c-4a88-406d-bf25-f005cf9af275`. Two batches completed in `227.633s`
-(`113.399s` / `114.124s`): batch 1 admitted `14/14` evidence-backed Models;
-batch 2 selected all 14 exact batch-1 Models and produced 12 authorized and
-material effects, all 12 trace-referenced, durably applied, and receipted. Both
-barriers closed and the strict CF3-B report had no failed gates. Usage was
-204,011 input, 42,466 output, and 121,856 cache tokens. CF3-C is unlocked.
-Exact-envelope deduplication remains deferred because recurrence and
-corroboration require explicit temporal semantics.
+**Current checkpoint:** M0, CF3-A, and CF3-B are green. The first four-batch
+CF3-C run completed but is semantically red because it admitted no composite
+or canonical Atlas relation. The failure has been frozen and classified; a
+bounded local repair now covers exact synthesis-candidate identity, causal
+relation semantics, duplicate unresolved-mention admission, purpose-aware
+receipts, report/evidence digest binding, and sparse-gold mention scoring. The
+frozen rerender recovers `88/88` required mentions and reports adjudicated
+precision `0.967033`, with three confirmed false positives and 36 open-world
+review spans. CF4 remains locked. One fresh CF3-C rerun is next.
 
 **Last updated:** 2026-07-19
 
@@ -2158,3 +2157,24 @@ matched feedback quality and objective entity v6.
   proposition strings. CF3-C is unlocked; EDGE-058 remains deferred.
 - Artifacts: `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1.json` and
   `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1-cf3b-v1.json`.
+
+### 2026-07-19 — First CF3-C run is red and the bounded repair is locally green
+
+- Tenant `4ab38d7f-5a24-4aac-b3f7-5d4ce4ce5503` completed four 25-signal
+  batches in `718.814s` with 62 provider calls. It passed boundary, canonical
+  link, entity type, evidence lineage, atomic recall, and material prior-Model
+  use gates.
+- It admitted zero composite Models and zero canonical relations. The exact
+  synthesis candidate was discarded because its long identifier did not join
+  back to the closed candidate; relation perception also called causal
+  ownership/handoff evidence `blocks`.
+- Eight false Models came from four distractor observations copied once per
+  unresolved mention coordinate. The receipt aggregate was falsely red because
+  entity-grounding calls were required to carry Think-run IDs.
+- The repair now uses short digest-bound candidate IDs, synthesis-local causal
+  relation semantics, duplicate unresolved-mention admission suppression,
+  purpose-aware receipts, and report-to-evidence digest binding. The original
+  run remains red and CF4 remains locked.
+- Focused validation passes `101/101` with PostgreSQL, plus architecture
+  ratchets, Ruff, and diff checks. One fresh CF3-C rerun is the next semantic
+  action.

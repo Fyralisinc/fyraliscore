@@ -192,9 +192,18 @@ def _score_mentions(
     }
 
 
-    scored_prediction_count = 0
+    # The sealed oracle is exhaustive for required storyline mentions and the
+    # explicit local mentions above, but not for every nested object phrase in
+    # otherwise-positive company prose.  Treating every unlisted span as false
+    # made precision a measure of annotation sparsity.  Precision therefore
+    # counts only adjudicable errors here: malformed/duplicate required spans
+    # and unexpected spans on sealed negative signals.  Other extra spans stay
+    # visible for open-world review without changing required-mention recall.
+    confirmed_false_positives = 0
+    open_world_extra_span_review: list[dict[str, Any]] = []
     worst = []
     signal_text = {signal.signal_id: signal.text for signal in population.signals}
+    gold_by_signal = {item.signal_id: item for item in gold_rows}
     for row in rows:
         signal_id = str(row.get("signal_id") or "")
         surface = str(row.get("surface") or "")
@@ -212,11 +221,32 @@ def _score_mentions(
             item for item in optional.get(signal_id, ())
             if item[0] == surface and exact_span
         ), None)
+        required_surface_match = any(
+            item[0] == surface for item in required.get(signal_id, ())
+        )
         if required_match is None and optional_match is None:
-            scored_prediction_count += 1
-            worst.append({"source_id": signal_id, "reason": "unexpected_mention"})
+            gold_item = gold_by_signal.get(signal_id)
+            reason: str | None = None
+            if required_surface_match:
+                reason = (
+                    "duplicate_required_mention"
+                    if exact_span else "invalid_required_mention_span"
+                )
+            elif gold_item is not None and gold_item.role in {
+                "noise", "high_similarity_distractor",
+            }:
+                reason = "unexpected_mention_on_sealed_negative"
+            if reason is not None:
+                confirmed_false_positives += 1
+                worst.append({"source_id": signal_id, "reason": reason})
+            else:
+                open_world_extra_span_review.append({
+                    "source_id": signal_id,
+                    "surface": surface,
+                    "entity_type": row.get("entity_type"),
+                    "reason": "unadjudicated_nested_or_open_world_span",
+                })
         elif required_match is not None:
-            scored_prediction_count += 1
             exact += 1
             seen_expected.add((signal_id, surface))
             allowed_types = required_match[1]
@@ -240,19 +270,36 @@ def _score_mentions(
                     "source_id": signal_id,
                     "reason": "local_entity_linked_to_storyline",
                 })
-    _, _, mention_f1 = _f1(exact, scored_prediction_count, required_count)
+    adjudicated_prediction_count = exact + confirmed_false_positives
+    mention_precision, mention_recall, mention_f1 = _f1(
+        exact, adjudicated_prediction_count, required_count,
+    )
     ids = sorted(required)
     storyline_ids = sorted(
         signal_id for signal_id, items in required.items()
         if any(ref is not None for _surface, _types, ref in items)
     )
-    return {
-        "exact_mention_f1": _metric(
+    exact_mention_metric = _metric(
             "exact_mention_f1",
             mention_f1 if required_count else None,
             1 if required_count else None,
             source_ids=ids, worst_cases=worst,
+        )
+    exact_mention_metric.update({
+        "required_mention_recall": mention_recall if required_count else None,
+        "adjudicated_mention_precision": (
+            mention_precision if adjudicated_prediction_count else None
         ),
+        "confirmed_false_positive_count": confirmed_false_positives,
+        "open_world_extra_span_review_count": len(open_world_extra_span_review),
+        "open_world_extra_span_review": open_world_extra_span_review,
+        "precision_contract": (
+            "required exact spans plus confirmed malformed, duplicate, or "
+            "sealed-negative predictions; sparse-gold extras require review"
+        ),
+    })
+    return {
+        "exact_mention_f1": exact_mention_metric,
         "entity_type_accuracy": _metric(
             "entity_type_accuracy",
             type_ok if required_count else None,

@@ -409,6 +409,15 @@ class CompiledBatchMemoryDecisionRequest:
         # Closed atomics are compiler-proven direct assertions. The LLM may
         # comment on them, but cannot turn them into a silent no-op.
         for candidate in self.candidates:
+            if candidate.get("admission_suppressed_reason"):
+                candidate_id = str(
+                    candidate.get("candidate_id") or "suppressed_atomic"
+                )
+                trace_parts.append(
+                    f"{candidate_id}: closed atomic admission suppressed - "
+                    f"{candidate['admission_suppressed_reason']}"
+                )
+                continue
             if not str(candidate.get("entailed_claim_text") or "").strip():
                 continue
             claim_op, lifecycle_op, placeholder, block_reason = (
@@ -921,6 +930,7 @@ def build_compiled_batch_memory_decision_request(
     candidates = _memory_candidates_from_packet(packet)
     if not candidates:
         return None
+    candidates = _suppress_ambiguous_duplicate_mention_atomics(candidates)
     candidates = _bind_synthesis_endpoint_versions(candidates, packet=packet)
     candidates = _bind_exact_closed_atomic_targets(
         candidates,
@@ -971,6 +981,8 @@ def build_compiled_batch_memory_decision_request(
         "For candidates with entailed_claim_text, the compiler owns their "
         "durable insert-or-confirm fate, immutable wording, and exact evidence; "
         "your response cannot suppress or widen them. "
+        "A candidate carrying admission_suppressed_reason is an explicit "
+        "compiler no-op and cannot create or update accepted truth. "
         "For each prior_same_scope_model_card, report one typed "
         "prior_memory_effect: supports, weakens, contradicts, supersedes, or "
         "none. This is candidate-local reconciliation, not generic lifecycle "
@@ -1283,6 +1295,65 @@ def _memory_candidates_from_packet(packet: dict[str, Any]) -> list[dict[str, Any
     return [dict(candidate) for candidate in raw if isinstance(candidate, dict)]
 
 
+def _suppress_ambiguous_duplicate_mention_atomics(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fail closed on one full observation copied across unresolved mentions.
+
+    Mention detection and grounding have already persisted before this seam.
+    Suppression affects only accepted-Model admission and only when two or more
+    distinct provisional detection coordinates claim the identical complete
+    observation body as their own atomic assertion.
+    """
+
+    groups: dict[tuple[str, str], list[int]] = {}
+    for index, candidate in enumerate(candidates):
+        scope_ref = str(candidate.get("canonical_scope_ref") or "").strip()
+        entailed = " ".join(
+            str(candidate.get("entailed_claim_text") or "").split()
+        )
+        event_ids = _candidate_event_ids(candidate)
+        evidence_rows = [
+            row for row in candidate.get("observation_evidence") or ()
+            if isinstance(row, dict)
+        ]
+        if (
+            not scope_ref.startswith("mention:")
+            or not entailed
+            or len(event_ids) != 1
+            or len(evidence_rows) != 1
+            or str(evidence_rows[0].get("observation_id") or "")
+            != str(event_ids[0])
+            or " ".join(str(evidence_rows[0].get("body") or "").split())
+            != entailed
+        ):
+            continue
+        groups.setdefault((str(event_ids[0]), entailed), []).append(index)
+
+    suppressed: set[int] = set()
+    for indexes in groups.values():
+        distinct_scopes = {
+            str(candidates[index].get("canonical_scope_ref")) for index in indexes
+        }
+        if len(distinct_scopes) >= 2:
+            suppressed.update(indexes)
+    return [
+        {
+            **candidate,
+            **(
+                {
+                    "admission_suppressed_reason": (
+                        "multiple unresolved mention subjects claim the same "
+                        "full observation"
+                    )
+                }
+                if index in suppressed else {}
+            ),
+        }
+        for index, candidate in enumerate(candidates)
+    ]
+
+
 _OPEN_WRITER_SURFACE_TOKENS = (
     "resource_ops",
     "resource op",
@@ -1538,6 +1609,7 @@ def _batch_candidate_lines(candidate: dict[str, Any]) -> list[str]:
         "confidence",
         "proposed_text",
         "entailed_claim_text",
+        "admission_suppressed_reason",
         "target_model_ids",
         "target_act_ids",
         "evidence_model_ids",
@@ -3556,6 +3628,40 @@ def _infer_relation_obligation_edge_kind(
 ) -> tuple[str | None, tuple[str, ...], str]:
     if not relation_clauses:
         return None, (), ""
+    # A mature synthesis opportunity can express causal evidence across
+    # several source-local clauses rather than with the literal word
+    # ``because``.  Repeated ownership/handoff evidence that explicitly links
+    # a condition to an adverse temporal outcome is causal influence, not the
+    # stronger claim that one endpoint directly blocks the other.  Keep this
+    # rule synthesis-only so generic ``linked`` text cannot promote arbitrary
+    # atomic relations.
+    synthesis_text = " ".join(relation_clauses).casefold()
+    causal_link_markers = tuple(
+        marker
+        for marker in (
+            "link ", "links ", "linked ",
+            "connect ", "connects ", "connected ",
+        )
+        if marker in synthesis_text
+    )
+    if (
+        candidate.get("candidate_kind") == "synthesis"
+        and causal_link_markers
+        and any(token in synthesis_text for token in (
+            "ownership", "owner", "handoff", "transition",
+        ))
+        and any(token in synthesis_text for token in (
+            "delay", "slip", "moved", "blocked", "risk", "before", "after",
+        ))
+    ):
+        evidence_text = next(
+            (
+                clause for clause in relation_clauses
+                if any(marker in clause.casefold() for marker in causal_link_markers)
+            ),
+            relation_clauses[0],
+        )
+        return "causes", causal_link_markers, evidence_text
     hinted = [
         str(kind or "").strip()
         for kind in (candidate.get("suggested_edge_kinds") or [])

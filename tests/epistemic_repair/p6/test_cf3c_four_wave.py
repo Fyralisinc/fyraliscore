@@ -202,6 +202,27 @@ def _artifact() -> dict:
     }
 
 
+def _evidence_artifact(artifact: dict) -> dict:
+    raw = {
+        key: value for key, value in artifact.items()
+        if key != "postfreeze_evidence"
+    }
+    body = {
+        "schema_version": "cf3c-four-wave-postfreeze-evidence-v1",
+        "commit": artifact["run_provenance"]["git_commit"],
+        "raw_execution_digest": canonical_sha256(raw),
+        "postfreeze_evidence": artifact["postfreeze_evidence"],
+    }
+    return {**body, "content_digest": canonical_sha256(body)}
+
+
+def _evaluate(artifact: dict, *, evidence_artifact: dict | None = None) -> dict:
+    return evaluate_cf3c_four_wave(
+        artifact,
+        evidence_artifact=evidence_artifact or _evidence_artifact(artifact),
+    )
+
+
 def _patch_metrics(monkeypatch) -> None:
     monkeypatch.setattr(
         "services.evaluation.epistemic_repair.cf3c_four_wave._score_boundaries",
@@ -237,7 +258,7 @@ def _patch_metrics(monkeypatch) -> None:
 
 def test_green_requires_four_wave_composite_and_material_prior_use(monkeypatch) -> None:
     _patch_metrics(monkeypatch)
-    report = evaluate_cf3c_four_wave(_artifact())
+    report = _evaluate(_artifact())
 
     assert report["verdict"] == "green"
     assert report["failed_gates"] == []
@@ -252,7 +273,7 @@ def test_composite_before_opportunity_fails_even_if_final_claim_is_valid(monkeyp
         deepcopy(artifact["waves"][3]["snapshot"]["accepted_models"][-1])
     )
 
-    report = evaluate_cf3c_four_wave(artifact)
+    report = _evaluate(artifact)
 
     assert report["verdict"] == "red"
     assert not report["gates"]["no_composite_before_batch_four_opportunity"]
@@ -265,7 +286,7 @@ def test_selected_or_traced_prior_without_material_effect_fails(monkeypatch) -> 
         "prior_memory_effects"
     ] = []
 
-    report = evaluate_cf3c_four_wave(artifact)
+    report = _evaluate(artifact)
 
     assert report["verdict"] == "red"
     assert not report["gates"]["material_earlier_model_use_in_batches_2_to_4"]
@@ -283,7 +304,7 @@ def test_direct_prior_phase_observation_or_unaccepted_member_version_fails(
     composite["direct_evidence_signal_ids"].append("p6-b01-s01")
     composite["source_model_version_ids"] = [str(uuid4())]
 
-    report = evaluate_cf3c_four_wave(artifact)
+    report = _evaluate(artifact)
 
     assert report["verdict"] == "red"
     assert not report["gates"]["composite_cites_exact_prior_model_versions"]
@@ -297,7 +318,7 @@ def test_full_p6_shape_cannot_be_reinterpreted_as_cf3c(monkeypatch) -> None:
     artifact = _artifact()
     artifact["target_batches"] = 12
 
-    report = evaluate_cf3c_four_wave(artifact)
+    report = _evaluate(artifact)
 
     assert report["verdict"] == "red"
     assert not report["gates"]["exactly_four_successful_batches_of_25"]
@@ -319,7 +340,7 @@ def test_arbitrary_atlas_relation_is_not_treated_as_supported(monkeypatch) -> No
         ],
     }]
 
-    report = evaluate_cf3c_four_wave(artifact)
+    report = _evaluate(artifact)
 
     assert report["verdict"] == "red"
     assert not report["gates"]["unsupported_canonical_relations_zero"]
@@ -357,7 +378,7 @@ def test_real_prefix_boundary_scorer_uses_all_one_hundred_members(monkeypatch) -
         ),
     } for batch in population.batches[:4] for signal in batch.signals]
 
-    report = evaluate_cf3c_four_wave(artifact)
+    report = _evaluate(artifact)
 
     boundary = report["measurements"]["continuous_metrics"][
         "boundary_b_cubed_f1"
@@ -365,3 +386,78 @@ def test_real_prefix_boundary_scorer_uses_all_one_hundred_members(monkeypatch) -
     assert boundary["status"] == "pass"
     assert boundary["value"] == 1.0
     assert len(boundary["source_ids"]) == 100
+
+
+def test_entity_grounding_receipt_does_not_require_think_run_id(monkeypatch) -> None:
+    _patch_metrics(monkeypatch)
+    artifact = _artifact()
+    artifact["llm_attempt_receipts"].append({
+        "purpose": "entity_grounding",
+        "physical_attempt_id": str(uuid4()),
+        "think_run_id": None,
+        "provider": "codex",
+        "model": "gpt-5.3-codex-spark",
+        "usage_exactness": "reported",
+        "input_tokens": 80,
+        "output_tokens": 8,
+        "cache_tokens": 16,
+    })
+
+    report = _evaluate(artifact)
+
+    assert report["gates"][
+        "all_barriers_fates_and_provider_receipts_complete"
+    ] is True
+
+
+def test_think_receipt_still_requires_think_run_id(monkeypatch) -> None:
+    _patch_metrics(monkeypatch)
+    artifact = _artifact()
+    artifact["llm_attempt_receipts"][0].update({
+        "purpose": "main_reasoning",
+        "think_run_id": None,
+    })
+
+    report = _evaluate(artifact)
+
+    assert report["gates"][
+        "all_barriers_fates_and_provider_receipts_complete"
+    ] is False
+
+
+def test_report_binds_verified_raw_and_evidence_artifact_digests(monkeypatch) -> None:
+    _patch_metrics(monkeypatch)
+    artifact = _artifact()
+    evidence_artifact = _evidence_artifact(artifact)
+
+    report = _evaluate(artifact, evidence_artifact=evidence_artifact)
+
+    assert report["gates"][
+        "clean_single_commit_and_postfreeze_evidence_valid"
+    ] is True
+    assert report["input_digests"] == {
+        "raw_execution": evidence_artifact["raw_execution_digest"],
+        "evidence_artifact": evidence_artifact["content_digest"],
+        "postfreeze_evidence": artifact["postfreeze_evidence"]["source_digest"],
+    }
+    body = dict(report)
+    digest = body.pop("content_digest")
+    assert digest == canonical_sha256(body)
+
+
+def test_internally_valid_but_detached_evidence_artifact_fails_binding(
+    monkeypatch,
+) -> None:
+    _patch_metrics(monkeypatch)
+    artifact = _artifact()
+    evidence_artifact = _evidence_artifact(artifact)
+    evidence_artifact["raw_execution_digest"] = "0" * 64
+    evidence_artifact.pop("content_digest")
+    evidence_artifact["content_digest"] = canonical_sha256(evidence_artifact)
+
+    report = _evaluate(artifact, evidence_artifact=evidence_artifact)
+
+    assert report["gates"][
+        "clean_single_commit_and_postfreeze_evidence_valid"
+    ] is False
+    assert report["verdict"] == "red"

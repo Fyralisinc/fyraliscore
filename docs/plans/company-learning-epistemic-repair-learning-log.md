@@ -2338,3 +2338,47 @@ scope strings as authority. CF3-B is green and CF3-C is unlocked.
 **Artifacts:** `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1.json`
 and `/tmp/fyralis-cf3b-provenance-scope-two-batch-spark-r1-cf3b-v1.json`.
 Temporal exact-envelope deduplication remains deferred under EDGE-058.
+
+### 2026-07-19 — LOG-069 — CF3-C isolated synthesis identity, distractor admission, and evaluator defects
+
+**Execution:** The first dedicated CF3-C run processed four intact batches of
+25 for tenant `4ab38d7f-5a24-4aac-b3f7-5d4ce4ce5503` in `718.814s` with 62
+provider calls. Boundary reconstruction, canonical linking, entity typing,
+evidence lineage, atomic recall, and material earlier-Model use passed. The
+frozen verdict remained red: no composite or canonical Atlas relation entered
+truth, atomic precision was `0.875`, exact mention F1 was `0.818605`, and scope
+precision was `0.333333`.
+
+**Root-cause classification:** The Atlas synthesis candidate existed, had eight
+exact accepted member Models and one exact relation-evidence bundle, but its
+80-character candidate identifier was returned non-identically and discarded
+as `ignored unknown candidate id`. Relation perception also interpreted
+generic `links`/`connects` wording as `blocks` rather than causal influence.
+Separately, each of four distractor observations produced two identical
+whole-observation Models under distinct unresolved `mention:*` coordinates;
+those eight rows explain every atomic-precision, scope-precision, and noise
+offender. The barrier aggregate was an evaluator defect: all four barriers and
+100 signal fates were complete, while 48 entity-grounding receipts correctly
+had no Think-run identifier. Required mention recall was complete (`88/88`);
+most additional spans are legitimate nested company objects absent from sparse
+gold, so suppressing extraction would be a product regression.
+
+**Bounded repair:** Candidate identifiers are now short digest-bound opaque
+keys derived from their complete basis. Mature synthesis-only evidence that
+links ownership/handoff state to an adverse temporal outcome compiles as
+causal influence; generic atomic links retain their prior conservative
+behavior. Duplicate unresolved mention candidates can no longer admit the same
+full observation as multiple Models, while observations, mentions, and fates
+remain intact. Receipt validation is now purpose-aware, and the CF3-C report is
+cryptographically bound to both frozen execution and evidence-wrapper digests.
+Sparse-gold mention evaluation now separates required recall, adjudicated
+precision, confirmed false positives, and unadjudicated open-world review
+spans. The same frozen artifact rerenders at required recall `1.0`, adjudicated
+precision `0.967033`, exact mention F1 `0.983240`, three confirmed false
+positives, and 36 review spans; the mention gate is green without suppressing
+production extraction.
+
+**Reflection:** This is one classified CF3-C repair cycle, not permission to
+open CF4 or pursue unrelated lifecycle, efficiency, or ontology work. The
+original artifact remains red. Focused PostgreSQL and pure validation is green;
+one fresh four-batch rerun is required before any M1 claim.

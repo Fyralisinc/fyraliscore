@@ -152,13 +152,58 @@ def _provider_receipts_valid(artifact: Mapping[str, Any]) -> bool:
                 for key in ("input_tokens", "output_tokens", "cache_tokens")
             )
             and bool(row.get("physical_attempt_id"))
-            and bool(row.get("think_run_id"))
+            and (
+                row.get("purpose") == "entity_grounding"
+                or bool(row.get("think_run_id"))
+            )
             for row in receipts
         )
     )
 
 
-def evaluate_cf3c_four_wave(artifact: Mapping[str, Any]) -> dict[str, Any]:
+def _proof_input_binding(
+    artifact: Mapping[str, Any],
+    evidence_artifact: Mapping[str, Any],
+) -> tuple[dict[str, str | None], bool]:
+    """Verify and expose the exact frozen inputs scored by this report."""
+
+    raw_execution = {
+        key: value for key, value in artifact.items()
+        if key != "postfreeze_evidence"
+    }
+    raw_execution_digest = canonical_sha256(raw_execution)
+    evidence_body = {
+        key: value for key, value in evidence_artifact.items()
+        if key != "content_digest"
+    }
+    evidence_content_digest = str(
+        evidence_artifact.get("content_digest") or ""
+    )
+    postfreeze = _mapping(artifact.get("postfreeze_evidence"))
+    postfreeze_source_digest = str(postfreeze.get("source_digest") or "")
+    bound = (
+        evidence_artifact.get("schema_version")
+        == "cf3c-four-wave-postfreeze-evidence-v1"
+        and bool(evidence_content_digest)
+        and evidence_content_digest == canonical_sha256(evidence_body)
+        and evidence_artifact.get("raw_execution_digest")
+        == raw_execution_digest
+        and evidence_artifact.get("postfreeze_evidence") == postfreeze
+        and evidence_artifact.get("commit")
+        == _mapping(artifact.get("run_provenance")).get("git_commit")
+    )
+    return {
+        "raw_execution": raw_execution_digest,
+        "evidence_artifact": evidence_content_digest or None,
+        "postfreeze_evidence": postfreeze_source_digest or None,
+    }, bound
+
+
+def evaluate_cf3c_four_wave(
+    artifact: Mapping[str, Any],
+    *,
+    evidence_artifact: Mapping[str, Any],
+) -> dict[str, Any]:
     """Score only the preregistered four-wave synthesis prefix."""
 
     population = build_p6_population()
@@ -167,6 +212,10 @@ def evaluate_cf3c_four_wave(artifact: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(row, Mapping)
     ]
     evidence = _mapping(artifact.get("postfreeze_evidence"))
+    input_digests, proof_inputs_bound = _proof_input_binding(
+        artifact,
+        evidence_artifact,
+    )
     exact_waves = (
         len(waves) == 4
         and [int(row.get("batch_number") or 0) for row in waves] == [1, 2, 3, 4]
@@ -187,6 +236,17 @@ def evaluate_cf3c_four_wave(artifact: Mapping[str, Any]) -> dict[str, Any]:
     metric_rows.update(_score_mentions(dict(artifact), population))
     metric_rows.update(_score_claims_and_theses(dict(artifact), population))
     prefix_metrics = {name: metric_rows[name] for name in _PREFIX_METRICS}
+    mention_evaluation = {
+        key: metric_rows["exact_mention_f1"].get(key)
+        for key in (
+            "required_mention_recall",
+            "adjudicated_mention_precision",
+            "confirmed_false_positive_count",
+            "open_world_extra_span_review_count",
+            "open_world_extra_span_review",
+            "precision_contract",
+        )
+    }
 
     claims = [
         _mapping(row) for row in _sequence(evidence.get("claims"))
@@ -429,6 +489,7 @@ def evaluate_cf3c_four_wave(artifact: Mapping[str, Any]) -> dict[str, Any]:
             and artifact.get("mixed_llm_attempt_count") == 0
             and artifact.get("population_digest") == population.population_digest
             and evidence_valid
+            and proof_inputs_bound
         ),
     }
     receipts = list(_sequence(artifact.get("llm_attempt_receipts")))
@@ -449,11 +510,13 @@ def evaluate_cf3c_four_wave(artifact: Mapping[str, Any]) -> dict[str, Any]:
         "materially_used_prior_model_ids": sorted(used_model_ids),
         "materially_used_prior_version_ids": sorted(used_version_ids),
         "continuous_metrics": prefix_metrics,
+        "mention_evaluation": mention_evaluation,
     }
     failed = sorted(name for name, passed in gates.items() if not passed)
     payload = {
         "schema_version": "cf3c-four-wave-evaluation-v1",
         "proof_claim": "four_wave_scope_local_synthesis_with_material_prior_memory_use",
+        "input_digests": input_digests,
         "measurements": measurements,
         "gates": gates,
         "failed_gates": failed,

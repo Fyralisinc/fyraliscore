@@ -1080,6 +1080,14 @@ def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> N
     assert synthesis[0].semantic_scope == ("Atlas release",)
     assert synthesis[0].candidate_kind == "synthesis"
     assert synthesis[0].allowed_operations == ("situation_and_edge", "no_op")
+    assert len(synthesis[0].candidate_id) < 64
+    assert synthesis[0].candidate_id == context_packet._candidate_id(
+        "MDC_SYNTH",
+        (
+            f"Atlas release:{','.join(synthesis[0].evidence_model_ids)}:"
+            f"{','.join(synthesis[0].member_observation_ids)}"
+        ),
+    )
     assert synthesis[0].evidence_model_ids
     assert synthesis[0].proposed_text == "Atlas release, update 4: Atlas release is ready."
     assert synthesis[0].observation_evidence == ({
@@ -1428,7 +1436,7 @@ def test_actual_p6_batch4_opens_grounded_synthesis_without_seed_components() -> 
         item for item in request.relation_obligations
         if item.candidate_id == candidate.candidate_id
     )
-    assert obligation.edge_kind == "blocks"
+    assert obligation.edge_kind == "causes"
     assert set(obligation.evidence_event_ids) == {
         observation_ids[key]
         for key in ("p6-b04-s01", "p6-b04-s05", "p6-b04-s13")
@@ -1441,12 +1449,16 @@ def test_actual_p6_batch4_opens_grounded_synthesis_without_seed_components() -> 
             operation="situation_and_edge", confidence=0.8,
             source_model_id=model_ids[0], target_model_id=model_ids[1],
             situation_member_model_ids=list(model_ids),
-            claim_text="Atlas readiness is blocked by certificate ownership.",
-            reason="The exact auxiliary evidence establishes the dependency.",
+            claim_text=(
+                "Recurring certificate-ownership handoffs causally influence "
+                "Atlas rollout delay."
+            ),
+            reason="The exact auxiliary evidence establishes causal influence.",
         )]),
         trigger=trigger, trigger_ref=uuid4(),
     )
     assert len(compiled.relation_claim_ops) == 1
+    assert compiled.relation_claim_ops[0].predicate == "causal_influence"
     assert compiled.relation_claim_ops[0].metadata["atomic_with_synthesis"] is True
 
 

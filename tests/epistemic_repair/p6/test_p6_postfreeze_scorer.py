@@ -373,6 +373,88 @@ def test_optional_facilities_mention_is_neither_required_nor_penalized() -> None
     assert without_optional["exact_mention_f1"]["status"] == "unmeasured"
 
 
+def test_unlisted_nested_span_is_reviewed_without_corrupting_required_precision() -> None:
+    population = build_p6_population()
+    signal = next(item for item in population.signals if item.signal_id == "p6-b01-s01")
+    required_start = signal.text.find("Atlas release")
+    nested_start = signal.text.find("release certificate")
+    scores = _score_mentions({
+        "postfreeze_evidence": {
+            "observed_source_ids": ["observation-atlas"],
+            "observation_signal_map": {"observation-atlas": signal.signal_id},
+            "mentions": [{
+                "signal_id": signal.signal_id,
+                "surface": "Atlas release",
+                "span_start": required_start,
+                "span_end": required_start + len("Atlas release"),
+                "entity_type": "workstream",
+                "canonical_ref": "workstream:atlas-release",
+            }, {
+                "signal_id": signal.signal_id,
+                "surface": "release certificate",
+                "span_start": nested_start,
+                "span_end": nested_start + len("release certificate"),
+                "entity_type": None,
+                "canonical_ref": None,
+            }],
+        },
+        "waves": [],
+    }, population)
+
+    metric = scores["exact_mention_f1"]
+    assert metric["value"] == 1.0
+    assert metric["required_mention_recall"] == 1.0
+    assert metric["adjudicated_mention_precision"] == 1.0
+    assert metric["confirmed_false_positive_count"] == 0
+    assert metric["open_world_extra_span_review_count"] == 1
+    assert metric["open_world_extra_span_review"][0]["surface"] == (
+        "release certificate"
+    )
+
+
+def test_unexpected_span_on_sealed_distractor_remains_a_precision_failure() -> None:
+    population = build_p6_population()
+    atlas = next(item for item in population.signals if item.signal_id == "p6-b01-s01")
+    distractor = next(
+        item for item in population.signals if item.signal_id == "p6-b01-s24"
+    )
+    atlas_start = atlas.text.find("Atlas release")
+    distractor_surface = "Atlas certificate training example"
+    distractor_start = distractor.text.find(distractor_surface)
+    scores = _score_mentions({
+        "postfreeze_evidence": {
+            "observed_source_ids": ["observation-atlas", "observation-distractor"],
+            "observation_signal_map": {
+                "observation-atlas": atlas.signal_id,
+                "observation-distractor": distractor.signal_id,
+            },
+            "mentions": [{
+                "signal_id": atlas.signal_id,
+                "surface": "Atlas release",
+                "span_start": atlas_start,
+                "span_end": atlas_start + len("Atlas release"),
+                "entity_type": "workstream",
+                "canonical_ref": "workstream:atlas-release",
+            }, {
+                "signal_id": distractor.signal_id,
+                "surface": distractor_surface,
+                "span_start": distractor_start,
+                "span_end": distractor_start + len(distractor_surface),
+                "entity_type": None,
+                "canonical_ref": None,
+            }],
+        },
+        "waves": [],
+    }, population)
+
+    metric = scores["exact_mention_f1"]
+    assert metric["required_mention_recall"] == 1.0
+    assert metric["adjudicated_mention_precision"] == 0.5
+    assert metric["confirmed_false_positive_count"] == 1
+    assert metric["open_world_extra_span_review_count"] == 0
+    assert metric["status"] == "fail"
+
+
 def test_local_entity_linked_to_storyline_fails_link_precision() -> None:
     population = build_p6_population()
     signal = next(item for item in population.signals if item.signal_id == "p6-b01-s25")
