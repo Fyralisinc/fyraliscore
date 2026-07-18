@@ -417,6 +417,51 @@ def test_batch_uncertainty_boundary_covers_question_and_ambiguity_paraphrases(
     assert context_packet._batch_fragment_uncertainty_kind(body) == expected
 
 
+def test_unprefixed_recognized_scope_assertion_becomes_closed_atomic() -> None:
+    prefixed_one = str(uuid4())
+    prefixed_two = str(uuid4())
+    conclusion = str(uuid4())
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=uuid4(),
+        observation_id=uuid4(),
+        observation_ids=[uuid4(), uuid4(), uuid4()],
+        seed_natural_text="Three Orion delivery signals.",
+        seed_signature={"batch_signal_fragments": [
+            {
+                "observation_id": prefixed_one,
+                "source_channel": "slack:message",
+                "text": "Orion delivery, update 4: Approval remains pending.",
+            },
+            {
+                "observation_id": prefixed_two,
+                "source_channel": "slack:message",
+                "text": "Orion delivery, update 4: The rollout window moved.",
+            },
+            {
+                "observation_id": conclusion,
+                "source_channel": "slack:message",
+                "text": "Orion delivery is ready.",
+            },
+        ]},
+    )
+
+    candidates, material = context_packet._batch_fragment_candidates(trigger)
+
+    matching = [
+        candidate for candidate in candidates
+        if candidate.member_observation_ids == (conclusion,)
+    ]
+    assert material
+    assert len(matching) == 1
+    assert matching[0].semantic_scope == ("Orion delivery",)
+    assert matching[0].entailed_claim_text == "Orion delivery is ready."
+    assert context_packet._is_scope_level_synthesis_assertion(
+        matching[0], "Orion delivery"
+    )
+
+
 def test_batch_fragments_compile_closed_local_atomics_without_distractors() -> None:
     storylines = {
         "Atlas release": (

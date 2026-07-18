@@ -383,6 +383,28 @@ class CompiledBatchMemoryDecisionRequest:
         trace_parts: list[str] = []
         candidate_claim_placeholders: dict[str, UUID] = {}
 
+        # Closed atomics are compiler-proven direct assertions. The LLM may
+        # comment on them, but cannot turn them into a silent no-op.
+        for candidate in self.candidates:
+            if not str(candidate.get("entailed_claim_text") or "").strip():
+                continue
+            claim_op, lifecycle_op, placeholder, block_reason = (
+                _closed_atomic_durable_fate(candidate, trigger=trigger)
+            )
+            candidate_id = str(candidate.get("candidate_id") or "closed_atomic")
+            if block_reason:
+                blocked += 1
+                trace_parts.append(f"{candidate_id}: closed atomic blocked - {block_reason}")
+                continue
+            if lifecycle_op is not None:
+                memory_lifecycle_ops.append(lifecycle_op)
+                trace_parts.append(f"{candidate_id}: deterministic exact-bound confirm")
+            elif claim_op is not None and placeholder is not None:
+                claim_ops.append(claim_op)
+                candidate_claim_placeholders[candidate_id] = placeholder
+                trace_parts.append(f"{candidate_id}: deterministic atomic insert")
+            accepted += 1
+
         for decision in decisions.decisions:
             candidate = by_id.get(decision.candidate_id)
             if candidate is None:
@@ -391,19 +413,16 @@ class CompiledBatchMemoryDecisionRequest:
                     f"{decision.candidate_id}: ignored unknown candidate id"
                 )
                 continue
+            if candidate.get("entailed_claim_text"):
+                # Its durable fate was compiled above. Ignore an LLM accept,
+                # rejection, or no-op so it cannot duplicate or erase it.
+                continue
             if decision.decision != "accept" or decision.operation == "no_op":
                 rejected += 1
                 trace_parts.append(
                     f"{decision.candidate_id}: rejected - {decision.reason}"
                 )
                 continue
-            if candidate.get("entailed_claim_text") and decision.operation != "claim":
-                blocked += 1
-                trace_parts.append(
-                    f"{decision.candidate_id}: closed atomic candidate only permits claim"
-                )
-                continue
-
             claim_placeholder: UUID | None = None
             synthesis_candidate = candidate.get("candidate_kind") == "synthesis"
             if synthesis_candidate:
@@ -704,6 +723,11 @@ def build_compiled_batch_memory_decision_request(
     candidates = _memory_candidates_from_packet(packet)
     if not candidates:
         return None
+    candidates = _bind_exact_closed_atomic_targets(
+        candidates,
+        models=bundle.models,
+        tenant_id=trigger.tenant_id,
+    )
     max_candidates = _env_int("THINK_COMPILED_BATCH_MEMORY_MAX_CANDIDATES", 6)
     atomic_count = sum(
         bool(str(candidate.get("entailed_claim_text") or "").strip())
@@ -740,8 +764,9 @@ def build_compiled_batch_memory_decision_request(
         "The batch is one physical transport unit, never a semantic unit. "
         "Reason independently within each candidate's explicit semantic scope "
         "and member observations; never combine unrelated candidates. "
-        "For candidates with entailed_claim_text, decide only accept or no-op; "
-        "the compiler owns the immutable claim wording and evidence membership. "
+        "For candidates with entailed_claim_text, the compiler owns their "
+        "durable insert-or-confirm fate, immutable wording, and exact evidence; "
+        "your response cannot suppress or widen them. "
         "Prefer updates over duplicate inserts, situations for composite "
         "candidate-local understanding, and edges when selected graph context is "
         "decision-relevant. Reject/no-op only when uncertainty is decisive, "
@@ -769,6 +794,91 @@ def build_compiled_batch_memory_decision_request(
             "important_unknowns": packet.get("important_unknowns"),
         },
     )
+
+
+def _bind_exact_closed_atomic_targets(
+    candidates: list[dict[str, Any]],
+    *,
+    models: list[Any],
+    tenant_id: UUID,
+) -> list[dict[str, Any]]:
+    """Bind closed atomics only to exact, same-scope accepted memory.
+
+    This deliberately does not perform fuzzy semantic reconciliation. A weak
+    match must remain a new atomic claim; only an exact natural-language
+    identity plus exact scope is authority to confirm an existing Model.
+    """
+
+    bound: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if not str(candidate.get("entailed_claim_text") or "").strip():
+            bound.append(candidate)
+            continue
+        exact_targets = [
+            model
+            for model in models
+            if _model_is_exact_closed_atomic_target(
+                model,
+                candidate=candidate,
+                tenant_id=tenant_id,
+            )
+        ]
+        if len(exact_targets) != 1:
+            bound.append(candidate)
+            continue
+        row = dict(candidate)
+        row["target_model_ids"] = [str(exact_targets[0].id)]
+        row["allowed_operations"] = ["memory_lifecycle"]
+        bound.append(row)
+    return bound
+
+
+def _model_is_exact_closed_atomic_target(
+    model: Any,
+    *,
+    candidate: dict[str, Any],
+    tenant_id: UUID,
+) -> bool:
+    if getattr(model, "tenant_id", None) != tenant_id:
+        return False
+    if str(getattr(model, "status", "")) != "active":
+        return False
+    if str(getattr(model, "abstraction_level", "atomic") or "atomic") != "atomic":
+        return False
+    expected = " ".join(
+        str(candidate.get("entailed_claim_text") or "").casefold().split()
+    )
+    actual = " ".join(str(getattr(model, "natural", "")).casefold().split())
+    if not expected or actual != expected:
+        return False
+    candidate_scopes = {
+        " ".join(str(value).casefold().split())
+        for value in candidate.get("semantic_scope") or ()
+        if str(value).strip()
+    }
+    model_scopes = {
+        " ".join(str(value).casefold().split())
+        for entity in getattr(model, "scope_entities", ()) or ()
+        if isinstance(entity, dict)
+        for value in (
+            entity.get("display_label"),
+            entity.get("canonical_ref"),
+            entity.get("label"),
+        )
+        if value
+    }
+    proposition = getattr(model, "proposition", None)
+    if isinstance(proposition, dict):
+        model_scopes.update(
+            " ".join(str(value).casefold().split())
+            for value in (
+                proposition.get("scope_label"),
+                proposition.get("scope_ref"),
+                proposition.get("subject"),
+            )
+            if value
+        )
+    return bool(candidate_scopes) and bool(candidate_scopes & model_scopes)
 
 
 def _inquiry_context_packet(bundle: ContextBundle) -> dict[str, Any] | None:
@@ -3317,6 +3427,61 @@ def _claim_op_from_batch_decision(
         # bodies before allowing any redistributed support ID into truth.
         proposition["evidence_observation_manifest"] = observation_manifest
     return ClaimOp(op="insert", entry=entry), born_event, ""
+
+
+def _closed_atomic_durable_fate(
+    candidate: dict[str, Any],
+    *,
+    trigger: TriggerContext,
+) -> tuple[ClaimOp | None, MemoryLifecycleOp | None, UUID | None, str]:
+    evidence_event_ids = _candidate_event_ids(candidate)
+    if len(evidence_event_ids) != 1:
+        return None, None, None, "closed atomic evidence must be exactly singleton"
+    target_ids = _dedupe_uuids(_uuid_values(candidate.get("target_model_ids")))
+    exact_bound = (
+        len(target_ids) == 1
+        and set(candidate.get("allowed_operations") or ()) == {"memory_lifecycle"}
+    )
+    confidence = min(
+        0.95,
+        max(0.55, float(candidate.get("confidence") or 0.58)),
+    )
+    candidate_id = str(candidate.get("candidate_id") or "closed_atomic")
+    if exact_bound:
+        op = MemoryLifecycleOp(
+            model_id=target_ids[0],
+            action="confirm",
+            evidence_event_ids=evidence_event_ids,
+            claim_local_evidence_event_ids=evidence_event_ids,
+            confidence=confidence,
+            rationale=(
+                "Compiler-confirmed exact same-tenant, same-scope atomic identity "
+                f"for {candidate_id}."
+            ),
+            metadata={
+                "source": "closed_atomic_durable_fate",
+                "candidate_id": candidate_id,
+                "binding": "exact_natural_and_scope",
+            },
+        )
+        return None, op, None, ""
+
+    decision = BatchMemoryCandidateDecision(
+        candidate_id=candidate_id,
+        decision="accept",
+        operation="claim",
+        confidence=confidence,
+        claim_role="fact",
+        claim_text=str(candidate.get("entailed_claim_text") or ""),
+        reason="Compiler-proven closed atomic direct assertion.",
+    )
+    claim_op, placeholder, block_reason = _claim_op_from_batch_decision(
+        candidate,
+        decision,
+        trigger,
+        force_role="fact",
+    )
+    return claim_op, None, placeholder, block_reason
 
 
 def _candidate_observation_manifest(

@@ -976,7 +976,8 @@ def _batch_fragment_candidates(
         # Repetition plus distinct payloads prevents a duplicated wrapper from
         # manufacturing a durable workstream hypothesis.
         payloads = {
-            _BATCH_SCOPE_PREFIX_RE.match(member["body"]).group("body").casefold()  # type: ignore[union-attr]
+            _batch_fragment_assertion_body(member["body"], scope_labels[scope_key])
+            .casefold()
             for member in members
         }
         if len(members) < 2 or len(payloads) < 2:
@@ -985,16 +986,18 @@ def _batch_fragment_candidates(
         for member in sorted(members, key=lambda row: row["observation_id"]):
             observation_id = member["observation_id"]
             match = _BATCH_SCOPE_PREFIX_RE.match(member["body"])
-            if match is None:  # guarded during grouping
-                continue
-            if not match.group("body").strip():
+            assertion_body = (
+                match.group("body") if match is not None
+                else _batch_fragment_assertion_body(member["body"], scope)
+            )
+            if not assertion_body.strip():
                 continue
             # Keep the exact persisted body. The recognized envelope carries
             # the scope coordinate and lets splitter/admission reopen the same
             # byte-for-byte evidence without a second interpretation step.
             entailed_text = member["body"]
             covered_ids.add(observation_id)
-            if _batch_fragment_uncertainty_kind(match.group("body")) is not None:
+            if _batch_fragment_uncertainty_kind(assertion_body) is not None:
                 continue
             candidates.append(
                 MemoryDecisionCandidate(
@@ -1044,6 +1047,7 @@ def _group_batch_fragments(
 ) -> tuple[dict[str, list[dict[str, str]]], dict[str, str]]:
     groups: dict[str, list[dict[str, str]]] = {}
     scope_labels: dict[str, str] = {}
+    ungrouped: list[dict[str, str]] = []
     for raw in fragments:
         if not isinstance(raw, dict):
             continue
@@ -1053,6 +1057,11 @@ def _group_batch_fragments(
             continue
         match = _BATCH_SCOPE_PREFIX_RE.match(text)
         if match is None:
+            ungrouped.append({
+                "observation_id": observation_id,
+                "body": text,
+                "source_channel": str(raw.get("source_channel") or ""),
+            })
             continue
         scope = " ".join(match.group("scope").split())
         scope_key = scope.casefold()
@@ -1066,7 +1075,34 @@ def _group_batch_fragments(
             }
         )
         scope_labels.setdefault(scope_key, scope)
+    # A direct scope-level assertion need not repeat the transport wrapper.
+    # Bind it only when its leading subject exactly matches one already
+    # recognized business scope in this batch; never guess a scope fuzzily.
+    for member in ungrouped:
+        matching_scope_keys = [
+            scope_key for scope_key, scope in scope_labels.items()
+            if _is_unprefixed_scope_assertion(member["body"], scope)
+        ]
+        if len(matching_scope_keys) == 1:
+            groups.setdefault(matching_scope_keys[0], []).append(member)
     return groups, scope_labels
+
+
+def _is_unprefixed_scope_assertion(text: str, scope: str) -> bool:
+    return re.match(
+        rf"^\s*{re.escape(scope)}\s+(?:is|are|was|were)\b",
+        text,
+        re.IGNORECASE,
+    ) is not None
+
+
+def _batch_fragment_assertion_body(text: str, scope: str) -> str:
+    match = _BATCH_SCOPE_PREFIX_RE.match(text)
+    if match is not None:
+        return match.group("body").strip()
+    if _is_unprefixed_scope_assertion(text, scope):
+        return text.strip()
+    return ""
 
 
 def _batch_fragment_uncertainty_kind(body: str) -> str | None:
@@ -1109,16 +1145,21 @@ def _batch_fragment_uncertainty_rows(
     for scope_key in sorted(groups):
         members = groups[scope_key]
         payloads = {
-            _BATCH_SCOPE_PREFIX_RE.match(member["body"]).group("body").casefold()  # type: ignore[union-attr]
+            _batch_fragment_assertion_body(member["body"], scope_labels[scope_key])
+            .casefold()
             for member in members
         }
         if len(members) < 2 or len(payloads) < 2:
             continue
         for member in sorted(members, key=lambda row: row["observation_id"]):
             match = _BATCH_SCOPE_PREFIX_RE.match(member["body"])
-            if match is None:
-                continue
-            kind = _batch_fragment_uncertainty_kind(match.group("body"))
+            assertion_body = (
+                match.group("body") if match is not None
+                else _batch_fragment_assertion_body(
+                    member["body"], scope_labels[scope_key]
+                )
+            )
+            kind = _batch_fragment_uncertainty_kind(assertion_body)
             if kind is None:
                 continue
             rows.append(
