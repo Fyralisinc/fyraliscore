@@ -142,7 +142,7 @@ def build_frozen_dossier_cases() -> tuple[FrozenDossierCase, ...]:
     atlas = FrozenDossierCase(
         case_id="atlas_positive_v1",
         provider_payload=_payload(
-            dossier_id="DOS_TI3_ATLAS_V1",
+            dossier_id="DOS_7c1e5a28f9044bd1",
             display_label="Atlas release",
             handles=[
                 _object(
@@ -215,7 +215,7 @@ def build_frozen_dossier_cases() -> tuple[FrozenDossierCase, ...]:
     cobalt = FrozenDossierCase(
         case_id="cobalt_positive_v1",
         provider_payload=_payload(
-            dossier_id="DOS_TI3_COBALT_V1",
+            dossier_id="DOS_b6932fd847ac501e",
             display_label="Cobalt renewal",
             handles=[
                 _object(
@@ -293,7 +293,7 @@ def build_frozen_dossier_cases() -> tuple[FrozenDossierCase, ...]:
     null = FrozenDossierCase(
         case_id="null_adversarial_v1",
         provider_payload=_payload(
-            dossier_id="DOS_TI3_NULL_V1",
+            dossier_id="DOS_41d8e7c2a9560fb3",
             display_label="Harbor launch",
             handles=[
                 _object(

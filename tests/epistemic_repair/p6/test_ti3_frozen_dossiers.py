@@ -18,14 +18,14 @@ def test_three_cases_have_stable_independent_digests() -> None:
         "null_adversarial_v1",
     ]
     assert [case.dossier_digest for case in cases] == [
-        "0feda62cb418388d6baab2d8bd95ab6063c5895ee240ebd6a598e70c23b30222",
-        "283a521fb191c725f6a22ee03fd8e0c976120058da2dd1ffed3c3ede5d080bcd",
-        "a439451996c955046c1d5b7cd78c17b112cb4ef4a69aec9da30f40262f2e88ee",
+        "7703e20677499e057ca83134f9f89eb850b6e0a63e1f3102f3cd15780815b0f9",
+        "1db969580b4c9ec49dc10c96ed84c296323b100635da9da9c5f4a0a3afde7143",
+        "551225920d3d194fdb00e43b5a9ab1ef9f4e346dcd62ee769b96d0be9bcef0c8",
     ]
     assert [case.case_digest for case in cases] == [
-        "47e07df8b5588236dc77dea0db5e88980cdb2eb510e1e039929171dcec831439",
-        "a123c2b2b33b36e3aaf431896d47328795b091d688e0cccd16c467b79148058a",
-        "ee5e48285086db106f1ae6ba478830c1ef96bd5e1eb02c3d26a5736f73317323",
+        "00ad39a6bf4f962699b91d6b538fbf82972b09c033dc8236d8a546b6602a4d0c",
+        "d8ef469d13fcc66482abdfc41866dcfc435e8a4fc2a12255986d4a6ea10e3baa",
+        "2642647b51973625cea1d5bb38e00d3c8b0db953018fd829f39f974c19a493f9",
     ]
     assert len({case.dossier_digest for case in cases}) == 3
     assert len({case.gold_digest for case in cases}) == 3
@@ -55,6 +55,27 @@ def test_provider_payloads_contain_no_gold_or_canonical_identity() -> None:
         assert case.gold.expected_decision not in case.provider_payload
         assert "expected_" not in payload_text
         assert "required_" not in payload_text
+
+
+def test_provider_visible_identifiers_are_opaque_to_case_and_gold_labels() -> None:
+    forbidden_identifier_values = {
+        "atlas_positive",
+        "cobalt_positive",
+        "null_adversarial",
+        "null_v1",
+    }
+    dossier_ids = []
+    for case in build_frozen_dossier_cases():
+        dossier_id = str(case.provider_payload["dossier_id"])
+        dossier_ids.append(dossier_id)
+        normalized = dossier_id.casefold()
+        assert normalized.startswith("dos_")
+        assert all(value not in normalized for value in forbidden_identifier_values)
+        assert case.case_id.casefold() not in normalized
+        company_label = str(case.provider_payload["scope"]["display_label"]).split()[0]
+        assert company_label.casefold() not in normalized
+        assert case.case_id not in json.dumps(case.provider_payload, sort_keys=True)
+    assert len(dossier_ids) == len(set(dossier_ids)) == 3
 
 
 def test_positive_cases_are_structurally_distinct_and_null_is_insufficient() -> None:
@@ -123,7 +144,7 @@ def test_manifest_is_reproducible_and_binds_all_case_parts() -> None:
     second = build_fixture_manifest()
     assert first == second
     assert first["manifest_digest"] == (
-        "92de6fbdb9676f73376a268a09376bbeb48c3e9ce51ad6d146aba0b82a7d266f"
+        "94d5a81b981b12adb18e565813ed2172de3139fee8a6ee785eae5a6a34230bac"
     )
     assert all(
         set(entry) == {"case_id", "dossier_digest", "gold_digest", "case_digest"}
