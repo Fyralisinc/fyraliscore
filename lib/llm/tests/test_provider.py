@@ -1060,3 +1060,35 @@ async def test_structured_rejects_evaluator_gold_before_provider_call():
             cognitive_purpose="main_synthesis",
             cognition_versions={"oracle_label": "positive"},
         )
+
+
+@pytest.mark.asyncio
+async def test_structured_preserves_sanitized_parse_invalid_raw_attempt():
+    class Answer(BaseModel):
+        answer: str
+
+    provider = ScriptedProvider(
+        ['{"wrong":"shape","api_key":"do-not-persist"}'],
+        cfg=LLMConfig(
+            provider="test", api_key="test", model="model", max_retries=0
+        ),
+    )
+    sink = InMemoryLLMReceiptSink()
+    provider.set_receipt_sink(sink)
+
+    with pytest.raises(LLMParseError):
+        await provider.structured(
+            system="system", user="user", schema=Answer,
+            cognitive_purpose="main_synthesis",
+        )
+
+    raw_events = [
+        event for event in sink.cognition_events
+        if event.stage == "raw_provider_response"
+    ]
+    assert len(raw_events) == 1
+    event = raw_events[0]
+    assert event.payload["parse_outcome"] == "parse_failure"
+    assert event.physical_attempt_id == sink.attempts[0].physical_attempt_id
+    assert "do-not-persist" not in event.payload["structured_text"]
+    assert "[REDACTED]" in event.payload["structured_text"]

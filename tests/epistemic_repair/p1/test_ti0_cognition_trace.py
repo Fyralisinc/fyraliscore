@@ -36,6 +36,7 @@ def _collector() -> ThinkLLMReceiptCollector:
     ))
     collector.record_cognition_event(CognitionTraceEvent(
         schema_version="think-cognition-trace-v1", trace_id="trace-1",
+        event_id="event-1",
         logical_call_id="logical-1", stage="prompt",
         cognitive_purpose="main_synthesis", payload={"system_text": "s"},
         content_digest="b" * 64, occurred_at=now,

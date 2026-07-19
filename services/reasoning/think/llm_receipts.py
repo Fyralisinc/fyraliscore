@@ -16,6 +16,7 @@ from lib.llm.telemetry import (
     PhysicalAttemptReceipt,
     utc_now,
 )
+from lib.shared.ids import uuid7
 
 
 class ReceiptIntegrityError(RuntimeError):
@@ -109,6 +110,7 @@ class ThinkLLMReceiptCollector(LLMReceiptSink):
         safe_payload = sanitize_cognition_payload(payload)
         self.cognition_events.append(CognitionTraceEvent(
             schema_version="think-cognition-trace-v1",
+            event_id=str(uuid7()),
             trace_id=prompt_event.trace_id,
             logical_call_id=logical.logical_call_id,
             stage=stage,  # type: ignore[arg-type]
@@ -177,7 +179,8 @@ class ThinkLLMReceiptCollector(LLMReceiptSink):
             for event in self.cognition_events:
                 persisted = await conn.fetchval(
                     _UPSERT_COGNITION_EVENT,
-                    self.tenant_id, event.trace_id, event.logical_call_id,
+                    self.tenant_id, event.event_id, event.trace_id,
+                    event.logical_call_id, event.physical_attempt_id,
                     self.trigger_id, self.think_run_id, self.batch_id,
                     event.schema_version, event.stage, event.cognitive_purpose,
                     json.dumps(event.payload, sort_keys=True, separators=(",", ":")),
@@ -297,16 +300,17 @@ RETURNING physical_attempt_id
 
 _UPSERT_COGNITION_EVENT = """
 INSERT INTO think_cognition_trace_events (
-  tenant_id, trace_id, logical_call_id, trigger_id, think_run_id, batch_id,
+  tenant_id, event_id, trace_id, logical_call_id, physical_attempt_id,
+  trigger_id, think_run_id, batch_id,
   schema_version, stage, cognitive_purpose, payload, content_digest, occurred_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)
-ON CONFLICT (tenant_id, trace_id, stage) DO UPDATE SET trace_id=EXCLUDED.trace_id
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14)
+ON CONFLICT (tenant_id, event_id) DO UPDATE SET event_id=EXCLUDED.event_id
 WHERE ROW(think_cognition_trace_events.logical_call_id,
           think_cognition_trace_events.payload,
           think_cognition_trace_events.content_digest)
  IS NOT DISTINCT FROM ROW(EXCLUDED.logical_call_id, EXCLUDED.payload,
                           EXCLUDED.content_digest)
-RETURNING trace_id
+RETURNING event_id
 """
 
 

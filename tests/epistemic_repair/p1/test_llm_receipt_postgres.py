@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import os
 from uuid import uuid4
 
 import asyncpg
 import pytest
 
-from lib.llm.telemetry import LogicalCallReceipt, PhysicalAttemptReceipt
+from lib.llm.telemetry import (
+    CognitionTraceEvent,
+    LogicalCallReceipt,
+    PhysicalAttemptReceipt,
+)
 from services.reasoning.think.llm_receipts import (
     ReceiptIntegrityError,
     ThinkLLMReceiptCollector,
@@ -72,6 +77,15 @@ async def test_receipt_round_trip_and_conflict_guard_in_postgres():
         )
         collector.record_logical_call(logical)
         collector.record_attempt(attempt)
+        collector.record_cognition_event(CognitionTraceEvent(
+            schema_version="think-cognition-trace-v1",
+            event_id=f"p1-event-{uuid4()}", trace_id=f"p1-trace-{uuid4()}",
+            logical_call_id=logical_id, physical_attempt_id=attempt_id,
+            stage="raw_provider_response", cognitive_purpose="main_synthesis",
+            payload={"structured_text": '{"answer":"safe"}',
+                     "parse_outcome": "accepted"},
+            content_digest="c" * 64, occurred_at=now,
+        ))
 
         await collector.persist(conn)
         await collector.persist(conn)  # identical replay is idempotent
@@ -95,6 +109,16 @@ async def test_receipt_round_trip_and_conflict_guard_in_postgres():
             "output_tokens": 7,
             "usage_exactness": "reported",
         }
+        trace = await conn.fetchrow(
+            """SELECT physical_attempt_id, stage, cognitive_purpose, payload
+               FROM think_cognition_trace_events
+               WHERE tenant_id=$1 AND logical_call_id=$2""",
+            tenant_id, logical_id,
+        )
+        assert trace["physical_attempt_id"] == attempt_id
+        assert trace["stage"] == "raw_provider_response"
+        assert trace["cognitive_purpose"] == "main_synthesis"
+        assert json.loads(trace["payload"])["parse_outcome"] == "accepted"
 
         conflicting = ThinkLLMReceiptCollector(tenant_id=tenant_id)
         conflicting.record_logical_call(

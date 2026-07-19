@@ -72,6 +72,7 @@ class CognitionTraceEvent:
     """One immutable stage in a logical call's cognition trace."""
 
     schema_version: str
+    event_id: str
     trace_id: str
     logical_call_id: str
     stage: Literal[
@@ -82,6 +83,7 @@ class CognitionTraceEvent:
     payload: dict[str, Any]
     content_digest: str
     occurred_at: datetime
+    physical_attempt_id: str | None = None
 
 
 def utc_now() -> datetime:

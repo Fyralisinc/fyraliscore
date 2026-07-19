@@ -354,6 +354,12 @@ _CURRENT_USAGE_PURPOSE: contextvars.ContextVar[str] = contextvars.ContextVar(
 _CURRENT_LOGICAL_CALL_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_CURRENT_LOGICAL_CALL_ID", default=None
 )
+_CURRENT_COGNITION_TRACE_ID: contextvars.ContextVar[str | None] = (
+    contextvars.ContextVar("_CURRENT_COGNITION_TRACE_ID", default=None)
+)
+_CURRENT_COGNITIVE_PURPOSE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_CURRENT_COGNITIVE_PURPOSE", default="main_reconciliation"
+)
 _CURRENT_PHYSICAL_ATTEMPT_COUNT: contextvars.ContextVar[int] = contextvars.ContextVar(
     "_CURRENT_PHYSICAL_ATTEMPT_COUNT", default=0
 )
@@ -1239,6 +1245,7 @@ class LLMProvider(abc.ABC):
             })
             receipt_sink.record_cognition_event(CognitionTraceEvent(
                 schema_version="think-cognition-trace-v1",
+                event_id=str(uuid.uuid4()),
                 trace_id=trace_id,
                 logical_call_id=logical_call_id,
                 stage="prompt",
@@ -1252,6 +1259,8 @@ class LLMProvider(abc.ABC):
         logical_error_class: str | None = None
         logical_error_message: str | None = None
         logical_token = _CURRENT_LOGICAL_CALL_ID.set(logical_call_id)
+        trace_token = _CURRENT_COGNITION_TRACE_ID.set(trace_id)
+        purpose_token = _CURRENT_COGNITIVE_PURPOSE.set(purpose)
         count_token = _CURRENT_PHYSICAL_ATTEMPT_COUNT.set(0)
         limit_token = _CURRENT_ATTEMPT_LIMIT.set(attempt_limit)
         deadline_token = _CURRENT_LOGICAL_DEADLINE.set(
@@ -1321,6 +1330,7 @@ class LLMProvider(abc.ABC):
                     }
                     receipt_sink.record_cognition_event(CognitionTraceEvent(
                         schema_version="think-cognition-trace-v1",
+                        event_id=str(uuid.uuid4()),
                         trace_id=trace_id,
                         logical_call_id=logical_call_id,
                         stage="raw_provider_response",
@@ -1338,30 +1348,6 @@ class LLMProvider(abc.ABC):
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            if receipt_sink is not None and hasattr(receipt_sink, "record_cognition_event"):
-                try:
-                    safe_raw = json.dumps(
-                        sanitize_cognition_payload(json.loads(raw)),
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                except json.JSONDecodeError:
-                    safe_raw = sanitize_cognition_payload(raw)
-                raw_payload = sanitize_cognition_payload({
-                    "structured_text": safe_raw,
-                    "raw_digest": canonical_sha256(safe_raw),
-                    "parse_outcome": "accepted",
-                })
-                receipt_sink.record_cognition_event(CognitionTraceEvent(
-                    schema_version="think-cognition-trace-v1",
-                    trace_id=trace_id,
-                    logical_call_id=logical_call_id,
-                    stage="raw_provider_response",
-                    cognitive_purpose=purpose,
-                    payload=raw_payload,
-                    content_digest=canonical_sha256(raw_payload),
-                    occurred_at=utc_now(),
-                ))
             parsed, err = _try_parse(raw, schema)
             if err is not None:
                 raise LLMParseError(
@@ -1414,6 +1400,8 @@ class LLMProvider(abc.ABC):
                 )
             _CURRENT_PHYSICAL_ATTEMPT_COUNT.reset(count_token)
             _CURRENT_LOGICAL_CALL_ID.reset(logical_token)
+            _CURRENT_COGNITION_TRACE_ID.reset(trace_token)
+            _CURRENT_COGNITIVE_PURPOSE.reset(purpose_token)
             _CURRENT_ATTEMPT_LIMIT.reset(limit_token)
             _CURRENT_LOGICAL_DEADLINE.reset(deadline_token)
             if usage_token is not None:
@@ -1547,6 +1535,10 @@ class LLMProvider(abc.ABC):
 
             _, err = _try_parse(raw, schema)
             if err is None:
+                self._record_raw_cognition_event(
+                    raw=raw, parse_outcome="accepted",
+                    physical_attempt_id=physical_attempt_id,
+                )
                 self._record_attempt_receipt(
                     physical_attempt_id=physical_attempt_id,
                     logical_call_id=logical_call_id,
@@ -1564,6 +1556,10 @@ class LLMProvider(abc.ABC):
                 return raw
 
             last_error = err
+            self._record_raw_cognition_event(
+                raw=raw, parse_outcome="parse_failure",
+                physical_attempt_id=physical_attempt_id,
+            )
             repair_note = str(err)
             retry_scheduled = attempt + 1 < attempts_remaining
             self._record_attempt_receipt(
@@ -1645,6 +1641,38 @@ class LLMProvider(abc.ABC):
                 ),
             )
         )
+
+    def _record_raw_cognition_event(
+        self, *, raw: str, parse_outcome: str, physical_attempt_id: str
+    ) -> None:
+        receipt_sink = _CURRENT_RECEIPT_SINK.get() or self._receipt_sink
+        trace_id = _CURRENT_COGNITION_TRACE_ID.get()
+        logical_call_id = _CURRENT_LOGICAL_CALL_ID.get()
+        if (
+            receipt_sink is None or trace_id is None or logical_call_id is None
+            or not hasattr(receipt_sink, "record_cognition_event")
+        ):
+            return
+        try:
+            safe_raw = json.dumps(
+                sanitize_cognition_payload(json.loads(raw)),
+                sort_keys=True, separators=(",", ":"),
+            )
+        except json.JSONDecodeError:
+            safe_raw = sanitize_cognition_payload(raw)
+        payload = {
+            "structured_text": safe_raw,
+            "raw_digest": canonical_sha256(safe_raw),
+            "parse_outcome": parse_outcome,
+        }
+        receipt_sink.record_cognition_event(CognitionTraceEvent(
+            schema_version="think-cognition-trace-v1",
+            event_id=str(uuid.uuid4()), trace_id=trace_id,
+            logical_call_id=logical_call_id, stage="raw_provider_response",
+            cognitive_purpose=_CURRENT_COGNITIVE_PURPOSE.get(),
+            payload=payload, content_digest=canonical_sha256(payload),
+            occurred_at=utc_now(), physical_attempt_id=physical_attempt_id,
+        ))
 
 
 def _schema_hint(schema: type[BaseModel]) -> str:
