@@ -8,6 +8,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
+from lib.contracts.kernel import canonical_sha256
 from lib.llm.telemetry import (
     CognitionTraceEvent,
     LogicalCallReceipt,
@@ -77,14 +78,15 @@ async def test_receipt_round_trip_and_conflict_guard_in_postgres():
         )
         collector.record_logical_call(logical)
         collector.record_attempt(attempt)
+        trace_payload = {"structured_text": '{"answer":"safe"}',
+                         "parse_outcome": "accepted"}
         collector.record_cognition_event(CognitionTraceEvent(
             schema_version="think-cognition-trace-v1",
             event_id=f"p1-event-{uuid4()}", trace_id=f"p1-trace-{uuid4()}",
             logical_call_id=logical_id, physical_attempt_id=attempt_id,
             stage="raw_provider_response", cognitive_purpose="main_synthesis",
-            payload={"structured_text": '{"answer":"safe"}',
-                     "parse_outcome": "accepted"},
-            content_digest="c" * 64, occurred_at=now,
+            payload=trace_payload,
+            content_digest=canonical_sha256(trace_payload), occurred_at=now,
         ))
 
         await collector.persist(conn)

@@ -23,7 +23,10 @@ import structlog
 
 from lib.llm.telemetry import sanitize_cognition_payload
 from lib.shared.ids import uuid7
-from .llm_receipts import record_current_pipeline_stage
+from .llm_receipts import (
+    record_current_pipeline_failure,
+    record_current_pipeline_stage,
+)
 
 
 _log = structlog.get_logger("think.debug_capture")
@@ -95,7 +98,15 @@ async def capture(
         "apply": "applied_result",
     }.get(stage)
     if cognition_stage is not None:
-        record_current_pipeline_stage(cognition_stage, _coerce(payload))
+        try:
+            record_current_pipeline_stage(cognition_stage, _coerce(payload))
+        except Exception as exc:  # noqa: BLE001
+            record_current_pipeline_failure(cognition_stage, exc)
+            _log.warning(
+                "debug_capture.cognition_stage_incomplete",
+                stage=stage,
+                error_class=type(exc).__name__,
+            )
     if not _enabled():
         return
     if stage not in _STAGES:

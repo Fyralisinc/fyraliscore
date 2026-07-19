@@ -8,6 +8,7 @@ import contextvars
 from typing import Any
 from uuid import UUID
 
+from lib.contracts.kernel import canonical_sha256
 from lib.llm.provider import using_receipt_sink
 from lib.llm.telemetry import (
     CognitionTraceEvent,
@@ -50,6 +51,7 @@ class ThinkLLMReceiptCollector(LLMReceiptSink):
     terminal_outcomes: dict[str, tuple[str | None, str | None]] = field(
         default_factory=dict
     )
+    owning_main_logical_call_id: str | None = None
 
     def record_attempt(self, receipt: PhysicalAttemptReceipt) -> None:
         self.attempts.append(receipt)
@@ -86,8 +88,11 @@ class ThinkLLMReceiptCollector(LLMReceiptSink):
     ) -> None:
         self.validation_outcome = validation_outcome
         self.apply_outcome = apply_outcome
-        if self.logical_calls:
-            self.terminal_outcomes[self.logical_calls[-1].logical_call_id] = (
+        owner = self.owning_main_logical_call_id
+        if owner is None and len(self.logical_calls) == 1:
+            owner = self.logical_calls[0].logical_call_id
+        if owner is not None:
+            self.terminal_outcomes[owner] = (
                 validation_outcome, apply_outcome
             )
 
@@ -97,6 +102,7 @@ class ThinkLLMReceiptCollector(LLMReceiptSink):
         }:
             return
         logical = self.logical_calls[-1]
+        self.owning_main_logical_call_id = logical.logical_call_id
         prompt_event = next(
             (event for event in reversed(self.cognition_events)
              if event.logical_call_id == logical.logical_call_id),
@@ -104,7 +110,6 @@ class ThinkLLMReceiptCollector(LLMReceiptSink):
         )
         if prompt_event is None:
             return
-        from lib.contracts.kernel import canonical_sha256
         from lib.llm.telemetry import sanitize_cognition_payload
 
         safe_payload = sanitize_cognition_payload(payload)
@@ -177,6 +182,11 @@ class ThinkLLMReceiptCollector(LLMReceiptSink):
                     )
 
             for event in self.cognition_events:
+                expected_digest = canonical_sha256(event.payload)
+                if event.content_digest != expected_digest:
+                    raise ReceiptIntegrityError(
+                        f"cognition trace digest mismatch: {event.event_id}"
+                    )
                 persisted = await conn.fetchval(
                     _UPSERT_COGNITION_EVENT,
                     self.tenant_id, event.event_id, event.trace_id,
@@ -316,7 +326,7 @@ RETURNING event_id
 
 __all__ = [
     "ReceiptIntegrityError", "ThinkLLMReceiptCollector",
-    "record_current_pipeline_stage",
+    "record_current_pipeline_failure", "record_current_pipeline_stage",
 ]
 
 
@@ -324,3 +334,14 @@ def record_current_pipeline_stage(stage: str, payload: Any) -> None:
     collector = _CURRENT_COLLECTOR.get()
     if collector is not None:
         collector.record_pipeline_stage(stage, payload)
+
+
+def record_current_pipeline_failure(stage: str, exc: BaseException) -> None:
+    collector = _CURRENT_COLLECTOR.get()
+    if collector is None or not collector.logical_calls:
+        return
+    collector.record_pipeline_stage(stage, {
+        "capture_complete": False,
+        "failure_class": type(exc).__name__,
+        "failure_message": "cognition stage payload rejected by safety policy",
+    })

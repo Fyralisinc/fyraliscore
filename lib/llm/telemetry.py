@@ -32,7 +32,8 @@ _SECRET_KEYS = re.compile(
     r"password|connection[_-]?(string|url)|provider[_-]?auth)", re.I
 )
 _GOLD_KEYS = re.compile(
-    r"(oracle|gold|expected[_-]?(thesis|mechanism|direction|storyline)|threshold)",
+    r"(oracle|gold|expected[_-]?(thesis|mechanism|direction|storyline)|"
+    r"(?:scorer|evaluation|gold)[_-]?threshold)",
     re.I,
 )
 _BEARER = re.compile(r"(?i)bearer\s+[a-z0-9._~+/-]+=*")
