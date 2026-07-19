@@ -2250,3 +2250,21 @@ matched feedback quality and objective entity v6.
   the resumed CF3-C proof remain open. The next provider action is exactly one
   preregistered observation-only current-interface baseline, not CF3-C
   qualification and not a repair loop.
+
+### 2026-07-19 — Observation-only Arm A completes red without reopening repair
+
+- Clean commit `43dcb197` completed the one allowed current-interface baseline:
+  four intact batches, 100 signals, Codex CLI, `gpt-5.3-codex-spark`, medium
+  effort, isolated database, and `982.222s` total elapsed time.
+- The first three batches again admitted the intended 12 atomics each. The
+  fourth legacy decision validated one relation claim but did not yield the
+  expected Atlas composite/current version or its exact composite-bound
+  relation. The frozen verdict is red on six dependent synthesis gates.
+- TI0 now preserves prompt and raw-response evidence by cognitive purpose. The
+  run also revealed that its broad `threshold` forbidden-key matcher suppresses
+  legitimate retrieval debug rows; this is classified as an observability
+  issue, not a reason to patch or rerun Arm A.
+- Raw, evidence, and report SHA-256 digests are respectively `8355fac9...aa73`,
+  `adec20db...137d`, and `4d02ae2a...ea3d`. Arm A is frozen. Wave 2 scorer,
+  fixture, and audit work proceeds, and the legacy interface receives no
+  further tuning.

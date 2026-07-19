@@ -2497,3 +2497,44 @@ integrated. No provider call or CF3-C run has occurred.
 observation-only current-interface four-batch canary in a clean proof worktree
 and isolated database. Its output is immutable Arm A evidence and authorizes no
 patch or rerun. TI3 and the new-interface work proceed regardless of its color.
+
+### 2026-07-19 — LOG-074 — Observation-only Arm A is complete and red
+
+**Execution:** The single preregistered current-interface baseline ran from
+clean detached commit `43dcb197` against isolated database
+`fyralis_ti0_baseline_43dcb197`, Codex CLI, model
+`gpt-5.3-codex-spark`, and explicit medium effort. An initial pre-provider
+attempt found the fresh database missing the July 2025 observation partition;
+zero observations and zero provider receipts existed. The partition was added
+without code change and the same frozen configuration resumed once.
+
+Tenant `64d91147-9a2e-4ccf-83ac-559d50e7d6cb` completed four intact batches in
+`982.222s`. Batches one through three admitted 12 atomics each. Batch four's
+legacy compiled path validated 21 claim operations and one canonical relation
+operation, but the frozen evaluator found no expected Atlas composite/current
+version and therefore no exact expected Atlas relation bound to that
+composite. The verdict is red on six composite/relation consequences.
+
+**Observable cognition:** The trace preserves exact prompt and raw response
+events by purpose, including 42 entity-resolution calls, seven main Think
+logical paths, and three question-planning calls. It exposed one TI0 defect:
+the generic forbidden-key matcher treats legitimate runtime fields such as
+`sparse_threshold` and `relevance_gate.threshold` as evaluator gold, causing
+best-effort retrieval debug-capture rows to be skipped. Prompt, raw response,
+compiler, validation, apply, and provider receipts remained available.
+
+**Artifacts:**
+
+- raw SHA-256 `8355fac92daaaa018cb870bfb297040de7d393978e291e76fa764bb127bfaa73`;
+- postfreeze evidence SHA-256
+  `adec20dbcfb6be6bf2d8be41798918ad84d9bc36c95064aa2ee684198b24137d`;
+- report SHA-256
+  `4d02ae2ac4c58ea3644d4641db73182d981d3edf49cb9a0b9f105a590144ea3d`.
+
+**Decision:** This is immutable Arm A evidence only. It authorizes no legacy
+prompt/compiler patch and no rerun. The primary semantic class remains
+context/interface design, which TI1-TI3 were already created to test. The
+threshold matcher is an observability classification defect to assess in the
+Wave 2 audit; it must be repaired before qualifying CF3-C only if it prevents
+complete required trace reconstruction. Proceed to scorer, fixture, and audit
+lanes regardless of the red semantic result.
