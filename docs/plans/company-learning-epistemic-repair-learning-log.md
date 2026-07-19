@@ -2619,3 +2619,38 @@ LOG-075's parse-failure durability repair remains required independently. Both
 defects must be reproduced and fixed provider-free before any fresh full TI3
 authorization. The partial r1 artifact remains untouched, no policy is
 selected, and CF3-C remains locked.
+
+### 2026-07-19 — LOG-077 — Both TI3 r1 recovery repairs are provider-free complete
+
+**Integration:** Commit `ed25b33bc15be6a0546c9e683d718d3fca77b977`
+completes both bounded r1 repairs. A one-attempt parse failure now survives as a
+digest-bound red `schema_binding` outcome with physical/logical accounting and
+no compiler, validator, applier, or mutation claim. The new-interface provider
+schema now contains only the semantic decision; the trusted adapter binds the
+known dossier ID/digest before the existing compiler identity check.
+
+**Structural schema closure:** Provider-visible synthesis now restricts
+`relation_kind` to `blocks | depends_on | causes | influences | predicts`.
+Relation source handles must be a subset of cause/condition handles, include at
+least one accepted `M*` handle, and exclude effect handles. Supporting evidence
+must include at least one direct `O*` handle. These constraints are represented
+in the schema/prompt and enforced by validation rather than left as prose-only
+guidance. Provider output contains neither dossier ID nor dossier digest.
+
+**Exact current-HEAD validation:** At
+`ed25b33bc15be6a0546c9e683d718d3fca77b977`, the synthesis-contract, TI3
+experiment, and failed-outcome suites passed `41/41` in `1.16s`. The compiled
+synthesis and atomicity command passed `8` tests and skipped the one PostgreSQL
+atomicity test because `DATABASE_URL` was not set (`8 passed, 1 skipped in
+0.17s`). The skip is an explicit validation boundary; this checkpoint does not
+claim a fresh database atomicity execution. Contract v3 remains byte-identical
+at SHA-256
+`8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`.
+
+**Proof boundary and next action:** This closes provider-free implementation of
+the two failures exposed by r1. No fresh provider run occurred, r1 remains the
+immutable incomplete terminal-red artifact, and no TI3 policy is selected.
+CF3-C remains locked. If work resumes, the next action is an independent
+integration-owner preflight and authorization for exactly one fresh full TI3
+run under a new identity; provider execution is not authorized by this
+checkpoint itself.

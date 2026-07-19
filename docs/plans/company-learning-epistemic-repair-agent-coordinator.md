@@ -61,18 +61,28 @@ still that the evaluator can retain and score a one-attempt parse failure as red
 evidence without changing provider policy. The integration checklist is:
 
 1. Preserve r1 unchanged; do not resume, overwrite, or use its six successes as
-   selective substitutions.
+   selective substitutions. **Complete.**
 2. Reproduce `decision = no_op` against `BatchMemoryDecisionSet` provider-free.
+   **Complete at `ed25b33b`.**
 3. Implement v3's provider-semantic-only schema and trusted exact
    dossier-identity binding, plus failed-outcome capture/evaluation durability;
    keep the pinned provider, model, effort, `max_attempts = 1`, gold, thresholds,
-   and selection rule unchanged.
+   and selection rule unchanged. **Complete at `ed25b33b`.**
 4. Prove provider-free that parse failure emits a digest-bound outcome receipt,
    scores `schema_valid = false`/`schema_binding`, performs no compiler/apply
-   work, and remains in complete experiment accounting.
+   work, and remains in complete experiment accounting. **Complete:** focused
+   synthesis/TI3/failure suites passed `41/41`; compiled synthesis passed `8`
+   tests, with one PostgreSQL atomicity test skipped because `DATABASE_URL` was
+   unset.
 5. Request integration-owner authorization for at most one fresh full TI3 run
    under a new identity. Do not run CF3-C; it remains locked until complete TI3
-   evidence selects and freezes a policy.
+   evidence selects and freezes a policy. **Pending independent authorization.**
+
+The completed v3 structural schema permits only `blocks`, `depends_on`,
+`causes`, `influences`, and `predicts`; requires relation sources to be a
+cause/condition subset containing an accepted Model and no effect handle; and
+requires direct-observation support. No provider run followed r1, no policy is
+selected, and this provider-free checkpoint does not itself authorize one.
 
 The authorized order is:
 

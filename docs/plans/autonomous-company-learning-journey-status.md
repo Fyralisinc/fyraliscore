@@ -2317,3 +2317,21 @@ matched feedback quality and objective entity v6.
   binding and parse-failure durability are now required before a fresh full TI3
   run can be considered. R1 remains incomplete and immutable, no policy is
   selected, and CF3-C remains locked.
+
+### 2026-07-19 — R1 recovery is provider-free complete at `ed25b33b`
+
+- Both bounded recovery seams are implemented: parse failures become durable
+  red `schema_binding` outcomes without mutation claims, and the trusted adapter
+  binds dossier identity after an identity-free provider semantic decision.
+- The provider schema also closes the structural relation boundary. Allowed
+  kinds are `blocks`, `depends_on`, `causes`, `influences`, and `predicts`;
+  sources are cause/condition subsets with at least one accepted Model and no
+  effect handle; support includes at least one direct observation.
+- Current-HEAD focused validation passed `41/41` synthesis/TI3/failure-outcome
+  tests in `1.16s`, then `8` compiled-synthesis tests in `0.17s`. One PostgreSQL
+  atomicity test was skipped because `DATABASE_URL` was unset, so no fresh DB
+  atomicity claim is made. Contract v3 bytes remain unchanged at
+  `8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`.
+- No provider call occurred after r1 and no policy is selected. CF3-C remains
+  locked. If resumed, the only next provider action is an independently
+  preflighted and authorized fresh full TI3 run under a new identity.
