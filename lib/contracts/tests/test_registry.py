@@ -36,6 +36,81 @@ def test_registry_digest_is_deterministic() -> None:
     assert len(first.digest) == 64
 
 
+def test_registry_separates_the_latest_system_into_checked_components() -> None:
+    registry = load_architecture_registry(REGISTRY_PATH)
+    report = validate_architecture_registry(registry, root=ROOT)
+
+    assert {component.component_id for component in registry.components} == {
+        "C0",
+        "E0",
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "P7",
+        "P8",
+        "P9",
+        "P10",
+    }
+    assert report.missing_component_paths == ()
+    assert report.missing_component_test_paths == ()
+    assert report.missing_implemented_writer_packages == ()
+
+
+def test_registry_rejects_competing_component_ownership() -> None:
+    registry = load_architecture_registry(REGISTRY_PATH)
+    payload = registry.model_dump(mode="json")
+    p2 = next(
+        component
+        for component in payload["components"]
+        if component["component_id"] == "P2"
+    )
+    p2["owned_paths"].append("services/domain/models")
+
+    with pytest.raises(ValueError, match="belongs to both P2 and P3"):
+        ArchitectureContractRegistry.model_validate(payload)
+
+
+def test_registry_reports_missing_component_proof_path() -> None:
+    registry = load_architecture_registry(REGISTRY_PATH)
+    payload = registry.model_dump(mode="json")
+    c0 = next(
+        component
+        for component in payload["components"]
+        if component["component_id"] == "C0"
+    )
+    c0["test_paths"] = ["tests/contract/does-not-exist"]
+    invalid = ArchitectureContractRegistry.model_validate(payload)
+
+    report = validate_architecture_registry(invalid, root=ROOT)
+
+    assert report.missing_component_test_paths == (
+        "C0:tests/contract/does-not-exist",
+    )
+    assert not report.internally_valid
+
+
+def test_registry_rejects_implemented_writer_without_a_package() -> None:
+    registry = load_architecture_registry(REGISTRY_PATH)
+    payload = registry.model_dump(mode="json")
+    writer = next(
+        writer
+        for writer in payload["writers"]
+        if writer["writer_id"] == "ConcernApplier"
+    )
+    writer["package"] = "services.domain.missing_concern_writer"
+    invalid = ArchitectureContractRegistry.model_validate(payload)
+
+    report = validate_architecture_registry(invalid, root=ROOT)
+
+    assert report.missing_implemented_writer_packages == (
+        "ConcernApplier:services.domain.missing_concern_writer",
+    )
+    assert not report.internally_valid
+
+
 def test_registry_rejects_duplicate_yaml_keys(tmp_path: Path) -> None:
     path = tmp_path / "registry.yaml"
     path.write_text("meta:\n  registry_id: first\n  registry_id: second\n")

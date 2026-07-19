@@ -48,8 +48,8 @@ jobs:
       # import-linter builds a static import graph (grimp) — it parses the
       # source tree and only needs `lib`/`services` importable from the repo
       # root, so the heavy runtime deps are not required here.
-      - name: Install import-linter
-        run: pip install "import-linter>=2.0"
+      - name: Install architecture-check dependencies
+        run: pip install "import-linter>=2.0" "pydantic>=2.7" "pyyaml>=6.0"
 
       # Enforces the layer-boundary contracts declared in pyproject.toml
       # ([tool.importlinter]). Green today; a failure means a new import
@@ -61,6 +61,11 @@ jobs:
       # raw-write bans plus import-linter allowlist growth ceilings.
       - name: Check architecture ratchets
         run: python scripts/check_architecture_ratchets.py
+
+      # Binds latest-system components to existing implementation/test paths,
+      # registered writers/contracts, and current normative-document digests.
+      - name: Check architecture component registry
+        run: python scripts/check_architecture_registry.py
 
       # Keeps `.env.production.example` aligned with fail-closed production
       # settings so deploy operators see required keys before runtime startup.

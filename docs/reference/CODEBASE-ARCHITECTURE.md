@@ -8,6 +8,11 @@ Core is **backend-only**: the FastAPI gateway, domain services, workers, and mig
 
 ## 0. Source Layout (Layers)
 
+For semantic component ownership during the current architecture cleanup, use
+[Latest System Component Map](LATEST-SYSTEM-COMPONENTS.md) and the checked
+`architecture/registry.yaml`. This document describes the physical runtime and
+may include compatibility paths that are not part of the latest target system.
+
 `services/` is grouped into six architectural layers (plus the already-layered `workers/`), ordered so higher layers depend on lower ones. The directory tree mirrors the data flow: signal → ingest → domain substrate → reasoning → product surface → app transport. Each layer is a PEP 420 namespace package with a `README.md`; boundaries are enforced by `lint-imports` (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 | Layer | Packages | Role |
@@ -547,5 +552,11 @@ When code and docs disagree, prefer this order:
 3. Route wiring in [services/app/gateway/route_mounts.py](services/app/gateway/route_mounts.py) and [services/app/gateway/ceo_view_wiring.py](services/app/gateway/ceo_view_wiring.py) (UI route wiring lives in the overlay repo).
 4. Tests under [services](services) and [tests](tests) (UI tests live in the overlay repo).
 5. Design documents such as this one.
+
+The exception is architecture intent and component ownership: migrations and
+live code prove current behavior, but they do not redefine the target semantic
+planes. Reconcile them through
+[Latest System Component Map](LATEST-SYSTEM-COMPONENTS.md) and record conflicts
+as migration or cleanup gaps rather than silently adopting legacy behavior.
 
 This document is a map, not a lockfile. Update it when new routes, queues, worker deployments, schema families, or UI surfaces become first-class.

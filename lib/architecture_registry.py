@@ -43,6 +43,60 @@ class RegistryWriter(_RegistryModel):
     implementation_status: str = Field(pattern=r"^(planned|partial|implemented)$")
 
 
+class RegistryComponent(_RegistryModel):
+    """One logical latest-system component and its current physical boundary.
+
+    ``owned_paths`` are paths for which this component is already the sole
+    architectural owner. ``shared_legacy_paths`` are deliberately unresolved
+    mixed-architecture hotspots; listing them is an inventory, not an ownership
+    claim. Target-only packages belong in prose until they exist, so the checked
+    registry cannot make absent implementation look complete.
+    """
+
+    component_id: str = Field(pattern=r"^(C0|E0|P(?:[1-9]|10))$")
+    name: str = Field(min_length=1)
+    semantic_plane: str = Field(min_length=1)
+    architecture_role: str = Field(
+        pattern=(
+            r"^(contract_kernel|canonical_plane|temporary_workspace|"
+            r"derived_projection|runtime_control|authority_control|evaluation_only)$"
+        )
+    )
+    implementation_status: str = Field(pattern=r"^(planned|partial|implemented)$")
+    separation_status: str = Field(pattern=r"^(separated|mixed|contract_only)$")
+    owned_paths: tuple[str, ...] = ()
+    shared_legacy_paths: tuple[str, ...] = ()
+    test_paths: tuple[str, ...] = Field(min_length=1)
+    writer_ids: tuple[str, ...] = ()
+    contract_ids: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()
+    forbidden_responsibilities: tuple[str, ...] = Field(min_length=1)
+    next_component_gate: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def paths_and_references_are_locally_unique(self) -> Self:
+        for field in (
+            "owned_paths",
+            "shared_legacy_paths",
+            "test_paths",
+            "writer_ids",
+            "contract_ids",
+            "depends_on",
+        ):
+            values = getattr(self, field)
+            if len(values) != len(set(values)):
+                raise ValueError(
+                    f"component {self.component_id} has duplicate values in {field}"
+                )
+        overlap = set(self.owned_paths) & set(self.shared_legacy_paths)
+        if overlap:
+            raise ValueError(
+                f"component {self.component_id} cannot both own and share paths "
+                f"{sorted(overlap)}"
+            )
+        return self
+
+
 class RegistryContract(_RegistryModel):
     contract_id: str = Field(min_length=1)
     contract_kind: str = Field(min_length=1)
@@ -118,6 +172,7 @@ class RegistryProjection(_RegistryModel):
 class ArchitectureContractRegistry(_RegistryModel):
     meta: RegistryMeta
     writers: tuple[RegistryWriter, ...]
+    components: tuple[RegistryComponent, ...]
     contracts: tuple[RegistryContract, ...]
     invariants: tuple[RegistryInvariant, ...]
     projections: tuple[RegistryProjection, ...]
@@ -125,13 +180,47 @@ class ArchitectureContractRegistry(_RegistryModel):
     @model_validator(mode="after")
     def references_are_closed(self) -> Self:
         _require_unique(self.writers, "writer_id")
+        _require_unique(self.components, "component_id")
         _require_unique(self.contracts, "contract_id")
         _require_unique(self.invariants, "invariant_id")
         _require_unique(self.projections, "projection_id")
 
         writer_ids = {item.writer_id for item in self.writers}
+        component_ids = {item.component_id for item in self.components}
         contract_ids = {item.contract_id for item in self.contracts}
         invariant_ids = {item.invariant_id for item in self.invariants}
+        owned_paths: dict[str, str] = {}
+        for component in self.components:
+            missing_writers = set(component.writer_ids) - writer_ids
+            if missing_writers:
+                raise ValueError(
+                    f"component {component.component_id} references unknown writers "
+                    f"{sorted(missing_writers)}"
+                )
+            missing_contracts = set(component.contract_ids) - contract_ids
+            if missing_contracts:
+                raise ValueError(
+                    f"component {component.component_id} references unknown contracts "
+                    f"{sorted(missing_contracts)}"
+                )
+            missing_components = set(component.depends_on) - component_ids
+            if missing_components:
+                raise ValueError(
+                    f"component {component.component_id} references unknown components "
+                    f"{sorted(missing_components)}"
+                )
+            if component.component_id in component.depends_on:
+                raise ValueError(
+                    f"component {component.component_id} cannot depend on itself"
+                )
+            for path in component.owned_paths:
+                previous = owned_paths.get(path)
+                if previous is not None:
+                    raise ValueError(
+                        f"owned path {path!r} belongs to both {previous} and "
+                        f"{component.component_id}"
+                    )
+                owned_paths[path] = component.component_id
         for contract in self.contracts:
             missing_writers = set(contract.all_writer_ids) - writer_ids
             if missing_writers:
@@ -233,11 +322,18 @@ class RegistryValidationReport(_RegistryModel):
     coverage: RegistryCoverage
     projection_digest_mismatches: tuple[str, ...] = ()
     missing_projection_paths: tuple[str, ...] = ()
+    missing_component_paths: tuple[str, ...] = ()
+    missing_component_test_paths: tuple[str, ...] = ()
+    missing_implemented_writer_packages: tuple[str, ...] = ()
 
     @property
     def internally_valid(self) -> bool:
         return (
-            not self.projection_digest_mismatches and not self.missing_projection_paths
+            not self.projection_digest_mismatches
+            and not self.missing_projection_paths
+            and not self.missing_component_paths
+            and not self.missing_component_test_paths
+            and not self.missing_implemented_writer_packages
         )
 
     @property
@@ -297,11 +393,40 @@ def validate_architecture_registry(
     for projection in registry.projections:
         if projection.required_for_complete and not (root / projection.path).exists():
             missing_paths.append(projection.path)
+    missing_component_paths: list[str] = []
+    missing_component_test_paths: list[str] = []
+    missing_implemented_writer_packages: list[str] = []
+    for writer in registry.writers:
+        if writer.implementation_status != "implemented":
+            continue
+        package_path = root / writer.package.replace(".", "/")
+        if not package_path.exists() and not package_path.with_suffix(".py").exists():
+            missing_implemented_writer_packages.append(
+                f"{writer.writer_id}:{writer.package}"
+            )
+    for component in registry.components:
+        for component_path in (*component.owned_paths, *component.shared_legacy_paths):
+            if not (root / component_path).exists():
+                missing_component_paths.append(
+                    f"{component.component_id}:{component_path}"
+                )
+        for test_path in component.test_paths:
+            if not (root / test_path).exists():
+                missing_component_test_paths.append(
+                    f"{component.component_id}:{test_path}"
+                )
     return RegistryValidationReport(
         registry_digest=registry.digest,
         coverage=registry.coverage(),
         projection_digest_mismatches=tuple(sorted(set(digest_mismatches))),
         missing_projection_paths=tuple(sorted(set(missing_paths))),
+        missing_component_paths=tuple(sorted(set(missing_component_paths))),
+        missing_component_test_paths=tuple(
+            sorted(set(missing_component_test_paths))
+        ),
+        missing_implemented_writer_packages=tuple(
+            sorted(set(missing_implemented_writer_packages))
+        ),
     )
 
 
@@ -316,6 +441,7 @@ __all__ = [
     "ArchitectureContractRegistry",
     "ArchitectureRegistryError",
     "RegistryContract",
+    "RegistryComponent",
     "RegistryCoverage",
     "RegistryDocument",
     "RegistryInvariant",

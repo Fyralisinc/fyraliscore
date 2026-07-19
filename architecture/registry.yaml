@@ -1,7 +1,7 @@
 meta:
   registry_id: fyralis-architecture
-  registry_version: constitutional-kernel-v2
-  scope: constitutional kernel plus staged evidence, grounding, operational and evaluation contracts
+  registry_version: constitutional-kernel-v3-component-separation
+  scope: constitutional kernel, latest-system component ownership, and staged evidence, grounding, operational and evaluation contracts
   maturity: candidate
   completeness_target: full durable semantic registry and INV-01 through INV-42 proof mapping
   documents:
@@ -9,7 +9,7 @@ meta:
       sha256: a3e75c96080101cc547b5ea144c51a57988b6ff5f054aa32b57d1d234daecf4a
       role: normative implementation projection
     - path: docs/evaluation/revised-system-objective-evaluation-framework.md
-      sha256: c1bfbac26726d68ce77ec57dcdb6419af41a8ffdf7f8f076534f74bd3b8a5fd6
+      sha256: 664e2b3c7f6682c7066bde761582a8eeb74080225cf65b232709fd0adccddd17
       role: normative evaluation projection
 
 writers:
@@ -60,7 +60,7 @@ writers:
   - writer_id: PolicyRegistryApplier
     owner: P7 control and learned-artifact governance
     package: services.domain.control
-    implementation_status: implemented
+    implementation_status: partial
   - writer_id: RepresentationRegistryApplier
     owner: P3 belief and representation admission
     package: services.domain.models
@@ -72,15 +72,15 @@ writers:
   - writer_id: RepairLedgerApplier
     owner: P9 correction invalidation repair and convergence
     package: services.domain.repair
-    implementation_status: implemented
+    implementation_status: partial
   - writer_id: ArchitectureRegistrySteward
-    owner: P0 architecture registry and evidence coordination
+    owner: C0 architecture registry and evidence coordination
     package: lib.architecture_registry
     implementation_status: implemented
   - writer_id: WriterEpochApplier
     owner: P9 writer ownership and cutover
     package: services.domain.writer_epochs
-    implementation_status: implemented
+    implementation_status: partial
   - writer_id: EvidenceAppender
     owner: P1A source fidelity and evidence
     package: services.ingest
@@ -97,6 +97,445 @@ writers:
     owner: P1F consumer-specific grounding admission
     package: services.domain.entity_grounding
     implementation_status: partial
+  - writer_id: ConversationTopologyProjector
+    owner: P1A2 derived conversation topology
+    package: services.domain.conversation_context
+    implementation_status: planned
+  - writer_id: PhysicalStateApplier
+    owner: P1G physical and institutional state
+    package: services.domain.physical_state
+    implementation_status: planned
+  - writer_id: EpistemicApplier
+    owner: P3 canonical beliefs and relational assertions
+    package: services.domain.models
+    implementation_status: implemented
+  - writer_id: InquiryRecorder
+    owner: P4 inquiry lifecycle and terminal summary
+    package: services.platform.execution
+    implementation_status: planned
+  - writer_id: CriteriaProjector
+    owner: P2 derived normative and attention criteria
+    package: services.domain.criteria
+    implementation_status: planned
+  - writer_id: UnifiedGraphProjector
+    owner: P8 rebuildable unified graph
+    package: services.domain.projections
+    implementation_status: partial
+  - writer_id: GeneralProjectionProjector
+    owner: P8 non-graph projections and indexes
+    package: services.domain.projections
+    implementation_status: partial
+  - writer_id: EffectiveAuthorityProjector
+    owner: P10 derived effective authority state
+    package: services.platform.access_control
+    implementation_status: planned
+  - writer_id: TraceLedgerAppender
+    owner: P10 neutral authority and fate trace facts
+    package: lib.observability
+    implementation_status: planned
+  - writer_id: TransactionKernel
+    owner: C0 atomic command event result and outbox protocol
+    package: lib.contracts
+    implementation_status: partial
+
+components:
+  - component_id: C0
+    name: Semantic contract and transport kernel
+    semantic_plane: cross_plane_contracts
+    architecture_role: contract_kernel
+    implementation_status: partial
+    separation_status: contract_only
+    owned_paths:
+      - architecture/registry.yaml
+      - lib/architecture_registry.py
+      - lib/contracts
+      - scripts/check_architecture_registry.py
+    shared_legacy_paths: []
+    test_paths:
+      - lib/contracts/tests
+    writer_ids: [ArchitectureRegistrySteward, TransactionKernel]
+    contract_ids:
+      - ArchitectureContractRegistry
+      - OrthogonalSemanticAxes
+      - BitemporalInterval
+      - AuthorityContextAlgebra
+      - WriterScopeEpoch
+      - CommandEventResultOutboxProtocol
+      - MultiAggregateMutationPlan
+      - EventPositionWatermarkVector
+      - ContractCompatibilityManifest
+      - ProposalValidationApply
+    depends_on: []
+    forbidden_responsibilities:
+      - domain policy or business truth
+      - provider or product orchestration
+      - evaluator gold and scoring
+    next_component_gate: Every stable contract has compatibility fixtures, negative tests, one writer, and a migration or retirement law.
+
+  - component_id: P1
+    name: Evidence, perception, grounding, physical state, and observed outcomes
+    semantic_plane: evidence_grounding_physical
+    architecture_role: canonical_plane
+    implementation_status: partial
+    separation_status: mixed
+    owned_paths:
+      - services/ingest/ingestion
+      - services/domain/observations
+      - services/domain/conversation_context
+      - services/domain/entity_grounding
+      - services/domain/canonical_referents
+      - services/domain/source_identity_bindings
+      - services/domain/source_semantics
+      - services/workers/entity_resolver
+      - services/workers/source_semantic_worker
+    shared_legacy_paths:
+      - services/domain/entity_aliases
+      - services/domain/outcomes
+      - services/ingest/integrations
+    test_paths:
+      - services/domain/conversation_context/tests
+      - services/domain/entity_grounding/tests
+      - services/domain/source_semantics/tests
+      - services/ingest/ingestion/tests
+    writer_ids:
+      - EvidenceAppender
+      - GroundingAnnotationAppender
+      - EntityIdentityApplier
+      - GroundingAdmissionApplier
+      - OutcomeRecorder
+      - ConversationTopologyProjector
+      - PhysicalStateApplier
+    contract_ids:
+      - EvidenceLineageAndRevision
+      - IngestionReceipt
+      - ConversationInterpretationContext
+      - SourceSemanticAdmission
+      - EntityGroundingStages
+      - EntityCandidateRequestFate
+      - EntityIdentityLifecycle
+      - GroundingAdmission
+      - GroundingContinuityTrace
+    depends_on: [C0, P9, P10]
+    forbidden_responsibilities:
+      - constituting company intent from interpreted language
+      - admitting beliefs or inferred relations as truth
+      - treating evaluator labels as evidence
+    next_component_gate: Prove P1A through P1I separately with adversarial context, candidate-fate, correction, and observed-outcome fixtures before a live reasoning loop.
+
+  - component_id: P2
+    name: Intent and bounded agency
+    semantic_plane: intent_agency
+    architecture_role: canonical_plane
+    implementation_status: partial
+    separation_status: mixed
+    owned_paths:
+      - services/domain/intent
+      - services/domain/agency_activation
+      - services/workers/agency_activation_worker
+    shared_legacy_paths:
+      - services/domain/acts
+      - services/domain/execution
+      - services/domain/obligations.py
+      - services/domain/resources
+    test_paths:
+      - services/domain/intent/tests
+      - services/domain/agency_activation/tests
+      - services/domain/execution/tests
+    writer_ids:
+      - ProposalAppender
+      - IntentApplier
+      - AuthorizationApplier
+      - AgencyStateApplier
+      - ExecutionLedgerApplier
+      - CriteriaProjector
+    contract_ids:
+      - GovernedIntentProtocol
+      - AuthorityBasisSurvivalReducer
+      - WorkflowTaskStateProtocol
+      - ExternalEffectReceiptProtocol
+      - IntentAcquisitionLoop
+    depends_on: [C0, P1, P9, P10]
+    forbidden_responsibilities:
+      - inferring intent from repeated behavior or silence
+      - executing a natural-language proposal without exact authorization
+      - recording execution as an independently observed outcome
+    next_component_gate: Prove typed command, interpreted proposal, revocation, authorization, task, and effect fates independently with no implicit authority path.
+
+  - component_id: P3
+    name: Beliefs, relational structure, and representation admission
+    semantic_plane: brain_epistemic
+    architecture_role: canonical_plane
+    implementation_status: partial
+    separation_status: mixed
+    owned_paths:
+      - services/domain/models
+      - services/domain/truth_kernel
+      - services/reasoning/think
+      - services/reasoning/synthesis
+      - services/reasoning/relationships
+      - services/reasoning/edge_intelligence
+      - services/reasoning/judgment
+    shared_legacy_paths:
+      - services/domain/bridge
+      - services/reasoning/sage
+    test_paths:
+      - services/domain/models/tests
+      - services/domain/truth_kernel/tests
+      - services/reasoning/think/tests
+      - services/reasoning/synthesis/tests
+    writer_ids: [EpistemicApplier, RepresentationRegistryApplier]
+    contract_ids:
+      - SemanticComputationalCommitBoundary
+      - RepresentationAdmissionScope
+    depends_on: [C0, P1, P9, P10]
+    forbidden_responsibilities:
+      - mutating evidence or physical state
+      - creating intent or authorization
+      - treating graph projections or repeated model output as corroboration
+    next_component_gate: Separate provider semantics, compiler, validator, applier, relation truth, and optional representation utility into independently red-green proof slices.
+
+  - component_id: P4
+    name: Authorized context and temporary inquiry
+    semantic_plane: inquiry_workspace
+    architecture_role: temporary_workspace
+    implementation_status: partial
+    separation_status: mixed
+    owned_paths:
+      - services/reasoning/retrieval
+      - services/platform/execution
+    shared_legacy_paths:
+      - services/reasoning/sage
+    test_paths:
+      - services/reasoning/retrieval/tests
+      - services/platform/execution/tests
+      - tests/retrieval_e2e
+    writer_ids: [InquiryRecorder]
+    contract_ids:
+      - ConversationInterpretationContext
+      - GroundingContinuityTrace
+    depends_on: [C0, P1, P2, P3, P9, P10]
+    forbidden_responsibilities:
+      - becoming a second durable knowledge graph
+      - persisting every hypothesis as canonical belief
+      - bypassing source authority or tenant visibility during retrieval
+    next_component_gate: Prove retrieval, context assembly, inquiry transitions, stop rules, and dependency manifests against frozen fixtures before provider-backed inquiry.
+
+  - component_id: P5
+    name: Concerns, governed attention, and control candidates
+    semantic_plane: concern_attention
+    architecture_role: canonical_plane
+    implementation_status: partial
+    separation_status: mixed
+    owned_paths:
+      - services/domain/concerns
+      - services/workers/anomaly_processor
+    shared_legacy_paths:
+      - services/reasoning/sage
+    test_paths:
+      - services/domain/concerns/tests
+      - services/workers/anomaly_processor/tests
+      - tests/epistemic_repair/p5
+    writer_ids: [ConcernApplier]
+    contract_ids:
+      - AttentionGovernanceConcernReducer
+      - HumanAttentionEnvelope
+    depends_on: [C0, P1, P2, P3, P9, P10]
+    forbidden_responsibilities:
+      - converting every gap into interruption or work
+      - using urgency or goal relevance as factual evidence
+      - silently discarding standing obligations or discovery duties
+    next_component_gate: Prove scoped deduplication, plural criteria, conflict, reopen, materiality, and finite no-interruption fates with component fixtures.
+
+  - component_id: P6
+    name: Proposals, interventions, predictions, settlement, and attribution
+    semantic_plane: intervention_learning_boundary
+    architecture_role: canonical_plane
+    implementation_status: partial
+    separation_status: mixed
+    owned_paths:
+      - services/domain/intervention_runtime
+      - services/workers/intervention_episode_coordinator
+      - services/reasoning/oracle
+    shared_legacy_paths:
+      - services/domain/intent
+      - services/domain/outcomes
+      - services/domain/execution
+      - services/product/recommendations
+    test_paths:
+      - services/domain/intervention_runtime/tests
+      - services/domain/outcomes/tests
+      - services/reasoning/oracle/tests
+      - tests/epistemic_repair/p6
+    writer_ids:
+      - ProposalAppender
+      - EpisodeCoordinator
+      - PredictionWriter
+      - SettlementApplier
+      - AttributionApplier
+    contract_ids:
+      - PredictionInterventionSettlementBoundary
+      - OutcomeAttributionBoundary
+      - ExternalEffectReceiptProtocol
+    depends_on: [C0, P1, P2, P3, P4, P5, P9, P10]
+    forbidden_responsibilities:
+      - treating a proposal as an accepted decision
+      - treating execution receipt as outcome evidence
+      - treating residual correlation as causal attribution
+    next_component_gate: Prove immutable episode linkage, prediction preregistration, no-action comparator, effect reconciliation, settlement, and learning eligibility before a closed loop.
+
+  - component_id: P7
+    name: Governed control learning
+    semantic_plane: control_learning
+    architecture_role: canonical_plane
+    implementation_status: partial
+    separation_status: mixed
+    owned_paths:
+      - services/domain/company_learning
+      - services/reasoning/calibration
+    shared_legacy_paths:
+      - services/reasoning/sage
+    test_paths:
+      - tests/epistemic_repair/p7
+      - services/reasoning/calibration/tests
+    writer_ids: [PolicyRegistryApplier]
+    contract_ids:
+      - BootstrapPolicy
+      - GovernedControlPolicyProtocol
+      - LearnedArtifactManifest
+      - TenantInfluenceLineage
+    depends_on: [C0, P6, P9, P10]
+    forbidden_responsibilities:
+      - learning reward from self-authored or unattributable outcomes
+      - promoting a policy without independent evidence and rollback
+      - writing semantic truth owned by another plane
+    next_component_gate: Prove bootstrap, shadow assignment, eligibility, promotion, rollback, correction retraction, and tenant influence lineage on sealed episodes.
+
+  - component_id: P8
+    name: Unified graph, projections, and product delivery
+    semantic_plane: derived_product
+    architecture_role: derived_projection
+    implementation_status: partial
+    separation_status: mixed
+    owned_paths:
+      - services/domain/projections
+      - services/product
+      - services/reasoning/topology
+      - services/workers/topology_sweeper
+      - services/workers/sage_structural_features
+      - services/workers/sage_topology_optimizer
+    shared_legacy_paths:
+      - services/domain/bridge
+      - services/domain/models
+    test_paths:
+      - services/domain/projections/tests
+      - services/product/ask/tests
+      - services/product/query/tests
+      - services/reasoning/topology/tests
+    writer_ids: [UnifiedGraphProjector, GeneralProjectionProjector]
+    contract_ids:
+      - RepresentationAdmissionScope
+      - GroundingContinuityTrace
+    depends_on: [C0, P1, P2, P3, P4, P5, P6, P7, P9, P10]
+    forbidden_responsibilities:
+      - making projected graph edges canonical truth
+      - bypassing proposal authorization and effect ledgers for delivery
+      - hiding uncertainty or provenance in product rendering
+    next_component_gate: Prove rebuildability, plane ownership, access filtering, epistemic rendering, correction propagation, and delivery handoff independently.
+
+  - component_id: P9
+    name: Runtime and metabolism governor
+    semantic_plane: runtime_control
+    architecture_role: runtime_control
+    implementation_status: partial
+    separation_status: mixed
+    owned_paths:
+      - services/platform/runtime
+      - services/domain/work_scheduling
+      - services/workers/work_scheduler_worker
+      - services/workers/housekeeper
+      - services/workers/maintenance
+    shared_legacy_paths:
+      - services/domain/execution
+      - services/platform/execution
+    test_paths:
+      - services/platform/runtime/tests
+      - services/domain/work_scheduling/tests
+      - services/workers/housekeeper/tests
+    writer_ids:
+      - WorkLedgerApplier
+      - RepairLedgerApplier
+      - WriterEpochApplier
+    contract_ids:
+      - WorkLeaseFateProtocol
+      - FailureOwnerTerminalizationProtocol
+      - DependencyInvalidationRepairProtocol
+      - RepairConvergenceProtocol
+      - ProcessingClassPolicy
+      - ProcessingClassDecision
+      - EconomicOperatingEnvelope
+      - UsefulSafeFate
+      - WriterScopeEpoch
+    depends_on: [C0]
+    forbidden_responsibilities:
+      - owning another component's semantic mutation
+      - converting scheduler priority into truth or intent
+      - declaring quiescence over an incomplete obligation denominator
+    next_component_gate: Prove transaction, outbox, lease, failure, redrive, repair, process-manifest, budget, and quiescence primitives under crash and replay before orchestration tests.
+
+  - component_id: P10
+    name: Authority, audit, trace, and proof telemetry
+    semantic_plane: authority_audit
+    architecture_role: authority_control
+    implementation_status: partial
+    separation_status: mixed
+    owned_paths:
+      - services/platform/access_control
+    shared_legacy_paths:
+      - services/app/gateway
+      - services/domain/execution
+      - lib/observability
+    test_paths:
+      - services/platform/access_control/tests
+      - tests/epistemic_repair/p0
+      - tests/epistemic_repair/p1
+    writer_ids: [EffectiveAuthorityProjector, TraceLedgerAppender]
+    contract_ids:
+      - AuthorityContextAlgebra
+      - TenantInfluenceLineage
+      - InvariantProofMatrix
+    depends_on: [C0, P9]
+    forbidden_responsibilities:
+      - becoming a competing semantic writer
+      - authorizing from stale roles or revoked grants
+      - allowing missing fate telemetry to count as successful work
+    next_component_gate: Prove live authority freshness, revocation, tenant isolation, mandatory fate coverage, trace neutrality, and evaluator cutoffs before cross-component acceptance.
+
+  - component_id: E0
+    name: Independent evaluation and simulation
+    semantic_plane: evaluator_only
+    architecture_role: evaluation_only
+    implementation_status: partial
+    separation_status: separated
+    owned_paths:
+      - services/evaluation
+      - lib/evaluation
+      - benchmarks
+      - tests/evaluation
+    shared_legacy_paths:
+      - services/ingest/synthetic
+      - tests/epistemic_repair
+      - tests/real_llm
+    test_paths:
+      - tests/evaluation
+      - tests/epistemic_repair
+    writer_ids: []
+    contract_ids: [InvariantProofMatrix]
+    depends_on: [C0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10]
+    forbidden_responsibilities:
+      - importing evaluator gold into production decisions
+      - writing canonical company state
+      - presenting a rerender or narrow component result as fresh end-to-end proof
+    next_component_gate: Bind fixtures, oracles, populations, cutoffs, code, schema, policy, calls, and failures before any expensive provider or end-to-end run.
 
 contracts:
   - contract_id: GovernedIntentProtocol

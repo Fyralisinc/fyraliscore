@@ -51,6 +51,29 @@ claims that were not checked against code or artifacts.
 
 ## Durable Lessons
 
+### 2026-07-19 - End-to-end runs must consume component proof, not create it
+
+- Context: Reconciling the revised Physics–Brain–Intent architecture with the
+  TI3 recovery handoff, live packages, tests, and architecture registry.
+- Symptom: An expensive provider experiment discovered exact provider-schema
+  identity drift and incomplete failure durability. Separately, the registry
+  could call a writer implemented without checking whether its named package
+  existed on the branch.
+- Cause: Broad architecture and end-to-end gates existed before every logical
+  component had a checked physical boundary and cheap L0 contract, L1 pure,
+  L2 durable, and L3 adjacent-integration proof.
+- Lesson: Register logical components, owned paths, shared legacy hotspots,
+  tests, writers, contracts, dependencies, and forbidden responsibilities.
+  Validate physical paths and implemented writer packages. A higher-cost gate
+  must consume green lower-gate evidence; it must not be the first place a
+  component contract or terminal-failure path is exercised.
+- Evidence: `architecture/registry.yaml`;
+  `docs/reference/LATEST-SYSTEM-COMPONENTS.md`;
+  `docs/plans/latest-system-component-cleanup-plan.md`;
+  `lib/contracts/tests/test_registry.py`.
+- Status: Initial separation and registry enforcement landed; per-component
+  physical inventories, splits, and proof manifests remain.
+
 ### 2026-07-17 - Characterize epistemic bypasses before repairing them
 
 - Context: Starting the company-learning epistemic repair after a contaminated
