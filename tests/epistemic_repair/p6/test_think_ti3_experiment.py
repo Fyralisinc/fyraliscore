@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
+from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +15,7 @@ from services.evaluation.epistemic_repair.think_ti3_experiment import (
     ProviderAttempt,
     _capture_request,
     _legacy_request,
+    _legacy_candidate_id,
     _spec,
     _validate_capture_match,
     default_arm_policies,
@@ -24,16 +27,16 @@ from lib.evaluation.epistemic_repair.ti3_frozen_dossiers import build_frozen_dos
 from uuid import NAMESPACE_URL, uuid5
 
 
-def _decision(payload: dict) -> dict:
+def _decision(payload: dict, *, case_id: str) -> dict:
     dossier_id = payload["dossier_id"]
     digest = canonical_sha256(payload)
-    if dossier_id == "DOS_TI3_NULL_V1":
+    if case_id == "null_adversarial_v1":
         decision = {"kind": "abstain", "reason_code": "insufficient_evidence",
                     "explanation": "No authorized record explains the schedule change.",
                     "missing_evidence": ["Authorized change record giving the reason."],
                     "relevant_handles": ["O2", "O3"], "confidence": .9}
     else:
-        atlas = dossier_id == "DOS_TI3_ATLAS_V1"
+        atlas = case_id == "atlas_positive_v1"
         causes = ["M1", "M2", "O1"] if atlas else ["O1", "M1"]
         support = [row["object_handle"] for row in payload["supporting_evidence"]]
         decision = {"kind": "synthesis",
@@ -60,15 +63,17 @@ def _decision(payload: dict) -> dict:
 
 
 def _legacy_decision(case_id: str) -> dict:
+    case = next(row for row in build_frozen_dossier_cases() if row.case_id == case_id)
+    candidate_id = _legacy_candidate_id(case)
     if case_id == "null_adversarial_v1":
-        return {"decisions": [{"candidate_id": f"MDC_TI3_{case_id}",
+        return {"decisions": [{"candidate_id": candidate_id,
             "decision": "reject", "operation": "no_op", "confidence": .9,
             "reason": "No authorized record explains the schedule change."}],
             "prior_memory_effects": []}
     atlas = case_id == "atlas_positive_v1"
     def model(handle: str) -> str:
         return str(uuid5(NAMESPACE_URL, f"ti3:{case_id}:{handle}"))
-    return {"decisions": [{"candidate_id": f"MDC_TI3_{case_id}",
+    return {"decisions": [{"candidate_id": candidate_id,
         "decision": "accept", "operation": "situation_and_edge", "confidence": .8,
         "claim_role": "situation",
         "claim_text": ("Atlas release ownership mechanism." if atlas
@@ -85,8 +90,13 @@ def _legacy_decision(case_id: str) -> dict:
 def _attempt(capture) -> ProviderAttempt:
     cases = {case.case_id: case for case in build_frozen_dossier_cases()}
     raw = (_legacy_decision(capture.case_id) if capture.interface == "legacy_isolated"
-           else _decision(dict(cases[capture.case_id].provider_payload)))
+           else _decision(dict(cases[capture.case_id].provider_payload),
+                          case_id=capture.case_id))
     raw_digest = canonical_sha256(raw)
+    structured = json.dumps(raw, sort_keys=True, separators=(",", ":"))
+    cognition_payload = {"structured_text": structured,
+                         "raw_digest": canonical_sha256(structured),
+                         "parse_outcome": "accepted"}
     return ProviderAttempt(raw_decision=raw, input_tokens=900, output_tokens=100,
         latency_ms=10, cost_usd=.01, attempt_id=capture.attempt_id,
         validation_status="not_run", apply_status="not_run",
@@ -96,8 +106,10 @@ def _attempt(capture) -> ProviderAttempt:
         physical_attempt_ids=[f"physical:{capture.attempt_id}"], physical_attempt_count=1,
         physical_outcomes=["success"], logical_outcome_id=capture.attempt_id,
         logical_outcome_count=1, logical_outcome="success", parse_outcome="accepted",
-        cognition_event_digest="c" * 64, accepted_raw_digest=raw_digest,
-        cognition_event_raw_digest=raw_digest,
+        cognition_event_digest=canonical_sha256(cognition_payload),
+        cognition_event_payload=cognition_payload,
+        cognition_raw_text_digest=canonical_sha256(structured),
+        accepted_raw_digest=raw_digest,
         usage_exactness="reported", provider="codex",
         provider_config_effort_digest=canonical_sha256({"provider": "codex",
             "model": capture.model, "effort": capture.effort}))
@@ -153,6 +165,11 @@ async def test_preregistered_attempt_counts_concurrency_artifacts_and_selection(
         assert "required_mechanism_facets" not in prompt
         assert "expected_decision" not in prompt
         assert "forbidden_claims" not in prompt
+        for sentinel in (
+            "atlas_positive_v1", "cobalt_positive_v1",
+            "null_adversarial_v1", "null_v1",
+        ):
+            assert sentinel not in prompt
 
 
 @pytest.mark.asyncio
@@ -188,8 +205,14 @@ async def test_arm_a_can_ingest_frozen_baseline_without_provider_call(tmp_path) 
                 "model": "gpt-5.3-codex-spark"}],
               "logical_call_receipts": [{"logical_call_id": "historical-l1",
                                           "outcome": "success"}],
-              "accepted_cognition_event": {"content_digest": "d" * 64,
-                                            "raw_digest": canonical_sha256(raw),
+              "accepted_cognition_event": {"content_digest": canonical_sha256({
+                                                "structured_text": json.dumps(raw),
+                                                "raw_digest": canonical_sha256(json.dumps(raw)),
+                                                "parse_outcome": "accepted"}),
+                                            "payload": {
+                                                "structured_text": json.dumps(raw),
+                                                "raw_digest": canonical_sha256(json.dumps(raw)),
+                                                "parse_outcome": "accepted"},
                                             "logical_call_id": "historical-l1",
                                             "physical_attempt_id": "historical-p1"},
               "usage": {"input_tokens": 10, "output_tokens": 2}}
@@ -252,6 +275,9 @@ def test_physical_receipt_retry_cache_count_and_raw_tamper_fail_closed() -> None
         ({"physical_outcomes": ["success", "success"]}, "without retry"),
         ({"physical_outcomes": ["cache_hit"]}, "without retry"),
         ({"accepted_raw_digest": "0" * 64}, "raw digest mismatch"),
+        ({"cognition_event_payload": {**attempt.cognition_event_payload,
+                                       "parse_outcome": "tampered"}},
+         "content digest mismatch"),
         ({"logical_outcome_count": 2}, "exactly one joined logical"),
     ):
         with pytest.raises(ValidationError, match=match):
@@ -268,6 +294,30 @@ def test_live_preflight_rejects_installed_response_cache() -> None:
             _assert_response_cache_disabled()
     finally:
         set_response_cache(None)
+
+
+def test_real_cognition_event_binds_raw_text_separately_from_semantic_object() -> None:
+    from lib.llm.telemetry import CognitionTraceEvent
+    from scripts.run_think_ti3_live import _accepted_cognition_binding
+
+    structured = '{\n  "kind": "abstain", "confidence": 0.8\n}'
+    payload = {"structured_text": structured, "raw_digest": canonical_sha256(structured),
+               "parse_outcome": "accepted"}
+    event = CognitionTraceEvent(
+        schema_version="llm-cognition-event-v1", event_id="e1", trace_id="t1",
+        logical_call_id="l1", stage="raw_provider_response",
+        cognitive_purpose="main_synthesis", payload=payload,
+        content_digest=canonical_sha256(payload), occurred_at=datetime.now(timezone.utc),
+        physical_attempt_id="p1",
+    )
+    parsed, text_digest, bound_payload = _accepted_cognition_binding(event)
+    assert parsed == {"kind": "abstain", "confidence": .8}
+    assert text_digest == canonical_sha256(structured)
+    assert text_digest != canonical_sha256(parsed)
+    assert bound_payload == payload
+    tampered = replace(event, payload={**payload, "parse_outcome": "cache_hit"})
+    with pytest.raises(RuntimeError, match="parse outcome"):
+        _accepted_cognition_binding(tampered)
 
 
 def test_isolated_not_run_stages_are_unawarded_but_selectable() -> None:

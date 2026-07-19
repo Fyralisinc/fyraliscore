@@ -81,7 +81,8 @@ class ProviderAttempt(BaseModel):
     logical_outcome: Literal["success"]
     parse_outcome: Literal["accepted"]
     cognition_event_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    cognition_event_raw_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cognition_event_payload: dict[str, Any]
+    cognition_raw_text_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     accepted_raw_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     usage_exactness: Literal["reported"]
     provider: str
@@ -99,8 +100,10 @@ class ProviderAttempt(BaseModel):
             raise ValueError("TI3 provider attempt/logical receipt mismatch")
         if self.accepted_raw_digest != canonical_sha256(self.raw_decision):
             raise ValueError("TI3 accepted raw digest mismatch")
-        if self.cognition_event_raw_digest != self.accepted_raw_digest:
-            raise ValueError("TI3 cognition event/raw digest mismatch")
+        if canonical_sha256(self.cognition_event_payload) != self.cognition_event_digest:
+            raise ValueError("TI3 cognition event content digest mismatch")
+        if self.cognition_event_payload.get("raw_digest") != self.cognition_raw_text_digest:
+            raise ValueError("TI3 cognition raw text digest mismatch")
         expected = canonical_sha256({"provider": self.provider, "model": self.model,
                                      "effort": self.effort})
         if self.provider_config_effort_digest != expected:
@@ -489,6 +492,7 @@ def load_historical_atlas_baseline(
     physical = list(report.get("physical_attempt_receipts") or ())
     logical = list(report.get("logical_call_receipts") or ())
     cognition = dict(report.get("accepted_cognition_event") or {})
+    cognition_payload = dict(cognition.get("payload") or {})
     if len(physical) != 1 or len(logical) != 1:
         raise ValueError("historical baseline requires one physical and logical receipt")
     historical_logical_id = str(logical[0].get("logical_call_id") or "")
@@ -501,8 +505,13 @@ def load_historical_atlas_baseline(
     receipt_model = str(physical[0].get("model") or "")
     if receipt_model != binding.model:
         raise ValueError("historical physical receipt model mismatch")
-    if str(cognition.get("raw_digest") or "") != canonical_sha256(dict(native_raw)):
-        raise ValueError("historical cognition/raw digest mismatch")
+    structured_text = cognition_payload.get("structured_text")
+    if not isinstance(structured_text, str):
+        raise ValueError("historical cognition event lacks structured raw text")
+    if cognition_payload.get("raw_digest") != canonical_sha256(structured_text):
+        raise ValueError("historical cognition raw text digest mismatch")
+    if json.loads(structured_text) != dict(native_raw):
+        raise ValueError("historical cognition text/accepted object mismatch")
     return ProviderAttempt(
         raw_decision=dict(native_raw), compiler_artifact=dict(compiled),
         validation_status=str(apply_facts.get("validation_status") or "not_run"),
@@ -520,7 +529,8 @@ def load_historical_atlas_baseline(
         logical_outcome_id=historical_logical_id, logical_outcome_count=1,
         logical_outcome=str(logical[0].get("outcome")), parse_outcome="accepted",
         cognition_event_digest=str(cognition.get("content_digest")),
-        cognition_event_raw_digest=str(cognition.get("raw_digest")),
+        cognition_event_payload=cognition_payload,
+        cognition_raw_text_digest=str(cognition_payload.get("raw_digest")),
         accepted_raw_digest=canonical_sha256(dict(native_raw)),
         usage_exactness=str(physical[0].get("usage_exactness")),
         provider=str(physical[0].get("provider")),
@@ -594,7 +604,8 @@ def _capture_receipt(attempt: ProviderAttempt) -> dict[str, Any]:
             "logical_outcome": attempt.logical_outcome,
             "parse_outcome": attempt.parse_outcome,
             "cognition_event_digest": attempt.cognition_event_digest,
-            "cognition_event_raw_digest": attempt.cognition_event_raw_digest,
+            "cognition_event_payload": attempt.cognition_event_payload,
+            "cognition_raw_text_digest": attempt.cognition_raw_text_digest,
             "usage_exactness": attempt.usage_exactness, "provider": attempt.provider,
             "provider_config_effort_digest": attempt.provider_config_effort_digest,
             "usage": {"input_tokens": attempt.input_tokens,
@@ -623,7 +634,7 @@ def _legacy_request(case: FrozenDossierCase) -> CompiledBatchMemoryDecisionReque
         for row in case.provider_payload["handles"]
     }
     candidate = {
-        "candidate_id": f"MDC_TI3_{case.case_id}", "candidate_kind": "synthesis",
+        "candidate_id": _legacy_candidate_id(case), "candidate_kind": "synthesis",
         "allowed_operations": ["situation_and_edge", "no_op"],
         "op_family": "claim_insert",
         "proposed_text": f"Evaluate the mechanism in {case.provider_payload['scope']['display_label']}.",
@@ -665,6 +676,11 @@ def _legacy_request(case: FrozenDossierCase) -> CompiledBatchMemoryDecisionReque
     return request
 
 
+def _legacy_candidate_id(case: FrozenDossierCase) -> str:
+    """Opaque stable identity derived only from the sealed provider payload."""
+    return f"MDC_{case.dossier_digest[:24]}"
+
+
 def _model_handle_by_id(case: FrozenDossierCase) -> dict[str, str]:
     return {str(row.canonical_id): row.handle for row in _compile_context(case).bindings
             if row.object_kind == "accepted_model_head"}
@@ -685,7 +701,7 @@ def _verify_file(directory: Path, entry: Mapping[str, Any]) -> bool:
 
 def _compile_context(case: FrozenDossierCase) -> SynthesisCompileContext:
     tenant = uuid5(NAMESPACE_URL, f"ti3:{case.case_id}:tenant")
-    scope_ref = f"evaluation:{case.case_id}"
+    scope_ref = f"evaluation:{case.dossier_digest[:24]}"
     slots = case.provider_payload["candidate_mechanism_slots"]
     supporting = {row["object_handle"] for row in case.provider_payload["supporting_evidence"]}
     contradictory = {row["object_handle"] for row in case.provider_payload["contradictory_evidence"]}

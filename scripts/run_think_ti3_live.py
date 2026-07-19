@@ -50,6 +50,25 @@ def _assert_response_cache_disabled() -> None:
         raise RuntimeError("TI3 live execution forbids the response cache")
 
 
+def _accepted_cognition_binding(event) -> tuple[dict, str, dict]:
+    """Bind provider raw text and parsed semantic object as distinct representations."""
+    payload = dict(event.payload)
+    if payload.get("parse_outcome") != "accepted":
+        raise RuntimeError("TI3 cognition event parse outcome is not accepted")
+    if canonical_sha256(payload) != event.content_digest:
+        raise RuntimeError("TI3 cognition event content digest mismatch")
+    structured = payload.get("structured_text")
+    if not isinstance(structured, str):
+        raise RuntimeError("TI3 raw response is not text")
+    text_digest = canonical_sha256(structured)
+    if payload.get("raw_digest") != text_digest:
+        raise RuntimeError("TI3 cognition raw text digest mismatch")
+    parsed = json.loads(structured)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("TI3 accepted response is not a JSON object")
+    return parsed, text_digest, payload
+
+
 async def _main() -> int:
     args = _arguments()
     base = LLMConfig.from_env()
@@ -108,12 +127,9 @@ async def _main() -> int:
         ]
         if len(raw_events) != 1:
             raise RuntimeError("TI3 attempt requires exactly one accepted raw response")
-        structured = raw_events[0].payload.get("structured_text")
-        if not isinstance(structured, str):
-            raise RuntimeError("TI3 raw response is not text")
-        raw_decision = json.loads(structured)
-        if raw_events[0].payload.get("raw_digest") != canonical_sha256(raw_decision):
-            raise RuntimeError("TI3 cognition event/raw digest mismatch")
+        raw_decision, cognition_text_digest, cognition_payload = (
+            _accepted_cognition_binding(raw_events[0])
+        )
         attempts = [
             row for row in sink.attempts if row.logical_call_id == request.attempt_id
         ]
@@ -152,7 +168,8 @@ async def _main() -> int:
             logical_outcome_id=logical[0].logical_call_id, logical_outcome_count=1,
             logical_outcome=logical[0].outcome, parse_outcome="accepted",
             cognition_event_digest=raw_events[0].content_digest,
-            cognition_event_raw_digest=str(raw_events[0].payload["raw_digest"]),
+            cognition_event_payload=cognition_payload,
+            cognition_raw_text_digest=cognition_text_digest,
             accepted_raw_digest=canonical_sha256(raw_decision),
             usage_exactness=attempts[0].usage_exactness,
             provider=attempts[0].provider,
