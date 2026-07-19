@@ -35,6 +35,39 @@ V2 is a narrow ownership correction: TI0 may emit the exact sanitized raw
 response from `lib/llm/provider.py`, the only boundary that possesses it before
 structured parsing. No semantic field or authority changed.
 
+### TI3 r1 terminal-red checkpoint and recovery checklist
+
+Run `ti3-live-8d7d9b05-r1` at commit
+`8d7d9b05c4081889a93b26cff8af2fb4cb4347de` is incomplete terminal red with
+primary class `schema_binding`. Nine screening calls were initiated; six
+Atlas/Cobalt successes are durable, one null Arm A parse failure is known, and
+the other two initiated null-call terminal outcomes are unknown. The untouched
+partial directory is
+`/tmp/fyralis-ti3-live-8d7d9b05/ti3/ti3-live-8d7d9b05-r1`. It has no run
+manifest and does not contain the known failed call's exact raw/receipt. No TI3
+arm or policy is selected.
+
+Impact review finds no contract amendment: v2 sections 3, 6, 7, and 8 already
+require raw parse outcomes, a schema-valid hard gate, `schema_binding`
+classification, and immutable artifacts. Digest
+`b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717`
+remains authoritative. The recovery hypothesis is that the evaluator can
+retain and score a one-attempt parse failure as red evidence without changing
+provider policy. The integration checklist is:
+
+1. Preserve r1 unchanged; do not resume, overwrite, or use its six successes as
+   selective substitutions.
+2. Reproduce `decision = no_op` against `BatchMemoryDecisionSet` provider-free.
+3. Repair only failed-outcome capture/evaluation durability; keep the pinned
+   provider, model, effort, schemas, `max_attempts = 1`, gold, thresholds, and
+   selection rule unchanged.
+4. Prove provider-free that parse failure emits a digest-bound outcome receipt,
+   scores `schema_valid = false`/`schema_binding`, performs no compiler/apply
+   work, and remains in complete experiment accounting.
+5. Request integration-owner authorization for at most one fresh full TI3 run
+   under a new identity. Do not run CF3-C; it remains locked until complete TI3
+   evidence selects and freezes a policy.
+
 The authorized order is:
 
 1. implement and provider-free validate TI0 observability;

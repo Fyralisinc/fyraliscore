@@ -2538,3 +2538,49 @@ threshold matcher is an observability classification defect to assess in the
 Wave 2 audit; it must be repaired before qualifying CF3-C only if it prevents
 complete required trace reconstruction. Proceed to scorer, fixture, and audit
 lanes regardless of the red semantic result.
+
+### 2026-07-19 — LOG-075 — TI3 r1 terminates incomplete on an unretained parse-failure outcome
+
+**Execution:** The preregistered TI3 run `ti3-live-8d7d9b05-r1` started from
+clean commit `8d7d9b05c4081889a93b26cff8af2fb4cb4347de` with Codex CLI,
+`gpt-5.3-codex-spark`, medium effort for Arms A/B and high effort for Arm C,
+zero retries, and concurrency capped at three. Nine screening calls were
+initiated. Six successful Atlas/Cobalt outcomes have durable per-attempt
+manifests. One null-case Arm A `BatchMemoryDecisionSet` response is known to
+have failed parsing because it placed `no_op` in `decision` rather than the
+separate `operation` field. The terminal outcomes of the other two initiated
+null-case calls are unknown from the governed artifacts. Do not infer either
+success or failure for them.
+
+**Verdict and artifact boundary:** Classify the run as incomplete terminal red,
+primary class `schema_binding`. It is not a completed nine-call screening, a
+21-outcome TI3 experiment, or a semantic comparison. No arm or policy was
+selected. The partial directory remains untouched at
+`/tmp/fyralis-ti3-live-8d7d9b05/ti3/ti3-live-8d7d9b05-r1`; it contains six
+durable successful attempt directories and no governing run manifest. The
+failed call's exact raw body and receipt are not present there, so this record
+does not claim terminal raw preservation or exact token/cost reconciliation for
+all nine initiated calls.
+
+**Contract impact review:** Contract-freeze v2 already requires raw provider
+response plus parse outcome in the cognition trace, names schema validity as a
+hard gate, permits `schema_binding` as the failure class, and requires unique,
+never-overwritten artifacts. The accepted-only TI3 capture adapter therefore
+failed to carry an existing v2 outcome into independent evaluation. This is an
+implementation/evaluator-durability nonconformance, not a change to semantic
+field ownership. Contract v2 and SHA-256
+`b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717`
+remain frozen. Provider, model, effort, schema vocabulary, one-attempt policy,
+quality tolerance, scorer gold, and hard gates are unchanged.
+
+**Written rerun hypothesis and next action:** If the evaluator durably retains
+and scores a terminal provider parse failure as `schema_valid = false` and
+`schema_binding`, without fabricating a parsed decision or changing provider
+policy, then the preregistered experiment can preserve complete arm/case
+accounting and fail the affected hard gates honestly instead of aborting before
+an outcome artifact exists. Reproduce the exact failure shape provider-free,
+repair only that capture/evaluation durability seam, and validate it before the
+integration owner considers one fresh full TI3 run with a new run identity.
+Never resume or overwrite r1, never substitute its six completed calls into a
+selective rerun, and do not run CF3-C. CF3-C remains locked until a complete TI3
+run selects and freezes a policy.

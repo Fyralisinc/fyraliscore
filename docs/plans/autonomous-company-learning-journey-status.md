@@ -2268,3 +2268,29 @@ matched feedback quality and objective entity v6.
   `adec20db...137d`, and `4d02ae2a...ea3d`. Arm A is frozen. Wave 2 scorer,
   fixture, and audit work proceeds, and the legacy interface receives no
   further tuning.
+
+### 2026-07-19 — TI3 r1 is incomplete terminal red; no policy was selected
+
+- Clean commit `8d7d9b05c4081889a93b26cff8af2fb4cb4347de` initiated all nine
+  screening calls for `ti3-live-8d7d9b05-r1`. Six Atlas/Cobalt calls have
+  durable successful attempt manifests. One null Arm A response failed the
+  `BatchMemoryDecisionSet` schema by returning `decision = no_op`; the two other
+  initiated null-call terminal outcomes are unknown from governed artifacts.
+- The untouched partial artifact is
+  `/tmp/fyralis-ti3-live-8d7d9b05/ti3/ti3-live-8d7d9b05-r1`. It has no run
+  manifest and does not preserve the failed call's exact raw response/receipt,
+  so it cannot support complete screening, call-cost reconciliation, arm
+  comparison, confirmation, or policy selection.
+- The primary failure class is `schema_binding`. Contract-freeze v2 already
+  requires raw parse outcomes, schema-validity hard gating, typed failure
+  classification, and never-overwritten artifacts. Impact review therefore
+  keeps v2 and digest `b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717`
+  unchanged: the accepted-only evaluator path is an implementation durability
+  defect, not a reason to alter provider/model/effort, retry policy, schemas,
+  scorer gold, or thresholds.
+- The written rerun hypothesis is narrow: retaining and scoring a terminal
+  parse failure as red evidence will preserve population accounting without
+  changing provider policy. First reproduce and fix that seam provider-free.
+  Any later provider run requires integration-owner authorization, the same
+  frozen policies, and a fresh run identity; r1 cannot be resumed, overwritten,
+  or selectively completed. CF3-C remains locked.
