@@ -44,6 +44,7 @@ def _invalid_no_op_attempt(capture, case) -> tuple[ProviderAttempt, str, dict]:
     }
     attempt = ProviderAttempt(
         raw_decision=raw,
+        raw_structured_text=raw_text,
         input_tokens=100,
         output_tokens=20,
         latency_ms=5,

@@ -51,7 +51,7 @@ def _assert_response_cache_disabled() -> None:
         raise RuntimeError("TI3 live execution forbids the response cache")
 
 
-def _cognition_binding(event, *, parse_outcome: str) -> tuple[dict, str, dict]:
+def _cognition_binding(event, *, parse_outcome: str) -> tuple[dict | None, str, dict]:
     """Bind provider raw text and parsed semantic object as distinct representations."""
     payload = dict(event.payload)
     if payload.get("parse_outcome") != parse_outcome:
@@ -64,9 +64,17 @@ def _cognition_binding(event, *, parse_outcome: str) -> tuple[dict, str, dict]:
     text_digest = canonical_sha256(structured)
     if payload.get("raw_digest") != text_digest:
         raise RuntimeError("TI3 cognition raw text digest mismatch")
-    parsed = json.loads(structured)
-    if not isinstance(parsed, dict):
+    try:
+        parsed = json.loads(structured)
+    except json.JSONDecodeError:
+        if parse_outcome == "parse_failure":
+            parsed = None
+        else:
+            raise RuntimeError("TI3 accepted response is not valid JSON") from None
+    if parse_outcome == "accepted" and not isinstance(parsed, dict):
         raise RuntimeError("TI3 accepted response is not a JSON object")
+    if parsed is not None and not isinstance(parsed, dict):
+        parsed = None
     return parsed, text_digest, payload
 
 
@@ -159,6 +167,7 @@ async def _main() -> int:
         )
         return ProviderAttempt(
             raw_decision=raw_decision,
+            raw_structured_text=str(cognition_payload["structured_text"]),
             input_tokens=sum(row.input_tokens for row in attempts),
             output_tokens=sum(row.output_tokens for row in attempts),
             latency_ms=latency_ms,
@@ -177,7 +186,12 @@ async def _main() -> int:
             cognition_event_digest=raw_events[0].content_digest,
             cognition_event_payload=cognition_payload,
             cognition_raw_text_digest=cognition_text_digest,
-            accepted_raw_digest=canonical_sha256(raw_decision),
+            accepted_raw_digest=canonical_sha256(
+                raw_decision if raw_decision is not None else {
+                    "structured_text": cognition_payload["structured_text"],
+                    "parse_outcome": "parse_failure",
+                }
+            ),
             usage_exactness=attempts[0].usage_exactness,
             provider=attempts[0].provider,
             provider_config_effort_digest=canonical_sha256({

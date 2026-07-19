@@ -19,6 +19,7 @@ from lib.evaluation.epistemic_repair.ti3_frozen_dossiers import (
     build_frozen_dossier_cases,
 )
 from services.reasoning.think.synthesis_contract import (
+    CONTRACT_DIGEST,
     HandleBinding,
     SynthesisCompileContext,
     SynthesisProviderDecision,
@@ -58,7 +59,8 @@ class ArmPolicy(BaseModel):
 
 class ProviderAttempt(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    raw_decision: dict[str, Any]
+    raw_decision: dict[str, Any] | None
+    raw_structured_text: str
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     latency_ms: float = Field(ge=0)
@@ -104,12 +106,39 @@ class ProviderAttempt(BaseModel):
             raise ValueError("TI3 outcome requires exactly one joined logical receipt")
         if self.source == "provider" and self.logical_outcome_id != self.attempt_id:
             raise ValueError("TI3 provider attempt/logical receipt mismatch")
-        if self.accepted_raw_digest != canonical_sha256(self.raw_decision):
+        raw_artifact: Any = (
+            self.raw_decision if self.raw_decision is not None else {
+                "structured_text": self.raw_structured_text,
+                "parse_outcome": "parse_failure",
+            }
+        )
+        if self.accepted_raw_digest != canonical_sha256(raw_artifact):
             raise ValueError("TI3 accepted raw digest mismatch")
         if canonical_sha256(self.cognition_event_payload) != self.cognition_event_digest:
             raise ValueError("TI3 cognition event content digest mismatch")
         if self.cognition_event_payload.get("raw_digest") != self.cognition_raw_text_digest:
             raise ValueError("TI3 cognition raw text digest mismatch")
+        structured = self.cognition_event_payload.get("structured_text")
+        if structured != self.raw_structured_text:
+            raise ValueError("TI3 cognition/raw structured text mismatch")
+        if canonical_sha256(self.raw_structured_text) != self.cognition_raw_text_digest:
+            raise ValueError("TI3 cognition raw text digest mismatch")
+        if self.parse_outcome == "accepted":
+            if self.raw_decision is None:
+                raise ValueError("TI3 accepted response requires a JSON object")
+            try:
+                parsed = json.loads(self.raw_structured_text)
+            except json.JSONDecodeError:
+                raise ValueError("TI3 accepted response requires valid JSON") from None
+            if parsed != self.raw_decision:
+                raise ValueError("TI3 accepted text/object mismatch")
+        elif self.raw_decision is not None:
+            try:
+                parsed = json.loads(self.raw_structured_text)
+            except json.JSONDecodeError:
+                raise ValueError("TI3 parse-failure object lacks JSON source") from None
+            if not isinstance(parsed, dict) or parsed != self.raw_decision:
+                raise ValueError("TI3 parse-failure text/object mismatch")
         expected = canonical_sha256({"provider": self.provider, "model": self.model,
                                      "effort": self.effort})
         if self.provider_config_effort_digest != expected:
@@ -243,7 +272,7 @@ async def run_ti3_experiment(
     body = {
         "schema_version": "think-ti3-experiment-v1", "run_id": run_id,
         "commit": commit,
-        "contract_digest": "b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717",
+        "contract_digest": CONTRACT_DIGEST,
         "fixture_manifest_digest": build_fixture_manifest()["manifest_digest"],
         "quality_tolerance": quality_tolerance, "max_concurrency": max_concurrency,
         "screening_attempt_count": len(screening), "confirmation_attempt_count": len(confirmation),
@@ -312,8 +341,14 @@ def _evaluate_attempt(
     historical_substitution: bool,
     capture: CaptureRequest,
 ) -> AttemptOutcome:
-    raw = dict(attempt.raw_decision)
-    raw_digest = canonical_sha256(raw)
+    raw = dict(attempt.raw_decision or {})
+    raw_artifact: Any = (
+        attempt.raw_decision
+        if attempt.raw_decision is not None
+        else {"structured_text": attempt.raw_structured_text,
+              "parse_outcome": "parse_failure"}
+    )
+    raw_digest = canonical_sha256(raw_artifact)
     compiler_digest: str | None = None
     compiler_accepted = False
     if attempt.parse_outcome == "parse_failure":
@@ -371,12 +406,13 @@ def _evaluate_attempt(
     )
     result = (
         score_legacy_compiled_decision(
-            scorer_case, raw, compiled_artifact=compiler_artifact,
+            scorer_case, raw_artifact, compiled_artifact=compiler_artifact,
             decision_artifact_digest=raw_digest, execution=execution,
             model_handle_by_id=_model_handle_by_id(case),
         ) if policy.interface == "legacy_isolated" else
         score_semantic_decision(
-            scorer_case, raw, decision_artifact_digest=raw_digest, execution=execution,
+            scorer_case, raw_artifact, decision_artifact_digest=raw_digest,
+            execution=execution,
         )
     )
     receipt = build_evaluation_receipt(
@@ -392,7 +428,7 @@ def _evaluate_attempt(
         "prompt.json": {"system": capture.system_prompt, "user": capture.user_prompt,
                         "schema_name": capture.schema_name,
                         "json_schema": capture.json_schema},
-        "raw-response.json": raw,
+        "raw-response.json": raw_artifact,
         "compiler.json": compiler_artifact,
         "applied-result.json": {"validation_status": attempt.validation_status,
             "apply_status": attempt.apply_status,
@@ -412,7 +448,7 @@ def _evaluate_attempt(
     manifest_body = {
         "schema_version": "think-cognition-artifact-manifest-v1",
         "commit": commit,
-        "contract_digest": "b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717",
+        "contract_digest": CONTRACT_DIGEST,
         "attempt_id": spec.attempt_id, "case_id": spec.case_id, "arm": spec.arm,
         "phase": spec.phase, "sample_index": spec.sample_index,
         "logical_call_id": spec.attempt_id, "trace_id": spec.attempt_id,
@@ -532,7 +568,8 @@ def load_historical_atlas_baseline(
     if json.loads(structured_text) != dict(native_raw):
         raise ValueError("historical cognition text/accepted object mismatch")
     return ProviderAttempt(
-        raw_decision=dict(native_raw), compiler_artifact=dict(compiled),
+        raw_decision=dict(native_raw), raw_structured_text=structured_text,
+        compiler_artifact=dict(compiled),
         validation_status=str(apply_facts.get("validation_status") or "not_run"),
         apply_status=str(apply_facts.get("apply_status") or "not_run"),
         partial_write_count=apply_facts.get("partial_write_count"),
@@ -619,7 +656,12 @@ def _capture_receipt(attempt: ProviderAttempt) -> dict[str, Any]:
     return {"attempt_id": attempt.attempt_id, "model": attempt.model,
             "effort": attempt.effort, "prompt_digest": attempt.prompt_digest,
             "schema_digest": attempt.schema_digest, "source": attempt.source,
-            "raw_digest": canonical_sha256(attempt.raw_decision),
+            "raw_digest": canonical_sha256(
+                attempt.raw_decision
+                if attempt.raw_decision is not None
+                else {"structured_text": attempt.raw_structured_text,
+                      "parse_outcome": "parse_failure"}
+            ),
             "physical_attempt_ids": attempt.physical_attempt_ids,
             "physical_attempt_count": attempt.physical_attempt_count,
             "physical_outcomes": attempt.physical_outcomes,

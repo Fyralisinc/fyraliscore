@@ -19,7 +19,7 @@ from lib.shared.ids import uuid7
 from .diff_schema import ClaimOp, RawDiff, RelationClaimOp
 
 
-CONTRACT_DIGEST = "b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717"
+CONTRACT_DIGEST = "8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f"
 LocalHandle = Annotated[str, Field(pattern=r"^(?:M|O)[1-9][0-9]{0,2}$")]
 SemanticRole = Literal[
     "cause", "effect", "support", "counterevidence", "novelty_reference",

@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from lib.contracts.kernel import canonical_sha256
+from services.reasoning.think.synthesis_contract import CONTRACT_DIGEST
 from services.evaluation.epistemic_repair.think_ti3_experiment import (
     ArmPolicy,
     HistoricalBaselineBinding,
@@ -97,7 +98,8 @@ def _attempt(capture) -> ProviderAttempt:
     cognition_payload = {"structured_text": structured,
                          "raw_digest": canonical_sha256(structured),
                          "parse_outcome": "accepted"}
-    return ProviderAttempt(raw_decision=raw, input_tokens=900, output_tokens=100,
+    return ProviderAttempt(raw_decision=raw, raw_structured_text=structured,
+        input_tokens=900, output_tokens=100,
         latency_ms=10, cost_usd=.01, attempt_id=capture.attempt_id,
         validation_status="not_run", apply_status="not_run",
         partial_write_count=None, validator_applier_failure_count=None,
@@ -123,7 +125,8 @@ def _schema_failure_attempt(capture) -> ProviderAttempt:
                          "raw_digest": canonical_sha256(structured),
                          "parse_outcome": "parse_failure"}
     return ProviderAttempt(
-        raw_decision=raw, input_tokens=700, output_tokens=40, latency_ms=8,
+        raw_decision=raw, raw_structured_text=structured,
+        input_tokens=700, output_tokens=40, latency_ms=8,
         cost_usd=.01, attempt_id=capture.attempt_id,
         validation_status="not_run", apply_status="not_run",
         partial_write_count=None, validator_applier_failure_count=None,
@@ -137,6 +140,35 @@ def _schema_failure_attempt(capture) -> ProviderAttempt:
         cognition_event_payload=cognition_payload,
         cognition_raw_text_digest=canonical_sha256(structured),
         accepted_raw_digest=canonical_sha256(raw), usage_exactness="reported",
+        provider="codex", provider_config_effort_digest=canonical_sha256({
+            "provider": "codex", "model": capture.model, "effort": capture.effort,
+        }),
+    )
+
+
+def _non_json_failure_attempt(capture) -> ProviderAttempt:
+    structured = "not-json-at-all"
+    cognition_payload = {"structured_text": structured,
+                         "raw_digest": canonical_sha256(structured),
+                         "parse_outcome": "parse_failure"}
+    return ProviderAttempt(
+        raw_decision=None, raw_structured_text=structured,
+        input_tokens=700, output_tokens=5, latency_ms=8, cost_usd=.01,
+        attempt_id=capture.attempt_id,
+        validation_status="not_run", apply_status="not_run",
+        partial_write_count=None, validator_applier_failure_count=None,
+        model=capture.model, effort=capture.effort,
+        prompt_digest=capture.prompt_digest, schema_digest=capture.schema_digest,
+        physical_attempt_ids=[f"physical:{capture.attempt_id}"],
+        physical_attempt_count=1, physical_outcomes=["parse_failure"],
+        logical_outcome_id=capture.attempt_id, logical_outcome_count=1,
+        logical_outcome="exhausted", parse_outcome="parse_failure",
+        cognition_event_digest=canonical_sha256(cognition_payload),
+        cognition_event_payload=cognition_payload,
+        cognition_raw_text_digest=canonical_sha256(structured),
+        accepted_raw_digest=canonical_sha256({
+            "structured_text": structured, "parse_outcome": "parse_failure",
+        }), usage_exactness="reported",
         provider="codex", provider_config_effort_digest=canonical_sha256({
             "provider": "codex", "model": capture.model, "effort": capture.effort,
         }),
@@ -171,6 +203,9 @@ async def test_preregistered_attempt_counts_concurrency_artifacts_and_selection(
         arm_policies=policies, quality_tolerance=.03, max_concurrency=3,
     )
     assert artifact["screening_attempt_count"] == 9
+    assert artifact["contract_digest"] == CONTRACT_DIGEST == (
+        "8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f"
+    )
     assert artifact["confirmation_attempt_count"] == 12
     assert len(calls) == len(set(calls)) == 21
     assert maximum <= 3
@@ -251,6 +286,42 @@ async def test_one_attempt_no_op_schema_failure_is_durable_red_and_run_continues
     assert score["verdict"] == "red"
     assert compiler["accepted"] is False
     assert compiler["error_type"] == "ProviderSchemaParseFailure"
+    assert (directory / "manifest.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_arbitrary_non_json_failure_is_durable_and_run_continues(tmp_path) -> None:
+    failed_attempt_id = None
+    calls = []
+
+    async def provider(capture):
+        nonlocal failed_attempt_id
+        calls.append(capture.attempt_id)
+        if failed_attempt_id is None:
+            failed_attempt_id = capture.attempt_id
+            return _non_json_failure_attempt(capture)
+        return _attempt(capture)
+
+    artifact = await run_ti3_experiment(
+        output_root=tmp_path, run_id="non-json-failure-r1", provider=provider,
+        commit="test-commit",
+    )
+    assert len(calls) == 21
+    assert artifact["physical_call_count"] == artifact["logical_outcome_count"] == 21
+    directory = tmp_path / "ti3" / "non-json-failure-r1" / "attempts" / failed_attempt_id
+    persisted_raw = json.loads((directory / "raw-response.json").read_text())
+    capture = json.loads((directory / "capture-receipt.json").read_text())
+    score = json.loads((directory / "score.json").read_text())
+    assert persisted_raw == {"structured_text": "not-json-at-all",
+                             "parse_outcome": "parse_failure"}
+    assert capture["cognition_event_payload"]["structured_text"] == (
+        persisted_raw["structured_text"]
+    )
+    assert capture["physical_outcomes"] == ["parse_failure"]
+    assert capture["logical_outcome"] == "exhausted"
+    assert score["hard_gates"]["schema_valid"] is False
+    assert score["failure_class"] == "schema_binding"
+    assert score["verdict"] == "red"
     assert (directory / "manifest.json").is_file()
 
 
@@ -400,6 +471,20 @@ def test_real_cognition_event_binds_raw_text_separately_from_semantic_object() -
     tampered = replace(event, payload={**payload, "parse_outcome": "cache_hit"})
     with pytest.raises(RuntimeError, match="parse outcome"):
         _cognition_binding(tampered, parse_outcome="accepted")
+
+    failed_text = "not-json-at-all"
+    failed_payload = {"structured_text": failed_text,
+                      "raw_digest": canonical_sha256(failed_text),
+                      "parse_outcome": "parse_failure"}
+    failed_event = replace(
+        event, payload=failed_payload, content_digest=canonical_sha256(failed_payload),
+    )
+    parsed, text_digest, bound_payload = _cognition_binding(
+        failed_event, parse_outcome="parse_failure",
+    )
+    assert parsed is None
+    assert text_digest == canonical_sha256(failed_text)
+    assert bound_payload == failed_payload
 
 
 def test_isolated_not_run_stages_are_unawarded_but_selectable() -> None:
