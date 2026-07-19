@@ -137,7 +137,7 @@ async def test_success_receipts_are_scoped_enriched_and_persisted(monkeypatch):
     outcome = await reason.think(trigger, _Pool(conn), llm_provider=provider)
 
     assert outcome.status == "success"
-    assert len(conn.calls) == 2
+    assert len(conn.calls) == 4
     logical_args = conn.calls[0][1]
     assert logical_args[0] == trigger.tenant_id
     assert logical_args[2] == trigger_id
@@ -174,7 +174,7 @@ async def test_failed_provider_attempt_is_still_persisted(monkeypatch):
     outcome = await reason.think(trigger, _Pool(conn), llm_provider=provider)
 
     assert outcome.status == "failed"
-    assert len(conn.calls) == 2
+    assert len(conn.calls) == 3
     assert conn.calls[0][1][13] == "provider_error"
     assert conn.calls[0][1][15:17] == ("RuntimeError", "not_applied")
     assert conn.calls[1][1][10] == "provider_error"
@@ -221,7 +221,7 @@ async def test_receipts_survive_an_orchestration_exception(monkeypatch):
     with pytest.raises(LookupError, match="failure handler also failed"):
         await reason.think(trigger, _Pool(conn), llm_provider=provider)
 
-    assert len(conn.calls) == 2
+    assert len(conn.calls) == 3
     assert conn.calls[0][1][15:17] == ("LookupError", "orchestration_failed")
     assert conn.calls[1][1][10] == "provider_error"
 

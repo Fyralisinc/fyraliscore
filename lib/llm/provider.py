@@ -60,9 +60,11 @@ from pydantic import BaseModel, ValidationError as PydanticValidationError
 
 from lib.contracts.kernel import canonical_sha256
 from lib.llm.telemetry import (
+    CognitionTraceEvent,
     LLMReceiptSink,
     LogicalCallReceipt,
     PhysicalAttemptReceipt,
+    sanitize_cognition_payload,
     utc_now,
 )
 from lib.shared.errors import CompanyOSError
@@ -1182,6 +1184,8 @@ class LLMProvider(abc.ABC):
         context_digest: str | None = None,
         max_attempts: int | None = None,
         deadline_s: float = 240.0,
+        cognitive_purpose: str | None = None,
+        cognition_versions: dict[str, str] | None = None,
     ) -> T:
         """
         Invoke the model and return a validated Pydantic instance.
@@ -1194,6 +1198,7 @@ class LLMProvider(abc.ABC):
         through the schema on hit.
         """
         logical_call_id = logical_call_id or str(uuid.uuid4())
+        trace_id = str(uuid.uuid4())
         requested_attempts = (
             max_attempts if max_attempts is not None
             else self.config.max_retries + 1
@@ -1213,6 +1218,35 @@ class LLMProvider(abc.ABC):
                 "max_tokens": max_tokens,
             }
         )
+        receipt_sink = _CURRENT_RECEIPT_SINK.get() or self._receipt_sink
+        raw_purpose = cognitive_purpose or _CURRENT_USAGE_PURPOSE.get()
+        purpose = {
+            "main_reasoning": "main_reconciliation",
+            "entity_grounding": "entity_resolution",
+            "parse_repair": "main_reconciliation",
+        }.get(raw_purpose, raw_purpose)
+        if purpose not in {
+            "mention_discovery", "entity_resolution", "question_planning",
+            "main_reconciliation", "main_synthesis",
+        }:
+            purpose = "main_reconciliation"
+        if receipt_sink is not None and hasattr(receipt_sink, "record_cognition_event"):
+            prompt_payload = sanitize_cognition_payload({
+                "system_text": system,
+                "user_text": user,
+                "prompt_digest": prompt_digest,
+                "versions": cognition_versions or {},
+            })
+            receipt_sink.record_cognition_event(CognitionTraceEvent(
+                schema_version="think-cognition-trace-v1",
+                trace_id=trace_id,
+                logical_call_id=logical_call_id,
+                stage="prompt",
+                cognitive_purpose=purpose,
+                payload=prompt_payload,
+                content_digest=canonical_sha256(prompt_payload),
+                occurred_at=utc_now(),
+            ))
         physical_attempt_count = 0
         logical_outcome = "success"
         logical_error_class: str | None = None
@@ -1267,6 +1301,34 @@ class LLMProvider(abc.ABC):
                     ) from err
                 if not cache_fetched:
                     logical_outcome = "cache_hit"
+                if receipt_sink is not None and hasattr(
+                    receipt_sink, "record_cognition_event"
+                ):
+                    try:
+                        safe_cached = json.dumps(
+                            sanitize_cognition_payload(json.loads(raw_cached)),
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    except json.JSONDecodeError:
+                        safe_cached = sanitize_cognition_payload(raw_cached)
+                    cached_payload = {
+                        "structured_text": safe_cached,
+                        "raw_digest": canonical_sha256(safe_cached),
+                        "parse_outcome": (
+                            "cache_hit" if not cache_fetched else "accepted"
+                        ),
+                    }
+                    receipt_sink.record_cognition_event(CognitionTraceEvent(
+                        schema_version="think-cognition-trace-v1",
+                        trace_id=trace_id,
+                        logical_call_id=logical_call_id,
+                        stage="raw_provider_response",
+                        cognitive_purpose=purpose,
+                        payload=cached_payload,
+                        content_digest=canonical_sha256(cached_payload),
+                        occurred_at=utc_now(),
+                    ))
                 return parsed     # type: ignore[return-value]
 
             raw = await self._structured_raw(
@@ -1276,6 +1338,30 @@ class LLMProvider(abc.ABC):
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            if receipt_sink is not None and hasattr(receipt_sink, "record_cognition_event"):
+                try:
+                    safe_raw = json.dumps(
+                        sanitize_cognition_payload(json.loads(raw)),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                except json.JSONDecodeError:
+                    safe_raw = sanitize_cognition_payload(raw)
+                raw_payload = sanitize_cognition_payload({
+                    "structured_text": safe_raw,
+                    "raw_digest": canonical_sha256(safe_raw),
+                    "parse_outcome": "accepted",
+                })
+                receipt_sink.record_cognition_event(CognitionTraceEvent(
+                    schema_version="think-cognition-trace-v1",
+                    trace_id=trace_id,
+                    logical_call_id=logical_call_id,
+                    stage="raw_provider_response",
+                    cognitive_purpose=purpose,
+                    payload=raw_payload,
+                    content_digest=canonical_sha256(raw_payload),
+                    occurred_at=utc_now(),
+                ))
             parsed, err = _try_parse(raw, schema)
             if err is not None:
                 raise LLMParseError(
@@ -1320,7 +1406,9 @@ class LLMProvider(abc.ABC):
                         outcome=logical_outcome,  # type: ignore[arg-type]
                         physical_attempt_count=physical_attempt_count,
                         error_class=logical_error_class,
-                        error_message=logical_error_message,
+                        error_message=sanitize_cognition_payload(
+                            logical_error_message
+                        ),
                         context_digest=context_digest,
                     )
                 )
@@ -1539,7 +1627,7 @@ class LLMProvider(abc.ABC):
                 ended_at=utc_now(),
                 outcome=outcome,  # type: ignore[arg-type]
                 error_class=error_class,
-                error_message=error_message,
+                error_message=sanitize_cognition_payload(error_message),
                 retry_scheduled=retry_scheduled,
                 input_tokens=sum(item.input_tokens for item in usages),
                 output_tokens=sum(item.output_tokens for item in usages),

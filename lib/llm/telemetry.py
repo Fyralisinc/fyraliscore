@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Literal, Protocol
+import re
+from typing import Any, Literal, Protocol
 
 
 AttemptOutcome = Literal[
@@ -18,6 +19,69 @@ AttemptOutcome = Literal[
 LogicalCallOutcome = Literal[
     "success", "cache_hit", "timeout", "parse_failure", "provider_error", "exhausted"
 ]
+CognitivePurpose = Literal[
+    "mention_discovery",
+    "entity_resolution",
+    "question_planning",
+    "main_reconciliation",
+    "main_synthesis",
+]
+
+_SECRET_KEYS = re.compile(
+    r"(authorization|cookie|api[_-]?key|access[_-]?token|refresh[_-]?token|"
+    r"password|connection[_-]?(string|url)|provider[_-]?auth)", re.I
+)
+_GOLD_KEYS = re.compile(
+    r"(oracle|gold|expected[_-]?(thesis|mechanism|direction|storyline)|threshold)",
+    re.I,
+)
+_BEARER = re.compile(r"(?i)bearer\s+[a-z0-9._~+/-]+=*")
+
+
+class UnsafeCognitionTrace(ValueError):
+    """The event contains evaluator authority that runtime may not persist."""
+
+
+def sanitize_cognition_payload(value: Any, *, path: str = "$") -> Any:
+    """Redact credentials and reject evaluator-gold fields recursively."""
+
+    if isinstance(value, dict):
+        clean: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            if _GOLD_KEYS.search(key):
+                raise UnsafeCognitionTrace(f"evaluator field forbidden at {path}.{key}")
+            clean[key] = (
+                "[REDACTED]"
+                if _SECRET_KEYS.search(key)
+                else sanitize_cognition_payload(item, path=f"{path}.{key}")
+            )
+        return clean
+    if isinstance(value, (list, tuple)):
+        return [
+            sanitize_cognition_payload(item, path=f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, str):
+        return _BEARER.sub("Bearer [REDACTED]", value)
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class CognitionTraceEvent:
+    """One immutable stage in a logical call's cognition trace."""
+
+    schema_version: str
+    trace_id: str
+    logical_call_id: str
+    stage: Literal[
+        "prompt", "raw_provider_response", "compiler", "validated_command",
+        "applied_result",
+    ]
+    cognitive_purpose: CognitivePurpose
+    payload: dict[str, Any]
+    content_digest: str
+    occurred_at: datetime
 
 
 def utc_now() -> datetime:
@@ -71,6 +135,8 @@ class LLMReceiptSink(Protocol):
 
     def record_logical_call(self, receipt: LogicalCallReceipt) -> None: ...
 
+    def record_cognition_event(self, event: CognitionTraceEvent) -> None: ...
+
 
 @dataclass(slots=True)
 class InMemoryLLMReceiptSink:
@@ -78,9 +144,13 @@ class InMemoryLLMReceiptSink:
 
     attempts: list[PhysicalAttemptReceipt] = field(default_factory=list)
     logical_calls: list[LogicalCallReceipt] = field(default_factory=list)
+    cognition_events: list[CognitionTraceEvent] = field(default_factory=list)
 
     def record_attempt(self, receipt: PhysicalAttemptReceipt) -> None:
         self.attempts.append(receipt)
 
     def record_logical_call(self, receipt: LogicalCallReceipt) -> None:
         self.logical_calls.append(receipt)
+
+    def record_cognition_event(self, event: CognitionTraceEvent) -> None:
+        self.cognition_events.append(event)

@@ -49,6 +49,9 @@ if TYPE_CHECKING:
 
 
 _CLAIMS_ONLY_MAX_TOKENS_DEFAULT = 1024
+_PROMPT_POLICY_VERSION = "think-compiled-prompt-v1"
+_COMPILER_VERSION = "think-compiled-reasoning-v1"
+_ROUTING_POLICY_VERSION = "think-cognitive-routing-v1"
 class ReasoningFailure(CompanyOSError):
     default_code = "reasoning_failure"
 
@@ -103,6 +106,7 @@ async def llm_reason(
                     compiled_relationship_candidate_max_tokens(),
                 ),
                 max_attempts=max_attempts,
+                cognitive_purpose="main_synthesis",
             )
             return (
                 apply_relation_lifecycle_kernel(
@@ -132,6 +136,7 @@ async def llm_reason(
                     compiled_batch_memory_decision_max_tokens(),
                 ),
                 max_attempts=max_attempts,
+                cognitive_purpose="main_synthesis",
             )
             return (
                 apply_relation_lifecycle_kernel(
@@ -174,6 +179,7 @@ async def llm_reason(
         max_tokens=effective_max_tokens,
         max_attempts=max_attempts,
         context_digest=canonical_sha256(asdict(bundle)),
+        cognitive_purpose="main_reconciliation",
     )
     raw_diff = _coerce_raw_diff(diff_like)
     raw_diff = apply_relation_lifecycle_kernel(
@@ -194,6 +200,7 @@ async def _structured_with_reasoning_retries(
     max_tokens: int,
     max_attempts: int,
     context_digest: str | None = None,
+    cognitive_purpose: str = "main_reconciliation",
 ) -> tuple[Any, int]:
     started = time.monotonic()
     try:
@@ -206,6 +213,17 @@ async def _structured_with_reasoning_retries(
             max_attempts=max_attempts,
             deadline_s=240.0,
             context_digest=context_digest,
+            cognitive_purpose=cognitive_purpose,
+            cognition_versions={
+                "prompt_policy_version": _PROMPT_POLICY_VERSION,
+                "provider_schema_version": (
+                    f"{schema.__name__.replace('_', '-').lower()}-v1"
+                ),
+                "compiler_version": _COMPILER_VERSION,
+                "model": provider.config.model,
+                "effort": provider.config.reasoning_effort or "default",
+                "routing_policy_version": _ROUTING_POLICY_VERSION,
+            },
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
         return parsed, elapsed_ms

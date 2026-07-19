@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import asyncio
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
 
@@ -24,6 +23,7 @@ from lib.llm.provider import (
     _codex_transport,
     _codex_should_use_cli_transport,
 )
+from lib.llm.telemetry import InMemoryLLMReceiptSink, UnsafeCognitionTrace
 
 
 # ---------------------------------------------------------------------
@@ -1013,3 +1013,50 @@ async def test_structured_different_schema_per_call():
     p = ScriptedProvider([raw])
     out = await p.structured(system="s", user="u", schema=Other)
     assert out.topic == "ship"
+@pytest.mark.asyncio
+async def test_structured_emits_sanitized_prompt_and_raw_cognition_trace():
+    class Answer(BaseModel):
+        answer: str
+        access_token: str
+
+    provider = ScriptedProvider(['{"answer":"ok","access_token":"secret"}'])
+    sink = InMemoryLLMReceiptSink()
+    provider.set_receipt_sink(sink)
+
+    await provider.structured(
+        system="Authorization: Bearer top-secret",
+        user="reason about this",
+        schema=Answer,
+        cognitive_purpose="main_synthesis",
+        cognition_versions={"effort": "high"},
+    )
+
+    assert [event.stage for event in sink.cognition_events] == [
+        "prompt", "raw_provider_response",
+    ]
+    prompt, raw = sink.cognition_events
+    assert "top-secret" not in prompt.payload["system_text"]
+    assert raw.payload["structured_text"] == (
+        '{"access_token":"[REDACTED]","answer":"ok"}'
+    )
+    assert prompt.cognitive_purpose == "main_synthesis"
+    assert prompt.content_digest != raw.content_digest
+
+
+@pytest.mark.asyncio
+async def test_structured_rejects_evaluator_gold_before_provider_call():
+    class Answer(BaseModel):
+        answer: str
+
+    provider = ScriptedProvider(['{"answer":"unused"}'])
+    sink = InMemoryLLMReceiptSink()
+    provider.set_receipt_sink(sink)
+
+    with pytest.raises(UnsafeCognitionTrace, match="evaluator field forbidden"):
+        await provider.structured(
+            system="system",
+            user="user",
+            schema=Answer,
+            cognitive_purpose="main_synthesis",
+            cognition_versions={"oracle_label": "positive"},
+        )

@@ -21,7 +21,9 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from lib.llm.telemetry import sanitize_cognition_payload
 from lib.shared.ids import uuid7
+from .llm_receipts import record_current_pipeline_stage
 
 
 _log = structlog.get_logger("think.debug_capture")
@@ -87,13 +89,22 @@ async def capture(
     stage: str,
     payload: Any,
 ) -> None:
+    cognition_stage = {
+        "response": "compiler",
+        "validation": "validated_command",
+        "apply": "applied_result",
+    }.get(stage)
+    if cognition_stage is not None:
+        record_current_pipeline_stage(cognition_stage, _coerce(payload))
     if not _enabled():
         return
     if stage not in _STAGES:
         _log.warning("debug_capture.unknown_stage", stage=stage)
         return
     try:
-        payload_json = json.dumps(_coerce(payload), default=str)
+        payload_json = json.dumps(
+            sanitize_cognition_payload(_coerce(payload)), default=str
+        )
     except Exception as e:  # noqa: BLE001
         _log.warning(
             "debug_capture.serialization_failed",
