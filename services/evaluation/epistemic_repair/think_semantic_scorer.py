@@ -87,8 +87,10 @@ class ExecutionEvidence(BaseModel):
     scope_clean: bool
     compiler_accepted: bool
     unsupported_canonical_relation_count: int = Field(ge=0)
-    partial_write_count: int = Field(ge=0)
-    validator_applier_failure_count: int = Field(ge=0)
+    validation_status: Literal["success", "failure", "not_run"]
+    apply_status: Literal["success", "failure", "not_run"]
+    partial_write_count: int | None = Field(default=None, ge=0)
+    validator_applier_failure_count: int | None = Field(default=None, ge=0)
     compiler_receipt_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     tokens: int = Field(default=0, ge=0)
     latency_ms: float = Field(default=0, ge=0)
@@ -107,8 +109,8 @@ class HardGates(BaseModel):
     correct_mechanism_and_direction: bool
     correct_abstention: bool
     unsupported_canonical_relations_zero: bool
-    partial_writes_zero: bool
-    validator_applier_failures_zero: bool
+    partial_writes_zero: bool | None
+    validator_applier_failures_zero: bool | None
 
 
 class ContinuousMetrics(BaseModel):
@@ -224,8 +226,14 @@ def score_semantic_decision(
         ), correct_mechanism_and_direction=bool(correct_semantics),
         correct_abstention=bool(correct_abstention),
         unsupported_canonical_relations_zero=execution.unsupported_canonical_relation_count == 0,
-        partial_writes_zero=execution.partial_write_count == 0,
-        validator_applier_failures_zero=execution.validator_applier_failure_count == 0,
+        partial_writes_zero=(
+            execution.partial_write_count == 0 if execution.apply_status != "not_run" else None
+        ),
+        validator_applier_failures_zero=(
+            execution.validator_applier_failure_count == 0
+            if execution.validation_status != "not_run" or execution.apply_status != "not_run"
+            else None
+        ),
     )
     hard_values = hard.model_dump().values()
     semantic_mean = sum(map(float, (
@@ -246,8 +254,18 @@ def score_semantic_decision(
         tokens=execution.tokens, latency_ms=execution.latency_ms, cost_usd=execution.cost_usd,
         semantic_value_per_thousand_tokens=value_per_k,
     )
-    verdict: Literal["green", "red"] = "green" if all(hard_values) else "red"
-    failure = None if verdict == "green" else _failure_class(hard)
+    verdict: Literal["green", "red"] = "green" if all(value is True for value in hard_values) else "red"
+    isolated_values = [
+        value for key, value in hard.model_dump().items()
+        if key not in {"partial_writes_zero", "validator_applier_failures_zero"}
+    ]
+    mutation_unrun = (
+        hard.partial_writes_zero is None and hard.validator_applier_failures_zero is None
+    )
+    failure = (
+        None if verdict == "green" or (mutation_unrun and all(isolated_values))
+        else _failure_class(hard)
+    )
     body = {
         "schema_version": "think-semantic-result-v1", "case_id": case.case_id,
         "case_digest": case.content_digest, "decision_artifact_digest": decision_artifact_digest,
@@ -348,7 +366,7 @@ def _failure_class(gates: HardGates) -> FailureClass:
         return "context_dossier"
     if not gates.compiler_accepted:
         return "compiler"
-    if not gates.partial_writes_zero or not gates.validator_applier_failures_zero:
+    if gates.partial_writes_zero is False or gates.validator_applier_failures_zero is False:
         return "validator_applier"
     return "semantic_model"
 

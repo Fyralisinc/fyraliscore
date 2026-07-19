@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from lib.contracts.kernel import canonical_sha256
 from services.evaluation.epistemic_repair.think_ti3_experiment import (
@@ -85,12 +86,21 @@ def _attempt(capture) -> ProviderAttempt:
     cases = {case.case_id: case for case in build_frozen_dossier_cases()}
     raw = (_legacy_decision(capture.case_id) if capture.interface == "legacy_isolated"
            else _decision(dict(cases[capture.case_id].provider_payload)))
+    raw_digest = canonical_sha256(raw)
     return ProviderAttempt(raw_decision=raw, input_tokens=900, output_tokens=100,
         latency_ms=10, cost_usd=.01, attempt_id=capture.attempt_id,
-        apply_facts={"applied": False, "reason": "experiment_compile_only",
-                     "partial_write_count": 0, "validator_applier_failure_count": 0},
+        validation_status="not_run", apply_status="not_run",
+        partial_write_count=None, validator_applier_failure_count=None,
         model=capture.model, effort=capture.effort,
-        prompt_digest=capture.prompt_digest, schema_digest=capture.schema_digest)
+        prompt_digest=capture.prompt_digest, schema_digest=capture.schema_digest,
+        physical_attempt_ids=[f"physical:{capture.attempt_id}"], physical_attempt_count=1,
+        physical_outcomes=["success"], logical_outcome_id=capture.attempt_id,
+        logical_outcome_count=1, logical_outcome="success", parse_outcome="accepted",
+        cognition_event_digest="c" * 64, accepted_raw_digest=raw_digest,
+        cognition_event_raw_digest=raw_digest,
+        usage_exactness="reported", provider="codex",
+        provider_config_effort_digest=canonical_sha256({"provider": "codex",
+            "model": capture.model, "effort": capture.effort}))
 
 
 @pytest.mark.asyncio
@@ -162,7 +172,8 @@ async def test_arm_a_can_ingest_frozen_baseline_without_provider_call(tmp_path) 
     )
     raw = _legacy_decision(atlas.case_id)
     evidence = {"compiled_raw_diff": {"claim_ops": [], "relation_claim_ops": []},
-                "apply_facts": {"applied": True, "partial_write_count": 0,
+                "apply_facts": {"validation_status": "success", "apply_status": "success",
+                                "partial_write_count": 0,
                                 "validator_applier_failure_count": 0}}
     report = {"run_provenance": {"git_commit": "43dcb197abcdef"},
               "expected_llm_configuration": {"model": "gpt-5.3-codex-spark",
@@ -171,6 +182,16 @@ async def test_arm_a_can_ingest_frozen_baseline_without_provider_call(tmp_path) 
                                  "model": "gpt-5.3-codex-spark", "effort": "medium"},
               "capture_receipt": {"prompt_digest": capture.prompt_digest,
                                   "schema_digest": capture.schema_digest},
+              "physical_attempt_receipts": [{"physical_attempt_id": "historical-p1",
+                "logical_call_id": "historical-l1",
+                "outcome": "success", "usage_exactness": "reported", "provider": "codex",
+                "model": "gpt-5.3-codex-spark"}],
+              "logical_call_receipts": [{"logical_call_id": "historical-l1",
+                                          "outcome": "success"}],
+              "accepted_cognition_event": {"content_digest": "d" * 64,
+                                            "raw_digest": canonical_sha256(raw),
+                                            "logical_call_id": "historical-l1",
+                                            "physical_attempt_id": "historical-p1"},
               "usage": {"input_tokens": 10, "output_tokens": 2}}
     paths = {}
     for name, value in (("raw", raw), ("evidence", evidence), ("report", report)):
@@ -187,7 +208,8 @@ async def test_arm_a_can_ingest_frozen_baseline_without_provider_call(tmp_path) 
                              historical_atlas_baseline=baseline)
     assert called == 20
     assert artifact["planned_outcome_count"] == 21
-    assert artifact["physical_call_count"] == 20
+    assert artifact["physical_call_count"] == 21
+    assert artifact["current_run_physical_call_count"] == 20
     assert artifact["historical_substitution_count"] == 1
     historical_manifest = next(
         json.loads(path.read_text()) for path in
@@ -217,11 +239,52 @@ def test_capture_receipt_rejects_model_effort_and_prompt_mismatch() -> None:
         _validate_capture_match(capture, attempt, historical=False)
 
 
+def test_physical_receipt_retry_cache_count_and_raw_tamper_fail_closed() -> None:
+    case = build_frozen_dossier_cases()[0]
+    capture = _capture_request(
+        _spec("r", "screening", "B", case.case_id, 0), case=case,
+        policy=default_arm_policies()[1], legacy_request=None,
+    )
+    attempt = _attempt(capture)
+    for changes, match in (
+        ({"physical_attempt_count": 2,
+          "physical_attempt_ids": ["p1", "p2"]}, "exactly one physical"),
+        ({"physical_outcomes": ["success", "success"]}, "without retry"),
+        ({"physical_outcomes": ["cache_hit"]}, "without retry"),
+        ({"accepted_raw_digest": "0" * 64}, "raw digest mismatch"),
+        ({"logical_outcome_count": 2}, "exactly one joined logical"),
+    ):
+        with pytest.raises(ValidationError, match=match):
+            ProviderAttempt.model_validate({**attempt.model_dump(), **changes})
+
+
+def test_live_preflight_rejects_installed_response_cache() -> None:
+    from lib.llm.provider import set_response_cache
+    from scripts.run_think_ti3_live import _assert_response_cache_disabled
+
+    set_response_cache(object())
+    try:
+        with pytest.raises(RuntimeError, match="forbids the response cache"):
+            _assert_response_cache_disabled()
+    finally:
+        set_response_cache(None)
+
+
+def test_isolated_not_run_stages_are_unawarded_but_selectable() -> None:
+    attempt = _attempt(_capture_request(
+        _spec("r", "screening", "B", build_frozen_dossier_cases()[0].case_id, 0),
+        case=build_frozen_dossier_cases()[0], policy=default_arm_policies()[1],
+        legacy_request=None,
+    ))
+    assert attempt.validation_status == attempt.apply_status == "not_run"
+    assert attempt.partial_write_count is None
+
+
 def test_artifact_tampering_and_policy_gate_fail_closed(tmp_path) -> None:
     policies = default_arm_policies()
     with pytest.raises(ValueError, match="no arm satisfies"):
         select_cheapest_within_tolerance(
-            {"A": {"hard_gate_pass_rate": 0, "quality_score": 1}},
+            {"A": {"isolated_ti3_gate_pass_rate": 0, "quality_score": 1}},
             policies=policies, quality_tolerance=.1,
         )
 

@@ -60,6 +60,7 @@ def _execution(**changes) -> ExecutionEvidence:
               "scope_clean": True, "compiler_accepted": True,
               "unsupported_canonical_relation_count": 0, "partial_write_count": 0,
               "validator_applier_failure_count": 0, "compiler_receipt_digest": "b" * 64,
+              "validation_status": "success", "apply_status": "success",
               "tokens": 2000, "latency_ms": 300, "cost_usd": .01, "consistency": .9}
     return ExecutionEvidence(**{**values, **changes})
 
@@ -105,6 +106,20 @@ def test_semantic_failure_is_noncompensatory_and_classified() -> None:
     assert result.verdict == "red"
     assert result.failure_class == "semantic_model"
     assert result.hard_gates.correct_mechanism_and_direction is False
+
+
+def test_not_run_mutation_stages_are_not_awarded() -> None:
+    artifact = _positive_decision()
+    result = score_semantic_decision(
+        _positive_case(), artifact, decision_artifact_digest=canonical_sha256(artifact),
+        execution=_execution(validation_status="not_run", apply_status="not_run",
+                             partial_write_count=None,
+                             validator_applier_failure_count=None),
+    )
+    assert result.hard_gates.partial_writes_zero is None
+    assert result.hard_gates.validator_applier_failures_zero is None
+    assert result.verdict == "red"
+    assert result.failure_class is None
 
 
 def test_decision_and_result_tampering_fail_closed() -> None:

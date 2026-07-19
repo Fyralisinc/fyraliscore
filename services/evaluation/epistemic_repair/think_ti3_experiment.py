@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Mapping
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lib.contracts.kernel import canonical_sha256
 from lib.evaluation.epistemic_repair.ti3_frozen_dossiers import (
@@ -64,12 +64,48 @@ class ProviderAttempt(BaseModel):
     cost_usd: float = Field(ge=0)
     source: Literal["provider", "frozen_baseline"] = "provider"
     compiler_artifact: dict[str, Any] | None = None
-    apply_facts: dict[str, Any]
+    validation_status: Literal["success", "failure", "not_run"]
+    apply_status: Literal["success", "failure", "not_run"]
+    partial_write_count: int | None = Field(default=None, ge=0)
+    validator_applier_failure_count: int | None = Field(default=None, ge=0)
     attempt_id: str
     model: str
     effort: Literal["medium", "high"]
     prompt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    physical_attempt_ids: list[str]
+    physical_attempt_count: int = Field(ge=0)
+    physical_outcomes: list[str]
+    logical_outcome_id: str
+    logical_outcome_count: int = Field(ge=0)
+    logical_outcome: Literal["success"]
+    parse_outcome: Literal["accepted"]
+    cognition_event_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cognition_event_raw_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    accepted_raw_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    usage_exactness: Literal["reported"]
+    provider: str
+    provider_config_effort_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def one_physical_receipt(self) -> "ProviderAttempt":
+        if self.physical_attempt_count != 1 or len(self.physical_attempt_ids) != 1:
+            raise ValueError("TI3 outcome requires exactly one physical attempt")
+        if self.physical_outcomes != ["success"]:
+            raise ValueError("TI3 physical attempt must succeed without retry")
+        if self.logical_outcome_count != 1:
+            raise ValueError("TI3 outcome requires exactly one joined logical receipt")
+        if self.source == "provider" and self.logical_outcome_id != self.attempt_id:
+            raise ValueError("TI3 provider attempt/logical receipt mismatch")
+        if self.accepted_raw_digest != canonical_sha256(self.raw_decision):
+            raise ValueError("TI3 accepted raw digest mismatch")
+        if self.cognition_event_raw_digest != self.accepted_raw_digest:
+            raise ValueError("TI3 cognition event/raw digest mismatch")
+        expected = canonical_sha256({"provider": self.provider, "model": self.model,
+                                     "effort": self.effort})
+        if self.provider_config_effort_digest != expected:
+            raise ValueError("TI3 provider/model/effort digest mismatch")
+        return self
 
 
 class CaptureRequest(BaseModel):
@@ -121,6 +157,8 @@ class AttemptOutcome(BaseModel):
     receipt_digest: str
     artifact_manifest_digest: str
     execution_source: Literal["physical_call", "historical_substitution"]
+    physical_attempt_count: int
+    logical_outcome_count: int
 
 
 def default_arm_policies() -> tuple[ArmPolicy, ...]:
@@ -187,6 +225,10 @@ async def run_ti3_experiment(
     selected = select_cheapest_within_tolerance(
         confirmation_summary, policies=policies, quality_tolerance=quality_tolerance,
     )
+    physical_count = sum(row.physical_attempt_count for row in (*screening, *confirmation))
+    logical_count = sum(row.logical_outcome_count for row in (*screening, *confirmation))
+    if physical_count != 21 or logical_count != 21:
+        raise ValueError("TI3 requires exactly 21 physical attempts and logical outcomes")
     body = {
         "schema_version": "think-ti3-experiment-v1", "run_id": run_id,
         "commit": commit,
@@ -195,9 +237,12 @@ async def run_ti3_experiment(
         "quality_tolerance": quality_tolerance, "max_concurrency": max_concurrency,
         "screening_attempt_count": len(screening), "confirmation_attempt_count": len(confirmation),
         "planned_outcome_count": len(screening) + len(confirmation),
-        "physical_call_count": sum(
-            row.execution_source == "physical_call" for row in (*screening, *confirmation)
+        "physical_call_count": physical_count,
+        "current_run_physical_call_count": sum(
+            row.physical_attempt_count for row in (*screening, *confirmation)
+            if row.execution_source == "physical_call"
         ),
+        "logical_outcome_count": logical_count,
         "historical_substitution_count": sum(
             row.execution_source == "historical_substitution"
             for row in (*screening, *confirmation)
@@ -260,8 +305,6 @@ def _evaluate_attempt(
     raw_digest = canonical_sha256(raw)
     compiler_digest: str | None = None
     compiler_accepted = False
-    partial_writes = int(attempt.apply_facts.get("partial_write_count") or 0)
-    validator_failures = int(attempt.apply_facts.get("validator_applier_failure_count") or 0)
     if historical_substitution and attempt.compiler_artifact is not None:
         compiler_artifact = dict(attempt.compiler_artifact)
         compiler_accepted = compiler_artifact.get("accepted", True) is True
@@ -297,7 +340,9 @@ def _evaluate_attempt(
         schema_valid=bool(raw), handles_resolved=compiler_accepted,
         evidence_complete=compiler_accepted, scope_clean=True,
         compiler_accepted=compiler_accepted, unsupported_canonical_relation_count=0,
-        partial_write_count=partial_writes, validator_applier_failure_count=validator_failures,
+        validation_status=attempt.validation_status, apply_status=attempt.apply_status,
+        partial_write_count=attempt.partial_write_count,
+        validator_applier_failure_count=attempt.validator_applier_failure_count,
         compiler_receipt_digest=compiler_digest,
         tokens=attempt.input_tokens + attempt.output_tokens, latency_ms=attempt.latency_ms,
         cost_usd=attempt.cost_usd, consistency=1,
@@ -327,7 +372,10 @@ def _evaluate_attempt(
                         "json_schema": capture.json_schema},
         "raw-response.json": raw,
         "compiler.json": compiler_artifact,
-        "applied-result.json": attempt.apply_facts,
+        "applied-result.json": {"validation_status": attempt.validation_status,
+            "apply_status": attempt.apply_status,
+            "partial_write_count": attempt.partial_write_count,
+            "validator_applier_failure_count": attempt.validator_applier_failure_count},
         "score.json": result.model_dump(mode="json"),
         "evaluation-receipt.json": receipt.model_dump(mode="json"),
         "capture-receipt.json": capture_receipt,
@@ -360,6 +408,8 @@ def _evaluate_attempt(
         artifact_manifest_digest=manifest["content_digest"],
         execution_source=("historical_substitution" if historical_substitution
                           else "physical_call"),
+        physical_attempt_count=attempt.physical_attempt_count,
+        logical_outcome_count=attempt.logical_outcome_count,
     )
 
 
@@ -368,7 +418,7 @@ def select_cheapest_within_tolerance(
     quality_tolerance: float,
 ) -> ArmName:
     eligible = {arm: row for arm, row in summary.items()
-                if float(row["hard_gate_pass_rate"]) == 1.0}
+                if float(row["isolated_ti3_gate_pass_rate"]) == 1.0}
     if not eligible:
         raise ValueError("no arm satisfies noncompensatory hard gates")
     best = max(float(row["quality_score"]) for row in eligible.values())
@@ -436,15 +486,48 @@ def load_historical_atlas_baseline(
     if not isinstance(native_raw, Mapping):
         raise ValueError("historical baseline raw response is not an object")
     usage = dict(report.get("usage") or {})
+    physical = list(report.get("physical_attempt_receipts") or ())
+    logical = list(report.get("logical_call_receipts") or ())
+    cognition = dict(report.get("accepted_cognition_event") or {})
+    if len(physical) != 1 or len(logical) != 1:
+        raise ValueError("historical baseline requires one physical and logical receipt")
+    historical_logical_id = str(logical[0].get("logical_call_id") or "")
+    if (not historical_logical_id
+            or str(physical[0].get("logical_call_id") or "") != historical_logical_id
+            or str(cognition.get("logical_call_id") or "") != historical_logical_id
+            or str(cognition.get("physical_attempt_id") or "")
+               != str(physical[0].get("physical_attempt_id") or "")):
+        raise ValueError("historical physical/logical/cognition receipt join mismatch")
+    receipt_model = str(physical[0].get("model") or "")
+    if receipt_model != binding.model:
+        raise ValueError("historical physical receipt model mismatch")
+    if str(cognition.get("raw_digest") or "") != canonical_sha256(dict(native_raw)):
+        raise ValueError("historical cognition/raw digest mismatch")
     return ProviderAttempt(
         raw_decision=dict(native_raw), compiler_artifact=dict(compiled),
-        apply_facts=dict(apply_facts),
+        validation_status=str(apply_facts.get("validation_status") or "not_run"),
+        apply_status=str(apply_facts.get("apply_status") or "not_run"),
+        partial_write_count=apply_facts.get("partial_write_count"),
+        validator_applier_failure_count=apply_facts.get("validator_applier_failure_count"),
         input_tokens=int(usage.get("input_tokens") or 0),
         output_tokens=int(usage.get("output_tokens") or 0),
         latency_ms=float(usage.get("latency_ms") or 0),
         cost_usd=float(usage.get("cost_usd") or 0), source="frozen_baseline",
-        attempt_id=capture.attempt_id, model=binding.model, effort=binding.effort,
+        attempt_id=historical_logical_id, model=receipt_model, effort=binding.effort,
         prompt_digest=capture.prompt_digest, schema_digest=capture.schema_digest,
+        physical_attempt_ids=[str(physical[0].get("physical_attempt_id"))],
+        physical_attempt_count=1, physical_outcomes=[str(physical[0].get("outcome"))],
+        logical_outcome_id=historical_logical_id, logical_outcome_count=1,
+        logical_outcome=str(logical[0].get("outcome")), parse_outcome="accepted",
+        cognition_event_digest=str(cognition.get("content_digest")),
+        cognition_event_raw_digest=str(cognition.get("raw_digest")),
+        accepted_raw_digest=canonical_sha256(dict(native_raw)),
+        usage_exactness=str(physical[0].get("usage_exactness")),
+        provider=str(physical[0].get("provider")),
+        provider_config_effort_digest=canonical_sha256({
+            "provider": str(physical[0].get("provider")), "model": binding.model,
+            "effort": binding.effort,
+        }),
     )
 
 
@@ -492,7 +575,7 @@ def _validate_capture_match(
         raise ValueError("provider receipt model or effort mismatch")
     if attempt.prompt_digest != capture.prompt_digest or attempt.schema_digest != capture.schema_digest:
         raise ValueError("provider receipt prompt or schema mismatch")
-    if attempt.attempt_id != capture.attempt_id:
+    if not historical and attempt.attempt_id != capture.attempt_id:
         raise ValueError("provider receipt attempt mismatch")
     if historical != (attempt.source == "frozen_baseline"):
         raise ValueError("provider receipt execution source mismatch")
@@ -503,6 +586,17 @@ def _capture_receipt(attempt: ProviderAttempt) -> dict[str, Any]:
             "effort": attempt.effort, "prompt_digest": attempt.prompt_digest,
             "schema_digest": attempt.schema_digest, "source": attempt.source,
             "raw_digest": canonical_sha256(attempt.raw_decision),
+            "physical_attempt_ids": attempt.physical_attempt_ids,
+            "physical_attempt_count": attempt.physical_attempt_count,
+            "physical_outcomes": attempt.physical_outcomes,
+            "logical_outcome_id": attempt.logical_outcome_id,
+            "logical_outcome_count": attempt.logical_outcome_count,
+            "logical_outcome": attempt.logical_outcome,
+            "parse_outcome": attempt.parse_outcome,
+            "cognition_event_digest": attempt.cognition_event_digest,
+            "cognition_event_raw_digest": attempt.cognition_event_raw_digest,
+            "usage_exactness": attempt.usage_exactness, "provider": attempt.provider,
+            "provider_config_effort_digest": attempt.provider_config_effort_digest,
             "usage": {"input_tokens": attempt.input_tokens,
                       "output_tokens": attempt.output_tokens,
                       "latency_ms": attempt.latency_ms, "cost_usd": attempt.cost_usd}}
@@ -674,6 +768,9 @@ def _summarize(outcomes: tuple[AttemptOutcome, ...], policies: tuple[ArmPolicy, 
         result[policy.arm] = {
             "attempt_count": len(rows),
             "hard_gate_pass_rate": sum(row.result.verdict == "green" for row in rows) / len(rows),
+            "isolated_ti3_gate_pass_rate": sum(
+                _isolated_ti3_gates_pass(row.result) for row in rows
+            ) / len(rows),
             "quality_score": sum(quality) / len(quality),
             "total_tokens": sum(row.result.continuous_metrics.tokens for row in rows),
             "total_cost_usd": sum(row.result.continuous_metrics.cost_usd for row in rows),
@@ -683,10 +780,18 @@ def _summarize(outcomes: tuple[AttemptOutcome, ...], policies: tuple[ArmPolicy, 
 
 def _best_arms(summary: Mapping[str, Mapping[str, Any]], *, count: int) -> tuple[ArmName, ...]:
     ordered = sorted(summary, key=lambda arm: (
-        -float(summary[arm]["hard_gate_pass_rate"]),
+        -float(summary[arm]["isolated_ti3_gate_pass_rate"]),
         -float(summary[arm]["quality_score"]), arm,
     ))
     return tuple(ordered[:count])  # type: ignore[return-value]
+
+
+def _isolated_ti3_gates_pass(result: SemanticScorerResult) -> bool:
+    gates = result.hard_gates.model_dump()
+    return all(
+        value is True for key, value in gates.items()
+        if key not in {"partial_writes_zero", "validator_applier_failures_zero"}
+    )
 
 
 def _spec(run_id: str, phase: Phase, arm: ArmName, case_id: str, sample: int) -> AttemptSpec:
