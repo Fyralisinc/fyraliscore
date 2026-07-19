@@ -161,12 +161,13 @@ def score_semantic_decision(
     *,
     decision_artifact_digest: str,
     execution: ExecutionEvidence,
+    semantic_view: Mapping[str, Any] | None = None,
 ) -> SemanticScorerResult:
     """Recompute one frozen decision score; fail closed on artifact tampering."""
     artifact = dict(decision_artifact)
     if canonical_sha256(artifact) != decision_artifact_digest:
         raise ValueError("decision artifact digest mismatch")
-    decision = _decision(artifact)
+    decision = dict(semantic_view) if semantic_view is not None else _decision(artifact)
     kind = str(decision.get("kind") or "")
     used_handles = _used_handles(decision)
     if case.case_kind == "positive":
@@ -258,6 +259,56 @@ def score_semantic_decision(
     return SemanticScorerResult(**body, content_digest=canonical_sha256(body))
 
 
+def score_legacy_compiled_decision(
+    case: SemanticScorerCase,
+    raw_legacy_decision: Mapping[str, Any],
+    *,
+    compiled_artifact: Mapping[str, Any],
+    decision_artifact_digest: str,
+    execution: ExecutionEvidence,
+    model_handle_by_id: Mapping[str, str],
+) -> SemanticScorerResult:
+    """Score native BatchMemoryDecisionSet evidence without creating a TI2 envelope."""
+    decisions = [
+        _mapping(row) for row in raw_legacy_decision.get("decisions") or ()
+        if isinstance(row, Mapping)
+    ]
+    accepted = next((row for row in decisions if row.get("decision") == "accept"), {})
+    members = [
+        model_handle_by_id.get(str(value), str(value))
+        for value in accepted.get("situation_member_model_ids") or ()
+    ]
+    source = model_handle_by_id.get(str(accepted.get("source_model_id") or ""))
+    effect = model_handle_by_id.get(str(accepted.get("target_model_id") or ""))
+    evidence_handles = set()
+    for op in compiled_artifact.get("claim_ops") or ():
+        entry = _mapping(_mapping(op).get("entry"))
+        proposition = _mapping(entry.get("proposition"))
+        evidence_handles.update(
+            model_handle_by_id.get(str(value), str(value))
+            for value in proposition.get("member_model_ids") or ()
+        )
+    semantic_view = {
+        "kind": "synthesis" if accepted else "abstain",
+        "thesis": str(accepted.get("claim_text") or ""),
+        "mechanism": str(accepted.get("reason") or ""),
+        "cause_condition_handles": [value for value in (source, *members) if value],
+        "effect_handles": [effect] if effect else [],
+        "supporting_evidence_handles": sorted(evidence_handles),
+        "counterevidence": [],
+        "strongest_alternative": {},
+        "novelty": {"classification": "novel"},
+        "confidence": accepted.get("confidence", 0),
+        "relation": {"relation_kind": accepted.get("edge_kind"),
+                     "direction": "source_to_target"},
+    }
+    return score_semantic_decision(
+        case, raw_legacy_decision,
+        decision_artifact_digest=decision_artifact_digest,
+        execution=execution, semantic_view=semantic_view,
+    )
+
+
 def _decision(artifact: Mapping[str, Any]) -> dict[str, Any]:
     # Supports the TI2 envelope and observational Arm A's already-frozen raw
     # decision wrapper without rewriting either artifact.
@@ -304,5 +355,5 @@ def _failure_class(gates: HardGates) -> FailureClass:
 
 __all__ = [
     "ExecutionEvidence", "SemanticScorerCase", "SemanticScorerResult",
-    "score_semantic_decision",
+    "score_legacy_compiled_decision", "score_semantic_decision",
 ]
