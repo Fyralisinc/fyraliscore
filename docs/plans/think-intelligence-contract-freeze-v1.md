@@ -1,4 +1,4 @@
-# Think Intelligence Gate — Shared Contract Freeze v1
+# Think Intelligence Gate — Shared Contract Freeze v2
 
 **Status:** Frozen implementation contract
 
@@ -7,6 +7,12 @@
 **Freeze commit:** To be recorded at checkpoint commit
 
 **Contract digest:** Recorded outside this file after its bytes are frozen
+
+**Amendment from v1:** TI0 additionally owns a narrow raw-response trace
+emission in `lib/llm/provider.py` and its focused provider test. The provider
+boundary is the only layer that possesses the exact response before Pydantic
+parsing, so the v1 file manifest could not satisfy its own observability
+contract without this addition. No field meaning or semantic authority changed.
 
 This checkpoint freezes only the interfaces required for TI0, TI1, TI2, TI3,
 and TI4-min. It is not a general reasoning framework. Runtime implementations
@@ -319,7 +325,7 @@ integration owner rather than editing another lane's contract or files.
 
 | Lane | Owned files | Forbidden files | Database | Provider |
 | --- | --- | --- | --- | --- |
-| TI0 telemetry | `lib/llm/telemetry.py`; `services/reasoning/think/llm_receipts.py`; `services/reasoning/think/debug_capture.py`; narrow call-site wiring in `llm_reason.py`, `reason.py`, `run_pipeline.py`; focused TI0 tests; required migration | Dossier semantics, synthesis schema/compiler, scorer gold/thresholds | `fyralis_ti0` | Forbidden until observational canary authorization |
+| TI0 telemetry | `lib/llm/telemetry.py`; narrow raw-response trace emission in `lib/llm/provider.py` and its focused provider test; `services/reasoning/think/llm_receipts.py`; `services/reasoning/think/debug_capture.py`; narrow call-site wiring in `llm_reason.py`, `reason.py`, `run_pipeline.py`; focused TI0 tests; required migration | Dossier semantics, synthesis schema/compiler, scorer gold/thresholds | `fyralis_ti0` | Forbidden until observational canary authorization |
 | TI1 dossier | new `services/platform/execution/synthesis_dossier.py`; its tests; narrow governed-episode/context-packet integration | Telemetry receipts, canonical admission/compiler, scorer gold/thresholds | `fyralis_ti1` | Forbidden |
 | TI2 decision | new `services/reasoning/think/synthesis_contract.py`; its tests; one narrow adapter in `compiled_reasoning.py`; atomicity tests | Dossier assembly, telemetry framework, evaluator gold/thresholds | `fyralis_ti2` | Forbidden |
 | Scorer/TI4 | frozen replay/scorer and evaluation receipt modules under `services/evaluation/epistemic_repair`; evaluation tests/fixtures | Runtime dossier, prompt, compiler, truth mutation | separate scorer artifacts; read-only proof DB if needed | Only during TI3 authorization |

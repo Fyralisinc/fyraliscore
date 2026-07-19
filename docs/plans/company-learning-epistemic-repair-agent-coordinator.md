@@ -26,10 +26,14 @@ The prior authorization for one immediate CF3-C confirmation canary is
 superseded: **do not run CF3-C yet**.
 
 Shared TI0-TI4-min interfaces are frozen in
-[Think Intelligence Gate Shared Contract Freeze v1](think-intelligence-contract-freeze-v1.md),
-SHA-256 `bbe1d1025c9b73cb5a91a34d9933b8bd0da84177450be6172c57bde48d75f74b`.
+[Think Intelligence Gate Shared Contract Freeze v2](think-intelligence-contract-freeze-v1.md),
+SHA-256 `b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717`.
 Only the integration owner may amend that contract; amendments require a new
 version and digest.
+
+V2 is a narrow ownership correction: TI0 may emit the exact sanitized raw
+response from `lib/llm/provider.py`, the only boundary that possesses it before
+structured parsing. No semantic field or authority changed.
 
 The authorized order is:
 

@@ -2430,8 +2430,8 @@ Gate is green.
 
 **Contract checkpoint:** The integration owner reconciled independent
 telemetry, dossier, and decision/scorer audits into
-`think-intelligence-contract-freeze-v1.md`, SHA-256
-`bbe1d1025c9b73cb5a91a34d9933b8bd0da84177450be6172c57bde48d75f74b`.
+`think-intelligence-contract-freeze-v1.md` v2, SHA-256
+`b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717`.
 The freeze defines one trace envelope, one scope-local dossier, one
 `SynthesisProposal | AbstentionDecision`, deterministic local-handle binding,
 one canonical relation path, independent scorer contracts, minimum policy
@@ -2452,3 +2452,19 @@ CF3-C run occurred.
 **Next action:** Commit this reversible freeze, create isolated TI0, TI1, and
 TI2 worktrees/databases/artifact roots with the frozen digest, and implement
 only their falsifiable provider-free contracts.
+
+### 2026-07-19 — LOG-072 — TI0 preflight corrects one file-ownership omission
+
+**Finding:** The frozen TI0 trace requires the exact structured provider
+response before compiler normalization. The active provider path keeps that
+text local to `lib/llm/provider.py`; the v1 ownership manifest assigned only
+downstream call sites, which cannot reconstruct it.
+
+**Amendment:** Contract v2 adds only a narrow sanitized raw-response trace
+emission in `lib/llm/provider.py` and its focused provider test to TI0's owned
+surface. Field meanings, semantic authority, scorer separation, and every
+other lane boundary are unchanged. The new contract SHA-256 is
+`b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717`.
+
+**Proof boundary:** This is a provider-free contract correction. No runtime
+implementation, database state, provider call, or CF3-C evidence run occurred.

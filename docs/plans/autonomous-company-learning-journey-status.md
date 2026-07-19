@@ -2217,8 +2217,8 @@ matched feedback quality and objective entity v6.
   synthesis-or-abstention with local handles, TI4-min policy receipts, and the
   TI3 three-dossier experiment are green and a selected policy is frozen.
 - The small shared interface checkpoint is frozen in
-  `think-intelligence-contract-freeze-v1.md`, SHA-256
-  `bbe1d1025c9b73cb5a91a34d9933b8bd0da84177450be6172c57bde48d75f74b`.
+  `think-intelligence-contract-freeze-v1.md` v2, SHA-256
+  `b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717`.
   It assigns each field and implementation surface to one owner, keeps scorer
   gold outside runtime, preserves existing truth/validation/apply machinery,
   and establishes the governing boundary: the LLM owns semantic judgment; the
@@ -2227,3 +2227,8 @@ matched feedback quality and objective entity v6.
   documented evidence artifacts and their exact digests, Python 3.12.13,
   available PostgreSQL, and no active provider/shared-database evidence run.
   No provider call or CF3-C run occurred during the freeze.
+- The first implementation preflight found that exact pre-normalization raw
+  output exists only inside `lib/llm/provider.py`, which v1 had not assigned to
+  TI0. The integration owner issued v2 solely to add a narrow sanitized
+  raw-response emission and focused provider test to TI0 ownership. This was a
+  file-manifest correction, not a change in semantic authority.
