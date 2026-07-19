@@ -7,7 +7,14 @@
 **Branch:** `codex/autonomous-company-learning`
 
 **Starting HEAD:** `eec044a5`
+
 **Scope:** component separation and cleanup foundation only
+
+**Strategy update:** The user subsequently chose a clean implementation in a
+separate repository. Continue from
+`fyraliscore-clean-reimplementation-handoff-20260719.md`; use this document as
+historical evidence and a legacy extraction map, not as authorization for broad
+in-place cleanup.
 
 ## Outcome
 

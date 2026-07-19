@@ -51,6 +51,26 @@ claims that were not checked against code or artifacts.
 
 ## Durable Lessons
 
+### 2026-07-19 - A clean rewrite must not inherit the old runtime implicitly
+
+- Context: Choosing a clean Fyralis Core implementation after mapping 573,000
+  service lines and several mixed architecture generations.
+- Symptom: A package-level rewrite inside the existing repository would still
+  inherit legacy imports, migrations, tests, database assumptions, and
+  compatibility pressure before the first company-learning loop existed.
+- Cause: Treating “from scratch” as reorganizing old code instead of creating a
+  new authority, schema, dependency, and proof boundary.
+- Lesson: Build in a separate repository with a fresh schema and no runtime
+  imports from legacy Fyralis. Treat the old repository as a read-only quarry:
+  port only small reviewed behavior after the new component contract and tests
+  exist. Qualify one synthesis -> correction -> corrected-reuse loop before
+  data migration, connectors, task autonomy, or broad product parity.
+- Evidence:
+  `docs/plans/fyraliscore-clean-reimplementation-handoff-20260719.md`;
+  `docs/reference/LATEST-SYSTEM-COMPONENTS.md`.
+- Status: Strategy and operating handoff recorded; new repository creation is
+  intentionally deferred to the next implementation session.
+
 ### 2026-07-19 - End-to-end runs must consume component proof, not create it
 
 - Context: Reconciling the revised Physics–Brain–Intent architecture with the

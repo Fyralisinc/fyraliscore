@@ -5,7 +5,13 @@
 **Branch:** `codex/autonomous-company-learning`
 
 **Baseline before this plan:** `eec044a5`
-**Status:** active cleanup plan; no provider or end-to-end run authorized
+
+**Status:** superseded as the primary implementation strategy by
+`fyraliscore-clean-reimplementation-handoff-20260719.md`. Retain this plan and
+its component registry as architecture evidence and as the classification map
+for selective legacy extraction; do not continue broad in-place cleanup unless
+the user explicitly reauthorizes it. No provider or end-to-end run is
+authorized.
 
 ## Objective
 
