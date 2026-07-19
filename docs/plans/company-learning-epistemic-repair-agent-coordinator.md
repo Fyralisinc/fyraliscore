@@ -12,6 +12,9 @@ implementation precedes any new CF3-C provider canary
 **Companion scratchpad:**
 [Company-Learning Epistemic Repair Learning Log](company-learning-epistemic-repair-learning-log.md)
 
+**Latest continuation handoff:**
+[TI3 Recovery Continuation Handoff](autonomous-company-learning-ti3-recovery-handoff-20260719.md)
+
 **Historical evidence:**
 [45-Batch Cold-Start Postmortem](../evaluation/autonomous-company-learning-cold-start-45-postmortem-20260717.md)
 
@@ -37,13 +40,21 @@ request's known dossier ID/digest before compilation. Provider policy and
 semantic authority are unchanged. V2's narrow TI0 raw-response ownership
 correction remains in force.
 
+**Continuation-review blocker:** frozen v3 names the provider schema
+`SynthesisSemanticDecision` / `think-synthesis-semantic-decision-v1`, while
+current code and policy receipts use `SynthesisProviderDecision` /
+`think-synthesis-provider-decision-v2`. Fields and authority are aligned, but
+the frozen schema identity is not. Reconcile this provider-free and rerun the
+focused/atomic checks before any new TI3 authorization.
+
 ### TI3 r1 terminal-red checkpoint and recovery checklist
 
 Run `ti3-live-8d7d9b05-r1` at commit
 `8d7d9b05c4081889a93b26cff8af2fb4cb4347de` is incomplete terminal red with
 primary class `schema_binding`. Nine screening calls were initiated; six
-Atlas/Cobalt successes are durable, one null Arm A parse failure is known, and
-the other two initiated null-call terminal outcomes are unknown. The untouched
+Atlas/Cobalt successes have complete local per-attempt directories, one null
+Arm A parse failure is known, and the other two initiated null-call terminal
+outcomes are unknown. The untouched
 partial directory is
 `/tmp/fyralis-ti3-live-8d7d9b05/ti3/ti3-live-8d7d9b05-r1`. It has no run
 manifest and does not contain the known failed call's exact raw/receipt. No TI3
@@ -67,7 +78,8 @@ evidence without changing provider policy. The integration checklist is:
 3. Implement v3's provider-semantic-only schema and trusted exact
    dossier-identity binding, plus failed-outcome capture/evaluation durability;
    keep the pinned provider, model, effort, `max_attempts = 1`, gold, thresholds,
-   and selection rule unchanged. **Complete at `ed25b33b`.**
+   and selection rule unchanged. **Behavior implemented at `ed25b33b`; exact
+   frozen provider class/schema identity still requires reconciliation.**
 4. Prove provider-free that parse failure emits a digest-bound outcome receipt,
    scores `schema_valid = false`/`schema_binding`, performs no compiler/apply
    work, and remains in complete experiment accounting. **Complete:** focused
@@ -76,9 +88,10 @@ evidence without changing provider policy. The integration checklist is:
    unset.
 5. Request integration-owner authorization for at most one fresh full TI3 run
    under a new identity. Do not run CF3-C; it remains locked until complete TI3
-   evidence selects and freezes a policy. **Pending independent authorization.**
+   evidence selects and freezes a policy. **Blocked until exact provider
+   schema-identity reconciliation and then pending independent authorization.**
 
-The completed v3 structural schema permits only `blocks`, `depends_on`,
+The implemented structural schema behavior permits only `blocks`, `depends_on`,
 `causes`, `influences`, and `predicts`; requires relation sources to be a
 cause/condition subset containing an accepted Model and no effect handle; and
 requires direct-observation support. No provider run followed r1, no policy is
@@ -87,10 +100,10 @@ selected, and this provider-free checkpoint does not itself authorize one.
 ### TI3 recovery wrap-blocker addendum
 
 Commit `4e85d8554abb8b553b020f419e4b2d1333160996` makes arbitrary non-JSON
-parse failures exact-text-bound durable red `schema_binding` outcomes. The raw
-text and digest remain joined to the physical/logical receipts and evaluation
-artifact; parsed decision, compiler, validator, applier, and mutation success
-remain absent. TI3 runtime and experiment manifests now read the frozen v3
+parse failures exact-text-bound, digest-bound red `schema_binding` outcomes.
+The raw text and digest remain joined to the physical/logical receipts and
+evaluation artifact; parsed decision, compiler, validator, applier, and
+mutation success remain absent. TI3 runtime and experiment manifests now read the frozen v3
 digest `8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`
 from the shared contract constant.
 
