@@ -923,6 +923,13 @@ def compiled_relationship_candidate_max_tokens(default: int = 768) -> int:
         return default
 
 
+def compile_frozen_synthesis_decision(envelope: Any, *, context: Any) -> RawDiff:
+    """Adapt the active compiled path to the frozen TI2 compiler."""
+    from .synthesis_contract import compile_synthesis_decision
+
+    return compile_synthesis_decision(envelope, context=context)
+
+
 def compiled_batch_memory_decision_enabled() -> bool:
     return os.environ.get(
         "THINK_COMPILED_BATCH_MEMORY_REASONING",
