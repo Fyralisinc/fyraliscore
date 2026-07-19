@@ -84,6 +84,27 @@ cause/condition subset containing an accepted Model and no effect handle; and
 requires direct-observation support. No provider run followed r1, no policy is
 selected, and this provider-free checkpoint does not itself authorize one.
 
+### TI3 recovery wrap-blocker addendum
+
+Commit `4e85d8554abb8b553b020f419e4b2d1333160996` makes arbitrary non-JSON
+parse failures exact-text-bound durable red `schema_binding` outcomes. The raw
+text and digest remain joined to the physical/logical receipts and evaluation
+artifact; parsed decision, compiler, validator, applier, and mutation success
+remain absent. TI3 runtime and experiment manifests now read the frozen v3
+digest `8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`
+from the shared contract constant.
+
+This is implementation conformance only: provider/model/effort,
+`max_attempts = 1`, provider schema, scorer gold, thresholds, semantic
+authority, and selection are unchanged. Bounded agent validation reported
+`32 passed`. Final validation at exact HEAD `4e85d855` passed 75 focused
+provider-free tests and one PostgreSQL synthesis atomicity test; `py_compile`,
+architecture ratchets, and `git diff --check` were green. Contract SHA remained
+exactly `8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`.
+No provider run or CF3-C is authorized, no policy is selected, and checklist
+item 5 remains pending an independent preflight and authorization for one fresh
+full TI3 identity.
+
 The authorized order is:
 
 1. implement and provider-free validate TI0 observability;

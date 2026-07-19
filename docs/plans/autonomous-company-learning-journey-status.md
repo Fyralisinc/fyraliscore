@@ -2335,3 +2335,22 @@ matched feedback quality and objective entity v6.
 - No provider call occurred after r1 and no policy is selected. CF3-C remains
   locked. If resumed, the only next provider action is an independently
   preflighted and authorized fresh full TI3 run under a new identity.
+
+### 2026-07-19 — Arbitrary non-JSON parse failures are now durable red evidence
+
+- Commit `4e85d8554abb8b553b020f419e4b2d1333160996` closes the remaining
+  failed-outcome wrapper gap: non-JSON text is preserved by exact text/digest
+  across the raw artifact and receipts, scores terminal red `schema_binding`,
+  and cannot imply parsing, compilation, application, or mutation success.
+- Runtime synthesis and TI3 run/attempt manifests now consume frozen contract
+  v3 digest `8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`.
+  No provider policy, schema, scorer, semantic ownership, threshold, or
+  selection rule changed.
+- Bounded implementation validation reported `32 passed`. Final validation at
+  exact HEAD `4e85d855` passed 75 focused provider-free tests and one PostgreSQL
+  synthesis atomicity test; `py_compile`, architecture ratchets, and
+  `git diff --check` were green. The contract file SHA remained exactly
+  `8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`.
+- No fresh provider run occurred and no policy is selected. CF3-C remains
+  locked. Any resumed provider work still requires independent authorization
+  for one fresh full TI3 run under a new identity.

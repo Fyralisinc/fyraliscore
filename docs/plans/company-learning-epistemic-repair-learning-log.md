@@ -2654,3 +2654,36 @@ CF3-C remains locked. If work resumes, the next action is an independent
 integration-owner preflight and authorization for exactly one fresh full TI3
 run under a new identity; provider execution is not authorized by this
 checkpoint itself.
+
+### 2026-07-19 — LOG-078 — Arbitrary non-JSON TI3 failures close the recovery wrap blocker
+
+**Repair:** Commit `4e85d8554abb8b553b020f419e4b2d1333160996`
+extends the failed-outcome path beyond schema-invalid JSON objects. Arbitrary
+non-JSON structured text now remains exact-text bound through its cognition raw
+digest, capture receipt, raw-response artifact, score, evaluation receipt, and
+manifest. It becomes a terminal red `schema_binding` outcome with reported
+physical/logical accounting; no parsed semantic object is fabricated and no
+compiler, validator, applier, or mutation success is asserted. The experiment
+can retain the failed arm/case outcome and continue its preregistered accounting.
+
+**Identity and policy binding:** Runtime synthesis and TI3 experiment/attempt
+manifests now use the frozen v3 digest
+`8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`
+from the shared contract constant rather than the superseded v2 literal. This
+is wiring conformance, not another contract amendment. Provider, model, effort,
+one-attempt/no-retry policy, provider schema, semantic field ownership, scorer
+gold, thresholds, and selection rules are unchanged.
+
+**Validation:** The implementation agent first reported `32 passed`, with
+compile and diff checks green. Final parent validation at exact HEAD `4e85d855`
+then passed 75 focused provider-free tests and one PostgreSQL synthesis
+atomicity test. `py_compile`, architecture ratchets, and `git diff --check` were
+green. The worktree was clean before this documentation addendum. Contract v3
+remained byte-identical at SHA-256
+`8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`.
+
+**State:** No fresh provider run occurred, no TI3 policy is selected, and CF3-C
+remains locked. This repair does not authorize provider execution or CF3-C. If
+the effort resumes after broader validation, the next action remains an
+independent integration-owner preflight and authorization for exactly one
+fresh full TI3 run under a new identity.
