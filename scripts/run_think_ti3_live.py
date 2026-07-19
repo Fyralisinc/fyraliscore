@@ -15,6 +15,7 @@ if __package__ in {None, ""}:
 
 from lib.llm.provider import (  # noqa: E402
     LLMConfig,
+    LLMParseError,
     _codex_transport,
     build_provider,
     get_response_cache,
@@ -50,11 +51,11 @@ def _assert_response_cache_disabled() -> None:
         raise RuntimeError("TI3 live execution forbids the response cache")
 
 
-def _accepted_cognition_binding(event) -> tuple[dict, str, dict]:
+def _cognition_binding(event, *, parse_outcome: str) -> tuple[dict, str, dict]:
     """Bind provider raw text and parsed semantic object as distinct representations."""
     payload = dict(event.payload)
-    if payload.get("parse_outcome") != "accepted":
-        raise RuntimeError("TI3 cognition event parse outcome is not accepted")
+    if payload.get("parse_outcome") != parse_outcome:
+        raise RuntimeError("TI3 cognition event parse outcome mismatch")
     if canonical_sha256(payload) != event.content_digest:
         raise RuntimeError("TI3 cognition event content digest mismatch")
     structured = payload.get("structured_text")
@@ -95,40 +96,44 @@ async def _main() -> int:
             else SynthesisDecisionEnvelope
         )
         sink = InMemoryLLMReceiptSink()
+        parse_outcome = "accepted"
         with using_receipt_sink(sink):
-            await provider.structured(
-                system=request.system_prompt,
-                user=request.user_prompt,
-                schema=schema,
-                logical_call_id=request.attempt_id,
-                max_attempts=1,
-                deadline_s=300,
-                max_tokens=4096,
-                cognitive_purpose="main_synthesis",
-                cognition_versions={
-                    "prompt_policy_version": (
-                        "legacy-compiled-v1"
-                        if request.interface == "legacy_isolated"
-                        else "dossier-schema-v1"
-                    ),
-                    "provider_schema_version": request.schema_name,
-                    "compiler_version": "ti2-v1",
-                    "routing_policy_version": "ti3-v1",
-                    "model": request.model,
-                    "effort": request.effort,
-                },
-            )
+            try:
+                await provider.structured(
+                    system=request.system_prompt,
+                    user=request.user_prompt,
+                    schema=schema,
+                    logical_call_id=request.attempt_id,
+                    max_attempts=1,
+                    deadline_s=300,
+                    max_tokens=4096,
+                    cognitive_purpose="main_synthesis",
+                    cognition_versions={
+                        "prompt_policy_version": (
+                            "legacy-compiled-v1"
+                            if request.interface == "legacy_isolated"
+                            else "dossier-schema-v1"
+                        ),
+                        "provider_schema_version": request.schema_name,
+                        "compiler_version": "ti2-v1",
+                        "routing_policy_version": "ti3-v1",
+                        "model": request.model,
+                        "effort": request.effort,
+                    },
+                )
+            except LLMParseError:
+                parse_outcome = "parse_failure"
         raw_events = [
             row
             for row in sink.cognition_events
             if row.logical_call_id == request.attempt_id
             and row.stage == "raw_provider_response"
-            and row.payload.get("parse_outcome") == "accepted"
+            and row.payload.get("parse_outcome") == parse_outcome
         ]
         if len(raw_events) != 1:
             raise RuntimeError("TI3 attempt requires exactly one accepted raw response")
         raw_decision, cognition_text_digest, cognition_payload = (
-            _accepted_cognition_binding(raw_events[0])
+            _cognition_binding(raw_events[0], parse_outcome=parse_outcome)
         )
         attempts = [
             row for row in sink.attempts if row.logical_call_id == request.attempt_id
@@ -136,10 +141,12 @@ async def _main() -> int:
         logical = [
             row for row in sink.logical_calls if row.logical_call_id == request.attempt_id
         ]
-        if len(logical) != 1 or logical[0].outcome != "success":
+        expected_logical = "success" if parse_outcome == "accepted" else "exhausted"
+        expected_physical = "success" if parse_outcome == "accepted" else "parse_failure"
+        if len(logical) != 1 or logical[0].outcome != expected_logical:
             raise RuntimeError("TI3 logical receipt is incomplete")
-        if len(attempts) != 1 or attempts[0].outcome != "success":
-            raise RuntimeError("TI3 requires one successful physical attempt")
+        if len(attempts) != 1 or attempts[0].outcome != expected_physical:
+            raise RuntimeError("TI3 requires one terminal physical attempt")
         if attempts[0].retry_scheduled:
             raise RuntimeError("TI3 retries are forbidden")
         if attempts[0].usage_exactness != "reported":
@@ -166,7 +173,7 @@ async def _main() -> int:
             physical_attempt_ids=[attempts[0].physical_attempt_id],
             physical_attempt_count=1, physical_outcomes=[attempts[0].outcome],
             logical_outcome_id=logical[0].logical_call_id, logical_outcome_count=1,
-            logical_outcome=logical[0].outcome, parse_outcome="accepted",
+            logical_outcome=logical[0].outcome, parse_outcome=parse_outcome,
             cognition_event_digest=raw_events[0].content_digest,
             cognition_event_payload=cognition_payload,
             cognition_raw_text_digest=cognition_text_digest,

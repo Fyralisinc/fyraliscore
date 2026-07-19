@@ -115,6 +115,34 @@ def _attempt(capture) -> ProviderAttempt:
             "model": capture.model, "effort": capture.effort}))
 
 
+def _schema_failure_attempt(capture) -> ProviderAttempt:
+    raw = {"decisions": [{"candidate_id": "opaque", "decision": "no_op"}],
+           "prior_memory_effects": []}
+    structured = json.dumps(raw, sort_keys=True, separators=(",", ":"))
+    cognition_payload = {"structured_text": structured,
+                         "raw_digest": canonical_sha256(structured),
+                         "parse_outcome": "parse_failure"}
+    return ProviderAttempt(
+        raw_decision=raw, input_tokens=700, output_tokens=40, latency_ms=8,
+        cost_usd=.01, attempt_id=capture.attempt_id,
+        validation_status="not_run", apply_status="not_run",
+        partial_write_count=None, validator_applier_failure_count=None,
+        model=capture.model, effort=capture.effort,
+        prompt_digest=capture.prompt_digest, schema_digest=capture.schema_digest,
+        physical_attempt_ids=[f"physical:{capture.attempt_id}"],
+        physical_attempt_count=1, physical_outcomes=["parse_failure"],
+        logical_outcome_id=capture.attempt_id, logical_outcome_count=1,
+        logical_outcome="exhausted", parse_outcome="parse_failure",
+        cognition_event_digest=canonical_sha256(cognition_payload),
+        cognition_event_payload=cognition_payload,
+        cognition_raw_text_digest=canonical_sha256(structured),
+        accepted_raw_digest=canonical_sha256(raw), usage_exactness="reported",
+        provider="codex", provider_config_effort_digest=canonical_sha256({
+            "provider": "codex", "model": capture.model, "effort": capture.effort,
+        }),
+    )
+
+
 @pytest.mark.asyncio
 async def test_preregistered_attempt_counts_concurrency_artifacts_and_selection(tmp_path) -> None:
     active = 0
@@ -170,6 +198,40 @@ async def test_preregistered_attempt_counts_concurrency_artifacts_and_selection(
             "null_adversarial_v1", "null_v1",
         ):
             assert sentinel not in prompt
+
+
+@pytest.mark.asyncio
+async def test_one_attempt_no_op_schema_failure_is_durable_red_and_run_continues(tmp_path) -> None:
+    failed_attempt_id = None
+    calls = []
+
+    async def provider(capture):
+        nonlocal failed_attempt_id
+        calls.append(capture.attempt_id)
+        if failed_attempt_id is None and capture.interface == "legacy_isolated":
+            failed_attempt_id = capture.attempt_id
+            return _schema_failure_attempt(capture)
+        return _attempt(capture)
+
+    artifact = await run_ti3_experiment(
+        output_root=tmp_path, run_id="parse-failure-r1", provider=provider,
+        commit="test-commit",
+    )
+    assert len(calls) == 21
+    assert artifact["physical_call_count"] == artifact["logical_outcome_count"] == 21
+    assert failed_attempt_id is not None
+    directory = tmp_path / "ti3" / "parse-failure-r1" / "attempts" / failed_attempt_id
+    capture = json.loads((directory / "capture-receipt.json").read_text())
+    score = json.loads((directory / "score.json").read_text())
+    compiler = json.loads((directory / "compiler.json").read_text())
+    assert capture["physical_outcomes"] == ["parse_failure"]
+    assert capture["logical_outcome"] == "exhausted"
+    assert capture["parse_outcome"] == "parse_failure"
+    assert score["hard_gates"]["schema_valid"] is False
+    assert score["verdict"] == "red"
+    assert compiler["accepted"] is False
+    assert compiler["error_type"] == "ProviderSchemaParseFailure"
+    assert (directory / "manifest.json").is_file()
 
 
 @pytest.mark.asyncio
@@ -272,8 +334,8 @@ def test_physical_receipt_retry_cache_count_and_raw_tamper_fail_closed() -> None
     for changes, match in (
         ({"physical_attempt_count": 2,
           "physical_attempt_ids": ["p1", "p2"]}, "exactly one physical"),
-        ({"physical_outcomes": ["success", "success"]}, "without retry"),
-        ({"physical_outcomes": ["cache_hit"]}, "without retry"),
+        ({"physical_outcomes": ["success", "success"]}, "outcomes disagree"),
+        ({"physical_outcomes": ["cache_hit"]}, "outcomes disagree"),
         ({"accepted_raw_digest": "0" * 64}, "raw digest mismatch"),
         ({"cognition_event_payload": {**attempt.cognition_event_payload,
                                        "parse_outcome": "tampered"}},
@@ -298,7 +360,7 @@ def test_live_preflight_rejects_installed_response_cache() -> None:
 
 def test_real_cognition_event_binds_raw_text_separately_from_semantic_object() -> None:
     from lib.llm.telemetry import CognitionTraceEvent
-    from scripts.run_think_ti3_live import _accepted_cognition_binding
+    from scripts.run_think_ti3_live import _cognition_binding
 
     structured = '{\n  "kind": "abstain", "confidence": 0.8\n}'
     payload = {"structured_text": structured, "raw_digest": canonical_sha256(structured),
@@ -310,14 +372,14 @@ def test_real_cognition_event_binds_raw_text_separately_from_semantic_object() -
         content_digest=canonical_sha256(payload), occurred_at=datetime.now(timezone.utc),
         physical_attempt_id="p1",
     )
-    parsed, text_digest, bound_payload = _accepted_cognition_binding(event)
+    parsed, text_digest, bound_payload = _cognition_binding(event, parse_outcome="accepted")
     assert parsed == {"kind": "abstain", "confidence": .8}
     assert text_digest == canonical_sha256(structured)
     assert text_digest != canonical_sha256(parsed)
     assert bound_payload == payload
     tampered = replace(event, payload={**payload, "parse_outcome": "cache_hit"})
     with pytest.raises(RuntimeError, match="parse outcome"):
-        _accepted_cognition_binding(tampered)
+        _cognition_binding(tampered, parse_outcome="accepted")
 
 
 def test_isolated_not_run_stages_are_unawarded_but_selectable() -> None:

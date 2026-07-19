@@ -78,8 +78,8 @@ class ProviderAttempt(BaseModel):
     physical_outcomes: list[str]
     logical_outcome_id: str
     logical_outcome_count: int = Field(ge=0)
-    logical_outcome: Literal["success"]
-    parse_outcome: Literal["accepted"]
+    logical_outcome: Literal["success", "exhausted"]
+    parse_outcome: Literal["accepted", "parse_failure"]
     cognition_event_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     cognition_event_payload: dict[str, Any]
     cognition_raw_text_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -92,8 +92,13 @@ class ProviderAttempt(BaseModel):
     def one_physical_receipt(self) -> "ProviderAttempt":
         if self.physical_attempt_count != 1 or len(self.physical_attempt_ids) != 1:
             raise ValueError("TI3 outcome requires exactly one physical attempt")
-        if self.physical_outcomes != ["success"]:
-            raise ValueError("TI3 physical attempt must succeed without retry")
+        expected_outcomes = {
+            "accepted": (["success"], "success"),
+            "parse_failure": (["parse_failure"], "exhausted"),
+        }
+        physical, logical = expected_outcomes[self.parse_outcome]
+        if self.physical_outcomes != physical or self.logical_outcome != logical:
+            raise ValueError("TI3 physical, logical, and parse outcomes disagree")
         if self.logical_outcome_count != 1:
             raise ValueError("TI3 outcome requires exactly one joined logical receipt")
         if self.source == "provider" and self.logical_outcome_id != self.attempt_id:
@@ -308,7 +313,13 @@ def _evaluate_attempt(
     raw_digest = canonical_sha256(raw)
     compiler_digest: str | None = None
     compiler_accepted = False
-    if historical_substitution and attempt.compiler_artifact is not None:
+    if attempt.parse_outcome == "parse_failure":
+        compiler_artifact = {
+            "accepted": False,
+            "error_type": "ProviderSchemaParseFailure",
+            "error": "one-attempt provider response failed the requested schema",
+        }
+    elif historical_substitution and attempt.compiler_artifact is not None:
         compiler_artifact = dict(attempt.compiler_artifact)
         compiler_accepted = compiler_artifact.get("accepted", True) is True
         compiler_digest = canonical_sha256(compiler_artifact) if compiler_accepted else None
@@ -340,7 +351,7 @@ def _evaluate_attempt(
                                  "error": str(exc)}
     scorer_case = _scorer_case(case)
     execution = ExecutionEvidence(
-        schema_valid=bool(raw), handles_resolved=compiler_accepted,
+        schema_valid=attempt.parse_outcome == "accepted", handles_resolved=compiler_accepted,
         evidence_complete=compiler_accepted, scope_clean=True,
         compiler_accepted=compiler_accepted, unsupported_canonical_relation_count=0,
         validation_status=attempt.validation_status, apply_status=attempt.apply_status,
