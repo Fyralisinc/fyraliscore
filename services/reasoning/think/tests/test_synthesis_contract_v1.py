@@ -24,19 +24,19 @@ def _fixture():
     bindings = (
         HandleBinding("M1", "accepted_model_head", model, version, tenant,
                       "workstream:atlas", "authoritative",
-                      frozenset({"cause", "effect", "novelty_reference"})),
+                      frozenset({"cause", "support", "novelty_reference"})),
         HandleBinding("M2", "accepted_model_head", uuid4(), uuid4(), tenant,
                       "workstream:atlas", "authoritative",
-                      frozenset({"effect"})),
+                      frozenset({"cause", "support"})),
         HandleBinding("O1", "observation", observation, None, tenant,
                       "workstream:atlas", "authoritative",
-                      frozenset({"support"})),
+                      frozenset({"cause", "support"})),
         HandleBinding("O2", "observation", uuid4(), None, tenant,
                       "workstream:atlas", "authoritative",
-                      frozenset({"effect"})),
+                      frozenset({"counterevidence"})),
         HandleBinding("O3", "observation", uuid4(), None, tenant,
                       "workstream:atlas", "independent",
-                      frozenset({"counterevidence"})),
+                      frozenset({"effect", "support"})),
     )
     context = SynthesisCompileContext(
         "atlas-v1", DIGEST, tenant, "workstream:atlas", trigger,
@@ -48,9 +48,9 @@ def _fixture():
         "dossier_digest": DIGEST, "decision": {
             "kind": "synthesis", "thesis": "Ownership delay affected rollout timing.",
             "mechanism": "An unowned certificate delayed the rollout gate.",
-            "cause_condition_handles": ["M1"], "effect_handles": ["M2"],
-            "supporting_evidence_handles": ["O1"],
-            "counterevidence": [{"handle": "O3", "bearing": "weakens",
+            "cause_condition_handles": ["M1", "M2", "O1"], "effect_handles": ["O3"],
+            "supporting_evidence_handles": ["M1", "M2", "O1", "O3"],
+            "counterevidence": [{"handle": "O2", "bearing": "weakens",
                                   "explanation": "One status report claimed readiness."}],
             "strongest_alternative": {"thesis": "Capacity caused the delay.",
                 "mechanism": "A capacity constraint could defer rollout.",
@@ -108,7 +108,7 @@ def test_abstention_compiles_to_zero_mutation() -> None:
 @pytest.mark.parametrize("mutation,match", [
     ("unknown", "unknown handle"), ("stale", "stale or malformed"),
     ("scope", "tenant or scope mismatch"), ("closure", "outside trigger closure"),
-    ("unauthorized", "unauthorized support"), ("digest", "dossier identity"),
+    ("unauthorized", "unauthorized cause"), ("digest", "dossier identity"),
     ("duplicate_binding", "duplicate handle binding"),
 ])
 def test_invalid_binding_fails_before_diff(mutation: str, match: str) -> None:
@@ -141,6 +141,15 @@ def test_relation_semantics_are_not_inferred_from_thesis_text() -> None:
     raw["decision"]["thesis"] = "This text says blocks repeatedly but is not authority."
     raw["decision"]["relation"]["relation_kind"] = "fixture_only_relation"
     with pytest.raises(SynthesisContractError, match="unsupported governed"):
+        compile_frozen_synthesis_decision(
+            SynthesisDecisionEnvelope.model_validate(raw), context=context,
+        )
+
+
+def test_observational_cause_requires_a_causal_model_relation_source() -> None:
+    raw, context = _fixture()
+    raw["decision"]["relation"]["source_handles"] = ["O1"]
+    with pytest.raises(SynthesisContractError, match="accepted Model heads"):
         compile_frozen_synthesis_decision(
             SynthesisDecisionEnvelope.model_validate(raw), context=context,
         )

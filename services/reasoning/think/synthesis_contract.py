@@ -162,9 +162,6 @@ def compile_synthesis_decision(
         _require_unique(handles, f"repeated {role} handle")
         _resolve_handles(handles, by_handle, role=role)  # type: ignore[arg-type]
     _resolve_handles(decision.strongest_alternative.supporting_handles, by_handle, role="support")
-    all_semantic = [handle for handles in groups.values() for handle in handles]
-    if len(all_semantic) != len(set(all_semantic)):
-        raise SynthesisContractError("handle has conflicting semantic roles")
     if set(decision.cause_condition_handles) & set(decision.effect_handles):
         raise SynthesisContractError("source/effect overlap")
     _require_unique(decision.relation.source_handles, "duplicate relation source")
@@ -173,29 +170,41 @@ def compile_synthesis_decision(
     if decision.relation.relation_kind not in EDGE_REGISTRY:
         raise SynthesisContractError("unsupported governed relation kind")
     source_bindings = _resolve_handles(decision.relation.source_handles, by_handle, role="cause")
-    if any(row.object_kind != "accepted_model_head" for row in source_bindings):
+    canonical_sources = [
+        row for row in source_bindings if row.object_kind == "accepted_model_head"
+    ]
+    if not canonical_sources:
         raise SynthesisContractError("canonical relation sources must be accepted Model heads")
     support = _resolve_handles(decision.supporting_evidence_handles, by_handle, role="support")
     direct_observations = [row for row in support if row.object_kind == "observation"]
-    if len(direct_observations) != 1:
-        raise SynthesisContractError("synthesis requires exactly one direct observation support")
+    if not direct_observations:
+        raise SynthesisContractError("synthesis requires direct observation support")
 
     members = _ordered_bindings(
         [*decision.cause_condition_handles, *decision.effect_handles,
+         *decision.supporting_evidence_handles,
          *decision.novelty.relative_to_model_handles], by_handle,
         object_kind="accepted_model_head",
     )
     if len(members) < 2:
         raise SynthesisContractError("composite synthesis requires two exact accepted Model members")
-    effect_models = _ordered_bindings(
-        decision.effect_handles, by_handle, object_kind="accepted_model_head",
-    )
-    if not effect_models:
-        raise SynthesisContractError("synthesis requires an exact effect Model member")
     placeholder = uuid7()
     evidence_ids = [row.canonical_id for row in direct_observations]
-    source = source_bindings[0]
-    effect = effect_models[0]
+    source = canonical_sources[0]
+    closure_target = next(
+        (row for row in members if row.canonical_id != source.canonical_id), None,
+    )
+    if closure_target is None:
+        raise SynthesisContractError("synthesis relation closure requires distinct Model members")
+    effect_observation_ids = {
+        row.canonical_id for row in _resolve_handles(
+            decision.effect_handles, by_handle, role="effect",
+        ) if row.object_kind == "observation"
+    }
+    opener = next(
+        (row for row in direct_observations if row.canonical_id in effect_observation_ids),
+        direct_observations[0],
+    )
     canonical_relation_kind = {
         "blocks": "dependency_constraint",
         "depends_on": "dependency_constraint",
@@ -219,16 +228,18 @@ def compile_synthesis_decision(
         "supported_relation": {"kind": canonical_relation_kind,
             "mechanism": decision.mechanism,
             "source_model_id": str(source.canonical_id),
-            "target_model_id": str(effect.canonical_id),
+            "target_model_id": str(closure_target.canonical_id),
             "source_model_version_id": str(source.exact_version_id),
-            "target_model_version_id": str(effect.exact_version_id)},
+            "target_model_version_id": str(closure_target.exact_version_id)},
         "synthesis_contract": True, "synthesis_contract_version": envelope.schema_version,
         "contract_digest": CONTRACT_DIGEST, "dossier_id": envelope.dossier_id,
         "dossier_digest": envelope.dossier_digest,
     }
     claim = ClaimOp(op="insert", entry={
         "tenant_id": str(context.tenant_id), "born_from_event_id": str(placeholder),
-        "supporting_event_ids": [str(value) for value in evidence_ids],
+        # Truth admission accepts one conclusion opener; the proposition keeps
+        # the complete closed support set without discarding provider semantics.
+        "supporting_event_ids": [str(opener.canonical_id)],
         "proposition": proposition, "natural": decision.thesis,
         "confidence": decision.confidence, "confidence_at_assertion": decision.confidence,
         "scope_entities": [{"type": context.canonical_scope_ref.split(":", 1)[0],
