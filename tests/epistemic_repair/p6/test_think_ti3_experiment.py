@@ -28,8 +28,6 @@ from uuid import NAMESPACE_URL, uuid5
 
 
 def _decision(payload: dict, *, case_id: str) -> dict:
-    dossier_id = payload["dossier_id"]
-    digest = canonical_sha256(payload)
     if case_id == "null_adversarial_v1":
         decision = {"kind": "abstain", "reason_code": "insufficient_evidence",
                     "explanation": "No authorized record explains the schedule change.",
@@ -58,8 +56,10 @@ def _decision(payload: dict, *, case_id: str) -> dict:
             "relation": {"relation_kind": "causes" if atlas else "blocks",
                          "source_handles": ["M1"], "target": "synthesis_output",
                          "direction": "source_to_target", "explanation": "Causal sequence."}}
-    return {"schema_version": "think-synthesis-decision-v1", "dossier_id": dossier_id,
-            "dossier_digest": digest, "decision": decision}
+    return {
+        "schema_version": "think-synthesis-provider-decision-v2",
+        "decision": decision,
+    }
 
 
 def _legacy_decision(case_id: str) -> dict:
@@ -182,9 +182,16 @@ async def test_preregistered_attempt_counts_concurrency_artifacts_and_selection(
     arm_b = next(row for row in captures if row.arm == "B")
     arm_c = next(row for row in captures if row.arm == "C")
     assert arm_a.schema_name == "BatchMemoryDecisionSet"
-    assert arm_b.schema_name == "SynthesisDecisionEnvelope"
+    assert arm_b.schema_name == "SynthesisProviderDecision"
     assert arm_a.prompt_digest != arm_b.prompt_digest
     assert arm_a.schema_digest != arm_b.schema_digest
+    policies_by_arm = {row.arm: row for row in policies}
+    assert policies_by_arm["A"].policy.provider_schema_version == (
+        "batch-memory-decision-set-v1"
+    )
+    assert policies_by_arm["B"].policy.provider_schema_version == (
+        "think-synthesis-provider-decision-v2"
+    )
     assert arm_a.model == arm_b.model == arm_c.model == "gpt-5.3-codex-spark"
     assert arm_a.effort == arm_b.effort == "medium"
     assert arm_c.effort == "high"
@@ -198,6 +205,19 @@ async def test_preregistered_attempt_counts_concurrency_artifacts_and_selection(
             "null_adversarial_v1", "null_v1",
         ):
             assert sentinel not in prompt
+        if capture.arm in {"B", "C"}:
+            assert "dossier_id" not in capture.json_schema.get("properties", {})
+            assert "dossier_digest" not in capture.json_schema.get("properties", {})
+            assert "subset of cause_condition_handles" in capture.system_prompt
+            assert "at least one accepted M handle" in capture.system_prompt
+            assert "no effect handle" in capture.system_prompt
+            assert "at least one direct O handle" in capture.system_prompt
+
+    for attempt_dir in (tmp_path / "ti3/provider-free-r1/attempts").iterdir():
+        manifest = json.loads((attempt_dir / "manifest.json").read_text())
+        if manifest["arm"] in {"B", "C"}:
+            raw = json.loads((attempt_dir / "raw-response.json").read_text())
+            assert set(raw) == {"schema_version", "decision"}
 
 
 @pytest.mark.asyncio

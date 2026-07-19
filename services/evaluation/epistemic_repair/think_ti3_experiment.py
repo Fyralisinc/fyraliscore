@@ -21,7 +21,8 @@ from lib.evaluation.epistemic_repair.ti3_frozen_dossiers import (
 from services.reasoning.think.synthesis_contract import (
     HandleBinding,
     SynthesisCompileContext,
-    SynthesisDecisionEnvelope,
+    SynthesisProviderDecision,
+    bind_synthesis_provider_decision,
     compile_synthesis_decision,
 )
 from services.reasoning.retrieval.assembler import ContextBundle
@@ -128,7 +129,7 @@ class CaptureRequest(BaseModel):
     effort: Literal["medium", "high"]
     system_prompt: str
     user_prompt: str
-    schema_name: Literal["BatchMemoryDecisionSet", "SynthesisDecisionEnvelope"]
+    schema_name: Literal["BatchMemoryDecisionSet", "SynthesisProviderDecision"]
     json_schema: dict[str, Any]
     prompt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -170,19 +171,21 @@ class AttemptOutcome(BaseModel):
 
 
 def default_arm_policies() -> tuple[ArmPolicy, ...]:
-    common = dict(provider_schema_version="think-synthesis-decision-v1",
-                  compiler_version="ti2-v1", routing_policy_version="ti3-v1")
+    common = dict(compiler_version="ti2-v1", routing_policy_version="ti3-v1")
     return (
         ArmPolicy(arm="A", interface="legacy_isolated",
                   policy=PolicyIdentity(prompt_policy_version="legacy-compiled-v1",
+                    provider_schema_version="batch-memory-decision-set-v1",
                     model="gpt-5.3-codex-spark", effort="medium", **common),
                   estimated_cost_per_thousand_tokens=0.006),
         ArmPolicy(arm="B", interface="synthesis_decision_v1",
-                  policy=PolicyIdentity(prompt_policy_version="dossier-schema-v1",
+                  policy=PolicyIdentity(prompt_policy_version="dossier-schema-v2-binding",
+                    provider_schema_version="think-synthesis-provider-decision-v2",
                     model="gpt-5.3-codex-spark", effort="medium", **common),
                   estimated_cost_per_thousand_tokens=0.006),
         ArmPolicy(arm="C", interface="synthesis_decision_v1",
-                  policy=PolicyIdentity(prompt_policy_version="dossier-schema-v1",
+                  policy=PolicyIdentity(prompt_policy_version="dossier-schema-v2-binding",
+                    provider_schema_version="think-synthesis-provider-decision-v2",
                     model="gpt-5.3-codex-spark", effort="high", **common),
                   estimated_cost_per_thousand_tokens=0.012),
     )
@@ -341,7 +344,12 @@ def _evaluate_attempt(
                                  "error": str(exc)}
     else:
         try:
-            envelope = SynthesisDecisionEnvelope.model_validate(raw)
+            provider_decision = SynthesisProviderDecision.model_validate(raw)
+            envelope = bind_synthesis_provider_decision(
+                provider_decision,
+                dossier_id=str(case.provider_payload["dossier_id"]),
+                dossier_digest=case.dossier_digest,
+            )
             compiled = compile_synthesis_decision(envelope, context=_compile_context(case))
             compiler_artifact = compiled.model_dump(mode="json")
             compiler_digest = canonical_sha256(compiler_artifact)
@@ -572,11 +580,16 @@ def _capture_request(
     else:
         system = (
             "Analyze one closed company-learning dossier. Return exactly one "
-            "SynthesisProposal or AbstentionDecision using only local handles."
+            "SynthesisProposal or AbstentionDecision using only local handles. "
+            "For synthesis, relation_kind must be one of blocks, depends_on, "
+            "causes, influences, or predicts. Relation source_handles must be a "
+            "subset of cause_condition_handles, include at least one accepted M "
+            "handle, and contain no effect handle. Supporting evidence must "
+            "include at least one direct O handle."
         )
         user = json.dumps(case.provider_payload, sort_keys=True, separators=(",", ":"))
-        schema_name = "SynthesisDecisionEnvelope"
-        schema = SynthesisDecisionEnvelope.model_json_schema()
+        schema_name = "SynthesisProviderDecision"
+        schema = SynthesisProviderDecision.model_json_schema()
     prompt_digest = canonical_sha256({"system": system, "user": user})
     schema_digest = canonical_sha256(schema)
     return CaptureRequest(

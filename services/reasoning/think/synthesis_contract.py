@@ -24,6 +24,9 @@ LocalHandle = Annotated[str, Field(pattern=r"^(?:M|O)[1-9][0-9]{0,2}$")]
 SemanticRole = Literal[
     "cause", "effect", "support", "counterevidence", "novelty_reference",
 ]
+SynthesisRelationKind = Literal[
+    "blocks", "depends_on", "causes", "influences", "predicts",
+]
 
 
 class EvidenceAssessment(BaseModel):
@@ -58,8 +61,15 @@ class NoveltyAssessment(BaseModel):
 
 class SemanticRelationProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    relation_kind: str = Field(min_length=1, max_length=80)
-    source_handles: list[LocalHandle] = Field(min_length=1, max_length=8)
+    relation_kind: SynthesisRelationKind
+    source_handles: list[LocalHandle] = Field(
+        min_length=1,
+        max_length=8,
+        description=(
+            "Subset of cause_condition_handles containing at least one accepted "
+            "Model handle and no effect handle."
+        ),
+    )
     target: Literal["synthesis_output"]
     direction: Literal["source_to_target"]
     explanation: str = Field(min_length=1, max_length=500)
@@ -72,13 +82,32 @@ class SynthesisProposal(BaseModel):
     mechanism: str = Field(min_length=1, max_length=1000)
     cause_condition_handles: list[LocalHandle] = Field(min_length=1, max_length=8)
     effect_handles: list[LocalHandle] = Field(min_length=1, max_length=8)
-    supporting_evidence_handles: list[LocalHandle] = Field(min_length=1, max_length=16)
+    supporting_evidence_handles: list[LocalHandle] = Field(
+        min_length=1,
+        max_length=16,
+        description="Closed support handles including at least one direct O handle.",
+    )
     counterevidence: list[EvidenceAssessment] = Field(default_factory=list, max_length=8)
     strongest_alternative: AlternativeAssessment
     novelty: NoveltyAssessment
     confidence: float = Field(ge=0.0, le=1.0)
     falsifying_evidence: list[str] = Field(min_length=1, max_length=8)
     relation: SemanticRelationProposal
+
+    @model_validator(mode="after")
+    def require_closed_relation_and_direct_support(self) -> "SynthesisProposal":
+        causes = set(self.cause_condition_handles)
+        effects = set(self.effect_handles)
+        sources = set(self.relation.source_handles)
+        if not sources <= causes:
+            raise ValueError("relation sources must be a subset of cause_condition handles")
+        if sources & effects:
+            raise ValueError("relation sources cannot contain effect handles")
+        if not any(handle.startswith("M") for handle in sources):
+            raise ValueError("relation requires at least one accepted Model source")
+        if not any(handle.startswith("O") for handle in self.supporting_evidence_handles):
+            raise ValueError("supporting evidence requires at least one direct observation")
+        return self
 
 
 class AbstentionDecision(BaseModel):
@@ -98,12 +127,35 @@ class AbstentionDecision(BaseModel):
 Decision = Annotated[SynthesisProposal | AbstentionDecision, Field(discriminator="kind")]
 
 
+class SynthesisProviderDecision(BaseModel):
+    """Identity-free semantic decision accepted directly from the provider."""
+
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["think-synthesis-provider-decision-v2"]
+    decision: Decision
+
+
 class SynthesisDecisionEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal["think-synthesis-decision-v1"]
     dossier_id: str = Field(min_length=1, max_length=120)
     dossier_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     decision: Decision
+
+
+def bind_synthesis_provider_decision(
+    provider_decision: SynthesisProviderDecision,
+    *,
+    dossier_id: str,
+    dossier_digest: str,
+) -> SynthesisDecisionEnvelope:
+    """Bind trusted closed-dossier identity after provider schema validation."""
+    return SynthesisDecisionEnvelope(
+        schema_version="think-synthesis-decision-v1",
+        dossier_id=dossier_id,
+        dossier_digest=dossier_digest,
+        decision=provider_decision.decision,
+    )
 
 
 @dataclass(frozen=True)
@@ -322,5 +374,6 @@ __all__ = [
     "AbstentionDecision", "AlternativeAssessment", "CONTRACT_DIGEST",
     "EvidenceAssessment", "HandleBinding", "NoveltyAssessment",
     "SemanticRelationProposal", "SynthesisCompileContext", "SynthesisContractError",
-    "SynthesisDecisionEnvelope", "SynthesisProposal", "compile_synthesis_decision",
+    "SynthesisDecisionEnvelope", "SynthesisProposal", "SynthesisProviderDecision",
+    "bind_synthesis_provider_decision", "compile_synthesis_decision",
 ]

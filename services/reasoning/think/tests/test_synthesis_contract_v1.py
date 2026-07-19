@@ -12,6 +12,8 @@ from services.reasoning.think.synthesis_contract import (
     SynthesisCompileContext,
     SynthesisContractError,
     SynthesisDecisionEnvelope,
+    SynthesisProviderDecision,
+    bind_synthesis_provider_decision,
 )
 
 
@@ -67,12 +69,98 @@ def _fixture():
 
 
 def test_provider_schema_contains_handles_and_no_uuid_fields() -> None:
-    schema = str(SynthesisDecisionEnvelope.model_json_schema())
+    schema = str(SynthesisProviderDecision.model_json_schema())
     assert "UUID" not in schema
     assert "canonical_id" not in schema
+    assert "dossier_id" not in schema
+    assert "dossier_digest" not in schema
     raw, _ = _fixture()
+    provider_raw = {
+        "schema_version": "think-synthesis-provider-decision-v2",
+        "decision": raw["decision"],
+    }
     with pytest.raises(ValidationError):
-        SynthesisDecisionEnvelope.model_validate({**raw, "provider_uuid": str(uuid4())})
+        SynthesisProviderDecision.model_validate(
+            {**provider_raw, "dossier_id": "provider-authored"}
+        )
+    with pytest.raises(ValidationError):
+        SynthesisProviderDecision.model_validate(
+            {**provider_raw, "dossier_digest": "0" * 64}
+        )
+
+
+@pytest.mark.parametrize("invented_digest", ["0" * 64, "1" * 64, "f" * 64, "a" * 64])
+def test_provider_cannot_author_any_dossier_digest(invented_digest: str) -> None:
+    raw, _ = _fixture()
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        SynthesisProviderDecision.model_validate({
+            "schema_version": "think-synthesis-provider-decision-v2",
+            "dossier_digest": invented_digest,
+            "decision": raw["decision"],
+        })
+
+
+def test_trusted_adapter_binds_identity_and_unknown_handles_still_fail() -> None:
+    raw, context = _fixture()
+    provider_raw = {
+        "schema_version": "think-synthesis-provider-decision-v2",
+        "decision": {**raw["decision"], "supporting_evidence_handles": ["O9"]},
+    }
+    provider_decision = SynthesisProviderDecision.model_validate(provider_raw)
+    envelope = bind_synthesis_provider_decision(
+        provider_decision,
+        dossier_id=context.dossier_id,
+        dossier_digest=context.dossier_digest,
+    )
+    assert envelope.dossier_id == context.dossier_id
+    assert envelope.dossier_digest == context.dossier_digest
+    with pytest.raises(SynthesisContractError, match="unknown handle"):
+        compile_frozen_synthesis_decision(envelope, context=context)
+
+
+@pytest.mark.parametrize(
+    "relation_kind",
+    ["supports", "causal_chain", "supports_causal_gate", "fixture_relation"],
+)
+def test_provider_relation_kind_is_closed_before_trusted_binding(
+    relation_kind: str,
+) -> None:
+    raw, _ = _fixture()
+    raw["decision"]["relation"]["relation_kind"] = relation_kind
+    with pytest.raises(ValidationError, match="relation_kind"):
+        SynthesisProviderDecision.model_validate({
+            "schema_version": "think-synthesis-provider-decision-v2",
+            "decision": raw["decision"],
+        })
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("outside_cause", "subset of cause_condition"),
+        ("effect_source", "subset of cause_condition"),
+        ("no_model_source", "accepted Model source"),
+        ("no_direct_support", "direct observation"),
+    ],
+)
+def test_provider_cross_field_relation_contract_fails_before_binding(
+    mutation: str, message: str,
+) -> None:
+    raw, _ = _fixture()
+    decision = raw["decision"]
+    if mutation == "outside_cause":
+        decision["relation"]["source_handles"] = ["M1", "O2"]
+    elif mutation == "effect_source":
+        decision["relation"]["source_handles"] = ["M1", "O3"]
+    elif mutation == "no_model_source":
+        decision["relation"]["source_handles"] = ["O1"]
+    elif mutation == "no_direct_support":
+        decision["supporting_evidence_handles"] = ["M1", "M2"]
+    with pytest.raises(ValidationError, match=message):
+        SynthesisProviderDecision.model_validate({
+            "schema_version": "think-synthesis-provider-decision-v2",
+            "decision": decision,
+        })
 
 
 def test_synthesis_compiles_exactly_one_composite_and_relation_only() -> None:
@@ -137,19 +225,15 @@ def test_invalid_binding_fails_before_diff(mutation: str, match: str) -> None:
 
 
 def test_relation_semantics_are_not_inferred_from_thesis_text() -> None:
-    raw, context = _fixture()
+    raw, _ = _fixture()
     raw["decision"]["thesis"] = "This text says blocks repeatedly but is not authority."
     raw["decision"]["relation"]["relation_kind"] = "fixture_only_relation"
-    with pytest.raises(SynthesisContractError, match="unsupported governed"):
-        compile_frozen_synthesis_decision(
-            SynthesisDecisionEnvelope.model_validate(raw), context=context,
-        )
+    with pytest.raises(ValidationError, match="relation_kind"):
+        SynthesisDecisionEnvelope.model_validate(raw)
 
 
 def test_observational_cause_requires_a_causal_model_relation_source() -> None:
-    raw, context = _fixture()
+    raw, _ = _fixture()
     raw["decision"]["relation"]["source_handles"] = ["O1"]
-    with pytest.raises(SynthesisContractError, match="accepted Model heads"):
-        compile_frozen_synthesis_decision(
-            SynthesisDecisionEnvelope.model_validate(raw), context=context,
-        )
+    with pytest.raises(ValidationError, match="accepted Model source"):
+        SynthesisDecisionEnvelope.model_validate(raw)

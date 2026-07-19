@@ -32,7 +32,7 @@ from services.reasoning.think.compiled_reasoning import (  # noqa: E402
     BatchMemoryDecisionSet,
 )
 from services.reasoning.think.synthesis_contract import (  # noqa: E402
-    SynthesisDecisionEnvelope,
+    SynthesisProviderDecision,
 )
 
 
@@ -93,7 +93,7 @@ async def _main() -> int:
         schema = (
             BatchMemoryDecisionSet
             if request.schema_name == "BatchMemoryDecisionSet"
-            else SynthesisDecisionEnvelope
+            else SynthesisProviderDecision
         )
         sink = InMemoryLLMReceiptSink()
         parse_outcome = "accepted"
@@ -112,7 +112,7 @@ async def _main() -> int:
                         "prompt_policy_version": (
                             "legacy-compiled-v1"
                             if request.interface == "legacy_isolated"
-                            else "dossier-schema-v1"
+                            else "dossier-schema-v2-binding"
                         ),
                         "provider_schema_version": request.schema_name,
                         "compiler_version": "ti2-v1",
