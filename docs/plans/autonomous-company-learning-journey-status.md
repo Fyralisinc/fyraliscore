@@ -2232,3 +2232,21 @@ matched feedback quality and objective entity v6.
   TI0. The integration owner issued v2 solely to add a narrow sanitized
   raw-response emission and focused provider test to TI0 ownership. This was a
   file-manifest correction, not a change in semantic authority.
+
+### 2026-07-19 — TI0-TI2 Wave 1 is provider-free green
+
+- TI0, TI1, and TI2 were implemented in isolated worktrees, branches,
+  databases, and artifact roots against contract v2, then integrated through
+  reversible commits.
+- The integrated checkpoint at `68b5a0e8` passes 54 combined focused tests,
+  two PostgreSQL synthesis atomicity tests, architecture ratchets, and the
+  production environment contract.
+- The dossier module remains evaluator-blind and structural; the decision seam
+  uses only local handles provider-facing; the compiler binds exact canonical
+  versions and emits one canonical relation path; and the trace preserves
+  sanitized parse failures as well as accepted responses.
+- This is provider-free contract evidence, not semantic-model evidence.
+  Production dossier selection, semantic scoring, TI4-min receipts, TI3, and
+  the resumed CF3-C proof remain open. The next provider action is exactly one
+  preregistered observation-only current-interface baseline, not CF3-C
+  qualification and not a repair loop.

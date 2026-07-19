@@ -2468,3 +2468,32 @@ other lane boundary are unchanged. The new contract SHA-256 is
 
 **Proof boundary:** This is a provider-free contract correction. No runtime
 implementation, database state, provider call, or CF3-C evidence run occurred.
+
+### 2026-07-19 — LOG-073 — TI0-TI2 Wave 1 integrates provider-free
+
+**Integration:** TI1 added a standalone evaluator-blind scope-local dossier
+assembler. Its twelve-batch mechanical inspection built 48 scope snapshots;
+Atlas became structurally mature only at batch four, Cobalt only at batch nine,
+and the null case never matured. TI2 added the closed local-handle
+`SynthesisProposal | AbstentionDecision` seam. Accepted synthesis compiles to
+exactly one composite command and one canonical relation command; abstention
+emits no mutation. TI0 added immutable prompt, raw provider response, compiler,
+validation, and apply events joined to existing logical and physical receipts.
+Parse-invalid raw bodies are retained, sanitized, and linked to their physical
+attempts.
+
+**Validation:** On integrated HEAD `68b5a0e8`, 54 combined TI0-TI2 focused
+tests passed against the assigned databases, plus two PostgreSQL synthesis
+atomicity tests. Architecture ratchets and the production environment contract
+passed. The isolated TI1 twelve-batch mechanical proof, TI2 contract suite,
+and TI0 DB-backed observability suite were independently green before merge.
+
+**Proof boundary:** This proves the provider-free shared seams and atomic
+compiler boundary. Production dossier hydration/call-site selection, the
+independent semantic scorer, and TI4-min evaluation receipts are not yet
+integrated. No provider call or CF3-C run has occurred.
+
+**Next action:** Freeze this integration checkpoint and run exactly one
+observation-only current-interface four-batch canary in a clean proof worktree
+and isolated database. Its output is immutable Arm A evidence and authorizes no
+patch or rerun. TI3 and the new-interface work proceed regardless of its color.
