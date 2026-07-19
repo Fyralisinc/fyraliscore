@@ -2419,3 +2419,36 @@ about the one missing end-to-end synthesis transition. Do not widen entity,
 ontology, lifecycle or efficiency work. Run at most one confirmation CF3-C
 canary; if it remains red, preserve the artifact and reconsider the synthesis
 boundary rather than entering another local patch/rerun loop.
+
+### 2026-07-19 — LOG-071 — Think Intelligence contracts freeze before another provider run
+
+**Decision:** The LLM-interface audit supersedes LOG-070's immediate
+confirmation-canary authorization. The compiler repair remains locally green,
+but another CF3-C run would still present an overloaded and insufficiently
+observable cognitive task. CF3-C is locked until the bounded Think Intelligence
+Gate is green.
+
+**Contract checkpoint:** The integration owner reconciled independent
+telemetry, dossier, and decision/scorer audits into
+`think-intelligence-contract-freeze-v1.md`, SHA-256
+`bbe1d1025c9b73cb5a91a34d9933b8bd0da84177450be6172c57bde48d75f74b`.
+The freeze defines one trace envelope, one scope-local dossier, one
+`SynthesisProposal | AbstentionDecision`, deterministic local-handle binding,
+one canonical relation path, independent scorer contracts, minimum policy
+governance, artifact rules, and non-overlapping file/database ownership.
+
+**Invariant:** The LLM owns mechanism, direction, alternatives, novelty,
+counterevidence, uncertainty, and abstention. The compiler owns canonical
+identity, evidence closure, allowed operations, exact versions, and atomic
+transaction construction. Runtime contracts contain no evaluator gold and the
+provider transports no canonical UUIDs.
+
+**Preflight:** Worktree `fyraliscore-autonomous-learning` was clean at
+`c5297848`; the CF3-B, CF3-C r2, and batch-four context artifacts existed with
+their documented digests; Python 3.12.13 and PostgreSQL were available; and no
+provider or shared-database evidence process was active. No provider call or
+CF3-C run occurred.
+
+**Next action:** Commit this reversible freeze, create isolated TI0, TI1, and
+TI2 worktrees/databases/artifact roots with the frozen digest, and implement
+only their falsifiable provider-free contracts.

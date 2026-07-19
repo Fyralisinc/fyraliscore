@@ -2204,3 +2204,26 @@ matched feedback quality and objective entity v6.
   evidence or version predicate. Focused synthesis plus real-PostgreSQL
   atomicity proof passes `21/21`. One confirmation CF3-C canary is allowed;
   another patch/rerun loop is not.
+
+### 2026-07-19 — Think Intelligence Gate contract freeze supersedes the immediate canary
+
+- The subsequent LLM-interface audit showed that the fourth-batch cognitive
+  problem mixed misleading candidate framing, broad context, bookkeeping,
+  canonical identifiers, multiple semantic operations, and inconsistent
+  relation ownership. The locally green compiler repair therefore remains
+  necessary but insufficient evidence.
+- The new-thread handoff now governs the immediate sequence. CF3-C is locked
+  until TI0 observability, TI1 scope-local dossiers, TI2
+  synthesis-or-abstention with local handles, TI4-min policy receipts, and the
+  TI3 three-dossier experiment are green and a selected policy is frozen.
+- The small shared interface checkpoint is frozen in
+  `think-intelligence-contract-freeze-v1.md`, SHA-256
+  `bbe1d1025c9b73cb5a91a34d9933b8bd0da84177450be6172c57bde48d75f74b`.
+  It assigns each field and implementation surface to one owner, keeps scorer
+  gold outside runtime, preserves existing truth/validation/apply machinery,
+  and establishes the governing boundary: the LLM owns semantic judgment; the
+  compiler owns identity, closure, legality, and atomicity.
+- Preflight verified the requested clean worktree at `c5297848`, the three
+  documented evidence artifacts and their exact digests, Python 3.12.13,
+  available PostgreSQL, and no active provider/shared-database evidence run.
+  No provider call or CF3-C run occurred during the freeze.

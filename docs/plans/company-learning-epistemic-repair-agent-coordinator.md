@@ -2,8 +2,8 @@
 
 **Document type:** Central implementation and evaluation coordinator
 
-**Status:** In execution — clean four-batch core semantics pass through
-`bf26d622`; the full twelve-batch P6 proof remains outstanding
+**Status:** In execution — Think Intelligence Gate contract frozen; TI0-TI2
+implementation precedes any new CF3-C provider canary
 
 **Active branch:** `codex/autonomous-company-learning`
 
@@ -17,6 +17,38 @@
 
 **Reuse boundary:**
 [Autonomous Company-Learning Reuse Audit](autonomous-company-learning-reuse-audit.md)
+
+## Current execution checkpoint — 2026-07-19 Think Intelligence Gate
+
+The immediate sequence is governed by
+[the new-thread handoff](autonomous-company-learning-new-thread-handoff.md).
+The prior authorization for one immediate CF3-C confirmation canary is
+superseded: **do not run CF3-C yet**.
+
+Shared TI0-TI4-min interfaces are frozen in
+[Think Intelligence Gate Shared Contract Freeze v1](think-intelligence-contract-freeze-v1.md),
+SHA-256 `bbe1d1025c9b73cb5a91a34d9933b8bd0da84177450be6172c57bde48d75f74b`.
+Only the integration owner may amend that contract; amendments require a new
+version and digest.
+
+The authorized order is:
+
+1. implement and provider-free validate TI0 observability;
+2. implement and provider-free validate TI1 scope-local dossiers over all
+   twelve development batches;
+3. implement and provider-free validate TI2 synthesis/abstention and local
+   handle binding;
+4. freeze TI0 and run exactly one observation-only current-interface canary;
+5. integrate TI4-min receipts and independent scoring;
+6. run the preregistered three-dossier TI3 experiment and select the cheapest
+   policy within the frozen quality tolerance; and
+7. resume the existing `CF3-C -> CF4 -> CF5 -> CF6 -> CF7 -> CF8` ladder only
+   after the complete telemetry and selected policy are frozen cleanly.
+
+The first closed learning-loop milestone, M1, is green only after correct
+scope-local synthesis, later correction/lifecycle handling, and retrieval/use
+of the corrected current head. Task autonomy, connectors, general episode
+discovery, broad prompt platforms, and production polish remain deferred.
 
 ## Current execution checkpoint — 2026-07-18
 
