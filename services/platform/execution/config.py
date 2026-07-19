@@ -53,6 +53,7 @@ def _env_csv_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class InquiryConfig:
+    learned_policy_enabled: bool = True
     max_rounds: int = 2
     questions_per_round: int = 3
     evidence_reservoir_limit: int = 500
@@ -127,6 +128,10 @@ class InquiryConfig:
     @classmethod
     def from_env(cls) -> "InquiryConfig":
         return cls(
+            learned_policy_enabled=_env_bool(
+                "INQUIRY_LEARNED_POLICY_ENABLED",
+                True,
+            ),
             planner_profile=os.environ.get(
                 "INQUIRY_PLANNER_PROFILE",
                 "default",

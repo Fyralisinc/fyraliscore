@@ -132,3 +132,54 @@ async def test_bootstrap_passes_company_learning_profile_to_primary_retrieval(
     assert seen["company_profile"] is state.company_learning_profile
     assert state.company_learning_profile is not None
     assert state.company_learning_profile.notes == ("empty_company_learning_profile",)
+
+
+@pytest.mark.asyncio
+async def test_stage1_bootstrap_does_not_read_or_apply_learned_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _unexpected(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Stage 1 must not load learned retrieval policy")
+
+    seen: dict[str, object] = {}
+
+    async def _fake_primary_retrieve(
+        trigger: TriggerContext,
+        *_args: object,
+        **kwargs: object,
+    ) -> RetrievalResult:
+        seen.update(kwargs)
+        return RetrievalResult(trigger=trigger)
+
+    monkeypatch.setattr(inquiry_bootstrap, "load_sage_route_utilities", _unexpected)
+    monkeypatch.setattr(inquiry_bootstrap, "load_question_policy_stats", _unexpected)
+    monkeypatch.setattr(inquiry_bootstrap, "load_company_learning_profile", _unexpected)
+    monkeypatch.setattr(inquiry_bootstrap, "primary_retrieve", _fake_primary_retrieve)
+
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=UUID("00000000-0000-0000-0000-000000000001"),
+        seed_natural_text="Atlas renewal is blocked on security approval.",
+    )
+    state = await inquiry_bootstrap._bootstrap_inquiry_run(
+        trigger=trigger,
+        conn=_NoPolicyConn(),
+        embedder=None,
+        read_pool=None,
+        route=None,
+        mode="deep",
+        top_n=16,
+        config=InquiryConfig(
+            learned_policy_enabled=False,
+            candidate_model_limit=10,
+            result_model_limit=5,
+            max_rounds=0,
+            sage_reader_enabled=False,
+        ),
+    )
+
+    assert state.company_learning_profile is None
+    assert state.sage_route_utilities == ()
+    assert seen["company_profile"] is None
+    assert seen["sage_route_utilities"] == ()
+    assert seen["config"].sage_retrieval_policy_enabled is False

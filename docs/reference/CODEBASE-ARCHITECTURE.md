@@ -1,6 +1,7 @@
 # Fyralis Core Architecture
 
-Last reviewed from the codebase on 2026-06-03 (re-layered; see [CODEBASE-MANAGEMENT.md](CODEBASE-MANAGEMENT.md)).
+Last reviewed from the codebase on 2026-07-19 (Stage 1 company-memory profile;
+see [CODEBASE-MANAGEMENT.md](CODEBASE-MANAGEMENT.md)).
 
 Fyralis Core is an organizational intelligence runtime. It ingests company signals, stores them as tenant-scoped observations, reasons over them into a live model of the organization, and renders the result into CEO-facing product surfaces.
 
@@ -211,6 +212,14 @@ The trust map is centralized in [services/ingest/ingestion/handlers/__init__.py]
 ## 7. Think Pipeline
 
 The core reasoning entry point is [services/reasoning/think/reason.py](services/reasoning/think/reason.py). The queue runner is [services/reasoning/think/worker.py](services/reasoning/think/worker.py).
+
+The minimal Observation-to-Model production composition is documented in
+[Stage 1 Company Memory](STAGE1-COMPANY-MEMORY.md). It runs the existing Think
+kernel under an explicit claims-only profile: retrieve relevant Models and
+Observations, build one context packet, propose or update Models, validate, and
+apply atomically. The production worker selects it for source T1 arrivals and
+their batch wrappers; derived T1 work and T2/T3/T4 retain full Think. SAGE and
+autonomous learning remain outside the Stage 1 profile.
 
 ### Trigger Kinds
 

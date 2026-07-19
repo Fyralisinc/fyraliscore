@@ -142,6 +142,7 @@ async def test_worker_config_defaults_are_batch_first(monkeypatch):
     monkeypatch.delenv("THINK_T2_BATCH_MAX_SIZE", raising=False)
     monkeypatch.delenv("THINK_T4_BATCH_MAX_SIZE", raising=False)
     monkeypatch.delenv("THINK_T4_LANE_CIRCUIT_ISOLATION", raising=False)
+    monkeypatch.delenv("THINK_STAGE1_COMPANY_MEMORY_FOR_T1", raising=False)
     monkeypatch.delenv("LLM_DAILY_BUDGET_USD_PER_T4_LANE", raising=False)
     monkeypatch.delenv("LLM_DAILY_BUDGET_USD_PER_T4_REPAIR_LANE", raising=False)
     monkeypatch.delenv("LLM_DAILY_BUDGET_USD_PER_T4_RELATIONSHIP_LANE", raising=False)
@@ -157,6 +158,7 @@ async def test_worker_config_defaults_are_batch_first(monkeypatch):
     assert cfg.t2_batch_max_size == 8
     assert cfg.t4_batch_max_size == 4
     assert cfg.process_background_triggers is True
+    assert cfg.stage1_company_memory_for_t1 is True
     assert cfg.isolate_t4_lane_circuit_breakers is True
 
 
@@ -3066,6 +3068,7 @@ async def test_process_trigger_rehydrates_full_payload_for_retrieval(
 
     async def _fake_think(trigger, pool, **kwargs):
         captured["trigger"] = trigger
+        captured["execution_policy"] = kwargs["execution_policy"]
         # Simulate a successful run so the worker marks the queue row complete.
         from services.reasoning.think.reason import ThinkRunOutcome
 
@@ -3126,3 +3129,4 @@ async def test_process_trigger_rehydrates_full_payload_for_retrieval(
     assert t.seed_entity_ids == [{"type": "commitment", "id": "c-187"}]
     assert t.seed_occurred_at.year == 2026 and t.seed_occurred_at.month == 4
     assert t.scope_actors == [actor]
+    assert captured["execution_policy"].is_stage1_company_memory is True

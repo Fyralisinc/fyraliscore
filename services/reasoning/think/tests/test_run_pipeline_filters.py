@@ -7,9 +7,46 @@ import pytest
 from lib.shared.ids import uuid7
 from services.reasoning.retrieval.primary import TriggerContext
 import services.reasoning.think.reason as reason_mod
-from services.reasoning.think.diff_schema import ClaimOp, RawDiff, ValidatedDiff
+from services.reasoning.think.diff_schema import (
+    ActOp,
+    ClaimOp,
+    MemoryLifecycleOp,
+    RawDiff,
+    ValidatedDiff,
+)
 from services.reasoning.think.reason import ThinkRunOutcome
-from services.reasoning.think.run_pipeline import _drop_event_batch_wrapper_claims
+from services.reasoning.think.run_pipeline import (
+    _drop_event_batch_wrapper_claims,
+    _restrict_to_stage1_model_ops,
+)
+
+
+def test_stage1_filter_retains_only_model_mutations() -> None:
+    tenant_id = uuid7()
+    trigger_id = uuid7()
+    model_id = uuid7()
+    diff = RawDiff(
+        trigger_ref=trigger_id,
+        tenant_id=tenant_id,
+        claim_ops=[ClaimOp(op="update", model_id=model_id, changes={"confidence": 0.8})],
+        memory_lifecycle_ops=[
+            MemoryLifecycleOp(
+                model_id=model_id,
+                action="confirm",
+                rationale="New source confirms the current Model.",
+            )
+        ],
+        act_ops=[ActOp(op="create_goal", entity={"title": "Not Stage 1"})],
+    )
+
+    restricted = _restrict_to_stage1_model_ops(diff)
+
+    assert len(restricted.claim_ops) == 1
+    assert len(restricted.memory_lifecycle_ops) == 1
+    assert restricted.act_ops == []
+    assert restricted.reasoning_trace == (
+        "stage1_company_memory omitted 1 non-Model operation(s)"
+    )
 
 
 def test_drop_event_batch_wrapper_claims_drops_batch_subject_insert():

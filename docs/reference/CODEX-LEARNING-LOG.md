@@ -1,6 +1,6 @@
 # Codex Learning Log
 
-Last reviewed: 2026-07-17.
+Last reviewed: 2026-07-19.
 
 This file is the durable cross-run memory for Fyralis Core. Use it for lessons
 that should compound across Codex sessions: failed benchmark interpretation,
@@ -50,6 +50,37 @@ claims that were not checked against code or artifacts.
 ```
 
 ## Durable Lessons
+
+### 2026-07-19 - A disabled learning reader is not a disabled learning loop
+
+- Context: Isolating the deterministic Observation-to-Model Stage 1 path from
+  SAGE and autonomous-learning behavior.
+- Symptom: A provider-free run read no learned routing policy but still wrote
+  SAGE route-utility rows through inquiry persistence.
+- Cause: Learning inputs, adaptive decisions, persistence, and downstream
+  feedback are separate boundaries; disabling only the readers leaves learning
+  writes active.
+- Lesson: A non-learning execution profile must explicitly disable learned
+  reads, adaptive planners, inquiry persistence, and post-apply learning
+  feedback. Prove the boundary by checking the relevant tables remain empty.
+- Evidence: `services/reasoning/think/context_planner.py`;
+  `services/platform/execution/inquiry_bootstrap.py`;
+  `services/reasoning/think/reason.py`.
+- Status: Landed in the Stage 1 company-memory profile.
+
+### 2026-07-19 - Record execution profiles through an existing receipt boundary
+
+- Context: Making Stage 1 runs distinguishable without expanding the schema.
+- Symptom: Writing `stage1_company_memory` into `think_runs.execution_mode`
+  violated that column's database check constraint and rolled back the run.
+- Cause: `execution_mode` has a narrower persisted vocabulary than the new
+  composition profile.
+- Lesson: Keep execution mode and composition profile as separate concepts.
+  Record the Stage 1 profile in the existing `ops_applied` receipt unless a
+  deliberate migration changes the database contract.
+- Evidence: `services/reasoning/think/execution_policy.py`;
+  `services/reasoning/think/reason.py`.
+- Status: Landed without a schema change.
 
 ### 2026-07-19 - A clean rewrite must not inherit the old runtime implicitly
 
@@ -312,3 +343,22 @@ claims that were not checked against code or artifacts.
   `services/reasoning/think/llm_receipts.py`.
 - Status: P1 contract landed; runtime retry unification and end-to-end proof are
   still required.
+
+### 2026-07-19 - Stage 1 entity competence begins with authoritative identity bootstrap
+
+- Context: A real two-batch Stage 1 run detected every fixture mention but
+  resolved none of them.
+- Symptom: Model reasoning worked, but scopes remained request-local mention
+  references instead of stable company entities.
+- Cause: The resolver correctly operates over a closed, authorized candidate
+  set; the zero-seed run supplied no founder identity vocabulary, so resolving
+  a synthetic name would have required inventing identity authority.
+- Lesson: Qualify cold-start Stage 1 with an explicit founder-authoritative
+  identity manifest applied before enqueue. Keep unknown names unresolved, and
+  score frozen Stage 1 snapshots with the narrow Stage 1 scorer rather than a
+  full-pipeline scorer whose telemetry is intentionally absent.
+- Evidence: `services/domain/company_identity_bootstrap/service.py`;
+  `services/evaluation/epistemic_repair/stage1_quality_scorer.py`;
+  `scripts/score_stage1_company_memory.py`.
+- Status: Implemented and covered by focused tests; live qualification must run
+  from a clean pinned commit.

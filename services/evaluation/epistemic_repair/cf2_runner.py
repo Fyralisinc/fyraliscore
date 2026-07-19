@@ -39,8 +39,6 @@ from services.evaluation.epistemic_repair.p6_think_runner import (
     _write_checkpoint,
     run_p6_think_with_dependencies,
 )
-
-
 class CF2DeterministicEmbedder:
     """Small provider-free, deterministic 768-dimensional embedder."""
 
@@ -167,7 +165,11 @@ async def run_cf2_provider_free(
         transport="in_process_provider_free",
         persist_runtime_batch=persist_batch,
         prepare_persisted_batch=prepare_batch,
-        execution_mode="actual ThinkWorker with deterministic provider-free dependencies",
+        execution_mode=(
+            "actual ThinkWorker production T1 policy selection with "
+            "deterministic provider-free dependencies"
+        ),
+        execution_policy=None,
     )
     try:
         artifact = await run_p6_think_with_dependencies(

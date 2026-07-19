@@ -107,6 +107,9 @@ async def _main() -> None:
             learned_entity_discovery="ready_at_persisted_t1_batch_boundary",
             entity_discovery_model=discovery_llm.config.model,
             lanes=lane_names(worker.config.allowed_lanes),
+            stage1_company_memory_for_t1=(
+                worker.config.stage1_company_memory_for_t1
+            ),
         )
         await worker.run()
     finally:

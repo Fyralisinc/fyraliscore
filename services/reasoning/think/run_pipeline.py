@@ -30,7 +30,6 @@ from services.reasoning.sage.inquiry_traces.emitter import (
 )
 
 from .cascade import CascadeEvent, CascadeResult, cascade
-from .company_learning_feedback import record_uncertainty_dispositions
 from .context_planner import assemble_reasoning_context, plan_context
 from .debug_capture import capture as debug_capture
 from .deterministic import deterministic_handler, is_authoritative
@@ -43,7 +42,11 @@ from .observability import (
     insert_think_run,
     update_think_run,
 )
-from .representation_contract import enrich_raw_diff_representation
+from .execution_policy import NORMAL_EXECUTION_POLICY, ThinkExecutionPolicy
+from .representation_contract import (
+    bind_raw_diff_representation,
+    enrich_raw_diff_representation,
+)
 from .region_locks import (
     RegionLockAcquisition,
     acquire_region_lock,
@@ -264,14 +267,17 @@ async def prepare_reasoning_run_state(
     embedder: Any | None,
     read_pool: asyncpg.Pool | None = None,
     stage_timings: list[dict[str, Any]] | None = None,
+    execution_policy: ThinkExecutionPolicy = NORMAL_EXECUTION_POLICY,
 ) -> ReasoningRunState:
-    from services.reasoning.relationships.adjudication import (
-        load_candidate_for_trigger,
-    )
+    loaded_relationship_candidate = None
+    if not execution_policy.is_stage1_company_memory:
+        from services.reasoning.relationships.adjudication import (
+            load_candidate_for_trigger,
+        )
 
-    started = time.perf_counter()
-    loaded_relationship_candidate = await load_candidate_for_trigger(conn, trigger)
-    record_stage_timing(stage_timings, "relationship_candidate_load", started)
+        started = time.perf_counter()
+        loaded_relationship_candidate = await load_candidate_for_trigger(conn, trigger)
+        record_stage_timing(stage_timings, "relationship_candidate_load", started)
 
     started = time.perf_counter()
     context_plan = await plan_context(
@@ -280,6 +286,7 @@ async def prepare_reasoning_run_state(
         embedder=embedder,
         llm_provider=llm_provider,
         read_pool=read_pool,
+        stage1_company_memory=execution_policy.is_stage1_company_memory,
     )
     record_stage_timing(stage_timings, "context_plan", started)
     inquiry_result = context_plan.inquiry_result
@@ -298,15 +305,17 @@ async def prepare_reasoning_run_state(
         reasoning_frame=reasoning_frame,
         inquiry_result=inquiry_result,
         loaded_relationship_candidate=loaded_relationship_candidate,
+        record_learning_feedback=not execution_policy.is_stage1_company_memory,
     )
     record_stage_timing(stage_timings, "context_plan_observability", started)
-    _install_sage_inquiry_trace_context(
-        conn=conn,
-        trigger=trigger,
-        record=record,
-        trigger_kind_full=trigger_kind_full,
-        inquiry_result=inquiry_result,
-    )
+    if not execution_policy.is_stage1_company_memory:
+        _install_sage_inquiry_trace_context(
+            conn=conn,
+            trigger=trigger,
+            record=record,
+            trigger_kind_full=trigger_kind_full,
+            inquiry_result=inquiry_result,
+        )
 
     started = time.perf_counter()
     reasoning_context = await assemble_reasoning_context(
@@ -317,6 +326,7 @@ async def prepare_reasoning_run_state(
         expanded_region=expanded_region,
         run_id=record.id,
         read_pool=read_pool,
+        stage1_company_memory=execution_policy.is_stage1_company_memory,
     )
     bundle = reasoning_context.bundle
     allowed_region = reasoning_context.allowed_region
@@ -369,6 +379,7 @@ async def prepare_reasoning_run_state(
             expanded_region=expanded_region,
             run_id=record.id,
             read_pool=read_pool,
+            stage1_company_memory=execution_policy.is_stage1_company_memory,
         )
         locked_region = list(locked_context.allowed_region)
         record_stage_timing(
@@ -429,6 +440,7 @@ async def build_raw_reasoning_output(
     state: ReasoningRunState,
     reason_cache: dict[str, Any] | None,
     stage_timings: list[dict[str, Any]] | None = None,
+    execution_policy: ThinkExecutionPolicy = NORMAL_EXECUTION_POLICY,
 ) -> RawReasoningOutput:
     llm_latency_ms: int | None = None
     if is_authoritative(trigger):
@@ -473,6 +485,7 @@ async def build_raw_reasoning_output(
                 triggering_actor_summary=state.actor_operating_summary,
                 reason_for_trigger=reason_for_trigger,
                 reasoning_frame=state.reasoning_frame,
+                claims_only=execution_policy.is_stage1_company_memory,
             )
             record_stage_timing(
                 stage_timings,
@@ -486,35 +499,40 @@ async def build_raw_reasoning_output(
                 reason_cache["raw_diff"] = raw_diff
 
     started = time.perf_counter()
-    from .auto_create_commitment import (
-        maybe_inject_block_transition,
-        maybe_inject_create_commitment,
-        maybe_inject_customer_risk,
-        maybe_inject_decision_pressure_recommendation,
-        maybe_inject_decision_revisit,
-        maybe_inject_future_prediction,
-    )
     from .context_use import summarize_context_use
     from .deterministic import _trigger_ref  # type: ignore
-    from .lifecycle_obligations import (
-        maybe_inject_lifecycle_obligations,
-        maybe_inject_synthesis_evolution_obligations,
-    )
 
     raw_diff.trigger_ref = _trigger_ref(trigger)
     raw_diff.tenant_id = trigger.tenant_id
-    raw_diff = maybe_inject_create_commitment(raw_diff, trigger, state.bundle)
-    raw_diff = maybe_inject_block_transition(raw_diff, trigger, state.bundle)
-    raw_diff = maybe_inject_decision_revisit(raw_diff, trigger, state.bundle)
-    raw_diff = maybe_inject_future_prediction(raw_diff, trigger, state.bundle)
-    raw_diff = maybe_inject_customer_risk(raw_diff, trigger, state.bundle)
-    raw_diff = maybe_inject_decision_pressure_recommendation(
-        raw_diff, trigger, state.bundle
-    )
-    raw_diff = maybe_inject_lifecycle_obligations(raw_diff, trigger, state.bundle)
     raw_diff = _drop_event_batch_wrapper_claims(raw_diff, trigger)
-    raw_diff = enrich_raw_diff_representation(raw_diff, trigger, state.bundle)
-    raw_diff = maybe_inject_synthesis_evolution_obligations(raw_diff, state.bundle)
+    if execution_policy.is_stage1_company_memory:
+        raw_diff = _restrict_to_stage1_model_ops(raw_diff)
+        raw_diff = bind_raw_diff_representation(raw_diff, trigger, state.bundle)
+    else:
+        from .auto_create_commitment import (
+            maybe_inject_block_transition,
+            maybe_inject_create_commitment,
+            maybe_inject_customer_risk,
+            maybe_inject_decision_pressure_recommendation,
+            maybe_inject_decision_revisit,
+            maybe_inject_future_prediction,
+        )
+        from .lifecycle_obligations import (
+            maybe_inject_lifecycle_obligations,
+            maybe_inject_synthesis_evolution_obligations,
+        )
+
+        raw_diff = maybe_inject_create_commitment(raw_diff, trigger, state.bundle)
+        raw_diff = maybe_inject_block_transition(raw_diff, trigger, state.bundle)
+        raw_diff = maybe_inject_decision_revisit(raw_diff, trigger, state.bundle)
+        raw_diff = maybe_inject_future_prediction(raw_diff, trigger, state.bundle)
+        raw_diff = maybe_inject_customer_risk(raw_diff, trigger, state.bundle)
+        raw_diff = maybe_inject_decision_pressure_recommendation(
+            raw_diff, trigger, state.bundle
+        )
+        raw_diff = maybe_inject_lifecycle_obligations(raw_diff, trigger, state.bundle)
+        raw_diff = enrich_raw_diff_representation(raw_diff, trigger, state.bundle)
+        raw_diff = maybe_inject_synthesis_evolution_obligations(raw_diff, state.bundle)
     record_stage_timing(stage_timings, "post_llm_enrichment", started)
 
     started = time.perf_counter()
@@ -567,6 +585,41 @@ async def build_raw_reasoning_output(
         llm_latency_ms=llm_latency_ms,
         mutation_compile_summary=mutation_compile_summary.to_dict(),
     )
+
+
+def _restrict_to_stage1_model_ops(raw_diff: Any) -> Any:
+    """Keep only canonical Model proposals and reconciliations in Stage 1."""
+
+    omitted = sum(
+        len(getattr(raw_diff, name, []) or [])
+        for name in (
+            "relation_claim_ops",
+            "relation_frame_ops",
+            "edge_ops",
+            "ontology_gap_ops",
+            "open_question_ops",
+            "act_ops",
+            "resource_ops",
+            "new_predictions",
+        )
+    )
+    raw_diff = raw_diff.model_copy(
+        update={
+            "relation_claim_ops": [],
+            "relation_frame_ops": [],
+            "edge_ops": [],
+            "ontology_gap_ops": [],
+            "open_question_ops": [],
+            "act_ops": [],
+            "resource_ops": [],
+            "new_predictions": [],
+        }
+    )
+    if omitted:
+        note = f"stage1_company_memory omitted {omitted} non-Model operation(s)"
+        trace = raw_diff.reasoning_trace or ""
+        raw_diff.reasoning_trace = f"{trace}\n{note}".strip()
+    return raw_diff
 
 
 async def validate_raw_reasoning_output(
@@ -755,6 +808,7 @@ async def _record_context_plan_observability(
     reasoning_frame: Any,
     inquiry_result: Any | None,
     loaded_relationship_candidate: Any,
+    record_learning_feedback: bool = True,
 ) -> None:
     emit(
         "think.retrieval_done",
@@ -875,7 +929,13 @@ async def _record_context_plan_observability(
         payload=inquiry_result.context_packet,
     )
     uncertainty_signals = inquiry_result.context_packet.get("uncertainty_signals")
-    if isinstance(uncertainty_signals, list) and uncertainty_signals:
+    if (
+        record_learning_feedback
+        and isinstance(uncertainty_signals, list)
+        and uncertainty_signals
+    ):
+        from .company_learning_feedback import record_uncertainty_dispositions
+
         await record_uncertainty_dispositions(
             conn,
             tenant_id=trigger.tenant_id,

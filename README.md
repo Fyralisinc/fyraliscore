@@ -11,6 +11,8 @@ processes for asynchronous reasoning and post-commit propagation.
 
 For the architecture and module-level reference, see
 [CODEBASE-ARCHITECTURE.md](docs/reference/CODEBASE-ARCHITECTURE.md).
+For the minimal signal-to-Model runtime boundary, see
+[STAGE1-COMPANY-MEMORY.md](docs/reference/STAGE1-COMPANY-MEMORY.md).
 
 This document is the end-to-end setup guide for running the backend locally.
 
@@ -230,6 +232,10 @@ python scripts/run_post_commit_worker.py
 # Topology sweeper
 python scripts/run_topology_sweeper.py
 ```
+
+The worker defaults source `T1:event_arrival` and `T1:event_batch` work to the
+Stage 1 company-memory profile. Set `THINK_STAGE1_COMPANY_MEMORY_FOR_T1=0` only
+to roll those triggers back to the full Think profile.
 
 ---
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 from uuid import UUID
 
@@ -16,6 +16,7 @@ from services.reasoning.retrieval.primary import (
     TriggerContext,
     primary_retrieve,
 )
+from services.reasoning.retrieval.config import CONFIG as RETRIEVAL_CONFIG
 from services.reasoning.sage.company_profile import (
     CompanyLearningProfile,
     load_company_learning_profile,
@@ -160,43 +161,47 @@ async def _bootstrap_inquiry_run(
     baseline_top_n = adaptive_baseline_top_n(candidate_top_n, signal_class)
     stage_timing_notes: list[dict[str, Any]] = []
 
-    stage_started = time.perf_counter()
-    sage_route_utilities = await load_sage_route_utilities(conn, trigger)
-    append_stage_timing(
-        stage_timing_notes,
-        "sage_route_utility_load",
-        stage_started,
-        utilities=len(sage_route_utilities),
-    )
+    sage_route_utilities: tuple[Any, ...] = ()
+    question_policy: dict[str, QuestionPolicySignal] = {}
+    company_learning_profile: CompanyLearningProfile | None = None
+    if cfg.learned_policy_enabled:
+        stage_started = time.perf_counter()
+        sage_route_utilities = await load_sage_route_utilities(conn, trigger)
+        append_stage_timing(
+            stage_timing_notes,
+            "sage_route_utility_load",
+            stage_started,
+            utilities=len(sage_route_utilities),
+        )
 
-    stage_started = time.perf_counter()
-    question_policy = await load_question_policy_stats(
-        conn,
-        tenant_id=trigger.tenant_id,
-        signal_type=trigger.kind,
-    )
-    append_stage_timing(
-        stage_timing_notes,
-        "question_policy_load",
-        stage_started,
-        policies=len(question_policy),
-    )
+        stage_started = time.perf_counter()
+        question_policy = await load_question_policy_stats(
+            conn,
+            tenant_id=trigger.tenant_id,
+            signal_type=trigger.kind,
+        )
+        append_stage_timing(
+            stage_timing_notes,
+            "question_policy_load",
+            stage_started,
+            policies=len(question_policy),
+        )
 
-    stage_started = time.perf_counter()
-    company_learning_profile = await load_company_learning_profile(
-        conn,
-        tenant_id=trigger.tenant_id,
-        route_utilities=sage_route_utilities,
-        question_policy_stats=question_policy.values(),
-    )
-    append_stage_timing(
-        stage_timing_notes,
-        "company_learning_profile_build",
-        stage_started,
-        priors=len(company_learning_profile.priors),
-        samples=company_learning_profile.sample_count,
-        confidence=company_learning_profile.confidence,
-    )
+        stage_started = time.perf_counter()
+        company_learning_profile = await load_company_learning_profile(
+            conn,
+            tenant_id=trigger.tenant_id,
+            route_utilities=sage_route_utilities,
+            question_policy_stats=question_policy.values(),
+        )
+        append_stage_timing(
+            stage_timing_notes,
+            "company_learning_profile_build",
+            stage_started,
+            priors=len(company_learning_profile.priors),
+            samples=company_learning_profile.sample_count,
+            confidence=company_learning_profile.confidence,
+        )
 
     stage_started = time.perf_counter()
     if noop_gate["used"]:
@@ -226,6 +231,14 @@ async def _bootstrap_inquiry_run(
             structural_read_fanout_min_seeds=cfg.structural_read_fanout_min_seeds,
             structural_read_fanout_chunk_size=cfg.structural_read_fanout_chunk_size,
             top_n=baseline_top_n,
+            config=(
+                RETRIEVAL_CONFIG
+                if cfg.learned_policy_enabled
+                else replace(
+                    RETRIEVAL_CONFIG,
+                    sage_retrieval_policy_enabled=False,
+                )
+            ),
             sage_route_utilities=sage_route_utilities,
             company_profile=company_learning_profile,
         )
@@ -303,8 +316,10 @@ async def _bootstrap_inquiry_run(
         "selected_model_ids": [],
         "projected_evidence_count": 0,
         "activation_trace_count": 0,
-        "company_learning_profile": company_learning_profile.to_policy_notes(
-            max_priors=12
+        "company_learning_profile": (
+            company_learning_profile.to_policy_notes(max_priors=12)
+            if company_learning_profile is not None
+            else {"enabled": False, "reason": "stage1_company_memory"}
         ),
     }
     sage_reader_runtime: Any | None = None

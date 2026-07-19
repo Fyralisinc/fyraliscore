@@ -68,6 +68,7 @@ async def llm_reason(
     temperature: float = 0.2,
     max_tokens: int = 2048,
     max_attempts: int = 3,
+    claims_only: bool = False,
 ) -> tuple[RawDiff, int]:
     """
     Return (raw_diff, elapsed_ms).
@@ -76,7 +77,7 @@ async def llm_reason(
     physical calls under a 240-second logical deadline.
     """
     feedback = _validation_feedback(trigger)
-    if compiled_relationship_candidate_enabled():
+    if not claims_only and compiled_relationship_candidate_enabled():
         compiled = build_compiled_relationship_candidate_request(trigger, bundle)
         if compiled is not None:
             from .deterministic import _trigger_ref  # type: ignore
@@ -151,7 +152,7 @@ async def llm_reason(
                 elapsed_ms,
             )
 
-    schema = _select_output_schema(trigger, bundle)
+    schema = RawDiffClaimsOnly if claims_only else _select_output_schema(trigger, bundle)
     effective_max_tokens = _effective_max_tokens(max_tokens, schema)
     pair = build_prompt(
         trigger,

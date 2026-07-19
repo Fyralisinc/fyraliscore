@@ -89,12 +89,27 @@ _CORROBORATION_CUES = re.compile(
 
 def enrich_raw_diff_representation(raw_diff: Any, trigger: TriggerContext, bundle: Any) -> Any:
     """Mutate ``raw_diff`` with representation metadata and source digests."""
-    observation_index = _observation_index(bundle)
-    substrate_candidates = _substrate_candidates_for_curiosity(bundle)
     _maybe_add_source_digest_claims(raw_diff, trigger, bundle)
     _maybe_add_curiosity_claims(raw_diff, trigger, bundle)
     _maybe_add_lifecycle_pressure_ops(raw_diff, trigger, bundle)
     _maybe_add_adaptive_edge_candidate_ops(raw_diff, trigger, bundle)
+    return bind_raw_diff_representation(raw_diff, trigger, bundle)
+
+
+def bind_raw_diff_representation(
+    raw_diff: Any,
+    trigger: TriggerContext,
+    bundle: Any,
+) -> Any:
+    """Bind proposed Models to retrieved evidence without inventing new ops.
+
+    This is the representation step used by the Stage 1 company-memory loop.
+    The broader enrichment entry point may additionally synthesize digests,
+    curiosity, lifecycle pressure, and graph candidates for later stages.
+    """
+
+    observation_index = _observation_index(bundle)
+    substrate_candidates = _substrate_candidates_for_curiosity(bundle)
 
     enriched = 0
     for op in _iter_insert_ops(raw_diff):

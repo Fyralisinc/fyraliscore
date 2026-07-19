@@ -70,7 +70,11 @@ from .lanes import (
 )
 from .observability import METRICS, emit, render_prometheus_text
 from .reason import think
-from .execution_policy import NORMAL_EXECUTION_POLICY, ThinkExecutionPolicy
+from .execution_policy import (
+    NORMAL_EXECUTION_POLICY,
+    STAGE1_COMPANY_MEMORY_POLICY,
+    ThinkExecutionPolicy,
+)
 
 
 _log = structlog.get_logger(__name__)
@@ -612,6 +616,7 @@ class WorkerConfig:
     t4_batch_max_size: int = 4
     prune_low_value_downstream_triggers: bool = True
     process_background_triggers: bool = True
+    stage1_company_memory_for_t1: bool = True
     t4_topology_min_judgment_leverage: float = 0.70
     t4_topology_min_impact: float = 0.50
     t4_topology_min_actionability: float = 0.40
@@ -672,6 +677,10 @@ class WorkerConfig:
                 .strip()
                 .lower()
                 not in {"0", "false", "no", "off"}
+            ),
+            stage1_company_memory_for_t1=_bool_env(
+                "THINK_STAGE1_COMPANY_MEMORY_FOR_T1",
+                True,
             ),
             t4_topology_min_judgment_leverage=float(
                 os.environ.get("THINK_T4_TOPOLOGY_MIN_JUDGMENT_LEVERAGE", 0.70)
@@ -742,6 +751,7 @@ class ThinkWorker:
             except Exception:  # noqa: BLE001
                 embedder = None
         self.embedder = embedder
+        self._has_execution_policy_override = execution_policy is not None
         self.execution_policy = execution_policy or NORMAL_EXECUTION_POLICY
         self.execution_policy.assert_authorized()
         self._semaphores: dict[UUID, asyncio.Semaphore] = {}
@@ -754,6 +764,29 @@ class ThinkWorker:
 
     def _lane_allowed(self, lane: ThinkLane) -> bool:
         return self.config.allowed_lanes is None or lane in self.config.allowed_lanes
+
+    def _execution_policy_for_trigger(
+        self,
+        trigger_kind: str | None,
+        trigger_subkind: str | None,
+    ) -> ThinkExecutionPolicy:
+        """Select Stage 1 only for source-signal T1 work.
+
+        Explicitly injected policies remain authoritative for evaluators and
+        tests. Production workers default source arrivals and their batch
+        wrappers to Stage 1 while keeping derived state changes and T2/T3/T4
+        maintenance on the full profile.
+        """
+
+        if self._has_execution_policy_override:
+            return self.execution_policy
+        if (
+            self.config.stage1_company_memory_for_t1
+            and trigger_kind == "T1"
+            and trigger_subkind in {"event_arrival", "event_batch"}
+        ):
+            return STAGE1_COMPANY_MEMORY_POLICY
+        return NORMAL_EXECUTION_POLICY
 
     def _lane_filter_sql(self, *, prefix: str = "") -> str:
         predicate = lane_sql_predicate(self.config.allowed_lanes, prefix=prefix)
@@ -3023,6 +3056,10 @@ class ThinkWorker:
         )
         heartbeat = asyncio.create_task(self._heartbeat_trigger(row["id"]))
         try:
+            execution_policy = self._execution_policy_for_trigger(
+                trigger.kind,
+                trigger.subkind,
+            )
             call = think(
                 trigger,
                 self.pool,
@@ -3033,7 +3070,7 @@ class ThinkWorker:
                     if row["trigger_subkind"]
                     else row["trigger_kind"]
                 ),
-                execution_policy=self.execution_policy,
+                execution_policy=execution_policy,
             )
             if self.config.run_timeout_s > 0:
                 outcome = await asyncio.wait_for(

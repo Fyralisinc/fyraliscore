@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from lib.shared.ids import uuid7
+from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.context_planner import (
+    _restrict_stage1_context_bundle,
     _should_emit_missing_transition_triggers,
     _think_inquiry_config_for_trigger,
+    stage1_inquiry_config_for_trigger,
 )
 
 
@@ -37,6 +40,44 @@ def test_think_inquiry_config_uses_t1_triage_profile(monkeypatch) -> None:
     assert config.llm_question_planning_trigger_kinds == ("T1",)
     assert config.question_primitive_weights["COMMITMENT"] > 0
     assert config.context_packet_evidence_mode == "models_only"
+
+
+def test_stage1_inquiry_config_disables_every_learned_controller() -> None:
+    config = stage1_inquiry_config_for_trigger(
+        TriggerContext(kind="T1", tenant_id=uuid7())
+    )
+
+    assert config.learned_policy_enabled is False
+    assert config.llm_question_planning_enabled is False
+    assert config.llm_question_planning_trigger_kinds == ()
+    assert config.utility_governor_enabled is False
+    assert config.adaptive_question_budget_enabled is False
+    assert config.retrieval_motifs_enabled is False
+    assert config.reflective_rules_enabled is False
+    assert config.sage_reader_enabled is False
+    assert config.sage_retrieval_policy_enabled is False
+    assert config.persist is False
+
+
+def test_stage1_context_packet_contains_only_models_and_observations() -> None:
+    bundle = ContextBundle(
+        acts_summary={
+            "goals": [object()],
+            "commitments": [object()],
+            "decisions": [object()],
+        },
+        resources_summary=[object()],  # type: ignore[list-item]
+        customer_context={"customer": "context"},
+        topology_context={"graph": "context"},
+    )
+
+    _restrict_stage1_context_bundle(bundle)
+
+    assert bundle.acts_summary == {"goals": [], "commitments": [], "decisions": []}
+    assert bundle.resources_summary == []
+    assert bundle.customer_context is None
+    assert bundle.topology_context is None
+    assert bundle.notes["stage1_company_memory"] is True
 
 
 def test_think_inquiry_config_allows_investigative_t4_profile(monkeypatch) -> None:

@@ -42,6 +42,10 @@ from services.domain.entity_grounding.learned_discovery import (
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.worker import EntityResolverWorker
 from services.reasoning.think.llm_receipts import ThinkLLMReceiptCollector
+from services.reasoning.think.execution_policy import (
+    NORMAL_EXECUTION_POLICY,
+    ThinkExecutionPolicy,
+)
 from lib.contracts.entity_mentions import EntityMentionDetectionFate
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
@@ -100,6 +104,7 @@ class P6ThinkExecutionDependencies:
     execution_mode: str = (
         "injected ThinkWorker dependencies; no semantic success claimed"
     )
+    execution_policy: ThinkExecutionPolicy | None = NORMAL_EXECUTION_POLICY
 
 
 def _p6_simulation_mention_adapter(
@@ -680,6 +685,7 @@ async def _execute_p6_think(
         llm_provider=provider, mention_discovery_provider=provider,
         mention_candidate_adapter=dependencies.mention_candidate_adapter,
         embedder=embedder,
+        execution_policy=dependencies.execution_policy,
     )
     resolver = _build_p6_entity_resolver(pool=pool, provider=provider)
     started = time.monotonic()
@@ -939,6 +945,7 @@ async def run_p6_production_think(
         execution_mode=(
             "production ThinkWorker; every role pinned to one configuration"
         ),
+        execution_policy=None,
     )
     try:
         return await run_p6_think_with_dependencies(

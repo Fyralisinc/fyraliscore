@@ -1,4 +1,4 @@
-"""Explicit execution authority for non-applying Think evaluation runs."""
+"""Explicit execution authority and composition profile for Think runs."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ _EVALUATION_CAPABILITY = object()
 @dataclass(frozen=True, slots=True)
 class ThinkExecutionPolicy:
     mode: Literal["normal", "validate_only"] = "normal"
+    profile: Literal["full", "stage1_company_memory"] = "full"
     authority: str = "production"
     _capability: object | None = None
 
@@ -27,8 +28,18 @@ class ThinkExecutionPolicy:
                 "validate-only Think requires an explicit evaluation-control capability",
             )
 
+    @property
+    def is_stage1_company_memory(self) -> bool:
+        """Whether this run is restricted to the Stage 1 company-memory loop."""
+
+        return self.profile == "stage1_company_memory"
+
 
 NORMAL_EXECUTION_POLICY = ThinkExecutionPolicy()
+STAGE1_COMPANY_MEMORY_POLICY = ThinkExecutionPolicy(
+    profile="stage1_company_memory",
+    authority="stage1_company_memory",
+)
 
 
 def issue_evaluation_validate_only_policy() -> ThinkExecutionPolicy:
@@ -43,6 +54,7 @@ def issue_evaluation_validate_only_policy() -> ThinkExecutionPolicy:
 
 __all__ = [
     "NORMAL_EXECUTION_POLICY",
+    "STAGE1_COMPANY_MEMORY_POLICY",
     "ThinkExecutionPolicy",
     "issue_evaluation_validate_only_policy",
 ]

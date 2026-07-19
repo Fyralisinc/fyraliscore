@@ -314,6 +314,35 @@ def _think_inquiry_config() -> InquiryConfig:
     return _think_inquiry_config_for_trigger(TriggerContext(kind="T1", tenant_id=UUID(int=0)))
 
 
+def stage1_inquiry_config_for_trigger(trigger: TriggerContext) -> InquiryConfig:
+    """Return deterministic retrieval configuration for the Stage 1 loop.
+
+    Stage 1 still uses the production inquiry engine to retrieve Models and
+    Observations and to build its context packet. Learned retrieval motifs,
+    reflective policy, LLM question planning, adaptive budgeting, and SAGE are
+    intentionally disabled; those belong to the later self-learning stage.
+    """
+
+    return replace(
+        _think_inquiry_config_for_trigger(trigger),
+        learned_policy_enabled=False,
+        max_rounds=1,
+        llm_question_planning_enabled=False,
+        llm_question_planning_trigger_kinds=(),
+        utility_governor_enabled=False,
+        adaptive_question_budget_enabled=False,
+        retrieval_motifs_enabled=False,
+        reflective_rules_enabled=False,
+        sage_reader_enabled=False,
+        sage_reader_row_cache_enabled=False,
+        sage_reader_shared_substrate_enabled=False,
+        sage_reader_parallel_enabled=False,
+        sage_reader_gate_broad_actions=False,
+        sage_retrieval_policy_enabled=False,
+        persist=False,
+    )
+
+
 def _t4_llm_question_planning_eligible(trigger: TriggerContext) -> bool:
     allowed_subkinds = _env_csv_set(
         "THINK_T4_LLM_QUESTION_PLANNING_SUBKINDS",
@@ -338,6 +367,7 @@ async def plan_context(
     embedder: Any | None = None,
     llm_provider: LLMProvider | None = None,
     read_pool: asyncpg.Pool | None = None,
+    stage1_company_memory: bool = False,
 ) -> ContextPlan:
     """Build the retrieval/context plan used by Think reasoning.
 
@@ -347,14 +377,23 @@ async def plan_context(
     metadata so the later validator/applier can emit SAGE outcome events.
     """
 
+    inquiry_config = (
+        stage1_inquiry_config_for_trigger(trigger)
+        if stage1_company_memory
+        else _think_inquiry_config_for_trigger(trigger)
+    )
     active_retrieval = await retrieve_for_execution(
         trigger,
         conn,
         embedder=embedder,
-        llm_provider=retrieval_question_planning_provider(llm_provider),
+        llm_provider=(
+            None
+            if stage1_company_memory
+            else retrieval_question_planning_provider(llm_provider)
+        ),
         read_pool=read_pool,
         mode=_plan_mode_for_trigger(trigger),
-        config=_think_inquiry_config_for_trigger(trigger),
+        config=inquiry_config,
     )
     inquiry_result = (
         active_retrieval
@@ -366,28 +405,41 @@ async def plan_context(
         if isinstance(active_retrieval, InquiryResult)
         else active_retrieval
     )
-    retrieval_result = await _maybe_expand_second_pass(
-        retrieval_result,
-        trigger,
-        conn,
-        read_pool=read_pool,
-    )
+    if not stage1_company_memory:
+        retrieval_result = await _maybe_expand_second_pass(
+            retrieval_result,
+            trigger,
+            conn,
+            read_pool=read_pool,
+        )
     reasoning_frame = ReasoningFrame.from_trigger(
         trigger,
         retrieval_result=retrieval_result,
     )
-    reasoning_frame = await _attach_dynamic_signals(
-        reasoning_frame,
-        retrieval_result,
-        trigger,
-        conn,
-    )
+    if not stage1_company_memory:
+        reasoning_frame = await _attach_dynamic_signals(
+            reasoning_frame,
+            retrieval_result,
+            trigger,
+            conn,
+        )
     retrieval_result.notes["reasoning_frame"] = reasoning_frame.to_dict()
     return ContextPlan(
         retrieval_result=retrieval_result,
         inquiry_result=inquiry_result,
         reasoning_frame=reasoning_frame,
     )
+
+
+def _restrict_stage1_context_bundle(bundle: ContextBundle) -> None:
+    """Keep the Stage 1 prompt packet limited to Models and Observations."""
+
+    bundle.acts_summary = {"goals": [], "commitments": [], "decisions": []}
+    bundle.resources_summary = []
+    bundle.customer_context = None
+    bundle.topology_context = None
+    bundle.notes["stage1_company_memory"] = True
+    bundle.notes["substrate_candidates"] = []
 
 
 async def assemble_reasoning_context(
@@ -399,6 +451,7 @@ async def assemble_reasoning_context(
     expanded_region: set[tuple[str, str]] | None = None,
     run_id: UUID | None = None,
     read_pool: asyncpg.Pool | None = None,
+    stage1_company_memory: bool = False,
 ) -> ReasoningContext:
     """Assemble the prompt-facing bundle and final allowed region.
 
@@ -422,81 +475,84 @@ async def assemble_reasoning_context(
         config=_retrieval_config_for_trigger(trigger),
         read_pool=read_pool,
     )
-    _diag_log.warning(
-        "augmentation.entry",
-        run_id=str(run_id) if run_id is not None else None,
-        bundle_commitments=len(bundle.acts_summary.get("commitments", [])),
-    )
-
-    try:
-        allowed_region = await _augment_active_acts(
-            conn,
-            trigger,
-            bundle,
-            allowed_region=allowed_region,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_if_postgres_error(exc)
-        if run_id is not None:
-            await debug_capture(
-                conn,
-                run_id=run_id,
-                tenant_id=trigger.tenant_id,
-                stage="error",
-                payload={
-                    "phase": "acts_augmentation",
-                    "error": repr(exc),
-                },
-            )
-
-    try:
-        substrate_candidates = await build_substrate_candidates(
-            conn,
-            tenant_id=trigger.tenant_id,
-            observations=bundle.observations,
-            models=bundle.models,
-            run_id=run_id,
-        )
-        bundle.notes["substrate_candidates"] = substrate_candidates
-        candidate_region = _substrate_candidate_region(substrate_candidates)
-        if candidate_region:
-            allowed_region = sorted(set(allowed_region) | set(candidate_region))
-            bundle.notes["substrate_candidate_region_count"] = len(candidate_region)
-    except asyncpg.exceptions.UndefinedTableError as exc:
-        bundle.notes["substrate_candidates"] = []
-        bundle.notes["substrate_candidates_error"] = {
-            "type": type(exc).__name__,
-            "message": str(exc),
-        }
-        _log.warning(
-            "think.substrate_candidates_table_missing",
-            tenant_id=str(trigger.tenant_id),
+    if stage1_company_memory:
+        _restrict_stage1_context_bundle(bundle)
+    else:
+        _diag_log.warning(
+            "augmentation.entry",
             run_id=str(run_id) if run_id is not None else None,
+            bundle_commitments=len(bundle.acts_summary.get("commitments", [])),
         )
-    except Exception as exc:  # noqa: BLE001
-        _raise_if_postgres_error(exc)
-        bundle.notes["substrate_candidates"] = []
-        bundle.notes["substrate_candidates_error"] = {
-            "type": type(exc).__name__,
-            "message": str(exc),
-        }
-        _log.warning(
-            "think.substrate_candidates_failed",
-            tenant_id=str(trigger.tenant_id),
-            run_id=str(run_id) if run_id is not None else None,
-            error=str(exc),
-        )
-        if run_id is not None:
-            await debug_capture(
+
+        try:
+            allowed_region = await _augment_active_acts(
                 conn,
-                run_id=run_id,
-                tenant_id=trigger.tenant_id,
-                stage="error",
-                payload={
-                    "phase": "substrate_candidates",
-                    "error": repr(exc),
-                },
+                trigger,
+                bundle,
+                allowed_region=allowed_region,
             )
+        except Exception as exc:  # noqa: BLE001
+            _raise_if_postgres_error(exc)
+            if run_id is not None:
+                await debug_capture(
+                    conn,
+                    run_id=run_id,
+                    tenant_id=trigger.tenant_id,
+                    stage="error",
+                    payload={
+                        "phase": "acts_augmentation",
+                        "error": repr(exc),
+                    },
+                )
+
+        try:
+            substrate_candidates = await build_substrate_candidates(
+                conn,
+                tenant_id=trigger.tenant_id,
+                observations=bundle.observations,
+                models=bundle.models,
+                run_id=run_id,
+            )
+            bundle.notes["substrate_candidates"] = substrate_candidates
+            candidate_region = _substrate_candidate_region(substrate_candidates)
+            if candidate_region:
+                allowed_region = sorted(set(allowed_region) | set(candidate_region))
+                bundle.notes["substrate_candidate_region_count"] = len(candidate_region)
+        except asyncpg.exceptions.UndefinedTableError as exc:
+            bundle.notes["substrate_candidates"] = []
+            bundle.notes["substrate_candidates_error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            _log.warning(
+                "think.substrate_candidates_table_missing",
+                tenant_id=str(trigger.tenant_id),
+                run_id=str(run_id) if run_id is not None else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _raise_if_postgres_error(exc)
+            bundle.notes["substrate_candidates"] = []
+            bundle.notes["substrate_candidates_error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            _log.warning(
+                "think.substrate_candidates_failed",
+                tenant_id=str(trigger.tenant_id),
+                run_id=str(run_id) if run_id is not None else None,
+                error=str(exc),
+            )
+            if run_id is not None:
+                await debug_capture(
+                    conn,
+                    run_id=run_id,
+                    tenant_id=trigger.tenant_id,
+                    stage="error",
+                    payload={
+                        "phase": "substrate_candidates",
+                        "error": repr(exc),
+                    },
+                )
 
     if run_id is not None:
         await debug_capture(
@@ -532,28 +588,29 @@ async def assemble_reasoning_context(
         )
 
     actor_operating_summary: str | None = None
-    try:
-        actor_contexts = await load_actor_operating_context(
-            conn,
-            tenant_id=trigger.tenant_id,
-            actor_ids=_actor_ids_for_operating_context(trigger, bundle),
-        )
-        actor_operating_summary = summarize_actor_operating_context(
-            actor_contexts
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_if_postgres_error(exc)
-        if run_id is not None:
-            await debug_capture(
+    if not stage1_company_memory:
+        try:
+            actor_contexts = await load_actor_operating_context(
                 conn,
-                run_id=run_id,
                 tenant_id=trigger.tenant_id,
-                stage="error",
-                payload={
-                    "phase": "actor_operating_context",
-                    "error": repr(exc),
-                },
+                actor_ids=_actor_ids_for_operating_context(trigger, bundle),
             )
+            actor_operating_summary = summarize_actor_operating_context(
+                actor_contexts
+            )
+        except Exception as exc:  # noqa: BLE001
+            _raise_if_postgres_error(exc)
+            if run_id is not None:
+                await debug_capture(
+                    conn,
+                    run_id=run_id,
+                    tenant_id=trigger.tenant_id,
+                    stage="error",
+                    payload={
+                        "phase": "actor_operating_context",
+                        "error": repr(exc),
+                    },
+                )
 
     return ReasoningContext(
         bundle=bundle,

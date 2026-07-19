@@ -56,6 +56,7 @@ from .applier import AlreadyAppliedError, apply_diff, check_already_applied
 from .debug_capture import capture as debug_capture
 from .debug_capture import capture_with_pool as debug_capture_with_pool
 from .deterministic import is_authoritative
+from .diff_schema import ValidatedDiff
 from .lanes import classify_trigger_lane
 from .llm_receipts import ThinkLLMReceiptCollector
 from .execution_policy import NORMAL_EXECUTION_POLICY, ThinkExecutionPolicy
@@ -312,8 +313,8 @@ async def _execute_think_run(
     started_at: float,
     max_retrieval_reruns: int,
     usage_agg: LLMUsageAggregator | None,
-    receipt_collector: ThinkLLMReceiptCollector | None,
-    execution_policy: ThinkExecutionPolicy,
+    receipt_collector: ThinkLLMReceiptCollector | None = None,
+    execution_policy: ThinkExecutionPolicy = NORMAL_EXECUTION_POLICY,
 ) -> ThinkRunOutcome:
     """Run Think to a terminal outcome while the caller owns telemetry scopes."""
 
@@ -392,6 +393,7 @@ async def _execute_think_run(
                 retry_count=transaction_retry_count + rerun_count,
                 usage_agg=usage_agg,
                 llm_provider=llm_provider,
+                execution_policy=execution_policy,
             )
             return outcome
     except CompanyOSError as e:
@@ -584,8 +586,8 @@ async def _run_think_attempt(
     record: ThinkRunRecord,
     expanded_region: set[tuple[str, str]] | None,
     reason_cache: dict[str, Any],
-    receipt_collector: ThinkLLMReceiptCollector | None,
-    execution_policy: ThinkExecutionPolicy,
+    receipt_collector: ThinkLLMReceiptCollector | None = None,
+    execution_policy: ThinkExecutionPolicy = NORMAL_EXECUTION_POLICY,
 ) -> ThinkRunOutcome:
     use_wide_transaction = (
         is_authoritative(trigger) or not _narrow_inferential_transaction_enabled()
@@ -746,6 +748,7 @@ async def _finalize_successful_outcome(
     retry_count: int,
     usage_agg: LLMUsageAggregator | None,
     llm_provider: LLMProvider | None,
+    execution_policy: ThinkExecutionPolicy,
 ) -> None:
     outcome.elapsed_ms = (time.monotonic() - started_at) * 1000.0
     METRICS.observe_latency(trigger_kind_full, outcome.elapsed_ms)
@@ -758,7 +761,8 @@ async def _finalize_successful_outcome(
         usage_agg=usage_agg,
     )
     await _record_region_lock_release(pool, trigger, run_id, outcome)
-    await _record_success_residuals(pool, outcome)
+    if not execution_policy.is_stage1_company_memory:
+        await _record_success_residuals(pool, outcome)
     emit(
         "think.completed",
         run_id=str(run_id),
@@ -1379,6 +1383,7 @@ async def _apply_validated_diff(
     region_entity_hash: int,
     acquisition: RegionLockAcquisition,
     llm_latency_ms: int | None,
+    execution_policy: ThinkExecutionPolicy = NORMAL_EXECUTION_POLICY,
 ) -> tuple[dict[str, Any] | None, ThinkRunOutcome | None]:
     try:
         applied = await apply_diff(
@@ -1414,26 +1419,27 @@ async def _apply_validated_diff(
         )
     await assert_tx_usable(conn, "apply_diff")
 
-    from services.reasoning.relationships.adjudication import (
-        adjudicate_candidates_for_trigger,
-    )
+    if not execution_policy.is_stage1_company_memory:
+        from services.reasoning.relationships.adjudication import (
+            adjudicate_candidates_for_trigger,
+        )
 
-    candidate_adjudications = await adjudicate_candidates_for_trigger(
-        conn,
-        trigger=trigger,
-        diff=validated,
-        applied=applied,
-    )
-    await assert_tx_usable(conn, "relationship_adjudication")
-    if candidate_adjudications:
-        applied["relationship_candidate_adjudication"] = {
-            **_adjudication_payload(candidate_adjudications[0]),
-        }
-        if len(candidate_adjudications) > 1:
-            applied["relationship_candidate_adjudications"] = [
-                _adjudication_payload(adjudication)
-                for adjudication in candidate_adjudications
-            ]
+        candidate_adjudications = await adjudicate_candidates_for_trigger(
+            conn,
+            trigger=trigger,
+            diff=validated,
+            applied=applied,
+        )
+        await assert_tx_usable(conn, "relationship_adjudication")
+        if candidate_adjudications:
+            applied["relationship_candidate_adjudication"] = {
+                **_adjudication_payload(candidate_adjudications[0]),
+            }
+            if len(candidate_adjudications) > 1:
+                applied["relationship_candidate_adjudications"] = [
+                    _adjudication_payload(adjudication)
+                    for adjudication in candidate_adjudications
+                ]
     return applied, None
 
 
@@ -1463,6 +1469,7 @@ async def _record_apply_observability(
     reasoning_frame: Any,
     applied: dict[str, Any],
     validated_context_use: dict[str, Any],
+    record_learning_feedback: bool = True,
 ) -> None:
     emit(
         "think.apply_done",
@@ -1482,33 +1489,34 @@ async def _record_apply_observability(
     )
     applied["context_use"] = validated_context_use
     applied["reasoning_frame"] = reasoning_frame.to_dict()
-    try:
-        from services.reasoning.edge_intelligence.context_feedback import (
-            record_context_use_pair_feedback,
+    if record_learning_feedback:
+        try:
+            from services.reasoning.edge_intelligence.context_feedback import (
+                record_context_use_pair_feedback,
+            )
+
+            await record_context_use_pair_feedback(
+                conn,
+                tenant_id=trigger.tenant_id,
+                trigger_ref=record.id,
+                context_use=validated_context_use,
+                primitive=_primitive_from_trigger(trigger),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _raise_if_postgres_error(exc)
+        from services.reasoning.think.company_learning_feedback import (
+            record_company_learning_context_credit,
         )
 
-        await record_context_use_pair_feedback(
+        await record_company_learning_context_credit(
             conn,
             tenant_id=trigger.tenant_id,
-            trigger_ref=record.id,
+            run_id=record.id,
+            batch_id=_receipt_batch_id(trigger, record.trigger_id) or str(record.id),
+            route_id=_primitive_from_trigger(trigger),
             context_use=validated_context_use,
-            primitive=_primitive_from_trigger(trigger),
+            applied=applied,
         )
-    except Exception as exc:  # noqa: BLE001
-        _raise_if_postgres_error(exc)
-    from services.reasoning.think.company_learning_feedback import (
-        record_company_learning_context_credit,
-    )
-
-    await record_company_learning_context_credit(
-        conn,
-        tenant_id=trigger.tenant_id,
-        run_id=record.id,
-        batch_id=_receipt_batch_id(trigger, record.trigger_id) or str(record.id),
-        route_id=_primitive_from_trigger(trigger),
-        context_use=validated_context_use,
-        applied=applied,
-    )
     await debug_capture(
         conn,
         run_id=record.id,
@@ -1898,18 +1906,22 @@ async def _finalize_successful_run(
     region_entity_hash: int,
     acquisition: RegionLockAcquisition,
     stage_timings: list[dict[str, Any]] | None = None,
+    execution_policy: ThinkExecutionPolicy = NORMAL_EXECUTION_POLICY,
 ) -> ThinkRunOutcome:
     started = time.perf_counter()
-    casc_result = await run_cascade_for_validated_act_ops(
-        conn=conn,
-        trigger=trigger,
-        validated=validated,
-    )
+    casc_result = None
+    if not execution_policy.is_stage1_company_memory:
+        casc_result = await run_cascade_for_validated_act_ops(
+            conn=conn,
+            trigger=trigger,
+            validated=validated,
+        )
     record_stage_timing(stage_timings, "cascade", started)
     await assert_tx_usable(conn, "cascade")
     cascade_depth = casc_result.depth_reached if casc_result else 0
     if casc_result is not None:
         METRICS.observe_cascade_depth(trigger_kind_full, cascade_depth)
+    applied["execution_profile"] = execution_policy.profile
     _attach_think_stage_timing_summary(applied, stage_timings)
     await update_think_run(
         conn,
@@ -1942,12 +1954,16 @@ async def _finalize_successful_run(
         region_tenant_hash=region_tenant_hash,
         region_entity_hash=region_entity_hash,
         region_acquisition=acquisition,
-        residual_context=_build_residual_context(
-            trigger=trigger,
-            record=record,
-            trigger_kind_full=trigger_kind_full,
-            validated=validated,
-            applied=applied,
+        residual_context=(
+            None
+            if execution_policy.is_stage1_company_memory
+            else _build_residual_context(
+                trigger=trigger,
+                record=record,
+                trigger_kind_full=trigger_kind_full,
+                validated=validated,
+                applied=applied,
+            )
         ),
     )
 
@@ -2040,6 +2056,7 @@ async def _prepare_attempt_reasoning_output(
     read_pool: asyncpg.Pool | None,
     reason_cache: dict[str, Any] | None,
     stage_timings: list[dict[str, Any]] | None,
+    execution_policy: ThinkExecutionPolicy,
 ) -> tuple[ReasoningRunState, RawReasoningOutput]:
     state = await prepare_reasoning_run_state(
         conn=conn,
@@ -2054,6 +2071,7 @@ async def _prepare_attempt_reasoning_output(
         embedder=embedder,
         read_pool=read_pool,
         stage_timings=stage_timings,
+        execution_policy=execution_policy,
     )
     raw = await build_raw_reasoning_output(
         conn=conn,
@@ -2065,8 +2083,67 @@ async def _prepare_attempt_reasoning_output(
         state=state,
         reason_cache=reason_cache,
         stage_timings=stage_timings,
+        execution_policy=execution_policy,
     )
     return state, raw
+
+
+async def _record_profiled_apply_side_effects(
+    *,
+    conn: asyncpg.Connection,
+    trigger: TriggerContext,
+    record: ThinkRunRecord,
+    trigger_kind_full: str,
+    validated: ValidatedDiff,
+    state: ReasoningRunState,
+    applied: dict[str, Any],
+    validated_context_use: dict[str, Any],
+    stage_timings: list[dict[str, Any]],
+    execution_policy: ThinkExecutionPolicy,
+) -> list[Any]:
+    if not execution_policy.is_stage1_company_memory:
+        started = time.perf_counter()
+        await _record_representation_audit(
+            conn=conn,
+            trigger=trigger,
+            record=record,
+            trigger_kind_full=trigger_kind_full,
+            validated=validated,
+            bundle=state.bundle,
+            applied=applied,
+            validated_context_use=validated_context_use,
+        )
+        record_stage_timing(stage_timings, "representation_audit", started)
+
+    started = time.perf_counter()
+    await _record_apply_observability(
+        conn=conn,
+        trigger=trigger,
+        record=record,
+        reasoning_frame=state.reasoning_frame,
+        applied=applied,
+        validated_context_use=validated_context_use,
+        record_learning_feedback=not execution_policy.is_stage1_company_memory,
+    )
+    record_stage_timing(stage_timings, "apply_observability", started)
+    if execution_policy.is_stage1_company_memory:
+        return []
+
+    started = time.perf_counter()
+    anomalies = await _publish_anomalies_and_enqueue_post_commit(
+        conn=conn,
+        trigger=trigger,
+        record=record,
+        validated=validated,
+        applied=applied,
+    )
+    record_stage_timing(
+        stage_timings,
+        "post_commit_enqueue",
+        started,
+        anomaly_count=len(anomalies),
+    )
+    return anomalies
 
 
 # ---------------------------------------------------------------------
@@ -2107,6 +2184,7 @@ async def _run_once(
         read_pool=read_pool,
         reason_cache=reason_cache,
         stage_timings=stage_timings,
+        execution_policy=execution_policy,
     )
 
     async with _mutation_transaction(conn):
@@ -2207,6 +2285,7 @@ async def _run_once(
             region_entity_hash=eh,
             acquisition=acquisition,
             llm_latency_ms=raw.llm_latency_ms,
+            execution_policy=execution_policy,
         )
         record_stage_timing(stage_timings, "apply_and_adjudication", started)
         if skipped is not None:
@@ -2215,41 +2294,17 @@ async def _run_once(
             )
             return skipped
         assert applied is not None
-        started = time.perf_counter()
-        await _record_representation_audit(
+        anomalies = await _record_profiled_apply_side_effects(
             conn=conn,
             trigger=trigger,
             record=record,
             trigger_kind_full=trigger_kind_full,
             validated=validated,
-            bundle=state.bundle,
+            state=state,
             applied=applied,
             validated_context_use=validated_context_use,
-        )
-        record_stage_timing(stage_timings, "representation_audit", started)
-        started = time.perf_counter()
-        await _record_apply_observability(
-            conn=conn,
-            trigger=trigger,
-            record=record,
-            reasoning_frame=state.reasoning_frame,
-            applied=applied,
-            validated_context_use=validated_context_use,
-        )
-        record_stage_timing(stage_timings, "apply_observability", started)
-        started = time.perf_counter()
-        anomalies = await _publish_anomalies_and_enqueue_post_commit(
-            conn=conn,
-            trigger=trigger,
-            record=record,
-            validated=validated,
-            applied=applied,
-        )
-        record_stage_timing(
-            stage_timings,
-            "post_commit_enqueue",
-            started,
-            anomaly_count=len(anomalies),
+            stage_timings=stage_timings,
+            execution_policy=execution_policy,
         )
         outcome = await _finalize_successful_run(
             conn=conn,
@@ -2264,6 +2319,7 @@ async def _run_once(
             region_entity_hash=eh,
             acquisition=acquisition,
             stage_timings=stage_timings,
+            execution_policy=execution_policy,
         )
         await _persist_receipts_in_semantic_transaction(
             conn, receipt_collector, outcome
