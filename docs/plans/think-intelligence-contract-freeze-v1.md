@@ -1,4 +1,4 @@
-# Think Intelligence Gate — Shared Contract Freeze v2
+# Think Intelligence Gate — Shared Contract Freeze v3
 
 **Status:** Frozen implementation contract
 
@@ -7,6 +7,14 @@
 **Freeze commit:** To be recorded at checkpoint commit
 
 **Contract digest:** Recorded outside this file after its bytes are frozen
+
+**Amendment from v2:** Provider-facing TI2 output now contains only the
+discriminated semantic decision. The trusted call-site adapter binds the known
+`dossier_id` and `dossier_digest` from the exact capture request before
+compilation. Provider-authored dossier identity is neither requested nor
+accepted. This removes identity bookkeeping from the LLM without changing its
+semantic authority, compiler closure checks, provider/model/effort policy,
+scorer gold, or hard gates.
 
 **Amendment from v1:** TI0 additionally owns a narrow raw-response trace
 emission in `lib/llm/provider.py` and its focused provider test. The provider
@@ -195,15 +203,24 @@ scorer gold.
 
 ## 5. TI2 Semantic Decision Contract
 
-`SynthesisDecisionEnvelope` has
-`schema_version = think-synthesis-decision-v1`, dossier ID, dossier digest, and
-exactly one discriminated decision:
+The provider-facing `SynthesisSemanticDecision` has
+`schema_version = think-synthesis-semantic-decision-v1` and exactly one
+discriminated decision:
 
 ```text
 SynthesisProposal | AbstentionDecision
 ```
 
 All schemas forbid extra fields. Provider fields contain no UUIDs.
+
+After provider parsing, the trusted call-site adapter constructs the
+compiler-facing `SynthesisDecisionEnvelope` with
+`schema_version = think-synthesis-decision-v1`, the semantic decision, and the
+exact `dossier_id` and `dossier_digest` already bound to the capture request.
+The adapter must not derive, repair, or accept either identity from provider
+text. The compiler still compares both values to its immutable compile context
+and fails closed on any mismatch. The trace separately preserves the raw
+provider semantic decision and the adapter binding operation.
 
 ### 5.1 SynthesisProposal
 
@@ -348,6 +365,9 @@ commit after lane commits; they are not shared-write permission.
   does not; no runtime implementation imports those expectations.
 - Synthesis/abstention union, no provider UUIDs, and all invalid handle classes
   fail before mutation.
+- Provider-facing synthesis output omits dossier ID/digest; the trusted adapter
+  binds the capture-request identity exactly, rejects provider identity fields,
+  and compiler mismatch tests remain fail-closed.
 - Exactly one composite plus one canonical relation path and transaction
   rollback at relation, projection, outbox, receipt, and stale-head fences.
 - Independent Atlas, Cobalt, and null scorer cases; scorer tamper detection;

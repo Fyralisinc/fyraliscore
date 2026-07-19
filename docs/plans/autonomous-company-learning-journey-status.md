@@ -2294,3 +2294,26 @@ matched feedback quality and objective entity v6.
   Any later provider run requires integration-owner authorization, the same
   frozen policies, and a fresh run identity; r1 cannot be resumed, overwritten,
   or selectively completed. CF3-C remains locked.
+
+### 2026-07-19 — Four preserved B/C outcomes force contract v3 identity ownership
+
+- Each completed Arm B/C prompt supplied a dossier ID but no dossier digest,
+  although the output schema required the model to return both. Three provider
+  outputs used an all-zero digest; the fourth invented a nonzero digest. All
+  four otherwise returned synthesis decisions and all four compiler artifacts
+  deterministically rejected `dossier identity or digest mismatch`.
+- This is TI2 `schema_binding`, not evidence that the semantic proposals were
+  valid and not permission to weaken compiler identity checks. The provider
+  cannot author a trusted digest it was never given, and should not be made the
+  owner of runtime identity even if it were shown the value.
+- Contract-freeze v3 assigns the provider only the semantic discriminated
+  decision. The trusted adapter binds the exact dossier ID/digest from the
+  capture request before the existing compiler check. The finalized contract
+  SHA-256 is
+  `8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`.
+  Provider/model/effort, zero-retry policy, semantic authority, scorer gold,
+  thresholds, compiler closure, and truth gates do not change.
+- Provider-free implementation and exact negative tests for both identity
+  binding and parse-failure durability are now required before a fresh full TI3
+  run can be considered. R1 remains incomplete and immutable, no policy is
+  selected, and CF3-C remains locked.

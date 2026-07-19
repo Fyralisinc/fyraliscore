@@ -26,14 +26,16 @@ The prior authorization for one immediate CF3-C confirmation canary is
 superseded: **do not run CF3-C yet**.
 
 Shared TI0-TI4-min interfaces are frozen in
-[Think Intelligence Gate Shared Contract Freeze v2](think-intelligence-contract-freeze-v1.md),
-SHA-256 `b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717`.
+[Think Intelligence Gate Shared Contract Freeze v3](think-intelligence-contract-freeze-v1.md),
+SHA-256 `8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`.
 Only the integration owner may amend that contract; amendments require a new
 version and digest.
 
-V2 is a narrow ownership correction: TI0 may emit the exact sanitized raw
-response from `lib/llm/provider.py`, the only boundary that possesses it before
-structured parsing. No semantic field or authority changed.
+V3 is a narrow identity-ownership correction: provider-facing TI2 output is
+only the semantic decision, while the trusted adapter binds the capture
+request's known dossier ID/digest before compilation. Provider policy and
+semantic authority are unchanged. V2's narrow TI0 raw-response ownership
+correction remains in force.
 
 ### TI3 r1 terminal-red checkpoint and recovery checklist
 
@@ -47,20 +49,24 @@ partial directory is
 manifest and does not contain the known failed call's exact raw/receipt. No TI3
 arm or policy is selected.
 
-Impact review finds no contract amendment: v2 sections 3, 6, 7, and 8 already
-require raw parse outcomes, a schema-valid hard gate, `schema_binding`
-classification, and immutable artifacts. Digest
-`b1e234eee1cdfaf279a431efda4abe39bb7aff5896d1f1d2de1f0b5fbcb48717`
-remains authoritative. The recovery hypothesis is that the evaluator can
-retain and score a one-attempt parse failure as red evidence without changing
-provider policy. The integration checklist is:
+The first impact review correctly found that parse-failure retention needs no
+new contract meaning. A deeper review of all four completed B/C artifacts found
+a separate TI2 identity-ownership defect: every provider payload omitted
+`dossier_digest` although the provider output schema required it. Three outputs
+invented the all-zero digest and one invented a nonzero digest; all four failed
+deterministically with `dossier identity or digest mismatch`. Contract v3 and
+digest `8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`
+move only that bookkeeping to the trusted adapter. The recovery hypothesis is
+still that the evaluator can retain and score a one-attempt parse failure as red
+evidence without changing provider policy. The integration checklist is:
 
 1. Preserve r1 unchanged; do not resume, overwrite, or use its six successes as
    selective substitutions.
 2. Reproduce `decision = no_op` against `BatchMemoryDecisionSet` provider-free.
-3. Repair only failed-outcome capture/evaluation durability; keep the pinned
-   provider, model, effort, schemas, `max_attempts = 1`, gold, thresholds, and
-   selection rule unchanged.
+3. Implement v3's provider-semantic-only schema and trusted exact
+   dossier-identity binding, plus failed-outcome capture/evaluation durability;
+   keep the pinned provider, model, effort, `max_attempts = 1`, gold, thresholds,
+   and selection rule unchanged.
 4. Prove provider-free that parse failure emits a digest-bound outcome receipt,
    scores `schema_valid = false`/`schema_binding`, performs no compiler/apply
    work, and remains in complete experiment accounting.

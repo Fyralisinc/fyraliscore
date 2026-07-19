@@ -2584,3 +2584,38 @@ integration owner considers one fresh full TI3 run with a new run identity.
 Never resume or overwrite r1, never substitute its six completed calls into a
 selective rerun, and do not run CF3-C. CF3-C remains locked until a complete TI3
 run selects and freezes a policy.
+
+### 2026-07-19 — LOG-076 — TI3 B/C artifacts expose provider-owned dossier identity
+
+**Artifact inspection:** All four completed new-interface screening attempts
+were reopened from preserved r1. Their provider-visible `prompt.json` user
+payloads included `dossier_id` but omitted `dossier_digest`, while the
+provider-facing `SynthesisDecisionEnvelope` schema required both. Atlas Arms B
+and C and Cobalt Arm B returned the 64-character all-zero digest. Cobalt Arm C
+invented nonzero digest
+`e3f5a7c12b4d9e8f66a7c2d9e4b3a1c0f0f7a8d6b9e2c1a4f6b5d8e3a0c7f4b2`.
+All four retained the supplied dossier ID, produced a semantic synthesis, and
+then failed compilation with the exact deterministic error
+`dossier identity or digest mismatch`.
+
+**Classification:** This is a TI2 `schema_binding` defect. The LLM was asked to
+author trusted identity bookkeeping it could not observe. The compiler's exact
+identity check behaved correctly and must remain fail-closed; the defect is the
+provider/adapter ownership boundary, not semantic mechanism generation and not
+a reason to accept an invented digest.
+
+**Contract v3 decision:** The provider owns only the discriminated semantic
+`SynthesisProposal | AbstentionDecision`. A trusted adapter binds the exact
+`dossier_id` and `dossier_digest` already known from the capture request to the
+compiler-facing envelope. Provider identity fields are neither requested nor
+accepted, and the compiler still verifies the bound envelope against its
+immutable context. This changes the provider-facing schema/identity owner but
+does not change provider, model, effort, one-attempt policy, LLM semantic
+authority, compiler closure, scorer gold, thresholds, or hard gates.
+
+**Checkpoint:** Contract-freeze v3 is frozen at SHA-256
+`8f90d9ecc723d61253f3e678fece1122967d280dcf8d8c23f1997d04d36c7a8f`.
+LOG-075's parse-failure durability repair remains required independently. Both
+defects must be reproduced and fixed provider-free before any fresh full TI3
+authorization. The partial r1 artifact remains untouched, no policy is
+selected, and CF3-C remains locked.
