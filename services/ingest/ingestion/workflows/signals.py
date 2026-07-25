@@ -149,7 +149,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 from uuid import UUID
 
 import asyncpg
@@ -160,6 +160,8 @@ from lib.shared.ids import uuid7
 
 
 log = logging.getLogger(__name__)
+
+SignalFairness = Literal["fifo", "shard", "reconciliation"]
 
 
 # Bounded retry for transient serialization conflicts on the shared
@@ -309,6 +311,202 @@ RETURNING s.id, s.workflow_kind, s.workflow_id,
           s.signal_kind, s.signal_data, s.idempotency_key
 """
 
+# Tenant/installation-fair claim for ShardFetch.  `started_at` is the durable
+# "last served" watermark: a successful pending claim sets it and an orphan
+# takeover refreshes it.  The two row-number passes interleave installations
+# within each tenant and then tenants within the inbox.  Missing-resource
+# signals retain the old consume-and-log behavior through payload fallbacks.
+_CLAIM_SHARD_SIGNALS_FAIR_SQL = """
+WITH enriched AS MATERIALIZED (
+    SELECT sig.id,
+           sig.created_at,
+           COALESCE(
+               shard.tenant_id::text,
+               NULLIF(sig.signal_data->>'tenant_id', ''),
+               '__unscoped__'
+           ) AS tenant_key,
+           COALESCE(
+               shard.installation_row_id::text,
+               shard.onboarding_run_id::text,
+               NULLIF(sig.signal_data->>'installation_row_id', ''),
+               NULLIF(sig.signal_data->>'onboarding_run_id', ''),
+               NULLIF(sig.signal_data->>'source', ''),
+               sig.id::text
+           ) AS installation_key,
+           tenant_history.last_served_at AS tenant_last_served_at,
+           installation_history.last_served_at
+               AS installation_last_served_at
+      FROM workflow_signals sig
+      LEFT JOIN onboarding_shards shard
+        ON shard.id::text = sig.signal_data->>'shard_id'
+      LEFT JOIN LATERAL (
+          SELECT max(prior.started_at) AS last_served_at
+            FROM onboarding_shards prior
+           WHERE prior.tenant_id = shard.tenant_id
+      ) tenant_history ON TRUE
+      LEFT JOIN LATERAL (
+          SELECT max(prior.started_at) AS last_served_at
+            FROM onboarding_shards prior
+           WHERE prior.tenant_id = shard.tenant_id
+             AND (
+                  (
+                    shard.installation_row_id IS NOT NULL
+                    AND prior.installation_row_id = shard.installation_row_id
+                  )
+                  OR (
+                    shard.installation_row_id IS NULL
+                    AND prior.installation_row_id IS NULL
+                    AND prior.onboarding_run_id = shard.onboarding_run_id
+                  )
+             )
+      ) installation_history ON TRUE
+     WHERE sig.workflow_kind = $1
+       AND sig.workflow_id = $2
+       AND sig.consumed_at IS NULL
+),
+installation_ranked AS MATERIALIZED (
+    SELECT enriched.*,
+           row_number() OVER (
+               PARTITION BY tenant_key, installation_key
+               ORDER BY created_at, id
+           ) AS installation_turn
+      FROM enriched
+),
+tenant_ranked AS MATERIALIZED (
+    SELECT installation_ranked.*,
+           row_number() OVER (
+               PARTITION BY tenant_key
+               ORDER BY installation_turn,
+                        installation_last_served_at NULLS FIRST,
+                        installation_key,
+                        created_at,
+                        id
+           ) AS tenant_turn
+      FROM installation_ranked
+),
+claimed AS (
+    SELECT sig.id
+      FROM workflow_signals sig
+      JOIN tenant_ranked ranked ON ranked.id = sig.id
+     ORDER BY ranked.tenant_turn,
+              ranked.tenant_last_served_at NULLS FIRST,
+              ranked.tenant_key,
+              ranked.installation_turn,
+              ranked.installation_last_served_at NULLS FIRST,
+              ranked.installation_key,
+              ranked.created_at,
+              ranked.id
+     LIMIT $3
+     FOR UPDATE OF sig SKIP LOCKED
+)
+UPDATE workflow_signals sig
+   SET consumed_at = now(),
+       consumed_by = $4
+  FROM claimed
+ WHERE sig.id = claimed.id
+RETURNING sig.id, sig.workflow_kind, sig.workflow_id,
+          sig.signal_kind, sig.signal_data, sig.idempotency_key
+"""
+
+# Same scheduling contract for source reconciliation signals.  The claim
+# watermark is stamped on `source_onboarding_runs` by Reconciler while holding
+# the run lock, so subsequent claims and other replicas rotate deterministically
+# across tenants and exact installations.
+_CLAIM_RECONCILIATION_SIGNALS_FAIR_SQL = """
+WITH enriched AS MATERIALIZED (
+    SELECT sig.id,
+           sig.created_at,
+           COALESCE(
+               run.tenant_id::text,
+               NULLIF(sig.signal_data->>'tenant_id', ''),
+               '__unscoped__'
+           ) AS tenant_key,
+           COALESCE(
+               run.installation_row_id::text,
+               run.onboarding_run_id::text,
+               NULLIF(sig.signal_data->>'installation_row_id', ''),
+               NULLIF(sig.signal_data->>'onboarding_run_id', ''),
+               NULLIF(sig.signal_data->>'source', ''),
+               sig.id::text
+           ) AS installation_key,
+           tenant_history.last_served_at AS tenant_last_served_at,
+           installation_history.last_served_at
+               AS installation_last_served_at
+      FROM workflow_signals sig
+      LEFT JOIN source_onboarding_runs run
+        ON run.onboarding_run_id::text =
+           sig.signal_data->>'onboarding_run_id'
+       AND run.source = sig.signal_data->>'source'
+      LEFT JOIN LATERAL (
+          SELECT max(prior.reconcile_last_claimed_at) AS last_served_at
+            FROM source_onboarding_runs prior
+           WHERE prior.tenant_id = run.tenant_id
+      ) tenant_history ON TRUE
+      LEFT JOIN LATERAL (
+          SELECT max(prior.reconcile_last_claimed_at) AS last_served_at
+            FROM source_onboarding_runs prior
+           WHERE prior.tenant_id = run.tenant_id
+             AND (
+                  (
+                    run.installation_row_id IS NOT NULL
+                    AND prior.installation_row_id = run.installation_row_id
+                  )
+                  OR (
+                    run.installation_row_id IS NULL
+                    AND prior.installation_row_id IS NULL
+                    AND prior.onboarding_run_id = run.onboarding_run_id
+                    AND prior.source = run.source
+                  )
+             )
+      ) installation_history ON TRUE
+     WHERE sig.workflow_kind = $1
+       AND sig.workflow_id = $2
+       AND sig.consumed_at IS NULL
+),
+installation_ranked AS MATERIALIZED (
+    SELECT enriched.*,
+           row_number() OVER (
+               PARTITION BY tenant_key, installation_key
+               ORDER BY created_at, id
+           ) AS installation_turn
+      FROM enriched
+),
+tenant_ranked AS MATERIALIZED (
+    SELECT installation_ranked.*,
+           row_number() OVER (
+               PARTITION BY tenant_key
+               ORDER BY installation_turn,
+                        installation_last_served_at NULLS FIRST,
+                        installation_key,
+                        created_at,
+                        id
+           ) AS tenant_turn
+      FROM installation_ranked
+),
+claimed AS (
+    SELECT sig.id
+      FROM workflow_signals sig
+      JOIN tenant_ranked ranked ON ranked.id = sig.id
+     ORDER BY ranked.tenant_turn,
+              ranked.tenant_last_served_at NULLS FIRST,
+              ranked.tenant_key,
+              ranked.installation_turn,
+              ranked.installation_last_served_at NULLS FIRST,
+              ranked.installation_key,
+              ranked.created_at,
+              ranked.id
+     LIMIT $3
+     FOR UPDATE OF sig SKIP LOCKED
+)
+UPDATE workflow_signals sig
+   SET consumed_at = now(),
+       consumed_by = $4
+  FROM claimed
+ WHERE sig.id = claimed.id
+RETURNING sig.id, sig.workflow_kind, sig.workflow_id,
+          sig.signal_kind, sig.signal_data, sig.idempotency_key
+"""
+
 # Unclaimed-only count for the polling diagnostic / `signal_count` API.
 _COUNT_UNCONSUMED_SQL = """
 SELECT count(*) FROM workflow_signals
@@ -425,6 +623,7 @@ async def claim_signals(
     workflow_id: str,
     consumed_by: str,
     batch_size: int = 32,
+    fairness: SignalFairness = "fifo",
 ) -> list[WorkflowSignal]:
     """Claim up to `batch_size` unclaimed signals under SKIP LOCKED.
 
@@ -479,8 +678,15 @@ async def claim_signals(
         transaction. Durability depends on the caller's commit;
         rollback re-makes the signals available to another poller.
     """
+    claim_sql = {
+        "fifo": _CLAIM_SIGNALS_SQL,
+        "shard": _CLAIM_SHARD_SIGNALS_FAIR_SQL,
+        "reconciliation": _CLAIM_RECONCILIATION_SIGNALS_FAIR_SQL,
+    }.get(fairness)
+    if claim_sql is None:
+        raise ValueError(f"unsupported signal fairness mode {fairness!r}")
     rows = await conn.fetch(
-        _CLAIM_SIGNALS_SQL,
+        claim_sql,
         workflow_kind, workflow_id, batch_size, consumed_by,
     )
     return [_row_to_signal(row) for row in rows]
@@ -493,6 +699,7 @@ async def poll_signals(
     workflow_id: str,
     consumed_by: str,
     batch_size: int = 32,
+    fairness: SignalFairness = "fifo",
 ) -> AsyncIterator[WorkflowSignal]:
     """Claim and yield up to `batch_size` unclaimed signals for this
     workflow's inbox, oldest first. Substrate-managed atomicity.
@@ -526,6 +733,7 @@ async def poll_signals(
                 workflow_id=workflow_id,
                 consumed_by=consumed_by,
                 batch_size=batch_size,
+                fairness=fairness,
             )
     # The transaction has committed by this point — the rows are
     # marked consumed in the DB. If the caller's consumer raises
@@ -562,6 +770,7 @@ async def signal_count(
 
 __all__ = [
     "EmitResult",
+    "SignalFairness",
     "WorkflowSignal",
     "claim_signals",
     "emit_signal",

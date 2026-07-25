@@ -194,6 +194,9 @@ export type SourceStatus =
 
 export type Source = {
   id: string;
+  canonicalId: string;
+  providerId: string;
+  aliases: string[];
   name: string;
   category: SourceCategory;
   description: string;

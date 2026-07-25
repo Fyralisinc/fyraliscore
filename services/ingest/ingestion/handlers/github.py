@@ -40,7 +40,6 @@ from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     HandlerError,
     ObservationDraft,
-    register,
 )
 
 
@@ -516,7 +515,6 @@ _EVENT_SHAPERS = {
 }
 
 
-@register(_CHANNEL)
 async def handle_github_webhook(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:

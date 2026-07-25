@@ -29,7 +29,6 @@ from lib.shared.errors import ValidationError
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -49,7 +48,6 @@ def _summary(event_type: str | None, data: dict[str, Any]) -> str:
     return " ".join(bits)
 
 
-@register(_CHANNEL)
 async def handle_stripe_webhook(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:

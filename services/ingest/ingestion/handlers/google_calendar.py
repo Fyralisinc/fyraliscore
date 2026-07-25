@@ -44,9 +44,7 @@ from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -128,7 +126,6 @@ def _format_time(dt: datetime | None) -> str:
 # Handler
 # ---------------------------------------------------------------------
 
-@register(_CHANNEL)
 async def handle_google_calendar_event(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -252,7 +249,6 @@ async def handle_google_calendar_event(
 
 # Single channel (D3). Register the trust default so any code that looks up
 # source_channel -> trust finds it (the handler also sets it per draft).
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL, _TRUST)
 
 
 __all__ = ["handle_google_calendar_event"]

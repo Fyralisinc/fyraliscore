@@ -39,9 +39,7 @@ from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -391,8 +389,6 @@ def _snapshot_draft(payload: dict[str, Any]) -> ObservationDraft:
 # Handler
 # ---------------------------------------------------------------------
 
-@register(_SNAPSHOT_CHANNEL)
-@register(_CHANNEL)
 async def handle_figma_event(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -447,8 +443,6 @@ async def handle_figma_event(
     )
 
 
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL, _TRUST)
-CHANNEL_TRUST_MAP.setdefault(_SNAPSHOT_CHANNEL, _TRUST)
 
 
 __all__ = ["handle_figma_event"]

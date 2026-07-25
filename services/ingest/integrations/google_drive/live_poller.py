@@ -60,6 +60,7 @@ async def _lease_due_targets(
             FROM google_drive_targets dt
             JOIN google_drive_installations gi
               ON gi.id = dt.google_drive_installation_id
+             AND gi.tenant_id = dt.tenant_id
            WHERE dt.state = 'active'
              AND dt.start_page_token IS NOT NULL
              AND gi.disabled_at IS NULL
@@ -75,8 +76,10 @@ async def _lease_due_targets(
          WHERE dt.id = leased.id
         RETURNING dt.id, dt.tenant_id, dt.drive_kind, dt.drive_id, dt.owner_email,
                   dt.start_page_token, dt.consecutive_live_failures,
+                  dt.google_drive_installation_id AS installation_id,
                   (SELECT scope FROM google_drive_installations
-                    WHERE id = dt.google_drive_installation_id) AS scope
+                    WHERE id = dt.google_drive_installation_id
+                      AND tenant_id = dt.tenant_id) AS scope
         """,
         limit,
     )
@@ -88,6 +91,7 @@ async def poll_one(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
         ingested, new_token = await drain_live(
             pool=pool,
             tenant_id=tenant_id,
+            installation_id=row["installation_id"],
             scope=row["scope"],
             channel=_CHANNEL,
             fetcher=_fetcher(),
@@ -95,6 +99,7 @@ async def poll_one(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
                 "drive_kind": row["drive_kind"],
                 "drive_id": row["drive_id"],
                 "owner_email": row["owner_email"],
+                "installation_id": str(row["installation_id"]),
                 "start_page_token": row["start_page_token"],
             },
             cursor_next_key="next_start_page_token",

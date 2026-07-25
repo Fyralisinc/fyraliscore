@@ -274,6 +274,75 @@ async def test_signed_webhook_resolves_app_secret_ref(
     }
 
 
+async def test_signed_webhook_is_scoped_to_exact_phone_installation(
+    whatsapp_client: tuple[httpx.AsyncClient, asyncpg.Pool, FernetSecretStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _pool, _store = whatsapp_client
+    tenant_a, phone_a, _ = await _register(
+        client,
+        app_secret="secret-a",
+    )
+    tenant_b, phone_b, _ = await _register(
+        client,
+        app_secret="secret-b",
+    )
+    captured_tenants: list[UUID] = []
+
+    async def fake_ingest_item(
+        deps: Any,
+        tenant_id: UUID,
+        channel: str,
+        item_payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        captured_tenants.append(tenant_id)
+        return {
+            "channel": channel,
+            "observation_id": str(uuid4()),
+            "deduped": False,
+        }
+
+    monkeypatch.setattr(whatsapp_router, "_ingest_item", fake_ingest_item)
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "metadata": {"phone_number_id": phone_b},
+                            "messages": [{"id": "wamid.EXACT", "type": "text"}],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+
+    accepted = await client.post(
+        "/integrations/whatsapp/webhook",
+        content=raw,
+        headers={
+            "X-Hub-Signature-256": sign_payload("secret-b", raw),
+        },
+    )
+    sibling_secret = await client.post(
+        "/integrations/whatsapp/webhook",
+        content=raw,
+        headers={
+            "X-Hub-Signature-256": sign_payload("secret-a", raw),
+        },
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["tenant_id"] == str(tenant_b)
+    assert captured_tenants == [tenant_b]
+    assert tenant_a != tenant_b
+    assert phone_a != phone_b
+    assert sibling_secret.status_code == 401
+
+
 async def test_production_ignores_whatsapp_verify_token_env_fallback(
     whatsapp_client: tuple[httpx.AsyncClient, asyncpg.Pool, FernetSecretStore],
     monkeypatch: pytest.MonkeyPatch,

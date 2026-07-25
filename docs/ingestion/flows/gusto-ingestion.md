@@ -70,7 +70,7 @@ the authoritative full-body observation is filled in by the next poll re-fetch.
 
 Gusto authenticates with an **OAuth 2.0 Bearer access token**, and every call is
 scoped to a company `company_uuid` (the QuickBooks `realm_id` equivalent). The
-access token is resolved **once** from the secret store (or preset in spammer
+access token is resolved **once** from the secret store (or preset in Provider Lab
 mode) and reused for the life of the client
 ([client.py:101‑123](../../../services/ingest/integrations/gusto/client.py#L101-L123),
 [client.py:125‑135](../../../services/ingest/integrations/gusto/client.py#L125-L135)).
@@ -580,16 +580,16 @@ on an auth failure. Behaviour on a rejected/expired token:
 - **Entity taxonomy** — `Invoice/Bill/BillPayment/Payment` (accounting). ⚠️
   comments claim payroll entities; **stale** (§4).
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
-For local testing against the mock source servers, `build_gusto_client` detects
-spammer mode and **presets the access token** to `"spam-gusto"` (skipping the
-secret-store lookup) and **points the API base** at the local spammer's `/gusto`
+For local testing against Provider Lab, `build_gusto_client` detects
+Provider Lab mode and **presets the access token** to `"spam-gusto"` (skipping the
+secret-store lookup) and **points the API base** at Provider Lab's `/gusto`
 sub-path via the endpoint resolver
 ([_clients.py:485‑512](../../../services/ingest/ingestion/fetchers/_clients.py#L485-L512),
-[endpoints.py:163](../../../lib/integrations/endpoints.py#L163)). The mock server matches the
-`/v3/company/.../query` path **suffix**
-([mock_servers/gusto.py:18‑24](../../../services/ingest/synthetic/mock_servers/gusto.py#L18-L24)).
+[endpoints.py:163](../../../lib/integrations/endpoints.py#L163)). The canonical
+[Provider Lab Gusto adapter](../../../services/ingest/synthetic/provider_lab/wave_b.py)
+matches the `/v3/company/.../query` path **suffix**.
 
 The dev finance panel (`finance_router`, `X-Tenant-Id` header, synthetic data)
 generates **QBO-shaped** backfill records (`_fyralis_company_uuid` keyed) and live

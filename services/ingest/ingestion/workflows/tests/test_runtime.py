@@ -146,16 +146,31 @@ async def test_make_workflow_pool_uses_pgbouncer_compatible_config(
     """`make_workflow_pool` MUST set `statement_cache_size=0` — the
     sixth activation after M3.1, M3.3, M4.2, M5.1, M5.2. M1.3 ADR Q1.
     """
-    captured: dict[str, Any] = {}
+    captured: dict[str, Any] = {"bindings_validated": False}
 
     async def _spy(dsn: str, **kwargs: Any) -> Any:
         captured["dsn"] = dsn
         captured["kwargs"] = kwargs
         return object()
 
+    async def _catalog_ok(_pool: Any) -> str:
+        return "test-catalog-hash"
+
+    def _bindings_ok() -> None:
+        captured["bindings_validated"] = True
+
     monkeypatch.setattr(asyncpg, "create_pool", _spy)
+    monkeypatch.setattr(
+        "services.ingest.source_contract.runtime.validate_runtime_bindings",
+        _bindings_ok,
+    )
+    monkeypatch.setattr(
+        "services.ingest.ingestion.source_catalog_db.validate_database_catalog",
+        _catalog_ok,
+    )
     await make_workflow_pool("postgresql://x@y/z")
 
+    assert captured["bindings_validated"] is True
     assert captured["kwargs"]["statement_cache_size"] == 0, (
         f"make_workflow_pool did NOT set statement_cache_size=0; "
         f"got {captured['kwargs'].get('statement_cache_size')}. "
@@ -165,3 +180,27 @@ async def test_make_workflow_pool_uses_pgbouncer_compatible_config(
     assert "min_size" in captured["kwargs"]
     assert "max_size" in captured["kwargs"]
     assert captured["kwargs"]["init"] is configure_connection_timeouts
+
+
+async def test_make_workflow_pool_fails_before_connecting_on_bad_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connected = False
+
+    async def _unexpected_pool(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal connected
+        connected = True
+        return object()
+
+    def _invalid_bindings() -> None:
+        raise RuntimeError("catalog binding missing")
+
+    monkeypatch.setattr(asyncpg, "create_pool", _unexpected_pool)
+    monkeypatch.setattr(
+        "services.ingest.source_contract.runtime.validate_runtime_bindings",
+        _invalid_bindings,
+    )
+
+    with pytest.raises(RuntimeError, match="catalog binding missing"):
+        await make_workflow_pool("postgresql://x@y/z")
+    assert connected is False

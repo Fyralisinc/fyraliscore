@@ -72,11 +72,15 @@ def build_oauth_native_connect_router(
         pool = _pool_from_request(request)
         body = await _json_body(request)
         installation_id = str(body.get("installation_id") or "").strip() or None
-        install_row = await _latest_install_row(
-            pool,
-            tenant_id=tenant_id,
-            source=source,
-            installation_id=installation_id,
+        install_row = (
+            await _load_exact_install_row(
+                pool,
+                tenant_id=tenant_id,
+                source=source,
+                installation_id=installation_id,
+            )
+            if installation_id is not None
+            else None
         )
         if install_row is not None:
             return JSONResponse(
@@ -155,39 +159,32 @@ def _handoff_payload(
     }
 
 
-async def _latest_install_row(
+async def _load_exact_install_row(
     pool: Any,
     *,
     tenant_id: UUID,
     source: str,
-    installation_id: str | None,
+    installation_id: str,
 ) -> Any:
-    if installation_id:
-        return await pool.fetchrow(
-            """
-            SELECT installation_id, enabled, installed_at
-              FROM provider_installations
-             WHERE tenant_id = $1
-               AND provider = $2
-               AND installation_id = $3
-             ORDER BY installed_at DESC
-             LIMIT 1
-            """,
-            tenant_id,
-            source,
-            installation_id,
-        )
+    """Load the callback-created installation named by the request.
+
+    ``(provider, installation_id)`` is unique in the database. Deliberately
+    omit the former tenant-only "latest installation" fallback: a finalize
+    request without provider installation identity starts/continues the
+    provider handoff instead of accidentally confirming a sibling install.
+    """
+
     return await pool.fetchrow(
         """
         SELECT installation_id, enabled, installed_at
           FROM provider_installations
          WHERE tenant_id = $1
            AND provider = $2
-         ORDER BY installed_at DESC
-         LIMIT 1
+           AND installation_id = $3
         """,
         tenant_id,
         source,
+        installation_id,
     )
 
 

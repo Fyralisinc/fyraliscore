@@ -103,6 +103,7 @@ from services.ingest.ingestion.workflows.state import (
     load_state,
     persist_state,
 )
+from services.ingest.source_contract.catalog import source_definition
 
 
 log = logging.getLogger(__name__)
@@ -160,6 +161,15 @@ UPDATE onboarding_triggers
        consumed_by_workflow_id = $2,
        consume_attempts = consume_attempts + 1,
        last_attempt_at = now()
+ WHERE id = $1
+"""
+
+_REJECT_TRIGGER_SQL = """
+UPDATE onboarding_triggers
+   SET consumed_at = now(),
+       consume_attempts = consume_attempts + 1,
+       last_attempt_at = now(),
+       last_error = $2
  WHERE id = $1
 """
 
@@ -259,6 +269,23 @@ def _payload_uuid_string(payload: dict[str, Any], key: str) -> str | None:
         return None
 
 
+def _exact_installation_id(
+    trigger: asyncpg.Record,
+    payload: dict[str, Any],
+) -> UUID | None:
+    """Normalize all ingress shapes to one exact installation-row UUID."""
+
+    raw = (
+        trigger["installation_row_id"]
+        or trigger["gmail_installation_id"]
+        or _payload_uuid_string(payload, "installation_row_id")
+    )
+    try:
+        return UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------
 # Service.
 # ---------------------------------------------------------------------
@@ -328,6 +355,41 @@ class OAuthPoller(LongRunningService):
                 if trigger is None:
                     return False
 
+                payload = _trigger_payload_dict(trigger["payload"])
+                installation_row_id = _exact_installation_id(trigger, payload)
+                try:
+                    source = source_definition(trigger["source"])
+                except (KeyError, TypeError):
+                    source = None
+                rejection_reason: str | None = None
+                if source is None:
+                    rejection_reason = "Unknown canonical onboarding source."
+                elif source.history is None:
+                    rejection_reason = (
+                        f"Source {source.source_id!r} is live-only and cannot "
+                        "request historical onboarding."
+                    )
+                elif installation_row_id is None:
+                    rejection_reason = (
+                        "Historical onboarding requires an exact installation "
+                        "row UUID."
+                    )
+                if rejection_reason is not None:
+                    await conn.execute(
+                        _REJECT_TRIGGER_SQL,
+                        trigger["id"],
+                        rejection_reason,
+                    )
+                    log.warning(
+                        "oauth_poller.trigger_rejected",
+                        extra={
+                            "trigger_id": str(trigger["id"]),
+                            "source": trigger["source"],
+                            "reason": rejection_reason,
+                        },
+                    )
+                    return True
+
                 run_id, workflow_id = await _create_onboarding_run(
                     conn, trigger=trigger,
                 )
@@ -347,21 +409,8 @@ class OAuthPoller(LongRunningService):
                     "trigger_id": str(trigger["id"]),
                     "source": trigger["source"],
                     "trigger_kind": trigger["trigger_kind"],
+                    "installation_row_id": str(installation_row_id),
                 }
-                payload = _trigger_payload_dict(trigger["payload"])
-                if trigger["installation_row_id"] is not None:
-                    signal_data["installation_row_id"] = str(
-                        trigger["installation_row_id"],
-                    )
-                elif payload_installation_row_id := _payload_uuid_string(
-                    payload,
-                    "installation_row_id",
-                ):
-                    signal_data["installation_row_id"] = payload_installation_row_id
-                if trigger["gmail_installation_id"] is not None:
-                    signal_data["gmail_installation_id"] = str(
-                        trigger["gmail_installation_id"],
-                    )
 
                 await emit_signal(
                     conn,

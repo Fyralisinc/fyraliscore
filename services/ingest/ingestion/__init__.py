@@ -2,8 +2,7 @@
 
 Public surface:
 - `core.ingest(...)` — UniformIngestPath entry (ARCHITECTURE §14).
-- `handlers.get_handler(channel)` — registry lookup for a channel.
-- `handlers.register(channel)` — decorator for handler modules.
+- `handlers.get_handler(channel)` — immutable source-contract lookup.
 """
 from services.ingest.ingestion.handlers import (  # noqa: F401
     CHANNEL_TRUST_MAP,
@@ -11,7 +10,6 @@ from services.ingest.ingestion.handlers import (  # noqa: F401
     ObservationDraft,
     get_handler,
     handler_channels,
-    register,
 )
 
 __all__ = [
@@ -20,5 +18,4 @@ __all__ = [
     "ObservationDraft",
     "get_handler",
     "handler_channels",
-    "register",
 ]

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.reconcilers import RECONCILER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_reconciler
 from services.ingest.ingestion.reconcilers import notion as nt_rec
 from services.ingest.ingestion.reconcilers.notion import (
     RESHARE_RECENCY_SCORE,
@@ -70,7 +70,12 @@ def _install():
 
 
 def _run():
-    return _FakeRecord(tenant_id=uuid4(), source="notion", status="completed")
+    return _FakeRecord(
+        tenant_id=uuid4(),
+        installation_row_id=uuid4(),
+        source="notion",
+        status="completed",
+    )
 
 
 def _stub_state(monkeypatch, cursors):
@@ -148,4 +153,4 @@ async def test_no_install_returns_clean(monkeypatch):
 
 
 async def test_dispatch_wired():
-    assert RECONCILER_DISPATCH["notion"] is reconcile_notion
+    assert resolve_reconciler("notion") is reconcile_notion

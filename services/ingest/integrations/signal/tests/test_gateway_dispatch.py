@@ -115,3 +115,18 @@ async def test_non_message_event_skipped(monkeypatch):
     monkeypatch.setattr(D, "ingest", lambda *a, **k: called.setdefault("x", 1))
     await handle_update({"event": "typing"}, _deps(_Flags(True)))
     assert called == {}
+
+
+async def test_inline_failure_reports_not_durable(monkeypatch):
+    async def _failed_ingest(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(D, "ingest", _failed_ingest)
+
+    durable = await handle_update(
+        _update(),
+        _deps(_Flags(False), with_plane=False),
+    )
+
+    assert durable is False

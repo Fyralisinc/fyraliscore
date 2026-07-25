@@ -13,8 +13,13 @@ from fastapi import FastAPI
 
 from services.app.gateway.byoc_onboarding_router import (
     _ALL_REHEARSAL_SOURCES,
-    _SOURCE_LIVE_INGRESS_PATHS,
+    _GENERIC_AUTHORIZATION_MODES,
+    _GENERIC_PROVIDER_CONSOLES,
+    _SOURCE_DISCOVERY_TARGETS,
+    _SOURCE_METHODS,
     _SOURCE_NATIVE_CONNECT_CONTRACTS,
+    _SOURCE_OPTIONAL_INPUTS,
+    _SOURCE_REQUIRED_INPUTS,
     _discord_source_access_payload,
     _discord_source_access_payload_for_installations,
     _execute_source_auto_connect_background_run,
@@ -28,6 +33,10 @@ from services.app.gateway.byoc_onboarding_router import (
     _source_provider_handoff,
     _source_rehearsal_status_payload,
     build_byoc_onboarding_router,
+)
+from services.ingest.source_contract import (
+    SOURCE_DEFINITIONS,
+    SOURCE_LIVE_INGRESS_CATALOG,
 )
 from lib.shared.errors import DiscordApiError
 from services.platform.runtime.source_browser_agent_recipes import (
@@ -940,7 +949,7 @@ def test_native_connect_contracts_cover_mounted_source_routers() -> None:
     assert figma_contract["disconnect_path"] == "/integrations/figma/connect"
     assert figma_contract["payload_fields"] == ["file_urls", "return_path"]
     assert "preflight_path" not in figma_contract
-    assert "figma" not in _SOURCE_LIVE_INGRESS_PATHS
+    assert SOURCE_LIVE_INGRESS_CATALOG["figma"] == "/webhooks/figma"
     assert _SOURCE_NATIVE_CONNECT_CONTRACTS["gmail"]["preflight_path"] == (
         "/integrations/gmail/connect/preflight"
     )
@@ -955,7 +964,56 @@ def test_native_connect_contracts_cover_mounted_source_routers() -> None:
     assert _SOURCE_NATIVE_CONNECT_CONTRACTS["google_calendar"][
         "preflight_payload_fields"
     ] == ["workspace_domain", "admin_email", "scope"]
-    assert "google_calendar" not in _SOURCE_LIVE_INGRESS_PATHS
+    assert SOURCE_LIVE_INGRESS_CATALOG["google_calendar"] == (
+        "/webhooks/google_calendar/push"
+    )
+
+
+def test_onboarding_views_are_derived_from_source_contracts() -> None:
+    assert set(_SOURCE_METHODS) == {
+        source.source_id for source in SOURCE_DEFINITIONS
+    }
+    assert set(_SOURCE_DISCOVERY_TARGETS) == set(_SOURCE_METHODS)
+    assert set(_SOURCE_NATIVE_CONNECT_CONTRACTS) == set(_SOURCE_METHODS)
+
+    for source in SOURCE_DEFINITIONS:
+        source_id = source.source_id
+        onboarding = source.onboarding
+        if onboarding.required_inputs is None:
+            assert source_id not in _SOURCE_REQUIRED_INPUTS
+        else:
+            assert _SOURCE_REQUIRED_INPUTS[source_id] == list(
+                onboarding.required_inputs
+            )
+        if onboarding.optional_inputs is None:
+            assert source_id not in _SOURCE_OPTIONAL_INPUTS
+        else:
+            assert _SOURCE_OPTIONAL_INPUTS[source_id] == list(
+                onboarding.optional_inputs
+            )
+        if onboarding.provider_console_url is None:
+            assert source_id not in _GENERIC_PROVIDER_CONSOLES
+        else:
+            assert (
+                _GENERIC_PROVIDER_CONSOLES[source_id]
+                == onboarding.provider_console_url
+            )
+        if onboarding.generic_authorization_mode is None:
+            assert source_id not in _GENERIC_AUTHORIZATION_MODES
+        else:
+            assert (
+                _GENERIC_AUTHORIZATION_MODES[source_id]
+                == onboarding.generic_authorization_mode
+            )
+        assert _SOURCE_METHODS[source_id] == onboarding.method
+        assert (
+            _SOURCE_DISCOVERY_TARGETS[source_id]
+            == onboarding.discovery_target
+        )
+        assert (
+            _SOURCE_NATIVE_CONNECT_CONTRACTS[source_id]
+            == onboarding.native_connect.as_payload()
+        )
 
 
 def test_google_browser_agent_run_uses_native_dwd_contract() -> None:

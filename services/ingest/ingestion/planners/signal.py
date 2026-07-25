@@ -20,7 +20,7 @@ from typing import Any
 
 import orjson
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -83,7 +83,6 @@ async def plan_shards_signal(ctx: PlannerContext) -> list[Shard]:
     return shards
 
 
-PLANNER_DISPATCH["signal"] = plan_shards_signal
 
 
 __all__ = ["SHARD_KIND_THREAD_HISTORY", "plan_shards_signal"]

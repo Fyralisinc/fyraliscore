@@ -55,6 +55,8 @@ class PollDeps:
     """
 
     pool: asyncpg.Pool
+    tenant_id: UUID | None = None
+    installation_id: str | None = None
     actor_repo: Any = None
     alias_repo: Any = None
     embedder: Any = None
@@ -87,17 +89,29 @@ def _event_namespace(event: dict[str, Any]) -> tuple[str | None, str | None]:
 async def _resolve_install(
     deps: PollDeps, *, account_id: str, region: str,
 ) -> _ResolvedInstall | None:
-    """Resolve the (account_id, region) -> aws_installations row. Returns None
-    when no enabled install owns this account/region (drop the event)."""
+    """Verify the poller's exact tenant/install owns this account and region.
+
+    Queue consumers are provisioned per installation. Resolving by account and
+    region alone is ambiguous across tenants and previously selected the first
+    matching row with ``LIMIT 1``.
+    """
+    if deps.tenant_id is None or not deps.installation_id:
+        log.error("aws_poll.missing_exact_installation_binding")
+        return None
     row = await deps.pool.fetchrow(
         """
         SELECT id, tenant_id
           FROM aws_installations
-         WHERE account_id = $1 AND region = $2 AND disabled_at IS NULL
-         ORDER BY created_at
-         LIMIT 1
+         WHERE tenant_id = $1
+           AND id = $2::uuid
+           AND account_id = $3
+           AND region = $4
+           AND disabled_at IS NULL
         """,
-        account_id, region,
+        deps.tenant_id,
+        deps.installation_id,
+        account_id,
+        region,
     )
     if row is None:
         return None

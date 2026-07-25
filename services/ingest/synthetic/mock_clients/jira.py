@@ -18,10 +18,9 @@ the JQL (`project = "KEY"`), honours the `updated >= "<floor>"` incremental
 clause when present, and pages by an opaque `next_page_token` capped at the
 fixture's `page_size`. The returned `next_page_token is None` iff `is_last`.
 
-Faults: every public method calls `self._check_fault()` first (A21). The four
-raisers surface `JiraApiError` with the production `code` values so the
-fetcher/reconciler branch exactly as they would against the real client (the
-fetcher keys its rate-limit fallback on `code == "jira_api_rate_limited"`).
+Faults: every public method calls `self._check_fault()` first (A21). Provider
+cooldowns surface the shared ``RetryLater`` scheduling signal, matching the
+contract-driven production client; permanent/auth failures remain Jira errors.
 """
 from __future__ import annotations
 
@@ -30,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, NoReturn
 
 from lib.shared.errors import JiraApiError
+from lib.shared.provider_transport import RequestContext, RetryLater, RetryReason
 from services.ingest.synthetic.fault_profiles import FaultProfile, HAPPY_PATH
 from services.ingest.synthetic.mock_clients._base import _MockBase
 
@@ -222,13 +222,16 @@ class MockJiraClient(_MockBase):
             return None
 
     # ---------------------------------------------------------------
-    # Fault raisers (production JiraApiError codes — A21)
+    # Fault raisers (production transport/error contracts — A21)
     # ---------------------------------------------------------------
     def _raise_rate_limit(self) -> NoReturn:
-        raise JiraApiError(
-            "MockJiraClient: rate limit (429), retry budget exhausted (X2 fault)",
-            code="jira_api_rate_limited",
-            context={"http_status": 429},
+        raise RetryLater.after(
+            request_context=RequestContext(
+                source="jira",
+                operation="issues.search",
+            ),
+            delay_seconds=1.0,
+            reason=RetryReason.RATE_LIMIT,
         )
 
     def _raise_5xx(self) -> NoReturn:

@@ -48,9 +48,20 @@ from lib.shared.errors import (
     StateTokenInvalidError,
 )
 from lib.shared.ids import uuid7
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RetryLater,
+    parse_retry_after,
+)
 from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.notion import metrics
 from services.ingest.integrations.notion.client import short_workspace_hash
+from services.ingest.integrations.provider_transport import (
+    ProviderRequestBinding,
+    tenant_preinstall_transport_kwargs,
+)
 # Reuse the IN-08 state-token primitives (provider-parameterized).
 from services.ingest.integrations.slack.oauth import (
     issue_state_token,
@@ -181,7 +192,13 @@ async def _connect_handoff(
 # Callback handler — GET /integrations/notion/callback
 # ---------------------------------------------------------------------
 
-async def _exchange_code_for_token(code: str) -> dict[str, Any]:
+async def _exchange_code_for_token(
+    code: str,
+    *,
+    tenant_id: UUID,
+    http_client: httpx.AsyncClient | None = None,
+    token_url: str | None = None,
+) -> dict[str, Any]:
     """Call Notion's `/v1/oauth/token`. Basic-auths with
     client_id:client_secret and returns the parsed JSON
     ({access_token, workspace_id, workspace_name, bot_id, ...})."""
@@ -191,21 +208,82 @@ async def _exchange_code_for_token(code: str) -> dict[str, Any]:
     basic = base64.b64encode(
         f"{client_id}:{client_secret}".encode("utf-8"),
     ).decode("ascii")
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        r = await client.post(
-            _NOTION_TOKEN_URL,
-            headers={
-                "Authorization": f"Basic {basic}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-            },
-        )
+    owns_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=15.0)
+    binding_kwargs = tenant_preinstall_transport_kwargs(tenant_id)
+    provider = ProviderRequestBinding(
+        source="notion",
+        tenant_id=str(binding_kwargs["tenant_id"]),
+        installation_id=None,
+        transport=binding_kwargs.get("provider_transport"),
+        request_policy=None,
+        quota_resolver=binding_kwargs.get("quota_resolver"),
+        allow_unlimited_local=bool(
+            binding_kwargs.get("allow_unlimited_local"),
+        ),
+        require_tenant=True,
+        require_installation=False,
+    )
+
+    async def _once() -> httpx.Response:
+        try:
+            response = await client.post(
+                token_url or _NOTION_TOKEN_URL,
+                headers={
+                    "Authorization": f"Basic {basic}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                },
+            )
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError(
+                "Notion OAuth token exchange timed out",
+                source="notion",
+                operation="oauth.token.exchange",
+                error_type=type(exc).__name__,
+            ) from exc
+        except httpx.TransportError as exc:
+            raise ProviderTransientError(
+                "Notion OAuth token exchange transport error",
+                source="notion",
+                operation="oauth.token.exchange",
+                error_type=type(exc).__name__,
+            ) from exc
+        if response.status_code == 429:
+            raise ProviderRateLimited(
+                "Notion OAuth token exchange rate limit",
+                retry_after_seconds=parse_retry_after(
+                    response.headers.get("Retry-After"),
+                ),
+                status_code=429,
+                header_parser_id="http.retry_after",
+                source="notion",
+                operation="oauth.token.exchange",
+            )
+        if response.status_code >= 500:
+            raise ProviderTransientError(
+                f"Notion OAuth token exchange returned HTTP "
+                f"{response.status_code}",
+                source="notion",
+                operation="oauth.token.exchange",
+                http_status=response.status_code,
+            )
+        return response
+
+    try:
+        r = await provider.execute("oauth.token.exchange", _once)
+    finally:
+        if owns_client:
+            await client.aclose()
     r.raise_for_status()
-    return r.json()
+    body = r.json()
+    if not isinstance(body, dict):
+        raise ValueError("Notion OAuth token response must be a JSON object")
+    return body
 
 
 async def _upsert_installation(
@@ -341,7 +419,12 @@ async def callback_handler(request: Request) -> Any:
 
     # Exchange code for a long-lived bot token.
     try:
-        token_response = await _exchange_code_for_token(code)
+        token_response = await _exchange_code_for_token(
+            code,
+            tenant_id=tenant_id,
+        )
+    except RetryLater:
+        raise
     except Exception as exc:  # noqa: BLE001 — Notion API / transport error
         log.error(
             "notion_install_failure",

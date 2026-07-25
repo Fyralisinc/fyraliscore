@@ -264,7 +264,11 @@ async def test_callback_selects_page_stores_tokens_subscribes_and_triggers_backf
         return tenant_id, {"page_id": "PAGE2"}
 
     monkeypatch.setattr(facebook_oauth, "verify_and_consume_state", _verify_state)
-    monkeypatch.setattr(facebook_oauth, "FacebookPagesClient", lambda: fake_client)
+    monkeypatch.setattr(
+        facebook_oauth,
+        "FacebookPagesClient",
+        lambda **_kwargs: fake_client,
+    )
     app = _make_app(pool, secret_store=secret_store)
 
     transport = httpx.ASGITransport(app=app)

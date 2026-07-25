@@ -18,6 +18,7 @@ import pytest
 from fakeredis import aioredis as fake_aioredis
 
 from services.ingest.ingestion.rate_limit import RateLimiter
+from services.ingest.ingestion.rate_limit.client import BucketRequirement
 
 
 @pytest.fixture
@@ -143,6 +144,20 @@ async def test_lua_lockout_expires(limiter: RateLimiter):
     assert granted.granted is True
 
 
+async def test_lua_lockout_feedback_never_shortens_shared_deadline(
+    limiter: RateLimiter,
+):
+    """A stale replica's shorter feedback cannot reopen a shared bucket."""
+    key = "rate:t1:monotonic_lockout:m"
+    await limiter.report_retry_after(key, retry_after_ms=5000)
+    await limiter.report_retry_after(key, retry_after_ms=100)
+
+    denied = await limiter.acquire(key, capacity=10, refill_per_sec=10.0)
+
+    assert denied.granted is False
+    assert denied.retry_after_ms >= 4900
+
+
 # ---------------------------------------------------------------------
 # Atomicity — the load-bearing test. If Lua serialisation breaks, this
 # bucket admits more than its capacity.
@@ -175,6 +190,52 @@ async def test_rate_limiter_concurrent_acquires_serialize(limiter: RateLimiter):
         f"is being interpreted as something else."
     )
     assert denied_count == 10 - capacity
+
+
+async def test_multi_scope_denial_does_not_charge_an_admitted_scope(
+    limiter: RateLimiter,
+) -> None:
+    """The all-or-none Lua pass preserves capacity on partial denial."""
+
+    app = BucketRequirement(
+        bucket_key="rate:atomic:app",
+        capacity=2,
+        refill_per_sec=0,
+    )
+    install = BucketRequirement(
+        bucket_key="rate:atomic:install",
+        capacity=1,
+        refill_per_sec=0,
+    )
+    first = await limiter.acquire_many((app, install))
+    assert first.granted is True
+
+    denied = await limiter.acquire_many((app, install))
+    assert denied.granted is False
+    assert denied.blocked_index == 1
+    assert denied.retry_after_ms == -1
+
+    # App retained its last token when the install scope denied the group.
+    app_only = await limiter.acquire(
+        app.bucket_key,
+        capacity=app.capacity,
+        refill_per_sec=app.refill_per_sec,
+    )
+    assert app_only.granted is True
+
+
+async def test_multi_scope_lockout_reports_the_blocking_index(
+    limiter: RateLimiter,
+) -> None:
+    first = BucketRequirement("rate:scope:first", 10, 10)
+    second = BucketRequirement("rate:scope:second", 10, 10)
+    await limiter.report_retry_after(second.bucket_key, retry_after_ms=5000)
+
+    result = await limiter.acquire_many((first, second))
+
+    assert result.granted is False
+    assert result.blocked_index == 1
+    assert result.retry_after_ms >= 4900
 
 
 # ---------------------------------------------------------------------

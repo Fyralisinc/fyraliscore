@@ -14,6 +14,7 @@ DATABASE_URL). It patches the module-level helpers the loop calls.
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -25,13 +26,16 @@ from services.ingest.ingestion.workflows.shard_fetch import ShardFetch, ShardFet
 
 
 def _shard():
+    installation_row_id = uuid4()
     return {
         "id": uuid4(),
         "tenant_id": uuid4(),
         "source": "github",
+        "installation_row_id": installation_row_id,
         "shard_identifier": {"shard_kind": "github_repo_events",
                              "event_type": "pull_requests",
-                             "owner": "o", "repo": "r"},
+                             "owner": "o", "repo": "r",
+                             "installation_row_id": str(installation_row_id)},
     }
 
 
@@ -52,29 +56,45 @@ def _patch_loadable(monkeypatch, *, install):
     monkeypatch.setattr(sf, "load_state", AsyncMock(return_value=state))
 
 
+async def _run_owned(svc: ShardFetch, shard: dict) -> None:
+    lease = sf._ShardLease(
+        shard_id=shard["id"],
+        owner="unit-worker",
+        version=1,
+    )
+    ctx = sf._FetchLoopContext.from_shard(shard, lease=lease)
+    await svc._run_fetch_loop_owned(ctx, asyncio.Event())
+
+
 @pytest.mark.asyncio
 async def test_recoverable_api_error_parks_shard(monkeypatch):
     svc = _make_service()
     _patch_loadable(monkeypatch, install={"installation_id": "1"})
+    schedule_retry = AsyncMock(return_value=True)
+    monkeypatch.setattr(sf, "_schedule_shard_retry", schedule_retry)
 
     async def _raise(*_a, **_k):
         raise GithubApiError("primary rate limit", code="github_api_rate_limited",
                              recoverable=True)
-    monkeypatch.setitem(sf.FETCHER_DISPATCH, "github", _raise)
+    monkeypatch.setattr(sf, "resolve_fetcher", lambda _source: _raise)
 
-    await svc._run_fetch_loop(_shard())
+    await _run_owned(svc, _shard())
     # Parked: NOT terminal-failed.
     svc._terminate_shard.assert_not_called()
+    schedule_retry.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_disabled_install_parks_shard(monkeypatch):
     svc = _make_service()
     monkeypatch.setattr(sf, "_load_install", AsyncMock(return_value=None))
+    schedule_retry = AsyncMock(return_value=True)
+    monkeypatch.setattr(sf, "_schedule_shard_retry", schedule_retry)
 
-    await svc._run_fetch_loop(_shard())
+    await _run_owned(svc, _shard())
     # Disabled install → parked (resumes on unsuspend), NOT terminal-failed.
     svc._terminate_shard.assert_not_called()
+    schedule_retry.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -84,9 +104,9 @@ async def test_nonrecoverable_error_terminal_fails(monkeypatch):
 
     async def _raise(*_a, **_k):
         raise ValueError("genuine bug")
-    monkeypatch.setitem(sf.FETCHER_DISPATCH, "github", _raise)
+    monkeypatch.setattr(sf, "resolve_fetcher", lambda _source: _raise)
 
-    await svc._run_fetch_loop(_shard())
+    await _run_owned(svc, _shard())
     # Non-recoverable → terminal-failed.
     svc._terminate_shard.assert_awaited_once()
     assert svc._terminate_shard.await_args.kwargs["state"] == "failed"

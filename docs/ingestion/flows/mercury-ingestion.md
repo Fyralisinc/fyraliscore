@@ -88,7 +88,7 @@ flow. There is no `code` exchange, no refresh token, and no per‑user token.
 
 - The token is resolved **once** from the secret store (via the install's
   `secret_ref`) on first request and reused for the life of the client; in
-  spammer mode it is preset
+  Provider Lab mode it is preset
   ([client.py:96‑122](../../../services/ingest/integrations/mercury/client.py#L96-L122)).
 - The outbound header is `Authorization: Bearer {token}`
   ([client.py:120‑122](../../../services/ingest/integrations/mercury/client.py#L120-L122)).
@@ -565,14 +565,15 @@ webhook signing secret is **per‑tenant** (secret store, not an env var).
 - **Idempotency** — versioned `external_id` (status for transactions, day for
   balances); webhook + backfill twins collapse to one observation. ✅
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
-For local testing against the mock source servers, `build_mercury_client` detects
-spammer mode and **presets** the API token to `spam-mercury` (skipping any secret
-store) and points `api_base_url` at the local spammer's `/mercury` sub‑path via
+For local testing against Provider Lab, `build_mercury_client` detects
+Provider Lab mode and **presets** the API token to `spam-mercury` (skipping any secret
+store) and points `api_base_url` at Provider Lab's `/mercury` URL via
 the endpoint resolver
 ([_clients.py:309‑334](../../../services/ingest/ingestion/fetchers/_clients.py#L309-L334),
-[endpoints.py:158](../../../lib/integrations/endpoints.py#L158)). The mock server
+[endpoints.py:158](../../../lib/integrations/endpoints.py#L158)). The canonical
+[Provider Lab Mercury adapter](../../../services/ingest/synthetic/provider_lab/wave_b.py)
 serves `GET /accounts`, `GET /account/{id}`, and `GET /account/{id}/transactions`
-with `limit`/`offset` paging and a `start=`‑driven incremental delta set
-([mock_servers/mercury.py:60‑107](../../../services/ingest/synthetic/mock_servers/mercury.py#L60-L107)).
+with `limit`/`offset` paging and date-granular `start=` filtering over the
+current transaction collection.

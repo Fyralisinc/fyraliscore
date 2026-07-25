@@ -87,7 +87,7 @@ against the per‑tenant site base URL `https://<site>.atlassian.net`
 
 This is **not** an Atlassian 3LO/OAuth bounce and **not** a DWD service account.
 Like the Notion client, the token is long‑lived, so there is **no per‑request
-mint**: it is resolved once from the secret store (or preset in spammer mode) and
+mint**: it is resolved once from the secret store (or preset in Provider Lab mode) and
 reused for the life of the client
 ([client.py:120‑142](../../../services/ingest/integrations/jira/client.py#L120-L142)).
 The API token and the Basic‑auth header are **never logged**; the site host is
@@ -519,7 +519,7 @@ treated as "no gap" (best‑effort), never failing the run
    `external_id` (`jira:{site}:issue:{id}:{updated}` and friends).
 2. **One credential model.** A long‑lived **API token** via HTTP Basic auth;
    no OAuth bounce, no DWD, no per‑request mint. Resolved once from the secret
-   store (or preset in spammer mode).
+   store (or preset in Provider Lab mode).
 3. **Versioned dedup for mutable entities.** Issues + comments key on `{updated}`
    (a re‑edit re‑observes); transitions key on the immutable `history_id`.
 4. **`/search/jql` token pagination + JQL `updated ASC` high‑water cursor.** The
@@ -544,7 +544,7 @@ webhook contracts.
 | `JIRA_RL_MAX_ATTEMPTS` | `4` | 429 `Retry-After` retry budget in `JiraClient._request` |
 | `JIRA_RL_MAX_SLEEP_SEC` | `30` | max backoff per `Retry-After` |
 | `JIRA_BACKFILL_PAGE_SIZE` | `100` | issue search page size (clamped to ≤100) |
-| `JIRA_API_BASE_URL` | — | **spammer/dev only** — overrides the per‑install base URL; prod uses `jira_installations.base_url` ([endpoints.py:48‑54](../../../lib/integrations/endpoints.py#L48-L54), [endpoints.py:127](../../../lib/integrations/endpoints.py#L127)) |
+| `JIRA_API_BASE_URL` | — | **Provider Lab/dev only** — explicitly overrides the per-install base URL; prod uses `jira_installations.base_url` ([endpoints.py:48‑54](../../../lib/integrations/endpoints.py#L48-L54), [endpoints.py:127](../../../lib/integrations/endpoints.py#L127)) |
 | `ingestion.kafka_path_enabled` (tenant flag, not env) | tenant‑configured | ON → webhook cutover (202); OFF → inline `jira:issue` ingest |
 
 > There is **no** `JIRA_*` rate‑limit *bucket* env (no static bucket exists; §3.2).
@@ -565,16 +565,17 @@ webhook contracts.
 - **Convergence** — minute‑after exclusive JQL floor + value‑own‑timezone literal
   prevent reconciler re‑share loops. ✅
 
-### 12.3 Dev / spammer mode
+### 12.3 Dev / Provider Lab mode
 
-For local testing against the mock source servers, `build_jira_client` detects
-spammer mode and **presets the API token** as `spam-jira`, skipping the secret
+For local testing against Provider Lab, `build_jira_client` detects
+Provider Lab mode and **presets the API token** as `spam-jira`, skipping the secret
 store entirely; the base URL is overridden via the endpoint resolver to the one
-mock host's `/jira` sub‑path (all sites route there)
+Provider Lab host's `/jira` sub‑path (all sites route there)
 ([_clients.py:278‑307](../../../services/ingest/ingestion/fetchers/_clients.py#L278-L307)).
-The mock server serves the token‑paginated `POST /rest/api/3/search/jql`
-([synthetic/mock_servers/jira.py:78‑116](../../../services/ingest/synthetic/mock_servers/jira.py#L78-L116)).
+The canonical
+[Provider Lab Jira adapter](../../../services/ingest/synthetic/provider_lab/wave_b.py)
+serves the token‑paginated `POST /rest/api/3/search/jql`.
 The `jira_api` endpoint entry is intentionally **empty** in production — it exists
-only so the spammer's `/jira` sub‑path convention resolves uniformly; prod always
+only for the explicit Provider Lab `/jira` URL; prod always
 uses the per‑install `base_url`
 ([endpoints.py:48‑54](../../../lib/integrations/endpoints.py#L48-L54)).

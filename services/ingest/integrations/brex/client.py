@@ -17,7 +17,6 @@ the real Brex /v2 paths.
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID
@@ -26,6 +25,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import BrexApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -35,15 +48,6 @@ log = structlog.get_logger("integrations.brex.client")
 _DEFAULT_TIMEOUT_S = 30.0
 _DEFAULT_PAGE_SIZE = 100
 _MAX_PAGE_SIZE = 1000
-
-
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
 
 
 class BrexClient:
@@ -60,6 +64,12 @@ class BrexClient:
         api_token: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
@@ -70,6 +80,27 @@ class BrexClient:
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="brex",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(installation_row_id)
+                if installation_row_id is not None
+                else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -101,6 +132,7 @@ class BrexClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        operation: str,
     ) -> Any:
         from services.ingest.integrations.brex import metrics
 
@@ -110,40 +142,62 @@ class BrexClient:
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
         }
-        max_attempts = int(os.environ.get("BREX_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("BREX_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
-        while True:
-            attempt += 1
+        async def _once() -> httpx.Response:
             try:
                 response = await client.request(
                     method, url, headers=headers, params=params,
                 )
+            except httpx.TimeoutException as exc:
+                metrics.record_request("error")
+                raise ProviderTimeoutError(
+                    "Brex request timed out",
+                    source="brex",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
             except httpx.TransportError as exc:
                 metrics.record_request("error")
-                raise BrexApiError(
-                    "transport error calling brex",
-                    code="brex_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
+                raise ProviderTransientError(
+                    "Brex transport error",
+                    source="brex",
+                    operation=operation,
+                    error_type=type(exc).__name__,
                 ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
+            if response.status_code == 429:
                 metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
-
-            if response.status_code // 100 == 2:
-                metrics.record_request("ok")
-                return _safe_json(response)
-
-            if response.status_code in (401, 403):
-                metrics.record_request("unauthorized")
-            else:
+                raise ProviderRateLimited(
+                    "Brex rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="brex",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
                 metrics.record_request("error")
-            raise _api_error_from_response(response, path)
+                raise ProviderTransientError(
+                    f"Brex returned HTTP {response.status_code}",
+                    source="brex",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
+
+        response = await self._provider.execute(operation, _once)
+        if response.status_code // 100 == 2:
+            metrics.record_request("ok")
+            return _safe_json(response)
+
+        if response.status_code in (401, 403):
+            metrics.record_request("unauthorized")
+        else:
+            metrics.record_request("error")
+        raise _api_error_from_response(response, path)
 
     # -----------------------------------------------------------------
     # Public read surface
@@ -152,13 +206,19 @@ class BrexClient:
     async def list_accounts(self) -> list[dict[str, Any]]:
         """List all cash and card accounts visible to the token."""
         cash = await self._list_cursor_items(
-            "/v2/accounts/cash", item_keys=("items", "accounts"),
+            "/v2/accounts/cash",
+            item_keys=("items", "accounts"),
+            operation="accounts.cash.list",
         )
         for account in cash:
             account.setdefault("_fyralis_account_kind", "cash")
             account.setdefault("type", account.get("type") or "cash")
 
-        card_body = await self._request("GET", "/v2/accounts/card")
+        card_body = await self._request(
+            "GET",
+            "/v2/accounts/card",
+            operation="accounts.card.list",
+        )
         cards = _extract_list(card_body, "items", "accounts", "cards")
         for account in cards:
             account.setdefault("_fyralis_account_kind", "card")
@@ -214,21 +274,39 @@ class BrexClient:
         self, account_id: str, *, limit: int, start: str | None,
     ) -> tuple[list[dict[str, Any]], int | None, int]:
         path = f"/v2/transactions/cash/{quote(account_id, safe='')}"
-        return await self._list_transaction_cursor(path, limit=limit, start=start)
+        return await self._list_transaction_cursor(
+            path,
+            limit=limit,
+            start=start,
+            operation="transactions.cash.list",
+        )
 
     async def _list_card_transactions(
         self, *, limit: int, start: str | None,
     ) -> tuple[list[dict[str, Any]], int | None, int]:
         return await self._list_transaction_cursor(
-            "/v2/transactions/card/primary", limit=limit, start=start,
+            "/v2/transactions/card/primary",
+            limit=limit,
+            start=start,
+            operation="transactions.card.list",
         )
 
     async def _list_transaction_cursor(
-        self, path: str, *, limit: int, start: str | None,
+        self,
+        path: str,
+        *,
+        limit: int,
+        start: str | None,
+        operation: str,
     ) -> tuple[list[dict[str, Any]], int | None, int]:
         effective_limit = max(1, min(_MAX_PAGE_SIZE, int(limit or _DEFAULT_PAGE_SIZE)))
         params = _txn_params(effective_limit, start, cursor=None)
-        first = await self._request("GET", path, params=params)
+        first = await self._request(
+            "GET",
+            path,
+            params=params,
+            operation=operation,
+        )
         if not isinstance(first, dict):
             raise BrexApiError(
                 "brex transactions response was not a JSON object",
@@ -251,6 +329,7 @@ class BrexClient:
                 "GET",
                 path,
                 params=_txn_params(effective_limit, start, cursor=next_cursor),
+                operation=operation,
             )
             if not isinstance(page, dict):
                 break
@@ -259,7 +338,11 @@ class BrexClient:
         return all_items, None, len(all_items)
 
     async def _list_cursor_items(
-        self, path: str, *, item_keys: tuple[str, ...],
+        self,
+        path: str,
+        *,
+        item_keys: tuple[str, ...],
+        operation: str,
     ) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         cursor: str | None = None
@@ -267,7 +350,12 @@ class BrexClient:
             params: dict[str, Any] = {"limit": _MAX_PAGE_SIZE}
             if cursor:
                 params["cursor"] = cursor
-            body = await self._request("GET", path, params=params)
+            body = await self._request(
+                "GET",
+                path,
+                params=params,
+                operation=operation,
+            )
             if not isinstance(body, dict):
                 return out
             out.extend(_extract_list(body, *item_keys))

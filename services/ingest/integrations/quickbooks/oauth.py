@@ -47,6 +47,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import QuickBooksApiError
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 from services.ingest.integrations.quickbooks.client import (
     DEFAULT_ENTITIES,
     QuickBooksClient,
@@ -130,12 +133,15 @@ def _auth_failure_response(exc: QuickBooksApiError) -> JSONResponse:
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
     """Verify the access token + realm via the companyinfo probe."""
-    _tenant_from_request(request)  # auth check
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     realm_id, access_token, base_url = _require_creds(body)
 
     client = QuickBooksClient(
-        base_url=base_url, realm_id=realm_id, access_token=access_token,
+        base_url=base_url,
+        realm_id=realm_id,
+        access_token=access_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         info = await client.company_info()
@@ -180,7 +186,10 @@ async def connect_finalize(request: Request) -> JSONResponse:
 
     # 1. Verify creds — before any write.
     client = QuickBooksClient(
-        base_url=base_url, realm_id=realm_id, access_token=access_token,
+        base_url=base_url,
+        realm_id=realm_id,
+        access_token=access_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         await client.company_info()

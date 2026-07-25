@@ -1,13 +1,13 @@
-"""services/ingest/ingestion/handlers/__init__.py — handler registry.
+"""Handler protocol and immutable contract-backed channel resolution.
 
 BUILD-PLAN §3 Prompt 2.A:
     "services/ingest/ingestion/handlers/__init__.py:
-       - Registry: channel name → handler callable.
+       - Catalog: channel name → handler callable reference.
        - Trust tier mapping table per §14 (channel → tier)."
 
-ARCHITECTURE §14 `CHANNEL_TRUST_MAP` is the authoritative table for
-source_channel → trust_tier. Only `slack:message` and the three
-`internal:*` channels ship in Wave 2-A; Agent 2-B owns the rest.
+ARCHITECTURE §14 `CHANNEL_TRUST_MAP` is derived from the source-contract
+catalog. Importing this package does not import every handler module or mutate
+a process-local registry; a declared handler is imported only when requested.
 
 Handler shape (the `ObservationDraft` model below):
 - `content_text: str`             — human-legible representation
@@ -29,60 +29,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Awaitable, Callable
+from collections.abc import Mapping
+from typing import Any, Awaitable, Callable, cast
 
 from lib.shared.errors import CompanyOSError
 from lib.shared.types import ObservationKind, TrustTierValue
+from services.ingest.source_contract.catalog import (
+    CHANNEL_TRUST_CATALOG,
+    normalizer_channels,
+)
+from services.ingest.source_contract.runtime import (
+    NormalizationChannelNotFoundError,
+    resolve_handler,
+)
 
 
-# ARCHITECTURE §14 CHANNEL_TRUST_MAP — authoritative mapping.
-# Only the four Wave 2-A channels are listed here. Agent 2-B will
-# extend via `register()` when those handlers land.
-CHANNEL_TRUST_MAP: dict[str, str] = {
-    "slack:message": "attested_agent",
-    "email:inbound": "attested_agent",
-    "gmail:": "attested_agent",
-    "linear:webhook": "authoritative",
-    "github:webhook": "authoritative",
-    "calendar:sync": "authoritative",
-    "stripe:webhook": "authoritative",
-    "discord:webhook": "attested_agent",
-    "discord:interaction": "attested_agent",
-    "discord:message": "attested_agent",
-    "jira:issue": "authoritative",
-    "journal:ui": "authoritative",
-    "agent:attested": "attested_agent",
-    "news:rss": "reputable",
-    "news:web": "inferential_external",
-    "social:twitter": "unvetted",
-    "social:linkedin": "reputable",
-    "market:api": "authoritative_external",
-    "regulatory:api": "authoritative_external",
-    "analyst:report": "reputable",
-    "ui:contestation": "authoritative",
-    # IN-PEOPLE (sources 23-25): HiBob (HR), Ashby (ATS), LinkedIn (recruiting).
-    # First-party source-of-record systems → authoritative, mirroring the other
-    # entity-model sources (gusto/carta).
-    "hibob:object": "authoritative",
-    "ashby:object": "authoritative",
-    "linkedin:object": "authoritative",
-    # WhatsApp (Cloud API webhook — live). ONE channel/many-event-types
-    # (like github:webhook): inbound customer messages are customer-authored
-    # content via a Meta-signed webhook → attested_agent (Slack/email posture),
-    # while outbound delivery-status callbacks are Meta-asserted facts and the
-    # handler OVERRIDES trust to authoritative + kind=state_change for those.
-    "whatsapp:message": "attested_agent",
-    # Facebook Page Messenger content arrives through Meta-signed webhooks or
-    # Page-token Graph pagination. Messages are customer/Page authored content,
-    # not a provider-authored state fact.
-    "facebook_pages:message": "attested_agent",
-    # Internal channels used by system-originated observations; these
-    # carry the highest trust and never enter through a signature-
-    # verified webhook.
-    "internal:state_change": "authoritative",
-    "internal:anomaly": "authoritative",
-    "internal:prediction_resolution": "authoritative",
-}
+CHANNEL_TRUST_MAP: Mapping[str, TrustTierValue] = CHANNEL_TRUST_CATALOG
 
 
 class HandlerNotFound(CompanyOSError):
@@ -123,90 +85,24 @@ class ObservationDraft:
 HandlerFn = Callable[[dict[str, Any], dict[str, str]], Awaitable[ObservationDraft]]
 
 
-_HANDLERS: dict[str, HandlerFn] = {}
-
-
-def register(channel: str) -> Callable[[HandlerFn], HandlerFn]:
-    """Decorator: register a handler for `channel`.
-
-    Usage:
-        @register("slack:message")
-        async def handle_slack(payload, headers):
-            ...
-
-    Raises at import time if the channel is already registered
-    (double-registration is a programmer error).
-    """
-
-    def _decorator(fn: HandlerFn) -> HandlerFn:
-        if channel in _HANDLERS:
-            raise RuntimeError(
-                f"handler for {channel!r} already registered"
-            )
-        _HANDLERS[channel] = fn
-        return fn
-
-    return _decorator
-
-
 def get_handler(channel: str) -> HandlerFn:
-    """Look up the handler for `channel`. Raises `HandlerNotFound` when
-    the channel has no handler registered."""
-    fn = _HANDLERS.get(channel)
-    if fn is None:
+    """Resolve a declared handler, raising ``HandlerNotFound`` on a miss."""
+
+    try:
+        fn = resolve_handler(channel)
+    except NormalizationChannelNotFoundError as exc:
         raise HandlerNotFound(
-            f"no handler registered for channel {channel!r}",
+            f"no handler declared for channel {channel!r}",
             channel=channel,
-            registered=sorted(_HANDLERS.keys()),
-        )
-    return fn
+            registered=handler_channels(),
+        ) from exc
+    return cast(HandlerFn, fn)
 
 
 def handler_channels() -> list[str]:
-    """Return the list of channels that have a registered handler."""
-    return sorted(_HANDLERS.keys())
+    """Return every channel with a contract-declared normalizer binding."""
 
-
-def _clear_registry_for_tests() -> None:
-    """Test helper: drop all registrations. NEVER call this from non-
-    test code — the Gateway startup path re-registers by importing
-    the handler modules, which is not idempotent."""
-    _HANDLERS.clear()
-
-
-# Import handlers so `register()` decorators run. Order matters only
-# for error messages (first to import wins uniqueness check). These
-# imports intentionally come after _HANDLERS is defined above.
-from services.ingest.ingestion.handlers import system  # noqa: E402,F401
-from services.ingest.ingestion.handlers import slack  # noqa: E402,F401
-from services.ingest.ingestion.handlers import github  # noqa: E402,F401
-from services.ingest.ingestion.handlers import linear  # noqa: E402,F401
-from services.ingest.ingestion.handlers import stripe  # noqa: E402,F401
-from services.ingest.ingestion.handlers import discord  # noqa: E402,F401
-from services.ingest.ingestion.handlers import gmail  # noqa: E402,F401
-from services.ingest.ingestion.handlers import notion  # noqa: E402,F401
-from services.ingest.ingestion.handlers import google_calendar  # noqa: E402,F401
-from services.ingest.ingestion.handlers import google_drive  # noqa: E402,F401
-from services.ingest.ingestion.handlers import jira  # noqa: E402,F401
-from services.ingest.ingestion.handlers import mercury  # noqa: E402,F401
-from services.ingest.ingestion.handlers import quickbooks  # noqa: E402,F401
-from services.ingest.ingestion.handlers import grafana  # noqa: E402,F401
-from services.ingest.ingestion.handlers import telegram  # noqa: E402,F401
-from services.ingest.ingestion.handlers import brex  # noqa: E402,F401
-from services.ingest.ingestion.handlers import ramp  # noqa: E402,F401
-from services.ingest.ingestion.handlers import gusto  # noqa: E402,F401
-from services.ingest.ingestion.handlers import deel  # noqa: E402,F401
-from services.ingest.ingestion.handlers import fireflies  # noqa: E402,F401
-from services.ingest.ingestion.handlers import signal  # noqa: E402,F401
-from services.ingest.ingestion.handlers import aws  # noqa: E402,F401
-from services.ingest.ingestion.handlers import miro  # noqa: E402,F401
-from services.ingest.ingestion.handlers import figma  # noqa: E402,F401
-from services.ingest.ingestion.handlers import carta  # noqa: E402,F401
-from services.ingest.ingestion.handlers import hibob  # noqa: E402,F401
-from services.ingest.ingestion.handlers import ashby  # noqa: E402,F401
-from services.ingest.ingestion.handlers import linkedin  # noqa: E402,F401
-from services.ingest.ingestion.handlers import whatsapp  # noqa: E402,F401
-from services.ingest.ingestion.handlers import facebook_pages  # noqa: E402,F401
+    return list(normalizer_channels())
 
 
 __all__ = [
@@ -215,7 +111,6 @@ __all__ = [
     "HandlerNotFound",
     "HandlerError",
     "ObservationDraft",
-    "register",
     "get_handler",
     "handler_channels",
 ]

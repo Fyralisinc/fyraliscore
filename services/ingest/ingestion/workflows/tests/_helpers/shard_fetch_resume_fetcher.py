@@ -1,6 +1,6 @@
 """Subprocess-loadable test fetcher for the
-shard_fetch resume-from-cursor test. Installs itself into
-FETCHER_DISPATCH on import.
+shard_fetch resume-from-cursor test. Activates a subprocess-scoped
+history binding override on import.
 
 Strategy: returns one fake record per page, with an asyncio.sleep
 between pages so the test can SIGKILL the subprocess between
@@ -9,12 +9,15 @@ encodes which page was last successfully emitted.
 """
 from __future__ import annotations
 
+import atexit
 import asyncio
+from contextlib import ExitStack
 from typing import Any
 
 import asyncpg
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
+from services.ingest.source_contract.runtime import override_history_bindings
 
 
 # Per-page artificial delay. Picked to make the resume test
@@ -41,5 +44,8 @@ async def _resume_test_fetcher(
     )
 
 
-# Install into the dispatch table at import time.
-FETCHER_DISPATCH["github"] = _resume_test_fetcher
+_OVERRIDE_SCOPE = ExitStack()
+_OVERRIDE_SCOPE.enter_context(
+    override_history_bindings(fetchers={"github": _resume_test_fetcher})
+)
+atexit.register(_OVERRIDE_SCOPE.close)

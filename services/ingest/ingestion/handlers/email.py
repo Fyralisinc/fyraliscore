@@ -61,7 +61,6 @@ from lib.shared.errors import ValidationError
 from services.ingest.ingestion.handlers import (
     HandlerError,
     ObservationDraft,
-    register,
 )
 
 
@@ -358,20 +357,6 @@ async def handle_email_webhook(
         entities_hint=entities_hint,
         raw_payload=payload,
     )
-
-
-# ---------------------------------------------------------------------
-# Registry entry. The registry's HandlerFn signature is (payload,
-# headers) -> ObservationDraft; the optional tenant_id / resolver
-# kwargs let the ingestion core pass through enrichers.
-# ---------------------------------------------------------------------
-
-@register(_CHANNEL)
-async def _registered_handler(
-    payload: dict[str, Any], headers: dict[str, str]
-) -> ObservationDraft:
-    return await handle_email_webhook(payload, headers)
-
 
 __all__ = [
     "EmailSignatureError",

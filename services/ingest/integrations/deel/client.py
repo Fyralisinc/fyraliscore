@@ -25,6 +25,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import DeelApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -35,15 +49,6 @@ _DEFAULT_TIMEOUT_S = 30.0
 _DEFAULT_PAGE_SIZE = 100
 _MAX_PAGE_SIZE = 100
 _DEFAULT_API_VERSION = "2026-01-01"
-
-
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
 
 
 def _normalise_base_url(url: str) -> str:
@@ -69,6 +74,12 @@ class DeelClient:
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
         api_version: str | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
@@ -84,6 +95,27 @@ class DeelClient:
         )
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="deel",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(installation_row_id)
+                if installation_row_id is not None
+                else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -115,6 +147,7 @@ class DeelClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        operation: str,
     ) -> dict[str, Any]:
         from services.ingest.integrations.deel import metrics
 
@@ -125,47 +158,69 @@ class DeelClient:
             "Accept": "application/json",
             "X-Version": self._api_version,
         }
-        max_attempts = int(os.environ.get("DEEL_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("DEEL_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
-        while True:
-            attempt += 1
+        async def _once() -> httpx.Response:
             try:
                 response = await client.request(
                     method, url, headers=headers, params=params,
                 )
+            except httpx.TimeoutException as exc:
+                metrics.record_request("error")
+                raise ProviderTimeoutError(
+                    "Deel request timed out",
+                    source="deel",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
             except httpx.TransportError as exc:
                 metrics.record_request("error")
-                raise DeelApiError(
-                    "transport error calling deel",
-                    code="deel_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
+                raise ProviderTransientError(
+                    "Deel transport error",
+                    source="deel",
+                    operation=operation,
+                    error_type=type(exc).__name__,
                 ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
+            if response.status_code == 429:
                 metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
-
-            if response.status_code // 100 == 2:
-                metrics.record_request("ok")
-                body = _safe_json(response)
-                if not isinstance(body, dict):
-                    raise DeelApiError(
-                        "deel response was not a JSON object",
-                        code="deel_api_error",
-                        context={"path": path},
-                    )
-                return body
-
-            if response.status_code in (401, 403):
-                metrics.record_request("unauthorized")
-            else:
+                raise ProviderRateLimited(
+                    "Deel rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="deel",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
                 metrics.record_request("error")
-            raise _api_error_from_response(response, path)
+                raise ProviderTransientError(
+                    f"Deel returned HTTP {response.status_code}",
+                    source="deel",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
+
+        response = await self._provider.execute(operation, _once)
+        if response.status_code // 100 == 2:
+            metrics.record_request("ok")
+            body = _safe_json(response)
+            if not isinstance(body, dict):
+                raise DeelApiError(
+                    "deel response was not a JSON object",
+                    code="deel_api_error",
+                    context={"path": path},
+                )
+            return body
+
+        if response.status_code in (401, 403):
+            metrics.record_request("unauthorized")
+        else:
+            metrics.record_request("error")
+        raise _api_error_from_response(response, path)
 
     # -----------------------------------------------------------------
     # Public read surface
@@ -173,12 +228,17 @@ class DeelClient:
 
     async def list_contracts(self) -> list[dict[str, Any]]:
         """`GET /contracts` - all contracts visible to the token."""
-        return await self._list_data_pages("/contracts")
+        return await self._list_data_pages(
+            "/contracts",
+            operation="contracts.list",
+        )
 
     async def get_contract(self, contract_id: str) -> dict[str, Any]:
         """`GET /contracts/{id}` - one contract from the `{data}` envelope."""
         body = await self._request(
-            "GET", f"/contracts/{quote(contract_id, safe='')}",
+            "GET",
+            f"/contracts/{quote(contract_id, safe='')}",
+            operation="contracts.get",
         )
         data = body.get("data")
         if isinstance(data, dict):
@@ -230,7 +290,12 @@ class DeelClient:
             page_params["offset"] = offset
             if cursor:
                 page_params["cursor"] = cursor
-            body = await self._request("GET", "/invoices", params=page_params)
+            body = await self._request(
+                "GET",
+                "/invoices",
+                params=page_params,
+                operation="invoices.list",
+            )
             items = _data_list(body, "invoices")
             out.extend(items)
             cursor = _page_cursor(body)
@@ -243,14 +308,24 @@ class DeelClient:
                 continue
             return out
 
-    async def _list_data_pages(self, path: str) -> list[dict[str, Any]]:
+    async def _list_data_pages(
+        self,
+        path: str,
+        *,
+        operation: str,
+    ) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         cursor: str | None = None
         while True:
             params: dict[str, Any] = {"limit": _MAX_PAGE_SIZE}
             if cursor:
                 params["cursor"] = cursor
-            body = await self._request("GET", path, params=params)
+            body = await self._request(
+                "GET",
+                path,
+                params=params,
+                operation=operation,
+            )
             items = _data_list(body)
             out.extend(items)
             cursor = _page_cursor(body)

@@ -56,9 +56,7 @@ import orjson
 from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 from services.ingest.ingestion.idempotency import carta_entity
 
@@ -376,7 +374,6 @@ def _firm_of(payload: dict[str, Any]) -> str:
 # Handler
 # ---------------------------------------------------------------------
 
-@register(_CHANNEL)
 async def handle_carta_object(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -403,7 +400,6 @@ async def handle_carta_object(
     )
 
 
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL, _TRUST)
 
 
 __all__ = ["handle_carta_object", "carta_entity", "carta_version"]

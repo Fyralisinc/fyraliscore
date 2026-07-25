@@ -56,7 +56,6 @@ from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     HandlerError,
     ObservationDraft,
-    register,
 )
 
 
@@ -310,14 +309,6 @@ async def handle_calendar_webhook(
         entities_hint=entities_hint,
         raw_payload=payload,
     )
-
-
-@register(_CHANNEL)
-async def _registered_handler(
-    payload: dict[str, Any], headers: dict[str, str]
-) -> ObservationDraft:
-    return await handle_calendar_webhook(payload, headers)
-
 
 __all__ = [
     "CalendarSignatureError",

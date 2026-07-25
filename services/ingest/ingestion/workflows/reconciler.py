@@ -19,8 +19,8 @@ and emits `source_onboarding_completed` directly to TenantOnboarding.
 
 M6.2b flow (this commit): SourceOnboarding emits
 `source_shards_completed` to THIS Reconciler service's inbox.
-Reconciler calls `RECONCILER_DISPATCH[source]` to decide clean vs.
-re-share. CLEAN → emit `source_onboarding_completed` to
+Reconciler resolves the source contract's reconciler binding to decide
+clean vs. re-share. CLEAN → emit `source_onboarding_completed` to
 TenantOnboarding (preserving the M6.1 consumer contract). RE-SHARE
 → create new shards with `parent_shard_id` linkage and emit
 `shard_fetch_requested` per new shard, restarting the cycle.
@@ -113,10 +113,8 @@ PATTERN-ALIGNMENT MAPPING
     (re-share). All via the substrate.
 
   Rule 5 (no cross-workflow shared state):
-    No module-level mutable state in this file. `RECONCILER_DISPATCH`
-    in `services/ingest/ingestion/reconcilers/__init__.py` is ALL_CAPS
-    (constant-style) and outside the analyzer's
-    `services/ingest/ingestion/workflows/*.py` scope.
+    No module-level mutable state in this file. Reconciler callables are
+    resolved lazily from immutable SourceDefinition bindings.
 """
 from __future__ import annotations
 
@@ -132,6 +130,11 @@ import asyncpg
 import orjson
 
 from lib.shared.ids import uuid7
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
 from lib.shared.product_workflow_metrics import record_product_workflow_event
 from services.ingest.ingestion.progress.events import (
     CoverageConfidence,
@@ -140,7 +143,6 @@ from services.ingest.ingestion.progress.events import (
 )
 from services.ingest.ingestion.progress.publisher import publish_progress_events
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
@@ -156,6 +158,7 @@ from services.ingest.ingestion.workflows.state import (
     load_state,
     persist_state,
 )
+from services.ingest.source_contract.runtime import resolve_reconciler
 
 
 log = logging.getLogger(__name__)
@@ -165,13 +168,17 @@ WORKFLOW_KIND = "reconciler"
 WORKFLOW_ID_INBOX = "reconciler"  # per A13: workflow_id = inbox
 
 # The per-source reconciler dispatch runs a best-effort gap-check that may
-# make source-API calls (real HTTP in production / against the spammer).
+# make source-API calls (real HTTP in production / against Provider Lab).
 # Bound it so one slow/wedged API call can't hold the claim transaction —
 # and thus freeze the reconciler's single-loop tick — indefinitely. A
 # timed-out check is treated as "clean" (no gaps): the run completes, and a
 # genuine gap would be re-detected on a later pass. Configurable for tests.
 RECONCILER_DISPATCH_TIMEOUT_S = float(
     os.environ.get("RECONCILER_DISPATCH_TIMEOUT_SEC", "30"),
+)
+RECONCILER_TIMEOUT_RETRY_DELAY_S = max(
+    1.0,
+    float(os.environ.get("RECONCILER_TIMEOUT_RETRY_DELAY_SEC", "30")),
 )
 WORKFLOW_ID_DEFAULT = "default"
 
@@ -194,10 +201,128 @@ DEFAULT_MAX_SIGNALS_PER_TICK = 50
 # SQL.
 # ---------------------------------------------------------------------
 _LOAD_RUN_SQL = """
-SELECT onboarding_run_id, source, tenant_id, status,
-       reconciled_at, reconciliation_pass_count, started_at
-  FROM source_onboarding_runs
+UPDATE source_onboarding_runs
+   SET reconcile_last_claimed_at = now()
  WHERE onboarding_run_id = $1 AND source = $2
+RETURNING onboarding_run_id, source, tenant_id, status,
+          installation_row_id, reconciled_at, reconciliation_pass_count,
+          started_at, reconcile_next_attempt_at, reconcile_attempt_count,
+          reconcile_retry_reason, reconcile_retry_operation,
+          reconcile_last_claimed_at
+"""
+
+# Retry candidates are snapshotted once per tick.  The attempt generation is
+# carried into the locking claim below, so two workers that saw the same
+# candidate cannot both dispatch it after the first worker schedules another
+# retry generation.
+_LIST_DUE_RETRY_CANDIDATES_SQL = """
+WITH eligible AS MATERIALIZED (
+    SELECT run.onboarding_run_id,
+           run.source,
+           run.tenant_id,
+           run.installation_row_id,
+           run.reconcile_attempt_count,
+           run.reconcile_next_attempt_at,
+           run.completed_at,
+           COALESCE(
+               run.installation_row_id::text,
+               run.onboarding_run_id::text
+           ) AS installation_key,
+           tenant_history.last_served_at AS tenant_last_served_at,
+           installation_history.last_served_at
+               AS installation_last_served_at,
+           row_number() OVER (
+               PARTITION BY run.tenant_id,
+                            COALESCE(
+                                run.installation_row_id::text,
+                                run.onboarding_run_id::text
+                            )
+               ORDER BY run.reconcile_next_attempt_at,
+                        run.completed_at,
+                        run.onboarding_run_id,
+                        run.source
+           ) AS installation_turn
+      FROM source_onboarding_runs run
+      LEFT JOIN LATERAL (
+          SELECT max(prior.reconcile_last_claimed_at) AS last_served_at
+            FROM source_onboarding_runs prior
+           WHERE prior.tenant_id = run.tenant_id
+      ) tenant_history ON TRUE
+      LEFT JOIN LATERAL (
+          SELECT max(prior.reconcile_last_claimed_at) AS last_served_at
+            FROM source_onboarding_runs prior
+           WHERE prior.tenant_id = run.tenant_id
+             AND (
+                  (
+                    run.installation_row_id IS NOT NULL
+                    AND prior.installation_row_id = run.installation_row_id
+                  )
+                  OR (
+                    run.installation_row_id IS NULL
+                    AND prior.installation_row_id IS NULL
+                    AND prior.onboarding_run_id = run.onboarding_run_id
+                    AND prior.source = run.source
+                  )
+             )
+      ) installation_history ON TRUE
+     WHERE run.status = 'completed'
+       AND run.reconciled_at IS NULL
+       AND run.reconcile_next_attempt_at IS NOT NULL
+       AND run.reconcile_next_attempt_at <= now()
+),
+ranked AS MATERIALIZED (
+    SELECT eligible.*,
+           row_number() OVER (
+               PARTITION BY tenant_id
+               ORDER BY installation_turn,
+                        installation_last_served_at NULLS FIRST,
+                        installation_key,
+                        reconcile_next_attempt_at,
+                        completed_at,
+                        onboarding_run_id,
+                        source
+           ) AS tenant_turn
+      FROM eligible
+)
+SELECT onboarding_run_id, source, reconcile_attempt_count
+  FROM ranked
+ ORDER BY tenant_turn,
+          tenant_last_served_at NULLS FIRST,
+          tenant_id,
+          installation_turn,
+          installation_last_served_at NULLS FIRST,
+          installation_key,
+          reconcile_next_attempt_at,
+          completed_at,
+          onboarding_run_id,
+          source
+ LIMIT $1
+"""
+
+_CLAIM_DUE_RETRY_SQL = """
+WITH claimed AS MATERIALIZED (
+    SELECT onboarding_run_id, source
+      FROM source_onboarding_runs
+     WHERE onboarding_run_id = $1
+       AND source = $2
+       AND reconcile_attempt_count = $3
+       AND status = 'completed'
+       AND reconciled_at IS NULL
+       AND reconcile_next_attempt_at IS NOT NULL
+       AND reconcile_next_attempt_at <= now()
+     FOR UPDATE SKIP LOCKED
+)
+UPDATE source_onboarding_runs run
+   SET reconcile_last_claimed_at = now()
+  FROM claimed
+ WHERE run.onboarding_run_id = claimed.onboarding_run_id
+   AND run.source = claimed.source
+RETURNING run.onboarding_run_id, run.source, run.tenant_id, run.status,
+          run.installation_row_id, run.reconciled_at,
+          run.reconciliation_pass_count, run.started_at,
+          run.reconcile_next_attempt_at, run.reconcile_attempt_count,
+          run.reconcile_retry_reason, run.reconcile_retry_operation,
+          run.reconcile_last_claimed_at
 """
 
 # Observations landed for this (tenant, source) — the `total_observations`
@@ -212,7 +337,7 @@ SELECT count(*) FROM observations
 # state to make a gap-detection decision.
 _LOAD_SHARDS_SQL = """
 SELECT id, onboarding_run_id, tenant_id, source, shard_kind,
-       shard_identifier, state, parent_shard_id, last_error,
+       shard_identifier, installation_row_id, state, parent_shard_id, last_error,
        observations_seen, pages_fetched, started_at, completed_at
   FROM onboarding_shards
  WHERE onboarding_run_id = $1 AND source = $2
@@ -224,12 +349,29 @@ SELECT id, onboarding_run_id, tenant_id, source, shard_kind,
 # row is a no-op.
 _STAMP_RECONCILED_SQL = """
 UPDATE source_onboarding_runs
-   SET reconciled_at = now()
+   SET reconciled_at = now(),
+       reconcile_next_attempt_at = NULL,
+       reconcile_retry_reason = NULL,
+       reconcile_retry_operation = NULL
  WHERE onboarding_run_id = $1 AND source = $2
    AND reconciled_at IS NULL
 """
 
-# Dispatch-failure path (per A19): when RECONCILER_DISPATCH[source]
+_SCHEDULE_RECONCILE_RETRY_SQL = """
+UPDATE source_onboarding_runs
+   SET reconcile_next_attempt_at = $5,
+       reconcile_retry_reason = $6,
+       reconcile_retry_operation = $7,
+       reconcile_attempt_count = reconcile_attempt_count + 1
+ WHERE onboarding_run_id = $1
+   AND source = $2
+   AND tenant_id = $3
+   AND installation_row_id IS NOT DISTINCT FROM $4
+   AND status = 'completed'
+RETURNING reconcile_attempt_count
+"""
+
+# Binding-call failure path (per A19): when the source reconciler
 # raises, mark the run failed and emit source_onboarding_completed
 # with the failure reason. When the reconciler's dispatch fires, the
 # run's status is typically 'completed' (SourceOnboarding's rollup
@@ -239,7 +381,12 @@ UPDATE source_onboarding_runs
 # reconciliation.
 _MARK_RUN_FAILED_SQL = """
 UPDATE source_onboarding_runs
-   SET status = 'failed', completed_at = now(), failure_reason = $3
+   SET status = 'failed',
+       completed_at = now(),
+       failure_reason = $3,
+       reconcile_next_attempt_at = NULL,
+       reconcile_retry_reason = NULL,
+       reconcile_retry_operation = NULL
  WHERE onboarding_run_id = $1 AND source = $2
    AND reconciled_at IS NULL
    AND status IN ('pending', 'in_progress', 'completed')
@@ -254,7 +401,10 @@ UPDATE source_onboarding_runs
 _RESHARE_RUN_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'in_progress',
-       reconciliation_pass_count = reconciliation_pass_count + 1
+       reconciliation_pass_count = reconciliation_pass_count + 1,
+       reconcile_next_attempt_at = NULL,
+       reconcile_retry_reason = NULL,
+       reconcile_retry_operation = NULL
  WHERE onboarding_run_id = $1 AND source = $2
 RETURNING reconciliation_pass_count
 """
@@ -268,10 +418,10 @@ UPDATE onboarding_shards
 _INSERT_RESHARED_SHARD_SQL = """
 INSERT INTO onboarding_shards
     (id, onboarding_run_id, tenant_id, source, shard_kind,
-     shard_identifier, window_start, window_end, recency_score,
-     state, parent_shard_id, created_at)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, 'pending',
-        $10, now())
+     shard_identifier, installation_row_id, window_start, window_end,
+     recency_score, state, parent_shard_id, created_at)
+VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, 'pending',
+        $11, now())
 """
 
 
@@ -296,6 +446,31 @@ async def _load_run(
     return await conn.fetchrow(_LOAD_RUN_SQL, run_id, source)
 
 
+async def _list_due_retry_candidates(
+    pool: asyncpg.Pool, *, limit: int,
+) -> list[asyncpg.Record]:
+    """Snapshot due initial-reconciliation retry generations for one tick."""
+    if limit <= 0:
+        return []
+    return list(await pool.fetch(_LIST_DUE_RETRY_CANDIDATES_SQL, limit))
+
+
+async def _claim_due_retry(
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
+    expected_attempt_count: int,
+) -> asyncpg.Record | None:
+    """Lock one still-due retry generation without waiting on another worker."""
+    return await conn.fetchrow(
+        _CLAIM_DUE_RETRY_SQL,
+        run_id,
+        source,
+        expected_attempt_count,
+    )
+
+
 async def _load_shards(
     conn: asyncpg.Connection, *, run_id: UUID, source: str,
 ) -> list[asyncpg.Record]:
@@ -306,6 +481,65 @@ async def _stamp_reconciled(
     conn: asyncpg.Connection, *, run_id: UUID, source: str,
 ) -> None:
     await conn.execute(_STAMP_RECONCILED_SQL, run_id, source)
+
+
+async def schedule_reconciliation_retry(
+    conn: asyncpg.Connection,
+    *,
+    run: asyncpg.Record,
+    retry: RetryLater,
+) -> int:
+    """Persist one provider cooldown against the exact run installation.
+
+    The caller owns a row lock.  Committing this update makes the not-before
+    durable and releases that lock; the retry is resumed by a later tick rather
+    than by sleeping or rolling the transaction back.
+    """
+    attempt_count = await conn.fetchval(
+        _SCHEDULE_RECONCILE_RETRY_SQL,
+        run["onboarding_run_id"],
+        run["source"],
+        run["tenant_id"],
+        run["installation_row_id"],
+        retry.not_before,
+        retry.reason.value,
+        retry.request_context.operation,
+    )
+    if attempt_count is None:
+        raise RuntimeError(
+            "reconciliation retry schedule lost exact run identity "
+            f"for {run['onboarding_run_id']}:{run['source']}"
+        )
+    return int(attempt_count)
+
+
+def reconciliation_timeout_retry(
+    run: asyncpg.Record,
+    *,
+    source: str,
+    timeout_seconds: float,
+) -> RetryLater:
+    """Convert a bounded gap-check timeout into durable retry control flow."""
+    installation_id = run["installation_row_id"]
+    return RetryLater.after(
+        request_context=RequestContext(
+            source=source,
+            operation="reconciliation.gap_check",
+            tenant_id=str(run["tenant_id"]),
+            installation_id=(
+                str(installation_id)
+                if installation_id is not None
+                else None
+            ),
+        ),
+        delay_seconds=RECONCILER_TIMEOUT_RETRY_DELAY_S,
+        reason=RetryReason.TIMEOUT,
+        cause_code="reconciliation_dispatch_timeout",
+        message=(
+            f"{source} reconciliation exceeded its "
+            f"{timeout_seconds:g}s dispatch timeout"
+        ),
+    )
 
 
 def _derive_coverage_confidence(pass_count: int) -> CoverageConfidence:
@@ -351,7 +585,7 @@ async def _mark_original_resharded(
 async def _insert_reshared_shard(
     conn: asyncpg.Connection, *,
     shard_id: UUID, run_id: UUID, tenant_id: UUID, source: str,
-    reshared: ResharedShard,
+    installation_row_id: UUID, reshared: ResharedShard,
 ) -> None:
     """INSERT one onboarding_shards row from a ResharedShard."""
     await conn.execute(
@@ -359,6 +593,7 @@ async def _insert_reshared_shard(
         shard_id, run_id, tenant_id, source,
         reshared.shard.shard_kind,
         orjson.dumps(reshared.shard.shard_identifier).decode("utf-8"),
+        installation_row_id,
         reshared.shard.window_start, reshared.shard.window_end,
         reshared.shard.recency_score,
         reshared.parent_shard_id,
@@ -368,6 +603,7 @@ async def _insert_reshared_shard(
 async def apply_reshare(
     conn: asyncpg.Connection, *,
     run_id: UUID, source: str, tenant_id: UUID,
+    installation_row_id: UUID,
     decision: ReconciliationDecision,
 ) -> None:
     """Apply a `has_gaps=True` decision: increment pass_count, flip
@@ -398,6 +634,7 @@ async def apply_reshare(
         await _insert_reshared_shard(
             conn, shard_id=new_shard_id,
             run_id=run_id, tenant_id=tenant_id, source=source,
+            installation_row_id=installation_row_id,
             reshared=reshared,
         )
         await emit_signal(
@@ -443,15 +680,81 @@ class Reconciler(LongRunningService):
         return self._config.tick_interval_seconds
 
     async def tick(self) -> None:
-        """One tick: drain up to `max_signals_per_tick` inbox signals."""
+        """Interleave bounded due retries and fresh inbox signals.
+
+        Due retry generations are snapshotted before any dispatch.  A
+        RetryLater raised during this tick therefore cannot be selected again
+        by this worker until a later tick, including a zero-delay signal.
+        Each retry is followed by a fresh claim so neither lane monopolizes
+        the worker while both have backlog.
+        """
+        retry_candidates = await _list_due_retry_candidates(
+            self._pool,
+            limit=self._config.max_signals_per_tick,
+        )
+        retries_processed = 0
         signals_processed = 0
-        for _ in range(self._config.max_signals_per_tick):
+        signal_inbox_empty = False
+        for candidate in retry_candidates:
+            processed = await self._process_one_due_retry(candidate)
+            if processed:
+                retries_processed += 1
+
+            if (
+                not signal_inbox_empty
+                and signals_processed < self._config.max_signals_per_tick
+            ):
+                signal_processed = await self._process_one_signal()
+                if signal_processed:
+                    signals_processed += 1
+                else:
+                    signal_inbox_empty = True
+
+        while (
+            not signal_inbox_empty
+            and signals_processed < self._config.max_signals_per_tick
+        ):
             processed = await self._process_one_signal()
             if not processed:
-                break
+                signal_inbox_empty = True
+                continue
             signals_processed += 1
 
-        await self._persist_scan_state(signals_processed=signals_processed)
+        await self._persist_scan_state(
+            signals_processed=signals_processed,
+            retries_processed=retries_processed,
+        )
+
+    async def _process_one_due_retry(
+        self,
+        candidate: asyncpg.Record,
+    ) -> bool:
+        """Claim and dispatch one snapshotted retry generation."""
+        return await process_signal_with_serialization_retry(
+            lambda: self._process_one_due_retry_once(candidate),
+            label="reconciler_retry",
+        )
+
+    async def _process_one_due_retry_once(
+        self,
+        candidate: asyncpg.Record,
+    ) -> bool:
+        events: list[ProgressEvent] = []
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                run = await _claim_due_retry(
+                    conn,
+                    run_id=candidate["onboarding_run_id"],
+                    source=candidate["source"],
+                    expected_attempt_count=int(
+                        candidate["reconcile_attempt_count"],
+                    ),
+                )
+                if run is None:
+                    return False
+                events = await self._reconcile_claimed_run(conn, run)
+        await publish_progress_events(self._kafka_producer, events)
+        return True
 
     async def _process_one_signal(self) -> bool:
         """Claim + dispatch ONE signal, retrying transient serialization
@@ -483,6 +786,7 @@ class Reconciler(LongRunningService):
                     workflow_id=WORKFLOW_ID_INBOX,
                     consumed_by=self._config.instance_name,
                     batch_size=1,
+                    fairness="reconciliation",
                 )
                 if not signals:
                     return False
@@ -511,7 +815,7 @@ class Reconciler(LongRunningService):
           - Load source_onboarding_runs row.
           - Idempotency check on reconciled_at.
           - Load all shards for (run, source).
-          - Call RECONCILER_DISPATCH[source](shards, run).
+          - Resolve and call the source reconciler with `(shards, run)`.
           - Clean path: stamp reconciled_at + emit source_onboarding_completed.
           - Re-share path: increment pass_count, transition status,
             mark originals resharded, INSERT new shards, emit
@@ -535,6 +839,17 @@ class Reconciler(LongRunningService):
             )
             return []
 
+        return await self._reconcile_claimed_run(conn, run)
+
+    async def _reconcile_claimed_run(
+        self,
+        conn: asyncpg.Connection,
+        run: asyncpg.Record,
+    ) -> list[ProgressEvent]:
+        """Dispatch one run whose row is locked by the caller."""
+        run_id = run["onboarding_run_id"]
+        source = run["source"]
+
         if run["reconciled_at"] is not None:
             # Already reconciled clean. Re-emit source_onboarding_completed
             # idempotently to cover the consumer-side gap (the second
@@ -544,6 +859,22 @@ class Reconciler(LongRunningService):
             # the first clean pass.
             await self._emit_source_completed(
                 conn, run_id=run_id, source=source, failure_reason=None,
+            )
+            return []
+
+        next_attempt_at = run["reconcile_next_attempt_at"]
+        now = dt.datetime.now(tz=dt.timezone.utc)
+        if next_attempt_at is not None and next_attempt_at > now:
+            # A fresh/stale completion signal may race with a scheduled retry.
+            # Consume that signal while preserving the durable not-before gate;
+            # the due-row lane owns resumption.
+            log.info(
+                "reconciler.retry_not_due",
+                extra={
+                    "source": source,
+                    "run_id": str(run_id),
+                    "next_attempt_at": next_attempt_at.isoformat(),
+                },
             )
             return []
 
@@ -559,22 +890,60 @@ class Reconciler(LongRunningService):
         # facing "not yet implemented" distinction); control flow is
         # identical.
         try:
+            reconciler = resolve_reconciler(source)
             decision = await asyncio.wait_for(
-                RECONCILER_DISPATCH[source](shards, run),
+                reconciler(shards, run),
                 timeout=RECONCILER_DISPATCH_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
-            # Best-effort gap-check exceeded its bound (slow / wedged source
-            # API). Treat as clean rather than failing the run or holding the
-            # claim open: the data is already backfilled; a real gap re-detects
-            # on a later reconcile. Prevents a single hung call from stalling
-            # all remaining reconciliations on this single-loop worker.
-            log.warning(
-                "reconciler.dispatch_timeout",
-                extra={"source": source, "run_id": str(run_id),
-                       "timeout_s": RECONCILER_DISPATCH_TIMEOUT_S},
+            retry = reconciliation_timeout_retry(
+                run,
+                source=source,
+                timeout_seconds=RECONCILER_DISPATCH_TIMEOUT_S,
             )
-            decision = ReconciliationDecision(has_gaps=False)
+            attempt_count = await schedule_reconciliation_retry(
+                conn,
+                run=run,
+                retry=retry,
+            )
+            log.warning(
+                "reconciler.dispatch_timeout_retry_scheduled",
+                extra={
+                    "source": source,
+                    "run_id": str(run_id),
+                    "tenant_id": str(run["tenant_id"]),
+                    "installation_row_id": str(
+                        run["installation_row_id"],
+                    ),
+                    "timeout_s": RECONCILER_DISPATCH_TIMEOUT_S,
+                    "next_attempt_at": retry.not_before.isoformat(),
+                    "attempt_count": attempt_count,
+                },
+            )
+            return []
+        except RetryLater as exc:
+            attempt_count = await schedule_reconciliation_retry(
+                conn,
+                run=run,
+                retry=exc,
+            )
+            log.info(
+                "reconciler.retry_scheduled",
+                extra={
+                    "source": source,
+                    "run_id": str(run_id),
+                    "tenant_id": str(run["tenant_id"]),
+                    "installation_row_id": str(
+                        run["installation_row_id"],
+                    ),
+                    "next_attempt_at": exc.not_before.isoformat(),
+                    "retry_reason": exc.reason.value,
+                    "retry_operation": exc.request_context.operation,
+                    "attempt_count": attempt_count,
+                    "blocked_scope": exc.blocked_scope,
+                },
+            )
+            return []
         except NotImplementedError as exc:
             failure_reason = str(exc)
             await _mark_run_failed(
@@ -611,7 +980,9 @@ class Reconciler(LongRunningService):
             )
         await self._handle_reshare_path(
             conn, run_id=run_id, source=source,
-            tenant_id=run["tenant_id"], decision=decision,
+            tenant_id=run["tenant_id"],
+            installation_row_id=run["installation_row_id"],
+            decision=decision,
         )
         return []
 
@@ -659,13 +1030,16 @@ class Reconciler(LongRunningService):
     async def _handle_reshare_path(
         self, conn: asyncpg.Connection, *,
         run_id: UUID, source: str, tenant_id: UUID,
+        installation_row_id: UUID,
         decision: ReconciliationDecision,
     ) -> None:
         """Reconciler decided gaps exist. Delegates to the shared
         module-level `apply_reshare` (also used by PeriodicReconciler)."""
         await apply_reshare(
             conn, run_id=run_id, source=source,
-            tenant_id=tenant_id, decision=decision,
+            tenant_id=tenant_id,
+            installation_row_id=installation_row_id,
+            decision=decision,
         )
 
     async def _emit_source_completed(
@@ -698,7 +1072,10 @@ class Reconciler(LongRunningService):
             )
 
     async def _persist_scan_state(
-        self, *, signals_processed: int,
+        self,
+        *,
+        signals_processed: int,
+        retries_processed: int,
     ) -> None:
         """Diagnostic state row. Not load-bearing for correctness."""
         existing = await load_state(
@@ -711,10 +1088,16 @@ class Reconciler(LongRunningService):
             state_data={
                 "last_tick_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
                 "last_signals_processed": signals_processed,
+                "last_retries_processed": retries_processed,
                 "lifetime_signals_processed": (
                     (existing.state_data.get("lifetime_signals_processed", 0)
                      if existing else 0)
                     + signals_processed
+                ),
+                "lifetime_retries_processed": (
+                    (existing.state_data.get("lifetime_retries_processed", 0)
+                     if existing else 0)
+                    + retries_processed
                 ),
             },
             last_advanced_at=dt.datetime.now(tz=dt.timezone.utc),
@@ -757,7 +1140,7 @@ async def _run_service() -> None:
     # M6.3: per-source reconcilers may need pool access for auxiliary reads
     # (e.g., Gmail reads workflow_states for each shard's final_history_id).
     # Register the pool with every per-source module via the shared helper —
-    # derived from RECONCILER_DISPATCH so this service and the
+    # derived from SourceDefinition history bindings so this service and the
     # PeriodicReconciler register the SAME source set and cannot drift (a
     # per-source module raises an explicit error if its pool isn't registered
     # when called).
@@ -816,9 +1199,11 @@ __all__ = [
     "DEFAULT_MAX_SIGNALS_PER_TICK",
     "DEFAULT_TICK_INTERVAL_SECONDS",
     "RECONCILER_DISPATCH_TIMEOUT_S",
+    "RECONCILER_TIMEOUT_RETRY_DELAY_S",
     "Reconciler",
     "ReconcilerConfig",
     "apply_reshare",
+    "reconciliation_timeout_retry",
     "SHARD_FETCH_INBOX_ID",
     "SHARD_FETCH_INBOX_KIND",
     "SIGNAL_KIND_SHARDS_COMPLETED",

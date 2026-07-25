@@ -11,6 +11,15 @@ on:
         description: "Successful Deploy to Staging workflow run id for target_sha."
         required: true
         type: string
+      source_certification_run_id:
+        description: "Successful source-certification workflow run id for target_sha."
+        required: true
+        type: string
+      source_certification_artifact_name:
+        description: "Artifact containing source-certification-manifest.json."
+        required: true
+        default: "source-certification-bundle"
+        type: string
       release_notes_path:
         description: "Release notes file reviewed for this promotion."
         required: true
@@ -49,11 +58,16 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin main production
+          if [[ ! "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "target_sha must be a lowercase full 40-character commit SHA" >&2
+            exit 1
+          fi
           git cat-file -e "${TARGET_SHA}^{commit}"
           if ! git merge-base --is-ancestor "${TARGET_SHA}" origin/main; then
             echo "target_sha must be reachable from origin/main" >&2
             exit 1
           fi
+          git checkout --detach "${TARGET_SHA}"
           if [ ! -f "${RELEASE_NOTES_PATH}" ]; then
             echo "release_notes_path does not exist: ${RELEASE_NOTES_PATH}" >&2
             exit 1
@@ -66,6 +80,10 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
         run: |
           set -euo pipefail
+          if [[ ! "${STAGING_DEPLOY_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "staging_deploy_run_id must be numeric" >&2
+            exit 1
+          fi
           run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${STAGING_DEPLOY_RUN_ID}")"
           workflow_name="$(jq -r '.name' <<< "${run_json}")"
           conclusion="$(jq -r '.conclusion' <<< "${run_json}")"
@@ -87,6 +105,84 @@ jobs:
             echo "staging deployment SHA ${head_sha} does not match target ${TARGET_SHA}" >&2
             exit 1
           fi
+
+      - name: Verify source certification workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_CERTIFICATION_RUN_ID: ${{ inputs.source_certification_run_id }}
+          SOURCE_CERTIFICATION_ARTIFACT_NAME: ${{ inputs.source_certification_artifact_name }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${SOURCE_CERTIFICATION_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "source_certification_run_id must be numeric" >&2
+            exit 1
+          fi
+          if [[ ! "${SOURCE_CERTIFICATION_ARTIFACT_NAME}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "source_certification_artifact_name contains unsupported characters" >&2
+            exit 1
+          fi
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CERTIFICATION_RUN_ID}")"
+          workflow_name="$(jq -r '.name' <<< "${run_json}")"
+          conclusion="$(jq -r '.conclusion' <<< "${run_json}")"
+          head_sha="$(jq -r '.head_sha' <<< "${run_json}")"
+          head_branch="$(jq -r '.head_branch' <<< "${run_json}")"
+          head_repository="$(jq -r '.head_repository.full_name' <<< "${run_json}")"
+          if [ "${workflow_name}" != "Source Certification" ]; then
+            echo "source_certification_run_id must reference Source Certification, got ${workflow_name}" >&2
+            exit 1
+          fi
+          if [ "${conclusion}" != "success" ]; then
+            echo "source certification workflow must be successful, got ${conclusion}" >&2
+            exit 1
+          fi
+          if [ "${head_repository}" != "${GITHUB_REPOSITORY}" ]; then
+            echo "source certification workflow must run in ${GITHUB_REPOSITORY}, got ${head_repository}" >&2
+            exit 1
+          fi
+          if [ "${head_branch}" != "main" ]; then
+            echo "source certification workflow must come from main, got ${head_branch}" >&2
+            exit 1
+          fi
+          if [ "${head_sha}" != "${TARGET_SHA}" ]; then
+            echo "source certification SHA ${head_sha} does not match target ${TARGET_SHA}" >&2
+            exit 1
+          fi
+
+          artifacts_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CERTIFICATION_RUN_ID}/artifacts?per_page=100"
+          )"
+          artifact_count="$(
+            jq --arg name "${SOURCE_CERTIFICATION_ARTIFACT_NAME}" \
+              '[.artifacts[] | select(.name == $name and .expired == false)] | length' \
+              <<< "${artifacts_json}"
+          )"
+          if [ "${artifact_count}" != "1" ]; then
+            echo "successful ${workflow_name} run must contain exactly one non-expired ${SOURCE_CERTIFICATION_ARTIFACT_NAME} artifact" >&2
+            exit 1
+          fi
+
+      - name: Download signed source certification bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.source_certification_artifact_name }}
+          path: ${{ runner.temp }}/source-certification
+          run-id: ${{ inputs.source_certification_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate signed 27-source certification manifest
+        env:
+          SOURCE_CERTIFICATION_MANIFEST_SIGNING_KEY: ${{ secrets.SOURCE_CERTIFICATION_MANIFEST_SIGNING_KEY }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          python scripts/validate_source_certification_manifest.py \
+            --manifest "${RUNNER_TEMP}/source-certification/source-certification-manifest.json" \
+            --target-sha "${TARGET_SHA}" \
+            --signing-key-env SOURCE_CERTIFICATION_MANIFEST_SIGNING_KEY
+
+      - name: Require contract-only source architecture
+        run: python scripts/check_source_architecture_ratchet.py --no-baseline
 
       - name: Promote SHA to production branch
         env:

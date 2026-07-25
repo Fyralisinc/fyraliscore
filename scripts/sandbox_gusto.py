@@ -9,7 +9,7 @@ docs.gusto.com) with bare-array list endpoints under
 thin webhooks. This sandbox stands up a REAL local mock of that wire contract
 and drives the REAL pipeline:
 
-    GustoClient (real httpx, spammer auth) -> fetch_page_gusto (real page
+    GustoClient (real httpx, Provider Lab auth) -> fetch_page_gusto (real page
     cursor + check_date high-water) -> handle_gusto_object (real
     ObservationDraft) -> ingest() (real observation insert + dedup)
 
@@ -48,7 +48,7 @@ import asyncpg
 
 _DEFAULT_ADMIN_URL = "postgresql://company_os:company_os@localhost:5434/company_os"
 _TENANT_ID = UUID("00000000-0000-0000-0000-000000006401")
-# Verified production host (docs.gusto.com); the spammer override wins locally.
+# Verified production host (docs.gusto.com); Provider Lab is explicit locally.
 _BASE_URL = "https://api.gusto.com"
 _COMPANY = "8b342a55-907e-4ba8-a95d-d29fbf95d6e1"
 
@@ -187,13 +187,15 @@ async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
 
 
 async def run(args) -> int:
-    from services.ingest.synthetic.mock_servers.gusto import start_mock_gusto
+    from services.ingest.synthetic.provider_lab.server import start_provider_lab
 
     fixtures = _build_fixtures()
-    server, base_url = start_mock_gusto(fixtures)
-    os.environ["SYNTHETIC_SOURCE_API_BASE"] = base_url
-    _hr("MOCK SERVER")
-    print(f"  Gusto API base : {base_url} (served under /gusto via spammer routing)")
+    server = start_provider_lab({"gusto": [fixtures]})
+    base_url = server.url("gusto")
+    os.environ["PROVIDER_LAB_URL"] = server.base_url
+    os.environ["GUSTO_API_BASE_URL"] = base_url
+    _hr("PROVIDER LAB")
+    print(f"  Gusto API base : {base_url} (explicit local override)")
 
     admin_url = os.environ.get("SANDBOX_ADMIN_URL", _DEFAULT_ADMIN_URL)
     provided_url = os.environ.get("DATABASE_URL")
@@ -265,8 +267,13 @@ async def run(args) -> int:
         _hr("PLAN (planner over the loader SQL)")
         from services.ingest.ingestion.planners.context import PlannerContext
         from services.ingest.ingestion.planners.gusto import plan_shards_gusto
-        from services.ingest.ingestion.workflows.source_onboarding import _LOAD_GUSTO_INSTALL_SQL
-        install_row = await pool.fetchrow(_LOAD_GUSTO_INSTALL_SQL, _TENANT_ID)
+        from services.ingest.ingestion.installations import load_source_installation
+        install_row = await load_source_installation(
+            pool,
+            source="gusto",
+            tenant_id=_TENANT_ID,
+            installation_id=install_id,
+        )
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_gusto(ctx)
         print(f"  planned {len(shards)} shard(s): "
@@ -303,6 +310,7 @@ async def run(args) -> int:
             "pay-2003", _date(datetime.now(timezone.utc) - timedelta(days=1)),
             processed=True,
         ))
+        server.replace_fixtures("gusto", [fixtures])
         incr_shard = {"shard_kind": "gusto_entity", "entity_type": "payroll",
                       "company_uuid": _COMPANY, "updated_cursor": hw}
         incr = await _drain_shard(pool, install_row, incr_shard)
@@ -316,6 +324,7 @@ async def run(args) -> int:
         #    observation (NO updated-since filter exists on /employees).
         _hr("EMPLOYEE RE-WALK (version bump -> one new observation)")
         fixtures["employee"][0]["version"] = "v-aaa2"
+        server.replace_fixtures("gusto", [fixtures])
         rewalk_shard = {"shard_kind": "gusto_entity", "entity_type": "employee",
                         "company_uuid": _COMPANY}
         rewalk = await _drain_shard(pool, install_row, rewalk_shard)

@@ -21,6 +21,7 @@ test_reconciler_subprocess.py.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -30,6 +31,11 @@ import pytest
 
 from lib.observability import counter, reset_default_for_tests
 from lib.shared.ids import uuid7
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
 from lib.shared.product_workflow_metrics import (
     PRODUCT_WORKFLOW_EVENT_OUTCOMES,
     PRODUCT_WORKFLOW_EVENTS,
@@ -37,10 +43,10 @@ from lib.shared.product_workflow_metrics import (
 )
 from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
+import services.ingest.ingestion.workflows.reconciler as reconciler_module
 from services.ingest.ingestion.workflows.reconciler import (
     Reconciler,
     ReconcilerConfig,
@@ -95,8 +101,10 @@ async def _seed_tenant(pool: asyncpg.Pool, label: str = "rec") -> UUID:
 async def _seed_run(
     pool: asyncpg.Pool, *, tenant_id: UUID, source: str = "slack",
     status: str = "completed", pass_count: int = 0,
+    installation_row_id: UUID | None = None,
 ) -> UUID:
     run_id = uuid7()
+    installation_row_id = installation_row_id or uuid4()
     await pool.execute(
         """
         INSERT INTO onboarding_runs
@@ -104,18 +112,24 @@ async def _seed_run(
              sources_enabled, started_at)
         VALUES ($1, $2, 'install', $3, 'running', $4::text[], now())
         """,
-        run_id, tenant_id, f"wf-{run_id.hex[:8]}", [source],
+        run_id, tenant_id, f"wf-{run_id.hex}", [source],
     )
     await pool.execute(
         """
         INSERT INTO source_onboarding_runs
             (onboarding_run_id, source, tenant_id, status,
-             started_at, completed_at, reconciliation_pass_count)
-        VALUES ($1, $2, $3, $4, now(),
+             installation_row_id, started_at, completed_at,
+             reconciliation_pass_count)
+        VALUES ($1, $2, $3, $4, $5, now(),
                 CASE WHEN $4 = 'completed' THEN now() ELSE NULL END,
-                $5)
+                $6)
         """,
-        run_id, source, tenant_id, status, pass_count,
+        run_id,
+        source,
+        tenant_id,
+        status,
+        installation_row_id,
+        pass_count,
     )
     return run_id
 
@@ -124,20 +138,30 @@ async def _seed_shard(
     pool: asyncpg.Pool, *, run_id: UUID, tenant_id: UUID, source: str,
     state: str = "done", shard_kind: str = "slack_channel_window",
     identifier: dict | None = None,
+    installation_row_id: UUID | None = None,
 ) -> UUID:
     shard_id = uuid7()
+    installation_row_id = installation_row_id or await pool.fetchval(
+        """
+        SELECT installation_row_id
+          FROM source_onboarding_runs
+         WHERE onboarding_run_id = $1 AND source = $2
+        """,
+        run_id,
+        source,
+    )
     await pool.execute(
         """
         INSERT INTO onboarding_shards
             (id, onboarding_run_id, tenant_id, source, shard_kind,
-             shard_identifier, recency_score, state, created_at,
-             completed_at)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, now(),
-                CASE WHEN $8 IN ('done','failed') THEN now() ELSE NULL END)
+             shard_identifier, installation_row_id, recency_score, state,
+             created_at, completed_at)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, now(),
+                CASE WHEN $9 IN ('done','failed') THEN now() ELSE NULL END)
         """,
         shard_id, run_id, tenant_id, source, shard_kind,
         orjson.dumps(identifier or {"channel_id": "C001"}).decode("utf-8"),
-        1.0, state,
+        installation_row_id, 1.0, state,
     )
     return shard_id
 
@@ -163,12 +187,17 @@ async def _emit_shards_completed(
     )
 
 
-def _service(pool: asyncpg.Pool) -> Reconciler:
+def _service(
+    pool: asyncpg.Pool,
+    *,
+    instance_name: str = "default",
+) -> Reconciler:
     return Reconciler(
         pool,
         config=ReconcilerConfig(
             tick_interval_seconds=0.01,
             max_signals_per_tick=20,
+            instance_name=instance_name,
         ),
     )
 
@@ -246,7 +275,11 @@ async def test_reconciler_handles_source_shards_completed_clean_path(
       (c) original signal consumed.
     All three observable changes commit atomically.
     """
-    monkeypatch.setitem(RECONCILER_DISPATCH, "slack", _clean_reconciler)
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _clean_reconciler,
+    )
 
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
@@ -313,9 +346,14 @@ async def test_reconciler_handles_source_shards_completed_reshare_path(
         state="done",
     )
 
-    monkeypatch.setitem(
-        RECONCILER_DISPATCH, "slack",
-        _reshare_reconciler_factory(parent_shard_id=orig_shard_id, num_new=2),
+    reconciler = _reshare_reconciler_factory(
+        parent_shard_id=orig_shard_id,
+        num_new=2,
+    )
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: reconciler,
     )
     await _emit_shards_completed(
         fresh_db, run_id=run_id, tenant_id=tid, source="slack",
@@ -390,7 +428,11 @@ async def test_reconciler_atomic_rollback_on_emit_failure(
     Verifies the A12 + A13 caller-managed transactional contract at
     the Reconciler-integration level.
     """
-    monkeypatch.setitem(RECONCILER_DISPATCH, "slack", _clean_reconciler)
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _clean_reconciler,
+    )
 
     # Patch the emit_signal function the Reconciler imports to raise.
     from services.ingest.ingestion.workflows import reconciler as rec_module
@@ -461,7 +503,11 @@ async def test_reconciler_clean_decision_path(
     sources have real reconcilers, so this verifies the clean-decision
     branch of the Reconciler service via an explicit monkeypatch.
     """
-    monkeypatch.setitem(RECONCILER_DISPATCH, "github", _clean_reconciler)
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _clean_reconciler,
+    )
 
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="github")
@@ -512,7 +558,11 @@ async def test_reconciler_handles_unexpected_dispatch_exception(
     async def _exploding_reconciler(shards, run):
         raise RuntimeError("simulated reconciler failure")
 
-    monkeypatch.setitem(RECONCILER_DISPATCH, "github", _exploding_reconciler)
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _exploding_reconciler,
+    )
 
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="github")
@@ -567,6 +617,439 @@ async def test_reconciler_handles_unexpected_dispatch_exception(
 
 
 # =====================================================================
+# 4c. RetryLater is durable, nonterminal, and resumed only when due.
+# =====================================================================
+
+async def test_reconciler_persists_retry_later_without_signal_spin(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tid = await _seed_tenant(fresh_db)
+    installation_id = uuid4()
+    run_id = await _seed_run(
+        fresh_db,
+        tenant_id=tid,
+        source="slack",
+        installation_row_id=installation_id,
+    )
+    await _seed_shard(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+        installation_row_id=installation_id,
+    )
+    await _emit_shards_completed(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+    )
+
+    retry = RetryLater.after(
+        request_context=RequestContext(
+            source="slack",
+            operation="conversations.history",
+            tenant_id=str(tid),
+            installation_id=str(installation_id),
+        ),
+        delay_seconds=3600,
+        reason=RetryReason.RATE_LIMIT,
+    )
+    calls: list[tuple[UUID, UUID]] = []
+
+    async def _deferred(shards, run):
+        calls.append((run["tenant_id"], run["installation_row_id"]))
+        raise retry
+
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _deferred,
+    )
+
+    service = _service(fresh_db)
+    await service.run(max_ticks=1)
+
+    parked = await fresh_db.fetchrow(
+        """
+        SELECT status, failure_reason, reconciled_at,
+               reconcile_next_attempt_at, reconcile_attempt_count,
+               reconcile_retry_reason, reconcile_retry_operation,
+               tenant_id, installation_row_id
+          FROM source_onboarding_runs
+         WHERE onboarding_run_id = $1 AND source = 'slack'
+        """,
+        run_id,
+    )
+    assert parked["status"] == "completed"
+    assert parked["failure_reason"] is None
+    assert parked["reconciled_at"] is None
+    assert parked["reconcile_next_attempt_at"] == retry.not_before
+    assert parked["reconcile_attempt_count"] == 1
+    assert parked["reconcile_retry_reason"] == "rate_limit"
+    assert parked["reconcile_retry_operation"] == "conversations.history"
+    assert parked["tenant_id"] == tid
+    assert parked["installation_row_id"] == installation_id
+    assert calls == [(tid, installation_id)]
+
+    consumed_at = await fresh_db.fetchval(
+        """
+        SELECT consumed_at
+          FROM workflow_signals
+         WHERE workflow_kind = $1
+           AND workflow_id = $2
+           AND signal_kind = $3
+           AND idempotency_key = $4
+        """,
+        WORKFLOW_KIND,
+        WORKFLOW_ID_INBOX,
+        SIGNAL_KIND_SHARDS_COMPLETED,
+        f"{run_id}:slack:pass_0",
+    )
+    assert consumed_at is not None
+    assert await fresh_db.fetchval(
+        """
+        SELECT count(*)
+          FROM workflow_signals
+         WHERE signal_kind = $1 AND idempotency_key = $2
+        """,
+        SIGNAL_KIND_SOURCE_COMPLETED,
+        f"{run_id}:slack",
+    ) == 0
+
+    # The consumed signal cannot spin, and the row is excluded until due.
+    await service.run(max_ticks=1)
+    assert calls == [(tid, installation_id)]
+
+    await fresh_db.execute(
+        """
+        UPDATE source_onboarding_runs
+           SET reconcile_next_attempt_at = now() - interval '1 second'
+         WHERE onboarding_run_id = $1 AND source = 'slack'
+        """,
+        run_id,
+    )
+    resumed: list[tuple[UUID, UUID]] = []
+
+    async def _clean_after_retry(shards, run):
+        resumed.append((run["tenant_id"], run["installation_row_id"]))
+        return ReconciliationDecision(has_gaps=False)
+
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _clean_after_retry,
+    )
+    await service.run(max_ticks=1)
+
+    completed = await fresh_db.fetchrow(
+        """
+        SELECT status, reconciled_at, reconcile_next_attempt_at,
+               reconcile_attempt_count, reconcile_retry_reason,
+               reconcile_retry_operation
+          FROM source_onboarding_runs
+         WHERE onboarding_run_id = $1 AND source = 'slack'
+        """,
+        run_id,
+    )
+    assert completed["status"] == "completed"
+    assert completed["reconciled_at"] is not None
+    assert completed["reconcile_next_attempt_at"] is None
+    assert completed["reconcile_attempt_count"] == 1
+    assert completed["reconcile_retry_reason"] is None
+    assert completed["reconcile_retry_operation"] is None
+    assert resumed == [(tid, installation_id)]
+
+
+async def test_reconciler_timeout_is_durable_and_not_terminal(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded gap-check timeout cannot masquerade as a clean pass."""
+    tenant_id = await _seed_tenant(fresh_db, "timeout")
+    installation_id = uuid4()
+    run_id = await _seed_run(
+        fresh_db,
+        tenant_id=tenant_id,
+        source="slack",
+        installation_row_id=installation_id,
+    )
+    await _seed_shard(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tenant_id,
+        source="slack",
+        installation_row_id=installation_id,
+    )
+    await _emit_shards_completed(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tenant_id,
+        source="slack",
+    )
+
+    async def _too_slow(shards, run):
+        await asyncio.sleep(1)
+        return ReconciliationDecision(has_gaps=False)
+
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _too_slow,
+    )
+    monkeypatch.setattr(
+        reconciler_module,
+        "RECONCILER_DISPATCH_TIMEOUT_S",
+        0.01,
+    )
+    monkeypatch.setattr(
+        reconciler_module,
+        "RECONCILER_TIMEOUT_RETRY_DELAY_S",
+        60.0,
+    )
+
+    await _service(fresh_db).run(max_ticks=1)
+
+    row = await fresh_db.fetchrow(
+        """
+        SELECT status, failure_reason, reconciled_at,
+               reconcile_next_attempt_at, reconcile_attempt_count,
+               reconcile_retry_reason, reconcile_retry_operation,
+               reconcile_last_claimed_at
+          FROM source_onboarding_runs
+         WHERE onboarding_run_id = $1 AND source = 'slack'
+        """,
+        run_id,
+    )
+    assert row["status"] == "completed"
+    assert row["failure_reason"] is None
+    assert row["reconciled_at"] is None
+    assert row["reconcile_next_attempt_at"] is not None
+    assert row["reconcile_attempt_count"] == 1
+    assert row["reconcile_retry_reason"] == "timeout"
+    assert row["reconcile_retry_operation"] == "reconciliation.gap_check"
+    assert row["reconcile_last_claimed_at"] is not None
+    assert await fresh_db.fetchval(
+        """
+        SELECT count(*)
+          FROM workflow_signals
+         WHERE signal_kind = $1 AND idempotency_key = $2
+        """,
+        SIGNAL_KIND_SOURCE_COMPLETED,
+        f"{run_id}:slack",
+    ) == 0
+
+
+async def test_reconciler_due_retry_candidates_rotate_tenants_and_installs(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_a = await _seed_tenant(fresh_db, "retry-fair-a")
+    tenant_b = await _seed_tenant(fresh_db, "retry-fair-b")
+    install_a1 = uuid4()
+    install_a2 = uuid4()
+    install_b1 = uuid4()
+
+    runs: list[tuple[UUID, UUID, UUID]] = []
+    for tenant_id, installation_id in (
+        (tenant_a, install_a1),
+        (tenant_a, install_a1),
+        (tenant_a, install_a2),
+        (tenant_b, install_b1),
+    ):
+        run_id = await _seed_run(
+            fresh_db,
+            tenant_id=tenant_id,
+            source="slack",
+            installation_row_id=installation_id,
+        )
+        await fresh_db.execute(
+            """
+            UPDATE source_onboarding_runs
+               SET reconcile_next_attempt_at = now() - interval '1 second',
+                   reconcile_attempt_count = 1,
+                   reconcile_retry_reason = 'quota',
+                   reconcile_retry_operation = 'conversations.history',
+                   reconcile_last_claimed_at = CASE
+                       WHEN tenant_id = $2 THEN now()
+                       ELSE NULL
+                   END
+             WHERE onboarding_run_id = $1 AND source = 'slack'
+            """,
+            run_id,
+            tenant_a,
+        )
+        runs.append((run_id, tenant_id, installation_id))
+
+    first = await reconciler_module._list_due_retry_candidates(
+        fresh_db,
+        limit=1,
+    )
+    assert len(first) == 1
+    first_run_id = first[0]["onboarding_run_id"]
+    assert next(
+        tenant_id
+        for run_id, tenant_id, _ in runs
+        if run_id == first_run_id
+    ) == tenant_b
+
+    selected = await reconciler_module._list_due_retry_candidates(
+        fresh_db,
+        limit=3,
+    )
+    selected_ids = {row["onboarding_run_id"] for row in selected}
+    bindings = {
+        (tenant_id, installation_id)
+        for run_id, tenant_id, installation_id in runs
+        if run_id in selected_ids
+    }
+    assert bindings == {
+        (tenant_a, install_a1),
+        (tenant_a, install_a2),
+        (tenant_b, install_b1),
+    }
+
+
+async def test_reconciler_interleaves_due_retry_and_fresh_signal(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry backlog cannot postpone a fresh completion signal."""
+    tenant_id = await _seed_tenant(fresh_db, "retry-live")
+    retry_runs: list[UUID] = []
+    for _ in range(2):
+        retry_run = await _seed_run(
+            fresh_db,
+            tenant_id=tenant_id,
+            source="slack",
+            installation_row_id=uuid4(),
+        )
+        await fresh_db.execute(
+            """
+            UPDATE source_onboarding_runs
+               SET reconcile_next_attempt_at = now() - interval '1 second',
+                   reconcile_attempt_count = 1,
+                   reconcile_retry_reason = 'quota',
+                   reconcile_retry_operation = 'conversations.history'
+             WHERE onboarding_run_id = $1 AND source = 'slack'
+            """,
+            retry_run,
+        )
+        retry_runs.append(retry_run)
+
+    live_run = await _seed_run(
+        fresh_db,
+        tenant_id=tenant_id,
+        source="slack",
+        installation_row_id=uuid4(),
+    )
+    await _emit_shards_completed(
+        fresh_db,
+        run_id=live_run,
+        tenant_id=tenant_id,
+        source="slack",
+    )
+
+    calls: list[UUID] = []
+
+    async def _record_clean(shards, run):
+        calls.append(run["onboarding_run_id"])
+        return ReconciliationDecision(has_gaps=False)
+
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _record_clean,
+    )
+    await Reconciler(
+        fresh_db,
+        config=ReconcilerConfig(
+            tick_interval_seconds=0.01,
+            max_signals_per_tick=2,
+            instance_name="retry-live-interleave",
+        ),
+    ).run(max_ticks=1)
+
+    assert len(calls) == 3
+    assert calls[0] in retry_runs
+    assert calls[1] == live_run
+    assert calls[2] in retry_runs
+    assert calls[0] != calls[2]
+
+
+async def test_reconciler_due_retry_is_single_owner_across_workers(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tid = await _seed_tenant(fresh_db)
+    installation_id = uuid4()
+    run_id = await _seed_run(
+        fresh_db,
+        tenant_id=tid,
+        source="slack",
+        installation_row_id=installation_id,
+    )
+    await _seed_shard(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+        installation_row_id=installation_id,
+    )
+    await fresh_db.execute(
+        """
+        UPDATE source_onboarding_runs
+           SET reconcile_next_attempt_at = now() - interval '1 second',
+               reconcile_attempt_count = 1,
+               reconcile_retry_reason = 'quota',
+               reconcile_retry_operation = 'conversations.history'
+         WHERE onboarding_run_id = $1 AND source = 'slack'
+        """,
+        run_id,
+    )
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[tuple[UUID, UUID]] = []
+
+    async def _slow_clean(shards, run):
+        calls.append((run["tenant_id"], run["installation_row_id"]))
+        entered.set()
+        await release.wait()
+        return ReconciliationDecision(has_gaps=False)
+
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _slow_clean,
+    )
+
+    worker_a = _service(fresh_db, instance_name="reconciler-a")
+    worker_b = _service(fresh_db, instance_name="reconciler-b")
+    task_a = asyncio.create_task(worker_a.tick())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    task_b = asyncio.create_task(worker_b.tick())
+    await asyncio.sleep(0.05)
+    release.set()
+    await asyncio.gather(task_a, task_b)
+
+    assert calls == [(tid, installation_id)]
+    row = await fresh_db.fetchrow(
+        """
+        SELECT status, reconciled_at, reconcile_next_attempt_at,
+               reconcile_attempt_count
+          FROM source_onboarding_runs
+         WHERE onboarding_run_id = $1 AND source = 'slack'
+        """,
+        run_id,
+    )
+    assert row["status"] == "completed"
+    assert row["reconciled_at"] is not None
+    assert row["reconcile_next_attempt_at"] is None
+    assert row["reconcile_attempt_count"] == 1
+
+
+# =====================================================================
 # 5. Signal-replay idempotency (emit_signal UNIQUE).
 # =====================================================================
 
@@ -577,7 +1060,11 @@ async def test_reconciler_idempotent_on_signal_replay(
     The second emit returns was_new=False (deduped by UNIQUE
     constraint); the Reconciler only sees one signal.
     """
-    monkeypatch.setitem(RECONCILER_DISPATCH, "slack", _clean_reconciler)
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _clean_reconciler,
+    )
 
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
@@ -640,7 +1127,11 @@ async def test_reconciler_replays_completion_for_already_reconciled_run(
           TenantOnboarding's inbox** — the Reconciler's re-emit
           deduped on the UNIQUE constraint.
     """
-    monkeypatch.setitem(RECONCILER_DISPATCH, "slack", _clean_reconciler)
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _clean_reconciler,
+    )
 
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(
@@ -747,7 +1238,11 @@ async def test_reconciler_emits_source_complete_progress_event(
         TOPIC_ONBOARDING_PROGRESS,
     )
 
-    monkeypatch.setitem(RECONCILER_DISPATCH, "slack", _clean_reconciler)
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _clean_reconciler,
+    )
 
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
@@ -792,7 +1287,11 @@ async def test_reconciler_idempotent_replay_does_not_re_emit_complete(
     """A second source_shards_completed signal for an already-reconciled
     run re-emits the Bridge SIGNAL but NOT a second `source.onboarding.complete`
     progress event (the user-facing complete fires exactly once)."""
-    monkeypatch.setitem(RECONCILER_DISPATCH, "slack", _clean_reconciler)
+    monkeypatch.setattr(
+        reconciler_module,
+        "resolve_reconciler",
+        lambda _source: _clean_reconciler,
+    )
 
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")

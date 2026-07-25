@@ -36,11 +36,28 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import httpx
 
 from lib.shared.errors import CompanyOSError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
+from services.ingest.integrations.provider_transport_runtime import (
+    get_provider_transport_runtime,
+)
 
 
 _TOKEN_URI = "https://oauth2.googleapis.com/token"
@@ -138,12 +155,34 @@ class DwdTokenMinter:
         key: ServiceAccountKey,
         *,
         http_client: httpx.AsyncClient | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
     ) -> None:
         self._key = key
         self._client = http_client
         self._owns_client = http_client is None
         self._cache: dict[tuple[str, str, frozenset[str]], _CachedToken] = {}
         self._locks: dict[tuple[str, str, frozenset[str]], asyncio.Lock] = {}
+        runtime = get_provider_transport_runtime()
+        self._provider_transport = (
+            provider_transport
+            or (runtime.transport if runtime is not None else None)
+        )
+        self._request_policy = request_policy
+        self._quota_resolver = (
+            quota_resolver
+            or (runtime.quota_resolver if runtime is not None else None)
+        )
+        self._allow_unlimited_local = explicit_local_transport(
+            requested=(
+                runtime is None
+                if allow_unlimited_local is None
+                else allow_unlimited_local
+            ),
+            has_local_injection=http_client is not None,
+        )
 
     async def __aenter__(self) -> "DwdTokenMinter":
         if self._client is None:
@@ -165,6 +204,11 @@ class DwdTokenMinter:
         user_email: str,
         scopes: list[str] | tuple[str, ...],
         now: float | None = None,
+        source: str = "gmail",
+        tenant_id: str | None = None,
+        installation_id: str | None = None,
+        quota_dimensions: Mapping[str, str] | None = None,
+        require_tenant_installation: bool = True,
     ) -> str:
         """Return a fresh bearer access token impersonating `user_email`."""
         if not user_email:
@@ -188,7 +232,15 @@ class DwdTokenMinter:
                 return cached.access_token
 
             assertion = self._sign_jwt(user_email=user_email, scopes=scopes, now=t)
-            token, expires_in = await self._exchange(assertion)
+            token, expires_in = await self._exchange(
+                assertion,
+                source=source,
+                tenant_id=tenant_id,
+                installation_id=installation_id,
+                user_email=user_email,
+                quota_dimensions=quota_dimensions,
+                require_tenant_installation=require_tenant_installation,
+            )
             self._cache[cache_key] = _CachedToken(
                 access_token=token, expires_at=t + expires_in,
             )
@@ -224,13 +276,93 @@ class DwdTokenMinter:
         signature = _rs256_sign(self._key.private_key_pem, signing_input)
         return f"{header_b64}.{payload_b64}.{_b64u(signature)}"
 
-    async def _exchange(self, assertion: str) -> tuple[str, int]:
+    async def _exchange(
+        self,
+        assertion: str,
+        *,
+        source: str,
+        tenant_id: str | None,
+        installation_id: str | None,
+        user_email: str,
+        quota_dimensions: Mapping[str, str] | None,
+        require_tenant_installation: bool,
+    ) -> tuple[str, int]:
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=10.0)
-        resp = await self._client.post(
-            self._key.token_uri,
-            data={"grant_type": _GRANT_TYPE, "assertion": assertion},
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        operation = "dwd.token.exchange"
+        binding = ProviderRequestBinding(
+            source=source,
+            tenant_id=tenant_id,
+            installation_id=installation_id,
+            transport=self._provider_transport,
+            request_policy=self._request_policy,
+            quota_resolver=self._quota_resolver,
+            allow_unlimited_local=self._allow_unlimited_local,
+            require_tenant=require_tenant_installation or tenant_id is not None,
+            require_installation=require_tenant_installation,
+        )
+
+        async def _once() -> httpx.Response:
+            assert self._client is not None
+            try:
+                response = await self._client.post(
+                    self._key.token_uri,
+                    data={"grant_type": _GRANT_TYPE, "assertion": assertion},
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                )
+            except httpx.TimeoutException as exc:
+                raise ProviderTimeoutError(
+                    "Google DWD token exchange timed out",
+                    source=source,
+                    operation=operation,
+                ) from exc
+            except httpx.TransportError as exc:
+                raise ProviderTransientError(
+                    "Google DWD token exchange transport error",
+                    source=source,
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
+            if response.status_code == 429:
+                raise ProviderRateLimited(
+                    "Google DWD token exchange rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                )
+            if response.status_code in {500, 502, 503, 504}:
+                retry_after = parse_retry_after(
+                    response.headers.get("Retry-After"),
+                )
+                if retry_after is not None:
+                    raise ProviderRateLimited(
+                        "Google DWD token exchange cooldown",
+                        retry_after_seconds=retry_after,
+                        status_code=response.status_code,
+                        header_parser_id="http.retry_after",
+                    )
+                raise ProviderTransientError(
+                    f"Google DWD token exchange returned "
+                    f"{response.status_code}",
+                    source=source,
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
+
+        dimensions = {
+            "user": user_email,
+            "service_account": self._key.client_email,
+            **dict(quota_dimensions or {}),
+        }
+        resp = await binding.execute(
+            operation,
+            _once,
+            quota_dimensions=dimensions,
         )
         if resp.status_code != 200:
             # NEVER echo the assertion or any request detail — it
@@ -277,7 +409,17 @@ _MINTER: DwdTokenMinter | None = None
 def get_minter() -> DwdTokenMinter:
     global _MINTER
     if _MINTER is None:
-        _MINTER = DwdTokenMinter(ServiceAccountKey.from_env())
+        runtime = get_provider_transport_runtime()
+        _MINTER = DwdTokenMinter(
+            ServiceAccountKey.from_env(),
+            provider_transport=(
+                runtime.transport if runtime is not None else None
+            ),
+            quota_resolver=(
+                runtime.quota_resolver if runtime is not None else None
+            ),
+            allow_unlimited_local=runtime is None,
+        )
     return _MINTER
 
 

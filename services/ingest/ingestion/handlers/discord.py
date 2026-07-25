@@ -38,7 +38,6 @@ from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -113,7 +112,6 @@ def _source_actor_ref(payload: dict[str, Any]) -> str | None:
     return None
 
 
-@register(_CHANNEL)
 async def handle_discord_webhook(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -210,7 +208,6 @@ def _message_entities_hint(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return hint
 
 
-@register(_CHANNEL_MESSAGE)
 async def handle_discord_message(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:

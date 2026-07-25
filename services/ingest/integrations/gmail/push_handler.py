@@ -27,8 +27,8 @@ from lib.shared.errors import CompanyOSError
 from services.ingest.integrations.gmail.client import (
     GmailClient,
     GoogleApiError,
-    GoogleHttpClient,
     GoogleRateLimited,
+    build_google_http_client,
 )
 from services.ingest.integrations.gmail.dwd import get_minter
 
@@ -158,7 +158,11 @@ async def _drain_history(
     from services.ingest.integrations.gmail.fetcher import drain_mailbox_history
 
     minter = get_minter()
-    async with GoogleHttpClient(minter) as http:
+    async with build_google_http_client(
+        minter,
+        tenant_id=str(tenant_id),
+        installation_id=str(gmail_installation_id),
+    ) as http:
         gmail = GmailClient(http)
         result = await drain_mailbox_history(
             pool=pool,

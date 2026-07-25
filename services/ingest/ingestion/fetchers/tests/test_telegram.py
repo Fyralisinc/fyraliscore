@@ -2,16 +2,21 @@
 
 Drives the REAL fetcher against the REAL MockTelegramClient + make_telegram
 fixture (highest fidelity), covering: dispatch/channel wiring, backward paging on
-offset_id, cursor round-trip, one-message-one-record fan-out, end_of_data, the
-FLOOD_WAIT backoff (empty page, cursor unadvanced), incremental min_id warm-start,
-and the empty-dialog terminal case.
+offset_id, cursor round-trip, one-message-one-record fan-out, end_of_data,
+durable FLOOD_WAIT propagation, incremental min_id warm-start, and the
+empty-dialog terminal case.
 """
 from __future__ import annotations
 
 
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
+from services.ingest.source_contract.runtime import resolve_fetcher
 from services.ingest.ingestion.fetchers import telegram as tf
 from services.ingest.ingestion.fetchers.telegram import (
     SHARD_KIND_DIALOG_HISTORY,
@@ -20,11 +25,10 @@ from services.ingest.ingestion.fetchers.telegram import (
 )
 from services.ingest.ingestion.kafka.topics import INGESTION_SOURCES
 from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
-from services.ingest.ingestion.planners import PLANNER_DISPATCH
-from services.ingest.ingestion.reconcilers import RECONCILER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_planner
+from services.ingest.source_contract.runtime import resolve_reconciler
 from services.ingest.ingestion.reconcilers.telegram import reconcile_telegram
 from services.ingest.synthetic.fixtures import make_telegram
-from services.ingest.synthetic.fault_profiles import FaultProfile
 from services.ingest.synthetic.mock_clients import MockTelegramClient
 
 
@@ -65,18 +69,18 @@ def _shard(fixture, *, offset_cursor=None):
 
 
 async def test_dispatch_and_channel_wired():
-    assert FETCHER_DISPATCH["telegram"] is fetch_page_telegram
+    assert resolve_fetcher("telegram") is fetch_page_telegram
     assert resolve_channel("telegram", "backfill") == "telegram:message"
     assert resolve_channel("telegram", "gateway") == "telegram:message"
 
 
-async def test_registry_drift_telegram_present():
-    # Drift guard: telegram must be in every per-source registry (the
-    # SourceLiteral-derived INGESTION_SOURCES + the three dispatch tables).
+async def test_contract_drift_telegram_present():
+    # Drift guard: Telegram must remain in the wire-source literal and expose
+    # all three historical roles through its SourceDefinition.
     assert "telegram" in INGESTION_SOURCES
-    assert "telegram" in PLANNER_DISPATCH
-    assert "telegram" in FETCHER_DISPATCH
-    assert "telegram" in RECONCILER_DISPATCH
+    assert callable(resolve_planner("telegram"))
+    assert callable(resolve_fetcher("telegram"))
+    assert callable(resolve_reconciler("telegram"))
 
 
 async def test_onboarding_and_reconciler_cover_telegram():
@@ -91,12 +95,14 @@ async def test_onboarding_and_reconciler_cover_telegram():
     import inspect
 
     from services.ingest.ingestion.workflows import reconciler as _rec
-    from services.ingest.ingestion.workflows.tenant_onboarding import (
-        _LOAD_ACTIVE_SOURCES_SQL,
+    from services.ingest.ingestion.workflows.tenant_onboarding import VALID_SOURCES
+    from services.ingest.source_contract.runtime import (
+        resolve_installation_loader,
     )
 
-    assert "telegram_installations" in _LOAD_ACTIVE_SOURCES_SQL
-    assert RECONCILER_DISPATCH["telegram"] is reconcile_telegram
+    assert "telegram" in VALID_SOURCES
+    assert callable(resolve_installation_loader("telegram"))
+    assert resolve_reconciler("telegram") is reconcile_telegram
     rec_src = inspect.getsource(_rec)
     assert "register_pool_provider(pool)" in rec_src
 
@@ -137,19 +143,24 @@ async def test_one_message_one_record(monkeypatch):
     assert len(res.records) == 3  # one record per message, no fan-out
 
 
-async def test_flood_wait_returns_empty_unadvanced(monkeypatch):
+async def test_flood_wait_propagates_durable_retry_later(monkeypatch):
     fixture = make_telegram(dialogs=1, messages_per_dialog=5, seed="t3")
-    # rate_limit_after_n_requests=0 → the first get_history raises FLOOD_WAIT.
-    mock = MockTelegramClient(
-        fixture=fixture, profile=FaultProfile(rate_limit_after_n_requests=0),
-    )
-    _patch_client(monkeypatch, mock)
-    res = await fetch_page_telegram(_FakeInst(), _shard(fixture), None)
-    # Backoff posture: no records, NOT terminal (ShardFetch re-enters), cursor
-    # unadvanced (offset_id still 0).
-    assert res.records == []
-    assert res.end_of_data is False
-    assert TelegramCursor.model_validate(res.next_cursor).offset_id == 0
+
+    class _FloodWait:
+        async def get_history(self, **_kwargs):
+            raise RetryLater.after(
+                request_context=RequestContext(
+                    source="telegram",
+                    operation="get_history",
+                ),
+                delay_seconds=30,
+                reason=RetryReason.RATE_LIMIT,
+            )
+
+    _patch_client(monkeypatch, _FloodWait())
+    with pytest.raises(RetryLater) as raised:
+        await fetch_page_telegram(_FakeInst(), _shard(fixture), None)
+    assert raised.value.context["operation"] == "get_history"
 
 
 async def test_incremental_warm_start_min_id(monkeypatch):

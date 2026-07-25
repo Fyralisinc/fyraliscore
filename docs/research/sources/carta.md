@@ -177,8 +177,8 @@ real change lands as a **new** observation — this mirrors the QuickBooks
 **Maps to our pipeline:** Live path **(none of the four HTTP paths)** — closest
 analogue is the poll-incremental arm used internally by Google Calendar / Drive, but
 here it is entirely driven by `PeriodicReconciler` / `oauth_poller` with no inbound
-HTTP push. `_EXPECTED_LIVE_STATUS["carta"] = set()` in `run_all_sources.py` (direct
-poll, no HTTP response to assert). No entry in `_HMAC_SOURCES`, no entry in
+HTTP push. Carta's source-certification evidence records a direct poll with no
+HTTP response to assert. No entry in `_HMAC_SOURCES`, no entry in
 `_CUTOVER_ENABLED_PROVIDERS`, no `_PROVIDER_CHANNEL` entry.
 
 ---

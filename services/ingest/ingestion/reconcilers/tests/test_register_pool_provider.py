@@ -6,21 +6,26 @@ gap re-check of the other 18 (jira/mercury/brex/…) called `_get_pool()` and
 raised RuntimeError — silently swallowed as a dispatch exception, permanently
 disabling periodic gap detection for those sources. Both the at-completion
 Reconciler and the PeriodicReconciler now derive their registration set from
-RECONCILER_DISPATCH via the shared helper, so the two cannot drift apart.
+the source contract via the shared helper, so the two cannot drift apart.
 """
 from __future__ import annotations
 
 import importlib
 
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     register_pool_provider,
 )
+from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
 
 
-def test_register_pool_provider_covers_every_dispatch_source() -> None:
+def test_register_pool_provider_covers_every_historical_source() -> None:
     sentinel = object()
-    sources = list(RECONCILER_DISPATCH)
+    sources = [
+        source.source_id
+        for source in SOURCE_DEFINITIONS
+        if source.history is not None
+    ]
+    assert len(sources) == 26
 
     mods = {
         source: importlib.import_module(
@@ -38,7 +43,7 @@ def test_register_pool_provider_covers_every_dispatch_source() -> None:
     try:
         registered = register_pool_provider(sentinel)
 
-        # Every source in the dispatch map (all 25) must be registered — no
+        # Every historical source must be registered — no
         # hand-maintained subset that can silently fall behind.
         assert set(registered) == set(sources)
         assert len(registered) == len(sources)

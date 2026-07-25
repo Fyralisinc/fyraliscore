@@ -639,7 +639,7 @@ def test_figma_runtime_deployment_discovery_skips_absent_optional_reconcilers(
     targets = fyralis_cli._provider_runtime_deployments(
         SimpleNamespace(kubectl="kubectl-test", namespace="customer-fyralis"),
         "figma",
-        fyralis_cli.REHEARSAL_PROFILES["figma"],
+        fyralis_cli._source_rehearsal_profile("figma"),
     )
 
     assert targets == ("customer-a-gateway", "customer-a-shard-fetch")
@@ -673,7 +673,7 @@ def test_figma_runtime_deployment_discovery_requires_gateway_and_shard_fetch(
         fyralis_cli._provider_runtime_deployments(
             SimpleNamespace(kubectl="kubectl-test", namespace="customer-fyralis"),
             "figma",
-            fyralis_cli.REHEARSAL_PROFILES["figma"],
+            fyralis_cli._source_rehearsal_profile("figma"),
         )
     except ValueError as exc:
         assert "shard-fetch" in str(exc)

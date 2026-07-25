@@ -126,8 +126,10 @@ All Web API calls funnel through `SlackClient._call`
 ([client.py:125‑212](../../../services/integrations/slack/client.py#L125-L212)), which:
 
 - sets `Authorization: Bearer {token}` (bot or user, resolved lazily),
-- honours Slack's `429 Retry-After` header within a bounded **30 s wall budget /
-  3 attempts**,
+- honours Slack's `429 Retry-After` header within a bounded retry policy,
+- retries short cooldowns inline, while a `Retry-After` above the independent
+  inline ceiling returns `RetryLater` so the scheduler can persist
+  `next_attempt_at` and release the worker,
 - retries transport errors with exponential backoff,
 - raises `SlackApiError` on `ok=false` (Slack errors are not retried — they're
   permanent for a given input).
@@ -285,7 +287,7 @@ flags ([client.py:401‑413](../../../services/integrations/slack/client.py#L401
 ```python
 ctype = ("im"   if c.get("is_im")
          else "mpim" if c.get("is_mpim")
-         else c.get("channel_type"))   # mock/spammer convenience
+         else c.get("channel_type"))   # mock/Provider Lab convenience
 out.append({
     "id": c["id"],
     "channel_type": ctype,
@@ -459,7 +461,7 @@ rejected with a 400.
    a user token (rows in `slack_dm_installations`); one user's revoked token
    never breaks the rest of the plan.
 4. **Cursor pagination + bounded retries everywhere**, with `429 Retry-After`
-   honoured inside a wall‑clock budget.
+   honoured without retaining a worker through a long provider cooldown.
 
 ---
 
@@ -478,7 +480,12 @@ detect its own listing status at runtime, so the tier is operator config:
 | Env var | Default | Meaning |
 |---------|---------|---------|
 | `SLACK_API_TIER` | `3` | Tier for `conversations.history`/`.replies`. Set to **`1`** for a non-Marketplace ("unlisted") distributed app; `3` for Marketplace/internal. Accepts `1`–`4`. |
-| `SLACK_RETRY_WALL_BUDGET_S` | tier-derived (`75` if tier 1, else `30`) | Per-call retry wall-clock budget. Must exceed one `Retry-After` (~60 s at Tier 1) or the 429 handler gives up before retrying. |
+| `SLACK_RETRY_WALL_BUDGET_S` | tier-derived (`75` if tier 1, else `30`) | Total wall-clock budget for one operation, including attempts and short inline waits. |
+| `SLACK_MAX_INLINE_RETRY_AFTER_S` | `30` | Maximum provider cooldown that may be waited inline. A longer delay becomes `RetryLater` even when it fits inside the total wall budget. |
+
+For example, the approximately 60-second Tier-1 cooldown is published to the
+shared quota coordinator and returned as `RetryLater`; it does not sleep the
+fetch worker. A short transient cooldown remains an inline retry.
 
 `conversations.list` (Tier 2) and `users.info` (Tier 4) are unaffected by the
 2025 change and carry their canonical tiers

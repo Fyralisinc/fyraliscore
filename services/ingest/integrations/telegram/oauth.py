@@ -9,6 +9,10 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import TelegramApiError
+from lib.shared.provider_transport import RetryLater
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 from services.ingest.integrations.telegram.client import TelegramClient
 from services.ingest.integrations.telegram.onboarding import finalize_install
 
@@ -58,14 +62,37 @@ async def _resolve_dialogs(
     api_id: str,
     api_hash: str,
     session: str,
+    tenant_id: UUID,
 ) -> tuple[dict[str, Any], list[dict[str, Any]] | JSONResponse]:
     requested = body.get("dialogs")
     if requested is not None and not isinstance(requested, list):
         raise HTTPException(status_code=400, detail="dialogs must be a list")
-    client = TelegramClient(api_id=api_id, api_hash=api_hash, session=session)
+    client = TelegramClient(
+        api_id=api_id,
+        api_hash=api_hash,
+        session=session,
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         account = await client.me()
         dialogs = requested if requested else await client.iter_dialogs(limit=75)
+    except RetryLater as exc:
+        return {}, JSONResponse(
+            status_code=503,
+            headers={
+                "Retry-After": str(
+                    max(
+                        1,
+                        int(exc.context.get("retry_after_seconds") or 60),
+                    )
+                )
+            },
+            content={
+                "ok": False,
+                "error_code": "provider_retry_later",
+                "message": "Telegram temporarily deferred the session probe.",
+            },
+        )
     except TelegramApiError as exc:
         return {}, JSONResponse(
             status_code=400,
@@ -82,7 +109,7 @@ async def _resolve_dialogs(
 
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
-    _tenant_from_request(request)
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     _account_label, api_id, api_hash, live_session, backfill_session = _inputs(body)
     account, dialogs = await _resolve_dialogs(
@@ -90,6 +117,7 @@ async def connect_preflight(request: Request) -> JSONResponse:
         api_id=api_id,
         api_hash=api_hash,
         session=backfill_session or live_session,
+        tenant_id=tenant_id,
     )
     if isinstance(dialogs, JSONResponse):
         return dialogs
@@ -111,6 +139,7 @@ async def connect_finalize(request: Request) -> JSONResponse:
         api_id=api_id,
         api_hash=api_hash,
         session=effective_backfill,
+        tenant_id=tenant_id,
     )
     if isinstance(dialogs, JSONResponse):
         return dialogs

@@ -49,18 +49,21 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from services.ingest.source_contract import SOURCE_DEFINITIONS
+
 
 log = structlog.get_logger("gateway.finance")
 
 
-_SOURCES = ("mercury", "quickbooks", "brex", "ramp", "gusto", "deel")
+_FINANCE_SOURCE_DEFINITIONS = tuple(
+    source
+    for source in SOURCE_DEFINITIONS
+    if "finance_testing" in source.capability_flags
+)
+_SOURCES = tuple(source.source_id for source in _FINANCE_SOURCE_DEFINITIONS)
 _CHANNEL = {
-    "mercury": "mercury:transaction",
-    "quickbooks": "quickbooks:object",
-    "brex": "brex:transaction",
-    "ramp": "ramp:transaction",
-    "gusto": "gusto:object",
-    "deel": "deel:payment",
+    source.source_id: source.channel_for_ingress("webhook")
+    for source in _FINANCE_SOURCE_DEFINITIONS
 }
 _MERCURY_BASE = "https://api.mercury.com/api/v1"
 _QBO_BASE = "https://sandbox-quickbooks.api.intuit.com"

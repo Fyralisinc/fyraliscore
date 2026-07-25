@@ -5,6 +5,7 @@ scripts, docker compose, and tests. This module keeps the process names
 and commands in one typed list so new workers do not quietly appear in
 one surface and disappear from another.
 """
+
 from __future__ import annotations
 
 import shlex
@@ -322,20 +323,21 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         "live-source",
         ("python", "scripts/run_telegram_gateway_worker.py"),
         ("production",),
-        "Telegram MTProto gateway session worker.",
+        "Installation-scoped Telegram MTProto gateway session worker.",
         compose_service="telegram_gateway_worker",
         has_healthcheck=True,
-        singleton=True,
     ),
     _proc(
         "signal_gateway_worker",
         "live-source",
         ("python", "scripts/run_signal_gateway_worker.py"),
         ("production",),
-        "Signal linked-device (signal-cli JSON-RPC) gateway session worker.",
+        (
+            "Installation-scoped Signal linked-device worker over signal-cli "
+            "HTTP JSON-RPC/SSE."
+        ),
         compose_service="signal_gateway_worker",
         has_healthcheck=True,
-        singleton=True,
     ),
     _proc(
         "gmail_watch_scheduler",

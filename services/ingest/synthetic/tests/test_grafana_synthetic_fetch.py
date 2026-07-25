@@ -12,8 +12,8 @@ Asserted invariants:
     2026 (the observations partition window),
   - backward pagination: annotations > per_page triggers a multi-page walk yet
     still yields every annotation exactly once,
-  - faults: a rate-limit FaultProfile surfaces GrafanaApiError and the fetcher's
-    rate-limit fallback returns an empty, non-terminal page (end_of_data False).
+  - faults: a legacy pre-transport GrafanaApiError propagates without producing
+    a cursor result.
 
 The 90-day backfill window floor is disabled (GRAFANA_BACKFILL_WINDOW_DAYS=0) so
 the 2026-01 fixture annotations are not filtered out by a wall-clock floor.
@@ -179,9 +179,7 @@ def test_synthetic_grafana_backward_pagination(monkeypatch):
 
 
 def test_synthetic_grafana_rate_limit_fault(monkeypatch):
-    """A rate-limit FaultProfile makes `list_annotations` raise
-    GrafanaApiError(grafana_api_rate_limited); the fetcher catches it and ends
-    the round empty WITHOUT advancing (end_of_data False)."""
+    """A legacy pre-transport rate-limit error cannot return a cursor result."""
     fixture = make_grafana(annotations=5, base_ms=_BASE_MS, base_url=_BASE_URL)
 
     # rate_limit_after_n_requests=0 -> the very first call raises.
@@ -193,13 +191,14 @@ def test_synthetic_grafana_rate_limit_fault(monkeypatch):
         asyncio.run(raw_client.list_annotations(from_ms=None, to_ms=None))
     assert exc_info.value.code == "grafana_api_rate_limited"
 
-    # 2. Through the fetcher: the rate-limit fallback returns an empty,
-    #    non-terminal page (cursor unadvanced) so ShardFetch re-enters.
+    # 2. Through the fetcher: no FetchResult is returned, so ShardFetch cannot
+    #    persist an advanced cursor. Production 429s are typed RetryLater
+    #    before this boundary; this legacy fake's source error also propagates.
     fetch_client = MockGrafanaClient(fixture=fixture, profile=profile)
     _patch_client(monkeypatch, fetch_client)
-    result = asyncio.run(fetch_page_grafana(_install(), _shard(), None))
-    assert result.records == []
-    assert result.end_of_data is False
+    with pytest.raises(GrafanaApiError) as fetch_error:
+        asyncio.run(fetch_page_grafana(_install(), _shard(), None))
+    assert fetch_error.value.code == "grafana_api_rate_limited"
 
 
 def test_mock_grafana_implements_methods_called_by_fetcher_and_reconciler():

@@ -292,7 +292,14 @@ async def _tables_to_truncate(conn: asyncpg.Connection) -> list[str]:
           AND c.relispartition = FALSE
         """
     )
-    return [r["relname"] for r in rows]
+    # Migration-owned reference data must survive per-test cleanup. The source
+    # foreign keys remain installed after TRUNCATE, so deleting these rows
+    # would make every otherwise-valid onboarding fixture fail.
+    return [
+        r["relname"]
+        for r in rows
+        if r["relname"] != "ingestion_source_catalog"
+    ]
 
 
 # ---------------------------------------------------------------------

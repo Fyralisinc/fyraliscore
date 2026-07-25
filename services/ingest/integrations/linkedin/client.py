@@ -6,7 +6,7 @@ LinkedIn Community Management API (Rest.li finders under
 Bearer **access token** (3-legged; the org read surface is partner-gated) and
 every call is scoped to an ``organization_urn`` (the scope-id, analogous to
 Carta's ``firm_id`` / QuickBooks' ``realmId``). The access token is resolved
-through a short-lived secret-ref cache (or preset in spammer mode), so rotation
+through a short-lived secret-ref cache (or preset in Provider Lab mode), so rotation
 is picked up without process restart.
 
 Wire contract (pinned against Microsoft Learn, 2026-06):
@@ -44,8 +44,10 @@ and refresh token refs, then retries once. Programmatic refresh tokens are only
 issued to approved partner programs; if refresh fails, the original auth error
 surfaces and shard_fetch records the shard as degraded.
 
-Rate limits: 429 + Retry-After (env knobs LINKEDIN_RL_MAX_ATTEMPTS /
-LINKEDIN_RL_MAX_SLEEP_SEC). Non-2xx maps to ``LinkedinApiError``.
+Every outbound attempt executes through the shared ``ProviderTransport``,
+which owns distributed quota, bounded full-jitter retries, timeout budgets,
+concurrency and shared ``Retry-After`` cooldowns. Non-retryable responses map
+to ``LinkedinApiError``.
 
 Logging redaction: the access token / auth header are NEVER logged.
 """
@@ -61,6 +63,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import LinkedinApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -80,15 +96,6 @@ _RESTLI_PROTOCOL_VERSION = "2.0.0"
 def linkedin_version() -> str:
     """The dated `LinkedIn-Version: YYYYMM` header value (env-overridable)."""
     return os.environ.get("LINKEDIN_VERSION", _DEFAULT_LINKEDIN_VERSION)
-
-
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
 
 
 def organization_id_of(organization_urn: str) -> str:
@@ -138,6 +145,11 @@ class LinkedinClient:
         api_base_url: str | None = None,
         install_row_id: Any | None = None,
         refresh_secret_ref: str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
@@ -148,11 +160,30 @@ class LinkedinClient:
         self._refresh_secret_ref = refresh_secret_ref
         self._access_token_cache = SecretValueCache(preset=access_token)
         self._token_lock = asyncio.Lock()
-        # In production the base is https://api.linkedin.com/rest; a spammer/
+        # In production the base is https://api.linkedin.com/rest; a lab/
         # test override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="linkedin",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(install_row_id) if install_row_id is not None else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -179,21 +210,24 @@ class LinkedinClient:
         )
 
     async def _request(
-        self, method: str, path: str, *, params: dict[str, Any] | None = None,
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        operation: str,
     ) -> dict[str, Any]:
         from services.ingest.integrations.linkedin import metrics
-        from services.ingest.integrations.oauth_refresh import refresh_on_unauthorized
+        from services.ingest.integrations.oauth_refresh import (
+            refresh_on_unauthorized,
+        )
 
         url = f"{self._api_base_url}{path}"
-        max_attempts = int(os.environ.get("LINKEDIN_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("LINKEDIN_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
         reminted = False
         refreshed_token: str | None = None
         while True:
-            attempt += 1
             token = refreshed_token or await self._token()
             headers = {
                 "Authorization": f"Bearer {token}",
@@ -203,24 +237,55 @@ class LinkedinClient:
                 "LinkedIn-Version": linkedin_version(),
                 "X-Restli-Protocol-Version": _RESTLI_PROTOCOL_VERSION,
             }
-            try:
-                response = await client.request(
-                    method, url, headers=headers, params=params,
-                )
-            except httpx.TransportError as exc:
-                metrics.record_request("error")
-                raise LinkedinApiError(
-                    "transport error calling linkedin",
-                    code="linkedin_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
-                ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
-                metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
+            async def _once() -> httpx.Response:
+                try:
+                    response = await client.request(
+                        method,
+                        url,
+                        headers=headers,
+                        params=params,
+                    )
+                except httpx.TimeoutException as exc:
+                    metrics.record_request("error")
+                    raise ProviderTimeoutError(
+                        "LinkedIn request timed out",
+                        source="linkedin",
+                        operation=operation,
+                        error_type=type(exc).__name__,
+                    ) from exc
+                except httpx.TransportError as exc:
+                    metrics.record_request("error")
+                    raise ProviderTransientError(
+                        "LinkedIn transport error",
+                        source="linkedin",
+                        operation=operation,
+                        error_type=type(exc).__name__,
+                    ) from exc
 
+                if response.status_code == 429:
+                    metrics.record_request("rate_limited")
+                    raise ProviderRateLimited(
+                        "LinkedIn rate limit",
+                        retry_after_seconds=parse_retry_after(
+                            response.headers.get("Retry-After"),
+                        ),
+                        status_code=429,
+                        header_parser_id="http.retry_after",
+                        source="linkedin",
+                        operation=operation,
+                    )
+                if response.status_code >= 500:
+                    metrics.record_request("error")
+                    raise ProviderTransientError(
+                        f"LinkedIn returned HTTP {response.status_code}",
+                        source="linkedin",
+                        operation=operation,
+                        http_status=response.status_code,
+                    )
+                return response
+
+            response = await self._provider.execute(operation, _once)
             if response.status_code // 100 == 2:
                 metrics.record_request("ok")
                 body = _safe_json(response)
@@ -245,6 +310,7 @@ class LinkedinClient:
                         install_row_id=self._install_row_id,
                         current_access_ref=self._secret_ref,
                         refresh_secret_ref=self._refresh_secret_ref,
+                        request_binding=self._provider,
                     )
                     if new_token is not None:
                         self._access_token_cache.set(new_token)
@@ -285,7 +351,12 @@ class LinkedinClient:
             "count": count,
             "sortBy": sort_by,
         }
-        resp = await self._request("GET", "/posts", params=params)
+        resp = await self._request(
+            "GET",
+            "/posts",
+            params=params,
+            operation="posts.list",
+        )
         elements = resp.get("elements")
         rows = (
             [e for e in elements if isinstance(e, dict)]
@@ -315,7 +386,10 @@ class LinkedinClient:
         """
         return await self._organizational_entity_statistics(
             "/organizationalEntityShareStatistics",
-            start_ms=start_ms, end_ms=end_ms, granularity=granularity,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            granularity=granularity,
+            operation="share_statistics.list",
         )
 
     async def follower_statistics(
@@ -334,7 +408,10 @@ class LinkedinClient:
         """
         return await self._organizational_entity_statistics(
             "/organizationalEntityFollowerStatistics",
-            start_ms=start_ms, end_ms=end_ms, granularity=granularity,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            granularity=granularity,
+            operation="follower_statistics.list",
         )
 
     async def _organizational_entity_statistics(
@@ -344,6 +421,7 @@ class LinkedinClient:
         start_ms: int | None,
         end_ms: int | None,
         granularity: str,
+        operation: str,
     ) -> list[dict[str, Any]]:
         # The query string is built by hand: the Rest.li-2.0 `timeIntervals`
         # value must keep its parens raw, which httpx params= would escape.
@@ -355,7 +433,11 @@ class LinkedinClient:
             query += "&timeIntervals=" + _time_intervals_param(
                 start_ms, end_ms, granularity,
             )
-        resp = await self._request("GET", f"{resource_path}?{query}")
+        resp = await self._request(
+            "GET",
+            f"{resource_path}?{query}",
+            operation=operation,
+        )
         elements = resp.get("elements")
         if not isinstance(elements, list):
             return []
@@ -368,7 +450,9 @@ class LinkedinClient:
         (`id`, `localizedName`, `vanityName`, …)."""
         org_id = organization_id_of(self._organization_urn)
         return await self._request(
-            "GET", f"/organizations/{quote(org_id, safe='')}",
+            "GET",
+            f"/organizations/{quote(org_id, safe='')}",
+            operation="organizations.get",
         )
 
 

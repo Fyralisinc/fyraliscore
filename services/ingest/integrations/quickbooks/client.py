@@ -3,7 +3,7 @@
 Single outbound surface for backfill + poll-incremental. QuickBooks Online is
 authenticated with an OAuth 2.0 Bearer **access token** (~60 min lifetime) and
 every call is scoped to a company ``realmId``. The access token is resolved
-through a short-lived secret-ref cache (or preset in spammer mode), so rotation
+through a short-lived secret-ref cache (or preset in Provider Lab mode), so rotation
 is picked up without process restart. Production token refresh (the rotating
 refresh token) is owned by the oauth_poller; this read client consumes the
 current access token and reactively refreshes once on 401.
@@ -13,23 +13,38 @@ Reads go through the **query endpoint**:
 returning ``{"QueryResponse": {"<Entity>": [...], "startPosition", "maxResults"}}``.
 Pagination is offset-based via ``STARTPOSITION n MAXRESULTS m`` in the SQL.
 
-Rate limits: 10 req/s, 120/min batch per realm; 429 on throttle (honoured with a
-bounded Retry-After retry). Non-2xx maps to ``QuickBooksApiError``.
+Every outbound attempt executes through the shared ``ProviderTransport`` under
+an exact tenant + installation binding.  The transport owns quota acquisition,
+bounded full-jitter retries, shared cooldowns, concurrency and timeouts.
+Non-retryable provider responses still map to ``QuickBooksApiError``.
 
 Logging redaction: the access token / auth header are NEVER logged.
 """
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
-from uuid import UUID
 from urllib.parse import quote
+from uuid import UUID
 
 import httpx
 import structlog
 
 from lib.shared.errors import QuickBooksApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -39,15 +54,6 @@ log = structlog.get_logger("integrations.quickbooks.client")
 _DEFAULT_TIMEOUT_S = 30.0
 _DEFAULT_PAGE_SIZE = 100
 _MINOR_VERSION = "75"
-
-
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
 
 
 class QuickBooksClient:
@@ -70,6 +76,11 @@ class QuickBooksClient:
         api_base_url: str | None = None,
         install_row_id: Any | None = None,
         refresh_secret_ref: str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
@@ -82,11 +93,30 @@ class QuickBooksClient:
         self._refresh_secret_ref = refresh_secret_ref
         self._access_token_cache = SecretValueCache(preset=access_token)
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical QBO host; a spammer/test
+        # In production the base is the canonical QBO host; a lab/test
         # override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="quickbooks",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(install_row_id) if install_row_id is not None else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -113,7 +143,12 @@ class QuickBooksClient:
         )
 
     async def _request(
-        self, method: str, path: str, *, params: dict[str, Any] | None = None,
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        operation: str,
     ) -> dict[str, Any]:
         from services.ingest.integrations.quickbooks import metrics
         from services.ingest.integrations.oauth_refresh import (
@@ -121,15 +156,11 @@ class QuickBooksClient:
         )
 
         url = f"{self._api_base_url}{path}"
-        max_attempts = int(os.environ.get("QUICKBOOKS_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("QUICKBOOKS_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
         reminted = False
         refreshed_token: str | None = None
         while True:
-            attempt += 1
             # Recompute the token each attempt so a reactive re-mint (below)
             # takes effect on the retry.
             token = refreshed_token or await self._token()
@@ -137,24 +168,55 @@ class QuickBooksClient:
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
             }
-            try:
-                response = await client.request(
-                    method, url, headers=headers, params=params,
-                )
-            except httpx.TransportError as exc:
-                metrics.record_request("error")
-                raise QuickBooksApiError(
-                    "transport error calling quickbooks",
-                    code="quickbooks_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
-                ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
-                metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
+            async def _once() -> httpx.Response:
+                try:
+                    response = await client.request(
+                        method,
+                        url,
+                        headers=headers,
+                        params=params,
+                    )
+                except httpx.TimeoutException as exc:
+                    metrics.record_request("error")
+                    raise ProviderTimeoutError(
+                        "QuickBooks request timed out",
+                        source="quickbooks",
+                        operation=operation,
+                        error_type=type(exc).__name__,
+                    ) from exc
+                except httpx.TransportError as exc:
+                    metrics.record_request("error")
+                    raise ProviderTransientError(
+                        "QuickBooks transport error",
+                        source="quickbooks",
+                        operation=operation,
+                        error_type=type(exc).__name__,
+                    ) from exc
 
+                if response.status_code == 429:
+                    metrics.record_request("rate_limited")
+                    raise ProviderRateLimited(
+                        "QuickBooks rate limit",
+                        retry_after_seconds=parse_retry_after(
+                            response.headers.get("Retry-After"),
+                        ),
+                        status_code=429,
+                        header_parser_id="http.retry_after",
+                        source="quickbooks",
+                        operation=operation,
+                    )
+                if response.status_code >= 500:
+                    metrics.record_request("error")
+                    raise ProviderTransientError(
+                        f"QuickBooks returned HTTP {response.status_code}",
+                        source="quickbooks",
+                        operation=operation,
+                        http_status=response.status_code,
+                    )
+                return response
+
+            response = await self._provider.execute(operation, _once)
             if response.status_code // 100 == 2:
                 metrics.record_request("ok")
                 body = _safe_json(response)
@@ -183,6 +245,7 @@ class QuickBooksClient:
                         install_row_id=self._install_row_id,
                         current_access_ref=self._secret_ref,
                         refresh_secret_ref=self._refresh_secret_ref,
+                        request_binding=self._provider,
                     )
                     if new_token is not None:
                         self._access_token_cache.set(new_token)
@@ -218,7 +281,12 @@ class QuickBooksClient:
         sql += f" ORDERBY {order_by} STARTPOSITION {start_position} MAXRESULTS {max_results}"
         path = f"/v3/company/{self._realm_id}/query"
         params = {"query": sql, "minorversion": _MINOR_VERSION}
-        resp = await self._request("GET", path, params=params)
+        resp = await self._request(
+            "GET",
+            path,
+            params=params,
+            operation="entities.query",
+        )
         qr = resp.get("QueryResponse")
         if not isinstance(qr, dict):
             return [], None
@@ -234,7 +302,10 @@ class QuickBooksClient:
         """`GET /v3/company/{realm}/companyinfo/{realm}` — connectivity probe."""
         path = f"/v3/company/{self._realm_id}/companyinfo/{quote(self._realm_id)}"
         return await self._request(
-            "GET", path, params={"minorversion": _MINOR_VERSION},
+            "GET",
+            path,
+            params={"minorversion": _MINOR_VERSION},
+            operation="company_info.get",
         )
 
 

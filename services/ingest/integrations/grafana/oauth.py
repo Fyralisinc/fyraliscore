@@ -14,6 +14,9 @@ from services.ingest.integrations.grafana.onboarding import (
     finalize_install,
     register_webhook_installation,
 )
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 
 
 router = APIRouter(prefix="/integrations/grafana", tags=["grafana"])
@@ -71,10 +74,14 @@ def _auth_failure(exc: GrafanaApiError) -> JSONResponse:
 
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
-    _tenant_from_request(request)
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     base_url, token, org_id = _inputs(body)
-    client = GrafanaClient(base_url=base_url, api_token=token)
+    client = GrafanaClient(
+        base_url=base_url,
+        api_token=token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         org = await client.get_org()
     except GrafanaApiError as exc:
@@ -93,7 +100,11 @@ async def connect_finalize(request: Request) -> JSONResponse:
     base_url, token, org_id = _inputs(body)
     webhook_secret = str(body.get("webhook_secret") or "").strip() or None
 
-    client = GrafanaClient(base_url=base_url, api_token=token)
+    client = GrafanaClient(
+        base_url=base_url,
+        api_token=token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         org = await client.get_org()
     except GrafanaApiError as exc:

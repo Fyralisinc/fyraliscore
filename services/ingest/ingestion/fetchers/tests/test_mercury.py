@@ -3,6 +3,11 @@ from __future__ import annotations
 
 import pytest
 
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
 from services.ingest.ingestion.fetchers import mercury as mercury_fetcher
 from services.ingest.ingestion.fetchers.mercury import (
     MercuryCursor,
@@ -115,3 +120,45 @@ async def test_missing_account_id_is_noop(monkeypatch):
     res = await fetch_page_mercury(_FakeInst(), {"shard_kind": SHARD_KIND_ACCOUNT_TXNS}, None)
     assert res.records == []
     assert res.end_of_data is True
+
+
+async def test_retry_later_propagates_without_cursor_advance(monkeypatch):
+    class _RateLimitedClient:
+        async def list_transactions(
+            self,
+            account_id,
+            *,
+            limit=100,
+            offset=0,
+            start=None,
+        ):
+            raise RetryLater.after(
+                request_context=RequestContext(
+                    source="mercury",
+                    operation="transactions.list",
+                ),
+                delay_seconds=60,
+                reason=RetryReason.RATE_LIMIT,
+            )
+
+    cursor = MercuryCursor(
+        offset=5,
+        high_water_created="2026-05-01T00:00:00Z",
+        incremental_floor="2026-05-01T00:00:00Z",
+        txns_seen=5,
+        seeded=True,
+    ).model_dump(mode="json")
+    original_cursor = dict(cursor)
+    _wire(monkeypatch, _RateLimitedClient())
+
+    with pytest.raises(RetryLater):
+        await fetch_page_mercury(
+            _FakeInst(),
+            {
+                "shard_kind": SHARD_KIND_ACCOUNT_TXNS,
+                "account_id": _ACCT,
+            },
+            cursor,
+        )
+
+    assert cursor == original_cursor

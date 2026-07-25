@@ -43,7 +43,7 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict
 
 from lib.shared.errors import MercuryApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -159,7 +159,9 @@ async def fetch_page_mercury(
             # Balance snapshot (cash-position signal) — one per shard run.
             try:
                 account = await client.get_account(account_id)
-            except MercuryApiError:
+            except MercuryApiError as exc:
+                if getattr(exc, "code", "") != "mercury_api_not_found":
+                    raise
                 account = None
             if isinstance(account, dict):
                 now_iso = datetime.now(timezone.utc).isoformat()
@@ -170,23 +172,12 @@ async def fetch_page_mercury(
                     "as_of": now_iso,
                 })
 
-        try:
-            txns, next_offset, total = await client.list_transactions(
-                account_id,
-                limit=_page_size(),
-                offset=cur.offset,
-                start=_iso_date(cur.incremental_floor),
-            )
-        except MercuryApiError as exc:
-            if (exc.context or {}).get("code") == "mercury_api_rate_limited" or \
-               getattr(exc, "_code", None) == "mercury_api_rate_limited":
-                log.info("mercury_backfill_rate_limited",
-                         extra={"account_id": account_id})
-                return FetchResult(
-                    records=records, next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        txns, next_offset, total = await client.list_transactions(
+            account_id,
+            limit=_page_size(),
+            offset=cur.offset,
+            start=_iso_date(cur.incremental_floor),
+        )
 
         for txn in txns:
             records.append({
@@ -214,7 +205,6 @@ async def fetch_page_mercury(
         await close()
 
 
-FETCHER_DISPATCH["mercury"] = fetch_page_mercury
 
 
 __all__ = [

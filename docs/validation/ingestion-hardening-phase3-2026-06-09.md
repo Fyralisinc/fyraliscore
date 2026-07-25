@@ -31,7 +31,7 @@ refresh exchange existed. Implemented end-to-end in
   when within the expiry skew, before a poll races the cutover.
 - **Reactive 401 re-mint**: wired into all four read clients (`QuickBooks/Ramp/
   Gusto/Carta Client._request`) — on a 401 the client refreshes via the install's
-  refresh material and retries once (inert in the gate's spammer mode).
+  refresh material and retries once (inert in the gate's Provider Lab mode).
 - **Persistence** (`refresh_and_persist`): `put` the new access (+ rotated
   refresh) ciphertext and `UPDATE` the install row's `secret_ref` /
   `refresh_secret_ref` / `token_expires_at` (generic across the four
@@ -60,7 +60,7 @@ still validate (no regression).
 ## 3. Phase-1 Report-Only Tech Debt — all cleared (additive, gate-safe)
 
 Each fix handles the **real** provider shape *in addition to* the synthetic shape,
-so the all-25 gate stayed green without spammer changes. The two gate-sensitive
+so the all-25 gate stayed green without Provider Lab changes. The two gate-sensitive
 items (github external_id, fireflies transport) were done with synthetic-side
 lockstep.
 

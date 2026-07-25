@@ -4,12 +4,12 @@
 #
 # Runs human↔human Slack DM ingestion through the GENUINE backfill worker chain
 # (planner → fetcher → raw-tier/S3 → Kafka → normalizer → observation_writer),
-# in spammer mode, landing observations you can watch in pgAdmin (:5434).
+# against Provider Lab, landing observations you can watch in pgAdmin (:5434).
 #
 # This is the worker-chain counterpart of scripts/slack_dm_demo.sh (which drives
 # the inline gateway console). Same observations, different path: this exercises
 # SlackUserClient + the slack_dm_window planner/fetcher shards via the real Kafka
-# workers, with the synthetic spammer serving the DM reads.
+# workers, with Provider Lab serving the DM reads.
 #
 #   scripts/slack_dm_worker_demo.sh            # default user U_ALICE, 6 msgs/DM
 #

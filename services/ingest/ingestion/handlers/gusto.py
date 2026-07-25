@@ -41,9 +41,7 @@ from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -383,7 +381,6 @@ def _thin_change_draft(
 # Handler
 # ---------------------------------------------------------------------
 
-@register(_CHANNEL)
 async def handle_gusto_object(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -449,7 +446,6 @@ async def handle_gusto_object(
     )
 
 
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL, _TRUST)
 
 
 __all__ = ["handle_gusto_object"]

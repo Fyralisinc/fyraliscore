@@ -19,10 +19,10 @@ per A17. Cursor starts at `page=1` again with the OLD
 (records older than baseline are pruned during normalization).
 
 ============================================================
-WIRE-IN
+SOURCE CONTRACT
 ============================================================
-Module-level assignment into `RECONCILER_DISPATCH['github']`. Pool
-provider seam (A18.3) for reading shard cursors.
+`SourceDefinition.reconciler_binding` points to `reconcile_github`. The pool
+provider seam (A18.3) remains for reading shard cursors.
 """
 from __future__ import annotations
 
@@ -30,11 +30,11 @@ import logging
 from typing import Any
 
 import asyncpg
+from services.ingest.ingestion.installations import load_source_installation
 import orjson
 
 from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
@@ -188,15 +188,11 @@ async def reconcile_github(
         return ReconciliationDecision(has_gaps=False)
 
     pool = _get_pool()
-    tenant_id = run["tenant_id"]
-    install = await pool.fetchrow(
-        """
-        SELECT id, tenant_id, provider, installation_id, enabled
-          FROM provider_installations
-         WHERE tenant_id = $1 AND provider = 'github' AND enabled = TRUE
-         LIMIT 1
-        """,
-        tenant_id,
+    install = await load_source_installation(
+        pool,
+        source="github",
+        tenant_id=run["tenant_id"],
+        installation_id=run["installation_row_id"],
     )
     if install is None:
         return ReconciliationDecision(has_gaps=False)
@@ -221,7 +217,6 @@ async def reconcile_github(
     return ReconciliationDecision(has_gaps=False)
 
 
-RECONCILER_DISPATCH["github"] = reconcile_github
 
 
 __all__ = [

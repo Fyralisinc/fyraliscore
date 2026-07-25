@@ -13,9 +13,9 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
+from services.ingest.ingestion.installations import load_google_calendar_installation
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.google_calendar import plan_shards_google_calendar
-from services.ingest.ingestion.workflows.source_onboarding import _LOAD_GCAL_INSTALL_SQL
 from services.ingest.integrations.google_calendar.onboarding import finalize_install
 
 
@@ -100,7 +100,11 @@ async def test_loader_sql_aggregates_calendars_for_planner(fresh_db):
     )
 
     # The SourceOnboarding loader aggregates calendars onto the install row.
-    row = await fresh_db.fetchrow(_LOAD_GCAL_INSTALL_SQL, tid)
+    row = await load_google_calendar_installation(
+        fresh_db,
+        tenant_id=tid,
+        installation_id=install_id,
+    )
     assert row["id"] == install_id
 
     # Feed it to the planner exactly as SourceOnboarding does.

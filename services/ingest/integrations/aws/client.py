@@ -3,11 +3,9 @@
 Single outbound surface for the CloudTrail management-events backfill +
 poll-incremental + the reconciler's gap probe. AWS authenticates with IAM
 credentials and SIGNS every request with SigV4. We use the `aioboto3`/botocore
-service clients (`cloudtrail`, `sts`), which perform SigV4 signing, endpoint
-resolution, and throttle-retry internally — rather than hand-rolling a SigV4Auth
-signer. The synthetic gate drives the REAL fetcher against a MOCK client
-(`mock_clients/aws.py`), so this production path is not exercised in CI;
-integration-testing it against moto/localstack is the remaining operator step.
+service clients (`cloudtrail`, `sts`) for signing and endpoint resolution, but
+disable botocore's internal retries. ProviderTransport is the sole owner of
+quota acquisition, retry budgets, cooldown propagation, and concurrency.
 
 ============================================================
 API shape (load-bearing for the fetcher's time-window walk)
@@ -30,11 +28,10 @@ SigV4 signing
 ============================================================
 Real AWS auth is IAM SigV4 over the per-region service endpoints. The aioboto3
 service clients sign internally from the resolved `AwsCredentials` (static keys
-or AssumeRole STS creds — see `credentials.py`); a botocore `Config` owns
-throttle-retry (exponential backoff w/ jitter). `endpoint_override` points the
-clients at moto/localstack for tests. CloudTrail LookupEvents is capped at 50
-results/page and a 90-DAY lookback; STS GetCallerIdentity is the connectivity
-probe.
+or AssumeRole STS creds — see `credentials.py`). `endpoint_override` points the
+clients at Provider Lab/moto/localstack for tests. CloudTrail LookupEvents is
+capped at 50 results/page and a 90-DAY lookback; STS GetCallerIdentity is the
+connectivity probe.
 
 Logging redaction: IAM credentials (access key / secret / session token) are
 NEVER logged. The account id is hashed before logging.
@@ -51,6 +48,19 @@ from uuid import UUID
 import structlog
 
 from lib.shared.errors import AwsApiError
+from lib.shared.provider_transport import (
+    ProviderPermanentError,
+    ProviderRateLimited,
+    ProviderTransientError,
+    RequestPolicy,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 
 
 log = structlog.get_logger("integrations.aws.client")
@@ -81,20 +91,11 @@ def short_account_hash(account_id: str) -> str:
     return hashlib.blake2b(account_id.encode("utf-8"), digest_size=8).hexdigest()
 
 
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
-
-
 class AwsClient:
     """Outbound AWS API client, one per backfill/poll shard open.
 
     Built by `services/ingest/ingestion/fetchers/_clients.py::build_aws_client`
-    (production / spammer) and by the seed/onboarding probe. In production the
+    (production / Provider Lab) and by the seed/onboarding probe. In production the
     request is SigV4-signed against the per-region CloudTrail endpoint; in the
     synthetic gate the whole surface is replaced by `MockAwsClient`.
     """
@@ -111,6 +112,12 @@ class AwsClient:
         secret_ref: str | None = None,
         http_client: Any | None = None,
         endpoint_override: str | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
@@ -122,13 +129,32 @@ class AwsClient:
         self._creds_lock = asyncio.Lock()
         self._creds: Any | None = None
         # Production endpoint is resolved per-region by the aioboto3 client; a
-        # spammer/test override (moto/localstack) is passed as `endpoint_url`.
+        # Lab/test override (moto/localstack) is passed as `endpoint_url`.
         self._endpoint_override = endpoint_override.rstrip("/") if endpoint_override else None
         self._endpoint = (
             self._endpoint_override
             or CLOUDTRAIL_ENDPOINT_TEMPLATE.format(region=region)
         )
         self._http = http_client
+        self._installation_row_id = (
+            str(installation_row_id)
+            if installation_row_id is not None
+            else None
+        )
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=endpoint_override is not None,
+        )
+        self._provider = ProviderRequestBinding(
+            source="aws",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=self._installation_row_id,
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant_installation=require_tenant_installation,
+        )
 
     async def aclose(self) -> None:
         """No durable client held by default; present for surface parity."""
@@ -157,18 +183,26 @@ class AwsClient:
                 credential_kind=self._credential_kind,
                 secret_ref=self._secret_ref,
                 region=self._region,
+                request_binding=self._provider,
+                endpoint_override=self._endpoint_override,
+                botocore_config=self._retry_config(),
             )
             return self._creds
 
     def _retry_config(self) -> Any:
-        """botocore Config owning SigV4 throttle-retry (exp backoff + jitter)."""
+        """SigV4 config with exactly one botocore attempt.
+
+        ``total_max_attempts=1`` includes the initial request, so botocore never
+        hides an extra provider call from ProviderTransport's quota/retry budget.
+        """
         from botocore.config import Config
 
         return Config(
             retries={
-                "max_attempts": int(os.environ.get("AWS_RL_MAX_ATTEMPTS", "4")),
+                "total_max_attempts": 1,
                 "mode": "standard",
             },
+            connect_timeout=_DEFAULT_TIMEOUT_S,
             read_timeout=_DEFAULT_TIMEOUT_S,
         )
 
@@ -196,6 +230,23 @@ class AwsClient:
         if self._endpoint_override:
             kwargs["endpoint_url"] = self._endpoint_override
         return aioboto3.Session().client(service, **kwargs)
+
+    async def _execute(
+        self,
+        operation: str,
+        call: Any,
+        *,
+        region: str | None = None,
+    ) -> Any:
+        """Execute one botocore attempt through the universal transport."""
+        try:
+            return await self._provider.execute(operation, call)
+        except ProviderPermanentError as exc:
+            raise _permanent_aws_error(
+                exc,
+                region=region or self._region,
+                operation=operation,
+            ) from exc
 
     # -----------------------------------------------------------------
     # Public read surface
@@ -233,17 +284,33 @@ class AwsClient:
                 to_ms / 1000, tz=dt.timezone.utc)
         if cursor:
             kwargs["NextToken"] = cursor
-        try:
-            client_cm = await self._service_client("cloudtrail")
-            async with client_cm as ct:
-                resp = await ct.lookup_events(**kwargs)
-        except AwsApiError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — map botocore ClientError.
-            from services.ingest.integrations.aws.credentials import (
-                _map_botocore_error,
-            )
-            raise _map_botocore_error(exc, region=region) from exc
+        # AssumeRole, when needed, is its own ProviderTransport operation and
+        # must complete before LookupEvents acquires its quota/retry budget.
+        await self._credentials()
+
+        async def _once() -> Any:
+            try:
+                client_cm = await self._service_client("cloudtrail")
+                async with client_cm as ct:
+                    return await ct.lookup_events(**kwargs)
+            except (AwsApiError, ProviderRateLimited, ProviderTransientError):
+                raise
+            except Exception as exc:  # noqa: BLE001 — botocore taxonomy.
+                from services.ingest.integrations.aws.credentials import (
+                    _map_botocore_provider_error,
+                )
+
+                raise _map_botocore_provider_error(
+                    exc,
+                    region=region,
+                    operation="cloudtrail.lookup_events",
+                ) from exc
+
+        resp = await self._execute(
+            "cloudtrail.lookup_events",
+            _once,
+            region=region,
+        )
         events = resp.get("Events") if isinstance(resp, dict) else None
         events = [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
         next_cursor = resp.get("NextToken") if isinstance(resp, dict) else None
@@ -267,22 +334,66 @@ class AwsClient:
         """A cheap connectivity + credential probe (STS GetCallerIdentity — a
         zero-permission call) used by the seed script to verify the resolved
         credentials reach the expected account."""
-        try:
-            client_cm = await self._service_client("sts")
-            async with client_cm as sts:
-                ident = await sts.get_caller_identity()
-        except AwsApiError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — map botocore ClientError.
-            from services.ingest.integrations.aws.credentials import (
-                _map_botocore_error,
-            )
-            raise _map_botocore_error(exc, region=self._region) from exc
+        # Resolve/refresh AssumeRole credentials under `sts.assume_role` before
+        # charging the separate GetCallerIdentity operation.
+        await self._credentials()
+
+        async def _once() -> Any:
+            try:
+                client_cm = await self._service_client("sts")
+                async with client_cm as sts:
+                    return await sts.get_caller_identity()
+            except (AwsApiError, ProviderRateLimited, ProviderTransientError):
+                raise
+            except Exception as exc:  # noqa: BLE001 — botocore taxonomy.
+                from services.ingest.integrations.aws.credentials import (
+                    _map_botocore_provider_error,
+                )
+
+                raise _map_botocore_provider_error(
+                    exc,
+                    region=self._region,
+                    operation="sts.get_caller_identity",
+                ) from exc
+
+        ident = await self._execute("sts.get_caller_identity", _once)
         return {
             "account_id": ident.get("Account") if isinstance(ident, dict) else None,
             "arn": ident.get("Arn") if isinstance(ident, dict) else None,
             "user_id": ident.get("UserId") if isinstance(ident, dict) else None,
         }
+
+
+def _permanent_aws_error(
+    exc: ProviderPermanentError,
+    *,
+    region: str,
+    operation: str,
+) -> AwsApiError:
+    status = exc.context.get("http_status") or exc.context.get("status_code")
+    aws_code = exc.context.get("aws_code")
+    code = "aws_api_error"
+    if status in {401, 403} or aws_code in {
+        "AccessDenied",
+        "UnrecognizedClientException",
+        "InvalidClientTokenId",
+        "SignatureDoesNotMatch",
+        "ExpiredToken",
+        "ExpiredTokenException",
+    }:
+        code = "aws_api_unauthorized"
+    elif status == 404:
+        code = "aws_api_not_found"
+    return AwsApiError(
+        exc.message,
+        code=code,
+        context={
+            "region": region,
+            "operation": operation,
+            **({"http_status": status} if status is not None else {}),
+            **({"aws_code": aws_code} if aws_code is not None else {}),
+        },
+    )
 
 
 __all__ = ["AwsClient", "AwsApiError", "short_account_hash", "CLOUDTRAIL_ENDPOINT_TEMPLATE"]

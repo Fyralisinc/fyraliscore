@@ -10,6 +10,10 @@ from fastapi import FastAPI
 from services.app.gateway.logging_config import get_logger
 from services.ingest.integrations.github.client import GithubClient
 from services.ingest.integrations.github.replay_cache import make_replay_cache
+from services.ingest.integrations.provider_transport_runtime import (
+    close_provider_transport_runtime,
+    get_provider_transport_runtime,
+)
 
 
 log = get_logger("gateway")
@@ -35,9 +39,31 @@ def wire_github_gateway_state(
     """Attach GitHub webhook/OAuth helpers to ``app.state``."""
     owns_client = False
     if getattr(app_.state, "github_client", None) is None:
+        provider_runtime = getattr(
+            app_.state,
+            "provider_transport_runtime",
+            None,
+        )
+        if provider_runtime is None:
+            provider_runtime = get_provider_transport_runtime()
+            app_.state.provider_transport_runtime = provider_runtime
+            app_.state.gateway_owns_provider_transport_runtime = (
+                provider_runtime is not None
+            )
         app_.state.github_client = GithubClient(
             pool=pool,
             tenant_resolver=tenant_resolver,
+            provider_transport=(
+                provider_runtime.transport
+                if provider_runtime is not None
+                else None
+            ),
+            quota_resolver=(
+                provider_runtime.quota_resolver
+                if provider_runtime is not None
+                else None
+            ),
+            allow_unlimited_local=provider_runtime is None,
         )
         app_.state.gateway_owns_github_client = True
         owns_client = True
@@ -55,6 +81,7 @@ async def close_github_gateway_state(
     target = (
         client if client is not None else getattr(app_.state, "github_client", None)
     )
+    target_is_current = getattr(app_.state, "github_client", None) is target
     if target is not None:
         close = getattr(target, "aclose", None)
         if close is not None:
@@ -66,10 +93,32 @@ async def close_github_gateway_state(
                     error=str(exc),
                     error_type=type(exc).__name__,
                 )
-    if getattr(app_.state, "github_client", None) is target:
+    if target_is_current:
         app_.state.github_client = None
     app_.state.github_replay_cache = None
     app_.state.gateway_owns_github_client = False
+    if target_is_current and bool(
+        getattr(
+            app_.state,
+            "gateway_owns_provider_transport_runtime",
+            False,
+        )
+    ):
+        runtime = getattr(
+            app_.state,
+            "provider_transport_runtime",
+            None,
+        )
+        try:
+            await close_provider_transport_runtime(runtime)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "provider_transport_runtime_close_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+        app_.state.provider_transport_runtime = None
+        app_.state.gateway_owns_provider_transport_runtime = False
 
 
 __all__ = [

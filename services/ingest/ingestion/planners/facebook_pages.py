@@ -1,7 +1,7 @@
 """Facebook Pages backfill planner."""
 from __future__ import annotations
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -28,7 +28,6 @@ async def plan_shards_facebook_pages(ctx: PlannerContext) -> list[Shard]:
     ]
 
 
-PLANNER_DISPATCH["facebook_pages"] = plan_shards_facebook_pages
 
 
 __all__ = ["SHARD_KIND_PAGE_HISTORY", "plan_shards_facebook_pages"]

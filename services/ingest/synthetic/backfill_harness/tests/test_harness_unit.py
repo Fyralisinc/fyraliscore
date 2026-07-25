@@ -4,8 +4,8 @@ the full 5-subprocess chain (which needs a real Kafka broker).
 Verifies:
   - Per-tenant install + onboarding_triggers writes are atomic and
     idempotent (via the same partial-unique-index path as production).
-  - Fixture registry is correctly written to disk.
-  - Helper module is generated correctly and importable.
+  - Certification-owned fixtures seed Provider Lab.
+  - Only the production-client Provider Lab mode exists.
 
 The full E2E harness run (Phase B + C, spawning subprocesses) requires
 KAFKA_BOOTSTRAP_SERVERS pointing at a real broker. That path is
@@ -14,10 +14,9 @@ exercised by `test_harness_e2e.py` which is gated by an env var
 """
 from __future__ import annotations
 
-import importlib.util
+import inspect
 import json
-import os
-import sys
+from types import SimpleNamespace
 
 import asyncpg
 import pytest
@@ -25,6 +24,10 @@ import pytest
 from services.ingest.synthetic.backfill_harness import (
     BackfillHarness,
     BackfillScenario,
+)
+from services.ingest.source_contract.catalog import (
+    CANONICAL_SOURCE_IDS,
+    source_definition,
 )
 
 
@@ -160,34 +163,55 @@ async def test_harness_install_idempotent_on_retry(
     assert n == 1, f"expected 1 trigger after retry, got {n}"
 
 
-def test_helper_module_is_generated_and_importable(tmp_path) -> None:
-    """The generated helper module loads cleanly and exposes the
-    expected `_install_factories` entry point."""
-    from services.ingest.synthetic.backfill_harness.harness import _write_helper
-
-    helper_name = "x3_helper_test_unit"
-    helpers_dir = _write_helper(str(tmp_path), helper_name)
-    module_path = os.path.join(helpers_dir, f"{helper_name}.py")
-    assert os.path.exists(module_path)
-
-    # Importable from disk without errors at module level (factories
-    # install themselves at import).
-    spec = importlib.util.spec_from_file_location(helper_name, module_path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[helper_name] = mod
-    try:
-        spec.loader.exec_module(mod)
-        # The helper should have populated module globals.
-        assert hasattr(mod, "_install_factories")
-        assert hasattr(mod, "_lookup_by_tenant_id")
-    finally:
-        del sys.modules[helper_name]
-
-
 @pytest.mark.asyncio
-async def test_registry_written_contains_per_tenant_fixtures(
-    fresh_db: asyncpg.Pool, tmp_path,
+async def test_all_26_history_installation_bindings_write_triggers(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    history_sources = [
+        source_id
+        for source_id in CANONICAL_SOURCE_IDS
+        if source_definition(source_id).history is not None
+    ]
+    scenarios = [
+        BackfillScenario(
+            tenant_slug=f"binding-{index}-{source_id}",
+            source=source_id,
+        )
+        for index, source_id in enumerate(history_sources)
+    ]
+    harness = BackfillHarness(
+        pool=fresh_db,
+        scenarios=scenarios,
+        concurrency=8,
+    )
+    outcomes = [_stub_outcome(scenario) for scenario in scenarios]
+
+    await harness._setup_tenants_and_fixtures(outcomes)
+    harness._prepare_provider_lab_fixtures(outcomes)
+    await harness._invoke_oauth_callbacks(outcomes)
+
+    assert len(history_sources) == 26
+    assert {
+        outcome.scenario.source: outcome.install_error
+        for outcome in outcomes
+        if outcome.install_error is not None
+    } == {}
+    assert await fresh_db.fetchval(
+        "SELECT count(*) FROM onboarding_triggers "
+        "WHERE tenant_id = ANY($1::uuid[])",
+        [outcome.tenant_id for outcome in outcomes],
+    ) == 26
+
+
+def test_harness_has_no_client_mode_switch_or_generated_helper() -> None:
+    from services.ingest.synthetic.backfill_harness import harness as module
+
+    assert "real_clients" not in inspect.signature(BackfillHarness).parameters
+    assert not hasattr(module, "_write_helper")
+    assert not hasattr(module, "_HELPER_TEMPLATE")
+
+
+def test_provider_lab_fixtures_are_certification_owned_per_tenant(
 ) -> None:
     scenarios = [
         BackfillScenario(
@@ -200,23 +224,16 @@ async def test_registry_written_contains_per_tenant_fixtures(
                             "messages_per_channel": 5},
         ),
     ]
-    harness = BackfillHarness(pool=fresh_db, scenarios=scenarios)
+    harness = BackfillHarness(
+        pool=None,  # type: ignore[arg-type]
+        scenarios=scenarios,
+    )
     outcomes = [_stub_outcome(s) for s in scenarios]
-    harness._workdir = str(tmp_path)
-    await harness._setup_tenants_and_fixtures(outcomes)
+    harness._prepare_provider_lab_fixtures(outcomes)
 
-    path = harness._write_registry(outcomes)
-    assert os.path.exists(path)
-
-    with open(path) as f:
-        data = json.load(f)
-    assert "entries" in data
-    assert len(data["entries"]) == 2
-    sources = {e["source"] for e in data["entries"]}
-    assert sources == {"gmail", "slack"}
-    for entry in data["entries"]:
-        assert "tenant_id" in entry
-        assert "fixture" in entry
+    assert set(harness._provider_lab_fixtures) == {"gmail", "slack"}
+    assert all(outcome.fixture is not None for outcome in outcomes)
+    assert outcomes[1].fixture["team_id"] == "x3-t2-slack"
 
 
 # =====================================================================
@@ -281,10 +298,80 @@ def test_harness_base_env_wires_s3(monkeypatch) -> None:
                         "messages_per_channel": 1},
     )
     harness = BackfillHarness(pool=None, scenarios=[scenario])  # type: ignore[arg-type]
+    harness._provider_lab = SimpleNamespace(
+        base_url="http://127.0.0.1:8787",
+    )
     env = harness._base_env()
     assert env["S3_RAW_BUCKET"] == "fyralis-raw"
     assert env["INGESTION_ENV"] == "test"
     assert env["S3_ENDPOINT_URL"] == "http://moto.local:5000"
+
+
+def test_harness_env_uses_provider_lab_and_explicit_endpoint_overrides() -> None:
+    scenario = BackfillScenario(
+        tenant_slug="provider-lab-env",
+        source="github",
+        fixture_params={"org_or_user": "acme", "repos": 1},
+    )
+    harness = BackfillHarness(
+        pool=None,  # type: ignore[arg-type]
+        scenarios=[scenario],
+    )
+    harness._provider_lab = SimpleNamespace(
+        base_url="http://127.0.0.1:8787",
+    )
+
+    env = harness._base_env()
+
+    assert env["PROVIDER_LAB_URL"] == "http://127.0.0.1:8787"
+    assert env["GITHUB_API_BASE_URL"] == "http://127.0.0.1:8787/github"
+    assert env["GMAIL_API_BASE_URL"] == (
+        "http://127.0.0.1:8787/gmail/gmail/v1"
+    )
+
+
+def test_harness_starts_seeded_provider_lab(tmp_path) -> None:
+    import httpx
+
+    from services.ingest.synthetic.fixtures import make_slack_workspace
+
+    scenario = BackfillScenario(
+        tenant_slug="provider-lab-server",
+        source="slack",
+        fixture_params={"team_id": "T_LAB", "channels": 1},
+    )
+    harness = BackfillHarness(
+        pool=None,  # type: ignore[arg-type]
+        scenarios=[scenario],
+        provider_lab_rate_limit_every=2,
+    )
+    harness._workdir = str(tmp_path)
+    fixture = make_slack_workspace(
+        team_id="T_LAB",
+        channels=1,
+        messages_per_channel=1,
+    )
+    harness._provider_lab_fixtures = {"slack": [fixture]}
+
+    harness._start_provider_lab()
+    try:
+        response = httpx.get(
+            harness._provider_lab.url("slack", "/api/conversations.list"),
+            headers={"Authorization": "Bearer lab-slack::T_LAB"},
+        )
+        service_account = json.loads(
+            (tmp_path / "provider_lab_sa.json").read_text(),
+        )
+        faults = harness._provider_lab.app.state.provider_lab.faults.snapshot()
+    finally:
+        harness._teardown_services()
+
+    assert response.status_code == 200
+    assert response.json()["channels"][0]["id"] == fixture["channels"][0]["id"]
+    assert service_account["token_uri"].startswith("http://127.0.0.1:")
+    assert service_account["token_uri"].endswith("/gmail/token")
+    assert faults
+    assert all(fault["status_code"] == 429 for fault in faults)
 
 
 @pytest.mark.asyncio

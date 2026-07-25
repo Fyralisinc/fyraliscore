@@ -14,9 +14,9 @@ client.py). Implements the read methods the planner-less Mercury chain calls:
       A thin wrapper over `list_transactions(limit=1, start=since[:10])` mirroring
       what reconcilers/mercury.py does to detect a gap.
 
-Every public method calls `self._check_fault()` first (A21), so the fetcher /
-reconciler see real `MercuryApiError` types with the right `code` on a configured
-fault — same as production.
+Every public method calls `self._check_fault()` first (A21). This legacy
+in-process mock surfaces pre-transport `MercuryApiError` values. Production
+rate limits instead emerge from `ProviderTransport` as `RetryLater`.
 
 `fixture` shape: see fixtures/mercury_generator.py::make_mercury.
 """

@@ -16,6 +16,7 @@ import pytest
 
 from datetime import datetime, timedelta, timezone
 
+from lib.shared.provider_transport import RetryLater, RetryReason
 from services.ingest.integrations.github.client import (
     CachedInstallationToken,
     GithubClient,
@@ -60,15 +61,19 @@ def test_auth_and_notfound_are_terminal():
 
 @pytest.mark.asyncio
 async def test_primary_limit_does_not_sleep_loop(monkeypatch):
-    """The primary limit returns after ONE GET (no retry sleeps); a bounded
-    in-call retry is reserved for the short secondary limit."""
+    """A long primary reset parks after one GET rather than sleeping."""
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         return httpx.Response(
             403,
-            headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "999"},
+            headers={
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(
+                    int(datetime.now(timezone.utc).timestamp()) + 3600,
+                ),
+            },
             json={"message": "API rate limit exceeded"},
         )
 
@@ -84,10 +89,15 @@ async def test_primary_limit_does_not_sleep_loop(monkeypatch):
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         api_base_url="http://t",
     )
-    resp = await client._get_with_rl_retry("http://t/repos/o/r/pulls", {})
-    assert resp.status_code == 403
+    with pytest.raises(RetryLater) as exc_info:
+        await client._get_with_rl_retry(
+            "http://t/repos/o/r/pulls",
+            {},
+            operation="repo_events.pull_requests.list",
+        )
     assert calls["n"] == 1, "primary limit must not retry-loop"
     assert slept["total"] == 0.0, "must not sleep the worker on the primary limit"
+    assert exc_info.value.reason is RetryReason.RATE_LIMIT
     await client.aclose()
 
 

@@ -6,9 +6,16 @@ Covers:
   - SC-008 (env-var fallback still reachable in dev)
 
 `load_secrets` becomes async in IN-08; we test the new contract:
-  load_secrets(provider, tenant_id, *, app_state=None) -> list[Secret]
+  load_secrets(
+      provider,
+      tenant_id,
+      *,
+      installation_row_id,
+      app_state=None,
+  ) -> list[Secret]
 
-When `app_state` is provided AND the (provider, tenant_id) maps to a
+When `app_state` is provided AND the exact
+`(installation_row_id, provider, tenant_id)` maps to an enabled
 `provider_installations` row with a populated `secret_ref`, the secret
 plaintext comes from `app_state.secret_store.get(...)`. Otherwise the
 function falls through to the legacy env-var path IF and ONLY IF
@@ -91,9 +98,19 @@ async def test_load_secrets_resolves_via_secret_store(
     ref = await app_state.secret_store.put(
         plaintext, label="slack_signing_secret:app", tenant_id=tenant,
     )
-    await _seed_installation(fresh_db, tenant, "slack", secret_ref=ref)
+    installation_id = await _seed_installation(
+        fresh_db,
+        tenant,
+        "slack",
+        secret_ref=ref,
+    )
 
-    secrets = await load_secrets("slack", tenant, app_state=app_state)
+    secrets = await load_secrets(
+        "slack",
+        tenant,
+        installation_row_id=installation_id,
+        app_state=app_state,
+    )
 
     assert len(secrets) == 1
     s = secrets[0]
@@ -112,9 +129,19 @@ async def test_load_secrets_env_fallback_off_returns_empty(
     app_state = _make_app_state(fresh_db)
     tenant = await _seed_tenant(fresh_db)
     # installation row exists but secret_ref is NULL — no DB resolution possible
-    await _seed_installation(fresh_db, tenant, "slack", secret_ref=None)
+    installation_id = await _seed_installation(
+        fresh_db,
+        tenant,
+        "slack",
+        secret_ref=None,
+    )
 
-    secrets = await load_secrets("slack", tenant, app_state=app_state)
+    secrets = await load_secrets(
+        "slack",
+        tenant,
+        installation_row_id=installation_id,
+        app_state=app_state,
+    )
 
     assert secrets == []
 
@@ -130,7 +157,12 @@ async def test_load_secrets_env_fallback_on_uses_env(
     tenant = await _seed_tenant(fresh_db)
     # No installation row → only env-var path can supply a secret.
 
-    secrets = await load_secrets("slack", tenant, app_state=app_state)
+    secrets = await load_secrets(
+        "slack",
+        tenant,
+        installation_row_id=uuid7(),
+        app_state=app_state,
+    )
 
     assert len(secrets) == 1
     assert secrets[0].value == "fallback-value"
@@ -148,9 +180,19 @@ async def test_load_secrets_db_ref_wins_over_env(
     ref = await app_state.secret_store.put(
         b"db-wins", label="slack_signing_secret:app", tenant_id=tenant,
     )
-    await _seed_installation(fresh_db, tenant, "slack", secret_ref=ref)
+    installation_id = await _seed_installation(
+        fresh_db,
+        tenant,
+        "slack",
+        secret_ref=ref,
+    )
 
-    secrets = await load_secrets("slack", tenant, app_state=app_state)
+    secrets = await load_secrets(
+        "slack",
+        tenant,
+        installation_row_id=installation_id,
+        app_state=app_state,
+    )
 
     assert len(secrets) == 1
     assert secrets[0].value == "db-wins"
@@ -170,16 +212,10 @@ async def test_load_secrets_no_app_state_uses_env(
     assert secrets[0].value == "legacy-env"
 
 
-async def test_load_secrets_returns_all_active_secrets_for_overlap(
+async def test_load_secrets_never_mixes_sibling_installation_secrets(
     fresh_db: asyncpg.Pool,
 ) -> None:
-    """FR-010 regression: during a zero-downtime secret rotation BOTH the old
-    and new secret_ref are enabled at once (and a tenant may also have several
-    installations of one provider). `load_secrets` must return EVERY active
-    secret so the verifier can accept either — a prior `LIMIT 1` returned only
-    the newest, dropping old-secret-signed deliveries with a 401 for the whole
-    overlap window.
-    """
+    """A delivery may verify only with its resolver-selected installation."""
     app_state = _make_app_state(fresh_db)
     tenant = await _seed_tenant(fresh_db)
     old_ref = await app_state.secret_store.put(
@@ -188,17 +224,34 @@ async def test_load_secrets_returns_all_active_secrets_for_overlap(
     new_ref = await app_state.secret_store.put(
         b"new-rotation-secret", label="slack_signing_secret:new", tenant_id=tenant,
     )
-    await _seed_installation(fresh_db, tenant, "slack", secret_ref=old_ref)
-    await _seed_installation(fresh_db, tenant, "slack", secret_ref=new_ref)
-
-    secrets = await load_secrets("slack", tenant, app_state=app_state)
-
-    assert {s.value for s in secrets} == {
-        "old-rotation-secret", "new-rotation-secret",
-    }, (
-        "load_secrets dropped an active rotation-overlap secret — DB-backed "
-        "zero-downtime rotation (LIMIT 1) regression."
+    old_installation = await _seed_installation(
+        fresh_db,
+        tenant,
+        "slack",
+        secret_ref=old_ref,
     )
+    new_installation = await _seed_installation(
+        fresh_db,
+        tenant,
+        "slack",
+        secret_ref=new_ref,
+    )
+
+    old_secrets = await load_secrets(
+        "slack",
+        tenant,
+        installation_row_id=old_installation,
+        app_state=app_state,
+    )
+    new_secrets = await load_secrets(
+        "slack",
+        tenant,
+        installation_row_id=new_installation,
+        app_state=app_state,
+    )
+
+    assert [secret.value for secret in old_secrets] == ["old-rotation-secret"]
+    assert [secret.value for secret in new_secrets] == ["new-rotation-secret"]
 
 
 async def test_load_secrets_disabled_installation_returns_empty(
@@ -213,11 +266,16 @@ async def test_load_secrets_disabled_installation_returns_empty(
     ref = await app_state.secret_store.put(
         b"stale-but-present", label="slack_signing_secret:app", tenant_id=tenant,
     )
-    await _seed_installation(
+    installation_id = await _seed_installation(
         fresh_db, tenant, "slack", secret_ref=ref, enabled=False,
     )
 
-    secrets = await load_secrets("slack", tenant, app_state=app_state)
+    secrets = await load_secrets(
+        "slack",
+        tenant,
+        installation_row_id=installation_id,
+        app_state=app_state,
+    )
 
     assert secrets == []
 

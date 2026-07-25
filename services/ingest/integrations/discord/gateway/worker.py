@@ -30,6 +30,10 @@ from services.ingest.integrations.discord.gateway.dispatch import (
     DispatchDeps,
     handle_dispatch,
 )
+from services.ingest.integrations.provider_transport_runtime import (
+    close_provider_transport_runtime,
+    get_provider_transport_runtime,
+)
 
 
 log = structlog.get_logger("integrations.discord.gateway.worker")
@@ -94,6 +98,7 @@ class GatewayWorker:
         self._current_client: DiscordGatewayClient | None = None
         self._initial_state = initial_state
         self._on_dispatched = on_dispatched
+        self._provider_transport_runtime = get_provider_transport_runtime()
 
     def _resolve_bot_token(self) -> str:
         token = self._bot_token_provider()
@@ -156,6 +161,19 @@ class GatewayWorker:
                     # Pulled from existing DispatchDeps; no new public
                     # surface on GatewayWorker.
                     kafka_producer=self._deps.kafka_producer,
+                    provider_transport=(
+                        self._provider_transport_runtime.transport
+                        if self._provider_transport_runtime is not None
+                        else None
+                    ),
+                    quota_resolver=(
+                        self._provider_transport_runtime.quota_resolver
+                        if self._provider_transport_runtime is not None
+                        else None
+                    ),
+                    allow_unlimited_local=(
+                        self._provider_transport_runtime is None
+                    ),
                 )
                 self._initial_state = None
                 self._current_client = client
@@ -201,6 +219,10 @@ class GatewayWorker:
                     # Reset attempt counter on the next successful READY.
                     pass
         finally:
+            await close_provider_transport_runtime(
+                self._provider_transport_runtime,
+            )
+            self._provider_transport_runtime = None
             log.info("discord_gateway_shutdown_complete")
         return 0
 

@@ -89,7 +89,7 @@ The final row (accounting objects + users) is **inferred and unverified**; endpo
 
 **Tenant identifier in payload (UNVERIFIED):** The field name used to route a webhook to the correct tenant install is unknown. Mercury uses `organizationId`; Brex likely uses a similar field. Must be confirmed to implement `_extract_brex` in `tenant_resolver.py`.
 
-**Maps to our pipeline:** Live path **(a) — HMAC webhook → Kafka cutover → 202**. This is the same path as Mercury, Jira, QuickBooks, and Grafana. Add `"brex"` to `_CUTOVER_ENABLED_PROVIDERS` and `_HMAC_SOURCES` in `router.py`. `_EXPECTED_LIVE_STATUS["brex"] = {202}` in `run_all_sources.py`.
+**Maps to our pipeline:** Live path **(a) — HMAC webhook → Kafka cutover → 202**. This is the same path as Mercury, Jira, QuickBooks, and Grafana. Brex's source-certification artifact records the expected 202 live ingress and HMAC/tamper evidence; Provider Lab coverage is derived from the canonical catalog.
 
 ---
 

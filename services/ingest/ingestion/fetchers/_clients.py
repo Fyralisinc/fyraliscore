@@ -1,18 +1,19 @@
-"""Production / spammer backfill read-client builders.
+"""Production / Provider Lab backfill read-client builders.
 
 The M6.4–M6.6 fetchers + reconcilers + planners (github / slack / discord)
 build their source client here. Historically the fetcher/reconciler openers
 `raise RuntimeError` and were satisfied only by the X3 mock monkeypatch; this
 module builds the REAL source clients, resolving each source's base URL
-through `lib.integrations.endpoints` — so pointing backfill at the local
-spammer (or at production) is pure config.
+through explicit per-source endpoint overrides. Provider Lab callers set
+``PROVIDER_LAB_URL`` to enable deterministic test credentials and set the
+per-source endpoint variables to the matching lab URLs.
 
 Identity is read from the install row: for github / slack / discord the
 `provider_installations.installation_id` column carries the source-native
 identity (the X3 harness writes `x3-{slug}-{source}`).
 
-SPAMMER MODE (env `SYNTHETIC_SOURCE_API_BASE` set): the clients skip real
-auth and instead carry a spammer-recognized identity token so the spammer
+PROVIDER LAB MODE (env ``PROVIDER_LAB_URL`` set): the clients skip real
+auth and instead carry a lab-recognized identity token so the lab
 can route the request to the right tenant's fixtures — no GitHub App JWT,
 no Slack bot-token secret, no Discord bot token required:
   - github : preseed the installation-token cache with `spam-gh::<inst>`
@@ -27,18 +28,18 @@ across shards.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import os
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
-from functools import wraps
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import asyncpg
 import httpx
 
-from lib.shared.circuit_breaker import AsyncCircuitBreaker
-from lib.shared.errors import CompanyOSError
-from lib.shared.http_retry import is_retryable_httpx_error
+from lib.integrations.provider_lab import provider_lab_enabled
+from services.ingest.integrations.provider_transport_runtime import (
+    get_provider_transport_runtime,
+)
 
 
 _POOL: asyncpg.Pool | None = None
@@ -51,91 +52,31 @@ _HTTP_LOCK = asyncio.Lock()
 # re-mint). See build_github_client.
 _GITHUB_CLIENTS: dict[str, Any] = {}
 _GITHUB_CLIENTS_LOCK = asyncio.Lock()
-_SOURCE_API_BREAKERS: dict[str, AsyncCircuitBreaker] = {}
-_SOURCE_API_BREAKERS_LOCK = asyncio.Lock()
 
 
-def _record_source_api_breaker_exception(exc: BaseException) -> bool:
-    if isinstance(exc, CompanyOSError):
-        return exc.recoverable
-    if isinstance(exc, httpx.HTTPStatusError):
-        return is_retryable_httpx_error(exc)
-    return isinstance(exc, httpx.TransportError)
+def _provider_transport_kwargs() -> dict[str, Any]:
+    """Production transport binding; explicit unmetered mode for Provider Lab/dev."""
+
+    runtime = get_provider_transport_runtime()
+    if runtime is None:
+        return {"allow_unlimited_local": True}
+    return {
+        "provider_transport": runtime.transport,
+        "quota_resolver": runtime.quota_resolver,
+        "allow_unlimited_local": False,
+    }
 
 
-async def _source_api_breaker(source: str) -> AsyncCircuitBreaker:
-    breaker = _SOURCE_API_BREAKERS.get(source)
-    if breaker is not None:
-        return breaker
-    async with _SOURCE_API_BREAKERS_LOCK:
-        breaker = _SOURCE_API_BREAKERS.get(source)
-        if breaker is None:
-            breaker = AsyncCircuitBreaker(
-                name=f"source_api_{source}",
-                record_exception=_record_source_api_breaker_exception,
-            )
-            _SOURCE_API_BREAKERS[source] = breaker
-        return breaker
-
-
-class SourceApiCircuitBreakerProxy:
-    """Wrap public async source-client methods with a per-source breaker."""
-
-    def __init__(
-        self,
-        *,
-        source: str,
-        client: Any,
-        breaker: AsyncCircuitBreaker,
-    ) -> None:
-        object.__setattr__(self, "_source", source)
-        object.__setattr__(self, "_client", client)
-        object.__setattr__(self, "_breaker", breaker)
-
-    def __getattr__(self, name: str) -> Any:
-        attr = getattr(self._client, name)
-        if (
-            name.startswith("_")
-            or name in {"aclose", "close"}
-            or not inspect.iscoroutinefunction(attr)
-        ):
-            return attr
-
-        @wraps(attr)
-        async def _wrapped(*args: Any, **kwargs: Any) -> Any:
-            return await self._breaker.call(lambda: attr(*args, **kwargs))
-
-        return _wrapped
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name in {"_source", "_client", "_breaker"}:
-            object.__setattr__(self, name, value)
-            return
-        setattr(self._client, name, value)
-
-
-async def _wrap_source_client(
-    source: str,
-    client: Any,
-    *,
-    breaker: AsyncCircuitBreaker | None = None,
-) -> SourceApiCircuitBreakerProxy:
-    return SourceApiCircuitBreakerProxy(
-        source=source,
-        client=client,
-        breaker=breaker or await _source_api_breaker(source),
-    )
-
-
-def _spammer_mode() -> bool:
-    return bool(os.environ.get("SYNTHETIC_SOURCE_API_BASE"))
+def _provider_lab_mode() -> bool:
+    """Whether deterministic Provider Lab credentials are explicitly enabled."""
+    return provider_lab_enabled()
 
 
 async def _get_http() -> httpx.AsyncClient:
     """One process-shared httpx client with keep-alive, reused across all
     shard fetches. Building a fresh client per `_open_*_client` opens new
     TCP connections every fetch — under fan-out backfill that floods the
-    single-process spammer with connection churn (it wedges). Keep-alive
+    single-process Provider Lab with connection churn (it wedges). Keep-alive
     reuse keeps the live-connection count to ~the fetch concurrency."""
     global _HTTP
     if _HTTP is None:
@@ -166,16 +107,16 @@ async def _get_pool() -> asyncpg.Pool:
 
 
 async def _effective_pool(
-    provided: asyncpg.Pool | None, *, spammer: bool,
+    provided: asyncpg.Pool | None, *, provider_lab: bool,
 ) -> asyncpg.Pool | None:
     """Pool for the client to carry. Reuse the caller's pool when given;
-    in spammer mode the clients never touch the pool (tokens are preset,
+    in Provider Lab mode the clients never touch the pool (tokens are preset,
     no secret-store / chokepoint), so don't open one. Only the production
-    fetcher/reconciler openers (no pool passed, not spammer) lazily share
+    fetcher/reconciler openers (no pool passed, not Provider Lab) lazily share
     the process-local pool."""
     if provided is not None:
         return provided
-    if spammer:
+    if provider_lab:
         return None
     return await _get_pool()
 
@@ -192,26 +133,39 @@ async def _get_secret_store() -> Any:
 # Client builders (used by both the fetcher/reconciler openers and the
 # source_onboarding planner factory).
 # ---------------------------------------------------------------------
-async def _new_github_client(inst: str, *, pool: asyncpg.Pool | None) -> Any:
+async def _new_github_client(
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None,
+) -> Any:
     from services.ingest.integrations.github.client import (
         CachedInstallationToken,
         GithubClient,
     )
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
+    inst = str(install["installation_id"])
     client = GithubClient(
-        pool=await _effective_pool(pool, spammer=spammer),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
         backfill_installation_id=inst,
+        tenant_id=install["tenant_id"],
+        installation_row_id=install["id"],
         http_client=await _get_http(),
+        **_provider_transport_kwargs(),
     )
-    if spammer:
+    await client.register_installation_context(
+        inst,
+        tenant_id=install["tenant_id"],
+        installation_row_id=install["id"],
+    )
+    if provider_lab:
         # Skip the App-JWT mint: hand the client a ready installation token
-        # the spammer recognizes (`spam-gh::<inst>` → repos for that install).
+        # the Provider Lab recognizes (`spam-gh::<inst>` → repos for that install).
         client._installation_tokens[inst] = CachedInstallationToken(
             token=f"spam-gh::{inst}",
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
-    return await _wrap_source_client("github", client)
+    return client
 
 
 async def build_github_client(
@@ -235,7 +189,7 @@ async def build_github_client(
     """
     inst = str(install["installation_id"])
     if pool is not None:
-        return await _new_github_client(inst, pool=pool)
+        return await _new_github_client(install, pool=pool)
 
     cached = _GITHUB_CLIENTS.get(inst)
     if cached is not None:
@@ -244,7 +198,7 @@ async def build_github_client(
         cached = _GITHUB_CLIENTS.get(inst)
         if cached is not None:
             return cached
-        client = await _new_github_client(inst, pool=None)
+        client = await _new_github_client(install, pool=None)
         _GITHUB_CLIENTS[inst] = client
         return client
 
@@ -254,21 +208,22 @@ async def build_slack_client(
 ) -> Any:
     from services.ingest.integrations.slack.client import SlackClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     team_id = str(install["installation_id"])
     client = SlackClient(
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         installation_row_id=install["id"],
         team_id=team_id,
         http_client=await _get_http(),
+        **_provider_transport_kwargs(),
     )
-    if spammer:
+    if provider_lab:
         client._bot_token_cache.set(  # type: ignore[attr-defined]
             f"spam-slack::{team_id}", ttl_seconds=float("inf"),
         )
-    return await _wrap_source_client("slack", client)
+    return client
 
 
 async def build_slack_user_client(
@@ -285,19 +240,19 @@ async def build_slack_user_client(
     grain is per consenting user (`slack_dm_installations`), so this builder
     takes the identity tuple directly rather than an install Record. The user
     token is resolved from the secret store by label
-    `slack_user_token:{team_id}:{user_id}` (or preset in spammer mode).
+    `slack_user_token:{team_id}:{user_id}` (or preset in Provider Lab mode).
 
-    SPAMMER MODE: preseed the user-token cache with
-    `spam-slack-user::<team>::<user>` so the spammer routes
+    PROVIDER LAB MODE: preseed the user-token cache with
+    `spam-slack-user::<team>::<user>` so the Provider Lab routes
     `conversations.list(types=im,mpim)` to that user's DM
     fixtures — no real xoxp grant or secret material required.
     """
     from services.ingest.integrations.slack.client import SlackUserClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     client = SlackUserClient(
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=tenant_id,
         # The user grain has no provider_installations row id; carry the
         # tenant uuid as the (unused-by-_call) installation_row_id slot.
@@ -306,12 +261,13 @@ async def build_slack_user_client(
         user_id=user_id,
         base_url=base_url,
         http_client=await _get_http(),
+        **_provider_transport_kwargs(),
     )
-    if spammer:
+    if provider_lab:
         client._user_token_cache.set(  # type: ignore[attr-defined]
             f"spam-slack-user::{team_id}::{user_id}", ttl_seconds=float("inf"),
         )
-    return await _wrap_source_client("slack", client)
+    return client
 
 
 async def build_discord_client(
@@ -319,103 +275,115 @@ async def build_discord_client(
 ) -> Any:
     from services.ingest.integrations.discord.client import DiscordClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     guild_id = str(install["installation_id"])
     client = DiscordClient(
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         installation_row_id=install["id"],
         guild_id=guild_id,
         http_client=await _get_http(),
-        bot_token=f"spam-bot::{guild_id}" if spammer else None,
+        bot_token=f"spam-bot::{guild_id}" if provider_lab else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("discord", client)
+    return client
 
 
 async def build_notion_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Notion read-client. Bot token is long-lived: resolved once from the
-    secret store via `install['secret_ref']` (or preset in spammer mode).
+    secret store via `install['secret_ref']` (or preset in Provider Lab mode).
     `installation_id` carries the workspace id. The base URL routes through
-    the endpoint resolver so backfill can point at the local spammer."""
+    the endpoint resolver so backfill can point at the local Provider Lab."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.notion.client import NotionClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     workspace_id = str(install["installation_id"])
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = NotionClient(
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
         workspace_id=workspace_id,
-        bot_token=(f"spam-notion::{workspace_id}" if spammer else None),
+        bot_token=(f"spam-notion::{workspace_id}" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("notion_api") if not spammer else None),
+        # endpoint() resolves the production host or explicit Notion lab base.
+        # Passing None in synthetic mode would silently hit Notion.
+        api_base_url=endpoint("notion_api"),
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("notion", client)
+    return client
 
 
 async def build_jira_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Jira Cloud read-client. API token is long-lived: resolved once from the
-    secret store via `install['secret_ref']` (or preset in spammer mode). The
-    site base URL is per-install (`install['base_url']`); in spammer mode it is
+    secret store via `install['secret_ref']` (or preset in Provider Lab mode). The
+    site base URL is per-install (`install['base_url']`); in Provider Lab mode it is
     overridden via the endpoint resolver so backfill points at the local
-    spammer's `/jira` sub-path. `account_email` is the Basic-auth username."""
+    Provider Lab's `/jira` sub-path. `account_email` is the Basic-auth username."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.jira.client import JiraClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"])
     account_email = str(install["account_email"])
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = JiraClient(
         base_url=base_url,
         account_email=account_email,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_token=("spam-jira" if spammer else None),
+        api_token=("spam-jira" if provider_lab else None),
         http_client=await _get_http(),
-        # Spammer routes ALL sites to the one mock host under /jira; prod uses
+        # Provider Lab routes ALL sites to the one mock host under /jira; prod uses
         # the per-install base_url (api_base_url=None → base_url is used).
-        api_base_url=(endpoint("jira_api") if spammer else None),
+        api_base_url=(endpoint("jira_api") if provider_lab else None),
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("jira", client)
+    # ProviderTransport owns Jira retry/cooldown/circuit behavior. A
+    # process-wide source breaker would collapse unrelated tenants and
+    # installations into one failure domain.
+    return client
 
 
 async def build_mercury_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Mercury read-client. API token is long-lived: resolved once from the
-    secret store via `install['secret_ref']` (or preset in spammer mode). The
+    secret store via `install['secret_ref']` (or preset in Provider Lab mode). The
     base URL routes through the endpoint resolver so backfill can point at the
-    local spammer's `/mercury` sub-path."""
+    local Provider Lab's `/mercury` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.mercury.client import MercuryClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = MercuryClient(
         base_url=base_url,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_token=("spam-mercury" if spammer else None),
+        api_token=("spam-mercury" if provider_lab else None),
         http_client=await _get_http(),
-        # Spammer routes to the one mock host under /mercury; prod uses the
+        # Provider Lab routes to the one mock host under /mercury; prod uses the
         # canonical Mercury API host (api_base_url=None → base_url is used).
-        api_base_url=(endpoint("mercury_api") if spammer else None),
+        api_base_url=(endpoint("mercury_api") if provider_lab else None),
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("mercury", client)
+    return client
 
 
 async def build_grafana_client(
@@ -423,63 +391,68 @@ async def build_grafana_client(
 ) -> Any:
     """Grafana read-client. Service-account token (Bearer) is long-lived:
     resolved once from the secret store via `install['secret_ref']` (or preset in
-    spammer mode). The instance base URL is per-install (`install['base_url']`);
-    in spammer mode it is overridden via the endpoint resolver so backfill points
-    at the local spammer's `/grafana` sub-path."""
+    Provider Lab mode). The instance base URL is per-install (`install['base_url']`);
+    in Provider Lab mode it is overridden via the endpoint resolver so backfill points
+    at the local Provider Lab's `/grafana` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.grafana.client import GrafanaClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = GrafanaClient(
         base_url=base_url,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_token=("spam-grafana" if spammer else None),
+        api_token=("spam-grafana" if provider_lab else None),
         http_client=await _get_http(),
-        # Spammer routes to the one mock host under /grafana; prod uses the
+        # Provider Lab routes to the one mock host under /grafana; prod uses the
         # per-install base_url (api_base_url=None → base_url is used).
-        api_base_url=(endpoint("grafana_api") if spammer else None),
+        api_base_url=(endpoint("grafana_api") if provider_lab else None),
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("grafana", client)
+    return client
 
 
 async def build_quickbooks_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
     """QuickBooks read-client. OAuth access token is resolved once from the
-    secret store via `install['secret_ref']` (or preset in spammer mode). The
-    realm-scoped base URL is per-install (`install['base_url']`); in spammer
+    secret store via `install['secret_ref']` (or preset in Provider Lab mode). The
+    realm-scoped base URL is per-install (`install['base_url']`); in Provider Lab
     mode it is overridden via the endpoint resolver so backfill points at the
-    local spammer's `/quickbooks` sub-path. `realm_id` scopes every query."""
+    local Provider Lab's `/quickbooks` sub-path. `realm_id` scopes every query."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.quickbooks.client import QuickBooksClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     realm_id = str(install["realm_id"]) if "realm_id" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = QuickBooksClient(
         base_url=base_url,
         realm_id=realm_id,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        access_token=("spam-quickbooks" if spammer else None),
+        access_token=("spam-quickbooks" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("quickbooks_api") if spammer else None),
-        # Phase 3: reactive OAuth re-mint on 401 (inert in spammer mode — the
+        api_base_url=(endpoint("quickbooks_api") if provider_lab else None),
+        # Phase 3: reactive OAuth re-mint on 401 (inert in Provider Lab mode — the
         # preset token + no secret_store mean refresh_on_unauthorized no-ops).
         install_row_id=install["id"] if "id" in install else None,
         refresh_secret_ref=(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
         ),
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("quickbooks", client)
+    # ProviderTransport owns scoped cooldown/circuit behavior. A process-wide
+    # source breaker would incorrectly couple unrelated realms/installations.
+    return client
 
 
 async def build_telegram_client(
@@ -487,31 +460,35 @@ async def build_telegram_client(
 ) -> Any:
     """Telegram MTProto read-client for BACKFILL. The credential is a persisted
     Telethon StringSession resolved once from the secret store (or preset in
-    spammer mode). Topology B (ADR-0003): backfill uses the SECOND authorization
+    Provider Lab mode). Topology B (ADR-0003): backfill uses the SECOND authorization
     (`backfill_session_secret_ref`), distinct from the live gateway worker's
     session, so the two never share one auth_key — falls back to the live session
     ref only if a dedicated backfill session wasn't minted. Telethon is optional
     and imported lazily inside the client's connect()."""
     from services.ingest.integrations.telegram.client import TelegramClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     backfill_ref = (
         install["backfill_session_secret_ref"]
         if "backfill_session_secret_ref" in install else None
     )
     live_ref = install["session_secret_ref"] if "session_secret_ref" in install else None
     client = TelegramClient(
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
+        installation_id=install["id"] if "id" in install else None,
         api_id=install["api_id"] if "api_id" in install else None,
         api_hash_secret_ref=(
             install["api_hash_secret_ref"] if "api_hash_secret_ref" in install else None
         ),
         session_secret_ref=(backfill_ref or live_ref),
-        session=("spam-telegram" if spammer else None),
+        session=("spam-telegram" if provider_lab else None),
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("telegram", client)
+    # ProviderTransport owns per-install cooldown and concurrency. A global
+    # Telegram breaker would couple unrelated MTProto authorizations.
+    return client
 
 
 async def build_brex_client(
@@ -519,27 +496,29 @@ async def build_brex_client(
 ) -> Any:
     """Brex read-client (IN-FIN2, Bearer auth over real v2 cash/card APIs). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
-    (or preset in spammer mode). The base URL routes through the endpoint
-    resolver so backfill can point at the local spammer's `/brex` sub-path."""
+    (or preset in Provider Lab mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local Provider Lab's `/brex` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.brex.client import BrexClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = BrexClient(
         base_url=base_url,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_token=("spam-brex" if spammer else None),
+        api_token=("spam-brex" if provider_lab else None),
         http_client=await _get_http(),
-        # Spammer routes to the one mock host under /brex; prod uses the
+        # Provider Lab routes to the one mock host under /brex; prod uses the
         # canonical Brex API host (api_base_url=None → base_url is used).
-        api_base_url=(endpoint("brex_api") if spammer else None),
+        api_base_url=(endpoint("brex_api") if provider_lab else None),
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("brex", client)
+    return client
 
 
 async def build_ramp_client(
@@ -547,35 +526,38 @@ async def build_ramp_client(
 ) -> Any:
     """Ramp read-client (IN-FIN2, OAuth client-credentials — verified
     docs.ramp.com Developer API). The Bearer access token is resolved once from
-    the secret store via `install['secret_ref']` (or preset in spammer mode);
+    the secret store via `install['secret_ref']` (or preset in Provider Lab mode);
     on 401 it is RE-MINTED via client_credentials (no refresh token exists for
     that grant). `business_id` is the per-install identity carried on records
     (it scopes external_ids, not the URL — the REST collections are
-    token-scoped); in spammer mode the base URL is overridden via the endpoint
-    resolver so backfill points at the local spammer's `/ramp` sub-path."""
+    token-scoped); in Provider Lab mode the base URL is overridden via the endpoint
+    resolver so backfill points at the local Provider Lab's `/ramp` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.ramp.client import RampClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     business_id = str(install["business_id"]) if "business_id" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = RampClient(
         base_url=base_url,
         business_id=business_id,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        access_token=("spam-ramp" if spammer else None),
+        access_token=("spam-ramp" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("ramp_api") if spammer else None),
+        api_base_url=(endpoint("ramp_api") if provider_lab else None),
         install_row_id=install["id"] if "id" in install else None,
         refresh_secret_ref=(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
         ),
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("ramp", client)
+    # ProviderTransport owns scoped cooldown/circuit behavior. A process-wide
+    # source breaker would incorrectly couple unrelated installations.
+    return client
 
 
 async def build_gusto_client(
@@ -583,34 +565,37 @@ async def build_gusto_client(
 ) -> Any:
     """Gusto read-client (IN-FIN2, OAuth payroll REST — /v1 bare-array
     endpoints, header pagination). OAuth access token is resolved once from
-    the secret store via `install['secret_ref']` (or preset in spammer mode).
+    the secret store via `install['secret_ref']` (or preset in Provider Lab mode).
     The scope id `company_uuid` is per-install and scopes every request
-    (`/v1/companies/{company_uuid}/...`); in spammer mode the base URL is
+    (`/v1/companies/{company_uuid}/...`); in Provider Lab mode the base URL is
     overridden via the endpoint resolver so backfill points at the local
-    spammer's `/gusto` sub-path."""
+    Provider Lab's `/gusto` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.gusto.client import GustoClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     company_uuid = str(install["company_uuid"]) if "company_uuid" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = GustoClient(
         base_url=base_url,
         company_uuid=company_uuid,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        access_token=("spam-gusto" if spammer else None),
+        access_token=("spam-gusto" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("gusto_api") if spammer else None),
+        api_base_url=(endpoint("gusto_api") if provider_lab else None),
         install_row_id=install["id"] if "id" in install else None,
         refresh_secret_ref=(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
         ),
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("gusto", client)
+    # ProviderTransport owns scoped cooldown/circuit behavior. A process-wide
+    # source breaker would incorrectly couple unrelated companies/installations.
+    return client
 
 
 async def build_deel_client(
@@ -618,27 +603,29 @@ async def build_deel_client(
 ) -> Any:
     """Deel read-client (IN-FIN2, Bearer auth over /rest/v2). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
-    (or preset in spammer mode). The base URL routes through the endpoint
-    resolver so backfill can point at the local spammer's `/deel` sub-path."""
+    (or preset in Provider Lab mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local Provider Lab's `/deel` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.deel.client import DeelClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = DeelClient(
         base_url=base_url,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_token=("spam-deel" if spammer else None),
+        api_token=("spam-deel" if provider_lab else None),
         http_client=await _get_http(),
-        # Spammer routes to the one mock host under /deel; prod uses the
+        # Provider Lab routes to the one mock host under /deel; prod uses the
         # canonical Deel API host (api_base_url=None → base_url is used).
-        api_base_url=(endpoint("deel_api") if spammer else None),
+        api_base_url=(endpoint("deel_api") if provider_lab else None),
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("deel", client)
+    return client
 
 
 async def build_fireflies_client(
@@ -646,26 +633,28 @@ async def build_fireflies_client(
 ) -> Any:
     """Fireflies read-client (IN-VERTICALS, GraphQL-only Bearer API). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
-    (or preset in spammer mode). The base URL routes through the endpoint
-    resolver so backfill can point at the local spammer's `/fireflies`
+    (or preset in Provider Lab mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local Provider Lab's `/fireflies`
     sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.fireflies.client import FirefliesClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = FirefliesClient(
         base_url=base_url,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_token=("spam-fireflies" if spammer else None),
+        api_token=("spam-fireflies" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("fireflies_api") if spammer else None),
+        api_base_url=(endpoint("fireflies_api") if provider_lab else None),
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("fireflies", client)
+    return client
 
 
 async def build_miro_client(
@@ -673,25 +662,27 @@ async def build_miro_client(
 ) -> Any:
     """Miro read-client (IN-VERTICALS, Brex/HMAC archetype). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
-    (or preset in spammer mode). The base URL routes through the endpoint
-    resolver so backfill can point at the local spammer's `/miro` sub-path."""
+    (or preset in Provider Lab mode). The base URL routes through the endpoint
+    resolver so backfill can point at the local Provider Lab's `/miro` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.miro.client import MiroClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = MiroClient(
         base_url=base_url,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_token=("spam-miro" if spammer else None),
+        api_token=("spam-miro" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("miro_api") if spammer else None),
+        api_base_url=(endpoint("miro_api") if provider_lab else None),
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("miro", client)
+    return client
 
 
 async def build_figma_client(
@@ -702,12 +693,12 @@ async def build_figma_client(
     ``auth_kind`` is persisted on the install so OAuth grants use the required
     ``Authorization: Bearer`` header while legacy PAT installs retain
     ``X-Figma-Token``.  The base URL routes through the endpoint resolver so
-    backfill can point at the local spammer's `/figma` sub-path.
+    backfill can point at the local Provider Lab's `/figma` sub-path.
     """
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.figma.client import FigmaClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     team_id = str(install["team_id"]) if "team_id" in install else ""
@@ -720,20 +711,24 @@ async def build_figma_client(
     )
     client = FigmaClient(
         base_url=base_url,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_token=("spam-figma" if spammer else None),
+        api_token=("spam-figma" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("figma_api") if spammer else None),
+        api_base_url=(endpoint("figma_api") if provider_lab else None),
         team_id=team_id,
         auth_kind=auth_kind,
         install_row_id=install["id"] if "id" in install else None,
         refresh_secret_ref=refresh_secret_ref,
         token_expires_at=token_expires_at,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("figma", client)
+    # ProviderTransport owns Figma retry/cooldown/circuit behavior. A
+    # process-wide source breaker would collapse unrelated tenants and
+    # installations into one failure domain.
+    return client
 
 
 async def build_carta_client(
@@ -741,34 +736,35 @@ async def build_carta_client(
 ) -> Any:
     """Carta read-client (IN-VERTICALS, Gusto/OAuth archetype). OAuth access
     token is resolved once from the secret store via `install['secret_ref']`
-    (or preset in spammer mode). The scope id is the Carta **issuer id**
+    (or preset in Provider Lab mode). The scope id is the Carta **issuer id**
     (stored in `carta_installations.firm_id` — the column predates the issuer
-    naming) and scopes every per-issuer read; in spammer mode the base URL is
+    naming) and scopes every per-issuer read; in Provider Lab mode the base URL is
     overridden via the endpoint resolver so backfill points at the local
-    spammer's `/carta` sub-path."""
+    Provider Lab's `/carta` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.carta.client import CartaClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     issuer_id = str(install["firm_id"]) if "firm_id" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = CartaClient(
         base_url=base_url,
         issuer_id=issuer_id,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        access_token=("spam-carta" if spammer else None),
+        access_token=("spam-carta" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("carta_api") if spammer else None),
+        api_base_url=(endpoint("carta_api") if provider_lab else None),
         install_row_id=install["id"] if "id" in install else None,
         refresh_secret_ref=(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
         ),
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("carta", client)
+    return client
 
 
 async def build_signal_client(
@@ -776,7 +772,7 @@ async def build_signal_client(
 ) -> Any:
     """Signal linked-device read-client for BACKFILL (IN-VERTICALS,
     Telegram/gateway archetype). The credential is a persisted linked-device
-    session resolved once from the secret store (or preset in spammer mode).
+    session resolved once from the secret store (or preset in Provider Lab mode).
     Topology B: backfill uses the SECOND linked-device session
     (`backfill_session_secret_ref`), distinct from the live gateway worker's
     session — falls back to the live session ref only if a dedicated backfill
@@ -784,7 +780,7 @@ async def build_signal_client(
     (no api_id / api_hash)."""
     from services.ingest.integrations.signal.client import SignalClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     backfill_ref = (
         install["backfill_session_secret_ref"]
         if "backfill_session_secret_ref" in install else None
@@ -796,14 +792,17 @@ async def build_signal_client(
         install["account_label"] if "account_label" in install else None
     )
     client = SignalClient(
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
+        installation_id=install["id"],
         account_label=account_label,
         session_secret_ref=(backfill_ref or live_ref),
-        session=("spam-signal" if spammer else None),
+        session=("spam-signal" if provider_lab else None),
+        http_client=await _get_http(),
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("signal", client)
+    return client
 
 
 async def build_aws_client(
@@ -812,24 +811,27 @@ async def build_aws_client(
     """AWS CloudTrail read-client for BACKFILL (IN-VERTICALS, poll-live edge).
     Credentials are resolved from the install's `credential_kind` (assume_role /
     static_keys) + `secret_ref`; `account_id` + `region` scope every
-    LookupEvents call. There is no spammer base-URL override (the synthetic
+    LookupEvents call. There is no Provider Lab base-URL override (the synthetic
     harness rebinds the fetcher's `_open_aws_client` seam to a MockAwsClient),
     so this builds a real client against the install's auth."""
     from services.ingest.integrations.aws.client import AwsClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     client = AwsClient(
         account_id=str(install["account_id"]) if "account_id" in install else "",
         region=str(install["region"]) if "region" in install else "us-east-1",
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"] if "tenant_id" in install else None,
         credential_kind=(
             install["credential_kind"] if "credential_kind" in install else None
         ),
         secret_ref=install["secret_ref"] if "secret_ref" in install else None,
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("aws", client)
+    # ProviderTransport owns account/install scoped cooldown and concurrency.
+    return client
 
 
 async def build_hibob_client(
@@ -840,13 +842,13 @@ async def build_hibob_client(
     `base64(service_user_id:token)`, NOT OAuth (no refresh). The `service_user_id`
     is the public half (carried on the install row); the secret half (`token`) is
     resolved once from the secret store via `install['secret_ref']` (or preset in
-    spammer mode). The scope id `company_id` is per-install; in spammer mode the
+    Provider Lab mode). The scope id `company_id` is per-install; in Provider Lab mode the
     base URL is overridden via the endpoint resolver so backfill points at the
-    local spammer's `/hibob` sub-path."""
+    local Provider Lab's `/hibob` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.hibob.client import HibobClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     company_id = str(install["company_id"]) if "company_id" in install else ""
     service_user_id = (
@@ -857,15 +859,17 @@ async def build_hibob_client(
         base_url=base_url,
         company_id=company_id,
         service_user_id=service_user_id,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        token=("spam-hibob" if spammer else None),
+        token=("spam-hibob" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("hibob_api") if spammer else None),
+        api_base_url=(endpoint("hibob_api") if provider_lab else None),
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("hibob", client)
+    return client
 
 
 async def build_ashby_client(
@@ -874,28 +878,30 @@ async def build_ashby_client(
     """Ashby read-client (IN-PEOPLE, Gusto-structure archetype). Ashby
     authenticates with an API KEY presented as the Basic username + empty
     password (`base64("KEY:")`); the key is resolved once from the secret store
-    via `install['secret_ref']` (or preset in spammer mode). The scope id `org_id`
-    is per-install; in spammer mode the base URL is overridden via the endpoint
-    resolver so backfill points at the local spammer's `/ashby` sub-path."""
+    via `install['secret_ref']` (or preset in Provider Lab mode). The scope id `org_id`
+    is per-install; in Provider Lab mode the base URL is overridden via the endpoint
+    resolver so backfill points at the local Provider Lab's `/ashby` sub-path."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.ashby.client import AshbyClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     org_id = str(install["org_id"]) if "org_id" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     client = AshbyClient(
         base_url=base_url,
         org_id=org_id,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_key=("spam-ashby" if spammer else None),
+        api_key=("spam-ashby" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("ashby_api") if spammer else None),
+        api_base_url=(endpoint("ashby_api") if provider_lab else None),
+        installation_row_id=install["id"] if "id" in install else None,
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("ashby", client)
+    return client
 
 
 async def build_linkedin_client(
@@ -903,15 +909,15 @@ async def build_linkedin_client(
 ) -> Any:
     """LinkedIn read-client (IN-PEOPLE, Carta-structure archetype). OAuth access
     token is resolved once from the secret store via `install['secret_ref']` (or
-    preset in spammer mode). The scope id `organization_urn` (firm_id-equivalent)
-    is per-install and scopes every request; in spammer mode the base URL is
+    preset in Provider Lab mode). The scope id `organization_urn` (firm_id-equivalent)
+    is per-install and scopes every request; in Provider Lab mode the base URL is
     overridden via the endpoint resolver so backfill points at the local
-    spammer's `/linkedin` sub-path. Poll-only live edge (no webhook); the
+    Provider Lab's `/linkedin` sub-path. Poll-only live edge (no webhook); the
     recruitment APIs are partner-gated in production."""
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.linkedin.client import LinkedinClient
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     base_url = str(install["base_url"]) if "base_url" in install else ""
     organization_urn = (
         str(install["organization_urn"]) if "organization_urn" in install else ""
@@ -920,26 +926,29 @@ async def build_linkedin_client(
     client = LinkedinClient(
         base_url=base_url,
         organization_urn=organization_urn,
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        access_token=("spam-linkedin" if spammer else None),
+        access_token=("spam-linkedin" if provider_lab else None),
         http_client=await _get_http(),
-        api_base_url=(endpoint("linkedin_api") if spammer else None),
+        api_base_url=(endpoint("linkedin_api") if provider_lab else None),
         install_row_id=(install["id"] if "id" in install else None),
         refresh_secret_ref=(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
         ),
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("linkedin", client)
+    # ProviderTransport owns scoped cooldown/circuit behavior. A process-wide
+    # source breaker would incorrectly couple unrelated organizations/installations.
+    return client
 
 
 async def build_facebook_pages_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Facebook Pages read-client. The Page access token lives behind
-    `facebook_page_installations.page_access_token_ref`; in spammer mode a
+    `facebook_page_installations.page_access_token_ref`; in Provider Lab mode a
     deterministic token is preset and the Graph base URL points at the local
     source mock."""
     from services.ingest.integrations.facebook_pages.client import (
@@ -947,21 +956,25 @@ async def build_facebook_pages_client(
         graph_api_base_url,
     )
 
-    spammer = _spammer_mode()
+    provider_lab = _provider_lab_mode()
     page_id = str(install["page_id"]) if "page_id" in install else ""
     client = FacebookPagesClient(
         base_url=graph_api_base_url(),
-        access_token=(f"spam-facebook-pages::{page_id}" if spammer else None),
+        access_token=(f"spam-facebook-pages::{page_id}" if provider_lab else None),
         page_access_token_ref=(
             install["page_access_token_ref"]
             if "page_access_token_ref" in install else None
         ),
-        pool=await _effective_pool(pool, spammer=spammer),
-        secret_store=None if spammer else await _get_secret_store(),
+        pool=await _effective_pool(pool, provider_lab=provider_lab),
+        secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         http_client=await _get_http(),
+        installation_row_id=install["id"],
+        **_provider_transport_kwargs(),
     )
-    return await _wrap_source_client("facebook_pages", client)
+    # ProviderTransport owns installation-scoped quota/cooldown state. A
+    # process-wide Facebook breaker would couple unrelated Pages and tenants.
+    return client
 
 
 # ---------------------------------------------------------------------

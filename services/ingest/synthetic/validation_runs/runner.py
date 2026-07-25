@@ -74,7 +74,11 @@ async def _migrate_and_truncate(pool: asyncpg.Pool) -> None:
                AND c.relispartition = FALSE
             """
         )
-        names = ", ".join(f'"{r["relname"]}"' for r in rows)
+        names = ", ".join(
+            f'"{r["relname"]}"'
+            for r in rows
+            if r["relname"] != "ingestion_source_catalog"
+        )
         if names:
             await conn.execute(
                 f"TRUNCATE {names} RESTART IDENTITY CASCADE"
@@ -328,7 +332,7 @@ def main() -> int:
     parser.add_argument(
         "--run", default="1", choices=("1", "2", "3", "4", "5", "all"),
         help="which run to execute; 'all' runs 1→2→3→4 sequentially. "
-             "5 = the spammer capstone (Run 4 shape, real clients → spammer).",
+             "5 = Provider Lab capstone (Run 4 shape, real clients → lab).",
     )
     parser.add_argument("--tenants-per-source", type=int, default=4)
     args = parser.parse_args()

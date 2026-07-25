@@ -35,8 +35,22 @@ import structlog
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
 from services.ingest.integrations.discord.gateway import metrics
 from services.ingest.integrations.discord.gateway._durability import pre_save_flush
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 
 
 log = structlog.get_logger("integrations.discord.gateway.client")
@@ -165,6 +179,10 @@ class DiscordGatewayClient:
         # otherwise the flush guarantees nothing about the frame.
         kafka_producer: Any = None,
         gateway_bot_url: str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
     ) -> None:
         if not bot_token:
             raise ValueError("bot_token is required")
@@ -190,6 +208,22 @@ class DiscordGatewayClient:
         self._on_dispatched = on_dispatched
         self._kafka_producer = kafka_producer
         self._gateway_bot_url = gateway_bot_url
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or gateway_bot_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="discord",
+            tenant_id=None,
+            installation_id=None,
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant_installation=False,
+        )
 
     async def aclose(self) -> None:
         if self._heartbeat_task is not None:
@@ -273,9 +307,52 @@ class DiscordGatewayClient:
 
     async def _fetch_gateway_url(self) -> str:
         from lib.integrations.endpoints import endpoint
-        r = await self._http.get(
-            self._gateway_bot_url or endpoint("discord_gateway_bot"),
-            headers={"Authorization": f"Bot {self._bot_token}"},
+        operation = "/gateway/bot"
+
+        async def _once() -> httpx.Response:
+            try:
+                response = await self._http.get(
+                    self._gateway_bot_url or endpoint("discord_gateway_bot"),
+                    headers={"Authorization": f"Bot {self._bot_token}"},
+                )
+            except httpx.TimeoutException as exc:
+                raise ProviderTimeoutError(
+                    "Discord gateway discovery timed out",
+                    source="discord",
+                    operation=operation,
+                ) from exc
+            except httpx.TransportError as exc:
+                raise ProviderTransientError(
+                    "Discord gateway discovery transport error",
+                    source="discord",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
+            if response.status_code == 429:
+                raise ProviderRateLimited(
+                    "Discord gateway discovery rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="discord.rate_limit_headers",
+                )
+            if response.status_code >= 500:
+                raise ProviderTransientError(
+                    f"Discord gateway discovery returned {response.status_code}",
+                    source="discord",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
+
+        r = await self._provider.execute(
+            operation,
+            _once,
+            quota_dimensions={
+                "app": self._state.application_id or "discord-app",
+                "route": operation,
+            },
         )
         r.raise_for_status()
         url = r.json()["url"]

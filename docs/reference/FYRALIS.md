@@ -856,7 +856,7 @@ None of the `services/workers/*` packages ship a `__main__.py`; the undeployed o
 | `lib.shared` | `db.py`, `ids.py`, `errors.py`, `types.py`, `memory_grammar.py`, `edge_registry.py`, `claim_role_registry.py`, `trust.py`, `tenant_context.py`, `env.py`, `migrations.py`, `secrets/` | asyncpg pool + savepoint transactions + typed row hydration; `uuid7` + tenant ContextVar; `CompanyOSError` hierarchy; `*Row` schema-mirror models; Model epistemic grammar / edge / claim-role registries; 7-tier `TrustTier`; RLS `app.current_tenant` binding; Fernet `SecretStore`. |
 | `lib.llm` | `provider.py` (~2000 lines) | One `LLMProvider.structured(system, user, schema)` surface returning a validated Pydantic instance with retry/JSON-repair. The app path is Codex-only; compatibility providers remain for tests/harnesses. Adds pricing, timeouts, error classification, circuit-breaker routing, usage aggregation, optional response cache. |
 | `lib.embeddings` | `base.py` (`Embedder` Protocol), `factory.py` (`make_embedder()`), `ollama.py`, `openai_backend.py` | Backend-agnostic embedder; Ollama `nomic-embed-text` (default) or OpenAI `text-embedding-3-small`, both pinned to 768-d (matches `VECTOR(768)`). |
-| `lib.integrations` | `endpoints.py` | Single outbound base-URL resolver (per-source env > spammer host > prod default). |
+| `lib.integrations` | `endpoints.py`, `provider_lab.py` | Production outbound base-URL resolver (explicit per-source env > prod default) and loopback-only Provider Lab URL contract. |
 | `lib.nexus` | `client.py` | Attestation **stub**, no service importers. |
 | `lib.topology` | — | No active source (only stale `__pycache__/` + `tests/`); the real topology code lives in `services/reasoning/topology/`. |
 
@@ -1137,7 +1137,7 @@ Providers handled by the unified router (the `VERIFIERS` registry in `services/a
 
 ### Mounting summary
 
-Most routers are mounted through `services/app/gateway/route_mounts.py` or `services/app/gateway/ceo_view_wiring.py`: always-on (decision-deltas, forecasts, model-trace, history, webhooks, integrations, spec, model-page, today, map, realtime, CEO stream); env-gated (finance, slack, debug, gmail/gcal/gdrive OAuth + push). Overlay-contributed routers (demo, simulation) are mounted at runtime through the gateway extension seam (`services/app/gateway/extensions.py`) when the demo overlay is installed. The synthetic spammer (`services/ingest/synthetic/spammer/server.py`) is a *separate* test-only app, not part of the gateway.
+Most routers are mounted through `services/app/gateway/route_mounts.py` or `services/app/gateway/ceo_view_wiring.py`: always-on (decision-deltas, forecasts, model-trace, history, webhooks, integrations, spec, model-page, today, map, realtime, CEO stream); env-gated (finance, slack, debug, gmail/gcal/gdrive OAuth + push). Overlay-contributed routers (demo, simulation) are mounted at runtime through the gateway extension seam (`services/app/gateway/extensions.py`) when the demo overlay is installed. Provider Lab (`services/ingest/synthetic/provider_lab/`) is separate loopback-only test infrastructure, not part of the gateway.
 
 ---
 

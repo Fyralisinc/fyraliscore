@@ -60,6 +60,7 @@ async def _lease_due_calendars(
             FROM google_calendar_calendars cc
             JOIN google_calendar_installations gi
               ON gi.id = cc.google_calendar_installation_id
+             AND gi.tenant_id = cc.tenant_id
            WHERE cc.state = 'active'
              AND cc.sync_token IS NOT NULL
              AND gi.disabled_at IS NULL
@@ -75,8 +76,10 @@ async def _lease_due_calendars(
          WHERE cc.id = leased.id
         RETURNING cc.id, cc.tenant_id, cc.calendar_id, cc.owner_email,
                   cc.sync_token, cc.consecutive_live_failures,
+                  cc.google_calendar_installation_id AS installation_id,
                   (SELECT scope FROM google_calendar_installations
-                    WHERE id = cc.google_calendar_installation_id) AS scope
+                    WHERE id = cc.google_calendar_installation_id
+                      AND tenant_id = cc.tenant_id) AS scope
         """,
         limit,
     )
@@ -88,12 +91,14 @@ async def poll_one(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
         ingested, new_token = await drain_live(
             pool=pool,
             tenant_id=tenant_id,
+            installation_id=row["installation_id"],
             scope=row["scope"],
             channel=_CHANNEL,
             fetcher=_fetcher(),
             shard_identifier={
                 "calendar_id": row["calendar_id"],
                 "owner_email": row["owner_email"],
+                "installation_id": str(row["installation_id"]),
                 "sync_token": row["sync_token"],
             },
             cursor_next_key="next_sync_token",

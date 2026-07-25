@@ -111,3 +111,72 @@ See [Figma BYOC OAuth administration](../../../docs/operations/figma-byoc-oauth-
 for the customer-owned Figma app and managed-secret setup, and
 [Figma design artifacts](../../../docs/ingestion/figma-design-artifacts.md)
 for safe retrieval of the complete design JSON.
+
+## Telegram installation workers
+
+Telegram is disabled by default. Declare one exact worker binding per active
+Fyralis installation:
+
+```yaml
+telegramGateway:
+  enabled: true
+  installations:
+    - name: executive-account
+      tenantId: 11111111-1111-4111-8111-111111111111
+      installationId: 22222222-2222-4222-8222-222222222222
+    - name: operations-account
+      tenantId: 33333333-3333-4333-8333-333333333333
+      installationId: 44444444-4444-4444-8444-444444444444
+```
+
+The chart renders one independent Deployment for each entry. Each process
+loads only the installation matching both UUIDs, resolves the Telethon session
+and API hash in that tenant, writes only that installation's update state, and
+holds a Redis lease keyed by both UUIDs. Session and API credentials remain in
+Fyralis's tenant-scoped secret store and do not belong in Helm values.
+
+`TELEGRAM_TENANT_ID` and `TELEGRAM_INSTALLATION_ID` are reserved and rejected
+in `app.extraEnv`, because global configuration would make every worker inherit
+the same binding.
+
+## Signal installation workers
+
+Signal is disabled by default. It depends on the unofficial signal-cli
+`0.14.4.1` runtime, linked to an account controlled by the customer. Run each
+daemon with its HTTP transport:
+
+```bash
+signal-cli -a <number> daemon --http 0.0.0.0:8080
+```
+
+Then declare one exact worker binding per active Fyralis installation:
+
+```yaml
+signalGateway:
+  enabled: true
+  signalCliVersion: "0.14.4.1"
+  installations:
+    - name: finance-phone
+      tenantId: 11111111-1111-4111-8111-111111111111
+      installationId: 22222222-2222-4222-8222-222222222222
+      jsonrpcEndpoint: http://signal-cli-finance:8080/api/v1/rpc
+      sseEndpoint: ""
+      multiAccount: false
+    - name: operations-phone
+      tenantId: 33333333-3333-4333-8333-333333333333
+      installationId: 44444444-4444-4444-8444-444444444444
+      jsonrpcEndpoint: http://signal-cli-operations:8080/api/v1/rpc
+      sseEndpoint: ""
+      multiAccount: false
+```
+
+The chart renders two independent Deployments in this example. Each process
+loads only the installation row matching both UUIDs, resolves its session
+secret in that tenant, writes only that installation's sync state, and holds a
+Redis lease keyed by both UUIDs. Linked-device state and raw credentials do not
+belong in Helm values; they remain in signal-cli's protected data directory and
+Fyralis's tenant-scoped secret store.
+
+`SIGNAL_TENANT_ID`, `SIGNAL_INSTALLATION_ID`, and Signal endpoint variables are
+reserved and rejected in `app.extraEnv`, because global configuration would
+cause every Signal worker to inherit the same binding.

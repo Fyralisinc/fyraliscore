@@ -106,7 +106,15 @@ async def _truncate_all(conn: asyncpg.Connection) -> None:
           AND c.relispartition = FALSE
         """
     )
-    tables = [r["relname"] for r in rows]
+    # ``ingestion_source_catalog`` is migration-owned reference data, not
+    # mutable test data.  Truncating it would leave the new source foreign
+    # keys installed while deleting their 27 referenced rows, making every
+    # valid onboarding insert fail for reasons production can never observe.
+    tables = [
+        r["relname"]
+        for r in rows
+        if r["relname"] != "ingestion_source_catalog"
+    ]
     if not tables:
         return
     table_list = ", ".join(f'"{t}"' for t in tables)

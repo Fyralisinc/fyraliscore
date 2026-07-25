@@ -17,7 +17,7 @@ embeddings, the Memory Fabric) is out of scope.
 > API**, which is GraphQL. The code carries explicit `TODO(human)` markers where
 > this matters; this doc reproduces them verbatim rather than papering over them.
 > What *is* verified end‑to‑end (one handler, one dedup key, the webhook edge, the
-> install/onboarding wiring, the channel mapping, the spammer path) is described
+> install/onboarding wiring, the channel mapping, the Provider Lab path) is described
 > as fact.
 
 ---
@@ -80,7 +80,7 @@ connect wizard
 ([oauth.py:56‑60](../../../services/ingest/integrations/fireflies/oauth.py#L56-L60)).
 
 The token is resolved **once** per client — from the secret store (production) or
-preset (spammer) — and reused for the life of the client; the token and the auth
+preset (Provider Lab) — and reused for the life of the client; the token and the auth
 header are **never logged**
 ([client.py:108‑134](../../../services/ingest/integrations/fireflies/client.py#L108-L134),
 [client.py:30](../../../services/ingest/integrations/fireflies/client.py#L30)).
@@ -564,16 +564,18 @@ through the connect wizard body, not env (§2.2).
   429 signal unverified — TODO ⚠️.
 - **Revocation chokepoint** — **absent** (§9).
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
-For local testing against the mock source servers, `build_fireflies_client`
-detects spammer mode and **presets** the token to `spam-fireflies`, skipping the
-secret store entirely, and points the API base at the local spammer's
+For local testing against Provider Lab, `build_fireflies_client`
+detects Provider Lab mode and **presets** the token to `spam-fireflies`, skipping the
+secret store entirely, and points the API base at Provider Lab's
 `/fireflies` sub‑path via the endpoint resolver
-([_clients.py:543‑567](../../../services/ingest/ingestion/fetchers/_clients.py#L543-L567)). The mock
-server implements the **same REST surface the client clones** — `GET /workspace`,
+([_clients.py:543‑567](../../../services/ingest/ingestion/fetchers/_clients.py#L543-L567)).
+The canonical
+[Provider Lab Fireflies adapter](../../../services/ingest/synthetic/provider_lab/wave_b.py)
+implements the **same REST surface the client clones** — `GET /workspace`,
 `GET /transcripts?limit&offset&start` (full vs `start=` incremental), and
-`GET /transcript/{id}` ([mock_servers/fireflies.py:8‑16](../../../services/ingest/synthetic/mock_servers/fireflies.py#L8-L16)) —
-so the spammer exercises the cloned REST path, not the (still‑unwired) GraphQL
+`GET /transcript/{id}` — so Provider Lab exercises the cloned REST path, not the
+(still‑unwired) GraphQL
 path. The synthetic webhook harness sends `workspaceId` explicitly so
 tenant resolution matches ([tenant_resolver.py:440](../../../services/app/webhooks/tenant_resolver.py#L440)).

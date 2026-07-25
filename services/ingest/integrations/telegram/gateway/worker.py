@@ -14,8 +14,9 @@ separate backfill session — is reconciled. It then runs the live event loop an
 periodically persists the advancing state.
 
 Single-instance safety: a Telegram authorization may be driven by only one live
-connection at a time, so the launcher acquires the `gateway:telegram:leader_lock`
-Redis lease BEFORE constructing the worker (mirrors Discord).
+connection at a time, so the launcher acquires an installation-scoped
+``gateway:telegram:{tenant}:{installation}:leader_lock`` Redis lease BEFORE
+constructing the worker (mirrors Discord without coupling distinct installs).
 """
 from __future__ import annotations
 
@@ -23,7 +24,22 @@ from typing import Any
 
 import structlog
 
-from services.ingest.integrations.telegram.client import _message_to_dict
+from lib.shared.provider_transport import (
+    ProviderPermanentError,
+    ProviderRateLimited,
+    ProviderTransientError,
+    RequestPolicy,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+)
+from services.ingest.integrations.telegram.client import (
+    _map_telethon_provider_error,
+    _message_to_dict,
+)
 from services.ingest.integrations.telegram.gateway.dispatch import (
     DispatchDeps,
     handle_update,
@@ -45,6 +61,10 @@ class TelegramGatewayWorker:
         api_hash: str,
         dialog_index: dict[int, dict[str, Any]],
         save_state: Any = None,  # async callable(pts, qts, seq, date) | None
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
     ) -> None:
         self._deps = deps
         self._session = session
@@ -54,6 +74,28 @@ class TelegramGatewayWorker:
         self._dialog_index = dialog_index
         self._save_state = save_state
         self._client: Any | None = None
+        if provider_transport is None or quota_resolver is None:
+            from services.ingest.integrations.provider_transport_runtime import (
+                get_provider_transport_runtime,
+            )
+
+            runtime = get_provider_transport_runtime()
+            if runtime is not None:
+                provider_transport = provider_transport or runtime.transport
+                quota_resolver = quota_resolver or runtime.quota_resolver
+        self._provider = ProviderRequestBinding(
+            source="telegram",
+            tenant_id=str(deps.tenant_id),
+            installation_id=deps.installation_id,
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=(
+                provider_transport is None
+                if allow_unlimited_local is None
+                else allow_unlimited_local
+            ),
+        )
 
     def _dialog_context(self, peer_id: int) -> dict[str, Any]:
         meta = self._dialog_index.get(peer_id) or {}
@@ -61,6 +103,34 @@ class TelegramGatewayWorker:
             "dialog_kind": meta.get("dialog_kind") or "chat",
             "dialog_title": meta.get("title"),
         }
+
+    async def _execute_telethon(
+        self,
+        operation: str,
+        call: Any,
+    ) -> Any:
+        async def _once() -> Any:
+            try:
+                return await call()
+            except (
+                ProviderPermanentError,
+                ProviderRateLimited,
+                ProviderTransientError,
+            ):
+                raise
+            except Exception as exc:  # noqa: BLE001 — Telethon is optional.
+                raise _map_telethon_provider_error(
+                    exc,
+                    operation=operation,
+                ) from exc
+
+        return await self._provider.execute(
+            operation,
+            _once,
+            concurrency_key=(
+                f"telegram:{self._deps.installation_id}:{operation}"
+            ),
+        )
 
     async def run_forever(self) -> None:
         """Connect, recover gaps, and run the live event loop until disconnect."""
@@ -93,18 +163,25 @@ class TelegramGatewayWorker:
             except Exception:  # noqa: BLE001
                 log.exception("telegram_gateway.update_handler_failed")
 
-        await client.connect()
-        if not await client.is_user_authorized():
+        await self._execute_telethon("gateway.connect", client.connect)
+        authorized = await self._execute_telethon(
+            "gateway.is_user_authorized",
+            client.is_user_authorized,
+        )
+        if not authorized:
             await client.disconnect()
             raise RuntimeError("telegram live session is not authorized (revoked?)")
 
-        log.info("telegram_gateway.connected", tenant_id=str(self._deps.tenant_id))
+        log.info(
+            "telegram_gateway.connected",
+            tenant_id=str(self._deps.tenant_id),
+            installation_id=self._deps.installation_id,
+        )
         # Gap recovery: reconcile updates missed while disconnected / during the
         # backfill sweep (updates.getDifference under the hood).
-        try:
-            await client.catch_up()
-        except Exception:  # noqa: BLE001
-            log.warning("telegram_gateway.catch_up_failed")
+        # Missing catch-up data is not equivalent to "no gap": any provider
+        # cooldown/failure escapes so the installation worker can retry safely.
+        await self._execute_telethon("updates.catch_up", client.catch_up)
 
         await client.run_until_disconnected()
 
@@ -112,7 +189,10 @@ class TelegramGatewayWorker:
         if self._save_state is None:
             return
         try:
-            state = await client.get_state()  # telethon updates.State
+            state = await self._execute_telethon(
+                "updates.get_state",
+                client.get_state,
+            )
             await self._save_state(
                 getattr(state, "pts", None),
                 getattr(state, "qts", None),

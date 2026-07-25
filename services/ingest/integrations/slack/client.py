@@ -1,10 +1,9 @@
 """services/ingest/integrations/slack/client.py — outbound Slack Web API client.
 
-Thin async wrapper around three Slack Web API endpoints (`chat.postMessage`,
-`users.info`, `conversations.info`), resolving the per-installation bot
-token through the IN-08 secret store. Honors Slack's 429 `Retry-After`
-header with a bounded retry budget; transport errors retry with
-exponential backoff within the same budget.
+Thin async wrapper around Slack Web API operations, resolving the exact
+installation's token through the IN-08 secret store. Every HTTP attempt runs
+through the universal ProviderTransport; the client only classifies Slack
+responses and never sleeps or retries locally.
 
 Becomes the substrate for Slack-outbound Acts in a follow-up (IN-10).
 """
@@ -20,6 +19,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import CompanyOSError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import (
     SecretValueCache,
     coerce_secret_text,
@@ -31,16 +44,16 @@ log = structlog.get_logger("integrations.slack.client")
 
 _SLACK_API_BASE = "https://slack.com/api"
 _DEFAULT_MAX_ATTEMPTS = 3
+_DEFAULT_MAX_INLINE_RETRY_AFTER_S = 30.0
 
 
 def _default_wall_budget_s() -> float:
     """Wall-clock retry budget for one Slack call.
 
     Explicit override: `SLACK_RETRY_WALL_BUDGET_S` (seconds). Otherwise it is
-    derived from `SLACK_API_TIER` — a Tier-1 (non-Marketplace, post-2025-05-29)
-    429 carries a ~60s `Retry-After`, so the budget MUST exceed one such wait
-    or the 429 handler gives up before it can retry. Tier 2–4 Retry-Afters are
-    small, so 30s is ample.
+    derived from `SLACK_API_TIER`. This budget bounds the complete operation;
+    it does not authorize sleeping through a long provider cooldown. The
+    independent inline Retry-After limit below controls that decision.
     """
     raw = os.environ.get("SLACK_RETRY_WALL_BUDGET_S", "").strip()
     if raw:
@@ -49,6 +62,22 @@ def _default_wall_budget_s() -> float:
         except ValueError:
             pass
     return 75.0 if os.environ.get("SLACK_API_TIER", "3").strip() == "1" else 30.0
+
+
+def _default_max_inline_retry_after_s() -> float:
+    """Longest Slack cooldown that may retain a worker.
+
+    Longer provider-directed waits surface as ``RetryLater`` so the caller can
+    persist ``next_attempt_at`` and release the worker. Operators may lower
+    this independently of the total retry wall budget.
+    """
+    raw = os.environ.get("SLACK_MAX_INLINE_RETRY_AFTER_S", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return _DEFAULT_MAX_INLINE_RETRY_AFTER_S
 
 
 class SlackApiError(CompanyOSError):
@@ -91,8 +120,13 @@ class SlackClient:
         team_id: str,
         max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
         wall_budget_s: float | None = None,
+        max_inline_retry_after_s: float | None = None,
         base_url: str | None = None,
         http_client: httpx.AsyncClient | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
     ) -> None:
         from lib.integrations.endpoints import endpoint
         self._api_base = (base_url or endpoint("slack_api")).rstrip("/")
@@ -106,9 +140,27 @@ class SlackClient:
         self._wall_budget_s = (
             wall_budget_s if wall_budget_s is not None else _default_wall_budget_s()
         )
+        self._max_inline_retry_after_s = (
+            max_inline_retry_after_s
+            if max_inline_retry_after_s is not None
+            else _default_max_inline_retry_after_s()
+        )
         self._bot_token_cache = SecretValueCache()
         self._bot_token_lock = asyncio.Lock()
         self._client: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=http_client is not None or base_url is not None,
+        )
+        self._provider = ProviderRequestBinding(
+            source="slack",
+            tenant_id=str(tenant_id),
+            installation_id=str(installation_row_id),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+        )
 
     async def _resolve_token(self) -> str:
         """Return the bearer token `_call` authenticates with.
@@ -186,72 +238,51 @@ class SlackClient:
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Issue a Slack Web API call with Tier 1–4 rate-limit and
-        transient-error backoff. Returns the parsed JSON on `ok=true`;
-        raises `SlackApiError` on `ok=false` or budget exhaustion.
-        """
+        """Issue one transport-owned Slack operation."""
         token = await self._resolve_token()
         url = f"{self._api_base}/{endpoint}"
         client = self._httpx()
         headers = {"Authorization": f"Bearer {token}"}
 
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + self._wall_budget_s
-        attempt = 0
-        last_status: int | None = None
-        last_slack_error: str | None = None
-
-        while attempt < self._max_attempts:
-            attempt += 1
+        async def _once() -> dict[str, Any]:
             try:
                 if method == "POST":
                     r = await client.post(url, headers=headers, json=json_body)
                 else:
                     r = await client.get(url, headers=headers, params=params)
+            except httpx.TimeoutException as exc:
+                raise ProviderTimeoutError(
+                    "Slack request timed out",
+                    source="slack",
+                    operation=endpoint,
+                    error_type=type(exc).__name__,
+                ) from exc
             except httpx.TransportError as exc:
-                # Transport-level error → exponential backoff within
-                # the wall budget. Last attempt raises.
-                if attempt >= self._max_attempts:
-                    raise SlackApiError(
-                        "transport error after retries",
-                        endpoint=endpoint,
-                        attempts=attempt,
-                        error_type=type(exc).__name__,
-                    ) from exc
-                sleep_s = min(2 ** (attempt - 1), deadline - loop.time())
-                if sleep_s <= 0:
-                    raise SlackApiError(
-                        "transport error and wall budget exhausted",
-                        endpoint=endpoint,
-                        attempts=attempt,
-                        error_type=type(exc).__name__,
-                    ) from exc
-                await asyncio.sleep(sleep_s)
-                continue
+                raise ProviderTransientError(
+                    "Slack transport error",
+                    source="slack",
+                    operation=endpoint,
+                    error_type=type(exc).__name__,
+                ) from exc
 
-            last_status = r.status_code
             if r.status_code == 429:
-                retry_after = _parse_retry_after(r.headers.get("Retry-After"))
-                if retry_after is None:
-                    retry_after = 1.0
-                remaining = deadline - loop.time()
-                if attempt >= self._max_attempts or retry_after >= remaining:
-                    raise SlackApiError(
-                        "Slack rate limit (429) exhausted retry budget",
-                        code="slack_api_rate_limited",
-                        endpoint=endpoint,
-                        retry_after=retry_after,
-                        attempts=attempt,
-                    )
-                await asyncio.sleep(retry_after)
-                continue
+                raise ProviderRateLimited(
+                    "Slack rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        r.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    endpoint=endpoint,
+                )
 
             if r.status_code >= 500:
-                raise SlackApiError(
+                raise ProviderTransientError(
                     f"Slack returned HTTP {r.status_code}",
+                    source="slack",
+                    operation=endpoint,
                     endpoint=endpoint,
                     http_status=r.status_code,
-                    attempts=attempt,
                 )
             if r.status_code >= 400:
                 code = (
@@ -264,28 +295,29 @@ class SlackClient:
                     code=code,
                     endpoint=endpoint,
                     http_status=r.status_code,
-                    attempts=attempt,
                 )
-            data = r.json()
+            try:
+                data = r.json()
+            except ValueError as exc:
+                raise SlackApiError(
+                    "Slack returned invalid JSON",
+                    endpoint=endpoint,
+                    http_status=r.status_code,
+                ) from exc
             if data.get("ok") is True:
                 return data
-            last_slack_error = data.get("error")
             # Non-ok responses are not retried (Slack error codes are
             # generally permanent for a given input).
             raise SlackApiError(
                 "Slack API returned ok=false",
                 endpoint=endpoint,
-                slack_error=last_slack_error,
-                attempts=attempt,
+                slack_error=data.get("error"),
             )
 
-        # Loop fell through — should be unreachable.
-        raise SlackApiError(  # pragma: no cover
-            "Slack API call exhausted retry budget",
-            endpoint=endpoint,
-            attempts=attempt,
-            status=last_status,
-            slack_error=last_slack_error,
+        return await self._provider.execute(
+            endpoint,
+            _once,
+            quota_dimensions={"workspace": self._team_id},
         )
 
     # -----------------------------------------------------------------
@@ -461,7 +493,7 @@ class SlackUserClient(SlackClient):
                 ctype = (
                     "im" if c.get("is_im")
                     else "mpim" if c.get("is_mpim")
-                    # Mock/spammer convenience: an explicit channel_type.
+                    # Mock/Provider Lab convenience: an explicit channel_type.
                     else c.get("channel_type")
                 )
                 out.append({
@@ -478,17 +510,6 @@ class SlackUserClient(SlackClient):
             if not cursor:
                 break
         return out
-
-
-def _parse_retry_after(value: str | None) -> float | None:
-    """Slack uses integer-seconds `Retry-After`. Be liberal: tolerate
-    a stray decimal. Returns None for unparseable values."""
-    if not value:
-        return None
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
 
 
 __all__ = ["SlackClient", "SlackUserClient", "SlackApiError"]

@@ -47,8 +47,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from lib.shared.errors import GustoApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -149,30 +148,22 @@ async def fetch_page_gusto(
 
     client, close = await _open_gusto_client(install)
     try:
-        try:
-            if entity_type == ENTITY_EMPLOYEE:
-                rows, next_page = await client.list_employees(
-                    page=cur.page, per=_page_size(),
-                )
-            else:
-                rows, next_page = await client.list_payrolls(
-                    page=cur.page,
-                    per=_page_size(),
-                    start_date=cur.incremental_floor,
-                    date_filter_by=(
-                        "check_date" if cur.incremental_floor else None
-                    ),
-                    payroll_types=("regular", "off_cycle"),
-                )
-        except GustoApiError as exc:
-            if exc.code == "gusto_api_rate_limited":
-                log.info("gusto_backfill_rate_limited",
-                         extra={"entity_type": entity_type})
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        # RetryLater must reach shard_fetch so it persists next_attempt_at
+        # instead of hot-looping an empty page with an unchanged cursor.
+        if entity_type == ENTITY_EMPLOYEE:
+            rows, next_page = await client.list_employees(
+                page=cur.page, per=_page_size(),
+            )
+        else:
+            rows, next_page = await client.list_payrolls(
+                page=cur.page,
+                per=_page_size(),
+                start_date=cur.incremental_floor,
+                date_filter_by=(
+                    "check_date" if cur.incremental_floor else None
+                ),
+                payroll_types=("regular", "off_cycle"),
+            )
 
         records: list[dict[str, Any]] = []
         for row in rows:
@@ -203,7 +194,6 @@ async def fetch_page_gusto(
         await close()
 
 
-FETCHER_DISPATCH["gusto"] = fetch_page_gusto
 
 
 __all__ = [

@@ -14,9 +14,8 @@ Public surface
 * `build_tenant_resolver(deps)` — factory returning a configured
   `TenantResolver`. Tests pass throwaway deps; production wires the
   pool + cache + clock + metrics at gateway startup.
-* `PROVIDER_EXTRACTORS` — per-provider id extractors (Slack `team_id`,
-  GitHub `installation.id`, Linear `organizationId`, Stripe
-  `Stripe-Account` header, Discord `guild_id` or `application_id`).
+* `tenant_extractor_for_provider()` — resolves the extractor declared by the
+  immutable provider ingress contract.
 * `InstallationCache` — TTL LRU keyed by `(provider, installation_id)`.
   Negative entries are cached too, so an attacker probing random ids
   cannot drive unbounded DB load.
@@ -64,6 +63,11 @@ from lib.shared.errors import (
 )
 from lib.shared.ids import uuid7
 from services.app.webhooks import metrics as resolver_metrics
+from services.ingest.source_contract import (
+    WEBHOOK_INGRESS_ROUTE_IDS,
+    resolve_webhook_tenant_extractor,
+    webhook_ingress_definition,
+)
 
 
 log = structlog.get_logger("webhooks.tenant_resolver")
@@ -73,11 +77,7 @@ log = structlog.get_logger("webhooks.tenant_resolver")
 # Types
 # =====================================================================
 
-ResolverProvider = Literal[
-    "slack", "github", "linear", "stripe", "discord", "notion", "jira",
-    "mercury", "quickbooks", "grafana", "brex", "ramp", "gusto", "deel",
-    "fireflies", "miro", "figma", "hibob", "ashby",
-]
+ResolverProvider = Literal[*WEBHOOK_INGRESS_ROUTE_IDS]
 
 
 class Installation(BaseModel):
@@ -516,8 +516,8 @@ def _extract_ashby(payload: Mapping[str, Any], headers: Mapping[str, str]) -> st
     # in the body (`{webhookActionId, action, data}`) — the tenant is named by
     # the PER-INSTALL ENDPOINT URL (`/webhooks/ashby/{installId}`), each install
     # configured with a distinct URL + Ashby-Signature secret. So the resolver
-    # resolves Ashby from the URL path FIRST (see `_PATH_RESOLVED_PROVIDERS` +
-    # `TenantResolver._resolve`); this body extractor is now only the FALLBACK
+    # resolves Ashby from the URL path FIRST (see the provider ingress contract
+    # plus `TenantResolver._resolve`); this body extractor is now only the FALLBACK
     # for legacy/synthetic (org-in-body) payloads posted to the bare endpoint.
     # The install is registered keyed by the path segment / org id
     # (provider_installations provider='ashby', installation_id=<installId>); the
@@ -532,15 +532,6 @@ def _host_from_self(self_url: Any) -> str | None:
     return host or None
 
 
-# R3 — providers that register a PER-INSTALL ENDPOINT and resolve the tenant from
-# the URL path (`/webhooks/{provider}/{installId}`) rather than a body field.
-# Ashby real deliveries carry NO org id in the body (`{webhookActionId, action,
-# data}`); the tenant is named by the receiving endpoint URL (each install is
-# configured with a distinct webhook URL + signing secret in Ashby's admin). The
-# body extractor stays as a legacy/synthetic fallback.
-_PATH_RESOLVED_PROVIDERS: frozenset[str] = frozenset({"ashby"})
-
-
 def _first_path_segment(subpath: str | None) -> str | None:
     """The first segment of a webhook subpath (`installId` from
     `/webhooks/{provider}/{installId}[/...]`). None when empty."""
@@ -550,30 +541,21 @@ def _first_path_segment(subpath: str | None) -> str | None:
     return seg or None
 
 
-PROVIDER_EXTRACTORS: dict[
-    ResolverProvider,
-    Callable[[Mapping[str, Any], Mapping[str, str]], str | None],
-] = {
-    "slack": _extract_slack,
-    "github": _extract_github,
-    "linear": _extract_linear,
-    "stripe": _extract_stripe,
-    "discord": _extract_discord,
-    "notion": _extract_notion,
-    "jira": _extract_jira,
-    "mercury": _extract_mercury,
-    "quickbooks": _extract_quickbooks,
-    "grafana": _extract_grafana,
-    "brex": _extract_brex,
-    "ramp": _extract_ramp,
-    "gusto": _extract_gusto,
-    "deel": _extract_deel,
-    "fireflies": _extract_fireflies,
-    "miro": _extract_miro,
-    "figma": _extract_figma,
-    "hibob": _extract_hibob,
-    "ashby": _extract_ashby,
-}
+TenantExtractor = Callable[
+    [Mapping[str, Any], Mapping[str, str]],
+    str | None,
+]
+
+
+def tenant_extractor_for_provider(
+    provider: str,
+) -> TenantExtractor | None:
+    """Resolve a provider's contract-declared tenant extractor."""
+
+    try:
+        return resolve_webhook_tenant_extractor(provider)
+    except KeyError:
+        return None
 
 
 # =====================================================================
@@ -659,11 +641,16 @@ class TenantResolver:
         subpath: str | None = None,
     ) -> ResolverOutcome:
         # Step 1: extract the provider-native installation identifier.
-        extractor = PROVIDER_EXTRACTORS.get(provider)
-        if extractor is None:
+        try:
+            ingress = webhook_ingress_definition(provider)
+        except KeyError:
             # Unknown provider is structurally identical to a malformed
             # payload — collapse into PayloadMissing rather than
             # introducing a separate outcome (Constitution §X).
+            self._metrics.record_outcome(provider, "payload_missing")
+            return PayloadMissing(provider=provider)
+        extractor = tenant_extractor_for_provider(provider)
+        if extractor is None:  # pragma: no cover - catalog/runtime guard
             self._metrics.record_outcome(provider, "payload_missing")
             return PayloadMissing(provider=provider)
         # R3: per-install-endpoint providers (Ashby) resolve the tenant from the
@@ -671,7 +658,7 @@ class TenantResolver:
         # carry no org id in the body. Prefer the path; fall back to the body
         # extractor so legacy/synthetic (org-in-body) payloads still resolve.
         installation_id: str | None = None
-        if provider in _PATH_RESOLVED_PROVIDERS:
+        if ingress.tenant_binding == "path_then_payload":
             installation_id = _first_path_segment(subpath)
         if installation_id is None:
             installation_id = extractor(payload, headers)
@@ -722,7 +709,6 @@ class TenantResolver:
              WHERE provider = $1
                AND installation_id = $2
                AND enabled = TRUE
-             LIMIT 1
             """,
             provider,
             installation_id,
@@ -897,7 +883,8 @@ __all__ = [
     "CacheNegative",
     "CacheValue",
     # Extractors
-    "PROVIDER_EXTRACTORS",
+    "TenantExtractor",
+    "tenant_extractor_for_provider",
     # Resolver
     "ResolverMetrics",
     "TenantResolverDeps",

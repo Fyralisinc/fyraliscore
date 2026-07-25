@@ -22,10 +22,10 @@ opaque string `"off:<n>"` (the next start offset) and is `None` iff
 `has_more` is False — so the fetcher threads it back verbatim, exactly like
 a real Notion `next_cursor`.
 
-Faults: every public method calls `self._check_fault()` first (A21). The
-four raisers surface `NotionApiError` with the production `code` values AND
-`context["http_status"]`, because the fetcher's rate-limit fallback keys on
-`(e.context or {}).get("http_status") == 429` (NOT on `code`).
+Faults: every public method calls `self._check_fault()` first (A21). This
+legacy in-process mock surfaces pre-transport `NotionApiError` values. The
+production client instead converts retryable provider responses into the
+universal transport's typed retry contract before the fetcher sees them.
 """
 from __future__ import annotations
 
@@ -201,8 +201,6 @@ class MockNotionClient(_MockBase):
     # Fault raisers (production NotionApiError codes — A21)
     # -----------------------------------------------------------------
     def _raise_rate_limit(self) -> NoReturn:
-        # The fetcher's rate-limit fallback keys on context["http_status"]==429,
-        # NOT on code — so the status MUST be present for the fallback to fire.
         raise NotionApiError(
             "MockNotionClient: rate limit (429), retry budget exhausted (X2 fault)",
             code="notion_api_rate_limited",

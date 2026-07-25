@@ -18,6 +18,7 @@ re-test of their internals.
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 import httpx
@@ -94,21 +95,27 @@ async def test_status_returns_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     from services.ingest.integrations.gmail import oauth as gmail_oauth
 
     tenant = uuid4()
+    install_id = uuid4()
     seen: dict = {}
 
-    async def _fake_status(*, tenant_id):
+    async def _fake_status(*, tenant_id, gmail_installation_id):
         seen["tenant_id"] = tenant_id
+        seen["gmail_installation_id"] = gmail_installation_id
         return {"connected": True, "installation_id": "inst-1", "watches": {"total": 3}}
 
     monkeypatch.setattr(gmail_oauth, "get_gmail_status", _fake_status)
 
     app = _make_app(with_auth=True, tenant_id=tenant)
     async with _client(app) as c:
-        r = await c.get("/integrations/gmail/status")
+        r = await c.get(
+            "/integrations/gmail/status",
+            params={"gmail_installation_id": str(install_id)},
+        )
 
     assert r.status_code == 200, r.text
     assert r.json() == {"connected": True, "installation_id": "inst-1", "watches": {"total": 3}}
     assert seen["tenant_id"] == tenant  # tenant came from request.state.auth
+    assert seen["gmail_installation_id"] == install_id
     assert (
         _events().get(
             workflow="source_onboarding",
@@ -124,14 +131,18 @@ async def test_status_records_not_found_for_disconnected_snapshot(
 ) -> None:
     from services.ingest.integrations.gmail import oauth as gmail_oauth
 
-    async def _fake_status(*, tenant_id):
+    async def _fake_status(*, tenant_id, gmail_installation_id):
+        del tenant_id, gmail_installation_id
         return {"connected": False}
 
     monkeypatch.setattr(gmail_oauth, "get_gmail_status", _fake_status)
 
     app = _make_app(with_auth=True, tenant_id=uuid4())
     async with _client(app) as c:
-        r = await c.get("/integrations/gmail/status")
+        r = await c.get(
+            "/integrations/gmail/status",
+            params={"gmail_installation_id": str(uuid4())},
+        )
 
     assert r.status_code == 200, r.text
     assert r.json() == {"connected": False}
@@ -143,6 +154,55 @@ async def test_status_records_not_found_for_disconnected_snapshot(
         )
         == 1
     )
+
+
+async def test_status_requires_exact_installation_id() -> None:
+    app = _make_app(with_auth=True, tenant_id=uuid4())
+    async with _client(app) as c:
+        missing = await c.get("/integrations/gmail/status")
+        malformed = await c.get(
+            "/integrations/gmail/status",
+            params={"gmail_installation_id": "not-a-uuid"},
+        )
+
+    assert missing.status_code == 400
+    assert "required" in missing.text
+    assert malformed.status_code == 400
+    assert "must be a UUID" in malformed.text
+
+
+async def test_status_query_is_exactly_tenant_and_installation_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.ingest.integrations.gmail import status_api
+
+    tenant_id = uuid4()
+    install_id = uuid4()
+
+    class _Context:
+        async def fetchrow(self, query, *args):
+            assert "id = $1" in query
+            assert "tenant_id = $2" in query
+            assert "ORDER BY" not in query.upper()
+            assert "LIMIT 1" not in query.upper()
+            assert args == (install_id, tenant_id)
+            return None
+
+    @asynccontextmanager
+    async def _tenant_transaction(exact_tenant_id):
+        assert exact_tenant_id == tenant_id
+        yield _Context()
+
+    monkeypatch.setattr(
+        status_api,
+        "tenant_transaction",
+        _tenant_transaction,
+    )
+
+    assert await status_api.get_gmail_status(
+        tenant_id=tenant_id,
+        gmail_installation_id=install_id,
+    ) == {"connected": False}
 
 
 # ---------------------------------------------------------------------

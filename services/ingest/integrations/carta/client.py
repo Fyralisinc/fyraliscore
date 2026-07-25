@@ -5,7 +5,7 @@ an **issuer** cap-table REST suite under ``/v1alpha1`` (alpha — expect breakin
 changes), authenticated with an OAuth 2.0 Bearer **access token** (~1 h; no
 refresh grant — re-minted via client_credentials, see
 `integrations/oauth_refresh.py`). The access token is resolved through a
-short-lived secret-ref cache (or preset in spammer mode), so rotation is picked
+short-lived secret-ref cache (or preset in Provider Lab mode), so rotation is picked
 up without process restart. A reactive 401 re-mint retries the request once
 with a fresh token.
 
@@ -35,15 +35,14 @@ https://docs.carta.com/api-platform/reference/v1alpha1issuersliststakeholders):
     ``https://api.playground.carta.team``. ACCESS IS PARTNER-GATED — see
     `lib/integrations/endpoints.py` (``carta_api``).
 
-Rate limits: 429 + Retry-After (env knobs CARTA_RL_MAX_ATTEMPTS /
-CARTA_RL_MAX_SLEEP_SEC). Non-2xx maps to ``CartaApiError``.
+Rate limits, retry budgets, timeouts, and distributed cooldowns are owned by
+``ProviderTransport``. Non-retryable HTTP outcomes map to ``CartaApiError``.
 
 Logging redaction: the access token / auth header are NEVER logged.
 """
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 from uuid import UUID
 from urllib.parse import quote
@@ -52,6 +51,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import CartaApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -79,15 +92,6 @@ ENTITY_COLLECTIONS: dict[str, str] = {
 DEFAULT_ENTITIES = tuple(ENTITY_COLLECTIONS)
 
 
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
-
-
 class CartaClient:
     """Outbound Carta client, one per backfill/poll shard open.
 
@@ -110,6 +114,11 @@ class CartaClient:
         api_base_url: str | None = None,
         install_row_id: Any | None = None,
         refresh_secret_ref: str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
@@ -122,11 +131,30 @@ class CartaClient:
         self._refresh_secret_ref = refresh_secret_ref
         self._access_token_cache = SecretValueCache(preset=access_token)
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical Carta host; a spammer/test
+        # In production the base is the canonical Carta host; a lab/test
         # override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="carta",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(install_row_id) if install_row_id is not None else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -153,7 +181,12 @@ class CartaClient:
         )
 
     async def _request(
-        self, method: str, path: str, *, params: dict[str, Any] | None = None,
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        operation: str,
     ) -> dict[str, Any]:
         from services.ingest.integrations.carta import metrics
         from services.ingest.integrations.oauth_refresh import (
@@ -161,68 +194,127 @@ class CartaClient:
         )
 
         url = f"{self._api_base_url}{path}"
-        max_attempts = int(os.environ.get("CARTA_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("CARTA_RL_MAX_SLEEP_SEC", "30"))
-        client = self._httpx()
-
-        attempt = 0
-        reminted = False
-        refreshed_token: str | None = None
-        while True:
-            attempt += 1
-            token = refreshed_token or await self._token()
-            headers = {
+        token = await self._token()
+        response = await self._execute_http(
+            method=method,
+            url=url,
+            headers={
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
-            }
+            },
+            params=params,
+            operation=operation,
+        )
+
+        if response.status_code in (401, 403):
+            new_token = await refresh_on_unauthorized(
+                provider="carta",
+                pool=self._pool,
+                secret_store=self._secret_store,
+                # The shared refresh core owns the exact
+                # ``oauth.token.mint`` ProviderTransport execution. Passing
+                # Carta's raw client here avoids charging the same upstream
+                # request twice.
+                http=self._httpx(),
+                tenant_id=self._tenant_id,
+                install_row_id=self._install_row_id,
+                current_access_ref=self._secret_ref,
+                refresh_secret_ref=self._refresh_secret_ref,
+                request_binding=self._provider,
+            )
+            if new_token is not None:
+                self._access_token_cache.set(new_token)
+                response = await self._execute_http(
+                    method=method,
+                    url=url,
+                    headers={
+                        "Authorization": f"Bearer {new_token}",
+                        "Accept": "application/json",
+                    },
+                    params=params,
+                    operation=operation,
+                )
+
+        if response.status_code // 100 == 2:
+            metrics.record_request("ok")
+            body = _safe_json(response)
+            if not isinstance(body, dict):
+                raise CartaApiError(
+                    "carta response was not a JSON object",
+                    code="carta_api_error",
+                    context={"path": path},
+                )
+            return body
+
+        if response.status_code in (401, 403):
+            metrics.record_request("unauthorized")
+        else:
+            metrics.record_request("error")
+        raise _api_error_from_response(response, path)
+
+    async def _execute_http(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        operation: str,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        from services.ingest.integrations.carta import metrics
+
+        client = self._httpx()
+
+        async def _once() -> httpx.Response:
             try:
                 response = await client.request(
-                    method, url, headers=headers, params=params,
+                    method,
+                    url,
+                    headers=headers,
+                    params=params,
+                    data=data,
                 )
+            except httpx.TimeoutException as exc:
+                metrics.record_request("error")
+                raise ProviderTimeoutError(
+                    "Carta request timed out",
+                    source="carta",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
             except httpx.TransportError as exc:
                 metrics.record_request("error")
-                raise CartaApiError(
-                    "transport error calling carta",
-                    code="carta_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
+                raise ProviderTransientError(
+                    "Carta transport error",
+                    source="carta",
+                    operation=operation,
+                    error_type=type(exc).__name__,
                 ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
+            if response.status_code == 429:
                 metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
+                raise ProviderRateLimited(
+                    "Carta rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="carta",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
+                metrics.record_request("error")
+                raise ProviderTransientError(
+                    f"Carta returned HTTP {response.status_code}",
+                    source="carta",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
 
-            if response.status_code // 100 == 2:
-                metrics.record_request("ok")
-                body = _safe_json(response)
-                if not isinstance(body, dict):
-                    raise CartaApiError(
-                        "carta response was not a JSON object",
-                        code="carta_api_error",
-                        context={"path": path},
-                    )
-                return body
-
-            if response.status_code in (401, 403):
-                metrics.record_request("unauthorized")
-                if not reminted:
-                    reminted = True
-                    new_token = await refresh_on_unauthorized(
-                        provider="carta", pool=self._pool,
-                        secret_store=self._secret_store, http=client,
-                        tenant_id=self._tenant_id,
-                        install_row_id=self._install_row_id,
-                        current_access_ref=self._secret_ref,
-                        refresh_secret_ref=self._refresh_secret_ref,
-                    )
-                    if new_token is not None:
-                        self._access_token_cache.set(new_token)
-                        refreshed_token = new_token
-                        continue
-                raise _api_error_from_response(response, path)
-            metrics.record_request("error")
-            raise _api_error_from_response(response, path)
+        return await self._provider.execute(operation, _once)
 
     def _require_issuer(self) -> str:
         if not self._issuer_id:
@@ -253,7 +345,12 @@ class CartaClient:
             params["pageSize"] = page_size
         if page_token:
             params["pageToken"] = page_token
-        body = await self._request("GET", "/v1alpha1/issuers", params=params)
+        body = await self._request(
+            "GET",
+            "/v1alpha1/issuers",
+            params=params,
+            operation="issuers.list",
+        )
         return _decode_page(body, "issuers")
 
     async def get_issuer(self, issuer_id: str | None = None) -> dict[str, Any]:
@@ -263,7 +360,9 @@ class CartaClient:
         """
         target = issuer_id or self._require_issuer()
         body = await self._request(
-            "GET", f"/v1alpha1/issuers/{quote(target, safe='')}",
+            "GET",
+            f"/v1alpha1/issuers/{quote(target, safe='')}",
+            operation="issuers.get",
         )
         issuer = body.get("issuer")
         return issuer if isinstance(issuer, dict) else {}
@@ -271,7 +370,10 @@ class CartaClient:
     async def probe(self) -> dict[str, Any]:
         """Cheap connectivity/auth probe: `GET /v1alpha1/issuers?pageSize=1`."""
         return await self._request(
-            "GET", "/v1alpha1/issuers", params={"pageSize": 1},
+            "GET",
+            "/v1alpha1/issuers",
+            params={"pageSize": 1},
+            operation="issuers.list",
         )
 
     async def list_entity(
@@ -307,7 +409,17 @@ class CartaClient:
         if modified_after is not None:
             params["lastModifiedDatetimeAfter"] = modified_after
         path = f"/v1alpha1/issuers/{quote(issuer, safe='')}/{collection}"
-        body = await self._request("GET", path, params=params)
+        body = await self._request(
+            "GET",
+            path,
+            params=params,
+            operation={
+                "stakeholder": "stakeholders.list",
+                "shareClass": "share_classes.list",
+                "optionGrant": "option_grants.list",
+                "convertibleNote": "convertible_notes.list",
+            }[entity_type],
+        )
         return _decode_page(body, collection)
 
     async def list_stakeholders(
@@ -347,6 +459,7 @@ class CartaClient:
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
 
 def _decode_page(
     body: dict[str, Any], collection: str,

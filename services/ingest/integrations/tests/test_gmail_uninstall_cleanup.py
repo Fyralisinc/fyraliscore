@@ -79,7 +79,11 @@ def _patch_google_stop(
             calls.append((user_email, scope))
 
     monkeypatch.setattr(gmail_uninstall, "get_minter", lambda: object())
-    monkeypatch.setattr(gmail_uninstall, "GoogleHttpClient", _FakeGoogleHttpClient)
+    monkeypatch.setattr(
+        gmail_uninstall,
+        "build_google_http_client",
+        lambda minter, **_kwargs: _FakeGoogleHttpClient(minter),
+    )
     monkeypatch.setattr(gmail_uninstall, "GmailClient", _FakeGmailClient)
 
 
@@ -96,7 +100,13 @@ def _patch_pubsub(
         async def __aexit__(self, *exc: object) -> None:
             return None
 
-        async def teardown(self, tenant_id: UUID) -> None:
+        async def teardown(
+            self,
+            tenant_id: UUID,
+            *,
+            installation_id: UUID,
+        ) -> None:
+            assert isinstance(installation_id, UUID)
             calls.append(tenant_id)
             if fail:
                 raise RuntimeError("delete failed")

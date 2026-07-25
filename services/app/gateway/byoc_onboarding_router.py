@@ -8,6 +8,7 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
@@ -40,6 +41,12 @@ from lib.shared.errors import DiscordApiError
 from lib.shared.ids import uuid7
 from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.discord.client import DiscordClient
+from services.ingest.source_contract.catalog import (
+    CANONICAL_SOURCE_IDS,
+    OAUTH_INGRESS_CATALOG,
+    SOURCE_DEFINITIONS,
+    SOURCE_LIVE_INGRESS_CATALOG,
+)
 
 _DISCORD_TEXT_CHANNEL_TYPE = 0
 _DISCORD_CATEGORY_CHANNEL_TYPE = 4
@@ -65,43 +72,8 @@ _DISCORD_THREAD_PARENT_CHANNEL_TYPES = {
     _DISCORD_MEDIA_CHANNEL_TYPE,
 }
 
-_ALL_REHEARSAL_SOURCES = {
-    "ashby",
-    "aws",
-    "brex",
-    "carta",
-    "deel",
-    "discord",
-    "facebook_pages",
-    "figma",
-    "fireflies",
-    "github",
-    "gmail",
-    "google_calendar",
-    "google_drive",
-    "grafana",
-    "gusto",
-    "hibob",
-    "jira",
-    "linkedin",
-    "mercury",
-    "miro",
-    "notion",
-    "quickbooks",
-    "ramp",
-    "signal",
-    "slack",
-    "telegram",
-    "whatsapp",
-}
-_OAUTH_REHEARSAL_SOURCES = {
-    "slack",
-    "github",
-    "discord",
-    "figma",
-    "notion",
-    "facebook_pages",
-}
+_ALL_REHEARSAL_SOURCES = frozenset(CANONICAL_SOURCE_IDS)
+_OAUTH_REHEARSAL_SOURCES = frozenset(OAUTH_INGRESS_CATALOG)
 _FORM_REHEARSAL_SOURCES = {"jira", "telegram", "whatsapp"}
 _SOURCE_SPECIFIC_FINALIZE_SOURCES = {"jira", "telegram", "whatsapp"}
 _GENERIC_FINALIZE_BLOCKED_SOURCES = (
@@ -155,193 +127,56 @@ _DISCORD_ACCESS_STATUS_CACHE: dict[
 ] = {}
 _DISCORD_ACCESS_STATUS_LOCKS: dict[tuple[str, str, str], asyncio.Lock] = {}
 
-_SOURCE_CALLBACK_PATHS = {
-    "slack": "/integrations/slack/callback",
-    "discord": "/integrations/discord/callback",
-    "github": "/integrations/github/callback",
-    "figma": "/integrations/figma/oauth/callback",
-    "notion": "/integrations/notion/callback",
-    "facebook_pages": "/integrations/facebook_pages/callback",
-}
+def _oauth_callback_path(source: str) -> str | None:
+    ingress = OAUTH_INGRESS_CATALOG.get(source)
+    return ingress.callback_path if ingress is not None else None
 
-_SOURCE_LIVE_INGRESS_PATHS = {
-    "ashby": "/webhooks/ashby/{install-id}",
-    "brex": "/webhooks/brex",
-    "deel": "/webhooks/deel",
-    "slack": "/webhooks/slack/events",
-    "discord": "/webhooks/discord",
-    "facebook_pages": "/integrations/facebook_pages/webhook",
-    "fireflies": "/webhooks/fireflies",
-    "github": "/webhooks/github",
-    "gmail": "/webhooks/gmail/pubsub",
-    "google_drive": "/webhooks/google_drive/push",
-    "grafana": "/webhooks/grafana/events",
-    "gusto": "/webhooks/gusto",
-    "hibob": "/webhooks/hibob",
-    "notion": "/webhooks/notion/events",
-    "jira": "/webhooks/jira/events",
-    "mercury": "/webhooks/mercury/events",
-    "quickbooks": "/webhooks/quickbooks/events",
-    "ramp": "/webhooks/ramp",
-    "telegram": "customer-cloud MTProto gateway worker",
-    "whatsapp": "/integrations/whatsapp/webhook",
-}
-
-_SOURCE_REQUIRED_INPUTS = {
-    "ashby": [
-        "api_token",
-    ],
-    "aws": [
-        "role_arn",
-    ],
-    "brex": [
-        "api_token",
-    ],
-    "carta": [
-        "token_ref",
-    ],
-    "deel": [
-        "api_token",
-    ],
-    "facebook_pages": [
-        "page_id",
-    ],
-    # The native Figma OAuth card accepts only file-scoped URLs.  The
-    # deployment-owned client secret is never an end-user onboarding field.
-    "figma": [
-        "file_urls",
-    ],
-    "fireflies": [
-        "api_token",
-    ],
-    "gmail": [
-        "workspace_domain",
-        "admin_email",
-        "dwd_grant",
-    ],
-    "google_calendar": [
-        "workspace_domain",
-        "admin_email",
-        "dwd_grant",
-    ],
-    "google_drive": [
-        "workspace_domain",
-        "admin_email",
-        "dwd_grant",
-    ],
-    "grafana": [
-        "base_url",
-        "service_account_token",
-    ],
-    "gusto": [
-        "token_ref",
-    ],
-    "hibob": [
-        "service_user_id",
-        "service_user_token",
-    ],
-    "jira": [
-        "base_url",
-        "account_email",
-        "api_token",
-    ],
-    "linkedin": [
-        "token_ref",
-    ],
-    "mercury": [
-        "api_token",
-    ],
-    "miro": [
-        "api_token",
-    ],
-    "quickbooks": [
-        "realm_id",
-        "token_ref",
-    ],
-    "ramp": [
-        "access_token_or_client_credentials",
-    ],
-    "signal": [
-        "linked_device_session",
-    ],
-    "telegram": [
-        "account_label",
-        "api_id",
-        "api_hash",
-        "live_session",
-    ],
-    "whatsapp": [
-        "phone_number_id",
-        "verify_token",
-        "app_secret",
-    ],
-}
-
-_SOURCE_OPTIONAL_INPUTS = {
-    "ashby": ["org_id", "base_url", "webhook_secret"],
-    "aws": ["account_id", "region"],
-    "brex": ["organization_id", "base_url", "account_ids", "webhook_secret"],
-    "carta": ["firm_id", "oauth_client", "base_url", "refresh_token_ref"],
-    "deel": ["organization_id", "base_url", "contract_ids", "webhook_secret"],
-    "facebook_pages": ["oauth_redirect_url", "events_request_url"],
-    "figma": [],
-    "fireflies": ["workspace_id", "base_url", "webhook_secret"],
-    "gmail": ["scope", "inclusion_spec", "pubsub_topic", "watch_channel_id"],
-    "google_calendar": ["scope", "inclusion_spec"],
-    "google_drive": [
-        "scope",
-        "inclusion_spec",
-        "include_shared_drives",
-        "watch_channel_id",
-    ],
-    "grafana": ["webhook_secret"],
-    "gusto": [
-        "company_uuid",
-        "oauth_client",
-        "base_url",
-        "refresh_token_ref",
-        "webhook_verifier_token",
-    ],
-    "hibob": ["company_id", "base_url", "webhook_secret"],
-    "jira": ["project_keys", "webhook_secret"],
-    "linkedin": ["organization_urn", "oauth_client", "base_url", "refresh_token_ref"],
-    "mercury": ["organization_id", "base_url", "account_ids", "webhook_secret"],
-    "miro": ["base_url", "board_ids"],
-    "quickbooks": [
-        "oauth_client",
-        "base_url",
-        "refresh_token_ref",
-        "webhook_verifier_token",
-    ],
-    "ramp": ["business_id", "base_url", "entity_scope", "webhook_verifier_token"],
-    "signal": ["account_label", "backfill_session", "thread_scope"],
-    "telegram": ["backfill_session", "dialogs"],
-    "whatsapp": ["business_account_id", "display_phone_number", "access_token"],
-}
-
-_GENERIC_PROVIDER_CONSOLES = {
-    "ashby": "https://app.ashbyhq.com/admin/api",
-    "aws": "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template",
-    "brex": "https://developer.brex.com/",
-    "carta": "https://developers.app.carta.com/",
-    "deel": "https://app.deel.com/",
-    "facebook_pages": "https://developers.facebook.com/apps/",
-    "figma": "https://www.figma.com/developers/apps",
-    "fireflies": "https://app.fireflies.ai/integrations",
-    "gmail": "https://admin.google.com/ac/owl/domainwidedelegation",
-    "google_calendar": "https://admin.google.com/ac/owl/domainwidedelegation",
-    "google_drive": "https://admin.google.com/ac/owl/domainwidedelegation",
-    "grafana": "https://grafana.com/auth/sign-in/",
-    "gusto": "https://dev.gusto.com/",
-    "hibob": "https://app.hibob.com/",
-    "linkedin": "https://www.linkedin.com/developers/apps",
-    "mercury": "https://app.mercury.com/settings/tokens",
-    "miro": "https://developers.miro.com/",
-    "quickbooks": "https://developer.intuit.com/app/developer/myapps",
-    "ramp": "https://developers.ramp.com/",
-    "signal": "https://signal.org/download/",
-    "whatsapp": "https://developers.facebook.com/apps/",
-}
+_SOURCE_REQUIRED_INPUTS = MappingProxyType(
+    {
+        source.source_id: list(source.onboarding.required_inputs)
+        for source in SOURCE_DEFINITIONS
+        if source.onboarding.required_inputs is not None
+    }
+)
+_SOURCE_OPTIONAL_INPUTS = MappingProxyType(
+    {
+        source.source_id: list(source.onboarding.optional_inputs)
+        for source in SOURCE_DEFINITIONS
+        if source.onboarding.optional_inputs is not None
+    }
+)
+_GENERIC_PROVIDER_CONSOLES = MappingProxyType(
+    {
+        source.source_id: source.onboarding.provider_console_url
+        for source in SOURCE_DEFINITIONS
+        if source.onboarding.provider_console_url is not None
+    }
+)
+_GENERIC_AUTHORIZATION_MODES = MappingProxyType(
+    {
+        source.source_id: source.onboarding.generic_authorization_mode
+        for source in SOURCE_DEFINITIONS
+        if source.onboarding.generic_authorization_mode is not None
+    }
+)
+_SOURCE_METHODS = MappingProxyType(
+    {
+        source.source_id: source.onboarding.method
+        for source in SOURCE_DEFINITIONS
+    }
+)
+_SOURCE_DISCOVERY_TARGETS = MappingProxyType(
+    {
+        source.source_id: source.onboarding.discovery_target
+        for source in SOURCE_DEFINITIONS
+    }
+)
+_SOURCE_NATIVE_CONNECT_CONTRACTS = MappingProxyType(
+    {
+        source.source_id: source.onboarding.native_connect.as_payload()
+        for source in SOURCE_DEFINITIONS
+    }
+)
 
 _AWS_RUNTIME_ROLE_ENV_KEYS = (
     "FYRALIS_BYOC_SOURCE_RUNTIME_ROLE_ARN",
@@ -373,442 +208,6 @@ _AWS_SOURCE_RUNTIME_TEMPLATE_PATH = (
 _AWS_SOURCE_EXTERNAL_ID_PATH = (
     ".fyralis/sources/aws/browser-agent-provider-setup/external-id.txt"
 )
-
-_GENERIC_AUTHORIZATION_MODES = {
-    "aws": "customer_iam_role_ref",
-    "signal": "customer_linked_device_session",
-    "telegram": "customer_mtproto_session",
-    "whatsapp": "customer_webhook_app",
-}
-
-_SOURCE_METHODS = {
-    "ashby": "api_token",
-    "aws": "iam_role",
-    "brex": "api_token",
-    "carta": "oauth",
-    "deel": "api_token",
-    "discord": "oauth_plus_gateway",
-    "facebook_pages": "oauth",
-    "figma": "oauth",
-    "fireflies": "api_token",
-    "github": "oauth",
-    "gmail": "dwd",
-    "google_calendar": "dwd",
-    "google_drive": "dwd",
-    "grafana": "api_token",
-    "gusto": "oauth",
-    "hibob": "api_token",
-    "jira": "api_token",
-    "linkedin": "poll",
-    "mercury": "api_token",
-    "miro": "api_token",
-    "notion": "oauth",
-    "quickbooks": "oauth",
-    "ramp": "oauth_client_credentials",
-    "signal": "gateway",
-    "slack": "oauth",
-    "telegram": "gateway",
-    "whatsapp": "webhook",
-}
-
-_SOURCE_DISCOVERY_TARGETS = {
-    "ashby": "jobs, candidates, interviews, and organization metadata",
-    "aws": "account, region, CloudTrail, and inventory scope",
-    "brex": "cash accounts, cards, and transaction scopes",
-    "carta": "issuer, securities, and stakeholder scopes",
-    "deel": "contracts, workers, and payment scopes",
-    "discord": "guilds, message channels, private channels, forum/media posts, and threads",
-    "facebook_pages": "Facebook Pages, Messenger conversations, Page message history, and webhooks",
-    "figma": (
-        "explicitly selected Figma design files, document structure, comments, "
-        "and version history"
-    ),
-    "fireflies": "workspace, meetings, and transcripts",
-    "github": "installations, repositories, pull requests, issues, and webhooks",
-    "gmail": "mailboxes, labels, watch channels, and Pub/Sub topic readiness",
-    "google_calendar": "calendars and shared calendar inclusion scope",
-    "google_drive": "shared drives, folders, files, and change tokens",
-    "grafana": "folders, dashboards, alert rules, and org metadata",
-    "gusto": "company, employees, and payroll scopes",
-    "hibob": "people fields, reports, and company metadata",
-    "jira": "projects, issue types, comments, and webhook registration",
-    "linkedin": "organization/page scope and polling windows",
-    "mercury": "organization, accounts, and transaction scopes",
-    "miro": "teams, boards, and board items",
-    "notion": "shared pages, databases, users, and webhook eligibility",
-    "quickbooks": "company realm, accounting entities, and webhook verifier",
-    "ramp": "business scope, transactions, reimbursements, cards, and users",
-    "signal": "linked account, approved contacts, groups, and threads",
-    "slack": "workspace, public/private channels the app can access, users, and events",
-    "telegram": "account, dialogs, channels, groups, and live update cursor",
-    "whatsapp": "business account, phone numbers, webhook verification, and message events",
-}
-
-_SOURCE_NATIVE_CONNECT_CONTRACTS = {
-    "ashby": {
-        "kind": "api_token_native_connect",
-        "preflight_path": "/integrations/ashby/connect/preflight",
-        "finalize_path": "/integrations/ashby/connect/finalize",
-        "preflight_payload_fields": ["api_token", "base_url", "org_id"],
-        "payload_fields": [
-            "api_token",
-            "base_url",
-            "org_id",
-            "entities",
-            "webhook_secret",
-        ],
-    },
-    "aws": {
-        "kind": "aws_iam_native_connect",
-        "preflight_path": "/integrations/aws/connect/preflight",
-        "finalize_path": "/integrations/aws/connect/finalize",
-        "payload_fields": [
-            "account_id",
-            "region",
-            "credential_kind",
-            "role_arn",
-            "external_id",
-            "backfill_window_days",
-        ],
-    },
-    "brex": {
-        "kind": "api_token_native_connect",
-        "preflight_path": "/integrations/brex/connect/preflight",
-        "finalize_path": "/integrations/brex/connect/finalize",
-        "preflight_payload_fields": ["api_token", "base_url"],
-        "payload_fields": [
-            "api_token",
-            "base_url",
-            "account_ids",
-            "organization_id",
-            "webhook_secret",
-        ],
-    },
-    "carta": {
-        "kind": "access_token_native_connect",
-        "preflight_path": "/integrations/carta/connect/preflight",
-        "finalize_path": "/integrations/carta/connect/finalize",
-        "payload_fields": [
-            "access_token",
-            "base_url",
-            "issuer_id",
-            "firm_id",
-            "client_secret",
-            "refresh_token",
-            "entities",
-        ],
-    },
-    "deel": {
-        "kind": "api_token_native_connect",
-        "preflight_path": "/integrations/deel/connect/preflight",
-        "finalize_path": "/integrations/deel/connect/finalize",
-        "preflight_payload_fields": ["api_token", "base_url"],
-        "payload_fields": [
-            "api_token",
-            "base_url",
-            "contract_ids",
-            "organization_id",
-            "webhook_secret",
-        ],
-    },
-    "discord": {
-        "kind": "oauth_gateway_native_connect",
-        "preflight_path": "/integrations/discord/connect/preflight",
-        "finalize_path": "/integrations/discord/connect/finalize",
-        "payload_fields": [
-            "guild_id",
-            "application_id",
-            "access_mode",
-            "approved_channel_ids",
-            "oauth_redirect_url",
-            "events_request_url",
-        ],
-    },
-    "figma": {
-        # This is intentionally not a preflight/finalize contract.  The
-        # browser starts a file-scoped OAuth authorization, and Figma's public
-        # callback finalizes the install server-side.  Legacy PAT endpoints
-        # stay isolated from this normal BYOC onboarding path.
-        "kind": "figma_oauth_file_scoped_connect",
-        "start_path": "/integrations/figma/oauth/start",
-        "status_path": "/integrations/figma/connect/status",
-        "retry_path": "/integrations/figma/connect/retry",
-        "disconnect_path": "/integrations/figma/connect",
-        "payload_fields": ["file_urls", "return_path"],
-    },
-    "fireflies": {
-        "kind": "api_token_native_connect",
-        "preflight_path": "/integrations/fireflies/connect/preflight",
-        "finalize_path": "/integrations/fireflies/connect/finalize",
-        "preflight_payload_fields": ["api_token", "base_url"],
-        "payload_fields": [
-            "api_token",
-            "base_url",
-            "workspace_id",
-            "webhook_secret",
-        ],
-    },
-    "github": {
-        "kind": "github_app_native_connect",
-        "preflight_path": "/integrations/github/connect/preflight",
-        "finalize_path": "/integrations/github/connect/finalize",
-        "payload_fields": [
-            "installation_id",
-            "organization",
-            "repository_selection",
-            "oauth_redirect_url",
-            "events_request_url",
-        ],
-    },
-    "gmail": {
-        "kind": "google_workspace_dwd",
-        "preflight_path": "/integrations/gmail/connect/preflight",
-        "finalize_path": "/integrations/gmail/connect/finalize",
-        "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
-        "payload_fields": [
-            "workspace_domain",
-            "admin_email",
-            "scope",
-            "inclusion_spec",
-        ],
-        "scope_aliases": ["gmail.metadata"],
-    },
-    "google_calendar": {
-        "kind": "google_workspace_dwd",
-        "preflight_path": "/integrations/google_calendar/connect/preflight",
-        "finalize_path": "/integrations/google_calendar/connect/finalize",
-        "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
-        "payload_fields": [
-            "workspace_domain",
-            "admin_email",
-            "scope",
-            "inclusion_spec",
-        ],
-        "scope_aliases": ["calendar.readonly"],
-    },
-    "google_drive": {
-        "kind": "google_workspace_dwd",
-        "preflight_path": "/integrations/google_drive/connect/preflight",
-        "finalize_path": "/integrations/google_drive/connect/finalize",
-        "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
-        "payload_fields": [
-            "workspace_domain",
-            "admin_email",
-            "scope",
-            "inclusion_spec",
-            "include_shared_drives",
-        ],
-        "scope_aliases": ["drive.readonly"],
-    },
-    "grafana": {
-        "kind": "api_token_native_connect",
-        "preflight_path": "/integrations/grafana/connect/preflight",
-        "finalize_path": "/integrations/grafana/connect/finalize",
-        "preflight_payload_fields": ["base_url", "service_account_token", "org_id"],
-        "payload_fields": [
-            "base_url",
-            "service_account_token",
-            "org_id",
-            "webhook_secret",
-        ],
-    },
-    "gusto": {
-        "kind": "access_token_native_connect",
-        "preflight_path": "/integrations/gusto/connect/preflight",
-        "finalize_path": "/integrations/gusto/connect/finalize",
-        "payload_fields": [
-            "company_uuid",
-            "access_token",
-            "base_url",
-            "refresh_token",
-            "webhook_verifier_token",
-            "entities",
-        ],
-    },
-    "hibob": {
-        "kind": "api_token_native_connect",
-        "preflight_path": "/integrations/hibob/connect/preflight",
-        "finalize_path": "/integrations/hibob/connect/finalize",
-        "preflight_payload_fields": [
-            "company_id",
-            "service_user_id",
-            "service_user_token",
-            "base_url",
-        ],
-        "payload_fields": [
-            "company_id",
-            "service_user_id",
-            "service_user_token",
-            "base_url",
-            "entities",
-            "webhook_secret",
-        ],
-    },
-    "linkedin": {
-        "kind": "access_token_native_connect",
-        "preflight_path": "/integrations/linkedin/connect/preflight",
-        "finalize_path": "/integrations/linkedin/connect/finalize",
-        "preflight_payload_fields": ["organization_urn", "access_token", "base_url"],
-        "payload_fields": [
-            "organization_urn",
-            "access_token",
-            "base_url",
-            "refresh_token",
-            "entities",
-        ],
-    },
-    "jira": {
-        "kind": "jira_api_token_native_connect",
-        "preflight_path": "/integrations/jira/connect/preflight",
-        "finalize_path": "/integrations/jira/connect/finalize",
-        "preflight_payload_fields": ["base_url", "account_email", "api_token"],
-        "payload_fields": [
-            "base_url",
-            "account_email",
-            "api_token",
-            "project_keys",
-            "webhook_secret",
-        ],
-    },
-    "mercury": {
-        "kind": "api_token_native_connect",
-        "preflight_path": "/integrations/mercury/connect/preflight",
-        "finalize_path": "/integrations/mercury/connect/finalize",
-        "preflight_payload_fields": ["api_token", "base_url"],
-        "payload_fields": [
-            "api_token",
-            "base_url",
-            "account_ids",
-            "organization_id",
-            "webhook_secret",
-        ],
-    },
-    "miro": {
-        "kind": "api_token_native_connect",
-        "preflight_path": "/integrations/miro/connect/preflight",
-        "finalize_path": "/integrations/miro/connect/finalize",
-        "preflight_payload_fields": ["api_token", "base_url"],
-        "payload_fields": [
-            "api_token",
-            "base_url",
-            "board_ids",
-        ],
-    },
-    "notion": {
-        "kind": "oauth_callback_native_connect",
-        "preflight_path": "/integrations/notion/connect/preflight",
-        "finalize_path": "/integrations/notion/connect/finalize",
-        "payload_fields": [
-            "workspace_id",
-            "shared_page_ids",
-            "shared_database_ids",
-            "oauth_redirect_url",
-            "events_request_url",
-            "installation_id",
-        ],
-    },
-    "quickbooks": {
-        "kind": "access_token_native_connect",
-        "preflight_path": "/integrations/quickbooks/connect/preflight",
-        "finalize_path": "/integrations/quickbooks/connect/finalize",
-        "preflight_payload_fields": ["realm_id", "access_token", "base_url"],
-        "payload_fields": [
-            "realm_id",
-            "access_token",
-            "base_url",
-            "refresh_token",
-            "webhook_verifier_token",
-            "entities",
-        ],
-    },
-    "signal": {
-        "kind": "local_session_native_connect",
-        "preflight_path": "/integrations/signal/connect/preflight",
-        "finalize_path": "/integrations/signal/connect/finalize",
-        "payload_fields": [
-            "account_label",
-            "linked_device_session",
-            "backfill_session",
-            "threads",
-        ],
-    },
-    "slack": {
-        "kind": "oauth_callback_native_connect",
-        "preflight_path": "/integrations/slack/connect/preflight",
-        "finalize_path": "/integrations/slack/connect/finalize",
-        "payload_fields": [
-            "workspace_id",
-            "approved_channel_ids",
-            "oauth_redirect_url",
-            "events_request_url",
-            "installation_id",
-        ],
-    },
-    "telegram": {
-        "kind": "local_session_native_connect",
-        "preflight_path": "/integrations/telegram/connect/preflight",
-        "finalize_path": "/integrations/telegram/connect/finalize",
-        "payload_fields": [
-            "account_label",
-            "api_id",
-            "api_hash",
-            "live_session",
-            "backfill_session",
-            "dialogs",
-        ],
-    },
-    "ramp": {
-        "kind": "ramp_native_connect",
-        "preflight_path": "/integrations/ramp/connect/preflight",
-        "finalize_path": "/integrations/ramp/connect/finalize",
-        "preflight_payload_fields": [
-            "access_token",
-            "client_id",
-            "client_secret",
-            "scopes",
-            "base_url",
-        ],
-        "payload_fields": [
-            "access_token",
-            "client_id",
-            "client_secret",
-            "base_url",
-            "business_id",
-            "entities",
-            "webhook_verifier_token",
-        ],
-    },
-    "whatsapp": {
-        "kind": "whatsapp_native_connect",
-        "preflight_path": "/integrations/whatsapp/connect/preflight",
-        "finalize_path": "/integrations/whatsapp/connect/finalize",
-        "preflight_payload_fields": ["phone_number_id", "app_secret", "verify_token"],
-        "payload_fields": [
-            "phone_number_id",
-            "business_account_id",
-            "display_phone_number",
-            "app_secret",
-            "verify_token",
-            "access_token",
-        ],
-    },
-    "facebook_pages": {
-        "kind": "oauth_native_connect",
-        "preflight_path": "/integrations/facebook_pages/connect/preflight",
-        "finalize_path": "/integrations/facebook_pages/connect/finalize",
-        "preflight_payload_fields": [
-            "page_id",
-            "oauth_redirect_url",
-            "events_request_url",
-        ],
-        "payload_fields": [
-            "page_id",
-            "installation_id",
-            "oauth_redirect_url",
-            "events_request_url",
-        ],
-    },
-}
 
 
 def build_byoc_onboarding_router(
@@ -963,6 +362,9 @@ def build_byoc_onboarding_router(
             register_webhook_installation,
             site_host,
         )
+        from services.ingest.integrations.provider_transport import (
+            tenant_preinstall_transport_kwargs,
+        )
 
         body = await request.json()
         base_url, account_email, api_token = _require_credentials(body)
@@ -978,6 +380,7 @@ def build_byoc_onboarding_router(
             base_url=base_url,
             account_email=account_email,
             api_token=api_token,
+            **tenant_preinstall_transport_kwargs(tenant_id),
         )
         try:
             await client.myself()
@@ -1088,6 +491,9 @@ def build_byoc_onboarding_router(
             )
 
         from lib.shared.errors import TelegramApiError
+        from services.ingest.integrations.provider_transport import (
+            tenant_preinstall_transport_kwargs,
+        )
         from services.ingest.integrations.telegram.client import TelegramClient
         from services.ingest.integrations.telegram.onboarding import finalize_install
 
@@ -1102,6 +508,7 @@ def build_byoc_onboarding_router(
             api_id=api_id,
             api_hash=api_hash,
             session=backfill_session,
+            **tenant_preinstall_transport_kwargs(tenant_id),
         )
         try:
             account = await client.me()
@@ -1679,8 +1086,8 @@ async def _prepare_source_rehearsal_response(
         session_expires_at=ctx.expires_at.isoformat(),
     )
     public_url = _public_url_from_env_or_request(request)
-    callback_path = _SOURCE_CALLBACK_PATHS.get(source)
-    live_path = _SOURCE_LIVE_INGRESS_PATHS.get(source)
+    callback_path = _oauth_callback_path(source)
+    live_path = SOURCE_LIVE_INGRESS_CATALOG.get(source)
     payload = {
         "enabled": True,
         "source": source,
@@ -1772,7 +1179,7 @@ async def _source_provider_handoff(
             "authorization_mode": "oauth",
             "install_url": install_url,
             "oauth_redirect_url": redirect_uri
-            or f"{public_url}/integrations/slack/callback",
+            or f"{public_url}{_oauth_callback_path('slack')}",
             "provider_console_url": "https://api.slack.com/apps",
             "missing_configuration": missing,
         }
@@ -1819,7 +1226,7 @@ async def _source_provider_handoff(
                 access_mode
             ),
             "oauth_redirect_url": redirect_uri
-            or f"{public_url}/integrations/discord/callback",
+            or f"{public_url}{_oauth_callback_path('discord')}",
             "provider_console_url": "https://discord.com/developers/applications",
             "missing_configuration": missing,
         }
@@ -1842,7 +1249,7 @@ async def _source_provider_handoff(
             # selected file URLs, so there is no generic install URL to open.
             "install_url": None,
             "oauth_redirect_url": configured_redirect
-            or f"{public_url}{_SOURCE_CALLBACK_PATHS['figma']}",
+            or f"{public_url}{_oauth_callback_path('figma')}",
             "provider_console_url": "https://www.figma.com/developers/apps",
             "missing_configuration": ([] if ready else ["deployment_figma_oauth_app"]),
             "setup_owner": "deployment_admin",
@@ -1887,7 +1294,9 @@ async def _source_provider_handoff(
         return {
             "authorization_mode": "github_app",
             "install_url": install_url,
-            "oauth_redirect_url": f"{public_url}/integrations/github/callback",
+            "oauth_redirect_url": (
+                f"{public_url}{_oauth_callback_path('github')}"
+            ),
             "provider_console_url": "https://github.com/settings/apps",
             "missing_configuration": missing,
         }
@@ -1928,7 +1337,7 @@ async def _source_provider_handoff(
             "authorization_mode": "oauth",
             "install_url": install_url,
             "oauth_redirect_url": redirect_uri
-            or f"{public_url}/integrations/notion/callback",
+            or f"{public_url}{_oauth_callback_path('notion')}",
             "provider_console_url": "https://www.notion.so/my-integrations",
             "missing_configuration": missing,
         }
@@ -1952,7 +1361,7 @@ async def _source_provider_handoff(
         }
 
     if source in _ALL_REHEARSAL_SOURCES:
-        callback_path = _SOURCE_CALLBACK_PATHS.get(source)
+        callback_path = _oauth_callback_path(source)
         return {
             "authorization_mode": _GENERIC_AUTHORIZATION_MODES.get(
                 source,
@@ -3026,7 +2435,7 @@ def _source_human_steps(source: str, method: str) -> list[dict[str, Any]]:
                 "The source owner must approve the boundary and scope.",
             )
         ]
-    if _SOURCE_LIVE_INGRESS_PATHS.get(source, "").startswith("/"):
+    if SOURCE_LIVE_INGRESS_CATALOG.get(source, "").startswith("/"):
         steps.append(
             (
                 "provider_webhook_enablement",

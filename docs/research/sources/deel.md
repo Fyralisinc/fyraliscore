@@ -185,7 +185,7 @@ Effort →                M: Mercury/QBO templates mechanical (fetcher/planner/h
                         no multi-tenant child table fan-out)
 ```
 
-**Auth archetype — Mercury or QuickBooks clone.** If only an API key is needed (static Bearer), this is a near-exact Mercury clone: `build_deel_client(install, *, pool)` reads `secret_ref` from `deel_installations`, constructs a Bearer-auth HTTP client, and sets `SYNTHETIC_SOURCE_API_BASE` override for the test seam (`spam-deel` recognizable token). If `accounting:read` requires OAuth2 with a refresh token, the auth shape pivots to QuickBooks: `secret_ref` + `refresh_secret_ref` with token-refresh logic before expiry. This decision is gated on confirming the full required scope list.
+**Auth archetype — Mercury or QuickBooks clone.** If only an API key is needed (static Bearer), this is a near-exact Mercury clone: `build_deel_client(install, *, pool)` reads `secret_ref` from `deel_installations` and constructs a Bearer-auth HTTP client. Provider Lab mode uses `PROVIDER_LAB_URL` for the recognizable `spam-deel` credential and an explicit `DEEL_API_BASE_URL` for routing. If `accounting:read` requires OAuth2 with a refresh token, the auth shape pivots to QuickBooks: `secret_ref` + `refresh_secret_ref` with token-refresh logic before expiry. This decision is gated on confirming the full required scope list.
 
 **Install table.** `deel_installations` is a new dedicated table (not `provider_installations`), keyed by `(tenant_id, deel_org_id)` with a UNIQUE constraint. The `deel_org_id` column doubles as the webhook tenant identifier extracted by `_extract_deel`. RLS `tenant_isolation` policy on `current_setting('app.current_tenant')::uuid` is mandatory given the PII content.
 

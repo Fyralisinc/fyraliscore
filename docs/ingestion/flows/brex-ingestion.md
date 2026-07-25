@@ -552,16 +552,17 @@ kill-switch, §7.3).
   ⚠️ CLONED from Mercury, **UNVERIFIED** against Brex docs (see the five
   `TODO(human)` callouts).
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
-For local testing against the mock source servers, `build_brex_client` detects
-spammer mode and **presets the API token** to `spam-brex`, skipping the secret
-store entirely; the API base then points at the local spammer's `/brex`
+For local testing against Provider Lab, `build_brex_client` detects
+Provider Lab mode and **presets the API token** to `spam-brex`, skipping the secret
+store entirely; the API base then points at Provider Lab's `/brex`
 sub-path (`endpoint("brex_api")` → `/brex`)
 ([_clients.py:427‑452](../../../services/ingest/ingestion/fetchers/_clients.py#L427-L452),
 [endpoints.py:161](../../../lib/integrations/endpoints.py#L161)).
 
-The mock Brex server ([synthetic/mock_servers/brex.py](../../../services/ingest/synthetic/mock_servers/brex.py))
+The canonical
+[Provider Lab Brex adapter](../../../services/ingest/synthetic/provider_lab/wave_b.py)
 serves `GET /accounts`, `GET /account/{id}`, and
 `GET /account/{id}/transactions?limit&offset&start` (full vs `start=`-bounded
 incremental), so the **real** `BrexClient` + fetcher + reconciler can be driven

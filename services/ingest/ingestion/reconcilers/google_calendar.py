@@ -40,9 +40,10 @@ from typing import Any
 import asyncpg
 import orjson
 
+from lib.shared.provider_transport import ProviderTransportError
+from services.ingest.ingestion.installations import load_source_installation
 from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
@@ -141,6 +142,10 @@ async def _check_one_shard_for_gap(
             user_email=owner_email,
             updated_min=floor,
         )
+    except ProviderTransportError:
+        # A transport outcome is not evidence that the shard is clean.
+        # Preserve the typed signal for the workflow scheduler.
+        raise
     except Exception as exc:  # noqa: BLE001 — best-effort gap check
         log.warning(
             "reconcilers.google_calendar.probe_failed",
@@ -173,15 +178,11 @@ async def reconcile_google_calendar(
         return ReconciliationDecision(has_gaps=False)
 
     pool = _get_pool()
-    install = await pool.fetchrow(
-        """
-        SELECT id, tenant_id, workspace_domain, service_account_email,
-               scope, disabled_at
-          FROM google_calendar_installations
-         WHERE tenant_id = $1 AND disabled_at IS NULL
-         LIMIT 1
-        """,
-        run["tenant_id"],
+    install = await load_source_installation(
+        pool,
+        source="google_calendar",
+        tenant_id=run["tenant_id"],
+        installation_id=run["installation_row_id"],
     )
     if install is None:
         return ReconciliationDecision(has_gaps=False)
@@ -206,7 +207,6 @@ async def reconcile_google_calendar(
     return ReconciliationDecision(has_gaps=False)
 
 
-RECONCILER_DISPATCH["google_calendar"] = reconcile_google_calendar
 
 
 __all__ = [

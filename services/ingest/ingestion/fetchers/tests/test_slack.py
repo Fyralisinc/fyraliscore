@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_fetcher
 from services.ingest.ingestion.fetchers import slack as sl
 from services.ingest.ingestion.fetchers.slack import (
     SHARD_KIND_CHANNEL_WINDOW,
@@ -101,4 +101,4 @@ async def test_cursor_strict():
 
 
 async def test_dispatch_wired():
-    assert FETCHER_DISPATCH["slack"] is fetch_page_slack
+    assert resolve_fetcher("slack") is fetch_page_slack

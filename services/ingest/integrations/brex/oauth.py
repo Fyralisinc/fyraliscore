@@ -47,6 +47,9 @@ from services.ingest.integrations.brex.onboarding import (
     finalize_install,
     register_webhook_installation,
 )
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 
 
 log = structlog.get_logger("integrations.brex.oauth")
@@ -128,11 +131,15 @@ def _normalize_account(a: dict[str, Any]) -> dict[str, Any]:
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
     """Verify the API token and enumerate accounts for the selector UI."""
-    _tenant_from_request(request)  # auth check
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     api_token, base_url = _require_token(body)
 
-    client = BrexClient(base_url=base_url, api_token=api_token)
+    client = BrexClient(
+        base_url=base_url,
+        api_token=api_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         accounts = await client.list_accounts()
     except BrexApiError as exc:
@@ -168,7 +175,11 @@ async def connect_finalize(request: Request) -> JSONResponse:
     webhook_secret = (body.get("webhook_secret") or "").strip() or None
 
     # 1. Verify creds + resolve the account set — before any write.
-    client = BrexClient(base_url=base_url, api_token=api_token)
+    client = BrexClient(
+        base_url=base_url,
+        api_token=api_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         raw_accounts = await client.list_accounts()
     except BrexApiError as exc:

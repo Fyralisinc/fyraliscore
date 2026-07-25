@@ -108,6 +108,120 @@ workers that exchange or refresh Figma grants.
 {{- end -}}
 {{- end -}}
 
+{{/*
+Signal runtime identity is per Deployment, never global app configuration.
+This prevents two tenant installations from inheriting the same identity or
+accidentally contending on one process-global lease.
+*/}}
+{{- define "fyralis.validateSignalGateway" -}}
+{{- $extraEnv := default (dict) .Values.app.extraEnv -}}
+{{- $reservedKeys := list "SIGNAL_TENANT_ID" "SIGNAL_INSTALLATION_ID" "SIGNAL_JSONRPC_ENDPOINT" "SIGNAL_SSE_ENDPOINT" "SIGNAL_CLI_VERSION" "SIGNAL_CLI_MULTI_ACCOUNT" -}}
+{{- range $key := $reservedKeys -}}
+{{- if hasKey $extraEnv $key -}}
+{{- fail (printf "app.extraEnv.%s is installation-scoped; configure it under signalGateway.installations instead" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.signalGateway.enabled -}}
+{{- if ne (toString .Values.signalGateway.signalCliVersion) "0.14.4.1" -}}
+{{- fail "signalGateway.signalCliVersion must equal the certified version 0.14.4.1" -}}
+{{- end -}}
+{{- if eq (len .Values.signalGateway.installations) 0 -}}
+{{- fail "signalGateway.installations must contain at least one exact binding when signalGateway.enabled=true" -}}
+{{- end -}}
+{{- $seenNames := dict -}}
+{{- $seenBindings := dict -}}
+{{- range $installation := .Values.signalGateway.installations -}}
+{{- $name := toString $installation.name -}}
+{{- $tenantID := toString $installation.tenantId -}}
+{{- $installationID := toString $installation.installationId -}}
+{{- $endpoint := toString $installation.jsonrpcEndpoint -}}
+{{- $sseEndpoint := toString (default "" $installation.sseEndpoint) -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name) -}}
+{{- fail (printf "signalGateway installation name %q must be a DNS label" $name) -}}
+{{- end -}}
+{{- if gt (len $name) 63 -}}
+{{- fail (printf "signalGateway installation name %q must not exceed 63 characters" $name) -}}
+{{- end -}}
+{{- if hasKey $seenNames $name -}}
+{{- fail (printf "duplicate signalGateway installation name %q" $name) -}}
+{{- end -}}
+{{- $recordedName := set $seenNames $name true -}}
+{{- $uuidPattern := "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$" -}}
+{{- if not (regexMatch $uuidPattern $tenantID) -}}
+{{- fail (printf "signalGateway installation %q has an invalid tenantId UUID" $name) -}}
+{{- end -}}
+{{- if not (regexMatch $uuidPattern $installationID) -}}
+{{- fail (printf "signalGateway installation %q has an invalid installationId UUID" $name) -}}
+{{- end -}}
+{{- if or (eq (lower $tenantID) "00000000-0000-0000-0000-000000000000") (eq (lower $installationID) "00000000-0000-0000-0000-000000000000") -}}
+{{- fail (printf "signalGateway installation %q cannot use a nil UUID" $name) -}}
+{{- end -}}
+{{- $binding := printf "%s/%s" (lower $tenantID) (lower $installationID) -}}
+{{- if hasKey $seenBindings $binding -}}
+{{- fail (printf "duplicate signalGateway tenant/installation binding %q" $binding) -}}
+{{- end -}}
+{{- $recordedBinding := set $seenBindings $binding true -}}
+{{- if not (regexMatch "^https?://.+" $endpoint) -}}
+{{- fail (printf "signalGateway installation %q jsonrpcEndpoint must be HTTP(S)" $name) -}}
+{{- end -}}
+{{- if and $sseEndpoint (not (regexMatch "^https?://.+" $sseEndpoint)) -}}
+{{- fail (printf "signalGateway installation %q sseEndpoint must be HTTP(S)" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Telegram runtime identity is per Deployment, never global app configuration.
+Each exact tenant/installation pair owns its Telethon session and Redis lease.
+*/}}
+{{- define "fyralis.validateTelegramGateway" -}}
+{{- $extraEnv := default (dict) .Values.app.extraEnv -}}
+{{- $reservedKeys := list "TELEGRAM_TENANT_ID" "TELEGRAM_INSTALLATION_ID" -}}
+{{- range $key := $reservedKeys -}}
+{{- if hasKey $extraEnv $key -}}
+{{- fail (printf "app.extraEnv.%s is installation-scoped; configure it under telegramGateway.installations instead" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.telegramGateway.enabled -}}
+{{- if eq (len .Values.telegramGateway.installations) 0 -}}
+{{- fail "telegramGateway.installations must contain at least one exact binding when telegramGateway.enabled=true" -}}
+{{- end -}}
+{{- $seenNames := dict -}}
+{{- $seenBindings := dict -}}
+{{- range $installation := .Values.telegramGateway.installations -}}
+{{- $name := toString $installation.name -}}
+{{- $tenantID := toString $installation.tenantId -}}
+{{- $installationID := toString $installation.installationId -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name) -}}
+{{- fail (printf "telegramGateway installation name %q must be a DNS label" $name) -}}
+{{- end -}}
+{{- if gt (len $name) 63 -}}
+{{- fail (printf "telegramGateway installation name %q must not exceed 63 characters" $name) -}}
+{{- end -}}
+{{- if hasKey $seenNames $name -}}
+{{- fail (printf "duplicate telegramGateway installation name %q" $name) -}}
+{{- end -}}
+{{- $_ := set $seenNames $name true -}}
+{{- $uuidPattern := "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$" -}}
+{{- if not (regexMatch $uuidPattern $tenantID) -}}
+{{- fail (printf "telegramGateway installation %q has an invalid tenantId UUID" $name) -}}
+{{- end -}}
+{{- if not (regexMatch $uuidPattern $installationID) -}}
+{{- fail (printf "telegramGateway installation %q has an invalid installationId UUID" $name) -}}
+{{- end -}}
+{{- if or (eq (lower $tenantID) "00000000-0000-0000-0000-000000000000") (eq (lower $installationID) "00000000-0000-0000-0000-000000000000") -}}
+{{- fail (printf "telegramGateway installation %q cannot use a nil UUID" $name) -}}
+{{- end -}}
+{{- $binding := printf "%s/%s" (lower $tenantID) (lower $installationID) -}}
+{{- if hasKey $seenBindings $binding -}}
+{{- fail (printf "duplicate telegramGateway tenant/installation binding %q" $binding) -}}
+{{- end -}}
+{{- $_ := set $seenBindings $binding true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "fyralis.redisName" -}}
 {{- printf "%s-redis" (include "fyralis.fullname" .) -}}
 {{- end -}}

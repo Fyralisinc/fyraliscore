@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
+from services.ingest.source_contract.runtime import resolve_fetcher
 from services.ingest.ingestion.fetchers import aws as af
 from services.ingest.ingestion.fetchers.aws import (
     SHARD_KIND_ACCOUNT_EVENTS,
@@ -63,7 +68,7 @@ def _patch_client(monkeypatch, client):
 
 
 async def test_dispatch_wired():
-    assert FETCHER_DISPATCH["aws"] is fetch_page_aws
+    assert resolve_fetcher("aws") is fetch_page_aws
 
 
 async def test_open_seam_passes_real_secret_store(monkeypatch):
@@ -89,14 +94,14 @@ async def test_open_seam_passes_real_secret_store(monkeypatch):
     async def _fake_secret_store():
         return sentinel_store
 
-    async def _fake_effective_pool(provided, *, spammer):
+    async def _fake_effective_pool(provided, *, provider_lab):
         return None
 
     import services.ingest.integrations.aws.client as aws_client_mod
 
     monkeypatch.setattr(_clients, "_get_secret_store", _fake_secret_store)
     monkeypatch.setattr(_clients, "_effective_pool", _fake_effective_pool)
-    monkeypatch.setattr(_clients, "_spammer_mode", lambda: False)
+    monkeypatch.setattr(_clients, "_provider_lab_mode", lambda: False)
     # build_aws_client lazily imports AwsClient from its source module, so patch
     # the symbol there (the lazy import resolves the live module attribute).
     monkeypatch.setattr(aws_client_mod, "AwsClient", _CapturedAwsClient)
@@ -174,17 +179,22 @@ async def test_empty_account_ends_cleanly(monkeypatch):
     assert res.records == []
 
 
-async def test_throttle_leaves_cursor_unadvanced(monkeypatch):
-    from services.ingest.integrations.aws.client import AwsApiError
-
+async def test_throttle_propagates_durable_retry_later(monkeypatch):
     class _Throttled:
         async def list_events(self, **_kw):
-            raise AwsApiError("throttled", code="aws_api_throttled")
+            raise RetryLater.after(
+                request_context=RequestContext(
+                    source="aws",
+                    operation="cloudtrail.lookup_events",
+                ),
+                delay_seconds=30,
+                reason=RetryReason.RATE_LIMIT,
+            )
 
     monkeypatch.setenv("AWS_BACKFILL_WINDOW_DAYS", "0")
     _patch_client(monkeypatch, _Throttled())
-    res = await fetch_page_aws(
-        _FakeInst(), {"shard_kind": SHARD_KIND_ACCOUNT_EVENTS}, None,
-    )
-    assert res.records == []
-    assert res.end_of_data is False  # re-enter next tick
+    with pytest.raises(RetryLater) as raised:
+        await fetch_page_aws(
+            _FakeInst(), {"shard_kind": SHARD_KIND_ACCOUNT_EVENTS}, None,
+        )
+    assert raised.value.context["operation"] == "cloudtrail.lookup_events"

@@ -291,8 +291,8 @@ def test_search_database_filter_returns_databases_for_planner():
 
 
 # ---------------------------------------------------------------------
-# Fault: a rate-limit FaultProfile surfaces NotionApiError, and the fetcher's
-# 429 fallback returns an empty NON-terminal page (cursor unadvanced).
+# Fault: the legacy in-process mock surfaces a pre-transport NotionApiError.
+# The fetcher must not convert that into an empty page or return a cursor.
 # ---------------------------------------------------------------------
 def test_synthetic_notion_rate_limit_fault(monkeypatch):
     fixture = make_notion(
@@ -314,18 +314,20 @@ def test_synthetic_notion_rate_limit_fault(monkeypatch):
     assert getattr(err, "_code", None) == "notion_api_rate_limited"
     assert (err.context or {}).get("http_status") == 429
 
-    # 2. Through the fetcher: the 429 fallback re-pushes the same work item and
-    #    ends the round empty + non-terminal so ShardFetch re-enters next tick.
+    # 2. Through the fetcher: no FetchResult is returned, so ShardFetch cannot
+    #    persist an advanced cursor. Production 429s are typed RetryLater
+    #    before this boundary; this legacy fake's source error also propagates.
     fetch_client = MockNotionClient(fixture=fixture, profile=profile)
     _patch_client(monkeypatch, fetch_client)
-    result = asyncio.run(
-        fetch_page_notion(_install(), _database_shard(database_id), None)
-    )
-    assert result.records == []
-    assert result.end_of_data is False
-    # The work stack is preserved (the db_rows item was re-pushed).
-    assert result.next_cursor is not None
-    assert result.next_cursor["stack"]  # non-empty → walk resumes
+    with pytest.raises(NotionApiError) as fetch_error:
+        asyncio.run(
+            fetch_page_notion(
+                _install(),
+                _database_shard(database_id),
+                None,
+            )
+        )
+    assert getattr(fetch_error.value, "_code", None) == "notion_api_rate_limited"
 
 
 # ---------------------------------------------------------------------

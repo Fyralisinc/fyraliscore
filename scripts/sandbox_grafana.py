@@ -7,7 +7,7 @@ surface (GET /api/annotations) and a live push surface (Alerting webhook). This
 sandbox stands up a REAL local mock of the Grafana endpoints and drives the REAL
 pipeline against it:
 
-    GrafanaClient (real httpx, spammer auth) -> fetch_page_grafana (real backward
+    GrafanaClient (real httpx, Provider Lab auth) -> fetch_page_grafana (real backward
     window walk + high-water cursor) -> handle_grafana_annotation (real
     ObservationDraft) -> ingest() (real observation insert + dedup)
 
@@ -152,18 +152,19 @@ async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
 
 
 async def run(args) -> int:
-    from services.ingest.synthetic.mock_servers.grafana import start_mock_grafana
+    from services.ingest.synthetic.provider_lab.server import start_provider_lab
 
     fixtures = _build_fixtures()
 
-    # 1. Start the mock; route the spammer single-host base at it (the client
-    #    resolves grafana_api -> <base>/grafana, and the mock matches path suffix).
+    # 1. Start Provider Lab and use Grafana's explicit local endpoint override.
     #    Force all-time backfill so the fixtures (relative to now) always land.
-    server, base_url = start_mock_grafana(fixtures)
-    os.environ["SYNTHETIC_SOURCE_API_BASE"] = base_url
+    server = start_provider_lab({"grafana": fixtures})
+    base_url = server.url("grafana")
+    os.environ["PROVIDER_LAB_URL"] = server.base_url
+    os.environ["GRAFANA_API_BASE_URL"] = base_url
     os.environ["GRAFANA_BACKFILL_WINDOW_DAYS"] = "0"  # all-time floor (None)
-    _hr("MOCK SERVER")
-    print(f"  Grafana API base : {base_url} (served under /grafana via spammer routing)")
+    _hr("PROVIDER LAB")
+    print(f"  Grafana API base : {base_url} (explicit local override)")
 
     admin_url = os.environ.get("SANDBOX_ADMIN_URL", _DEFAULT_ADMIN_URL)
     provided_url = os.environ.get("DATABASE_URL")
@@ -235,8 +236,13 @@ async def run(args) -> int:
         _hr("PLAN (planner over the loader SQL)")
         from services.ingest.ingestion.planners.context import PlannerContext
         from services.ingest.ingestion.planners.grafana import plan_shards_grafana
-        from services.ingest.ingestion.workflows.source_onboarding import _LOAD_GRAFANA_INSTALL_SQL
-        install_row = await pool.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, _TENANT_ID)
+        from services.ingest.ingestion.installations import load_source_installation
+        install_row = await load_source_installation(
+            pool,
+            source="grafana",
+            tenant_id=_TENANT_ID,
+            installation_id=install_id,
+        )
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_grafana(ctx)
         print(f"  planned {len(shards)} shard(s): "
@@ -281,6 +287,7 @@ async def run(args) -> int:
             "text": "LatencyHigh on api", "tags": ["alert"],
             "alertId": 7, "prevState": "Normal", "newState": "Alerting", "userId": 0,
         })
+        server.replace_fixtures("grafana", fixtures)
         incr_shard = {"shard_kind": "grafana_org_annotations",
                       "installation_id": str(install_id), "base_url": _BASE_URL,
                       "org_id": "1", "updated_cursor": int(hw)}

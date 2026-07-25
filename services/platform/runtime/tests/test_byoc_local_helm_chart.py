@@ -26,6 +26,11 @@ def test_local_rehearsal_helm_chart_has_required_runtime_contract() -> None:
     assert values["redis"]["enabled"] is True
     assert values["gateway"]["enabled"] is True
     assert values["workers"]["enabled"] is True
+    assert values["signalGateway"] == {
+        "enabled": False,
+        "signalCliVersion": "0.14.4.1",
+        "installations": [],
+    }
     assert values["minio"]["bucket"] == "fyralis-raw"
     assert values["minio"]["blobBucket"] == "fyralis-blobs"
 
@@ -72,6 +77,7 @@ def test_local_rehearsal_helm_chart_templates_core_surfaces() -> None:
         "redis.yaml",
         "jobs.yaml",
         "gateway.yaml",
+        "signal-gateways.yaml",
         "workers.yaml",
     }.issubset(templates)
 
@@ -82,7 +88,10 @@ def test_local_rehearsal_helm_chart_templates_core_surfaces() -> None:
     assert "KAFKA_BOOTSTRAP_SERVERS" in rendered_source
     assert "DATABASE_URL" in rendered_source
     assert "S3_BLOB_BUCKET" in rendered_source
-    assert "mc mb --ignore-existing local/{{ .Values.minio.blobBucket }}" in rendered_source
+    assert (
+        "mc mb --ignore-existing local/{{ .Values.minio.blobBucket }}"
+        in rendered_source
+    )
     assert "services.ingest.ingestion.workflows.oauth_poller" in (
         CHART / "values.yaml"
     ).read_text(encoding="utf-8")
@@ -90,9 +99,7 @@ def test_local_rehearsal_helm_chart_templates_core_surfaces() -> None:
         CHART / "values.yaml"
     ).read_text(encoding="utf-8")
 
-    configmap = (CHART / "templates" / "configmap.yaml").read_text(
-        encoding="utf-8"
-    )
+    configmap = (CHART / "templates" / "configmap.yaml").read_text(encoding="utf-8")
     workers_template = (CHART / "templates" / "workers.yaml").read_text(
         encoding="utf-8"
     )
@@ -105,12 +112,15 @@ def test_local_rehearsal_helm_chart_templates_core_surfaces() -> None:
     assert "OAUTH_STATE_HMAC_KEY_SECRET_REF:" not in configmap
     assert "app.figmaOAuth.existingSecret" in workers_template
     assert "app.figmaOAuth.existingSecret" in gateway_template
+    assert "SIGNAL_TENANT_ID" in rendered_source
+    assert "SIGNAL_INSTALLATION_ID" in rendered_source
+    assert "run_signal_gateway_worker.py" in rendered_source
     assert "scripts/docker-migrate.sh" in (CHART / "values.yaml").read_text(
         encoding="utf-8"
     )
-    assert "scripts/provision_kafka_topics.py" in (
-        CHART / "values.yaml"
-    ).read_text(encoding="utf-8")
+    assert "scripts/provision_kafka_topics.py" in (CHART / "values.yaml").read_text(
+        encoding="utf-8"
+    )
     assert "services.app.gateway.main:app" in (CHART / "values.yaml").read_text(
         encoding="utf-8"
     )

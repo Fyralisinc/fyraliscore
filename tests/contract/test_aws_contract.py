@@ -3,7 +3,7 @@
 Guards the Phase-3 drift fix (finding #2): a REAL `cloudtrail.lookup_events`
 response is PascalCase — `Events[].{EventId,EventName,EventTime,Username,
 CloudTrailEvent,Resources[]}` plus a top-level `NextToken` — whereas the
-synthetic spammer / normalized records are camelCase (`eventId`, `eventTime` as
+Provider Lab / normalized records are camelCase (`eventId`, `eventTime` as
 epoch ms, `cloudTrailEvent` as a dict). Two real-shape bugs are fixed additively:
 
   1. the fetcher's high-water extractor (`_event_time_ms`) and the handler's
@@ -92,7 +92,7 @@ def test_fetcher_high_water_reads_pascalcase_event_time():
 
 
 def test_fetcher_synthetic_camelcase_path_unchanged():
-    """The camelCase epoch-ms fallback (synthetic spammer shape) is byte-for-byte
+    """The camelCase epoch-ms fallback (Provider Lab shape) is byte-for-byte
     preserved — read first, so the all-25 gate is unaffected."""
     assert af._event_time_ms({"eventTime": 1_700_000_000_000}) == 1_700_000_000_000
     assert af._event_time_ms({"eventTime": True}) is None

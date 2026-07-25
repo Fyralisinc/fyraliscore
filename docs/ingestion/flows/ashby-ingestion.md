@@ -89,7 +89,7 @@ def _basic_auth_value(api_key: str) -> str:
     return f"Basic {token}"
 ```
 
-The key is resolved **once** from the secret store (or preset in spammer mode)
+The key is resolved **once** from the secret store (or preset in Provider Lab mode)
 and reused for the life of the client, guarded by an `asyncio.Lock`; there is no
 token refresh ([client.py:113‑138](../../../services/ingest/integrations/ashby/client.py#L113-L138)).
 The API key and the `Authorization` header are **never logged**
@@ -578,7 +578,7 @@ carry `TODO(human)` markers (§3.3, §2.3).
 | `ASHBY_RL_MAX_SLEEP_SEC` | `30` | max backoff per `Retry-After` ([client.py:162](../../../services/ingest/integrations/ashby/client.py#L162)) |
 | `ASHBY_BACKFILL_PAGE_SIZE` | `100` | `.list` page size, capped at 1000 ([fetchers/ashby.py:59‑63](../../../services/ingest/ingestion/fetchers/ashby.py#L59-L63)) |
 | `ASHBY_API_BASE_URL` | `https://api.ashbyhq.com` | per-source API host override ([endpoints.py:140](../../../lib/integrations/endpoints.py#L140)) |
-| `WEBHOOK_SECRET_ASHBY` | — | HMAC signing secret in dev/spammer mode ([validation_runs/composition.py:142](../../../services/ingest/synthetic/validation_runs/composition.py#L142)) |
+| `WEBHOOK_SECRET_ASHBY` | — | HMAC signing secret in dev/Provider Lab mode ([validation_runs/composition.py:142](../../../services/ingest/synthetic/validation_runs/composition.py#L142)) |
 
 ### 11.2 Verified compliant
 
@@ -595,13 +595,13 @@ carry `TODO(human)` markers (§3.3, §2.3).
 - **Rate limits** — `429 + Retry-After` retry only; concurrent quota
   **UNVERIFIED** (see §3.3 `TODO(human)`).
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
 For local testing against the mock source servers, `build_ashby_client` detects
-spammer mode and **presets** the API key to `spam-ashby`, skips the secret store,
-and points the API base at the local spammer's `/ashby` sub-path via the endpoint
+Provider Lab mode and **presets** the API key to `spam-ashby`, skips the secret store,
+and points the API base at Provider Lab's `/ashby` URL via the endpoint
 resolver ([_clients.py:749‑776](../../../services/ingest/ingestion/fetchers/_clients.py#L749-L776),
-spammer sub-path [endpoints.py:170](../../../lib/integrations/endpoints.py#L170)).
+Provider Lab path [endpoints.py:170](../../../lib/integrations/endpoints.py#L170)).
 The in-process `MockAshbyClient` replaces the real client at the
 `_open_ashby_client` seam, mirroring cursor pagination (decimal-offset tokens),
 the syncToken floor, and the production `AshbyApiError` codes for fault injection

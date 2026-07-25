@@ -20,6 +20,7 @@ Request flow:
        deferred until AFTER signature verification — same security
        posture as before IN-08: signature failure first, then tenant.
     6. Load secrets via `await load_secrets(provider, tenant_id,
+       installation_row_id=outcome.installation_row_id,
        app_state=request.app.state)`. With IN-08, this resolves
        `provider_installations.secret_ref` through the envelope-
        encrypted secret store; the env-var path is dev-only.
@@ -63,9 +64,8 @@ from services.ingest.ingestion.shadow_write import (
     CUTOVER_FLUSH_TIMEOUT_SEC,
     shadow_write_raw,
 )
-from services.ingest.integrations.notion import webhook as notion_webhook
 from services.app.webhooks import metrics
-from services.app.webhooks.signatures import VERIFIERS
+from services.app.webhooks.signatures import verifier_for_provider
 from services.app.webhooks.secrets import load_secrets
 from services.app.webhooks.tenant_resolver import (
     PayloadMissing,
@@ -74,8 +74,12 @@ from services.app.webhooks.tenant_resolver import (
 )
 from services.app.webhooks.verifier import (
     VerifiedContext,
-    Verifier,
     WebhookVerificationError,
+)
+from services.ingest.source_contract import (
+    WebhookIngressDefinition,
+    resolve_callable_reference,
+    webhook_ingress_definition,
 )
 
 
@@ -136,80 +140,6 @@ def _webhook_runtime(request: Request) -> WebhookRuntime:
         github_client=runtime_attr("github_client"),
         github_replay_cache=runtime_attr("github_replay_cache"),
     )
-
-
-# Providers whose webhook bodies belong on the new ingestion data
-# plane. linear/stripe ingestion stays inline-only — they're not in
-# the source enum (LLD §1 / RawEnvelope: slack|github|discord|gmail).
-# Gmail enters via Pub/Sub, not this webhook router (see M2.2).
-_PROVIDER_TO_SHADOW_SOURCE: dict[str, str] = {
-    "slack": "slack",
-    "github": "github",
-    "discord": "discord",
-    "jira": "jira",
-    # Finance sources — HMAC-signed webhooks route onto the data plane.
-    "mercury": "mercury",
-    "quickbooks": "quickbooks",
-    # IN-GRAFANA: Grafana Alerting webhook (HMAC X-Grafana-Alerting-Signature)
-    # routes onto the data plane.
-    "grafana": "grafana",
-    # IN-FIN2: Brex/Ramp/Gusto/Deel — HMAC-signed finance webhooks route onto
-    # the data plane (Bearer archetype: brex, deel; OAuth archetype: ramp, gusto).
-    "brex": "brex",
-    "ramp": "ramp",
-    "gusto": "gusto",
-    "deel": "deel",
-    # IN-FF/IN-MIRO/IN-FIGMA: Fireflies/Miro/Figma — HMAC-signed webhooks
-    # (Brex archetype) route onto the data plane.
-    "fireflies": "fireflies",
-    "miro": "miro",
-    "figma": "figma",
-    # IN-PEOPLE/IN-RECRUITING: HiBob + Ashby — HMAC-signed webhooks route onto
-    # the data plane. (LinkedIn is poll-only — no webhook — so it is absent.)
-    "hibob": "hibob",
-    "ashby": "ashby",
-}
-
-# M5.3 — providers whose `ingestion.kafka_path_enabled=TRUE` activates
-# the cutover (skip inline `ingest()`, publish to Kafka, return 202).
-# Discord interactions require a specific synchronous response shape
-# (CHANNEL_MESSAGE_WITH_SOURCE; see the discord type-2 branch below);
-# the 202 contract doesn't fit that shape, so discord webhooks stay
-# on the inline path regardless of the flag. M5.4 documents this as
-# a deferral — a future work-unit can wire discord cutover once the
-# response-shape question is resolved.
-_CUTOVER_ENABLED_PROVIDERS: dict[str, str] = {
-    "slack": "slack",
-    "github": "github",
-    # IN-17: Jira webhooks route through the full pipeline (the 202 cutover
-    # contract fits — no synchronous-response-shape constraint like Discord).
-    "jira": "jira",
-    # Finance sources: Mercury + QuickBooks webhooks fit the 202 cutover
-    # contract (no synchronous-response-shape constraint), so they activate
-    # the full pipeline once the tenant's kafka_path_enabled flag is TRUE.
-    "mercury": "mercury",
-    "quickbooks": "quickbooks",
-    # IN-GRAFANA: Grafana Alerting webhooks fit the 202 cutover contract.
-    "grafana": "grafana",
-    # IN-FIN2: Brex/Ramp/Gusto/Deel finance webhooks fit the 202 cutover
-    # contract (no synchronous-response-shape constraint), so they activate the
-    # full pipeline once the tenant's kafka_path_enabled flag is TRUE.
-    "brex": "brex",
-    "ramp": "ramp",
-    "gusto": "gusto",
-    "deel": "deel",
-    # IN-FF/IN-MIRO/IN-FIGMA: Fireflies/Miro/Figma webhooks fit the 202 cutover
-    # contract, so they activate the full pipeline once the tenant's
-    # kafka_path_enabled flag is TRUE.
-    "fireflies": "fireflies",
-    "miro": "miro",
-    "figma": "figma",
-    # IN-PEOPLE/IN-RECRUITING: HiBob + Ashby webhooks fit the 202 cutover
-    # contract, so they activate the full pipeline once the tenant's
-    # kafka_path_enabled flag is TRUE. (LinkedIn is poll-only — absent here.)
-    "hibob": "hibob",
-    "ashby": "ashby",
-}
 
 
 # The provisioner creates every ingestion topic with KAFKA_TOPIC_PARTITIONS
@@ -376,7 +306,7 @@ async def _maybe_shadow_write_webhook(
     unaffected.
 
     No-ops cleanly when:
-      - provider is not in the shadow-source map (linear/stripe).
+      - provider's contract does not declare inline shadow writing.
       - runtime.kafka_producer or runtime.s3_raw_client is unset
         (gateway-config: the lifespan handler hasn't wired the
         shadow deps; pre-M2 deployments).
@@ -386,9 +316,10 @@ async def _maybe_shadow_write_webhook(
     Per LLD §11 (per-tenant flag) + M2 §M2.1.
     """
     try:
-        source = _PROVIDER_TO_SHADOW_SOURCE.get(provider)
-        if source is None:
-            return  # linear / stripe / future providers — not in scope
+        ingress = webhook_ingress_definition(provider)
+        source = ingress.source_id
+        if not ingress.shadow_write_enabled or source is None:
+            return
 
         kafka_producer = runtime.kafka_producer
         s3_client = runtime.s3_raw_client
@@ -458,45 +389,6 @@ def _event_type_for(
         if isinstance(itype, int):
             return f"interaction:{itype}"
     return "unknown"
-
-
-# Channels in CHANNEL_TRUST_MAP are keyed differently per provider; the
-# router maps from provider → channel name once, here, so the
-# verification layer and the ingestion handler registry stay aligned.
-_PROVIDER_CHANNEL: dict[str, str] = {
-    "slack": "slack:message",
-    "github": "github:webhook",
-    "linear": "linear:webhook",
-    "stripe": "stripe:webhook",
-    "discord": "discord:interaction",
-    # IN-17: inline-ingest fallback channel (used only when the tenant's
-    # kafka_path_enabled flag is off; otherwise the cutover 202 path runs).
-    "jira": "jira:issue",
-    # Finance sources — inline-ingest fallback channels (cutover 202 path runs
-    # when kafka_path_enabled is TRUE).
-    "mercury": "mercury:transaction",
-    "quickbooks": "quickbooks:object",
-    # IN-GRAFANA: the webhook delivers alert groups -> the `grafana:alert`
-    # channel (inline-ingest fallback when kafka_path_enabled is off).
-    "grafana": "grafana:alert",
-    # IN-FIN2: finance webhook channels (inline-ingest fallback when
-    # kafka_path_enabled is off). Must match each handler's @register(...).
-    "brex": "brex:transaction",
-    "ramp": "ramp:transaction",
-    "gusto": "gusto:object",
-    "deel": "deel:payment",
-    # IN-FF/IN-MIRO/IN-FIGMA: webhook channels (inline-ingest fallback when
-    # kafka_path_enabled is off). Must match each handler's @register(...).
-    "fireflies": "fireflies:transcript",
-    "miro": "miro:item",
-    "figma": "figma:event",
-    # IN-PEOPLE/IN-RECRUITING: webhook channels (inline-ingest fallback when
-    # kafka_path_enabled is off). Must match each handler's @register(_CHANNEL):
-    # handlers/hibob.py _CHANNEL="hibob:object", handlers/ashby.py
-    # _CHANNEL="ashby:object". (LinkedIn is poll-only — no inline webhook channel.)
-    "hibob": "hibob:object",
-    "ashby": "ashby:object",
-}
 
 
 _WEBHOOK_RETRY_AFTER_SECONDS = "30"
@@ -900,6 +792,8 @@ async def _process_qbo_unit(
     inline). Raises `ValidationError` / `CompanyOSError` on an inline ingest
     rejection (the caller logs + skips the offending unit).
     """
+    ingress = webhook_ingress_definition("quickbooks")
+    assert ingress.source_id is not None
     unit_raw = json.dumps(unit_payload, separators=(",", ":")).encode("utf-8")
 
     flag_enabled = False
@@ -912,7 +806,7 @@ async def _process_qbo_unit(
             request,
             runtime=runtime,
             provider="quickbooks",
-            source="quickbooks",
+            source=ingress.source_id,
             tenant_id=tenant_id,
             raw_body=unit_raw,
             payload=unit_payload,
@@ -929,7 +823,7 @@ async def _process_qbo_unit(
 
     deps = _deps(request)
     await ingest(
-        "quickbooks:object",
+        ingress.channel,
         unit_payload,
         pool=deps.pool,
         tenant_id=tenant_id,
@@ -1117,7 +1011,7 @@ async def _resolve_and_verify_webhook(
     subpath: str,
     payload: Mapping[str, Any] | None,
     raw: bytes,
-    verifier: Verifier,
+    verifier: Any,
 ) -> WebhookAuthContext | JSONResponse:
     runtime = _webhook_runtime(request)
 
@@ -1135,9 +1029,17 @@ async def _resolve_and_verify_webhook(
     )
     tenant_id = outcome.tenant_id if isinstance(outcome, Resolved) else None
 
-    secrets = await load_secrets(provider, tenant_id, app_state=request.app.state)
+    installation_row_id = (
+        outcome.installation_row_id if isinstance(outcome, Resolved) else None
+    )
+    secrets = await load_secrets(
+        provider,
+        tenant_id,
+        installation_row_id=installation_row_id,
+        app_state=request.app.state,
+    )
     try:
-        verified = await verifier.verify(
+        verified = await verifier(
             body=raw,
             headers=request.headers,
             secrets=secrets,
@@ -1160,6 +1062,7 @@ async def _verified_pre_tenant_response(
     request: Request,
     *,
     provider: str,
+    ingress: WebhookIngressDefinition,
     runtime: WebhookRuntime,
     payload: Mapping[str, Any] | None,
     slack_url_verification: Mapping[str, Any] | None,
@@ -1167,7 +1070,10 @@ async def _verified_pre_tenant_response(
     if slack_url_verification is not None:
         challenge = slack_url_verification.get("challenge", "")
         return JSONResponse({"challenge": challenge}, status_code=200)
-    if provider == "discord" and _is_discord_ping(payload):
+    if (
+        ingress.acknowledgement_policy == "synchronous_provider_response"
+        and _is_discord_ping(payload)
+    ):
         return JSONResponse({"type": 1}, status_code=200)
 
     # IN-13 FR-022: GitHub bootstrap pings may arrive before installation rows.
@@ -1247,14 +1153,17 @@ async def _provider_verified_response(
     request: Request,
     *,
     provider: str,
+    ingress: WebhookIngressDefinition,
     runtime: WebhookRuntime,
     outcome: Any,
     tenant_id: Any,
     payload: Mapping[str, Any] | None,
     verified: VerifiedContext,
 ) -> JSONResponse | None:
-    if provider == "notion":
-        return await notion_webhook.handle_notion_event(
+    if ingress.handler_mode == "dedicated":
+        assert ingress.dedicated_handler_binding is not None
+        handler = resolve_callable_reference(ingress.dedicated_handler_binding)
+        return await handler(
             request=request,
             outcome=outcome,
             payload=payload or {},
@@ -1327,6 +1236,7 @@ async def _kafka_cutover_response(
     request: Request,
     *,
     provider: str,
+    ingress: WebhookIngressDefinition,
     runtime: WebhookRuntime,
     tenant_id: Any,
     raw: bytes,
@@ -1334,11 +1244,15 @@ async def _kafka_cutover_response(
     verified: VerifiedContext,
 ) -> WebhookCutoverDecision:
     flag_enabled = False
-    cutover_source = _CUTOVER_ENABLED_PROVIDERS.get(provider)
-    if cutover_source is not None and runtime.tenant_flags is not None:
+    cutover_source = ingress.source_id
+    if ingress.kafka_cutover_enabled and runtime.tenant_flags is not None:
         flag_enabled = await runtime.tenant_flags.kafka_path_enabled(tenant_id)
 
-    if not flag_enabled or cutover_source is None:
+    if (
+        not flag_enabled
+        or not ingress.kafka_cutover_enabled
+        or cutover_source is None
+    ):
         return WebhookCutoverDecision(flag_enabled=flag_enabled, response=None)
 
     succeeded = await _attempt_kafka_path(
@@ -1379,6 +1293,7 @@ async def _inline_ingest_response(
     request: Request,
     *,
     provider: str,
+    ingress: WebhookIngressDefinition,
     runtime: WebhookRuntime,
     tenant_id: Any,
     raw: bytes,
@@ -1386,7 +1301,7 @@ async def _inline_ingest_response(
     verified: VerifiedContext,
     suppress_shadow_write: bool,
 ) -> JSONResponse:
-    channel = _PROVIDER_CHANNEL[provider]
+    channel = ingress.channel
     if payload is None:
         try:
             payload = json.loads(verified.body)
@@ -1449,7 +1364,11 @@ async def _inline_ingest_response(
     if result.trigger_queue_id is not None:
         substrate_headers["X-Trigger-Queue-Id"] = str(result.trigger_queue_id)
 
-    if provider == "discord" and isinstance(payload, dict) and payload.get("type") == 2:
+    if (
+        ingress.acknowledgement_policy == "synchronous_provider_response"
+        and isinstance(payload, dict)
+        and payload.get("type") == 2
+    ):
         return JSONResponse(
             {
                 "type": 4,
@@ -1481,8 +1400,12 @@ async def _receive_webhook(
     *,
     subpath: str = "",
 ) -> JSONResponse:
-    verifier = VERIFIERS.get(provider)
-    if verifier is None:
+    try:
+        ingress = webhook_ingress_definition(provider)
+    except KeyError:
+        return _unknown_provider_response(provider)
+    verifier = verifier_for_provider(provider)
+    if verifier is None:  # pragma: no cover - catalog/runtime guard
         return _unknown_provider_response(provider)
 
     raw, payload, read_error = await _read_webhook_body(request, provider=provider)
@@ -1494,8 +1417,15 @@ async def _receive_webhook(
         _is_slack_url_verification(payload) if provider == "slack" else None
     )
 
-    if provider == "notion" and notion_webhook.is_verification_handshake(payload):
-        return notion_webhook.handle_verification_handshake(payload)
+    handshake_binding = ingress.verification_handshake_binding
+    handshake_handler_binding = ingress.verification_handshake_handler_binding
+    if handshake_binding is not None and handshake_handler_binding is not None:
+        is_handshake = resolve_callable_reference(handshake_binding)
+        if is_handshake(payload):
+            handshake_handler = resolve_callable_reference(
+                handshake_handler_binding
+            )
+            return handshake_handler(payload)
 
     auth = await _resolve_and_verify_webhook(
         request,
@@ -1511,6 +1441,7 @@ async def _receive_webhook(
     response = await _verified_pre_tenant_response(
         request,
         provider=provider,
+        ingress=ingress,
         runtime=auth.runtime,
         payload=payload,
         slack_url_verification=slack_url_verification,
@@ -1529,6 +1460,7 @@ async def _receive_webhook(
     response = await _provider_verified_response(
         request,
         provider=provider,
+        ingress=ingress,
         runtime=auth.runtime,
         outcome=auth.outcome,
         tenant_id=auth.tenant_id,
@@ -1541,6 +1473,7 @@ async def _receive_webhook(
     cutover = await _kafka_cutover_response(
         request,
         provider=provider,
+        ingress=ingress,
         runtime=auth.runtime,
         tenant_id=auth.tenant_id,
         raw=raw,
@@ -1553,6 +1486,7 @@ async def _receive_webhook(
     return await _inline_ingest_response(
         request,
         provider=provider,
+        ingress=ingress,
         runtime=auth.runtime,
         tenant_id=auth.tenant_id,
         raw=raw,

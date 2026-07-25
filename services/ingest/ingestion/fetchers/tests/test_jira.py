@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_fetcher
 from services.ingest.ingestion.fetchers import jira as jf
 from services.ingest.ingestion.fetchers.jira import (
     SHARD_KIND_PROJECT_ISSUES,
@@ -83,7 +83,7 @@ def _patch_client(monkeypatch, client):
 
 
 async def test_dispatch_and_channel_wired():
-    assert FETCHER_DISPATCH["jira"] is fetch_page_jira
+    assert resolve_fetcher("jira") is fetch_page_jira
     assert resolve_channel("jira", "backfill") == "jira:issue"
     assert resolve_channel("jira", "webhook") == "jira:issue"
     assert resolve_channel("jira", "poll") == "jira:issue"

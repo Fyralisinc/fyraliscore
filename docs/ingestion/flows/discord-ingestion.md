@@ -570,18 +570,12 @@ Gateway intents, REST rate limits).
 - **Privacy (SC‑006)** — raw `guild_id` never logged or persisted; only its
   BLAKE2b short hash. ✅
 
-### 12.3 Dev / spammer mode
+### 12.3 Dev / Provider Lab mode
 
-For local testing against the mock source servers, `build_discord_client` detects
-spammer mode (`SYNTHETIC_SOURCE_API_BASE` set) and **presets** the bot token to
-`spam-bot::{guild_id}`, skipping the real bot‑token resolution; the client's API
-base then points at the local spammer (`:7008` for Discord) rather than
-`discord.com` ([_clients.py:14‑22](../../../services/ingest/ingestion/fetchers/_clients.py#L14-L22),
-[232‑249](../../../services/ingest/ingestion/fetchers/_clients.py#L232-L249)). The
+For local testing, `build_discord_client` detects `PROVIDER_LAB_URL` and
+**presets** the bot token to `spam-bot::{guild_id}`, skipping real bot-token
+resolution. `DISCORD_API_BASE_URL` explicitly points the client at
+`http://127.0.0.1:<port>/discord/api/v10` rather than `discord.com`
+([_clients.py](../../../services/ingest/ingestion/fetchers/_clients.py)). The
 path‑keyed read endpoints (guilds, channels, messages) key on globally‑unique
 snowflakes, so only the token‑scoped auth needs the preseed.
-
-> **TODO(human):** the spammer Discord mock port (`:7008` above) is **inferred**
-> from the sibling source‑mock convention (GitHub `:7003`, Notion `:7006`) — the
-> port is not hard‑coded in this code path (it resolves through
-> `lib.integrations.endpoints`). Confirm and correct the port if it differs.

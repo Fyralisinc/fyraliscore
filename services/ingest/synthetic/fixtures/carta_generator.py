@@ -2,8 +2,8 @@
 
 `make_carta(firm_id=..., entities=[...], rows_per_entity=N)` produces a
 deterministic per-entity-type fixture shaped to feed `MockCartaClient` (the
-in-process `_open_carta_client` seam) and `start_mock_carta` (the threaded HTTP
-mock). Entities are REAL Issuer v1alpha1 shapes (CONFIRMED — see
+in-process `_open_carta_client` seam) and the canonical Provider Lab Carta
+adapter. Entities are REAL Issuer v1alpha1 shapes (CONFIRMED — see
 integrations/carta/client.py): camelCase field names and protobuf wrapper
 objects — `{"value": "<decimal string>"}` (v1alpha1Decimal / dates / datetimes)
 and `{"currencyCode": {"value": "USD"}, "amount": {"value": "1.25"}}`
@@ -72,8 +72,7 @@ def make_carta(
         multi-page AIP-158 pagination by setting rows_per_entity > page_size).
 
     Returns:
-      Fixture dict consumed by `MockCartaClient(fixture=...)` /
-      `start_mock_carta(...)`:
+      Fixture dict consumed by `MockCartaClient(fixture=...)` and Provider Lab:
         {
           "firm_id": "...",                      # the Carta issuer id
           "page_size": 50,

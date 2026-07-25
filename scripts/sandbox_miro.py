@@ -7,7 +7,7 @@ query surface (GET /boards, /boards/{id}/items) and a live push surface
 (HMAC-signed webhooks). This sandbox stands up a REAL local mock of the Miro v2
 endpoints and drives the REAL pipeline against it:
 
-    MiroClient (real httpx, spammer auth) -> fetch_page_miro (real opaque-cursor
+    MiroClient (real httpx, Provider Lab auth) -> fetch_page_miro (real opaque-cursor
     pagination + fan-out) -> handle_miro_item (real ObservationDraft) -> ingest()
     (real observation insert + dedup)
 
@@ -146,13 +146,15 @@ async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
 
 
 async def run(args) -> int:
-    from services.ingest.synthetic.mock_servers.miro import start_mock_miro
+    from services.ingest.synthetic.provider_lab.server import start_provider_lab
 
     fixtures = _build_fixtures()
-    server, base_url = start_mock_miro(fixtures)
-    os.environ["SYNTHETIC_SOURCE_API_BASE"] = base_url
-    _hr("MOCK SERVER")
-    print(f"  Miro API base : {base_url} (served under /miro via spammer routing)")
+    server = start_provider_lab({"miro": [fixtures]})
+    base_url = server.url("miro")
+    os.environ["PROVIDER_LAB_URL"] = server.base_url
+    os.environ["MIRO_API_BASE_URL"] = base_url
+    _hr("PROVIDER LAB")
+    print(f"  Miro API base : {base_url} (explicit local override)")
 
     admin_url = os.environ.get("SANDBOX_ADMIN_URL", _DEFAULT_ADMIN_URL)
     provided_url = os.environ.get("DATABASE_URL")
@@ -221,10 +223,17 @@ async def run(args) -> int:
         _check("onboarding trigger emitted (source=miro)",
                trig is not None and trig["source"] == "miro")
 
-        # 4. Build the install row + shard directly (the loader SQL is owned by
-        #    the wiring phase). The org_id threads through to the external_id.
-        install_row = {"id": install_id, "tenant_id": _TENANT_ID,
-                       "base_url": _BASE_URL, "secret_ref": None}
+        # 4. Resolve the exact installation through the source contract. The
+        #    org_id threads through to the external_id.
+        from services.ingest.ingestion.installations import (
+            load_source_installation,
+        )
+        install_row = await load_source_installation(
+            pool,
+            source="miro",
+            tenant_id=_TENANT_ID,
+            installation_id=install_id,
+        )
         shard_identifier = {"shard_kind": "miro_board_items", "board_id": _BOARD,
                             "org_id": _ORG_ID, "installation_id": str(install_id)}
 

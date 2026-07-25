@@ -20,10 +20,10 @@ Incremental filter: the fetcher passes `modified_since=<iso>` in poll mode. The
 mock honours it by dropping entities whose `modified` field is not strictly
 greater (matching the handler's `_modified_of` field precedence).
 
-Fault injection: `self._check_fault()` runs first on every public method and the
-four raisers surface `HibobApiError` with the same stable `code`s the real client
-emits, so the fetcher's rate-limit branch (and reconciler error mapping) see
-exactly the production exception shape.
+Fault injection: `self._check_fault()` runs first on every public method. This
+legacy in-process mock surfaces pre-transport `HibobApiError` values;
+production retryable responses instead emerge from `ProviderTransport` as
+typed retry outcomes.
 """
 from __future__ import annotations
 

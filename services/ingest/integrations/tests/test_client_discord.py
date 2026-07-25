@@ -19,6 +19,7 @@ from cryptography.fernet import Fernet
 
 from lib.shared.errors import DiscordApiError
 from lib.shared.ids import uuid7
+from lib.shared.provider_transport import RetryLater, RetryReason
 from lib.shared.secrets import FernetSecretStore
 from services.ingest.integrations.discord import metrics as discord_metrics
 from services.ingest.integrations.discord.client import DiscordClient
@@ -114,7 +115,7 @@ async def test_429_retry_within_budget(
     assert elapsed < 30.0
 
 
-async def test_budget_exhausted_raises_rate_limited(
+async def test_budget_exhausted_schedules_retry_later(
     fresh_db: asyncpg.Pool, _tenant: UUID,
 ) -> None:
     secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
@@ -133,11 +134,13 @@ async def test_budget_exhausted_raises_rate_limited(
             max_attempts=3,
             base_url="https://discord.com/api/v10",
         )
-        with pytest.raises(DiscordApiError) as exc_info:
+        with pytest.raises(RetryLater) as exc_info:
             await client.get_guild_member(_USER_ID)
         await client.aclose()
-    assert exc_info.value.code == "discord_api_rate_limited"
-    assert exc_info.value.context["attempts"] <= 3
+    assert exc_info.value.reason is RetryReason.RATE_LIMIT
+    assert exc_info.value.request_context.operation == (
+        "/guilds/{guild_id}/members/{user_id}"
+    )
 
 
 async def test_channel_missing_access_does_not_disable_installation(

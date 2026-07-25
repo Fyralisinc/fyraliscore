@@ -220,7 +220,7 @@ The code surface is genuinely a near-clone of the Telegram gateway (ADR-0003) an
 
 Where Signal materially diverges from every archetype:
 
-1. **The backfill contract is broken by design.** Every current source satisfies a cursor-walked historical pull (even Grafana, which time-walks backward). Signal cannot. The planner emits one shard; the fetcher drains whatever is in the relay queue at link time and immediately returns `end_of_data=True`. This is not a limitation to work around — it is the architecture. An ADR is required (like ADR-0003 for Telegram, but specifically addressing the live-only precedent and what "no backfill" means for source quality and the overlap-gate harness in `run_all_sources.py`).
+1. **The backfill contract is broken by design.** Every current source satisfies a cursor-walked historical pull (even Grafana, which time-walks backward). Signal cannot. The planner emits one shard; the fetcher drains whatever is in the relay queue at link time and immediately returns `end_of_data=True`. This is not a limitation to work around — it is the architecture. An ADR is required (like ADR-0003 for Telegram, but specifically addressing the live-only precedent and what "no backfill" means for source quality and its source-certification evidence).
 
 2. **The `_EXPECTED[signal]` count in the validation harness will be near-zero** (or a small fixed number equal to the link-time drain, not a meaningful historical corpus). The preflight and overlap-gate harness need to accommodate a source where `backfill_count ≈ 0` is a passing result, not a failure.
 

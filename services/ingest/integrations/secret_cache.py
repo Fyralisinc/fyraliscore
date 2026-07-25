@@ -32,7 +32,7 @@ def coerce_secret_text(raw: Any) -> str:
 class SecretValueCache:
     """Cache a secret-store value for a bounded TTL.
 
-    Preset values are used for tests/spammer mode and do not expire. Values
+    Preset values are used for tests/Provider Lab mode and do not expire. Values
     loaded from a secret provider expire, so rotations are picked up by
     long-lived clients without requiring a process restart.
     """

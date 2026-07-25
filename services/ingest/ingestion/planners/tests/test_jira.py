@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_planner
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.jira import (
     SHARD_KIND_PROJECT_ISSUES,
@@ -36,7 +36,7 @@ def _ctx(projects):
 
 
 async def test_dispatch_wired():
-    assert PLANNER_DISPATCH["jira"] is plan_shards_jira
+    assert resolve_planner("jira") is plan_shards_jira
 
 
 async def test_one_shard_per_project():

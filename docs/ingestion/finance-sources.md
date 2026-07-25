@@ -208,14 +208,15 @@ scripts/`:
 
 ## 6. Testing environment (the deliverable)
 
-A mock-driven environment where a user can, **from the browser**, start a
+A Provider-Lab-driven environment where a user can, **from the browser**, start a
 backfill and concurrently drive live ingestion for both sources.
 
-### Mock source servers
-`services/ingest/synthetic/mock_servers/mercury.py` + `quickbooks.py` — FastAPI apps
-serving per-tenant fixtures (accounts/transactions; invoices/bills/payments),
-reachable via `SYNTHETIC_SOURCE_API_BASE` sub-paths `/mercury`, `/quickbooks`
-(added to [lib/integrations/endpoints.py](../../lib/integrations/endpoints.py)).
+### Provider Lab
+`services/ingest/synthetic/provider_lab/` serves catalog-validated,
+per-tenant fixtures (accounts/transactions; invoices/bills/payments) below
+`/mercury` and `/quickbooks`. Local runs set `PROVIDER_LAB_URL` for test
+credentials and pass `MERCURY_API_BASE_URL` / `QUICKBOOKS_API_BASE_URL`
+explicitly; the production endpoint resolver has no single-host fallback.
 
 ### Gateway control endpoints (`services/app/gateway/finance_routes.py`)
 A new router mounted in [gateway/app.py](../../services/app/gateway/app.py),

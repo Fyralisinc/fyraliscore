@@ -23,16 +23,40 @@ class _FakeHttp:
         self.requests: list[dict] = []
         self.byte_requests: list[dict] = []
 
-    async def request(self, method, url, *, user_email, scopes, params=None, json_body=None):
+    async def request(
+        self,
+        method,
+        url,
+        *,
+        user_email,
+        scopes,
+        params=None,
+        json_body=None,
+        operation_id,
+    ):
         self.requests.append({
             "method": method, "url": url, "user_email": user_email,
             "scopes": tuple(scopes), "params": params or {},
             "json_body": json_body,
+            "operation_id": operation_id,
         })
         return self._responses.pop(0)
 
-    async def request_bytes(self, method, url, *, user_email, scopes, params=None):
-        self.byte_requests.append({"url": url, "params": params or {}})
+    async def request_bytes(
+        self,
+        method,
+        url,
+        *,
+        user_email,
+        scopes,
+        params=None,
+        operation_id,
+    ):
+        self.byte_requests.append({
+            "url": url,
+            "params": params or {},
+            "operation_id": operation_id,
+        })
         return self._raw
 
 
@@ -51,6 +75,12 @@ async def test_resolve_scope_and_extractable():
     assert not is_extractable(None)
 
 
+async def test_list_shared_drives_operation_id():
+    client, http = _client([{"drives": []}])
+    await client.list_shared_drives(user_email="admin@acme.com")
+    assert http.requests[0]["operation_id"] == "drives.list"
+
+
 async def test_list_files_my_drive_shape():
     client, http = _client([{"files": [{"id": "f1"}]}])
     body = await client.list_files(
@@ -64,6 +94,7 @@ async def test_list_files_my_drive_shape():
     assert "modifiedTime > '2026-01-01T00:00:00Z'" in req["params"]["q"]
     assert "trashed = false" in req["params"]["q"]
     assert "driveId" not in req["params"]
+    assert req["operation_id"] == "files.list"
 
 
 async def test_list_files_shared_drive_shape():
@@ -80,6 +111,7 @@ async def test_get_start_page_token():
     tok = await client.get_start_page_token(user_email="alice@acme.com")
     assert tok == "spt-7"
     assert http.requests[0]["url"].endswith("/changes/startPageToken")
+    assert http.requests[0]["operation_id"] == "changes.getStartPageToken"
 
 
 async def test_list_changes_shape():
@@ -89,6 +121,7 @@ async def test_list_changes_shape():
     req = http.requests[0]
     assert req["params"]["pageToken"] == "spt-7"
     assert req["params"]["includeRemoved"] == "true"
+    assert req["operation_id"] == "changes.list"
 
 
 async def test_has_changes_since():
@@ -107,6 +140,7 @@ async def test_export_text_google_native_truncates():
     assert text == "hello"
     assert http.byte_requests[0]["url"].endswith("/files/f1/export")
     assert http.byte_requests[0]["params"]["mimeType"] == "text/plain"
+    assert http.byte_requests[0]["operation_id"] == "files.export"
 
 
 async def test_export_text_plain_uses_media():
@@ -116,6 +150,7 @@ async def test_export_text_plain_uses_media():
     )
     assert text == "plain"
     assert http.byte_requests[0]["params"]["alt"] == "media"
+    assert http.byte_requests[0]["operation_id"] == "files.get"
 
 
 async def test_export_text_binary_returns_none():
@@ -178,6 +213,7 @@ async def test_list_comments_shape():
     req = http.requests[0]
     assert req["url"].endswith("/files/f1/comments")
     assert "replies" in req["params"]["fields"]
+    assert req["operation_id"] == "comments.list"
 
 
 async def test_list_revisions_shape():
@@ -185,6 +221,7 @@ async def test_list_revisions_shape():
     body = await client.list_revisions(user_email="a@x.com", file_id="f1")
     assert body["revisions"][0]["id"] == "r1"
     assert http.requests[0]["url"].endswith("/files/f1/revisions")
+    assert http.requests[0]["operation_id"] == "revisions.list"
 
 
 async def test_watch_changes_request_shape():
@@ -205,6 +242,7 @@ async def test_watch_changes_request_shape():
     assert jb["id"] == "ch1" and jb["type"] == "web_hook"
     assert jb["address"] == "https://app.test/webhooks/google_drive/push"
     assert jb["token"] == "secret-tok"
+    assert req["operation_id"] == "changes.watch"
 
 
 async def test_watch_changes_my_drive_omits_drive_id():
@@ -227,3 +265,4 @@ async def test_stop_channel_request_shape():
     assert req["method"] == "POST"
     assert req["url"] == "https://drive.test/v3/channels/stop"
     assert req["json_body"] == {"id": "ch1", "resourceId": "res1"}
+    assert req["operation_id"] == "channels.stop"

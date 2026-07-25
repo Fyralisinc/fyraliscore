@@ -1,21 +1,14 @@
-"""Central resolver for outbound source-API base URLs.
+"""Central resolver for production outbound source-API base URLs.
 
-Every outbound integration client (gmail, github, slack, discord REST +
-gateway) resolves its base URL through `endpoint(name)` instead of a
-hardcoded module constant. Production defaults are the real provider URLs;
-each can be overridden via an env var so the whole pipeline can be pointed
-at a **local source-mock server (the "spammer")** for load testing without
-touching any client code — pure config.
+Every outbound integration client resolves its base URL through
+``endpoint(name)`` instead of a hardcoded module constant. Production defaults
+are the real provider URLs, and each endpoint can be overridden through its
+own explicit environment variable.
 
-Resolution is done at client-construction time (not import time) so a test
-or a run can set the env var first.
-
-Two override granularities:
-  - per-source env var (e.g. `GMAIL_API_BASE_URL`) — explicit, wins.
-  - `SYNTHETIC_SOURCE_API_BASE` — a single base that points ALL sources at
-    one spammer host; each source is served under a conventional sub-path
-    (`/gmail`, `/github`, `/slack`, `/discord`). Convenience for the local
-    spammer; a per-source env var always takes precedence over it.
+Resolution happens at client-construction time so tests can configure a
+per-source endpoint before constructing the client. The loopback-only Provider
+Lab uses ``lib.integrations.provider_lab``; its single origin is intentionally
+not a fallback in this production resolver.
 
 Auth/token endpoints that matter for outbound:
   - `google_token` — the DWD token-exchange URL. (Also data-driven via the
@@ -50,24 +43,24 @@ _PROD: dict[str, str] = {
     # IN-17 Jira: NOTE — Jira Cloud has NO single global host; each tenant's
     # site is its own `https://<site>.atlassian.net`, carried per-install on
     # jira_installations.base_url and used directly in production. This entry
-    # exists ONLY so the local spammer sub-path convention (`/jira`) resolves
-    # uniformly; the prod default is intentionally empty (never used in
-    # production — build_jira_client passes the per-install base_url instead).
+    # exists only for explicit local Provider Lab routing to `/jira`; the prod
+    # default is intentionally empty (never used in production —
+    # build_jira_client passes the per-install base_url instead).
     "jira_api": "",
     # Finance: Mercury banking API. Single global host.
     "mercury_api": "https://api.mercury.com/api/v1",
     # Finance: QuickBooks Online. NOTE — the realm-scoped path
     # (`/v3/company/{realmId}`) is per-install on quickbooks_installations.base_url
-    # and used directly in production. This entry is the host prefix used ONLY so
-    # the local spammer sub-path convention (`/quickbooks`) resolves uniformly;
+    # and used directly in production. This entry is the production host prefix;
+    # local Provider Lab runs pass `/quickbooks` through the explicit override.
     # build_quickbooks_client passes the per-install base_url in production.
     "quickbooks_api": "https://quickbooks.api.intuit.com",
     # IN-GRAFANA: Grafana has NO single global host — each tenant's instance is
     # its own `https://<instance>` (Cloud) or self-hosted URL, carried per-install
     # on grafana_installations.base_url and used directly in production. This entry
-    # exists ONLY so the local spammer sub-path convention (`/grafana`) resolves
-    # uniformly; the prod default is intentionally empty (build_grafana_client
-    # passes the per-install base_url instead).
+    # exists only for explicit local Provider Lab routing to `/grafana`; the prod
+    # default is intentionally empty (build_grafana_client passes the
+    # per-install base_url instead).
     "grafana_api": "",
     # Finance (IN-FIN2): Brex — Bearer auth, real v2 cash/card endpoints.
     # Single global host
@@ -151,56 +144,17 @@ _ENV: dict[str, str] = {
     "facebook_graph_api": "FACEBOOK_GRAPH_API_BASE_URL",
 }
 
-# name -> sub-path under SYNTHETIC_SOURCE_API_BASE when that single-host
-# override is used.
-_SPAMMER_SUBPATH: dict[str, str] = {
-    "gmail_api": "/gmail/gmail/v1",
-    "google_directory": "/gmail/admin/directory/v1",
-    "google_token": "/gmail/token",
-    "github_api": "/github",
-    "slack_api": "/slack/api",
-    "discord_api": "/discord/api/v10",
-    "discord_gateway_bot": "/discord/api/v10/gateway/bot",
-    "notion_api": "/notion",
-    "google_calendar_api": "/gcal/calendar/v3",
-    "google_drive_api": "/gdrive/drive/v3",
-    "jira_api": "/jira",
-    "mercury_api": "/mercury",
-    "quickbooks_api": "/quickbooks",
-    "grafana_api": "/grafana",
-    "brex_api": "/brex",
-    "ramp_api": "/ramp",
-    "gusto_api": "/gusto",
-    "deel_api": "/deel",
-    "fireflies_api": "/fireflies",
-    "miro_api": "/miro",
-    "figma_api": "/figma",
-    "carta_api": "/carta",
-    "hibob_api": "/hibob",
-    "ashby_api": "/ashby",
-    "linkedin_api": "/linkedin",
-    "facebook_graph_api": "/facebook",
-}
-
-_SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"
-
-
 def endpoint(name: str) -> str:
-    """Resolve the base URL for `name`. Precedence: per-source env var →
-    single-host spammer base → production default. Trailing slash trimmed."""
+    """Resolve ``name`` from its explicit override or production default."""
     if name not in _PROD:
         raise KeyError(f"unknown endpoint name: {name!r}")
-    spammer_base = os.environ.get(_SPAMMER_BASE_ENV)
-    if spammer_base and is_prod():
+    if os.environ.get("PROVIDER_LAB_URL") and is_prod():
         raise RuntimeError(
-            f"{_SPAMMER_BASE_ENV} is a synthetic test override and must be "
-            "unset in production",
+            "PROVIDER_LAB_URL is test-only and must be unset in production",
         )
     explicit = os.environ.get(_ENV[name])
     if explicit:
         return explicit.rstrip("/")
-    if spammer_base:
-        return (spammer_base.rstrip("/") + _SPAMMER_SUBPATH[name]).rstrip("/")
     return _PROD[name]
 
 

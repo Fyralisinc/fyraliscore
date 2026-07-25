@@ -1,48 +1,100 @@
-"""scripts/run_signal_gateway_worker.py — Signal live gateway launcher.
+"""Signal live gateway launcher for one exact installation.
 
-The Telegram-gateway-worker analog for Signal (linked-device, signal-cli
-JSON-RPC). Holds ONE install's LIVE receive session and drives
-`dispatch.handle_update` for every incoming message, shadow-writing onto
-`ingestion.raw.signal` (kafka-first) or falling back to inline `core.ingest`. A
-Signal linked device should be driven by only one live receive loop at a time, so
-the launcher acquires the `gateway:signal:leader_lock` Redis lease BEFORE
-connecting (mirrors Telegram / Discord).
+The process holds one installation's signal-cli HTTP JSON-RPC/SSE receive
+session and drives ``dispatch.handle_update`` for every incoming message. Its
+database reads, secret lookup, update-state writes, Redis lease, and provider
+transport context all use the same required ``(tenant_id, installation_id)``.
+Automatic installation selection is deliberately unsupported.
 
-Env:
-  DATABASE_URL                 (required) Postgres DSN.
-  REDIS_URL                    (required) the single-instance lease store.
-  KAFKA_BOOTSTRAP_SERVERS      (optional) wire the data plane for the kafka-first
-                               path; absent → inline ingest().
-  SIGNAL_INSTALLATION_ID       (optional) which signal_installations row to run;
-                               absent → the first active install.
+Required environment:
 
-OPERATOR SETUP (Signal has no official server API): this worker talks JSON-RPC to
-a running **signal-cli** daemon holding the linked-device identity for this
-install's `account_label`. Before this worker can ingest anything the operator
-must (1) link signal-cli as a secondary device to a real Signal number
-(`signal-cli link`, scan the QR from the phone's Linked Devices), and (2) run the
-daemon in JSON-RPC mode (`signal-cli -a <number> daemon --tcp HOST:PORT` or
-`--socket PATH`). Point the worker at it via SIGNAL_JSONRPC_ENDPOINT (see
-integrations/signal/client.py). signal-cli is an OPTIONAL/external dependency;
-without a reachable daemon the worker exits with a clear error.
+* ``DATABASE_URL`` and ``REDIS_URL``;
+* ``SIGNAL_TENANT_ID`` and ``SIGNAL_INSTALLATION_ID`` (UUIDs);
+* ``SIGNAL_JSONRPC_ENDPOINT`` (the signal-cli ``--http`` RPC endpoint).
+
+``SIGNAL_SSE_ENDPOINT`` is optional for the native ``/api/v1/rpc`` endpoint,
+whose ``/api/v1/events`` URL is derived automatically. It is required for a
+custom Provider Lab JSON-RPC path that cannot be derived. The supported
+signal-cli version is pinned by ``SIGNAL_CLI_VERSION`` (default ``0.14.4.1``).
+
+Signal has no official server API. The operator links signal-cli as a secondary
+device, runs ``signal-cli -a <number> daemon --http HOST:PORT``, and deploys one
+worker binding per Signal installation. A shared multi-account daemon is an
+explicit opt-in via ``SIGNAL_CLI_MULTI_ACCOUNT=1``.
 """
+
 from __future__ import annotations
 
 import asyncio
 import os
 import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+from uuid import UUID
 
 import structlog
 
-from worker_observability import (
-    install_signal_handlers,
-    register_pool,
-    start_worker_health,
-)
-
 log = structlog.get_logger("scripts.run_signal_gateway_worker")
 
-_LEASE_KEY = "gateway:signal:leader_lock"
+
+@dataclass(frozen=True, slots=True)
+class SignalRuntimeBinding:
+    """Tenant-safe material needed by one live gateway worker."""
+
+    tenant_id: UUID
+    installation_id: UUID
+    account_label: str
+    session: str
+    thread_rows: tuple[Any, ...]
+
+
+def _required_text_env(
+    name: str,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    source = os.environ if environ is None else environ
+    value = source.get(name, "").strip()
+    if not value:
+        raise ValueError(f"{name} is required")
+    return value
+
+
+def _required_uuid_env(
+    name: str,
+    environ: Mapping[str, str] | None = None,
+) -> UUID:
+    value = _required_text_env(name, environ)
+    try:
+        parsed = UUID(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a UUID") from exc
+    if parsed.int == 0:
+        raise ValueError(f"{name} must not be the nil UUID")
+    return parsed
+
+
+def required_runtime_identity(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[UUID, UUID]:
+    """Return the mandatory, exact Signal tenant/installation identity."""
+
+    return (
+        _required_uuid_env("SIGNAL_TENANT_ID", environ),
+        _required_uuid_env("SIGNAL_INSTALLATION_ID", environ),
+    )
+
+
+def signal_lease_key(tenant_id: UUID, installation_id: UUID) -> str:
+    """One lease per tenant-bound linked-device installation."""
+
+    return f"gateway:signal:{tenant_id}:{installation_id}:leader_lock"
+
+
+def signal_worker_identity(tenant_id: UUID, installation_id: UUID) -> str:
+    """Stable observability identity for a single installation process."""
+
+    return f"signal_gateway_worker:{tenant_id}:{installation_id}"
 
 
 async def _resolve_secret(secret_store, ref, tenant_id):  # noqa: ANN001
@@ -52,7 +104,116 @@ async def _resolve_secret(secret_store, ref, tenant_id):  # noqa: ANN001
     return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
 
 
+async def load_signal_runtime_binding(
+    executor: Any,
+    secret_store: Any,
+    *,
+    tenant_id: UUID,
+    installation_id: UUID,
+) -> SignalRuntimeBinding:
+    """Load one exact active installation and its tenant-owned credentials."""
+
+    install = await executor.fetchrow(
+        """
+        SELECT id, tenant_id, account_label, session_secret_ref
+          FROM signal_installations
+         WHERE tenant_id = $1
+           AND id = $2
+           AND disabled_at IS NULL
+        """,
+        tenant_id,
+        installation_id,
+    )
+    if install is None:
+        raise LookupError(
+            "active Signal installation was not found for the exact tenant "
+            "and installation identity"
+        )
+    try:
+        row_tenant_id = UUID(str(install["tenant_id"]))
+        row_installation_id = UUID(str(install["id"]))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Signal installation returned invalid identity data"
+        ) from exc
+    if row_tenant_id != tenant_id or row_installation_id != installation_id:
+        raise RuntimeError(
+            "Signal installation loader returned a different tenant or "
+            "installation identity"
+        )
+
+    account_label = str(install["account_label"] or "").strip()
+    session = await _resolve_secret(
+        secret_store,
+        install["session_secret_ref"],
+        tenant_id,
+    )
+    session = (session or "").strip()
+    if not account_label or not session:
+        raise RuntimeError(
+            "Signal installation is missing its account label or live "
+            "linked-device session"
+        )
+
+    thread_rows = await executor.fetch(
+        """
+        SELECT thread_id, thread_kind, title
+          FROM signal_threads
+         WHERE tenant_id = $1
+           AND signal_installation_id = $2
+           AND state = 'active'
+         ORDER BY thread_id
+        """,
+        tenant_id,
+        installation_id,
+    )
+    return SignalRuntimeBinding(
+        tenant_id=tenant_id,
+        installation_id=installation_id,
+        account_label=account_label,
+        session=session,
+        thread_rows=tuple(thread_rows),
+    )
+
+
+async def persist_signal_sync_cursor(
+    executor: Any,
+    *,
+    tenant_id: UUID,
+    installation_id: UUID,
+    cursor: int | None,
+) -> None:
+    """Advance only the exact installation's live cursor."""
+
+    result = await executor.execute(
+        """
+        UPDATE signal_update_state
+           SET sync_cursor = $3,
+               updated_at = now()
+         WHERE tenant_id = $1
+           AND signal_installation_id = $2
+        """,
+        tenant_id,
+        installation_id,
+        cursor,
+    )
+    if result != "UPDATE 1":
+        raise RuntimeError(
+            "Signal live update state is missing for the exact tenant and "
+            "installation identity"
+        )
+
+
 async def _main() -> int:
+    # Importing this script as a module must remain side-effect free for the
+    # exact-binding tests. Executing it from scripts/ still needs this helper to
+    # bootstrap the repository root before importing Fyralis packages.
+    from worker_observability import (
+        install_signal_handlers,
+        register_pool,
+        start_worker_health,
+    )
+
     dsn = os.environ.get("DATABASE_URL")
     redis_url = os.environ.get("REDIS_URL")
     if not dsn:
@@ -61,6 +222,14 @@ async def _main() -> int:
     if not redis_url:
         log.error("signal_gateway_missing_env", var="REDIS_URL")
         return 2
+    try:
+        tenant_id, installation_id = required_runtime_identity()
+        jsonrpc_endpoint = _required_text_env("SIGNAL_JSONRPC_ENDPOINT")
+    except ValueError as exc:
+        log.error("signal_gateway_invalid_runtime_binding", error=str(exc))
+        return 2
+    worker_identity = signal_worker_identity(tenant_id, installation_id)
+    lease_key = signal_lease_key(tenant_id, installation_id)
 
     import asyncpg
     from redis.asyncio import Redis as AsyncRedis
@@ -72,6 +241,7 @@ async def _main() -> int:
         positive_int_env,
     )
     from lib.shared.secrets import build_secret_store
+    from lib.shared.tenant_context import tenant_transaction
     from services.domain.actors.repo import ActorRepo
     from services.domain.entity_aliases.repo import EntityAliasRepo
     from services.ingest.ingestion.feature_flags import TenantFlags
@@ -96,11 +266,11 @@ async def _main() -> int:
         init=configure_connection_timeouts,
         **runtime_kwargs,
     )
-    register_pool("signal_gateway_worker", pool)
+    register_pool(worker_identity, pool)
     redis: AsyncRedis | None = None
     stop_event = asyncio.Event()
     install_signal_handlers(stop_event)
-    health_shutdown = start_worker_health("signal_gateway_worker", stop_event)
+    health_shutdown = start_worker_health(worker_identity, stop_event)
     refresh_task: asyncio.Task | None = None
     lock = None
     worker: SignalGatewayWorker | None = None
@@ -108,40 +278,24 @@ async def _main() -> int:
     s3_raw_client = None
     try:
         secret_store = build_secret_store(pool)
-
-        # Select the install to run.
-        inst_id = os.environ.get("SIGNAL_INSTALLATION_ID")
-        if inst_id:
-            install = await pool.fetchrow(
-                "SELECT * FROM signal_installations WHERE id = $1::uuid "
-                "AND disabled_at IS NULL", inst_id,
+        try:
+            async with tenant_transaction(tenant_id, pool=pool) as tctx:
+                binding = await load_signal_runtime_binding(
+                    tctx,
+                    secret_store,
+                    tenant_id=tenant_id,
+                    installation_id=installation_id,
+                )
+        except (LookupError, RuntimeError) as exc:
+            log.error(
+                "signal_gateway_invalid_installation_binding",
+                tenant_id=str(tenant_id),
+                installation_id=str(installation_id),
+                error=str(exc),
             )
-        else:
-            install = await pool.fetchrow(
-                "SELECT * FROM signal_installations WHERE disabled_at IS NULL "
-                "ORDER BY created_at LIMIT 1",
-            )
-        if install is None:
-            log.error("signal_gateway_no_active_install")
-            return 2
-        tenant_id = install["tenant_id"]
-
-        # The LIVE linked-device session (distinct from the backfill device per
-        # Topology B). signal-cli holds the identity; the secret ref points at the
-        # daemon attach material / account selector resolved by SignalClient.
-        session = await _resolve_secret(
-            secret_store, install["session_secret_ref"], tenant_id,
-        )
-        if not (session and install["account_label"]):
-            log.error("signal_gateway_missing_live_session")
             return 2
 
-        thread_rows = await pool.fetch(
-            "SELECT thread_id, thread_kind, title FROM signal_threads "
-            "WHERE signal_installation_id = $1 AND state = 'active'",
-            install["id"],
-        )
-        thread_index = build_thread_index(thread_rows)
+        thread_index = build_thread_index(binding.thread_rows)
 
         actor_repo = ActorRepo(pool)
         alias_repo = EntityAliasRepo(pool)
@@ -158,7 +312,7 @@ async def _main() -> int:
                 kafka_producer = IdempotentProducer(
                     ProducerConfig(
                         bootstrap_servers=brokers,
-                        client_id="signal-gateway-worker",
+                        client_id=(f"signal-gateway-{str(installation_id)[:12]}"),
                     )
                 )
                 await kafka_producer.start()
@@ -177,18 +331,18 @@ async def _main() -> int:
                 kafka_producer = s3_raw_client = tenant_flags = None
 
         async def _save_state(cursor):  # noqa: ANN001
-            # Signal's sync state is a single advancing cursor (unlike Telegram's
-            # pts/qts/seq/date), persisted on signal_update_state.
-            await pool.execute(
-                "UPDATE signal_update_state SET sync_cursor=$2, updated_at=now() "
-                "WHERE signal_installation_id=$1",
-                install["id"], cursor,
-            )
+            async with tenant_transaction(tenant_id, pool=pool) as tctx:
+                await persist_signal_sync_cursor(
+                    tctx,
+                    tenant_id=tenant_id,
+                    installation_id=installation_id,
+                    cursor=cursor,
+                )
 
         deps = DispatchDeps(
             pool=pool,
             tenant_id=tenant_id,
-            installation_id=str(install["id"]),
+            installation_id=str(installation_id),
             actor_repo=actor_repo,
             alias_repo=alias_repo,
             embedder=embedder,
@@ -197,11 +351,16 @@ async def _main() -> int:
             tenant_flags=tenant_flags,
         )
 
-        # ---- single-instance lease (acquire BEFORE connecting) ----
+        # ---- one active receiver per exact installation ----
         redis = AsyncRedis.from_url(redis_url, decode_responses=False)
-        lock = LeaderLock(redis, key=_LEASE_KEY)
+        lock = LeaderLock(redis, key=lease_key)
         if not await lock.acquire():
-            log.error("signal_gateway_lease_held_elsewhere", key=_LEASE_KEY)
+            log.error(
+                "signal_gateway_lease_held_elsewhere",
+                key=lease_key,
+                tenant_id=str(tenant_id),
+                installation_id=str(installation_id),
+            )
             return 3  # transient — orchestrator restarts to stand by
 
         lease_lost = False
@@ -212,7 +371,12 @@ async def _main() -> int:
                 await asyncio.sleep(10)
                 if not await lock.refresh():
                     lease_lost = True
-                    log.warning("signal_gateway_lease_lost")
+                    log.warning(
+                        "signal_gateway_lease_lost",
+                        key=lease_key,
+                        tenant_id=str(tenant_id),
+                        installation_id=str(installation_id),
+                    )
                     stop_event.set()
                     return
 
@@ -220,12 +384,21 @@ async def _main() -> int:
 
         worker = SignalGatewayWorker(
             deps=deps,
-            session=session,
-            account_label=install["account_label"],
+            session=binding.session,
+            account_label=binding.account_label,
             thread_index=thread_index,
             save_state=_save_state,
+            jsonrpc_endpoint=jsonrpc_endpoint,
+            sse_endpoint=os.environ.get("SIGNAL_SSE_ENDPOINT") or None,
+            signal_cli_version=(os.environ.get("SIGNAL_CLI_VERSION") or "0.14.4.1"),
         )
-        log.info("signal_gateway_starting", tenant_id=str(tenant_id))
+        log.info(
+            "signal_gateway_starting",
+            worker_identity=worker_identity,
+            tenant_id=str(tenant_id),
+            installation_id=str(installation_id),
+            lease_key=lease_key,
+        )
         run_task = asyncio.create_task(worker.run_forever())
         stop_task = asyncio.create_task(stop_event.wait())
         done, _ = await asyncio.wait(
@@ -239,6 +412,9 @@ async def _main() -> int:
             return 3 if lease_lost else 0
         finally:
             stop_task.cancel()
+            if not run_task.done():
+                run_task.cancel()
+            await asyncio.gather(run_task, stop_task, return_exceptions=True)
     finally:
         if refresh_task is not None:
             refresh_task.cancel()

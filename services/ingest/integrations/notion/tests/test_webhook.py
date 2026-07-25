@@ -13,10 +13,16 @@ from uuid import UUID
 import pytest
 
 from lib.shared.errors import NotionApiError
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
 from services.ingest.integrations.notion import webhook
 
 
 TENANT = UUID("00000000-0000-0000-0000-000000000001")
+INSTALLATION = UUID("00000000-0000-0000-0000-000000000002")
 
 
 # ---------------------------------------------------------------------
@@ -53,6 +59,7 @@ class _FakeClient:
         self._error = error
         self.closed = False
         self.requested_id: str | None = None
+        self.install: dict | None = None
 
     async def retrieve_page(self, page_id: str) -> dict:
         self.requested_id = page_id
@@ -93,7 +100,11 @@ def _request_with_data_plane() -> tuple[SimpleNamespace, _FakeProducer, _FakeS3]
 
 
 def _outcome() -> SimpleNamespace:
-    return SimpleNamespace(tenant_id=TENANT, secret_ref="install:ref")
+    return SimpleNamespace(
+        tenant_id=TENANT,
+        installation_row_id=INSTALLATION,
+        secret_ref="install:ref",
+    )
 
 
 @pytest.fixture
@@ -101,6 +112,7 @@ def patch_client(monkeypatch):
     """Patch build_notion_client to return a supplied fake client."""
     def _install(client: _FakeClient) -> None:
         async def _build(install, *, pool=None):
+            client.install = install
             return client
         monkeypatch.setattr(
             "services.ingest.ingestion.fetchers._clients.build_notion_client", _build,
@@ -135,6 +147,9 @@ async def test_page_event_fetches_and_shadow_writes(patch_client) -> None:
     assert body["shadow_write"] is True
     assert client.requested_id == "page-123"
     assert client.closed is True
+    assert client.install is not None
+    assert client.install["id"] == INSTALLATION
+    assert client.install["tenant_id"] == TENANT
 
     # The fetched page (enriched with workspace id) was PUT to S3 and the
     # envelope published to ingestion.raw keyed by tenant.
@@ -188,6 +203,38 @@ async def test_fetch_404_acks_without_write(patch_client) -> None:
     )
     assert resp.status_code == 200
     assert json.loads(resp.body)["reason"] == "fetch_failed"
+    assert client.closed is True
+    assert producer.produced == [] and s3.puts == []
+
+
+@pytest.mark.asyncio
+async def test_retry_later_propagates_without_success_ack(patch_client) -> None:
+    retry = RetryLater.after(
+        request_context=RequestContext(
+            source="notion",
+            operation="pages.retrieve",
+            tenant_id=str(TENANT),
+            installation_id=str(INSTALLATION),
+        ),
+        delay_seconds=60,
+        reason=RetryReason.RATE_LIMIT,
+    )
+    client = _FakeClient(error=retry)
+    patch_client(client)
+    request, producer, s3 = _request_with_data_plane()
+
+    with pytest.raises(RetryLater) as raised:
+        await webhook.handle_notion_event(
+            request=request,
+            outcome=_outcome(),
+            payload={
+                "workspace_id": "ws-1",
+                "type": "page.content_updated",
+                "entity": {"id": "page-123", "type": "page"},
+            },
+        )
+
+    assert raised.value is retry
     assert client.closed is True
     assert producer.produced == [] and s3.puts == []
 

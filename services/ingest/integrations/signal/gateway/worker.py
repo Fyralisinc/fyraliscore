@@ -1,33 +1,42 @@
-"""services/ingest/integrations/signal/gateway/worker.py — persistent receive worker.
+"""Persistent installation-scoped signal-cli receive worker.
 
-Holds ONE install's LIVE Signal linked-device session (the Telegram-gateway
-analog) and drives `dispatch.handle_update` for every incoming message. The real
-Signal transport (signal-cli daemon / libsignal) is an OPTIONAL dependency,
-imported lazily in `run_forever` — importing this module never requires it (the
-synthetic harness drives `handle_update` directly and never instantiates the
-worker).
+Holds one installation's linked-device session and drives
+``dispatch.handle_update`` for every normalized SSE receive event. A finite
+stream (Provider Lab or daemon restart) is resubscribed after a bounded delay;
+typed ``RetryLater`` outcomes escape so the process supervisor can relinquish
+the worker instead of hot-looping through a provider cooldown.
 
-Gap recovery: on startup the worker loads the persisted sync cursor from
-`signal_update_state` and requests a sync replay so any message missed while the
-session was down — including during a long backfill sweep on the separate
-backfill linked device — is reconciled. It then runs the live receive loop and
-periodically persists the advancing cursor.
+Durability checkpointing: the worker acknowledges each SSE update only after it
+crosses the ingestion durability boundary, then persists the advancing message
+timestamp in ``signal_update_state``. signal-cli owns its local receive queue;
+the Fyralis cursor is an audit/reconciliation checkpoint, not an invented
+server-side Signal replay token.
 
-Single-instance safety: a Signal linked device should be driven by only one live
-receive loop at a time, so the launcher acquires the `gateway:signal:leader_lock`
-Redis lease BEFORE constructing the worker (mirrors Telegram / Discord).
+Installation-scoped safety: a Signal linked device should be driven by only one
+live receive loop at a time, so the launcher acquires
+``gateway:signal:{tenant_id}:{installation_id}:leader_lock`` before constructing
+the worker. Different installations use different leases and transport
+contexts.
 
-NOTE: the real Signal receive/sync transport is NOT verified — the lazy import
-and the receive-loop body are TODO(human) shells. The synthetic path never
-instantiates this worker.
 """
+
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
+import httpx
 import structlog
 
+from lib.shared.errors import SignalApiError
+from lib.shared.provider_transport import RequestPolicy, RetryLater
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    QuotaResolver,
+)
 from services.ingest.integrations.signal.client import _message_to_dict
+from services.ingest.integrations.signal.client import SignalJsonRpcTransport
 from services.ingest.integrations.signal.gateway.dispatch import (
     DispatchDeps,
     handle_update,
@@ -48,6 +57,16 @@ class SignalGatewayWorker:
         account_label: str,
         thread_index: dict[int, dict[str, Any]],
         save_state: Any = None,  # async callable(cursor) | None
+        jsonrpc_endpoint: str | None = None,
+        sse_endpoint: str | None = None,
+        http_client: httpx.AsyncClient | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        signal_cli_version: str | None = None,
+        multi_account: bool | None = None,
+        reconnect_delay_seconds: float = 1.0,
     ) -> None:
         self._deps = deps
         self._session = session
@@ -55,26 +74,120 @@ class SignalGatewayWorker:
         # thread_id -> {"thread_kind": str, "title": str|None}
         self._thread_index = thread_index
         self._save_state = save_state
-        self._client: Any | None = None
+        self._client: SignalJsonRpcTransport | None = None
+        self._jsonrpc_endpoint = jsonrpc_endpoint
+        self._sse_endpoint = sse_endpoint
+        self._http_client = http_client
+        self._provider_transport = provider_transport
+        self._request_policy = request_policy
+        self._quota_resolver = quota_resolver
+        self._allow_unlimited_local = allow_unlimited_local
+        self._signal_cli_version = signal_cli_version
+        self._multi_account = multi_account
+        if reconnect_delay_seconds < 0:
+            raise ValueError("reconnect_delay_seconds must be non-negative")
+        self._reconnect_delay_seconds = reconnect_delay_seconds
 
-    def _thread_context(self, peer_id: int) -> dict[str, Any]:
+    def _thread_context(
+        self,
+        peer_id: int,
+        *,
+        default_kind: str = "direct",
+        default_title: str | None = None,
+    ) -> dict[str, Any]:
         meta = self._thread_index.get(peer_id) or {}
         return {
-            "thread_kind": meta.get("thread_kind") or "direct",
-            "thread_title": meta.get("title"),
+            "thread_kind": meta.get("thread_kind") or default_kind,
+            "thread_title": meta.get("title") or default_title,
         }
 
     async def run_forever(self) -> None:
-        """Connect, recover gaps, and run the live receive loop until disconnect.
+        """Receive indefinitely, reconnecting only after finite/transient EOF."""
 
-        TODO(human): wire the real Signal linked-device transport. The synthetic
-        harness drives `handle_update` directly and never reaches this method, so
-        it stays a TODO shell.
-        """
-        raise RuntimeError(
-            "signal gateway worker transport is not configured "
-            "(real signal-cli/libsignal receive loop is a TODO)"
-        )
+        while True:
+            try:
+                delivered = await self.run_once()
+                log.info(
+                    "signal_gateway.stream_ended",
+                    delivered=delivered,
+                    tenant_id=str(self._deps.tenant_id),
+                    installation_id=self._deps.installation_id,
+                )
+            except asyncio.CancelledError:
+                raise
+            except RetryLater:
+                # ProviderTransport selected a durable cooldown. Let the
+                # supervisor release the installation worker rather than sleep
+                # while holding its leader lease.
+                raise
+            except SignalApiError as exc:
+                if not exc.recoverable:
+                    raise
+                log.warning(
+                    "signal_gateway.recoverable_error",
+                    code=exc.code,
+                    tenant_id=str(self._deps.tenant_id),
+                    installation_id=self._deps.installation_id,
+                )
+            except httpx.TransportError as exc:
+                log.warning(
+                    "signal_gateway.stream_transport_error",
+                    error_type=type(exc).__name__,
+                    tenant_id=str(self._deps.tenant_id),
+                    installation_id=self._deps.installation_id,
+                )
+
+            if self._reconnect_delay_seconds:
+                await asyncio.sleep(self._reconnect_delay_seconds)
+
+    async def run_once(self) -> int:
+        """Consume one subscription stream, returning its delivery count."""
+
+        client = self._client
+        if client is None:
+            client = SignalJsonRpcTransport(
+                session=self._session,
+                account_label=self._account_label,
+                tenant_id=self._deps.tenant_id,
+                installation_id=self._deps.installation_id,
+                jsonrpc_endpoint=self._jsonrpc_endpoint,
+                sse_endpoint=self._sse_endpoint,
+                http_client=self._http_client,
+                provider_transport=self._provider_transport,
+                request_policy=self._request_policy,
+                quota_resolver=self._quota_resolver,
+                allow_unlimited_local=self._allow_unlimited_local,
+                signal_cli_version=self._signal_cli_version,
+                multi_account=self._multi_account,
+            )
+            self._client = client
+
+        delivered = 0
+        async for update in client.iter_updates():
+            thread_id = update.get("thread_id")
+            if isinstance(thread_id, int):
+                context = self._thread_context(
+                    thread_id,
+                    default_kind=str(update.get("thread_kind") or "direct"),
+                    default_title=update.get("thread_title"),
+                )
+                update["thread_kind"] = context["thread_kind"]
+                if context["thread_title"] is not None:
+                    update["thread_title"] = context["thread_title"]
+            durable = await handle_update(update, self._deps)
+            if durable is False:
+                raise SignalApiError(
+                    "Signal update missed the ingestion durability boundary",
+                    code="signal_api_error",
+                    context={
+                        "error_type": "IngestionDurabilityFailure",
+                        "thread_id": thread_id,
+                    },
+                )
+            client.acknowledge_update(update)
+            delivered += 1
+            await self._persist_state(client)
+        return delivered
 
     async def _on_new_message(self, event: Any) -> None:
         """Receive-callback shape mirroring Telegram's NewMessage handler. The
@@ -98,7 +211,6 @@ class SignalGatewayWorker:
         if self._save_state is None or client is None:
             return
         try:
-            # TODO(human): read the real advancing sync cursor from the transport.
             cursor = getattr(client, "sync_cursor", None)
             await self._save_state(cursor)
         except Exception:  # noqa: BLE001

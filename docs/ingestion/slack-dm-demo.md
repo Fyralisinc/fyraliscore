@@ -105,7 +105,7 @@ docker compose -f docker-compose.yml -f docker-compose.sandbox.yml run --rm migr
 The console above drives the pipeline with inline `ingest()`. The **production
 worker-fetch backfill** does the same work through the genuine planner →
 fetcher → raw-tier(S3) → Kafka → normalizer → observation_writer chain, in
-**spammer mode**, landing **identical observations** (same `slack:message`
+**Provider Lab mode**, landing **identical observations** (same `slack:message`
 channel, same `external_id="{channel}:{ts}"`, same `content.channel_type`):
 
 ```bash
@@ -121,7 +121,7 @@ What it exercises:
 | **produce** | Each record → raw tier (S3, content-addressed) → `RawEnvelope` pointer on `ingestion.raw.slack` (the real shard_fetch producer functions). |
 | **consume** | The running `normalizer` → `ingestion.normalized.slack` → `observation_writer` → `observations` (gated by the tenant's `ingestion.kafka_path_enabled` flag). |
 
-The synthetic **spammer** (`services/ingest/synthetic/spammer/server.py`) serves the
+The loopback **Provider Lab** (`services/ingest/synthetic/provider_lab/`) serves the
 Slack reads: a per-user token `spam-slack-user::<team>::<user>` requesting
 `types=im,mpim` returns that consenting user's DM conversations; a **bot token
 gets none** (the real Slack ceiling). DM fixtures come from
@@ -145,5 +145,5 @@ tenant_id. Expected: 18 `im` + 4 `mpim` + 2 `channel` = 24 observations.
 
 The inline console drives the pipeline with **mock** xoxp tokens + synthetic
 data (no real Slack calls); the worker-fetch demo above adds the genuine
-backfill worker chain in spammer mode. In production, per-user xoxp tokens
+backfill worker chain in Provider Lab mode. In production, per-user xoxp tokens
 (consent flow) replace the mock tokens and the source clients hit real Slack.

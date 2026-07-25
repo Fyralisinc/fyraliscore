@@ -10,7 +10,6 @@ from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -157,7 +156,6 @@ def _occurred_at(payload: dict[str, Any], msg: dict[str, Any]) -> datetime:
     return _parse_ts(value)
 
 
-@register(_CHANNEL)
 async def handle_facebook_pages(
     payload: dict[str, Any],
     headers: dict[str, str],

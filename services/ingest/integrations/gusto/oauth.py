@@ -49,6 +49,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import GustoApiError
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 from services.ingest.integrations.gusto.client import (
     DEFAULT_ENTITIES,
     GustoClient,
@@ -134,12 +137,15 @@ def _auth_failure_response(exc: GustoApiError) -> JSONResponse:
 async def connect_preflight(request: Request) -> JSONResponse:
     """Verify the access token + company via the `GET /v1/companies/{uuid}`
     probe."""
-    _tenant_from_request(request)  # auth check
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     company_uuid, access_token, base_url = _require_creds(body)
 
     client = GustoClient(
-        base_url=base_url, company_uuid=company_uuid, access_token=access_token,
+        base_url=base_url,
+        company_uuid=company_uuid,
+        access_token=access_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         info = await client.company()
@@ -183,7 +189,10 @@ async def connect_finalize(request: Request) -> JSONResponse:
 
     # 1. Verify creds — before any write.
     client = GustoClient(
-        base_url=base_url, company_uuid=company_uuid, access_token=access_token,
+        base_url=base_url,
+        company_uuid=company_uuid,
+        access_token=access_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         await client.company()

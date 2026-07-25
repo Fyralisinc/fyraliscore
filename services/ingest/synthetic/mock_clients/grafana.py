@@ -15,10 +15,10 @@ call against the `_open_grafana_client` seam:
   - has_annotations_since(from_ms=...) -> bool
       Reconciler gap probe: is there >=1 annotation at/after `from_ms`?
 
-Faults: every public method calls `self._check_fault()` first (A21). The four
-raisers surface `GrafanaApiError` with the production `code` values so the
-fetcher branches exactly as it would against the real client (the fetcher keys
-its rate-limit fallback on `code == "grafana_api_rate_limited"`).
+Faults: every public method calls `self._check_fault()` first (A21). This
+legacy in-process mock surfaces pre-transport `GrafanaApiError` values.
+Production retryable responses are converted to the universal transport's
+typed retry contract before reaching the fetcher.
 """
 from __future__ import annotations
 

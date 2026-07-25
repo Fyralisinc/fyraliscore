@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from lib.shared.errors import DiscordApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_fetcher
 from services.ingest.ingestion.fetchers import discord as dc
 from services.ingest.ingestion.fetchers.discord import (
     DiscordCursor, SHARD_KIND_CHANNEL_WINDOW, fetch_page_discord,
@@ -113,4 +113,4 @@ async def test_cursor_strict():
 
 
 async def test_dispatch_wired():
-    assert FETCHER_DISPATCH["discord"] is fetch_page_discord
+    assert resolve_fetcher("discord") is fetch_page_discord

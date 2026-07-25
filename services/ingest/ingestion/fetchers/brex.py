@@ -50,7 +50,7 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict
 
 from lib.shared.errors import BrexApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -213,7 +213,6 @@ async def fetch_page_brex(
         await close()
 
 
-FETCHER_DISPATCH["brex"] = fetch_page_brex
 
 
 __all__ = [

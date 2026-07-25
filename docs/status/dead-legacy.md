@@ -57,8 +57,10 @@ a concern. (66 more files are `tooling`: `scripts/` probes, e2e runners, benches
 
 - `services/ingest/synthetic/fixtures/*` — deterministic per-source fixtures (`make_*`).
 - `services/ingest/synthetic/mock_clients/*` — in-process backfill fakes per source.
-- `services/ingest/synthetic/mock_servers/*` — standalone HTTP mock servers (e.g. mock Google Workspace org).
-- `services/ingest/synthetic/spammer/discord_gateway.py` — a mock Discord WSS server.
+- `services/ingest/synthetic/mock_servers/*` — **retired and deleted** standalone
+  HTTP mocks. The canonical executable provider surface is now
+  `services/ingest/synthetic/provider_lab/`.
+- Provider Lab now owns the deterministic Discord Gateway WebSocket surface.
 
 > **TODO(human):** Triage the "orphaned" table into delete vs. wire-up, and decide
 > whether the demo cost-cap / model-routing / notification-suppression being

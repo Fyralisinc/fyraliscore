@@ -20,11 +20,22 @@ class _FakeHttp:
         self._responses = list(responses)
         self.requests: list[dict] = []
 
-    async def request(self, method, url, *, user_email, scopes, params=None, json_body=None):
+    async def request(
+        self,
+        method,
+        url,
+        *,
+        user_email,
+        scopes,
+        params=None,
+        json_body=None,
+        operation_id,
+    ):
         self.requests.append({
             "method": method, "url": url, "user_email": user_email,
             "scopes": tuple(scopes), "params": params or {},
             "json_body": json_body,
+            "operation_id": operation_id,
         })
         return self._responses.pop(0)
 
@@ -32,6 +43,12 @@ class _FakeHttp:
 def _client(responses):
     http = _FakeHttp(responses)
     return GoogleCalendarClient(http, base_url="https://cal.test/v3"), http
+
+
+async def test_list_calendars_operation_id():
+    client, http = _client([{"items": []}])
+    await client.list_calendars(user_email="alice@acme.com")
+    assert http.requests[0]["operation_id"] == "calendarList.list"
 
 
 async def test_full_sync_request_shape():
@@ -47,6 +64,7 @@ async def test_full_sync_request_shape():
     assert req["params"]["timeMin"] == "2026-01-01T00:00:00Z"
     assert req["params"]["orderBy"] == "startTime"
     assert req["params"]["singleEvents"] == "true"
+    assert req["operation_id"] == "events.list"
     # full sync never sends a syncToken.
     assert "syncToken" not in req["params"]
 
@@ -107,6 +125,7 @@ async def test_watch_events_request_shape():
     assert jb["address"] == "https://app.test/webhooks/google_calendar/push"
     assert jb["token"] == "secret-tok"
     assert jb["params"]["ttl"] == "604800"
+    assert req["operation_id"] == "events.watch"
 
 
 async def test_stop_channel_request_shape():
@@ -118,3 +137,4 @@ async def test_stop_channel_request_shape():
     assert req["method"] == "POST"
     assert req["url"] == "https://cal.test/v3/channels/stop"
     assert req["json_body"] == {"id": "ch1", "resourceId": "res1"}
+    assert req["operation_id"] == "channels.stop"

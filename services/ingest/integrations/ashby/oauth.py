@@ -14,6 +14,9 @@ from services.ingest.integrations.ashby.onboarding import (
     finalize_install,
     register_webhook_installation,
 )
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 
 
 router = APIRouter(prefix="/integrations/ashby", tags=["ashby"])
@@ -85,10 +88,15 @@ def _auth_failure(exc: AshbyApiError) -> JSONResponse:
 
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
-    _tenant_from_request(request)
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     api_token, base_url, org_id = _inputs(body)
-    client = AshbyClient(base_url=base_url, org_id=org_id, api_key=api_token)
+    client = AshbyClient(
+        base_url=base_url,
+        org_id=org_id,
+        api_key=api_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         jobs, _cursor, _sync = await client.list_entities("job", limit=1)
     except AshbyApiError as exc:
@@ -116,7 +124,12 @@ async def connect_finalize(request: Request) -> JSONResponse:
     entities = _entities(body)
     webhook_secret = str(body.get("webhook_secret") or "").strip() or None
 
-    client = AshbyClient(base_url=base_url, org_id=org_id, api_key=api_token)
+    client = AshbyClient(
+        base_url=base_url,
+        org_id=org_id,
+        api_key=api_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         await client.list_entities("job", limit=1)
     except AshbyApiError as exc:

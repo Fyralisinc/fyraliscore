@@ -34,11 +34,11 @@ import logging
 from typing import Any
 
 import asyncpg
+from services.ingest.ingestion.installations import load_source_installation
 import orjson
 
 from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
@@ -147,15 +147,11 @@ async def reconcile_carta(
         return ReconciliationDecision(has_gaps=False)
 
     pool = _get_pool()
-    install = await pool.fetchrow(
-        """
-        SELECT id, tenant_id, firm_id, base_url, secret_ref,
-               refresh_secret_ref, disabled_at
-          FROM carta_installations
-         WHERE tenant_id = $1 AND disabled_at IS NULL
-         LIMIT 1
-        """,
-        run["tenant_id"],
+    install = await load_source_installation(
+        pool,
+        source="carta",
+        tenant_id=run["tenant_id"],
+        installation_id=run["installation_row_id"],
     )
     if install is None:
         return ReconciliationDecision(has_gaps=False)
@@ -180,7 +176,6 @@ async def reconcile_carta(
     return ReconciliationDecision(has_gaps=False)
 
 
-RECONCILER_DISPATCH["carta"] = reconcile_carta
 
 
 __all__ = ["reconcile_carta", "set_pool_provider", "SHARD_KIND_ENTITY"]

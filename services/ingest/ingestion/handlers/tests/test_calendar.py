@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from services.ingest.ingestion.handlers import get_handler
 from services.ingest.ingestion.handlers.calendar import (
     CalendarSignatureError,
     handle_calendar_webhook,
@@ -13,6 +14,10 @@ from services.ingest.ingestion.handlers.calendar import (
 # =====================================================================
 # Token check
 # =====================================================================
+
+def test_calendar_handler_is_declared_in_the_source_contract():
+    assert get_handler("calendar:sync") is handle_calendar_webhook
+
 
 def test_calendar_token_happy_path():
     verify_calendar_token("my-secret-token", "my-secret-token")

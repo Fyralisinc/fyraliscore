@@ -25,7 +25,7 @@ from typing import Any
 
 import orjson
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -97,7 +97,6 @@ async def plan_shards_miro(ctx: PlannerContext) -> list[Shard]:
     return shards
 
 
-PLANNER_DISPATCH["miro"] = plan_shards_miro
 
 
 __all__ = ["SHARD_KIND_BOARD_ITEMS", "plan_shards_miro"]

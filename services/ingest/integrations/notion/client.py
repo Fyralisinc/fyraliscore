@@ -1,16 +1,14 @@
 """services/ingest/integrations/notion/client.py — outbound Notion REST client.
 
-Single outbound surface for backfill + poll-incremental. Notion bot
-tokens are LONG-LIVED (issued once at OAuth install), so — unlike the
-GitHub client — there is no per-request token mint / JWT / token cache.
-The token is resolved once from the secret store (or preset in spammer
-mode) and reused for the life of the client.
+Single outbound surface for backfill, reconciliation, and webhook hydration.
+Notion bot tokens are LONG-LIVED (issued once at OAuth install), so there is no
+per-request token mint or refresh. The token is resolved once from the secret
+store (or preset in Provider-Lab mode) and reused for the life of the client.
 
-Rate limits (R1 / Risk #1): Notion enforces ~3 req/s per integration and
-returns HTTP 429 with a `Retry-After` (integer seconds) header. All read
-methods route through `_request`, which honours `Retry-After` with a
-bounded retry budget before surfacing `NotionApiError(rate_limited)` —
-the same posture as the Slack/GitHub clients.
+Every actual provider attempt runs through ``ProviderTransport``. HTTP 429,
+timeouts, and 5xx responses become its typed retry contract; long cooldowns
+therefore escape as ``RetryLater`` for durable workflow scheduling rather than
+sleeping in this client or returning an unchanged cursor.
 
 Pagination: every Notion list endpoint returns
 `{results: [...], next_cursor: str|null, has_more: bool}`. The list
@@ -32,6 +30,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import NotionApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -55,21 +67,11 @@ def short_workspace_hash(workspace_id: str) -> str:
     ).hexdigest()
 
 
-def _parse_retry_after(value: str | None) -> float:
-    """Seconds to wait from a Retry-After header. Falls back to 1s."""
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
-
-
 class NotionClient:
     """Outbound Notion REST client, one per backfill/poll shard open.
 
     Built by `services/ingest/ingestion/fetchers/_clients.py::build_notion_client`
-    (production / spammer) and by the OAuth callback's workspace probe.
+    (production / Provider Lab) and by the OAuth callback's workspace probe.
     Shares the process-wide httpx client when one is injected.
     """
 
@@ -84,6 +86,12 @@ class NotionClient:
         bot_token: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
@@ -91,13 +99,34 @@ class NotionClient:
         self._secret_ref = secret_ref
         self._workspace_id = workspace_id
         # Preset token (OAuth callback hands the freshly-minted token, and
-        # spammer mode presets a recognized token); otherwise resolved
+        # Provider Lab mode supplies a recognized token); otherwise resolved
         # lazily from the secret store on first request.
         self._bot_token_cache = SecretValueCache(preset=bot_token)
         self._token_lock = asyncio.Lock()
         self._api_base_url = (api_base_url or _NOTION_API_BASE).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="notion",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(installation_row_id)
+                if installation_row_id is not None
+                else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -130,12 +159,9 @@ class NotionClient:
         *,
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        operation: str,
     ) -> dict[str, Any]:
-        """One Notion API call with bounded Retry-After-aware 429 retry.
-
-        Returns the parsed JSON object. Non-2xx (including a still-429
-        after the budget is spent) is mapped to `NotionApiError`.
-        """
+        """Execute one semantic Notion operation through ProviderTransport."""
         token = await self._token()
         url = f"{self._api_base_url}{path}"
         headers = {
@@ -143,53 +169,67 @@ class NotionClient:
             "Notion-Version": _NOTION_VERSION,
             "Content-Type": "application/json",
         }
-        max_attempts = int(os.environ.get("NOTION_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("NOTION_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
-        while True:
-            attempt += 1
+        async def _once() -> httpx.Response:
             try:
                 response = await client.request(
                     method, url, headers=headers,
                     json=json_body, params=params,
                 )
-            except httpx.TransportError as exc:
-                # Network blip — transient, so recoverable (backfill parks
-                # + retries rather than terminal-failing the shard).
-                raise NotionApiError(
-                    "transport error calling notion",
-                    code="notion_api_error",
-                    recoverable=True,
-                    context={"error_type": type(exc).__name__, "path": path},
+            except httpx.TimeoutException as exc:
+                raise ProviderTimeoutError(
+                    "Notion request timed out",
+                    source="notion",
+                    operation=operation,
+                    error_type=type(exc).__name__,
                 ) from exc
+            except httpx.TransportError as exc:
+                raise ProviderTransientError(
+                    "Notion transport error",
+                    source="notion",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
+            if response.status_code == 429:
+                raise ProviderRateLimited(
+                    "Notion rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="notion",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
+                raise ProviderTransientError(
+                    f"Notion returned HTTP {response.status_code}",
+                    source="notion",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
 
-            if response.status_code == 429 and attempt < max_attempts:
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
+        response = await self._provider.execute(operation, _once)
+        if response.status_code // 100 == 2:
+            body = _safe_json(response)
+            if not isinstance(body, dict):
+                raise NotionApiError(
+                    "notion response was not a JSON object",
+                    code="notion_api_error",
+                    context={"path": path},
+                )
+            return body
 
-            if response.status_code // 100 == 2:
-                body = _safe_json(response)
-                if not isinstance(body, dict):
-                    raise NotionApiError(
-                        "notion response was not a JSON object",
-                        code="notion_api_error",
-                        context={"path": path},
-                    )
-                return body
+        # Revocation chokepoint (R2): a 401 means the integration token
+        # was revoked / the integration removed. Disable the install so
+        # the backfill orphan-scan parks (instead of hammering a dead
+        # token) and inbound webhooks for this workspace stop resolving.
+        if response.status_code == 401:
+            await self._maybe_disable_on_revocation()
 
-            # Revocation chokepoint (R2): a 401 means the integration token
-            # was revoked / the integration removed. Disable the install so
-            # the backfill orphan-scan parks (instead of hammering a dead
-            # token) and inbound webhooks for this workspace stop resolving.
-            # Fired BEFORE raising; the raised 401 is `recoverable` so the
-            # in-flight shard parks rather than terminal-failing the run.
-            if response.status_code == 401:
-                await self._maybe_disable_on_revocation()
-
-            raise _api_error_from_response(response, path)
+        raise _api_error_from_response(response, path)
 
     # -----------------------------------------------------------------
     # Public read surface
@@ -210,7 +250,14 @@ class NotionClient:
             body["filter"] = {"value": object_filter, "property": "object"}
         if start_cursor is not None:
             body["start_cursor"] = start_cursor
-        return _unwrap_list(await self._request("POST", "/v1/search", json_body=body))
+        return _unwrap_list(
+            await self._request(
+                "POST",
+                "/v1/search",
+                json_body=body,
+                operation="search",
+            )
+        )
 
     async def query_database(
         self,
@@ -225,7 +272,10 @@ class NotionClient:
             body["start_cursor"] = start_cursor
         return _unwrap_list(
             await self._request(
-                "POST", f"/v1/databases/{database_id}/query", json_body=body,
+                "POST",
+                f"/v1/databases/{database_id}/query",
+                json_body=body,
+                operation="databases.query",
             )
         )
 
@@ -242,7 +292,10 @@ class NotionClient:
             params["start_cursor"] = start_cursor
         return _unwrap_list(
             await self._request(
-                "GET", f"/v1/blocks/{block_id}/children", params=params,
+                "GET",
+                f"/v1/blocks/{block_id}/children",
+                params=params,
+                operation="blocks.children.list",
             )
         )
 
@@ -258,7 +311,12 @@ class NotionClient:
         if start_cursor is not None:
             params["start_cursor"] = start_cursor
         return _unwrap_list(
-            await self._request("GET", "/v1/comments", params=params)
+            await self._request(
+                "GET",
+                "/v1/comments",
+                params=params,
+                operation="comments.list",
+            )
         )
 
     async def latest_database_edit(self, database_id: str) -> str | None:
@@ -273,6 +331,7 @@ class NotionClient:
                     {"timestamp": "last_edited_time", "direction": "descending"},
                 ],
             },
+            operation="databases.query",
         )
         results, _cursor, _more = _unwrap_list(body)
         if results:
@@ -302,7 +361,7 @@ class NotionClient:
         page. We loop, threading `next_cursor` back as `start_cursor`, until we
         find a loose page or `has_more` is false. The single-call path is the
         fallback (a response with `has_more` absent/false stops after one call),
-        so the synthetic spammer's bounded fixtures behave exactly as before."""
+        so Provider Lab's bounded fixtures behave exactly as before."""
         start_cursor: str | None = None
         while True:
             json_body: dict[str, Any] = {
@@ -312,7 +371,12 @@ class NotionClient:
             }
             if start_cursor is not None:
                 json_body["start_cursor"] = start_cursor
-            body = await self._request("POST", "/v1/search", json_body=json_body)
+            body = await self._request(
+                "POST",
+                "/v1/search",
+                json_body=json_body,
+                operation="search",
+            )
             results, next_cursor, has_more = _unwrap_list(body)
             for page in results:
                 parent = page.get("parent")
@@ -329,13 +393,21 @@ class NotionClient:
 
     async def retrieve_page(self, page_id: str) -> dict[str, Any]:
         """`GET /v1/pages/{id}` — a single page object (properties only)."""
-        return await self._request("GET", f"/v1/pages/{page_id}")
+        return await self._request(
+            "GET",
+            f"/v1/pages/{page_id}",
+            operation="pages.retrieve",
+        )
 
     async def retrieve_bot_user(self) -> dict[str, Any]:
         """`GET /v1/users/me` — the bot user; its `bot.workspace_name` and
         the response `id` identify the install. Used by the OAuth callback
         as a connectivity probe."""
-        return await self._request("GET", "/v1/users/me")
+        return await self._request(
+            "GET",
+            "/v1/users/me",
+            operation="users.me",
+        )
 
     # -----------------------------------------------------------------
     # Revocation chokepoint
@@ -346,7 +418,7 @@ class NotionClient:
 
         Requires the DB-backed context `(pool, tenant_id, workspace_id)` —
         present for the backfill/reconcile/webhook clients but NOT in
-        spammer mode (preset token, no pool) or the OAuth probe. When any
+        Provider Lab mode (preset token, no pool) or the OAuth probe. When any
         is missing we log and skip; a later DB-backed failure fires it.
         Never raises (the caller is about to surface the original 401).
         """

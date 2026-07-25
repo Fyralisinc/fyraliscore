@@ -43,8 +43,9 @@ can resolve install-scoped secret refs:
   - Ramp `refresh_secret_ref`  — optional encrypted JSON
     `client_id`/`client_secret` payload used before env fallback.
 
-A non-2xx / malformed response raises `OAuthRefreshError`; callers translate that
-into a *degraded* shard (never a crash, never a silent data drop).
+A permanent non-2xx / malformed response raises `OAuthRefreshError`; throttles,
+timeouts, and retryable upstream failures are owned by `ProviderTransport` and
+surface as `RetryLater` when their bounded inline retry budget is exhausted.
 """
 from __future__ import annotations
 
@@ -60,6 +61,23 @@ import httpx
 import structlog
 
 from lib.observability import counter, histogram
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RetryLater,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    ProviderRequestBinding,
+    explicit_local_transport,
+)
+from services.ingest.integrations.provider_transport_runtime import (
+    get_provider_transport_runtime,
+)
+from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
+from services.ingest.source_contract.catalog import effective_request_policy
+from services.ingest.source_contract.models import CredentialRefreshDefinition
 
 
 log = structlog.get_logger("integrations.oauth_refresh")
@@ -75,7 +93,8 @@ _ATTEMPTS = counter(
 )
 _OUTCOMES = counter(
     "oauth_refresh_outcomes_total",
-    "OAuth refresh outcomes (success|transport_error|http_4xx|http_5xx|invalid_response|bad_request_config).",
+    "OAuth refresh outcomes (success|rate_limited|transport_error|http_4xx|"
+    "http_5xx|invalid_response|bad_request_config).",
     ("provider", "outcome"),
 )
 _DURATION = histogram(
@@ -103,6 +122,7 @@ AuthStyle = Literal["basic", "body"]
 @dataclass(frozen=True)
 class RefreshConfig:
     provider: str
+    operation_id: str
     token_url: str
     grant_type: GrantType
     auth_style: AuthStyle          # how client creds are presented
@@ -137,91 +157,48 @@ class RefreshedToken:
         return self.obtained_at + timedelta(seconds=self.expires_in)
 
 
-def _cfg(
-    provider: str, default_url: str, grant: GrantType, auth: AuthStyle,
-    rotates: bool, install_table: str, default_expires_in: int = 3600,
-    client_secret_from_install: bool = False, scope: str | None = None,
-    client_credentials_from_install: bool = False,
+def _config_from_contract(
+    provider: str,
+    declaration: CredentialRefreshDefinition,
 ) -> RefreshConfig:
-    url = os.environ.get(f"{provider.upper()}_TOKEN_URL", default_url)
     return RefreshConfig(
-        provider=provider, token_url=url, grant_type=grant, auth_style=auth,
-        rotates_refresh_token=rotates, install_table=install_table,
-        default_expires_in=default_expires_in,
-        client_secret_from_install=client_secret_from_install,
-        client_credentials_from_install=client_credentials_from_install,
-        scope=scope,
+        provider=provider,
+        operation_id=declaration.operation_id,
+        token_url=os.environ.get(
+            declaration.token_url_env,
+            declaration.default_token_url,
+        ),
+        grant_type=declaration.grant_type,
+        auth_style=declaration.auth_style,
+        rotates_refresh_token=declaration.rotates_refresh_token,
+        install_table=declaration.install_table,
+        default_expires_in=declaration.default_expires_in,
+        client_secret_from_install=(
+            declaration.client_secret_from_install
+        ),
+        client_credentials_from_install=(
+            declaration.client_credentials_from_install
+        ),
+        scope=(
+            os.environ.get(
+                declaration.scope_env,
+                declaration.default_scope,
+            )
+            if declaration.scope_env is not None
+            else None
+        ),
     )
 
 
-# Doc-derived provider configs. token_url overridable via {PROVIDER}_TOKEN_URL.
+# Runtime view derived from the one source catalog. Environment overrides are
+# resolved once at process start, matching the previous refresh-core behavior.
 REFRESH_CONFIGS: dict[str, RefreshConfig] = {
-    "quickbooks": _cfg(
-        "quickbooks",
-        "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
-        "refresh_token", "basic", rotates=True,
-        install_table="quickbooks_installations", default_expires_in=3600,
-    ),
-    "ramp": _cfg(
-        # Ramp client-credentials RE-MINT (verified docs.ramp.com authorization
-        # + OpenAPI /developer/v1/token): HTTP Basic client creds, form body
-        # grant_type=client_credentials + REQUIRED scope; access_token
-        # expires_in ~3600; NO refresh token for this grant.
-        "ramp", "https://api.ramp.com/developer/v1/token",
-        "client_credentials", "basic", rotates=False,
-        install_table="ramp_installations", default_expires_in=3600,
-        client_credentials_from_install=True,
-        scope=os.environ.get(
-            "RAMP_OAUTH_SCOPES",
-            "transactions:read reimbursements:read cards:read users:read "
-            "business:read",
-        ),
-    ),
-    "gusto": _cfg(
-        # Gusto refresh (verified docs.gusto.com/app-integrations/docs/oauth2):
-        # POST https://api.gusto.com/oauth/token, client creds in the BODY
-        # (client_id/client_secret, no Basic), grant_type=refresh_token;
-        # access_token expires in 7200 s and the refresh token ROTATES
-        # (single-use). TODO(human): the doc example sends the body as
-        #   Content-Type application/json; the shared exchange posts RFC-6749
-        #   x-www-form-urlencoded. Verify accepted on the first real exchange.
-        "gusto", "https://api.gusto.com/oauth/token",
-        "refresh_token", "body", rotates=True,
-        install_table="gusto_installations", default_expires_in=7200,
-    ),
-    "carta": _cfg(
-        # Carta client-credentials RE-MINT (verified
-        # docs.carta.com/carta/docs/client-credentials-flow): the token
-        # endpoint is POST https://login.app.carta.com/o/access_token/ (note
-        # the trailing slash) with HTTP **Basic** client auth
-        # (base64(client_id:client_secret)) + x-www-form-urlencoded body
-        # carrying the REQUIRED space-delimited `scope`. Access tokens live
-        # ~1 h; NO refresh token is returned — re-mint hourly. Default scopes
-        # are the four the /v1alpha1 read surface needs (from the Issuer OAS
-        # security entries); override via CARTA_OAUTH_SCOPES.
-        # TODO(human): Carta's doc example sends `grant_type=CLIENT_CREDENTIALS`
-        #   (uppercase); the shared exchange sends the RFC-6749 lowercase
-        #   value. Verify on the first real (partner-gated) exchange.
-        "carta", "https://login.app.carta.com/o/access_token/",
-        "client_credentials", "basic", rotates=False,
-        install_table="carta_installations", default_expires_in=3600,
-        client_secret_from_install=True,
-        scope=os.environ.get(
-            "CARTA_OAUTH_SCOPES",
-            "read_issuer_info read_issuer_stakeholders "
-            "read_issuer_shareclasses read_issuer_securities",
-        ),
-    ),
-    "linkedin": _cfg(
-        # LinkedIn programmatic refresh-token exchange (Microsoft Learn,
-        # programmatic-refresh-tokens): form-encoded grant_type=refresh_token
-        # with refresh_token + client_id + client_secret in the body. The
-        # endpoint returns a refresh_token alongside the new access token; store
-        # it so the install row tracks the provider's current credential.
-        "linkedin", "https://www.linkedin.com/oauth/v2/accessToken",
-        "refresh_token", "body", rotates=True,
-        install_table="linkedin_installations", default_expires_in=86400,
-    ),
+    source.source_id: _config_from_contract(
+        source.source_id,
+        source.credential_refresh,
+    )
+    for source in SOURCE_DEFINITIONS
+    if source.credential_refresh is not None
 }
 
 
@@ -264,22 +241,38 @@ def decode_client_credentials_secret(raw: str | None) -> tuple[str | None, str |
 
 
 async def refresh_access_token(
-    http: httpx.AsyncClient,
+    http: Any,
     config: RefreshConfig,
     *,
     client_id: str | None,
     client_secret: str | None,
     refresh_token: str | None = None,
     now: datetime | None = None,
+    request_binding: ProviderRequestBinding | None = None,
 ) -> RefreshedToken:
     """Exchange at the provider token endpoint and parse the response.
 
     `refresh_token` is required for the `refresh_token` grant and ignored for
-    `client_credentials` (Carta re-mint). Raises `OAuthRefreshError` on a
-    transport error, a non-2xx, or a response missing `access_token`.
+    `client_credentials` (Carta re-mint). Permanent HTTP or payload failures
+    raise `OAuthRefreshError`; bounded retry exhaustion raises `RetryLater`.
     """
     now = now or datetime.now(timezone.utc)
-    _ATTEMPTS.inc(provider=config.provider, grant_type=config.grant_type)
+    binding = request_binding or ProviderRequestBinding(
+        source=config.provider,
+        tenant_id=None,
+        installation_id=None,
+        transport=None,
+        request_policy=lambda operation: effective_request_policy(
+            config.provider,
+            operation,
+        ),
+        quota_resolver=None,
+        allow_unlimited_local=explicit_local_transport(
+            requested=None,
+            has_local_injection=True,
+        ),
+        require_tenant_installation=False,
+    )
 
     form: dict[str, str] = {"grant_type": config.grant_type}
     if config.grant_type == "refresh_token":
@@ -319,14 +312,74 @@ async def refresh_access_token(
             form["client_secret"] = client_secret
 
     started = time.monotonic()
+
+    async def _once() -> httpx.Response:
+        _ATTEMPTS.inc(
+            provider=config.provider,
+            grant_type=config.grant_type,
+        )
+        try:
+            response = await http.post(
+                config.token_url,
+                data=form,
+                headers=headers,
+            )
+        except httpx.TimeoutException as exc:
+            _OUTCOMES.inc(
+                provider=config.provider,
+                outcome="transport_error",
+            )
+            raise ProviderTimeoutError(
+                f"{config.provider} token request timed out",
+                source=config.provider,
+                operation=config.operation_id,
+                error_type=type(exc).__name__,
+            ) from exc
+        except httpx.TransportError as exc:
+            _OUTCOMES.inc(
+                provider=config.provider,
+                outcome="transport_error",
+            )
+            raise ProviderTransientError(
+                f"{config.provider} token transport error",
+                source=config.provider,
+                operation=config.operation_id,
+                error_type=type(exc).__name__,
+            ) from exc
+        if response.status_code == 429:
+            _OUTCOMES.inc(
+                provider=config.provider,
+                outcome="rate_limited",
+            )
+            raise ProviderRateLimited(
+                f"{config.provider} token endpoint rate limit",
+                retry_after_seconds=parse_retry_after(
+                    response.headers.get("Retry-After"),
+                ),
+                status_code=429,
+                header_parser_id="http.retry_after",
+                source=config.provider,
+                operation=config.operation_id,
+            )
+        if response.status_code >= 500:
+            _OUTCOMES.inc(provider=config.provider, outcome="http_5xx")
+            raise ProviderTransientError(
+                f"{config.provider} token endpoint returned "
+                f"{response.status_code}",
+                source=config.provider,
+                operation=config.operation_id,
+                http_status=response.status_code,
+            )
+        return response
+
     try:
-        resp = await http.post(config.token_url, data=form, headers=headers)
-    except httpx.TransportError as exc:
-        _DURATION.observe(time.monotonic() - started, provider=config.provider)
-        _OUTCOMES.inc(provider=config.provider, outcome="transport_error")
-        raise OAuthRefreshError(
-            config.provider, f"transport error: {type(exc).__name__}",
-        ) from exc
+        resp = await binding.execute(config.operation_id, _once)
+    except RetryLater:
+        _DURATION.observe(
+            time.monotonic() - started,
+            provider=config.provider,
+        )
+        raise
     _DURATION.observe(time.monotonic() - started, provider=config.provider)
 
     if resp.status_code // 100 != 2:
@@ -402,6 +455,7 @@ async def refresh_and_persist(
     install_row_id: Any,
     refresh_secret_ref: str | None,
     now: datetime | None = None,
+    request_binding: ProviderRequestBinding | None = None,
 ) -> RefreshedToken:
     """Perform the token exchange AND persist the result onto the install row.
 
@@ -411,8 +465,8 @@ async def refresh_and_persist(
     `token_expires_at` to point at the new refs. The refresh-managed install
     tables share these column names + an `id` PK, so this is generic.
 
-    Raises `OAuthRefreshError` on a failed exchange — the caller marks the shard
-    degraded (it never crashes the worker or silently drops data).
+    Permanent refresh failures raise `OAuthRefreshError`; retryable failures
+    raise `RetryLater` so the workflow can persist `next_attempt_at`.
     """
     now = now or datetime.now(timezone.utc)
     config = REFRESH_CONFIGS[provider]
@@ -441,10 +495,33 @@ async def refresh_and_persist(
             secret_store, refresh_secret_ref, tenant_id=tenant_id,
         ) or env_client_secret
 
+    if request_binding is None:
+        runtime = get_provider_transport_runtime()
+        request_binding = ProviderRequestBinding(
+            source=provider,
+            tenant_id=str(tenant_id),
+            installation_id=str(install_row_id),
+            transport=runtime.transport if runtime is not None else None,
+            request_policy=lambda operation: effective_request_policy(
+                provider,
+                operation,
+            ),
+            quota_resolver=(
+                runtime.quota_resolver if runtime is not None else None
+            ),
+            allow_unlimited_local=explicit_local_transport(
+                requested=None,
+                has_local_injection=http is not None,
+            ),
+        )
     refreshed = await refresh_access_token(
-        http, config,
-        client_id=client_id, client_secret=client_secret,
-        refresh_token=refresh_token, now=now,
+        http,
+        config,
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=refresh_token,
+        now=now,
+        request_binding=request_binding,
     )
 
     new_access_ref = await secret_store.put(
@@ -491,6 +568,7 @@ async def ensure_fresh_access_token(
     force: bool = False,
     now: datetime | None = None,
     skew_seconds: int = DEFAULT_REFRESH_SKEW_SECONDS,
+    request_binding: ProviderRequestBinding | None = None,
 ) -> str:
     """Return a valid access token, refreshing first if needed.
 
@@ -508,6 +586,7 @@ async def ensure_fresh_access_token(
             provider=provider, pool=pool, secret_store=secret_store, http=http,
             tenant_id=tenant_id, install_row_id=install_row_id,
             refresh_secret_ref=refresh_secret_ref, now=now,
+            request_binding=request_binding,
         )
         return refreshed.access_token
     # Still valid — return the current token plaintext.
@@ -518,6 +597,7 @@ async def ensure_fresh_access_token(
             provider=provider, pool=pool, secret_store=secret_store, http=http,
             tenant_id=tenant_id, install_row_id=install_row_id,
             refresh_secret_ref=refresh_secret_ref, now=now,
+            request_binding=request_binding,
         )
         return refreshed.access_token
     return token
@@ -533,15 +613,15 @@ async def refresh_on_unauthorized(
     install_row_id: Any,
     current_access_ref: str | None,
     refresh_secret_ref: str | None,
+    request_binding: ProviderRequestBinding | None = None,
 ) -> str | None:
     """Reactive 401 re-mint for the poll/backfill read clients.
 
     Force a refresh+persist and return the new access-token plaintext so the
-    client can retry the request once. Returns None — NEVER raises — when the
-    client lacks refresh deps (e.g. spammer mode with a preset token) or the
-    refresh itself fails; the caller then surfaces the original 401, which the
-    shard_fetch boundary records as a degraded shard (state='failed' +
-    last_error) rather than crashing the worker.
+    client can retry the request once. Returns None when the client lacks
+    refresh deps or a permanent refresh error occurs. `RetryLater` deliberately
+    propagates so a provider cooldown is durably scheduled instead of being
+    mistaken for an authentication failure.
     """
     if not (pool is not None and secret_store is not None
             and tenant_id is not None and install_row_id is not None):
@@ -555,6 +635,7 @@ async def refresh_on_unauthorized(
             current_access_ref=current_access_ref,
             refresh_secret_ref=refresh_secret_ref,
             token_expires_at=None, force=True,
+            request_binding=request_binding,
         )
     except OAuthRefreshError as exc:
         log.warning(

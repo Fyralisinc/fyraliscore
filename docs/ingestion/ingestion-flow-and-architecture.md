@@ -308,11 +308,12 @@ graph TD
 
 ### 5.2 Rate limiting the fetch loop
 
-Before *every* page fetch, `shard_fetch` acquires a token from a Redis Lua
-token-bucket keyed `rate:{tenant}:{source}:{method}`
-(`ingestion/rate_limit/`). Budgets live in `BUCKET_DEFAULTS` (Slack tiers,
-GitHub, Gmail, Discord); unbudgeted sources pass through. If the wait would
-exceed `max_wait` (30s) the shard exits cleanly and resumes next tick.
+`shard_fetch` does not apply a second, page-shaped limiter. Provider clients
+declare the quota scopes and weighted cost of each actual API call through the
+shared provider transport. `RedisQuotaCoordinator` charges those scopes
+atomically; short bounded retries remain client-local, while long cooldowns
+raise `RetryLater`, which persists `next_attempt_at` and releases the shard
+lease.
 
 ### 5.3 Progress events
 

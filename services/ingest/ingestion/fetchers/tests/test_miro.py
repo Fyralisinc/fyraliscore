@@ -3,6 +3,11 @@ from __future__ import annotations
 
 import pytest
 
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
 from services.ingest.ingestion.fetchers import miro as miro_fetcher
 from services.ingest.ingestion.fetchers.miro import (
     MiroCursor,
@@ -153,3 +158,39 @@ async def test_missing_board_id_is_noop(monkeypatch):
     res = await fetch_page_miro(_FakeInst(), {"shard_kind": SHARD_KIND_BOARD_ITEMS}, None)
     assert res.records == []
     assert res.end_of_data is True
+
+
+async def test_retry_later_propagates_without_cursor_advance(monkeypatch):
+    class _RateLimitedClient:
+        async def list_items(self, board_id, *, limit=50, cursor=None):
+            raise RetryLater.after(
+                request_context=RequestContext(
+                    source="miro",
+                    operation="board_items.list",
+                ),
+                delay_seconds=60,
+                reason=RetryReason.RATE_LIMIT,
+            )
+
+    cursor = MiroCursor(
+        page_cursor="cursor-1",
+        high_water_modified="2026-05-01T00:00:00Z",
+        incremental_floor="2026-05-01T00:00:00Z",
+        items_seen=5,
+        seeded=True,
+    ).model_dump(mode="json")
+    original_cursor = dict(cursor)
+    _wire(monkeypatch, _RateLimitedClient())
+
+    with pytest.raises(RetryLater):
+        await fetch_page_miro(
+            _FakeInst(),
+            {
+                "shard_kind": SHARD_KIND_BOARD_ITEMS,
+                "board_id": _BOARD,
+                "org_id": _ORG,
+            },
+            cursor,
+        )
+
+    assert cursor == original_cursor

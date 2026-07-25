@@ -4,9 +4,9 @@ Single chokepoint for every Discord API call. Resolves the **app-level
 Bot Token** from `DISCORD_BOT_TOKEN` env var (NOT a per-installation
 OAuth Bearer — see commands.py docstring for the rationale; the OAuth
 `access_token` returned by `oauth.v2.access` is a user Bearer that
-cannot authorize bot-scope API calls). Honors Discord's `Retry-After`
-and `X-RateLimit-Remaining` headers with a bounded retry budget
-(≤3 attempts, ≤30s wall). Triggers the bot-kick chokepoint
+cannot authorize bot-scope API calls). Every HTTP attempt executes through
+ProviderTransport, which owns Discord route/global cooldowns and bounded
+retry. Triggers the bot-kick chokepoint
 (`_disable_and_zeroize_discord`) on 401 / 403-with-code-50001.
 
 Phase 1 surface:
@@ -23,7 +23,6 @@ emits the raw `guild_id`. Operators correlate via `tenant_id` and
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any
 from uuid import UUID
@@ -33,7 +32,21 @@ import httpx
 import structlog
 
 from lib.shared.errors import DiscordApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
 from lib.shared.secrets import load_app_secret_text_from_env
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.discord.uninstall import _disable_and_zeroize_discord
 
 
@@ -67,6 +80,10 @@ class DiscordClient:
         http_client: httpx.AsyncClient | None = None,
         base_url: str | None = None,
         bot_token: str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
     ) -> None:
         from lib.integrations.endpoints import endpoint
         self._api_base = (base_url or endpoint("discord_api")).rstrip("/")
@@ -81,6 +98,19 @@ class DiscordClient:
         self._bot_token_override = bot_token
         self._owns_client = http_client is None
         self._client: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=http_client is not None or base_url is not None,
+        )
+        self._provider = ProviderRequestBinding(
+            source="discord",
+            tenant_id=str(tenant_id),
+            installation_id=str(installation_row_id),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+        )
 
     async def _resolve_bot_token(self) -> str:
         """Read the app-level Bot Token from `DISCORD_BOT_TOKEN` env.
@@ -152,13 +182,8 @@ class DiscordClient:
             headers["Content-Type"] = "application/json"
 
         client = self._httpx()
-        loop_start = time.monotonic()
-        deadline = loop_start + self._wall_budget_s
-        attempts = 0
-        last_status: int | None = None
 
-        while attempts < self._max_attempts:
-            attempts += 1
+        async def _once() -> dict[str, Any]:
             request_start = time.monotonic()
             try:
                 if method == "GET":
@@ -172,31 +197,21 @@ class DiscordClient:
                         method, url, headers=headers,
                         json=json_body, params=params,
                     )
+            except httpx.TimeoutException as exc:
+                raise ProviderTimeoutError(
+                    "Discord request timed out",
+                    source="discord",
+                    operation=endpoint_template,
+                    error_type=type(exc).__name__,
+                ) from exc
             except httpx.TransportError as exc:
-                if attempts >= self._max_attempts:
-                    raise DiscordApiError(
-                        "transport error after retries",
-                        code="discord_api_error",
-                        context={
-                            "tenant_id": str(self._tenant_id),
-                            "attempts": attempts,
-                            "error_type": type(exc).__name__,
-                        },
-                    ) from exc
-                sleep_s = min(2 ** (attempts - 1), max(0.0, deadline - time.monotonic()))
-                if sleep_s <= 0:
-                    raise DiscordApiError(
-                        "transport error and wall budget exhausted",
-                        code="discord_api_rate_limited",
-                        context={
-                            "tenant_id": str(self._tenant_id),
-                            "attempts": attempts,
-                        },
-                    ) from exc
-                await asyncio.sleep(sleep_s)
-                continue
+                raise ProviderTransientError(
+                    "Discord transport error",
+                    source="discord",
+                    operation=endpoint_template,
+                    error_type=type(exc).__name__,
+                ) from exc
 
-            last_status = r.status_code
             duration_ms = int((time.monotonic() - request_start) * 1000)
             log.info(
                 "discord_api_request",
@@ -205,27 +220,33 @@ class DiscordClient:
                 tenant_id=str(self._tenant_id),
                 http_status=r.status_code,
                 duration_ms=duration_ms,
-                attempts=attempts,
             )
 
-            # ---- 429 rate limited → honor Retry-After, retry within budget ----
+            # ProviderTransport publishes the route/global cooldown and owns
+            # all bounded retries.
             if r.status_code == 429:
                 retry_after = _parse_retry_after(r.headers.get("Retry-After"))
                 if retry_after is None:
-                    retry_after = 1.0
-                remaining = deadline - time.monotonic()
-                if attempts >= self._max_attempts or retry_after >= remaining:
-                    raise DiscordApiError(
-                        "rate limit (429) exhausted retry budget",
-                        code="discord_api_rate_limited",
-                        context={
-                            "tenant_id": str(self._tenant_id),
-                            "attempts": attempts,
-                            "retry_after": retry_after,
-                        },
+                    retry_after = _parse_retry_after(
+                        r.headers.get("X-RateLimit-Reset-After"),
                     )
-                await asyncio.sleep(retry_after)
-                continue
+                if retry_after is None:
+                    try:
+                        body = r.json()
+                    except ValueError:
+                        body = {}
+                    if isinstance(body, dict):
+                        retry_after = parse_retry_after(body.get("retry_after"))
+                raise ProviderRateLimited(
+                    "Discord rate limit",
+                    retry_after_seconds=retry_after,
+                    status_code=429,
+                    header_parser_id="discord.rate_limit_headers",
+                    route=endpoint_template,
+                    global_limit=(
+                        r.headers.get("X-RateLimit-Global", "").lower() == "true"
+                    ),
+                )
 
             # ---- 401 (or 403 code=50001) → chokepoint, then raise ----
             chokepoint_status: int | None = None
@@ -269,7 +290,15 @@ class DiscordClient:
                 except Exception:  # noqa: BLE001
                     return {}
 
-            # ---- Other 4xx/5xx: don't retry, raise structured error ----
+            if r.status_code >= 500:
+                raise ProviderTransientError(
+                    f"Discord returned {r.status_code}",
+                    source="discord",
+                    operation=endpoint_template,
+                    http_status=r.status_code,
+                )
+
+            # Other 4xx are permanent for the submitted operation.
             raise DiscordApiError(
                 f"discord returned {r.status_code}",
                 code="discord_api_error",
@@ -279,14 +308,13 @@ class DiscordClient:
                 },
             )
 
-        # Unreachable: every loop iteration either returns, continues, or raises.
-        raise DiscordApiError(  # pragma: no cover
-            "discord call exhausted retry budget",
-            code="discord_api_rate_limited",
-            context={
-                "tenant_id": str(self._tenant_id),
-                "attempts": attempts,
-                "http_status": last_status,
+        return await self._provider.execute(
+            endpoint_template,
+            _once,
+            concurrency_key=f"discord:{endpoint_template}",
+            quota_dimensions={
+                "guild": self._guild_id,
+                "route": endpoint_template,
             },
         )
 
@@ -470,13 +498,8 @@ class DiscordClient:
 
 
 def _parse_retry_after(value: str | None) -> float | None:
-    """Discord returns float-seconds Retry-After (often <1)."""
-    if not value:
-        return None
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
+    """Discord returns float seconds; HTTP-date is accepted defensively."""
+    return parse_retry_after(value)
 
 
 __all__ = ["DiscordClient"]

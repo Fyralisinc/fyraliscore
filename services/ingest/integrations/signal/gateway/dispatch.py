@@ -141,11 +141,11 @@ async def _maybe_shadow_write_gateway(
         log.debug("signal_gateway.shadow_audit_failed")
 
 
-async def handle_update(update: dict[str, Any], deps: DispatchDeps) -> None:
-    """Handle one live update from the persistent linked-device session."""
+async def handle_update(update: dict[str, Any], deps: DispatchDeps) -> bool:
+    """Handle one live update and report whether it crossed durability."""
     record = _update_to_record(update, deps)
     if record is None:
-        return
+        return True
 
     # ---- Cutover branch (kafka-first default; shared kill-switch flag) ----
     flag_enabled = False
@@ -158,7 +158,7 @@ async def handle_update(update: dict[str, Any], deps: DispatchDeps) -> None:
 
     if flag_enabled:
         if await _attempt_gateway_cutover(deps, record=record):
-            return
+            return True
         # Graceful degradation — fall through to inline so we don't drop it.
         log.warning("signal_gateway.kafka_path_fallback_to_inline")
 
@@ -179,10 +179,11 @@ async def handle_update(update: dict[str, Any], deps: DispatchDeps) -> None:
             thread_id=record.get("_fyralis_thread_id"),
             message_id=record.get("id"),
         )
-        return
+        return False
 
     if not flag_enabled:
         await _maybe_shadow_write_gateway(deps, record=record)
+    return True
 
 
 __all__ = ["DispatchDeps", "handle_update"]

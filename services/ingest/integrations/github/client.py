@@ -18,7 +18,6 @@ minted JWT and installation access token are NEVER logged at any level.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,12 +29,26 @@ import httpx
 import structlog
 
 from lib.shared.errors import GithubApiError, GithubJWTError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
 
 from services.ingest.integrations.github import metrics
 from services.ingest.integrations.github.jwt import mint_app_jwt
 from services.ingest.integrations.github.uninstall import (
     _disable_installation_github,
     _short_installation_hash,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
 )
 
 
@@ -81,25 +94,6 @@ def _gh_event_query(
     return f"state=all&sort=updated&direction={direction}&{paging}"
 _LINK_NEXT_PATTERN = re.compile(r'[?&]page=(\d+)[^>]*>;\s*rel="next"')
 
-# Backfill read-path rate-limit retry. Installation requests hit a
-# primary 5000/h limit plus secondary (abuse) limits; honoring
-# Retry-After with a bounded budget lets a transient 429 / secondary
-# limit be absorbed instead of failing the whole shard. Matches the
-# internal retry the Slack and Discord clients already do. Read at call
-# time so they are env-configurable (and test-overridable).
-
-
-def _parse_retry_after(value: str | None) -> float:
-    """Seconds to wait from a Retry-After header (integer-seconds form;
-    GitHub also uses this for secondary limits). Falls back to 1s."""
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
-
-
 @dataclass(frozen=True, slots=True)
 class CachedInstallationToken:
     """In-process cache entry for a per-installation access token."""
@@ -132,6 +126,12 @@ class GithubClient:
         api_base_url: str | None = None,
         tenant_resolver: Any | None = None,
         backfill_installation_id: str | None = None,
+        tenant_id: UUID | str | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
     ) -> None:
         from lib.integrations.endpoints import endpoint
         self._pool = pool
@@ -149,6 +149,23 @@ class GithubClient:
         self._installation_contexts: dict[str, _InstallationContext] = {}
         self._last_repos_truncated: bool = False
         self._last_repos_total_available: int | None = None
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=http_client is not None or api_base_url is not None,
+        )
+        self._provider = ProviderRequestBinding(
+            source="github",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(installation_row_id)
+                if installation_row_id is not None
+                else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -162,44 +179,84 @@ class GithubClient:
             self._http = None
 
     async def _get_with_rl_retry(
-        self, url: str, headers: dict[str, str],
+        self,
+        url: str,
+        headers: dict[str, str],
+        *,
+        operation: str,
+        installation_id: str | None = None,
     ) -> httpx.Response:
-        """GET with bounded Retry-After-aware retry on 429 / secondary
-        rate limits (403 + Retry-After). Returns the final response; the
-        caller maps a non-2xx (including a still-429 after the budget is
-        exhausted) to GithubApiError. Transport errors propagate to the
-        caller's existing handler.
-        """
-        max_attempts = int(os.environ.get("GITHUB_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("GITHUB_RL_MAX_SLEEP_SEC", "30"))
+        """Execute one GitHub GET; ProviderTransport owns all retries."""
+        return await self._execute_http(
+            method="GET",
+            url=url,
+            headers=headers,
+            operation=operation,
+            installation_id=installation_id,
+        )
+
+    async def _execute_http(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        operation: str,
+        installation_id: str | None,
+    ) -> httpx.Response:
         client = self._httpx()
-        attempt = 0
-        while True:
-            attempt += 1
-            response = await client.get(url, headers=headers)
-            # Secondary (abuse) limit: 429, or 403 carrying Retry-After.
-            # Short (≈seconds–minute); worth a bounded in-call retry.
-            secondary_limited = response.status_code == 429 or (
-                response.status_code == 403
-                and response.headers.get("Retry-After") is not None
-            )
-            # Primary limit (5000/h per installation): 403 with
-            # `X-RateLimit-Remaining: 0`; reset reported via
-            # `X-RateLimit-Reset` (epoch seconds), NOT Retry-After. The reset
-            # can be up to an hour out — do NOT sleep the worker. Return so the
-            # caller raises a *recoverable* rate-limit error and the backfill
-            # parks the shard (in_progress) for a later orphan-scan retry.
-            primary_limited = (
-                response.status_code == 403
-                and response.headers.get("X-RateLimit-Remaining") == "0"
-            )
-            if primary_limited or not secondary_limited or attempt >= max_attempts:
-                return response
-            delay = _parse_retry_after(response.headers.get("Retry-After"))
-            await asyncio.sleep(min(max_sleep, delay))
+
+        async def _once() -> httpx.Response:
+            try:
+                response = await client.request(method, url, headers=headers)
+            except httpx.TimeoutException as exc:
+                raise ProviderTimeoutError(
+                    "GitHub request timed out",
+                    source="github",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
+            except httpx.TransportError as exc:
+                raise ProviderTransientError(
+                    "GitHub transport error",
+                    source="github",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
+            _raise_github_transport_outcome(response, operation=operation)
+            return response
+
+        tenant_id, installation_row_id = self._request_identity(
+            installation_id,
+        )
+        return await self._provider.execute(
+            operation,
+            _once,
+            tenant_id=tenant_id,
+            installation_id=installation_row_id,
+            quota_dimensions={
+                "provider_installation": installation_id or "",
+            },
+        )
+
+    def _request_identity(
+        self,
+        installation_id: str | None,
+    ) -> tuple[str | None, str | None]:
+        if installation_id is None:
+            return None, None
+        context = self._installation_contexts.get(installation_id)
+        if context is None:
+            return None, None
+        return str(context.tenant_id), str(context.installation_row_id)
 
     async def _authed_get(
-        self, *, inst: str, url: str, etag: str | None = None,
+        self,
+        *,
+        inst: str,
+        url: str,
+        operation: str,
+        etag: str | None = None,
     ) -> httpx.Response:
         """GET an installation-authed URL, re-minting once on a 401.
 
@@ -223,7 +280,12 @@ class GithubClient:
             }
             if etag:
                 headers["If-None-Match"] = etag
-            return await self._get_with_rl_retry(url, headers)
+            return await self._get_with_rl_retry(
+                url,
+                headers,
+                operation=operation,
+                installation_id=inst,
+            )
 
         response = await _once()
         if response.status_code == 401:
@@ -284,23 +346,17 @@ class GithubClient:
                 f"{self._api_base_url}/app/installations/"
                 f"{installation_id}/access_tokens"
             )
-            client = self._httpx()
-            try:
-                response = await client.post(
-                    url,
-                    headers={
-                        "Authorization": f"Bearer {jwt_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                )
-            except httpx.TransportError as exc:
-                metrics.record_installation_token_mint(result="error")
-                raise GithubApiError(
-                    "transport error during installation-token mint",
-                    code="github_api_error",
-                    context={"error_type": type(exc).__name__},
-                ) from exc
+            response = await self._execute_http(
+                method="POST",
+                url=url,
+                headers={
+                    "Authorization": f"Bearer {jwt_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                operation="installation_token.mint",
+                installation_id=installation_id,
+            )
 
             metrics.record_outbound_request(
                 path="/app/installations/{id}/access_tokens",
@@ -379,14 +435,12 @@ class GithubClient:
                 f"{self._api_base_url}/installation/repositories"
                 f"?per_page={per_page}&page={page}"
             )
-            try:
-                response = await self._get_with_rl_retry(url, headers)
-            except httpx.TransportError as exc:
-                raise GithubApiError(
-                    "transport error fetching installation repositories",
-                    code="github_api_error",
-                    context={"error_type": type(exc).__name__},
-                ) from exc
+            response = await self._get_with_rl_retry(
+                url,
+                headers,
+                operation="installation_repositories.list",
+                installation_id=installation_id,
+            )
 
             metrics.record_outbound_request(
                 path="/installation/repositories",
@@ -490,7 +544,7 @@ class GithubClient:
     # -----------------------------------------------------------------
     # Backfill read surface (M6.4) — mirrors MockGithubClient so the
     # fetcher / reconciler exercise the SAME code against the real API
-    # (or a local spammer) as against the in-process mock.
+    # (or local Provider Lab) as against an in-process mock.
     # -----------------------------------------------------------------
 
     def _backfill_inst(self, installation_id: str | None) -> str:
@@ -530,16 +584,12 @@ class GithubClient:
             event_type, per_page=per_page, page=page, direction=direction,
         )
         url = f"{self._api_base_url}/repos/{owner}/{repo}/{path}?{query}"
-        try:
-            response = await self._authed_get(
-                inst=self._backfill_inst(installation_id), url=url, etag=etag,
-            )
-        except httpx.TransportError as exc:
-            raise GithubApiError(
-                "transport error fetching repo events",
-                code="github_api_error",
-                context={"error_type": type(exc).__name__},
-            ) from exc
+        response = await self._authed_get(
+            inst=self._backfill_inst(installation_id),
+            url=url,
+            etag=etag,
+            operation=f"repo_events.{event_type}.list",
+        )
 
         metrics.record_outbound_request(
             path=f"/repos/{{owner}}/{{repo}}/{path}",
@@ -576,16 +626,12 @@ class GithubClient:
             f"{self._api_base_url}/repos/{owner}/{repo}/{path}"
             f"?state=all&sort=updated&direction=desc&per_page=1&page=1"
         )
-        try:
-            response = await self._authed_get(
-                inst=self._backfill_inst(installation_id), url=url, etag=etag,
-            )
-        except httpx.TransportError as exc:
-            raise GithubApiError(
-                "transport error probing repo events",
-                code="github_api_error",
-                context={"error_type": type(exc).__name__},
-            ) from exc
+        response = await self._authed_get(
+            inst=self._backfill_inst(installation_id),
+            url=url,
+            etag=etag,
+            operation=f"repo_events.{event_type}.head",
+        )
 
         metrics.record_outbound_request(
             path=f"/repos/{{owner}}/{{repo}}/{path}",
@@ -621,16 +667,12 @@ class GithubClient:
             f"{self._api_base_url}/repos/{owner}/{repo}/pulls/{pull_number}"
             f"/reviews?per_page={per_page}&page={page}"
         )
-        try:
-            response = await self._authed_get(
-                inst=self._backfill_inst(installation_id), url=url, etag=etag,
-            )
-        except httpx.TransportError as exc:
-            raise GithubApiError(
-                "transport error fetching pr reviews",
-                code="github_api_error",
-                context={"error_type": type(exc).__name__},
-            ) from exc
+        response = await self._authed_get(
+            inst=self._backfill_inst(installation_id),
+            url=url,
+            etag=etag,
+            operation="pull_reviews.list",
+        )
         metrics.record_outbound_request(
             path="/repos/{owner}/{repo}/pulls/{n}/reviews",
             status=response.status_code,
@@ -666,16 +708,12 @@ class GithubClient:
             f"{self._api_base_url}/repos/{owner}/{repo}/commits/{ref}"
             f"/check-runs?per_page={per_page}&page={page}"
         )
-        try:
-            response = await self._authed_get(
-                inst=self._backfill_inst(installation_id), url=url, etag=etag,
-            )
-        except httpx.TransportError as exc:
-            raise GithubApiError(
-                "transport error fetching check runs",
-                code="github_api_error",
-                context={"error_type": type(exc).__name__},
-            ) from exc
+        response = await self._authed_get(
+            inst=self._backfill_inst(installation_id),
+            url=url,
+            etag=etag,
+            operation="check_runs.list",
+        )
         metrics.record_outbound_request(
             path="/repos/{owner}/{repo}/commits/{ref}/check-runs",
             status=response.status_code,
@@ -790,6 +828,68 @@ def _safe_json(response: httpx.Response) -> Any:
         return response.json()
     except Exception:  # noqa: BLE001
         return None
+
+
+def _raise_github_transport_outcome(
+    response: httpx.Response,
+    *,
+    operation: str,
+) -> None:
+    """Classify retryable HTTP outcomes for ``ProviderTransport``."""
+
+    retry_after = parse_retry_after(response.headers.get("Retry-After"))
+    is_secondary_limit = response.status_code == 429 or (
+        response.status_code == 403
+        and response.headers.get("Retry-After") is not None
+    )
+    if is_secondary_limit:
+        raise ProviderRateLimited(
+            "GitHub secondary rate limit",
+            retry_after_seconds=retry_after,
+            status_code=response.status_code,
+            header_parser_id="github.rate_limit_headers",
+            source="github",
+            operation=operation,
+        )
+
+    if (
+        response.status_code == 403
+        and response.headers.get("X-RateLimit-Remaining") == "0"
+    ):
+        reset_delay: float | None = None
+        raw_reset = response.headers.get("X-RateLimit-Reset")
+        try:
+            reset_delay = max(
+                0.0,
+                float(raw_reset) - datetime.now(timezone.utc).timestamp(),
+            )
+        except (TypeError, ValueError):
+            pass
+        raise ProviderRateLimited(
+            "GitHub primary rate limit",
+            retry_after_seconds=reset_delay,
+            status_code=403,
+            header_parser_id="github.rate_limit_headers",
+            source="github",
+            operation=operation,
+        )
+
+    if response.status_code >= 500:
+        if retry_after is not None:
+            raise ProviderRateLimited(
+                "GitHub service cooldown",
+                retry_after_seconds=retry_after,
+                status_code=response.status_code,
+                header_parser_id="github.rate_limit_headers",
+                source="github",
+                operation=operation,
+            )
+        raise ProviderTransientError(
+            f"GitHub returned {response.status_code}",
+            source="github",
+            operation=operation,
+            http_status=response.status_code,
+        )
 
 
 def _api_error_from_response(response: httpx.Response) -> GithubApiError:

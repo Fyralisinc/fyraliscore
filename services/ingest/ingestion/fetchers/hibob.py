@@ -41,8 +41,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from lib.shared.errors import HibobApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -143,24 +142,13 @@ async def fetch_page_hibob(
 
     client, close = await _open_hibob_client(install)
     try:
-        try:
-            rows, next_page = await client.list_entities(
-                entity_type,
-                limit=_page_size(),
-                offset=cur.offset,
-                page_cursor=cur.page_cursor,
-                modified_since=cur.incremental_floor,
-            )
-        except HibobApiError as exc:
-            code = (exc.context or {}).get("code") or getattr(exc, "_code", None)
-            if code == "hibob_api_rate_limited":
-                log.info("hibob_backfill_rate_limited",
-                         extra={"entity_type": entity_type})
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        rows, next_page = await client.list_entities(
+            entity_type,
+            limit=_page_size(),
+            offset=cur.offset,
+            page_cursor=cur.page_cursor,
+            modified_since=cur.incremental_floor,
+        )
 
         records: list[dict[str, Any]] = []
         for row in rows:
@@ -196,7 +184,6 @@ async def fetch_page_hibob(
         await close()
 
 
-FETCHER_DISPATCH["hibob"] = fetch_page_hibob
 
 
 __all__ = [

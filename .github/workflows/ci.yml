@@ -62,6 +62,17 @@ jobs:
       - name: Check architecture ratchets
         run: python scripts/check_architecture_ratchets.py
 
+      # Prevents new source wiring from bypassing the declarative source
+      # contract while allowing the exact reviewed legacy findings to shrink.
+      # `--no-baseline` is the eventual strict P9 cutover command.
+      - name: Check source architecture ratchet
+        run: python scripts/check_source_architecture_ratchet.py
+
+      # The onboarding marketplace is generated from SOURCE_DEFINITIONS.
+      # Fail when a contract edit was not accompanied by its checked-in JSON.
+      - name: Check generated source catalog artifact
+        run: python scripts/generate_source_catalog_artifacts.py --check
+
       # Keeps the checked-in main-branch required status-check policy aligned
       # with the workflow job names GitHub exposes for branch protection.
       - name: Check required merge checks policy

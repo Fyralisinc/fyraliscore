@@ -81,6 +81,15 @@ async def make_workflow_pool(
     cursor-style — at most one tick in flight per service. Per-source
     services that fan out internally should pass a larger `max_size`.
     """
+    from services.ingest.source_contract.runtime import (
+        validate_runtime_bindings,
+    )
+
+    # Fail before opening a database connection if any catalog-declared
+    # planner, fetcher, reconciler, normalizer, or installation adapter was
+    # renamed, removed, or stopped being callable.
+    validate_runtime_bindings()
+
     pool = await asyncpg.create_pool(
         dsn,
         min_size=min_size,
@@ -89,6 +98,19 @@ async def make_workflow_pool(
         init=configure_connection_timeouts,
         statement_cache_size=0,  # pgbouncer transaction mode (M1.3 ADR Q1)
     )
+    # A worker compiled against one source catalog must never run against a
+    # database with different membership/history semantics. Validate before
+    # registering health metrics or launching any work.
+    from services.ingest.ingestion.source_catalog_db import (
+        validate_database_catalog,
+    )
+
+    try:
+        await validate_database_catalog(pool)
+    except BaseException:
+        await pool.close()
+        raise
+
     # Scrape-time db_pool_* gauges. One pool per workflow process, so the
     # static "workflow" name is unambiguous per scrape target (the
     # prometheus `worker` label distinguishes processes).

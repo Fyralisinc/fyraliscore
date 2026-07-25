@@ -11,7 +11,7 @@ from cryptography.fernet import Fernet
 from lib.shared.ids import uuid7
 from lib.shared.secrets import FernetSecretStore
 from scripts.manage_dedicated_source_installations import (
-    SPECS,
+    INSTALLATION_MANAGEMENT_SPECS,
     DedicatedSourceInstallationCliError,
     _installation_projection_sql,
     _uninstall_installation,
@@ -21,6 +21,7 @@ from scripts.manage_dedicated_source_installations import (
     run_command,
 )
 from scripts.tests.conftest import insert_actor
+from services.ingest.source_contract import INSTALLATION_MANAGEMENT_CATALOG
 from services.platform.access_control.roles import grant_role
 
 
@@ -29,6 +30,10 @@ pytestmark = pytest.mark.integration
 
 def _parse(argv: list[str]) -> argparse.Namespace:
     return build_parser().parse_args(argv)
+
+
+def test_cli_uses_the_immutable_contract_derived_management_view() -> None:
+    assert INSTALLATION_MANAGEMENT_SPECS is INSTALLATION_MANAGEMENT_CATALOG
 
 
 def _metadata(row: asyncpg.Record) -> dict[str, object]:
@@ -63,7 +68,7 @@ async def _insert_installation(
     include_webhook: bool = False,
     region: str = "us-east-1",
 ) -> dict[str, str | UUID | None]:
-    spec = SPECS[source]
+    spec = INSTALLATION_MANAGEMENT_SPECS[source]
     install_id = uuid7()
     refs: dict[str, str | None] = {}
     ref_labels = {
@@ -1012,7 +1017,7 @@ def test_dedicated_rotate_webhook_rejects_poll_only_source() -> None:
     from scripts.manage_dedicated_source_installations import _column_for_secret_field
 
     with pytest.raises(DedicatedSourceInstallationCliError, match="not supported"):
-        _column_for_secret_field(SPECS["linkedin"], args.secret_field)
+        _column_for_secret_field(INSTALLATION_MANAGEMENT_SPECS["linkedin"], args.secret_field)
 
 
 def test_google_workspace_sources_have_no_secret_ref_lifecycle_specs() -> None:
@@ -1026,7 +1031,7 @@ def test_google_workspace_sources_have_no_secret_ref_lifecycle_specs() -> None:
     }
 
     for source, (table, entity_table) in expected.items():
-        spec = SPECS[source]
+        spec = INSTALLATION_MANAGEMENT_SPECS[source]
         assert spec.table == table
         assert spec.scope_column == "workspace_domain"
         assert spec.ref_columns == ()
@@ -1040,13 +1045,13 @@ def test_google_workspace_sources_have_no_secret_ref_lifecycle_specs() -> None:
 def test_webhook_cleanup_status_requires_local_resolver_disable() -> None:
     assert (
         _webhook_cleanup_status(
-            spec=SPECS["gusto"],
+            spec=INSTALLATION_MANAGEMENT_SPECS["gusto"],
             provider_row_updated=True,
         )
         == "local_resolver_disabled"
     )
     missing_status = _webhook_cleanup_status(
-        spec=SPECS["gusto"],
+        spec=INSTALLATION_MANAGEMENT_SPECS["gusto"],
         provider_row_updated=False,
     )
 
@@ -1054,7 +1059,7 @@ def test_webhook_cleanup_status_requires_local_resolver_disable() -> None:
     assert _webhook_cleanup_complete(missing_status) is False
     assert (
         _webhook_cleanup_status(
-            spec=SPECS["google_calendar"],
+            spec=INSTALLATION_MANAGEMENT_SPECS["google_calendar"],
             provider_row_updated=False,
         )
         == "not_applicable"
@@ -1063,7 +1068,7 @@ def test_webhook_cleanup_status_requires_local_resolver_disable() -> None:
 
 def test_installation_projection_supports_sources_without_ref_columns() -> None:
     projection = _installation_projection_sql(
-        SPECS["google_drive"],
+        INSTALLATION_MANAGEMENT_SPECS["google_drive"],
         entity_count_sql="0::int",
     )
 
@@ -1087,10 +1092,10 @@ class _CaptureFetchrowConnection:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "source",
-    sorted(source for source, spec in SPECS.items() if spec.ref_columns),
+    sorted(source for source, spec in INSTALLATION_MANAGEMENT_SPECS.items() if spec.ref_columns),
 )
 async def test_uninstall_sql_clears_every_secret_ref_column(source: str) -> None:
-    spec = SPECS[source]
+    spec = INSTALLATION_MANAGEMENT_SPECS[source]
     conn = _CaptureFetchrowConnection()
     tenant_id = uuid7()
     row_id = uuid7()
@@ -1116,7 +1121,7 @@ async def test_uninstall_sql_rejects_unknown_secret_ref_column() -> None:
         await _uninstall_installation(
             _CaptureFetchrowConnection(),  # type: ignore[arg-type]
             tenant_id=uuid7(),
-            spec=SPECS["ashby"],
+            spec=INSTALLATION_MANAGEMENT_SPECS["ashby"],
             row_id=uuid7(),
             clear_columns=("refresh_secret_ref",),
         )

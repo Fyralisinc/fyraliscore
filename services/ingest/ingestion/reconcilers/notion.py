@@ -26,10 +26,10 @@ can over-reshare (an edit to an already-seen object re-walks the scope)
 but never under-reshares, and dedup makes re-walks idempotent.
 
 ============================================================
-WIRE-IN
+SOURCE CONTRACT
 ============================================================
-Module-level assignment into `RECONCILER_DISPATCH['notion']`. Pool
-provider seam (A18.3) for reading shard cursors.
+`SourceDefinition.reconciler_binding` points to `reconcile_notion`. The pool
+provider seam (A18.3) remains for reading shard cursors.
 """
 from __future__ import annotations
 
@@ -37,11 +37,12 @@ import logging
 from typing import Any
 
 import asyncpg
+from services.ingest.ingestion.installations import load_source_installation
 import orjson
 
+from lib.shared.provider_transport import RetryLater
 from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
@@ -124,6 +125,10 @@ async def _check_one_shard_for_gap(
             latest = await client.latest_page_edit()
         else:
             return None
+    except RetryLater:
+        # The workflow owns durable not-before scheduling. Treating a quota
+        # pause as "no gap" would incorrectly complete reconciliation.
+        raise
     except Exception as exc:  # noqa: BLE001 — best-effort gap check
         log.warning(
             "reconcilers.notion.probe_failed",
@@ -158,14 +163,11 @@ async def reconcile_notion(
         return ReconciliationDecision(has_gaps=False)
 
     pool = _get_pool()
-    install = await pool.fetchrow(
-        """
-        SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
-          FROM provider_installations
-         WHERE tenant_id = $1 AND provider = 'notion' AND enabled = TRUE
-         LIMIT 1
-        """,
-        run["tenant_id"],
+    install = await load_source_installation(
+        pool,
+        source="notion",
+        tenant_id=run["tenant_id"],
+        installation_id=run["installation_row_id"],
     )
     if install is None:
         return ReconciliationDecision(has_gaps=False)
@@ -190,7 +192,6 @@ async def reconcile_notion(
     return ReconciliationDecision(has_gaps=False)
 
 
-RECONCILER_DISPATCH["notion"] = reconcile_notion
 
 
 __all__ = [

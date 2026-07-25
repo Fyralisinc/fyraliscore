@@ -175,7 +175,7 @@ The endpoints invoked for ingestion:
 | `POST /channels/stop` | `stop_channel()` | tear down a push channel (idempotent) | [client.py:189-199](../../../services/ingest/integrations/google_calendar/client.py#L189-L199) |
 
 The base URL is resolved via `endpoint("google_calendar_api")` so it can point at
-the local spammer in dev (§12.3); production default is
+Provider Lab in dev (§12.3); production default is
 `https://www.googleapis.com/calendar/v3`
 ([endpoints.py:44](../../../lib/integrations/endpoints.py#L44)).
 
@@ -307,8 +307,8 @@ tests) constructs the client over the **shared Gmail DWD minter + `GoogleHttpCli
 
 > **Aside — no `_clients.py` branch.** Unlike github/slack/discord/notion, Calendar
 > has **no builder in** `services/ingest/ingestion/fetchers/_clients.py` and **no
-> spammer token-preseed there**. It opens its own client through the Gmail DWD
-> substrate; dev/spammer redirection is **pure endpoint config** (§12.3), not a
+> Provider Lab token-preseed there**. It opens its own client through the Gmail DWD
+> substrate; dev/Provider Lab redirection is **pure endpoint config** (§12.3), not a
 > preseeded token (verified — `_clients.py` contains no `google`/`calendar`
 > reference).
 
@@ -570,7 +570,7 @@ Verified against Google Calendar v3 docs (incremental sync `nextSyncToken`,
 | `GMAIL_SERVICE_ACCOUNT_JSON_FILE` / `GMAIL_SERVICE_ACCOUNT_JSON` | — (one required) | DWD service-account key (shared Gmail/Calendar/Drive); also gates router mounting |
 | `GMAIL_SERVICE_ACCOUNT_CLIENT_ID` | — | numeric DWD client ID surfaced to the admin for the Workspace grant |
 | `GOOGLE_CALENDAR_BACKFILL_DAYS` | `180` | windowed full-sync horizon (`timeMin = now − N days`) |
-| `GOOGLE_CALENDAR_API_BASE_URL` | `https://www.googleapis.com/calendar/v3` | base URL override (points backfill at the local spammer in dev) |
+| `GOOGLE_CALENDAR_API_BASE_URL` | `https://www.googleapis.com/calendar/v3` | explicit base URL override (points backfill at Provider Lab in dev) |
 | `GOOGLE_PUSH_WEBHOOK_BASE` | — (unset → push disabled, poll is liveness) | public base for the `events.watch` `web_hook` address (§9) |
 
 > **TODO(human):** the retry knobs for `retry_with_backoff_on_429`
@@ -596,10 +596,10 @@ Verified against Google Calendar v3 docs (incremental sync `nextSyncToken`,
 - **Least secret surface** — single Workspace-global service-account key; no
   per-install token, no `secret_ref`. ✅
 
-### 12.3 Dev / spammer mode
+### 12.3 Dev / Provider Lab mode
 
 Backfill is pointed at the local mock by **endpoint config only**: setting
-`GOOGLE_CALENDAR_API_BASE_URL` (or the spammer endpoint resolver) redirects
+`GOOGLE_CALENDAR_API_BASE_URL` explicitly redirects
 `GoogleCalendarClient`'s base URL to the mock Calendar v3 server
 ([client.py:60-64](../../../services/ingest/integrations/google_calendar/client.py#L60-L64),
 [endpoints.py:44,125,155](../../../lib/integrations/endpoints.py#L44)). Unlike

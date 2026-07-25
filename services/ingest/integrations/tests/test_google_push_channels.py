@@ -90,6 +90,11 @@ async def test_resolve_push_good_token(fresh_db: asyncpg.Pool) -> None:
     assert row["calendar_id"] == "alice@acme.com"
     assert row["cursor_token"] == "sync-0"
     assert row["scope"] == "calendar.readonly"
+    assert row["installation_id"] == await fresh_db.fetchval(
+        "SELECT google_calendar_installation_id "
+        "FROM google_calendar_calendars WHERE id = $1",
+        cal,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -108,7 +113,15 @@ async def test_register_watch_persists_channel_state(fresh_db: asyncpg.Pool) -> 
         async def stop_channel(self, **kw):
             return None
 
-    async def _make_client(scope):
+    bound: dict = {}
+
+    async def _make_client(scope, *, tenant_id, installation_id):
+        bound.update({
+            "scope": scope,
+            "tenant_id": tenant_id,
+            "installation_id": installation_id,
+        })
+
         async def _close():
             return None
         return _FakeClient(), _close
@@ -125,6 +138,16 @@ async def test_register_watch_persists_channel_state(fresh_db: asyncpg.Pool) -> 
     assert watched["calendar_id"] == "alice@acme.com"
     assert watched["address"] == "https://app.test/webhooks/google_calendar/push"
     assert watched["channel_id"] and watched["token"]
+    install_id = await fresh_db.fetchval(
+        "SELECT google_calendar_installation_id "
+        "FROM google_calendar_calendars WHERE id = $1",
+        cal,
+    )
+    assert bound == {
+        "scope": "calendar.readonly",
+        "tenant_id": tenant,
+        "installation_id": install_id,
+    }
 
     row = await fresh_db.fetchrow(
         "SELECT watch_channel_id, watch_resource_id, watch_token, "

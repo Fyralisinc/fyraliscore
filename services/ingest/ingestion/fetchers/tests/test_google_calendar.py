@@ -4,7 +4,11 @@ from __future__ import annotations
 import pytest
 
 from lib.shared.errors import CompanyOSError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
 from services.ingest.ingestion.fetchers import google_calendar as gc
 from services.ingest.ingestion.fetchers.google_calendar import (
     SHARD_KIND_EVENTS,
@@ -12,6 +16,7 @@ from services.ingest.ingestion.fetchers.google_calendar import (
     fetch_page_google_calendar,
 )
 from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
+from services.ingest.source_contract.runtime import resolve_fetcher
 
 
 pytestmark = pytest.mark.asyncio
@@ -119,26 +124,30 @@ async def test_incremental_mode_when_shard_warm_started(monkeypatch):
     assert cursor["next_sync_token"] == "tok-2"
 
 
-async def test_rate_limit_returns_empty_page_preserving_cursor(monkeypatch):
-    """When the retry budget is exhausted (persistent 429), the fetcher
-    returns an empty page with the cursor unadvanced so ShardFetch re-enters
-    next tick. Patch the retry helper to a no-retry passthrough so the test
-    doesn't sit through real backoff sleeps."""
-    async def _no_retry(fn, retry_on, **kw):
-        return await fn()
-    monkeypatch.setattr(gc, "retry_with_backoff_on_429", _no_retry)
-
-    class _AlwaysRateLimited:
+async def test_retry_later_propagates_without_returning_an_advanced_cursor(monkeypatch):
+    class _Deferred:
         async def list_events(self, **kw):
-            from services.ingest.integrations.gmail.client import GoogleRateLimited
-            raise GoogleRateLimited("429", status=429)
+            raise RetryLater.after(
+                request_context=RequestContext(
+                    source="google_calendar",
+                    operation="events.list",
+                    tenant_id="tenant-1",
+                    installation_id="install-1",
+                ),
+                delay_seconds=60,
+                reason=RetryReason.RATE_LIMIT,
+            )
 
-    _patch(monkeypatch, _AlwaysRateLimited())
-    r = await fetch_page_google_calendar(_FakeInst(), _shard(), None)
-    assert r.records == []
-    assert r.end_of_data is False
-    # cursor is preserved (seeded full-sync window, no page advance).
-    assert r.next_cursor["sync_token"] is None
+    cursor = GoogleCalendarCursor(
+        seeded=True,
+        sync_token="sync-0",
+        page_token="page-before",
+    ).model_dump(mode="json")
+    original = dict(cursor)
+    _patch(monkeypatch, _Deferred())
+    with pytest.raises(RetryLater):
+        await fetch_page_google_calendar(_FakeInst(), _shard(), cursor)
+    assert cursor == original
 
 
 async def test_expired_sync_token_reseeds_full_sync(monkeypatch):
@@ -161,6 +170,6 @@ async def test_cursor_strict():
 
 
 async def test_dispatch_and_routing_wired():
-    assert FETCHER_DISPATCH["google_calendar"] is fetch_page_google_calendar
+    assert resolve_fetcher("google_calendar") is fetch_page_google_calendar
     assert resolve_channel("google_calendar", "backfill") == "google_calendar:event"
     assert resolve_channel("google_calendar", "poll") == "google_calendar:event"

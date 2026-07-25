@@ -132,7 +132,7 @@ async def register_webhook_installation(
     webhook is configured with a distinct URL `/webhooks/ashby/{org_id}` (+ its
     own Ashby-Signature secret), and the resolver resolves the tenant from that
     URL path (real Ashby deliveries carry no org id in the body; see
-    `tenant_resolver._PATH_RESOLVED_PROVIDERS`). `org_id` is the path segment;
+    `WebhookIngressDefinition.tenant_binding`). `org_id` is the path segment;
     the body `organizationId` read by `_extract_ashby` is now only a
     legacy/synthetic fallback for posts to the bare endpoint."""
     await upsert_provider_installation_for_tenant(

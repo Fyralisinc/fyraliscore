@@ -57,7 +57,8 @@ from services.ingest.integrations.gmail.client import (
     DirectoryClient,
     GmailClient,
     GoogleApiError,
-    GoogleHttpClient,
+    build_google_http_client,
+    build_google_onboarding_http_client,
 )
 from services.ingest.integrations.gmail.directory import enumerate_domain, resolve_inclusion
 from services.ingest.integrations.gmail.dwd import DwdError, get_minter
@@ -95,7 +96,7 @@ def _tenant_from_request(request: Request) -> UUID:
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
     """Verify DWD is set up and enumerate the domain for the selector."""
-    _tenant_from_request(request)  # auth check
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     workspace_domain = (body.get("workspace_domain") or "").strip().lower()
     admin_email = (body.get("admin_email") or "").strip().lower()
@@ -112,7 +113,11 @@ async def connect_preflight(request: Request) -> JSONResponse:
         )
 
     minter = get_minter()
-    async with GoogleHttpClient(minter) as http:
+    async with build_google_onboarding_http_client(
+        minter,
+        tenant_id=str(tenant_id),
+        quota_dimensions={"workspace": workspace_domain},
+    ) as http:
         directory = DirectoryClient(http, admin_email)
         try:
             enumeration = await enumerate_domain(
@@ -155,7 +160,11 @@ async def connect_finalize(request: Request) -> JSONResponse:
 
     minter = get_minter()
     try:
-        async with GoogleHttpClient(minter) as http:
+        async with build_google_onboarding_http_client(
+            minter,
+            tenant_id=str(tenant_id),
+            quota_dimensions={"workspace": workspace_domain},
+        ) as http:
             directory = DirectoryClient(http, admin_email)
             await _verify_dwd_grant(directory, workspace_domain=workspace_domain)
     except (GoogleApiError, DwdError) as exc:
@@ -236,13 +245,31 @@ async def connect_finalize(request: Request) -> JSONResponse:
 
 @router.get("/status")
 async def gmail_status(request: Request) -> JSONResponse:
-    """Read-only status snapshot for the tenant's Gmail install: watch
+    """Read-only status snapshot for one exact tenant-owned Gmail install: watch
     counts by state, last push/poll timestamps, errored mailboxes, recent
-    audit. Mirrors the finance (`/{source}/status`) + slack (`/{user}/status`)
-    status endpoints. Returns `{"connected": false}` when there is no
-    active install."""
+    audit. The installation UUID is required so multiple installs in one
+    tenant cannot silently select whichever row happened to be newest.
+    Returns ``{"connected": false}`` when that exact install is unavailable."""
     tenant_id = _tenant_from_request(request)
-    snapshot = await get_gmail_status(tenant_id=tenant_id)
+    raw_installation_id = (
+        request.query_params.get("gmail_installation_id") or ""
+    ).strip()
+    if not raw_installation_id:
+        raise HTTPException(
+            status_code=400,
+            detail="gmail_installation_id is required",
+        )
+    try:
+        installation_id = UUID(raw_installation_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="gmail_installation_id must be a UUID",
+        ) from exc
+    snapshot = await get_gmail_status(
+        tenant_id=tenant_id,
+        gmail_installation_id=installation_id,
+    )
     outcome = "success" if snapshot.get("connected") is True else "not_found"
     _record_source_event("source_status_checked", outcome)
     return JSONResponse(content=snapshot)
@@ -381,7 +408,10 @@ async def _provision_install(
     scope_long = SCOPE_ALIAS[scope_alias]
     try:
         async with PubsubAdmin() as admin:
-            resources = await admin.provision(tenant_id)
+            resources = await admin.provision(
+                tenant_id,
+                installation_id=gmail_installation_id,
+            )
 
         async with tenant_transaction(tenant_id) as tctx:
             await tctx.execute(
@@ -404,7 +434,11 @@ async def _provision_install(
             )
 
         minter = get_minter()
-        async with GoogleHttpClient(minter) as http:
+        async with build_google_http_client(
+            minter,
+            tenant_id=str(tenant_id),
+            installation_id=str(gmail_installation_id),
+        ) as http:
             directory = DirectoryClient(http, admin_email)
             emails = await resolve_inclusion(
                 directory,
@@ -432,7 +466,11 @@ async def _provision_install(
         # Activate watches outside the transaction so a slow API call
         # doesn't hold a DB connection. Activation per-mailbox uses its
         # own short transaction.
-        async with GoogleHttpClient(minter) as http:
+        async with build_google_http_client(
+            minter,
+            tenant_id=str(tenant_id),
+            installation_id=str(gmail_installation_id),
+        ) as http:
             gmail = GmailClient(http)
             for email in emails:
                 try:

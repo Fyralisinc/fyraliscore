@@ -11,7 +11,7 @@ the page_tree gap probe silently went blind.
 The fix is ADDITIVE: when `has_more` is true the client loops, threading
 `next_cursor` back as `start_cursor`, until it finds a loose (non-database-row)
 page or `has_more` is false. A response with `has_more` absent/false still stops
-after one call (the single-call fallback the synthetic spammer relies on).
+after one call (the single-call fallback Provider Lab relies on).
 
 This test drives the REAL `NotionClient` over a fake httpx transport fed the
 doc-shaped fixture, and asserts the loop CONTINUES past the all-database-rows

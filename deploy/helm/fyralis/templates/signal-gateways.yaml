@@ -1,0 +1,93 @@
+{{- include "fyralis.validateSignalGateway" . -}}
+{{- if .Values.signalGateway.enabled }}
+{{- $root := . }}
+{{- range $installation := .Values.signalGateway.installations }}
+{{- $bindingKey := printf "%s/%s" $installation.tenantId $installation.installationId }}
+{{- $bindingHash := $bindingKey | sha256sum | trunc 8 }}
+{{- $componentBase := printf "signal-gateway-%s" $installation.name | trunc 54 | trimSuffix "-" }}
+{{- $component := printf "%s-%s" $componentBase $bindingHash }}
+{{- $deploymentBase := printf "%s-signal-%s" (include "fyralis.fullname" $root) $installation.name | trunc 54 | trimSuffix "-" }}
+{{- $deploymentName := printf "%s-%s" $deploymentBase $bindingHash }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $deploymentName }}
+  labels:
+    {{- include "fyralis.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+    fyralis.io/source: signal
+    fyralis.io/source-installation: {{ $installation.name | quote }}
+spec:
+  # The Redis lease protects failover replicas, but each rendered Deployment
+  # represents exactly one tenant/installation identity.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "fyralis.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $component }}
+  template:
+    metadata:
+      annotations:
+        checksum/app-env: {{ toJson $root.Values.app | sha256sum }}
+        checksum/signal-binding: {{ toJson $installation | sha256sum }}
+      labels:
+        {{- include "fyralis.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $component }}
+        fyralis.io/source: signal
+        fyralis.io/source-installation: {{ $installation.name | quote }}
+    spec:
+      serviceAccountName: {{ include "fyralis.serviceAccountName" $root }}
+      initContainers:
+        {{- include "fyralis.waitForLocalServices" $root | nindent 8 }}
+      containers:
+        - name: signal-gateway
+          image: {{ include "fyralis.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command:
+            - python
+            - scripts/run_signal_gateway_worker.py
+          ports:
+            - name: health
+              containerPort: {{ $root.Values.app.ingestionHealthPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "fyralis.appEnvConfigName" $root }}
+            - secretRef:
+                name: {{ include "fyralis.appSecretName" $root }}
+          env:
+            - name: SIGNAL_TENANT_ID
+              value: {{ $installation.tenantId | quote }}
+            - name: SIGNAL_INSTALLATION_ID
+              value: {{ $installation.installationId | quote }}
+            - name: SIGNAL_JSONRPC_ENDPOINT
+              value: {{ $installation.jsonrpcEndpoint | quote }}
+            - name: SIGNAL_SSE_ENDPOINT
+              value: {{ default "" $installation.sseEndpoint | quote }}
+            - name: SIGNAL_CLI_VERSION
+              value: {{ $root.Values.signalGateway.signalCliVersion | quote }}
+            - name: SIGNAL_CLI_MULTI_ACCOUNT
+              value: {{ ternary "1" "0" (default false $installation.multiAccount) | quote }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 8
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 45
+            periodSeconds: 20
+          resources:
+            {{- toYaml $root.Values.resources | nindent 12 }}
+      nodeSelector:
+        {{- toYaml $root.Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml $root.Values.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml $root.Values.affinity | nindent 8 }}
+---
+{{- end }}
+{{- end }}

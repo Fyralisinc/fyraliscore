@@ -1,7 +1,7 @@
 """scripts/slack_dm_worker_fetch.py — production worker-fetch DM backfill driver.
 
 Runs the REAL per-user DM backfill through the genuine planner → fetcher →
-raw-tier(S3) → Kafka producer path, in SPAMMER MODE, then lets the running
+raw-tier(S3) → Kafka producer path against Provider Lab, then lets the running
 Kafka consumer workers (normalizer → observation_writer) land the observations.
 This is the worker-chain counterpart of the inline gateway console
 (slack_router.py): it produces IDENTICAL observations (same `slack:message`
@@ -17,9 +17,9 @@ S3_* on the compose network), driven by scripts/slack_dm_worker_demo.sh:
 What it does (idempotent):
   1. Seed: tenant, kafka_path_enabled flag, slack BOT provider_installation,
      slack_dm_installations (one consenting user), observation partitions.
-  2. Start an in-container spammer subprocess seeded with a `make_slack_dm_workspace`
-     fixture (now-anchored ts). Point the REAL Slack clients at it via
-     SYNTHETIC_SOURCE_API_BASE (spammer mode → preset tokens, no real creds).
+  2. Start an in-container provider simulator seeded with a
+     `make_slack_dm_workspace` fixture (now-anchored ts). Point the real Slack
+     clients at its explicit Slack endpoint and enable Provider Lab credentials.
   3. Run the REAL `plan_shards_slack` → channel shards (bot) + slack_dm_window
      shards (per consenting user, via conversations.list(types=im,mpim)).
   4. For each shard, run the REAL `fetch_page_slack` loop → records, write each
@@ -35,42 +35,21 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
-import sys
 import time
-import urllib.request
 from uuid import UUID, uuid4
 
 
 # Dedicated demo tenant (distinct from the inline console's tenant) so the
 # worker-fetch run is isolated + repeatable.
 DEFAULT_TENANT = "00000000-0000-0000-0000-0000000000d3"
-SPAMMER_PORT = int(os.environ.get("SLACK_DM_SPAMMER_PORT", "9100"))
 
 
 def _team_for(tenant_id: UUID) -> str:
     return "T0DMW" + tenant_id.hex[:9].upper()
 
 
-def _wait_healthz(port: int, timeout_s: float = 20.0) -> None:
-    deadline = time.time() + timeout_s
-    last = ""
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/healthz", timeout=2,
-            ) as r:
-                if r.status == 200:
-                    return
-        except Exception as exc:  # noqa: BLE001
-            last = str(exc)
-        time.sleep(0.3)
-    raise RuntimeError(f"spammer did not become healthy on :{port} ({last})")
-
-
 async def main() -> int:
     os.environ.setdefault("COMPANY_OS_ENV", "dev")  # synthetic import guard
-    os.environ["SYNTHETIC_SOURCE_API_BASE"] = f"http://127.0.0.1:{SPAMMER_PORT}"
 
     tenant_id = UUID(os.environ.get("SLACK_DM_DEMO_TENANT", DEFAULT_TENANT))
     user_id = os.environ.get("SLACK_DM_DEMO_USER", "U_ALICE")
@@ -119,31 +98,17 @@ async def main() -> int:
     from services.domain.observations.partitions import ensure_partitions
     await ensure_partitions(pool, months_ahead=2)
 
-    # ---- 2. Fixture registry + spammer subprocess -------------------
+    # ---- 2. Fixture + loopback Provider Lab -------------------------
     from services.ingest.synthetic.fixtures import make_slack_dm_workspace
+    from services.ingest.synthetic.provider_lab import start_provider_lab
+
     base_ts = time.time() - 120.0  # now-anchored → inside the partition window
     fixture = make_slack_dm_workspace(
         team_id=team_id, user_id=user_id, messages_per_dm=per, base_ts=base_ts,
     )
-    registry = {"entries": [
-        {"tenant_id": str(tenant_id), "source": "slack", "fixture": fixture},
-    ]}
-    reg_path = "/tmp/slack_dm_registry.json"
-    with open(reg_path, "w") as f:
-        json.dump(registry, f)
-
-    spammer_env = {
-        **os.environ,
-        "SPAMMER_PORT": str(SPAMMER_PORT),
-        "SPAMMER_WORKERS": "1",
-        "SPAMMER_FIXTURE_REGISTRY": reg_path,
-        "SPAMMER_LOG_LEVEL": "warning",
-        "COMPANY_OS_ENV": "dev",
-    }
-    spammer = subprocess.Popen(
-        [sys.executable, "-m", "services.ingest.synthetic.spammer.server"],
-        env=spammer_env,
-    )
+    provider_lab = start_provider_lab({"slack": [fixture]})
+    os.environ["PROVIDER_LAB_URL"] = provider_lab.base_url
+    os.environ["SLACK_API_BASE_URL"] = provider_lab.url("slack", "/api")
 
     summary: dict = {
         "tenant_id": str(tenant_id), "team_id": team_id, "user_id": user_id,
@@ -151,8 +116,6 @@ async def main() -> int:
         "shard_kinds": {},
     }
     try:
-        _wait_healthz(SPAMMER_PORT)
-
         # ---- 3. REAL planner: channel + DM shards -------------------
         install = await pool.fetchrow(
             "SELECT id, tenant_id, provider, installation_id, secret_ref, "
@@ -235,11 +198,7 @@ async def main() -> int:
             await producer.stop()
             await s3.close()
     finally:
-        spammer.terminate()
-        try:
-            spammer.wait(timeout=5)
-        except Exception:  # noqa: BLE001
-            spammer.kill()
+        provider_lab.shutdown()
         await pool.close()
 
     print("SLACK_DM_WORKER_FETCH_RESULT " + json.dumps(summary))

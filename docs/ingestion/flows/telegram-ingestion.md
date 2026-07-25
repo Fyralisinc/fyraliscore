@@ -541,7 +541,7 @@ passed 3-0).
 | `REDIS_URL` | — (required) | single-instance lease store (gateway launcher) |
 | `KAFKA_BOOTSTRAP_SERVERS` | — (optional) | wire the data plane for the kafka-first cutover; absent → inline `ingest()` ([run_telegram_gateway_worker.py:13-14](../../../scripts/run_telegram_gateway_worker.py#L13-L14)) |
 | `TELEGRAM_INSTALLATION_ID` | — (optional) | which `telegram_installations` row the worker runs; absent → first active install ([run_telegram_gateway_worker.py:15-16](../../../scripts/run_telegram_gateway_worker.py#L15-L16)) |
-| `SYNTHETIC_SOURCE_API_BASE` | unset | presence enables spammer/dev mode (preset session) ([_clients.py:50-51](../../../services/ingest/ingestion/fetchers/_clients.py#L50-L51)) |
+| `PROVIDER_LAB_URL` | unset | presence outside production enables deterministic lab credentials |
 
 Tenant-scoped feature flags (`ingestion.kafka_path_enabled`, `SHADOW_WRITE_ENABLED`)
 gate the live cutover vs inline path (§7.2); they are shared ingestion flags, not
@@ -561,13 +561,13 @@ Telegram-specific.
 - **Gap recovery** — native `updates.getDifference` (`catch_up`) on the live path;
   `has_history_since` re-probe on the backfill path. ✅
 
-### 12.3 Dev / spammer mode
+### 12.3 Dev / Provider Lab mode
 
 For local testing there are **two** distinct seams (the live path does **not**
 reuse the backfill mock):
 
-- **Backfill** — `build_telegram_client` detects spammer mode
-  (`SYNTHETIC_SOURCE_API_BASE` set) and presets the session string to
+- **Backfill** — `build_telegram_client` detects `PROVIDER_LAB_URL` and presets
+  the session string to
   `spam-telegram`, skipping the secret store and the real Telethon connect
   ([_clients.py:407-423](../../../services/ingest/ingestion/fetchers/_clients.py#L407-L423)).
   In-process tests instead rebind the `_open_telegram_client` seam

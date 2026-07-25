@@ -90,7 +90,7 @@ plus a rotating **refresh token**, with every call scoped to an
 `organization_urn` (the scope-id, analogous to Carta's `firm_id` / Gusto's
 `company_uuid` / QuickBooks' `realmId`)
 ([client.py:1‑8](../../../services/ingest/integrations/linkedin/client.py#L1-L8)).
-The access token is resolved **once** from the secret store (or preset in spammer
+The access token is resolved **once** from the secret store (or preset in Provider Lab
 mode) and reused for the life of the client
 ([client.py:142‑164](../../../services/ingest/integrations/linkedin/client.py#L142-L164)).
 
@@ -518,7 +518,7 @@ chokepoint is built yet.
 | `LINKEDIN_BACKFILL_PAGE_SIZE` | `100` (cap 1000) | per-page `MAXRESULTS` ([fetchers/linkedin.py:58‑62](../../../services/ingest/ingestion/fetchers/linkedin.py#L58-L62)) |
 | `LINKEDIN_RL_MAX_ATTEMPTS` | `4` | `429` retry budget ([client.py:180](../../../services/ingest/integrations/linkedin/client.py#L180)) |
 | `LINKEDIN_RL_MAX_SLEEP_SEC` | `30` | max backoff per `Retry-After` ([client.py:181](../../../services/ingest/integrations/linkedin/client.py#L181)) |
-| `SYNTHETIC_SOURCE_API_BASE` (+ spammer mode) | — | single-host spammer base; LinkedIn sub-path `/linkedin` ([endpoints.py:171](../../../lib/integrations/endpoints.py#L171)) |
+| `PROVIDER_LAB_URL` + explicit `LINKEDIN_API_BASE_URL` | — | test credentials plus loopback Provider Lab route `/linkedin` |
 
 Per-install `base_url` (stored on the install row) also overrides the host for
 that install.
@@ -541,11 +541,11 @@ that install.
 - **Verified API conformance (endpoints / pagination / scopes / protocol headers)**
   — ❌ partner-gated placeholders (`TODO(human)`, §3).
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
 For local testing against the mock source servers, `build_linkedin_client` detects
-spammer mode and **presets the access token to `spam-linkedin`**, skipping the
-real secret-store resolution, and points the API base at the local spammer's
+Provider Lab mode and **presets the access token to `spam-linkedin`**, skipping the
+real secret-store resolution, and points the API base at Provider Lab's
 `/linkedin` sub-path via the endpoint resolver
 ([_clients.py:779‑809](../../../services/ingest/ingestion/fetchers/_clients.py#L779-L809),
 [endpoints.py:171](../../../lib/integrations/endpoints.py#L171)).
@@ -563,6 +563,6 @@ real secret-store resolution, and points the API base at the local spammer's
   [115‑177](../../../services/ingest/synthetic/live_generators/linkedin_poll.py#L115-L177)).
 
 > Because the mock mirrors the **placeholder** Carta/Gusto read surface, a green
-> spammer run proves the *Fyralis-side control-flow* (sharding, cursoring,
+> Provider Lab run proves the *Fyralis-side control-flow* (sharding, cursoring,
 > dedup, poll cutover, reconciliation) — **not** conformance to the real LinkedIn
 > REST API, which is unverified pending partner entitlement.

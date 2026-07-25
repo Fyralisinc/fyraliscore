@@ -36,9 +36,7 @@ DEFAULT_FUNCTION_LINE_BUDGETS = {
     "services/app/gateway/structure_router.py:build_structure_router": 25,
     "services/app/gateway/today_routes.py:register_today_routes": 21,
     "services/app/gateway/ceo_view_wiring.py:configure_ceo_view": 28,
-    "services/ingest/synthetic/backfill_harness/harness.py:_write_install_and_trigger": 43,
     "services/ingest/synthetic/live_generators/hmac_webhook.py:_build_payload": 6,
-    "services/ingest/synthetic/mock_servers/google_workspace.py:_make_handler": 5,
     "services/ingest/ingestion/writers/observation_writer.py:_handle_message": 158,
     "services/ingest/ingestion/feature_flags/circuit_breaker.py:_process_tick": 42,
     "services/ingest/ingestion/core.py:ingest_from_draft": 104,
@@ -122,14 +120,8 @@ FUNCTION_LINE_BUDGET_ARG_NAMES = {
     "services/app/gateway/ceo_view_wiring.py:configure_ceo_view": (
         "max_ceo_view_wiring_lines"
     ),
-    "services/ingest/synthetic/backfill_harness/harness.py:_write_install_and_trigger": (
-        "max_backfill_install_dispatch_lines"
-    ),
     "services/ingest/synthetic/live_generators/hmac_webhook.py:_build_payload": (
         "max_hmac_webhook_payload_lines"
-    ),
-    "services/ingest/synthetic/mock_servers/google_workspace.py:_make_handler": (
-        "max_google_workspace_handler_lines"
     ),
     "services/ingest/ingestion/writers/observation_writer.py:_handle_message": (
         "max_observation_writer_handle_message_lines"
@@ -405,7 +397,6 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--max-ceo-view-wiring-lines", type=int, default=28)
     parser.add_argument("--max-backfill-install-dispatch-lines", type=int, default=43)
     parser.add_argument("--max-hmac-webhook-payload-lines", type=int, default=6)
-    parser.add_argument("--max-google-workspace-handler-lines", type=int, default=5)
     parser.add_argument("--max-observation-writer-handle-message-lines", type=int, default=158)
     parser.add_argument("--max-circuit-breaker-process-tick-lines", type=int, default=42)
     parser.add_argument("--max-ingest-from-draft-lines", type=int, default=104)

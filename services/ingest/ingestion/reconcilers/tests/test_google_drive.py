@@ -5,13 +5,18 @@ import json
 
 import pytest
 
-from services.ingest.ingestion.reconcilers import RECONCILER_DISPATCH
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
 from services.ingest.ingestion.reconcilers import google_drive as gd
 from services.ingest.ingestion.reconcilers.google_drive import (
     SHARD_KIND_FILES,
     reconcile_google_drive,
     set_pool_provider,
 )
+from services.ingest.source_contract.runtime import resolve_reconciler
 
 
 pytestmark = pytest.mark.asyncio
@@ -32,6 +37,8 @@ class _FakeClient:
 
     async def has_changes_since(self, **kw):
         self.calls.append(kw)
+        if isinstance(self._has, BaseException):
+            raise self._has
         return self._has
 
 
@@ -61,14 +68,15 @@ def _patch(monkeypatch, *, install, client, start_token):
     monkeypatch.setattr(gd, "_load_shard_start_token", fake_load)
 
 
-_INSTALL = {"id": "i1", "tenant_id": "t1", "scope": "drive.readonly",
+_INSTALL_ID = "22222222-2222-2222-2222-222222222222"
+_INSTALL = {"id": _INSTALL_ID, "tenant_id": "t1", "scope": "drive.readonly",
             "workspace_domain": "acme.com", "service_account_email": "sa@x",
             "disabled_at": None}
-_RUN = {"tenant_id": "t1"}
+_RUN = {"tenant_id": "t1", "installation_row_id": _INSTALL_ID}
 
 
 async def test_dispatch_registered():
-    assert RECONCILER_DISPATCH["google_drive"] is reconcile_google_drive
+    assert resolve_reconciler("google_drive") is reconcile_google_drive
 
 
 async def test_gap_detected_reshares(monkeypatch):
@@ -110,3 +118,21 @@ async def test_no_install_no_gaps(monkeypatch):
     _patch(monkeypatch, install=None, client=client, start_token="spt-9")
     decision = await reconcile_google_drive([_shard()], _RUN)
     assert decision.has_gaps is False
+
+
+async def test_retry_later_is_not_reported_as_a_clean_probe(monkeypatch):
+    retry = RetryLater.after(
+        request_context=RequestContext(
+            source="google_drive",
+            operation="changes.list",
+            tenant_id="tenant-1",
+            installation_id="install-1",
+        ),
+        delay_seconds=60,
+        reason=RetryReason.RATE_LIMIT,
+    )
+    client = _FakeClient(has_changes=retry)
+    _patch(monkeypatch, install=_INSTALL, client=client, start_token="spt-9")
+    with pytest.raises(RetryLater) as raised:
+        await reconcile_google_drive([_shard()], _RUN)
+    assert raised.value is retry

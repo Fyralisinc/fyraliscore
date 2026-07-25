@@ -32,9 +32,15 @@ async def test_snake_case_entity_maps_to_ashby_rpc_name(monkeypatch) -> None:
     )
     seen: dict[str, Any] = {}
 
-    async def fake_rpc(method_path: str, body: dict[str, Any] | None = None):
+    async def fake_rpc(
+        method_path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        operation: str,
+    ):
         seen["method_path"] = method_path
         seen["body"] = body
+        seen["operation"] = operation
         return {"success": True, "results": []}
 
     monkeypatch.setattr(client, "_rpc", fake_rpc)
@@ -44,6 +50,7 @@ async def test_snake_case_entity_maps_to_ashby_rpc_name(monkeypatch) -> None:
     assert seen == {
         "method_path": "applicationFeedback.list",
         "body": {"limit": 25},
+        "operation": "entities.list",
     }
 
 
@@ -55,7 +62,13 @@ async def test_endpoint_default_options_are_applied(monkeypatch) -> None:
     )
     calls: list[tuple[str, dict[str, Any] | None]] = []
 
-    async def fake_rpc(method_path: str, body: dict[str, Any] | None = None):
+    async def fake_rpc(
+        method_path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        operation: str,
+    ):
+        assert operation == "entities.list"
         calls.append((method_path, body))
         return {"success": True, "results": []}
 

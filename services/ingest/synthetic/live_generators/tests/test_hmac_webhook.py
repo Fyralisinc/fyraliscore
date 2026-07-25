@@ -16,22 +16,10 @@ import json
 
 import pytest
 
-from services.app.webhooks.signatures import (
-    ashby,
-    brex,
-    deel,
-    figma,
-    fireflies,
-    grafana,
-    gusto,
-    hibob,
-    jira,
-    mercury,
-    miro,
-    quickbooks,
-    ramp,
+from services.app.webhooks.signatures import verifier_for_provider
+from services.app.webhooks.tenant_resolver import (
+    tenant_extractor_for_provider,
 )
-from services.app.webhooks.tenant_resolver import PROVIDER_EXTRACTORS
 from services.app.webhooks.verifier import Secret, WebhookVerificationError
 from services.ingest.synthetic.live_generators.hmac_webhook import (
     HMAC_PROVIDERS,
@@ -70,15 +58,6 @@ class _T:
         self.ashby_org = "ashby-org-demo0"
 
 
-_VERIFIERS = {
-    "jira": jira.verifier, "mercury": mercury.verifier,
-    "quickbooks": quickbooks.verifier, "grafana": grafana.verifier,
-    "brex": brex.verifier, "ramp": ramp.verifier,
-    "gusto": gusto.verifier, "deel": deel.verifier,
-    "fireflies": fireflies.verifier, "miro": miro.verifier,
-    "figma": figma.verifier,
-    "hibob": hibob.verifier, "ashby": ashby.verifier,
-}
 _SECRET = "unit-secret"
 
 
@@ -96,7 +75,9 @@ async def test_signature_verifies_against_production_verifier(provider: str) -> 
     signature = gen._sign(body)
     headers = {gen._header_name: signature}
     # The real verifier must accept it (no raise) with the matching secret.
-    ctx = await _VERIFIERS[provider].verify(
+    verify = verifier_for_provider(provider)
+    assert verify is not None
+    ctx = await verify(
         body=body, headers=headers, secrets=[Secret(provider=provider, value=_SECRET, label="t")],
     )
     assert ctx.provider == provider
@@ -125,7 +106,9 @@ async def test_tampered_signature_rejected(provider: str) -> None:
         # base64 (quickbooks/ramp/gusto) + bare-hex (grafana): a wrong value.
         bad = "f" * 64
     with pytest.raises(WebhookVerificationError):
-        await _VERIFIERS[provider].verify(
+        verify = verifier_for_provider(provider)
+        assert verify is not None
+        await verify(
             body=body, headers={gen._header_name: bad},
             secrets=[Secret(provider=provider, value=_SECRET, label="t")],
         )
@@ -135,7 +118,8 @@ async def test_tampered_signature_rejected(provider: str) -> None:
 def test_payload_carries_tenant_resolution_key(provider: str) -> None:
     gen = _gen(provider)
     payload, _ = gen._build_payload(_T(provider), content="unit")
-    extractor = PROVIDER_EXTRACTORS[provider]
+    extractor = tenant_extractor_for_provider(provider)
+    assert extractor is not None
     resolved = extractor(payload, {})
     assert resolved, f"{provider} payload missing tenant-resolution key"
 

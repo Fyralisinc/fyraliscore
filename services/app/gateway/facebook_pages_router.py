@@ -23,12 +23,15 @@ from services.ingest.ingestion.shadow_write import (
     shadow_write_raw,
 )
 from services.ingest.integrations.whatsapp.signature import verify_signature
+from services.ingest.source_contract import dedicated_ingress_definition
 
 
 log = structlog.get_logger("facebook_pages.webhook")
 
-_WEBHOOK_PATH = "/integrations/facebook_pages/webhook"
-_CHANNEL = "facebook_pages:message"
+_INGRESS = dedicated_ingress_definition("facebook_pages_webhook")
+_WEBHOOK_PATH = _INGRESS.route_path
+assert _INGRESS.channel is not None
+_CHANNEL = _INGRESS.channel
 
 
 def _deps_or_503(request: Request) -> Any:
@@ -197,8 +200,8 @@ async def _publish_items_kafka(
             raw_body = json.dumps(item, separators=(",", ":")).encode("utf-8")
             await shadow_write_raw(
                 tenant_id=tenant_id,
-                source="facebook_pages",  # type: ignore[arg-type]
-                ingress_kind="webhook",
+                source=_INGRESS.source_id,  # type: ignore[arg-type]
+                ingress_kind=_INGRESS.ingress_kind,
                 raw_body=raw_body,
                 s3_client=s3_client,
                 kafka_producer=kafka_producer,

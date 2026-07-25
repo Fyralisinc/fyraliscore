@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_fetcher
 from services.ingest.ingestion.fetchers import grafana as gf
 from services.ingest.ingestion.fetchers.grafana import (
     SHARD_KIND_ORG_ANNOTATIONS,
@@ -57,7 +57,7 @@ def _patch_client(monkeypatch, client):
 
 
 async def test_dispatch_and_channel_wired():
-    assert FETCHER_DISPATCH["grafana"] is fetch_page_grafana
+    assert resolve_fetcher("grafana") is fetch_page_grafana
     assert resolve_channel("grafana", "backfill") == "grafana:annotation"
     assert resolve_channel("grafana", "poll") == "grafana:annotation"
     assert resolve_channel("grafana", "webhook") == "grafana:alert"

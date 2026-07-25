@@ -14,7 +14,7 @@ This test drives the REAL `MiroClient` (no stub of `list_boards`) over an
   - the client follows `links.next` to exhaustion and returns boards from ALL
     pages (terminal page omits `links.next`);
   - the single-page fallback (no `links.next`, no offset/total envelope) still
-    terminates after one page — the shape the synthetic spammer emits, so the
+    terminates after one page — the shape Provider Lab emits, so the
     all-25 synthetic gate is unaffected.
 
 Verified against developers.miro.com (GET /v2/boards; query params

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -65,7 +65,6 @@ async def plan_shards_grafana(ctx: PlannerContext) -> list[Shard]:
     return [shard]
 
 
-PLANNER_DISPATCH["grafana"] = plan_shards_grafana
 
 
 __all__ = ["SHARD_KIND_ORG_ANNOTATIONS", "plan_shards_grafana"]

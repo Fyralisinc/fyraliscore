@@ -19,6 +19,12 @@ from typing import Any, Sequence
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+from services.ingest.source_contract import (
+    SOURCE_CONNECTION_CATALOG,
+    SOURCE_CONNECTION_SLUGS,
+    source_connection_profile,
+    source_local_rehearsal_profile,
+)
 from services.platform.runtime.byoc_aws_live_preflight import (
     ByocAwsLivePreflightInputs,
     render_aws_live_preflight_json,
@@ -74,35 +80,7 @@ FIGMA_RUNTIME_COMPONENTS = (
     "periodic-reconciler",
 )
 FIGMA_REQUIRED_RUNTIME_COMPONENTS = frozenset({"gateway", "shard-fetch"})
-REHEARSABLE_SOURCES = (
-    "ashby",
-    "aws",
-    "brex",
-    "carta",
-    "deel",
-    "discord",
-    "facebook_pages",
-    "figma",
-    "fireflies",
-    "github",
-    "gmail",
-    "google-calendar",
-    "google-drive",
-    "grafana",
-    "gusto",
-    "hibob",
-    "jira",
-    "linkedin",
-    "mercury",
-    "miro",
-    "notion",
-    "quickbooks",
-    "ramp",
-    "signal",
-    "slack",
-    "telegram",
-    "whatsapp",
-)
+REHEARSABLE_SOURCES = SOURCE_CONNECTION_SLUGS
 SLACK_BOT_SCOPES = (
     "channels:read",
     "channels:history",
@@ -119,233 +97,6 @@ SLACK_USER_SCOPES = (
 )
 SLACK_BOT_EVENTS = ("message.channels", "message.groups")
 
-REHEARSAL_PROFILES: dict[str, dict[str, Any]] = {
-    "slack": {
-        "kind": "oauth_app",
-        "needs_public_url": True,
-        "install_endpoint": "/integrations/slack/install",
-        "callback_path": "/integrations/slack/callback",
-        "webhook_path": "/webhooks/slack/events",
-        "env": (
-            "SLACK_CLIENT_ID",
-            "SLACK_CLIENT_SECRET",
-            "SLACK_SIGNING_SECRET",
-            "SLACK_REDIRECT_URI",
-            "OAUTH_STATE_HMAC_KEY",
-        ),
-        "required_env": (
-            "SLACK_CLIENT_ID",
-            "SLACK_CLIENT_SECRET",
-            "SLACK_SIGNING_SECRET",
-            "SLACK_REDIRECT_URI",
-            "OAUTH_STATE_HMAC_KEY",
-        ),
-        "derived_env": {"WEBHOOK_SECRET_SLACK": "SLACK_SIGNING_SECRET"},
-        "manual_gate_names": (
-            "slack_app_creation_or_admin_approval",
-            "slack_oauth_consent",
-        ),
-    },
-    "github": {
-        "kind": "github_app",
-        "needs_public_url": True,
-        "install_endpoint": "/integrations/github/install",
-        "callback_path": "/integrations/github/callback",
-        "webhook_path": "/webhooks/github",
-        "env": (
-            "GITHUB_APP_SLUG",
-            "GITHUB_APP_ID",
-            "GITHUB_APP_PRIVATE_KEY",
-            "WEBHOOK_SECRET_GITHUB",
-            "OAUTH_STATE_HMAC_KEY",
-        ),
-        "required_env": (
-            "GITHUB_APP_SLUG",
-            "GITHUB_APP_ID",
-            "GITHUB_APP_PRIVATE_KEY",
-            "WEBHOOK_SECRET_GITHUB",
-            "OAUTH_STATE_HMAC_KEY",
-        ),
-        "manual_gate_names": (
-            "github_provider_admin_approval",
-            "github_app_installation_approval",
-        ),
-    },
-    "discord": {
-        "kind": "oauth_app",
-        "needs_public_url": True,
-        "install_endpoint": "/integrations/discord/install",
-        "callback_path": "/integrations/discord/callback",
-        "webhook_path": "/webhooks/discord",
-        "env": (
-            "DISCORD_CLIENT_ID",
-            "DISCORD_CLIENT_SECRET",
-            "DISCORD_REDIRECT_URI",
-            "DISCORD_APPLICATION_ID",
-            "DISCORD_BOT_TOKEN",
-            "WEBHOOK_SECRET_DISCORD",
-            "OAUTH_STATE_HMAC_KEY",
-        ),
-        "required_env": (
-            "DISCORD_CLIENT_ID",
-            "DISCORD_CLIENT_SECRET",
-            "DISCORD_REDIRECT_URI",
-            "DISCORD_APPLICATION_ID",
-            "DISCORD_BOT_TOKEN",
-            "WEBHOOK_SECRET_DISCORD",
-            "OAUTH_STATE_HMAC_KEY",
-        ),
-        "manual_gate_names": (
-            "discord_application_creation_or_update",
-            "discord_oauth_consent",
-        ),
-    },
-    "facebook_pages": {
-        "kind": "oauth_app",
-        "needs_public_url": True,
-        "install_endpoint": "/integrations/facebook_pages/install",
-        "callback_path": "/integrations/facebook_pages/callback",
-        "webhook_path": "/integrations/facebook_pages/webhook",
-        "env": (
-            "FACEBOOK_APP_ID",
-            "FACEBOOK_APP_SECRET",
-            "FACEBOOK_REDIRECT_URI",
-            "FACEBOOK_WEBHOOK_VERIFY_TOKEN",
-            "FACEBOOK_PAGE_ID",
-            "FACEBOOK_GRAPH_API_VERSION",
-            "OAUTH_STATE_HMAC_KEY",
-        ),
-        "required_env": (
-            "FACEBOOK_APP_ID",
-            "FACEBOOK_APP_SECRET",
-            "FACEBOOK_REDIRECT_URI",
-            "FACEBOOK_WEBHOOK_VERIFY_TOKEN",
-            "OAUTH_STATE_HMAC_KEY",
-        ),
-        "manual_gate_names": (
-            "facebook_pages_app_creation_or_update",
-            "facebook_pages_oauth_consent",
-            "facebook_pages_webhook_subscription_approval",
-        ),
-    },
-    "notion": {
-        "kind": "oauth_app",
-        "needs_public_url": True,
-        "install_endpoint": "/integrations/notion/install",
-        "callback_path": "/integrations/notion/callback",
-        "webhook_path": "/webhooks/notion/events",
-        "env": (
-            "NOTION_CLIENT_ID",
-            "NOTION_CLIENT_SECRET",
-            "NOTION_REDIRECT_URI",
-            "OAUTH_STATE_HMAC_KEY",
-            "NOTION_WEBHOOK_VERIFICATION_TOKEN",
-        ),
-        "required_env": (
-            "NOTION_CLIENT_ID",
-            "NOTION_CLIENT_SECRET",
-            "NOTION_REDIRECT_URI",
-            "OAUTH_STATE_HMAC_KEY",
-        ),
-        "manual_gate_names": (
-            "notion_integration_creation_or_update",
-            "notion_oauth_consent",
-            "notion_webhook_verification_token_copy",
-        ),
-    },
-    "figma": {
-        # One private Figma OAuth app is owned by one customer BYOC deployment.
-        # End users subsequently start the file-scoped OAuth flow from the
-        # Fyralis onboarding card; there is no generic install URL or PAT.
-        "kind": "oauth_app",
-        "needs_public_url": True,
-        "callback_path": "/integrations/figma/oauth/callback",
-        "env": (
-            "FIGMA_OAUTH_ENABLED",
-            "FIGMA_CLIENT_ID",
-            "FIGMA_CLIENT_SECRET_SECRET_REF",
-            "FIGMA_REDIRECT_URI",
-            "FIGMA_OAUTH_UI_BASE_URL",
-            "FIGMA_OAUTH_SCOPES",
-            "OAUTH_STATE_HMAC_KEY_SECRET_REF",
-        ),
-        "required_env": (
-            "FIGMA_OAUTH_ENABLED",
-            "FIGMA_CLIENT_ID",
-            "FIGMA_CLIENT_SECRET_SECRET_REF",
-            "FIGMA_REDIRECT_URI",
-            "FIGMA_OAUTH_UI_BASE_URL",
-            "FIGMA_OAUTH_SCOPES",
-            "OAUTH_STATE_HMAC_KEY_SECRET_REF",
-        ),
-        "default_env": {
-            "FIGMA_OAUTH_ENABLED": "1",
-            "FIGMA_OAUTH_SCOPES": (
-                "current_user:read,file_metadata:read,file_content:read,"
-                "file_comments:read,file_versions:read"
-            ),
-        },
-        # The gateway exchanges authorization codes.  The fetch and
-        # reconciliation workers instantiate FigmaClient, which can refresh
-        # an OAuth grant and therefore also requires the client credential
-        # reference and redirect configuration.
-        "runtime_components": FIGMA_RUNTIME_COMPONENTS,
-        "manual_gate_names": (
-            "figma_private_oauth_app_creation_or_update",
-            "figma_redirect_uri_registration",
-            "figma_deployment_secret_storage",
-            "figma_file_scoped_oauth_consent",
-        ),
-    },
-    "jira": {
-        "kind": "api_token_connect",
-        "needs_public_url": True,
-        "preflight_endpoint": "/integrations/jira/connect/preflight",
-        "finalize_endpoint": "/integrations/jira/connect/finalize",
-        "webhook_path": "/webhooks/jira/events",
-        "env": (
-            "JIRA_BASE_URL",
-            "JIRA_ACCOUNT_EMAIL",
-            "JIRA_API_TOKEN_REF",
-            "JIRA_PROJECT_KEYS",
-            "JIRA_WEBHOOK_SECRET_REF",
-        ),
-        "required_env": (
-            "JIRA_BASE_URL",
-            "JIRA_ACCOUNT_EMAIL",
-            "JIRA_API_TOKEN_REF",
-        ),
-        "manual_gate_names": (
-            "jira_api_token_creation",
-            "jira_project_scope_admin_approval",
-            "jira_webhook_admin_approval",
-        ),
-    },
-    "telegram": {
-        "kind": "local_gateway_session",
-        "needs_public_url": False,
-        "env": (
-            "TELEGRAM_ACCOUNT_LABEL",
-            "TELEGRAM_API_ID",
-            "TELEGRAM_API_HASH",
-            "TELEGRAM_SESSION",
-            "TELEGRAM_BACKFILL_SESSION",
-            "TELEGRAM_DIALOGS_JSON",
-        ),
-        "required_env": (
-            "TELEGRAM_ACCOUNT_LABEL",
-            "TELEGRAM_API_ID",
-            "TELEGRAM_API_HASH",
-            "TELEGRAM_SESSION",
-        ),
-        "manual_gate_names": (
-            "telegram_api_id_creation",
-            "telegram_mtproto_login_code",
-            "telegram_dialog_scope_selection",
-        ),
-    },
-}
-
 CAPABILITY_MODULES = {
     "kubernetes": "aws.eks",
     "network": "aws.vpc",
@@ -353,660 +104,6 @@ CAPABILITY_MODULES = {
     "postgres": "aws.rds-postgres-pgvector",
     "s3": "aws.s3",
     "kafka": "aws.msk",
-}
-
-SOURCE_PROFILES: dict[str, dict[str, Any]] = {
-    "ashby": {
-        "method": "api_token",
-        "default_scopes": ["jobs", "candidates", "interviews"],
-        "provider_permissions": ["jobs read", "candidates read", "interviews read"],
-        "ingress_paths": ["/webhooks/ashby/{install-id}"],
-        "required_refs": ["api_token"],
-        "native_connect": {
-            "kind": "api_token_native_connect",
-            "preflight_path": "/integrations/ashby/connect/preflight",
-            "finalize_path": "/integrations/ashby/connect/finalize",
-            "preflight_payload_fields": ["api_token", "base_url", "org_id"],
-            "payload_fields": [
-                "api_token",
-                "base_url",
-                "org_id",
-                "entities",
-                "webhook_secret",
-            ],
-        },
-    },
-    "aws": {
-        "method": "iam_role",
-        "default_scopes": ["inventory", "cloudtrail", "eventbridge"],
-        "provider_permissions": [
-            "inventory read",
-            "cloudtrail read",
-            "eventbridge read",
-        ],
-        "ingress_paths": [],
-        "required_refs": ["role_arn"],
-        "no_ingress_reason": "Fyralis polls customer-authorized AWS APIs locally.",
-        "native_connect": {
-            "kind": "aws_iam_native_connect",
-            "preflight_path": "/integrations/aws/connect/preflight",
-            "finalize_path": "/integrations/aws/connect/finalize",
-            "payload_fields": [
-                "account_id",
-                "region",
-                "credential_kind",
-                "role_arn",
-                "external_id",
-                "backfill_window_days",
-            ],
-        },
-    },
-    "brex": {
-        "method": "api_token",
-        "default_scopes": ["accounts", "transactions", "cards"],
-        "provider_permissions": ["accounts read", "transactions read", "cards read"],
-        "ingress_paths": ["/webhooks/brex"],
-        "required_refs": ["api_token", "webhook_secret"],
-        "native_connect": {
-            "kind": "api_token_native_connect",
-            "preflight_path": "/integrations/brex/connect/preflight",
-            "finalize_path": "/integrations/brex/connect/finalize",
-            "preflight_payload_fields": ["api_token", "base_url"],
-            "payload_fields": [
-                "api_token",
-                "base_url",
-                "account_ids",
-                "organization_id",
-                "webhook_secret",
-            ],
-        },
-    },
-    "carta": {
-        "method": "oauth",
-        "default_scopes": ["issuer", "securities", "stakeholders"],
-        "provider_permissions": ["issuer read", "securities read", "stakeholders read"],
-        "ingress_paths": [],
-        "required_refs": ["oauth_client", "token_ref"],
-        "no_ingress_reason": "Carta is poll-only from the customer data plane.",
-        "native_connect": {
-            "kind": "access_token_native_connect",
-            "preflight_path": "/integrations/carta/connect/preflight",
-            "finalize_path": "/integrations/carta/connect/finalize",
-            "payload_fields": [
-                "access_token",
-                "base_url",
-                "issuer_id",
-                "firm_id",
-                "client_secret",
-                "refresh_token",
-                "entities",
-            ],
-        },
-    },
-    "deel": {
-        "method": "api_token",
-        "default_scopes": ["workers", "contracts", "payments"],
-        "provider_permissions": ["workers read", "contracts read", "payments read"],
-        "ingress_paths": ["/webhooks/deel"],
-        "required_refs": ["api_token"],
-        "native_connect": {
-            "kind": "api_token_native_connect",
-            "preflight_path": "/integrations/deel/connect/preflight",
-            "finalize_path": "/integrations/deel/connect/finalize",
-            "preflight_payload_fields": ["api_token", "base_url"],
-            "payload_fields": [
-                "api_token",
-                "base_url",
-                "contract_ids",
-                "organization_id",
-                "webhook_secret",
-            ],
-        },
-    },
-    "discord": {
-        "method": "oauth_plus_gateway",
-        "default_scopes": ["pilot-guilds", "approved-channels"],
-        "provider_permissions": ["bot token", "message content intent", "guild read"],
-        "ingress_paths": ["/integrations/discord/callback", "/webhooks/discord"],
-        "required_refs": ["bot_token", "signing_secret"],
-        "native_connect": {
-            "kind": "oauth_gateway_native_connect",
-            "preflight_path": "/integrations/discord/connect/preflight",
-            "finalize_path": "/integrations/discord/connect/finalize",
-            "payload_fields": [
-                "guild_id",
-                "application_id",
-                "approved_channel_ids",
-                "oauth_redirect_url",
-                "events_request_url",
-            ],
-        },
-    },
-    "facebook_pages": {
-        "method": "oauth",
-        "default_scopes": [
-            "pages_show_list",
-            "pages_messaging",
-            "pages_manage_metadata",
-            "pages_read_engagement",
-        ],
-        "provider_permissions": [
-            "pages_show_list",
-            "pages_messaging",
-            "pages_manage_metadata",
-            "pages_read_engagement",
-        ],
-        "ingress_paths": [
-            "/integrations/facebook_pages/callback",
-            "/integrations/facebook_pages/webhook",
-        ],
-        "required_refs": [
-            "oauth_client",
-            "page_access_token",
-            "app_secret",
-            "verify_token",
-        ],
-        "native_connect": {
-            "kind": "oauth_native_connect",
-            "preflight_path": "/integrations/facebook_pages/connect/preflight",
-            "finalize_path": "/integrations/facebook_pages/connect/finalize",
-            "preflight_payload_fields": [
-                "page_id",
-                "oauth_redirect_url",
-                "events_request_url",
-            ],
-            "payload_fields": [
-                "page_id",
-                "installation_id",
-                "oauth_redirect_url",
-                "events_request_url",
-            ],
-        },
-    },
-    "figma": {
-        "method": "oauth",
-        "default_scopes": [
-            "current_user:read",
-            "file_metadata:read",
-            "file_content:read",
-            "file_comments:read",
-            "file_versions:read",
-        ],
-        "provider_permissions": [
-            "current user identity read",
-            "file metadata read",
-            "file document content read",
-            "file comments read",
-            "file version history read",
-        ],
-        "ingress_paths": ["/integrations/figma/oauth/callback"],
-        "required_refs": ["figma_client_secret", "oauth_state_hmac_key"],
-        "native_connect": {
-            "kind": "figma_oauth_file_scoped_connect",
-            "start_path": "/integrations/figma/oauth/start",
-            "status_path": "/integrations/figma/connect/status",
-            "retry_path": "/integrations/figma/connect/retry",
-            "disconnect_path": "/integrations/figma/connect",
-            "payload_fields": ["file_urls", "return_path"],
-        },
-    },
-    "fireflies": {
-        "method": "api_token",
-        "default_scopes": ["transcripts", "meetings"],
-        "provider_permissions": ["transcripts read", "meetings read"],
-        "ingress_paths": ["/webhooks/fireflies"],
-        "required_refs": ["api_token", "webhook_secret"],
-        "native_connect": {
-            "kind": "api_token_native_connect",
-            "preflight_path": "/integrations/fireflies/connect/preflight",
-            "finalize_path": "/integrations/fireflies/connect/finalize",
-            "preflight_payload_fields": ["api_token", "base_url"],
-            "payload_fields": [
-                "api_token",
-                "base_url",
-                "workspace_id",
-                "webhook_secret",
-            ],
-        },
-    },
-    "github": {
-        "method": "oauth",
-        "default_scopes": ["selected-repositories", "pull-requests", "issues"],
-        "provider_permissions": [
-            "repository metadata",
-            "pull requests",
-            "issues",
-            "webhooks",
-        ],
-        "ingress_paths": ["/integrations/github/callback", "/webhooks/github"],
-        "required_refs": ["github_app_private_key", "webhook_secret"],
-        "native_connect": {
-            "kind": "github_app_native_connect",
-            "preflight_path": "/integrations/github/connect/preflight",
-            "finalize_path": "/integrations/github/connect/finalize",
-            "payload_fields": [
-                "installation_id",
-                "organization",
-                "repository_selection",
-                "oauth_redirect_url",
-                "events_request_url",
-            ],
-        },
-    },
-    "gmail": {
-        "method": "dwd",
-        "default_scopes": ["gmail.metadata", "approved-mailboxes"],
-        "provider_permissions": [
-            "Domain-Wide Delegation",
-            "gmail.metadata",
-            "directory users/groups read",
-            "pubsub.topics.attachSubscription",
-        ],
-        "ingress_paths": ["/webhooks/gmail/pubsub"],
-        "required_refs": ["workspace_domain", "admin_email", "dwd_grant_receipt"],
-        "native_connect": {
-            "kind": "google_workspace_dwd",
-            "preflight_path": "/integrations/gmail/connect/preflight",
-            "finalize_path": "/integrations/gmail/connect/finalize",
-            "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
-            "payload_fields": [
-                "workspace_domain",
-                "admin_email",
-                "scope",
-                "inclusion_spec",
-            ],
-            "scope_aliases": ["gmail.metadata"],
-        },
-    },
-    "google-calendar": {
-        "method": "dwd",
-        "default_scopes": ["calendar.readonly", "pilot-calendars"],
-        "provider_permissions": [
-            "Domain-Wide Delegation",
-            "calendar.readonly",
-            "directory users/groups read",
-        ],
-        "ingress_paths": [],
-        "no_ingress_reason": "Google Calendar DWD install is poll-only; no webhook or push watch is configured.",
-        "required_refs": ["workspace_domain", "admin_email", "dwd_grant_receipt"],
-        "native_connect": {
-            "kind": "google_workspace_dwd",
-            "preflight_path": "/integrations/google_calendar/connect/preflight",
-            "finalize_path": "/integrations/google_calendar/connect/finalize",
-            "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
-            "payload_fields": [
-                "workspace_domain",
-                "admin_email",
-                "scope",
-                "inclusion_spec",
-            ],
-            "scope_aliases": ["calendar.readonly"],
-        },
-    },
-    "google-drive": {
-        "method": "dwd",
-        "default_scopes": ["drive.readonly", "shared-drives", "approved-folders"],
-        "provider_permissions": [
-            "Domain-Wide Delegation",
-            "drive.readonly",
-            "directory users/groups read",
-        ],
-        "ingress_paths": ["/webhooks/google_drive/push"],
-        "required_refs": ["workspace_domain", "admin_email", "dwd_grant_receipt"],
-        "native_connect": {
-            "kind": "google_workspace_dwd",
-            "preflight_path": "/integrations/google_drive/connect/preflight",
-            "finalize_path": "/integrations/google_drive/connect/finalize",
-            "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
-            "payload_fields": [
-                "workspace_domain",
-                "admin_email",
-                "scope",
-                "inclusion_spec",
-                "include_shared_drives",
-            ],
-            "scope_aliases": ["drive.readonly"],
-        },
-    },
-    "grafana": {
-        "method": "api_token",
-        "default_scopes": ["dashboards", "alerts", "folders"],
-        "provider_permissions": ["dashboards read", "alerts read", "folders read"],
-        "ingress_paths": ["/webhooks/grafana/events"],
-        "required_refs": ["service_account_token", "base_url", "webhook_secret"],
-        "native_connect": {
-            "kind": "api_token_native_connect",
-            "preflight_path": "/integrations/grafana/connect/preflight",
-            "finalize_path": "/integrations/grafana/connect/finalize",
-            "preflight_payload_fields": ["base_url", "service_account_token", "org_id"],
-            "payload_fields": [
-                "base_url",
-                "service_account_token",
-                "org_id",
-                "webhook_secret",
-            ],
-        },
-    },
-    "gusto": {
-        "method": "oauth",
-        "default_scopes": ["company", "employees", "payroll"],
-        "provider_permissions": ["company read", "employee read", "payroll read"],
-        "ingress_paths": ["/webhooks/gusto"],
-        "required_refs": ["oauth_client", "token_ref"],
-        "native_connect": {
-            "kind": "access_token_native_connect",
-            "preflight_path": "/integrations/gusto/connect/preflight",
-            "finalize_path": "/integrations/gusto/connect/finalize",
-            "payload_fields": [
-                "company_uuid",
-                "access_token",
-                "base_url",
-                "refresh_token",
-                "webhook_verifier_token",
-                "entities",
-            ],
-        },
-    },
-    "hibob": {
-        "method": "api_token",
-        "default_scopes": ["people", "fields", "reports"],
-        "provider_permissions": ["people read", "fields read", "reports read"],
-        "ingress_paths": ["/webhooks/hibob"],
-        "required_refs": ["service_user_id", "service_user_token"],
-        "native_connect": {
-            "kind": "api_token_native_connect",
-            "preflight_path": "/integrations/hibob/connect/preflight",
-            "finalize_path": "/integrations/hibob/connect/finalize",
-            "preflight_payload_fields": [
-                "company_id",
-                "service_user_id",
-                "service_user_token",
-                "base_url",
-            ],
-            "payload_fields": [
-                "company_id",
-                "service_user_id",
-                "service_user_token",
-                "base_url",
-                "entities",
-                "webhook_secret",
-            ],
-        },
-    },
-    "jira": {
-        "method": "api_token",
-        "default_scopes": ["pilot-projects", "issues", "comments"],
-        "provider_permissions": [
-            "read:jira-work",
-            "read:jira-user",
-            "webhook registration",
-        ],
-        "ingress_paths": ["/webhooks/jira/events"],
-        "required_refs": ["api_token", "site_url"],
-        "native_connect": {
-            "kind": "jira_api_token_native_connect",
-            "preflight_path": "/integrations/jira/connect/preflight",
-            "finalize_path": "/integrations/jira/connect/finalize",
-            "preflight_payload_fields": ["base_url", "account_email", "api_token"],
-            "payload_fields": [
-                "base_url",
-                "account_email",
-                "api_token",
-                "project_keys",
-                "webhook_secret",
-            ],
-        },
-    },
-    "linkedin": {
-        "method": "poll",
-        "default_scopes": ["organization", "company-page"],
-        "provider_permissions": [
-            "organization read",
-            "profile read",
-            "rate-limit approval",
-        ],
-        "ingress_paths": [],
-        "required_refs": ["oauth_client", "token_ref"],
-        "no_ingress_reason": "LinkedIn is poll-only from the customer data plane.",
-        "native_connect": {
-            "kind": "access_token_native_connect",
-            "preflight_path": "/integrations/linkedin/connect/preflight",
-            "finalize_path": "/integrations/linkedin/connect/finalize",
-            "preflight_payload_fields": [
-                "organization_urn",
-                "access_token",
-                "base_url",
-            ],
-            "payload_fields": [
-                "organization_urn",
-                "access_token",
-                "base_url",
-                "refresh_token",
-                "entities",
-            ],
-        },
-    },
-    "mercury": {
-        "method": "api_token",
-        "default_scopes": ["organization", "accounts", "transactions"],
-        "provider_permissions": ["accounts read", "transactions read"],
-        "ingress_paths": ["/webhooks/mercury/events"],
-        "required_refs": ["api_token", "webhook_secret"],
-        "native_connect": {
-            "kind": "api_token_native_connect",
-            "preflight_path": "/integrations/mercury/connect/preflight",
-            "finalize_path": "/integrations/mercury/connect/finalize",
-            "preflight_payload_fields": ["api_token", "base_url"],
-            "payload_fields": [
-                "api_token",
-                "base_url",
-                "account_ids",
-                "organization_id",
-                "webhook_secret",
-            ],
-        },
-    },
-    "miro": {
-        "method": "api_token",
-        "default_scopes": ["team", "approved-boards"],
-        "provider_permissions": ["boards read", "team read"],
-        "ingress_paths": [],
-        "required_refs": ["api_token"],
-        "no_ingress_reason": "Miro is poll-only from the customer data plane; provider webhooks are not configured.",
-        "native_connect": {
-            "kind": "api_token_native_connect",
-            "preflight_path": "/integrations/miro/connect/preflight",
-            "finalize_path": "/integrations/miro/connect/finalize",
-            "preflight_payload_fields": ["api_token", "base_url"],
-            "payload_fields": [
-                "api_token",
-                "base_url",
-                "board_ids",
-            ],
-        },
-    },
-    "notion": {
-        "method": "oauth",
-        "default_scopes": ["shared-pages", "shared-databases"],
-        "provider_permissions": ["read content", "read users", "database access"],
-        "ingress_paths": ["/integrations/notion/callback", "/webhooks/notion/events"],
-        "required_refs": ["oauth_client", "token_ref"],
-        "native_connect": {
-            "kind": "oauth_callback_native_connect",
-            "preflight_path": "/integrations/notion/connect/preflight",
-            "finalize_path": "/integrations/notion/connect/finalize",
-            "payload_fields": [
-                "workspace_id",
-                "shared_page_ids",
-                "shared_database_ids",
-                "oauth_redirect_url",
-                "events_request_url",
-                "installation_id",
-            ],
-        },
-    },
-    "quickbooks": {
-        "method": "oauth",
-        "default_scopes": ["company", "accounting", "webhooks"],
-        "provider_permissions": ["accounting read", "company info", "webhooks"],
-        "ingress_paths": ["/webhooks/quickbooks/events"],
-        "required_refs": ["oauth_client", "token_ref", "realm_id"],
-        "native_connect": {
-            "kind": "access_token_native_connect",
-            "preflight_path": "/integrations/quickbooks/connect/preflight",
-            "finalize_path": "/integrations/quickbooks/connect/finalize",
-            "preflight_payload_fields": ["realm_id", "access_token", "base_url"],
-            "payload_fields": [
-                "realm_id",
-                "access_token",
-                "base_url",
-                "refresh_token",
-                "webhook_verifier_token",
-                "entities",
-            ],
-        },
-    },
-    "ramp": {
-        "method": "oauth_client_credentials",
-        "default_scopes": [
-            "transactions",
-            "reimbursements",
-            "cards",
-            "users",
-            "business",
-        ],
-        "provider_permissions": [
-            "transactions read",
-            "reimbursements read",
-            "cards read",
-            "users read",
-            "business read",
-        ],
-        "ingress_paths": ["/webhooks/ramp"],
-        "required_refs": ["access_token_or_client_credentials"],
-        "native_connect": {
-            "kind": "ramp_native_connect",
-            "preflight_path": "/integrations/ramp/connect/preflight",
-            "finalize_path": "/integrations/ramp/connect/finalize",
-            "preflight_payload_fields": [
-                "access_token",
-                "client_id",
-                "client_secret",
-                "scopes",
-                "base_url",
-            ],
-            "payload_fields": [
-                "access_token",
-                "client_id",
-                "client_secret",
-                "base_url",
-                "business_id",
-                "entities",
-                "webhook_verifier_token",
-            ],
-        },
-    },
-    "signal": {
-        "method": "gateway",
-        "default_scopes": ["approved-contacts", "approved-groups"],
-        "provider_permissions": [
-            "linked device session",
-            "approved contacts",
-            "approved groups",
-        ],
-        "ingress_paths": [],
-        "required_refs": ["linked_device_session"],
-        "no_ingress_reason": "Linked-device gateway session runs from the customer cloud.",
-        "native_connect": {
-            "kind": "local_session_native_connect",
-            "preflight_path": "/integrations/signal/connect/preflight",
-            "finalize_path": "/integrations/signal/connect/finalize",
-            "payload_fields": [
-                "account_label",
-                "linked_device_session",
-                "backfill_session",
-                "threads",
-            ],
-        },
-    },
-    "slack": {
-        "method": "oauth",
-        "default_scopes": ["#leadership", "#finance-ops", "#customer-success"],
-        "provider_permissions": [
-            "channels:history",
-            "groups:history",
-            "users:read",
-            "team:read",
-        ],
-        "ingress_paths": ["/integrations/slack/callback", "/webhooks/slack/events"],
-        "required_refs": ["oauth_client", "bot_token", "signing_secret"],
-        "native_connect": {
-            "kind": "oauth_callback_native_connect",
-            "preflight_path": "/integrations/slack/connect/preflight",
-            "finalize_path": "/integrations/slack/connect/finalize",
-            "payload_fields": [
-                "workspace_id",
-                "approved_channel_ids",
-                "oauth_redirect_url",
-                "events_request_url",
-                "installation_id",
-            ],
-        },
-    },
-    "telegram": {
-        "method": "gateway",
-        "default_scopes": ["approved-chats"],
-        "provider_permissions": ["api id", "api hash", "approved chats"],
-        "ingress_paths": [],
-        "required_refs": ["api_id", "api_hash", "live_session"],
-        "no_ingress_reason": "Local MTProto gateway session runs from the customer cloud.",
-        "native_connect": {
-            "kind": "local_session_native_connect",
-            "preflight_path": "/integrations/telegram/connect/preflight",
-            "finalize_path": "/integrations/telegram/connect/finalize",
-            "payload_fields": [
-                "account_label",
-                "api_id",
-                "api_hash",
-                "live_session",
-                "backfill_session",
-                "dialogs",
-            ],
-        },
-    },
-    "whatsapp": {
-        "method": "webhook",
-        "default_scopes": ["business-account", "approved-phone-ids"],
-        "provider_permissions": [
-            "business account read",
-            "messages webhook",
-            "phone id",
-        ],
-        "ingress_paths": ["/integrations/whatsapp/webhook"],
-        "required_refs": ["phone_number_id", "app_secret", "verify_token"],
-        "native_connect": {
-            "kind": "whatsapp_native_connect",
-            "preflight_path": "/integrations/whatsapp/connect/preflight",
-            "finalize_path": "/integrations/whatsapp/connect/finalize",
-            "preflight_payload_fields": [
-                "phone_number_id",
-                "app_secret",
-                "verify_token",
-            ],
-            "payload_fields": [
-                "phone_number_id",
-                "business_account_id",
-                "display_phone_number",
-                "app_secret",
-                "verify_token",
-                "access_token",
-            ],
-        },
-    },
-}
-
-SOURCE_METHODS = {
-    source_id: profile["method"] for source_id, profile in SOURCE_PROFILES.items()
 }
 
 
@@ -2006,9 +1103,11 @@ def _cmd_source_activate(args: argparse.Namespace) -> int:
 
 def _cmd_source_autopilot(args: argparse.Namespace) -> int:
     requested = args.source.strip().lower()
-    source_ids = list(SOURCE_PROFILES) if requested == "all" else [requested]
+    source_ids = list(SOURCE_CONNECTION_SLUGS) if requested == "all" else [requested]
     invalid = [
-        source_id for source_id in source_ids if source_id not in SOURCE_PROFILES
+        source_id
+        for source_id in source_ids
+        if source_id not in SOURCE_CONNECTION_CATALOG
     ]
     if invalid:
         print(f"unsupported source: {', '.join(invalid)}", file=sys.stderr)
@@ -2065,9 +1164,11 @@ def _cmd_source_autopilot(args: argparse.Namespace) -> int:
 
 def _cmd_source_browser_agent(args: argparse.Namespace) -> int:
     requested = str(args.source).strip().lower()
-    source_ids = list(SOURCE_PROFILES) if requested == "all" else [requested]
+    source_ids = list(SOURCE_CONNECTION_SLUGS) if requested == "all" else [requested]
     invalid = [
-        source_id for source_id in source_ids if source_id not in SOURCE_PROFILES
+        source_id
+        for source_id in source_ids
+        if source_id not in SOURCE_CONNECTION_CATALOG
     ]
     if invalid:
         print(f"unsupported source: {', '.join(invalid)}", file=sys.stderr)
@@ -2173,10 +1274,17 @@ def _cmd_source_rehearse_slack(args: argparse.Namespace) -> int:
     return _cmd_source_rehearse(args)
 
 
+def _source_profile(source_id: str) -> dict[str, Any]:
+    """Return a fresh CLI view derived from the immutable source contract."""
+
+    return source_connection_profile(source_id)
+
+
 def _source_rehearsal_profile(source_id: str) -> dict[str, Any]:
-    if source_id in REHEARSAL_PROFILES:
-        return REHEARSAL_PROFILES[source_id]
-    source_profile = SOURCE_PROFILES[source_id]
+    explicit_profile = source_local_rehearsal_profile(source_id)
+    if explicit_profile is not None:
+        return explicit_profile
+    source_profile = _source_profile(source_id)
     ingress_paths = list(source_profile.get("ingress_paths", []))
     callback_path = next((path for path in ingress_paths if "callback" in path), None)
     webhook_path = next((path for path in ingress_paths if "webhook" in path), None)
@@ -2485,7 +1593,7 @@ def _cmd_source_rehearse(args: argparse.Namespace) -> int:
         "browser_agent_run": _source_browser_agent_run(
             args,
             source_id,
-            profile.get("source_profile", SOURCE_PROFILES[source_id]),
+            profile.get("source_profile", _source_profile(source_id)),
         ),
         "automated": _source_rehearsal_automated_steps(source_id, profile),
         "manual_gates": _source_manual_gates(source_id, profile, public_url=public_url),
@@ -2501,7 +1609,7 @@ def _run_source_autopilot(
     args: argparse.Namespace,
     source_id: str,
 ) -> dict[str, Any]:
-    profile = SOURCE_PROFILES[source_id]
+    profile = _source_profile(source_id)
     scopes = _source_scopes(args, profile)
     preauthorized_refs = _source_preauthorized_refs(args, source_id)
     preauthorized_refs_present = bool(preauthorized_refs) or bool(args.credential_ref)
@@ -2941,7 +2049,7 @@ def _generic_source_connection_checklist(
     *,
     public_url: str,
 ) -> dict[str, Any]:
-    source_profile = profile.get("source_profile", SOURCE_PROFILES[source_id])
+    source_profile = profile.get("source_profile", _source_profile(source_id))
     callback, webhook = _source_browser_agent_ingress_urls(
         profile,
         provider_ingress_url=public_url,
@@ -3034,7 +2142,9 @@ def _telegram_session_plan() -> dict[str, Any]:
             "Store live and optional backfill sessions in the customer secret manager.",
             "Select approved dialogs/chats and finalize the installation locally.",
         ],
-        "required_env": list(REHEARSAL_PROFILES["telegram"]["required_env"]),
+        "required_env": list(
+            _source_rehearsal_profile("telegram")["required_env"]
+        ),
         "raw_secret_values_included": False,
     }
 
@@ -3681,7 +2791,11 @@ def _provider_setup_notes(source_id: str) -> list[str]:
     }
     if source_id in notes:
         return notes[source_id]
-    source_profile = SOURCE_PROFILES.get(source_id, {})
+    source_profile = (
+        _source_profile(source_id)
+        if source_id in SOURCE_CONNECTION_CATALOG
+        else {}
+    )
     generic_notes = [
         f"Use the customer-owned {source_id} admin console to approve the connection.",
         "Store credentials in the customer-cloud secret manager or local env file only.",
@@ -3698,9 +2812,11 @@ def _provider_setup_notes(source_id: str) -> list[str]:
 
 def _source_ids_from_args(args: argparse.Namespace) -> tuple[list[str] | None, int]:
     requested = str(args.source).strip().lower()
-    source_ids = list(SOURCE_PROFILES) if requested == "all" else [requested]
+    source_ids = list(SOURCE_CONNECTION_SLUGS) if requested == "all" else [requested]
     invalid = [
-        source_id for source_id in source_ids if source_id not in SOURCE_PROFILES
+        source_id
+        for source_id in source_ids
+        if source_id not in SOURCE_CONNECTION_CATALOG
     ]
     if invalid:
         print(f"unsupported source: {', '.join(invalid)}", file=sys.stderr)
@@ -3725,7 +2841,7 @@ def _source_preauthorized_refs_from_args(
 
 
 def _source_discovery(args: argparse.Namespace, source_id: str) -> dict[str, Any]:
-    profile = SOURCE_PROFILES[source_id]
+    profile = _source_profile(source_id)
     scopes = _source_scopes(args, profile)
     preauthorized_refs = _source_preauthorized_refs(args, source_id)
     credential_ref = _source_credential_ref(args, source_id, preauthorized_refs)
@@ -3777,7 +2893,7 @@ def _source_contract(
     source_id: str,
     discovery: dict[str, Any],
 ) -> dict[str, Any]:
-    profile = SOURCE_PROFILES[source_id]
+    profile = _source_profile(source_id)
     return {
         "schema_version": "fyralis.byoc.source.contract.v1",
         "source": source_id,
@@ -3847,11 +2963,13 @@ def _source_setup_plan(
         "selected_scopes": list(discovery.get("selected_scopes", [])),
         "contract_path": str(_source_contract_path(args.workdir, source_id)),
         "discovery_path": str(_source_discovery_path(args.workdir, source_id)),
-        "automated_actions": _source_automated_steps(SOURCE_PROFILES[source_id]),
+        "automated_actions": _source_automated_steps(
+            _source_profile(source_id)
+        ),
         "browser_agent": _source_browser_agent_recipe(source_id),
         "browser_agent_run": contract.get("browser_agent_run")
-        or _source_browser_agent_run(args, source_id, SOURCE_PROFILES[source_id]),
-        "native_connect": SOURCE_PROFILES[source_id].get("native_connect"),
+        or _source_browser_agent_run(args, source_id, _source_profile(source_id)),
+        "native_connect": _source_profile(source_id).get("native_connect"),
         "provider_actions": list(contract["provider_actions"]),
         "local_agent_actions": list(contract["local_agent_actions"]),
         "human_gates": human_gates,
@@ -3889,7 +3007,7 @@ def _source_apply_result(
     source_id: str,
     plan: dict[str, Any],
 ) -> dict[str, Any]:
-    profile = SOURCE_PROFILES[source_id]
+    profile = _source_profile(source_id)
     scopes = [
         str(scope) for scope in plan.get("selected_scopes", []) if str(scope).strip()
     ] or _source_scopes(args, profile)
@@ -3950,7 +3068,7 @@ def _source_apply_result(
 
 
 def _source_validate_result(args: argparse.Namespace, source_id: str) -> dict[str, Any]:
-    profile = SOURCE_PROFILES[source_id]
+    profile = _source_profile(source_id)
     apply_receipt = _load_optional_json(
         _source_apply_receipt_path(args.workdir, source_id)
     )
@@ -4042,7 +3160,7 @@ def _source_activation_result(
         ]
         if isinstance(connection, dict)
         else []
-    ) or list(SOURCE_PROFILES[source_id]["default_scopes"])
+    ) or list(_source_profile(source_id)["default_scopes"])
     validation = _load_optional_json(
         _source_validation_path(args.workdir, source_id)
     ) or {"status": "failed"}
@@ -4731,7 +3849,7 @@ def _load_preauthorized_ref_manifest(path: Path | None) -> dict[str, dict[str, A
         if not isinstance(raw_value, dict):
             raise ValueError("each source ref manifest entry must be an object")
         source_key = str(source_id).strip().lower()
-        if source_key not in SOURCE_PROFILES:
+        if source_key not in SOURCE_CONNECTION_CATALOG:
             raise ValueError(f"unsupported source in ref manifest: {source_key}")
         entry: dict[str, Any] = {}
         credential_ref = raw_value.get("credential_ref")

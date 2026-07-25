@@ -45,6 +45,9 @@ from services.ingest.integrations.miro.onboarding import (
     finalize_install,
     register_webhook_installation,
 )
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 
 
 log = structlog.get_logger("integrations.miro.oauth")
@@ -128,11 +131,15 @@ def _normalize_board(b: dict[str, Any]) -> dict[str, Any]:
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
     """Verify the API token and enumerate boards for the selector UI."""
-    _tenant_from_request(request)  # auth check
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     api_token, base_url = _require_token(body)
 
-    client = MiroClient(base_url=base_url, api_token=api_token)
+    client = MiroClient(
+        base_url=base_url,
+        api_token=api_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         boards = await client.list_boards()
     except MiroApiError as exc:
@@ -168,7 +175,11 @@ async def connect_finalize(request: Request) -> JSONResponse:
     webhook_secret = (body.get("webhook_secret") or "").strip() or None
 
     # 1. Verify creds + resolve the board set — before any write.
-    client = MiroClient(base_url=base_url, api_token=api_token)
+    client = MiroClient(
+        base_url=base_url,
+        api_token=api_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         raw_boards = await client.list_boards()
     except MiroApiError as exc:

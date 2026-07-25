@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
+from lib.shared.provider_transport import RetryLater, RetryReason
 from services.ingest.integrations.oauth_refresh import (
     REFRESH_CONFIGS,
     OAuthRefreshError,
@@ -144,3 +145,61 @@ async def test_quickbooks_refresh_rotation_persists_new_token():
         )
     assert token.refresh_token == "ROTATED-refresh"
     assert token.refresh_token != "OLD-refresh"
+
+
+async def test_token_endpoint_rate_limit_becomes_durable_retry_later():
+    """A long provider cooldown leaves the worker instead of sleeping/spinning."""
+    config = REFRESH_CONFIGS["quickbooks"]
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "120"},
+            json={"error": "rate_limited"},
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as http:
+        with pytest.raises(RetryLater) as exc:
+            await refresh_access_token(
+                http,
+                config,
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+            )
+
+    assert attempts == 1
+    assert exc.value.request_context.source == "quickbooks"
+    assert exc.value.request_context.operation == "oauth.token.refresh"
+    assert exc.value.reason is RetryReason.RATE_LIMIT
+    assert exc.value.retry_after_seconds == 120
+
+
+async def test_unbound_token_request_fails_closed_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A direct token exchange cannot silently bypass transport in production."""
+    monkeypatch.setenv("FYRALIS_ENV", "production")
+    config = REFRESH_CONFIGS["quickbooks"]
+
+    async with _mock_http(
+        200,
+        {"access_token": "must-not-be-used", "expires_in": 3600},
+        {},
+    ) as http:
+        with pytest.raises(
+            RuntimeError,
+            match="requires ProviderTransport in production",
+        ):
+            await refresh_access_token(
+                http,
+                config,
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+            )

@@ -163,8 +163,7 @@ def _drive_file(fid: str, name: str, owner: str, version: int, *,
 
 
 def build_org():
-    """Construct the WorkspaceOrg fixture for acme.example."""
-    from services.ingest.synthetic.mock_servers.google_workspace import WorkspaceOrg
+    """Construct the canonical Provider Lab fixture for acme.example."""
 
     now = datetime.now(timezone.utc)
     now_ms = int(now.timestamp() * 1000)
@@ -256,11 +255,20 @@ def build_org():
         },
     }
 
-    return WorkspaceOrg(
-        domain=_DOMAIN, users=users, groups=groups, group_members=group_members,
-        org_units=org_units, gmail=gmail, calendar=calendar, drive_my=drive_my,
-        shared_drives=shared_drives, drive_shared=drive_shared,
-    )
+    return {
+        "domain": _DOMAIN,
+        "users": users,
+        "groups": groups,
+        "group_members": group_members,
+        "org_units": org_units,
+        "gmail": gmail,
+        "calendar": calendar,
+        "drive_my": drive_my,
+        "shared_drives": shared_drives,
+        "drive_shared": drive_shared,
+        "start_page_token": "spt-1",
+        "new_start_page_token": "spt-2",
+    }
 
 
 # =====================================================================
@@ -362,7 +370,7 @@ async def _seed_gmail_install(pool: asyncpg.Pool, org, emails: list[str]) -> UUI
         json.dumps(_INCLUSION_SPEC), len(emails),
     )
     for email in emails:
-        hist = str(org.gmail.get(email, {}).get("history_id", "1"))
+        hist = str(org["gmail"].get(email, {}).get("history_id", "1"))
         await pool.execute(
             """INSERT INTO gmail_mailbox_watches
                  (id, tenant_id, gmail_installation_id, email_address,
@@ -416,10 +424,45 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
     from services.ingest.integrations.gmail.dwd import get_minter
     from services.ingest.integrations.gmail.directory import resolve_inclusion
     from services.ingest.integrations.google_drive.client import GoogleDriveClient, resolve_scope
-    from services.ingest.synthetic.mock_servers.google_workspace import start_mock_workspace
+    from services.ingest.synthetic.provider_lab.server import start_provider_lab
 
     org = build_org()
-    server, env = start_mock_workspace(org)
+    server = start_provider_lab(
+        {
+            "gmail": [
+                {
+                    "directory": {
+                        "domain": org["domain"],
+                        "users": org["users"],
+                        "groups": org["groups"],
+                        "group_members": org["group_members"],
+                        "org_units": org["org_units"],
+                    },
+                    "mailboxes": org["gmail"],
+                }
+            ],
+            "google_calendar": [org["calendar"]],
+            "google_drive": [
+                {
+                    "drive_my": org["drive_my"],
+                    "shared_drives": org["shared_drives"],
+                    "drive_shared": org["drive_shared"],
+                    "start_page_token": org["start_page_token"],
+                    "new_start_page_token": org["new_start_page_token"],
+                }
+            ],
+        }
+    )
+    env = {
+        "PROVIDER_LAB_URL": server.base_url,
+        "GOOGLE_TOKEN_URI": server.url("gmail", "/token"),
+        "GOOGLE_DIRECTORY_BASE_URL": server.url(
+            "gmail", "/admin/directory/v1"
+        ),
+        "GMAIL_API_BASE_URL": server.url("gmail", "/gmail/v1"),
+        "GOOGLE_CALENDAR_API_BASE_URL": server.url("google_calendar"),
+        "GOOGLE_DRIVE_API_BASE_URL": server.url("google_drive"),
+    }
     sa_path = _write_fake_sa(env["GOOGLE_TOKEN_URI"])
 
     # Snapshot + apply env so we can restore afterward.
@@ -445,7 +488,13 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
         await _bootstrap_schema(pool)
 
         # -- 1. DWD directory resolution (Admin SDK), shared across all 3 sources.
-        http = GoogleHttpClient(get_minter())
+        http = GoogleHttpClient(
+            get_minter(),
+            source="gmail",
+            tenant_id=str(_TENANT_ID),
+            allow_unlimited_local=True,
+            require_tenant_installation=False,
+        )
         await http.__aenter__()
         try:
             directory = DirectoryClient(http, _ADMIN)
@@ -459,8 +508,20 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
             assert "dave@acme.example" not in resolved, "opt-out not subtracted"
             assert "erin@acme.example" not in resolved, "suspended user not filtered"
 
-            # Shared-drive enumeration uses the SA impersonating the first user.
-            drive_client = GoogleDriveClient(http, scope=resolve_scope("drive.readonly"))
+            # Shared-drive enumeration uses the same SA/minter, bound to the
+            # Drive source contract so operation policy resolution is exact.
+            drive_http = GoogleHttpClient(
+                get_minter(),
+                source="google_drive",
+                tenant_id=str(_TENANT_ID),
+                allow_unlimited_local=True,
+                require_tenant_installation=False,
+            )
+            await drive_http.__aenter__()
+            drive_client = GoogleDriveClient(
+                drive_http,
+                scope=resolve_scope("drive.readonly"),
+            )
         finally:
             pass  # keep http open; drive_client shares it for shared-drive enum
 
@@ -490,12 +551,13 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
         )
         assert len(drive_targets.my_drives) == 3, "one My Drive per resolved user"
         assert len(drive_targets.shared_drives) == 1, "one Shared Drive enumerated"
-        await finalize_drive(
+        drive_install = await finalize_drive(
             pool, tenant_id=_TENANT_ID, workspace_domain=_DOMAIN,
             service_account_email=_SA_EMAIL, targets=drive_targets.all(),
             inclusion_spec=_INCLUSION_SPEC, include_shared_drives=True,
         )
         gmail_install = await _seed_gmail_install(pool, org, resolved)
+        await drive_http.__aexit__(None, None, None)
         await http.__aexit__(None, None, None)
 
         # -- 3. Plan shards exactly as SourceOnboarding does (loader SQL → planner).
@@ -503,16 +565,29 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
         from services.ingest.ingestion.planners.gmail import plan_shards_gmail
         from services.ingest.ingestion.planners.google_calendar import plan_shards_google_calendar
         from services.ingest.ingestion.planners.google_drive import plan_shards_google_drive
-        from services.ingest.ingestion.workflows.source_onboarding import (
-            _LOAD_GCAL_INSTALL_SQL, _LOAD_GDRIVE_INSTALL_SQL, _LOAD_GMAIL_INSTALL_SQL,
-        )
+        from services.ingest.ingestion.installations import load_source_installation
 
         def _ctx(row):
             return PlannerContext(tenant_id=_TENANT_ID, install=row, conn=None, source_client=None)
 
-        gmail_row = await pool.fetchrow(_LOAD_GMAIL_INSTALL_SQL, _TENANT_ID)
-        cal_row = await pool.fetchrow(_LOAD_GCAL_INSTALL_SQL, _TENANT_ID)
-        drive_row = await pool.fetchrow(_LOAD_GDRIVE_INSTALL_SQL, _TENANT_ID)
+        gmail_row = await load_source_installation(
+            pool,
+            source="gmail",
+            tenant_id=_TENANT_ID,
+            installation_id=gmail_install,
+        )
+        cal_row = await load_source_installation(
+            pool,
+            source="google_calendar",
+            tenant_id=_TENANT_ID,
+            installation_id=cal_install,
+        )
+        drive_row = await load_source_installation(
+            pool,
+            source="google_drive",
+            tenant_id=_TENANT_ID,
+            installation_id=drive_install,
+        )
 
         gmail_shards = await plan_shards_gmail(_ctx(gmail_row))
         cal_shards = await plan_shards_google_calendar(_ctx(cal_row))
@@ -564,10 +639,18 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
         # Per-user impersonation: each mailbox was minted+read under its OWN
         # bearer (the mock counts a token mint per impersonated user).
         for email in _EXPECTED_USERS:
-            assert server.request_hits.get(f"token:{email}", 0) > 0, (
+            assert server.request_count(
+                source="gmail",
+                route_id="gmail.token",
+                scope=email,
+            ) > 0, (
                 f"no DWD token minted for {email} — impersonation collapsed"
             )
-            assert server.request_hits.get(f"gmail.list:{email}", 0) > 0, (
+            assert server.request_count(
+                source="gmail",
+                route_id="gmail.messages_list",
+                scope=email,
+            ) > 0, (
                 f"mailbox {email} never listed"
             )
 
@@ -605,7 +688,7 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
 
         # Cross-path dedup: re-ingesting an already-seen calendar event no-ops.
         from services.ingest.ingestion.core import ingest
-        twin = dict(org.calendar["bob@acme.example"]["events"][0])
+        twin = dict(org["calendar"]["bob@acme.example"]["events"][0])
         twin["_fyralis_calendar_id"] = "bob@acme.example"
         twin["_fyralis_owner_email"] = "bob@acme.example"
         res = await ingest("google_calendar:event", twin, pool=pool, tenant_id=_TENANT_ID)
@@ -620,7 +703,8 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
             print(f"\n  gmail={gmail_n} calendar={cal_n} drive={drive_n} total={total}")
             print(f"  resolved users: {resolved}")
             print("  token mints per user: " + ", ".join(
-                f"{u}={server.request_hits.get(f'token:{u}', 0)}" for u in _EXPECTED_USERS))
+                f"{u}={server.request_count(source='gmail', route_id='gmail.token', scope=u)}"
+                for u in _EXPECTED_USERS))
             print("  ALL CHECKS PASSED")
     finally:
         await pool.close()

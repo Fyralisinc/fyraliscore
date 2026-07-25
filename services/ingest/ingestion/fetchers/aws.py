@@ -44,8 +44,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from services.ingest.integrations.aws.client import AwsApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -204,24 +203,14 @@ async def fetch_page_aws(
 
     client, close = await _open_aws_client(install)
     try:
-        try:
-            page = await client.list_events(
-                account_id=account_id,
-                region=region,
-                from_ms=cur.floor_ms,
-                to_ms=cur.to_ms,
-                cursor=cur.events_cursor,
-                limit=page_size,
-            )
-        except AwsApiError as exc:
-            if getattr(exc, "code", None) == "aws_api_throttled":
-                # Retry budget spent — leave the cursor unadvanced, end this
-                # round empty so ShardFetch re-enters next tick.
-                log.info("aws_backfill_throttled")
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur), end_of_data=False,
-                )
-            raise
+        page = await client.list_events(
+            account_id=account_id,
+            region=region,
+            from_ms=cur.floor_ms,
+            to_ms=cur.to_ms,
+            cursor=cur.events_cursor,
+            limit=page_size,
+        )
 
         events = page.get("events") or []
         next_cursor = page.get("next_cursor")
@@ -260,7 +249,6 @@ async def fetch_page_aws(
         await close()
 
 
-FETCHER_DISPATCH["aws"] = fetch_page_aws
 
 
 __all__ = [

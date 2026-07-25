@@ -46,11 +46,13 @@ from services.ingest.ingestion.shadow_write import (
     shadow_write_raw,
 )
 from services.ingest.integrations.whatsapp.signature import verify_signature
+from services.ingest.source_contract import dedicated_ingress_definition
 
 
 log = structlog.get_logger("whatsapp.webhook")
 
-_WEBHOOK_PATH = "/integrations/whatsapp/webhook"
+_INGRESS = dedicated_ingress_definition("whatsapp_webhook")
+_WEBHOOK_PATH = _INGRESS.route_path
 
 
 # --------------------------------------------------------------------------- #
@@ -299,8 +301,8 @@ async def _publish_items_kafka(
             raw_body = json.dumps(item, separators=(",", ":")).encode("utf-8")
             await shadow_write_raw(
                 tenant_id=tenant_id,
-                source="whatsapp",  # type: ignore[arg-type]  — in SourceLiteral
-                ingress_kind="webhook",
+                source=_INGRESS.source_id,  # type: ignore[arg-type]
+                ingress_kind=_INGRESS.ingress_kind,
                 raw_body=raw_body,
                 s3_client=s3_client,
                 kafka_producer=kafka_producer,
@@ -549,8 +551,15 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
 
         # Inline path (default, or Kafka fallback — idempotent via external_id dedup).
         results: list[dict[str, Any]] = []
+        assert _INGRESS.channel is not None
         for item in items:
-            r = await _ingest_item(deps, tenant_id, "whatsapp:message", item, headers)
+            r = await _ingest_item(
+                deps,
+                tenant_id,
+                _INGRESS.channel,
+                item,
+                headers,
+            )
             if r:
                 results.append(r)
         log.info(

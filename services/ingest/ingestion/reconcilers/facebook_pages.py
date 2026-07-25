@@ -9,7 +9,6 @@ from uuid import UUID
 import asyncpg
 
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
 )
 from services.ingest.ingestion.workflows.state import load_state
@@ -133,7 +132,6 @@ async def reconcile_facebook_pages(
     )
 
 
-RECONCILER_DISPATCH["facebook_pages"] = reconcile_facebook_pages
 
 
 __all__ = ["reconcile_facebook_pages", "set_pool_provider"]

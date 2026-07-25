@@ -98,7 +98,11 @@ async def _migrate_and_truncate(pool: asyncpg.Pool) -> None:
                AND c.relispartition = FALSE
             """
         )
-        names = ", ".join(f'"{r["relname"]}"' for r in rows)
+        names = ", ".join(
+            f'"{r["relname"]}"'
+            for r in rows
+            if r["relname"] != "ingestion_source_catalog"
+        )
         if names:
             await conn.execute(f"TRUNCATE {names} RESTART IDENTITY CASCADE")
 

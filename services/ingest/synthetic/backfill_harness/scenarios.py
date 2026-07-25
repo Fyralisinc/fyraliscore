@@ -1,8 +1,8 @@
 """BackfillScenario configuration.
 
 One scenario describes a single tenant's synthetic install + backfill:
-which source, what fixture shape to build, what FaultProfile applies
-to the per-source client, and the expected observation count (for
+which source, what fixture shape to build, what Provider Lab fault profile
+applies, and the expected observation count (for
 assertion validation).
 """
 from __future__ import annotations
@@ -11,17 +11,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from services.ingest.synthetic.fault_profiles import HAPPY_PATH, FaultProfile
+from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
 
 
-# Sources the harness supports. Mirrors the M6 dispatch keys — all 25
-# production ingestion sources (RawEnvelope.SourceLiteral).
-_VALID_SOURCES = frozenset((
-    "gmail", "slack", "github", "discord", "google_calendar",
-    "google_drive", "jira", "mercury", "notion", "quickbooks", "grafana",
-    "telegram", "brex", "ramp", "gusto", "deel",
-    "fireflies", "signal", "aws", "miro", "figma", "carta",
-    "hibob", "ashby", "linkedin", "whatsapp", "facebook_pages",
-))
+# A backfill scenario is valid only for sources whose contract declares
+# history. This automatically includes Facebook Pages and deliberately
+# excludes live-only WhatsApp.
+_VALID_SOURCES = frozenset(
+    source.source_id for source in SOURCE_DEFINITIONS if source.history is not None
+)
 
 
 @dataclass(frozen=True)
@@ -40,7 +38,7 @@ class BackfillScenario:
         for Gmail, {"team_id": "T1", "channels": 2,
         "messages_per_channel": 50} for Slack.
       fault_profile:
-        FaultProfile applied to the mock client serving this tenant.
+        FaultProfile translated to deterministic Provider Lab faults.
         Default HAPPY_PATH.
       expected_observation_count:
         Sum of all records the fixture will yield through the M6 chain.

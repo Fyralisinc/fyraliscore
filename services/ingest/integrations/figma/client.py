@@ -16,7 +16,6 @@ comments into the handler's existing event shape.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -26,6 +25,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import FigmaApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -36,15 +49,6 @@ _DEFAULT_TIMEOUT_S = 30.0
 _DEFAULT_PAGE_SIZE = 50
 _MAX_VERSION_PAGE_SIZE = 50
 _OAUTH_REFRESH_SKEW_S = 5 * 60
-
-
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
 
 
 class FigmaClient:
@@ -66,6 +70,11 @@ class FigmaClient:
         install_row_id: Any | None = None,
         refresh_secret_ref: str | None = None,
         token_expires_at: Any | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         if auth_kind not in {"pat", "oauth"}:
             raise ValueError("figma auth_kind must be 'pat' or 'oauth'")
@@ -83,6 +92,25 @@ class FigmaClient:
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="figma",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(install_row_id) if install_row_id is not None else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -140,6 +168,7 @@ class FigmaClient:
             expected_access_ref=self._secret_ref,
             force=force,
             http_client=self._httpx(),
+            provider_binding=self._provider,
         )
         if result is None:
             return None
@@ -167,41 +196,70 @@ class FigmaClient:
         *,
         params: dict[str, Any] | None = None,
         url: str | None = None,
+        operation: str,
     ) -> dict[str, Any]:
         from services.ingest.integrations.figma import metrics
 
         target = url or f"{self._api_base_url}{path}"
-        max_attempts = int(os.environ.get("FIGMA_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("FIGMA_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
         refresh_attempted = False
         refreshed_token: str | None = None
         log_path = path or urlsplit(target).path
         while True:
-            attempt += 1
-            if attempt == 1 and self._oauth_refresh_due():
+            if not refresh_attempted and self._oauth_refresh_due():
                 refreshed_token = await self._refresh_oauth_token(force=False)
             token = refreshed_token or await self._token()
             headers = await self._headers(token)
-            try:
-                response = await client.request(
-                    method, target, headers=headers, params=params,
-                )
-            except httpx.TransportError as exc:
-                metrics.record_request("error")
-                raise FigmaApiError(
-                    "transport error calling figma",
-                    code="figma_api_error",
-                    context={"error_type": type(exc).__name__, "path": log_path},
-                ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
-                metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
+            async def _once() -> httpx.Response:
+                try:
+                    response = await client.request(
+                        method,
+                        target,
+                        headers=headers,
+                        params=params,
+                    )
+                except httpx.TimeoutException as exc:
+                    metrics.record_request("error")
+                    raise ProviderTimeoutError(
+                        "Figma request timed out",
+                        source="figma",
+                        operation=operation,
+                        error_type=type(exc).__name__,
+                    ) from exc
+                except httpx.TransportError as exc:
+                    metrics.record_request("error")
+                    raise ProviderTransientError(
+                        "Figma transport error",
+                        source="figma",
+                        operation=operation,
+                        error_type=type(exc).__name__,
+                    ) from exc
+
+                if response.status_code == 429:
+                    metrics.record_request("rate_limited")
+                    raise ProviderRateLimited(
+                        "Figma rate limit",
+                        retry_after_seconds=parse_retry_after(
+                            response.headers.get("Retry-After"),
+                        ),
+                        status_code=429,
+                        header_parser_id="http.retry_after",
+                        source="figma",
+                        operation=operation,
+                    )
+                if response.status_code >= 500:
+                    metrics.record_request("error")
+                    raise ProviderTransientError(
+                        f"Figma returned HTTP {response.status_code}",
+                        source="figma",
+                        operation=operation,
+                        http_status=response.status_code,
+                    )
+                return response
+
+            response = await self._provider.execute(operation, _once)
 
             if response.status_code // 100 == 2:
                 metrics.record_request("ok")
@@ -241,7 +299,9 @@ class FigmaClient:
                 code="figma_api_error",
             )
         projects_body = await self._request(
-            "GET", f"/v1/teams/{quote(tid, safe='')}/projects",
+            "GET",
+            f"/v1/teams/{quote(tid, safe='')}/projects",
+            operation="teams.projects.list",
         )
         projects = _extract_list(projects_body, "projects")
         files: list[dict[str, Any]] = []
@@ -250,7 +310,9 @@ class FigmaClient:
             if not project_id:
                 continue
             body = await self._request(
-                "GET", f"/v1/projects/{quote(project_id, safe='')}/files",
+                "GET",
+                f"/v1/projects/{quote(project_id, safe='')}/files",
+                operation="projects.files.list",
             )
             for item in _extract_list(body, "files"):
                 item.setdefault("project_id", project_id)
@@ -261,7 +323,11 @@ class FigmaClient:
 
     async def get_current_user(self) -> dict[str, Any]:
         """`GET /v1/me` — identify the OAuth grant holder."""
-        return await self._request("GET", "/v1/me")
+        return await self._request(
+            "GET",
+            "/v1/me",
+            operation="users.me.get",
+        )
 
     async def get_file(
         self, file_key: str, *, depth: int | None = None,
@@ -270,6 +336,7 @@ class FigmaClient:
         return await self._request(
             "GET", f"/v1/files/{quote(file_key, safe='')}",
             params={"depth": depth} if depth is not None else None,
+            operation="files.get",
         )
 
     async def list_events(
@@ -312,18 +379,30 @@ class FigmaClient:
     async def _list_versions(self, file_key: str) -> list[dict[str, Any]]:
         path = f"/v1/files/{quote(file_key, safe='')}/versions"
         params: dict[str, Any] = {"page_size": _MAX_VERSION_PAGE_SIZE}
-        body = await self._request("GET", path, params=params)
+        body = await self._request(
+            "GET",
+            path,
+            params=params,
+            operation="file_versions.list",
+        )
         out = _extract_list(body, "versions")
         next_url = _pagination_next(body)
         while next_url:
-            body = await self._request("GET", "", url=next_url)
+            body = await self._request(
+                "GET",
+                "",
+                url=next_url,
+                operation="file_versions.list",
+            )
             out.extend(_extract_list(body, "versions"))
             next_url = _pagination_next(body)
         return out
 
     async def _list_comments(self, file_key: str) -> list[dict[str, Any]]:
         body = await self._request(
-            "GET", f"/v1/files/{quote(file_key, safe='')}/comments",
+            "GET",
+            f"/v1/files/{quote(file_key, safe='')}/comments",
+            operation="file_comments.list",
         )
         return _extract_list(body, "comments")
 
@@ -444,16 +523,6 @@ def _api_error_from_response(
             "figma 404: file/resource not found or not visible to the token",
             code="figma_api_not_found",
             context={"http_status": status, "path": path},
-        )
-    if status == 429:
-        return FigmaApiError(
-            "figma rate limit (429), retry budget exhausted",
-            code="figma_api_rate_limited",
-            context={
-                "http_status": 429,
-                "retry_after": response.headers.get("Retry-After"),
-                "path": path,
-            },
         )
     return FigmaApiError(
         f"figma returned {status}",

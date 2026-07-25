@@ -51,8 +51,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from services.ingest.integrations.linkedin.client import LinkedinApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -182,29 +181,21 @@ async def fetch_page_linkedin(
 
     client, close = await _open_linkedin_client(install)
     try:
-        try:
-            if entity_type == "post":
-                return await _fetch_posts_page(client, cur, organization_urn)
-            if entity_type in _STATISTICS_TYPES:
-                return await _fetch_statistics(
-                    client, cur, organization_urn, entity_type,
-                )
-            log.warning(
-                "linkedin_backfill_unknown_entity_type",
-                extra={"entity_type": entity_type},
+        # RetryLater must reach shard_fetch so it persists next_attempt_at
+        # instead of hot-looping an empty page with an unchanged cursor.
+        if entity_type == "post":
+            return await _fetch_posts_page(client, cur, organization_urn)
+        if entity_type in _STATISTICS_TYPES:
+            return await _fetch_statistics(
+                client, cur, organization_urn, entity_type,
             )
-            return FetchResult(
-                records=[], next_cursor=_encode_cursor(cur), end_of_data=True,
-            )
-        except LinkedinApiError as exc:
-            if getattr(exc, "code", None) == "linkedin_api_rate_limited":
-                log.info("linkedin_backfill_rate_limited",
-                         extra={"entity_type": entity_type})
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        log.warning(
+            "linkedin_backfill_unknown_entity_type",
+            extra={"entity_type": entity_type},
+        )
+        return FetchResult(
+            records=[], next_cursor=_encode_cursor(cur), end_of_data=True,
+        )
     finally:
         await close()
 
@@ -287,7 +278,6 @@ async def _fetch_statistics(
     )
 
 
-FETCHER_DISPATCH["linkedin"] = fetch_page_linkedin
 
 
 __all__ = [

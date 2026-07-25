@@ -4,7 +4,7 @@ The Verifier Protocol is the contract every per-provider signature
 module satisfies. Adding a new provider (Twilio, Shopify, …) means
 adding a new function under `services/app/webhooks/signatures/` that
 satisfies this Protocol and is registered in
-`services/app/webhooks/signatures/__init__.py::VERIFIERS`.
+the provider ingress contract.
 
 Verification operates on literal bytes — the router captures the
 request body before any JSON decode so providers that sign whitespace
@@ -127,7 +127,7 @@ class Verifier(Protocol):
     """Per-provider signature verifier.
 
     Implementations live under `services/app/webhooks/signatures/` and
-    are registered in `services/app/webhooks/signatures/__init__.py::VERIFIERS`.
+    are referenced by the immutable provider ingress contract.
 
     Contract:
 

@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS slack_dm_installations (
   -- The consenting user's Slack id (U…). DMs this user participates in become
   -- visible to us via their user token.
   user_id TEXT NOT NULL,
-  -- Slack Web API base for this install (prod or the local spammer/mock base);
+  -- Slack Web API base for this install (production or explicit Provider Lab URL);
   -- mirrors how _build_source_client resolves the endpoint. NULL → resolver default.
   base_url TEXT,
   -- Opaque pointer into encrypted_secrets for the user token (xoxp). The raw

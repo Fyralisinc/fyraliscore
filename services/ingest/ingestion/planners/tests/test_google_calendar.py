@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_planner
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.google_calendar import (
     SHARD_KIND_EVENTS,
@@ -71,4 +71,4 @@ async def test_calendars_as_native_list():
 
 
 async def test_dispatch_wired():
-    assert PLANNER_DISPATCH["google_calendar"] is plan_shards_google_calendar
+    assert resolve_planner("google_calendar") is plan_shards_google_calendar

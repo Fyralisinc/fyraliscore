@@ -33,7 +33,6 @@ from lib.shared.errors import ValidationError
 from services.ingest.ingestion.handlers import (
     HandlerError,
     ObservationDraft,
-    register,
 )
 
 
@@ -325,7 +324,6 @@ _TYPE_SHAPERS = {
 }
 
 
-@register(_CHANNEL)
 async def handle_linear_webhook(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:

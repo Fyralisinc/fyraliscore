@@ -14,22 +14,22 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.manage_dedicated_source_installations import (  # noqa: E402
-    SPECS as DEDICATED_SOURCE_SPECS,
-)
-from scripts.manage_dedicated_source_installations import (  # noqa: E402
     build_parser as build_dedicated_lifecycle_parser,
 )
 from scripts.manage_source_installations import (  # noqa: E402
     build_parser as build_generic_lifecycle_parser,
 )
 from services.ingest.ingestion.kafka.topics import INGESTION_SOURCES  # noqa: E402
+from services.ingest.source_contract import (  # noqa: E402
+    INSTALLATION_MANAGEMENT_CATALOG as DEDICATED_SOURCE_SPECS,
+    SOURCE_DEFINITIONS,
+)
 
 
-GENERIC_PROVIDER_INSTALLATION_SOURCES: tuple[str, ...] = (
-    "slack",
-    "github",
-    "discord",
-    "notion",
+GENERIC_PROVIDER_INSTALLATION_SOURCES: tuple[str, ...] = tuple(
+    source.source_id
+    for source in SOURCE_DEFINITIONS
+    if source.source_id not in DEDICATED_SOURCE_SPECS
 )
 REQUIRED_LIFECYCLE_COMMANDS: frozenset[str] = frozenset(
     {"status", "pause", "resume", "uninstall", "rotate-secret"}

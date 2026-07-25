@@ -58,8 +58,9 @@ re-write is a no-op PutIfAbsent (same content_hash → same key) and
 the re-published pointer is deduped by the idempotent producer +
 the observation UNIQUE index. The N1 primitive's contract is
 UNCHANGED — it still receives opaque `KafkaMessage` bytes and owns
-the publish→flush→advance barrier. S3 failures propagate as
-exceptions and mark the shard 'failed' per A19.
+the publish→flush→advance barrier. S3 failures become durable
+recoverable retries; they never advance the cursor or discard the
+shard's remaining history.
 
 If the N1 primitive's contract is wrong for this use, that is a
 substrate finding (per the M6.2a prompt's discipline: "If the
@@ -132,10 +133,10 @@ concurrent replicas are safe under either.
         1. `claim_signals(conn, ...)` — SKIP LOCKED on the inbox.
         2. `_claim_shard_for_fetch(conn, shard_id)` — UPDATE
            onboarding_shards SET state='in_progress' WHERE id=$1
-           AND state='pending'. Returns True iff this caller's
-           UPDATE matched (won the race vs. another replica).
-        3. `_bootstrap_workflow_state(conn, shard_id)` — INSERT
-           the N1 home row.
+           AND state='pending'; atomically set owner/expiry and increment
+           `lease_version`. Returns the winning lease generation.
+        3. `_bootstrap_workflow_state(conn, lease)` — owner/version-fenced
+           INSERT of the N1 home row.
       All three commit atomically as the signal-claim transaction.
 
   (b) **Orphan-scan claim** (`_scan_and_resume_orphans`). Used to
@@ -143,43 +144,41 @@ concurrent replicas are safe under either.
       mechanism:
         1. `_load_orphan_shards(pool, lease_timeout, limit)` —
            LEFT JOIN onboarding_shards ⨝ workflow_states; find
-           rows where state='in_progress' AND
-           (workflow_states.last_advanced_at IS NULL OR
-            < now() - lease_timeout).
+           rows where state='in_progress', retry is due, and both the
+           explicit shard lease and workflow heartbeat are stale.
         2. For each: `_refresh_shard_lease(conn, shard_id)` —
-           UPDATE onboarding_shards SET started_at=now() WHERE
-           id=$1 AND state='in_progress'. Returns True iff this
-           caller's UPDATE matched.
+           atomically acquire only an expired row, set owner/expiry, and
+           increment `lease_version`.
         3. Run the fetch loop (which calls `load_state` to read
            the persisted cursor; if no row, the fetch loop
            defensively bootstraps).
 
-The two mechanisms NEVER produce double-fetches:
+The two mechanisms prevent concurrent commits:
   - In (a), state='pending' guard prevents claiming a shard
     already 'in_progress' (which would be served by mechanism (b)
     on a different replica).
-  - In (b), the lease-timeout filter prevents claiming a shard
-    whose owner is still actively advancing (their N1 advance
-    updates last_advanced_at, refreshing the lease).
-  - Concurrent replicas on either mechanism: SKIP LOCKED + the
-    state='in_progress' / state='pending' guards ensure exactly
-    one UPDATE matches per shard.
+  - A background heartbeat refreshes the explicit lease throughout slow
+    provider calls, bounded client waits, S3 writes, and Kafka flushes.
+  - Every cursor, retry, done, failed, and bootstrap mutation matches both
+    `lease_owner` and `lease_version`; cursor commits row-lock the shard
+    generation against a concurrent reclaim.
+  - A stale worker may duplicate an idempotent S3/Kafka publish if handoff
+    happens after upstream I/O, but it cannot advance the cursor or terminate
+    the shard.
 
 The lease timeout (`lease_timeout_seconds`, default 30s) is the
-tunable knob. Tighter = faster orphan recovery, more risk of
-double-claim under slow advances. Looser = safer for slow
-fetchers (e.g., rate-limited per-source APIs), longer worst-case
-recovery time. Tests use 0.01-0.3s; production at 30s; M6.3-M6.6
-per-source fetchers may want longer if their natural fetch
-latency approaches the timeout.
+tunable knob. Tighter means faster crash recovery and more heartbeat
+traffic; looser means a longer worst-case handoff. Provider latency does
+not itself force a larger lease because the heartbeat runs independently.
 
 ============================================================
 RESTART RESUMPTION (where the two mechanisms compose)
 ============================================================
 On SIGTERM/SIGKILL mid-fetch, the durable surfaces are:
   - `onboarding_shards.state = 'in_progress'`.
+  - `onboarding_shards.(lease_owner, lease_version, lease_expires_at)`.
   - `workflow_states.state_data["cursor"]` — most-recent N1 advance.
-  - `workflow_states.last_advanced_at` — N1 heartbeat.
+  - `workflow_states.last_advanced_at` — cursor-progress timestamp.
 
 A restart's first tick(): mechanism (a) sees an empty inbox (the
 signal was consumed at first claim); mechanism (b) sees the
@@ -205,52 +204,60 @@ PATTERN-ALIGNMENT MAPPING
     or `await self._kafka_producer.X(...)` in class bodies.
 
   Rule 2 (state in Postgres, not memory):
-    `state.persist_state` to bootstrap; the N1 primitive's
-    `advance_cursor_atomic_with_kafka_publish` for every cursor
-    advance. The shard's state column is the surviving anchor.
+    A lease-fenced bootstrap creates the state row; the N1 primitive publishes
+    and flushes every page before its final state update, which ShardFetch
+    replaces with an owner/version-fenced executor.
 
   Rule 3 (retry in named functions):
-    None at this granularity. The fetch loop has no `try ... await
-    asyncio.sleep ...` retry shape. Per-source retry (rate-limit
-    backoff, 5xx) is the per-source fetcher's concern; M6.3-M6.6
-    will wrap with named retry helpers from
-    `services.ingest.ingestion.workflows.retry`.
+    The fetch loop never sleeps for a durable cooldown. `RetryLater` and
+    recoverable infrastructure failures flow through
+    `_schedule_retry_for_context`, which persists the deadline and releases
+    ownership. Provider clients own bounded per-call retry policy.
 
   Rule 4 (signals via Postgres polling):
     The service is a consumer (`shard_fetch_requested`) and a
     producer (`shard_fetch_completed`). All via the substrate.
 
   Rule 5 (no cross-workflow shared state):
-    No module-level mutable state in this file. `FETCHER_DISPATCH`
-    in `services/ingest/ingestion/fetchers/__init__.py` is ALL_CAPS
-    (constant-style) and outside the analyzer's `services/ingest/ingestion/
-    workflows/*.py` scope.
+    No module-level mutable state in this file. Fetcher callables are
+    resolved lazily from immutable SourceDefinition bindings.
 """
 from __future__ import annotations
 
 import asyncio
 import datetime as dt
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, AsyncIterator
 from uuid import UUID
 
 import asyncpg
 import orjson
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+    ZeroProgressError,
+    validate_fetch_progress,
+)
 from services.ingest.ingestion.kafka.topics import topic_for
+from services.ingest.ingestion.installations import (
+    InstallationIdentityError,
+    require_installation_row_id,
+)
 from services.ingest.ingestion.progress.events import ProgressEvent, ShardFetched
 from services.ingest.ingestion.progress.publisher import publish_progress_events
-from services.ingest.ingestion.rate_limit import (
-    FetchRateLimiter,
-    RateLimitWaitExceeded,
-)
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingest.ingestion.raw_tier.s3 import (
     S3Client,
     build_raw_s3_key,
     compute_content_hash,
+)
+from services.ingest.source_contract.runtime import (
+    resolve_fetcher,
+    resolve_installation_loader,
 )
 from services.ingest.ingestion.workflows.runtime import LongRunningService
 from services.ingest.ingestion.workflows.signals import (
@@ -300,10 +307,12 @@ DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 0
 DEFAULT_AUTO_CONCURRENCY_LIMIT = 32
 DEFAULT_LEASE_TIMEOUT_SECONDS = 30.0
+# Sub-second values are useful in tests for making an unowned orphan eligible
+# immediately, but they are too short to remain live across one PostgreSQL
+# round trip under load. Detection may still use the configured window; an
+# acquired ownership lease always receives at least this much TTL.
+MIN_EFFECTIVE_LEASE_TIMEOUT_SECONDS = 1.0
 DEFAULT_FLUSH_TIMEOUT_SECONDS = 5.0
-# Bound on how long one rate-limited page fetch may wait for a token
-# before exiting the loop (shard stays in_progress; orphan-scan resumes).
-DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS = 30.0
 
 # How long the diagnostic instance string is allowed to be on
 # workflow_states.workflow_id. Per the substrate model, this is the
@@ -317,7 +326,9 @@ DEFAULT_DIAGNOSTIC_INSTANCE = "default"
 # ---------------------------------------------------------------------
 _LOAD_SHARD_SQL = """
 SELECT id, onboarding_run_id, tenant_id, source, shard_kind,
-       shard_identifier, state, started_at
+       shard_identifier, installation_row_id, state, started_at, next_attempt_at,
+       attempt_count, retry_reason, lease_owner, lease_version,
+       lease_expires_at
   FROM onboarding_shards
  WHERE id = $1
 """
@@ -325,9 +336,16 @@ SELECT id, onboarding_run_id, tenant_id, source, shard_kind,
 _MARK_SHARD_IN_PROGRESS_SQL = """
 UPDATE onboarding_shards
    SET state = 'in_progress',
-       started_at = COALESCE(started_at, now())
- WHERE id = $1 AND state = 'pending'
-RETURNING id
+       started_at = COALESCE(started_at, now()),
+       attempt_count = attempt_count + 1,
+       retry_reason = NULL,
+       lease_owner = $2,
+       lease_version = lease_version + 1,
+       lease_expires_at = now() + ($3 * interval '1 second')
+ WHERE id = $1
+   AND state = 'pending'
+   AND next_attempt_at <= now()
+RETURNING lease_version
 """
 
 # CLAIM-VIA-UPDATE for orphan re-acquire. Only succeeds if the shard
@@ -339,21 +357,128 @@ RETURNING id
 # heartbeat but is on a different table).
 _REFRESH_SHARD_LEASE_SQL = """
 UPDATE onboarding_shards
-   SET started_at = now()
- WHERE id = $1 AND state = 'in_progress'
-RETURNING id
+   SET started_at = now(),
+       attempt_count = attempt_count + 1,
+       retry_reason = NULL,
+       lease_owner = $2,
+       lease_version = lease_version + 1,
+       lease_expires_at = now() + ($3 * interval '1 second')
+ WHERE id = $1
+   AND state = 'in_progress'
+   AND next_attempt_at <= now()
+   AND (lease_expires_at IS NULL OR lease_expires_at <= now())
+RETURNING lease_version
 """
 
 _MARK_SHARD_DONE_SQL = """
 UPDATE onboarding_shards
-   SET state = 'done', completed_at = now()
- WHERE id = $1 AND state IN ('pending', 'in_progress')
+   SET state = 'done',
+       completed_at = now(),
+       retry_reason = NULL,
+       lease_owner = NULL,
+       lease_expires_at = NULL
+ WHERE id = $1
+   AND state = 'in_progress'
+   AND lease_owner = $2
+   AND lease_version = $3
+   AND lease_expires_at > now()
+RETURNING id
 """
 
 _MARK_SHARD_FAILED_SQL = """
 UPDATE onboarding_shards
-   SET state = 'failed', completed_at = now(), last_error = $2
- WHERE id = $1 AND state IN ('pending', 'in_progress')
+   SET state = 'failed',
+       completed_at = now(),
+       last_error = $2,
+       retry_reason = NULL,
+       lease_owner = NULL,
+       lease_expires_at = NULL
+ WHERE id = $1
+   AND state = 'in_progress'
+   AND lease_owner = $3
+   AND lease_version = $4
+   AND lease_expires_at > now()
+RETURNING id
+"""
+
+_HEARTBEAT_SHARD_LEASE_SQL = """
+UPDATE onboarding_shards
+   SET lease_expires_at = now() + ($4 * interval '1 second')
+ WHERE id = $1
+   AND state = 'in_progress'
+   AND lease_owner = $2
+   AND lease_version = $3
+RETURNING lease_version
+"""
+
+_SCHEDULE_SHARD_RETRY_SQL = """
+UPDATE onboarding_shards
+   SET next_attempt_at = $2,
+       retry_reason = $3,
+       last_error = $4,
+       lease_owner = NULL,
+       lease_expires_at = NULL
+ WHERE id = $1
+   AND state = 'in_progress'
+   AND lease_owner = $5
+   AND lease_version = $6
+   AND lease_expires_at > now()
+RETURNING id
+"""
+
+# The workflow-state cursor update is fenced by the same shard lease as every
+# other mutation.  The MATERIALIZED CTE takes a row lock, serializing this
+# commit with an orphan re-claim.  Therefore either the old owner commits the
+# cursor first, or the new owner increments lease_version first; both cannot
+# commit against the same lease generation.
+_ADVANCE_STATE_WITH_SHARD_LEASE_SQL = """
+WITH held_lease AS MATERIALIZED (
+    SELECT id
+      FROM onboarding_shards
+     WHERE id = $4
+       AND state = 'in_progress'
+       AND lease_owner = $5
+       AND lease_version = $6
+       AND lease_expires_at > now()
+     FOR UPDATE
+)
+UPDATE workflow_states
+   SET state_data = $1::jsonb,
+       last_advanced_at = now()
+ WHERE workflow_kind = $2
+   AND workflow_id = $3
+   AND EXISTS (SELECT 1 FROM held_lease)
+RETURNING workflow_id
+"""
+
+_WORKFLOW_STATE_EXISTS_SQL = """
+SELECT EXISTS (
+    SELECT 1
+      FROM workflow_states
+     WHERE workflow_kind = $1 AND workflow_id = $2
+)
+"""
+
+_INSERT_INITIAL_STATE_WITH_SHARD_LEASE_SQL = """
+WITH held_lease AS MATERIALIZED (
+    SELECT id
+      FROM onboarding_shards
+     WHERE id = $1
+       AND state = 'in_progress'
+       AND lease_owner = $2
+       AND lease_version = $3
+       AND lease_expires_at > now()
+     FOR UPDATE
+)
+INSERT INTO workflow_states
+    (workflow_kind, workflow_id, tenant_id, state_data,
+     last_advanced_at, paused_at)
+SELECT 'shard_fetch', $1::text, NULL,
+       '{"cursor": null, "pages_fetched": 0}'::jsonb,
+       now(), NULL
+  FROM held_lease
+ON CONFLICT (workflow_kind, workflow_id) DO NOTHING
+RETURNING workflow_id
 """
 
 # Find orphan in-progress shards: those whose workflow_states row is
@@ -361,15 +486,80 @@ UPDATE onboarding_shards
 # The LEFT JOIN treats "workflow_states row absent" as "stale-since-
 # beginning-of-time" so first-page bootstraps are caught too.
 _LOAD_ORPHAN_SHARDS_SQL = """
-SELECT s.id, s.onboarding_run_id, s.tenant_id, s.source, s.shard_kind,
-       s.shard_identifier, s.state
-  FROM onboarding_shards s
-  LEFT JOIN workflow_states ws
-    ON ws.workflow_kind = 'shard_fetch'
-   AND ws.workflow_id   = s.id::text
- WHERE s.state = 'in_progress'
-   AND (ws.last_advanced_at IS NULL OR ws.last_advanced_at < $1)
- ORDER BY s.started_at NULLS FIRST
+WITH eligible AS MATERIALIZED (
+    SELECT s.id, s.onboarding_run_id, s.tenant_id, s.source, s.shard_kind,
+           s.shard_identifier, s.installation_row_id, s.state,
+           s.next_attempt_at, s.started_at,
+           COALESCE(
+               s.installation_row_id::text,
+               s.onboarding_run_id::text
+           ) AS installation_key,
+           tenant_history.last_served_at AS tenant_last_served_at,
+           installation_history.last_served_at
+               AS installation_last_served_at,
+           row_number() OVER (
+               PARTITION BY s.tenant_id,
+                            COALESCE(
+                                s.installation_row_id::text,
+                                s.onboarding_run_id::text
+                            )
+               ORDER BY s.next_attempt_at, s.started_at NULLS FIRST, s.id
+           ) AS installation_turn
+      FROM onboarding_shards s
+      LEFT JOIN workflow_states ws
+        ON ws.workflow_kind = 'shard_fetch'
+       AND ws.workflow_id = s.id::text
+      LEFT JOIN LATERAL (
+          SELECT max(prior.started_at) AS last_served_at
+            FROM onboarding_shards prior
+           WHERE prior.tenant_id = s.tenant_id
+      ) tenant_history ON TRUE
+      LEFT JOIN LATERAL (
+          SELECT max(prior.started_at) AS last_served_at
+            FROM onboarding_shards prior
+           WHERE prior.tenant_id = s.tenant_id
+             AND (
+                  (
+                    s.installation_row_id IS NOT NULL
+                    AND prior.installation_row_id = s.installation_row_id
+                  )
+                  OR (
+                    s.installation_row_id IS NULL
+                    AND prior.installation_row_id IS NULL
+                    AND prior.onboarding_run_id = s.onboarding_run_id
+                  )
+             )
+      ) installation_history ON TRUE
+     WHERE s.state = 'in_progress'
+       AND s.next_attempt_at <= now()
+       AND (s.lease_expires_at IS NULL OR s.lease_expires_at <= now())
+       AND (ws.last_advanced_at IS NULL OR ws.last_advanced_at < $1)
+),
+ranked AS MATERIALIZED (
+    SELECT eligible.*,
+           row_number() OVER (
+               PARTITION BY tenant_id
+               ORDER BY installation_turn,
+                        installation_last_served_at NULLS FIRST,
+                        installation_key,
+                        next_attempt_at,
+                        started_at NULLS FIRST,
+                        id
+           ) AS tenant_turn
+      FROM eligible
+)
+SELECT id, onboarding_run_id, tenant_id, source, shard_kind,
+       shard_identifier, installation_row_id, state
+  FROM ranked
+ ORDER BY tenant_turn,
+          tenant_last_served_at NULLS FIRST,
+          tenant_id,
+          installation_turn,
+          installation_last_served_at NULLS FIRST,
+          installation_key,
+          next_attempt_at,
+          started_at NULLS FIRST,
+          id
  LIMIT $2
 """
 
@@ -380,287 +570,10 @@ SELECT count(*)
     ON ws.workflow_kind = 'shard_fetch'
    AND ws.workflow_id   = s.id::text
  WHERE s.state = 'in_progress'
+   AND s.next_attempt_at <= now()
+   AND (s.lease_expires_at IS NULL OR s.lease_expires_at <= now())
    AND (ws.last_advanced_at IS NULL OR ws.last_advanced_at < $1)
 """
-
-_LOAD_PROVIDER_INSTALL_SQL = """
-SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
-  FROM provider_installations
- WHERE tenant_id = $1 AND provider = $2 AND enabled = TRUE
- LIMIT 1
-"""
-
-_LOAD_PROVIDER_INSTALL_BY_INSTALLATION_ID_SQL = """
-SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
-  FROM provider_installations
- WHERE tenant_id = $1
-   AND provider = $2
-   AND installation_id = $3
-   AND enabled = TRUE
- LIMIT 1
-"""
-
-_LOAD_GMAIL_INSTALL_SQL = """
-SELECT id, tenant_id, workspace_domain, service_account_email,
-       scope, disabled_at
-  FROM gmail_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-15: Google Calendar is a DWD source like Gmail (not in
-# provider_installations). The fetcher works one calendar at a time via
-# shard_identifier, so the install row only needs scope + id + tenant_id;
-# the impersonated owner_email comes from the shard.
-_LOAD_GCAL_INSTALL_SQL = """
-SELECT id, tenant_id, workspace_domain, service_account_email,
-       scope, disabled_at
-  FROM google_calendar_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-16: Google Drive is a DWD source like Gmail/Calendar (not in
-# provider_installations). The fetcher works one drive at a time via
-# shard_identifier, so the install row only needs scope + id + tenant_id;
-# the impersonated owner_email + drive_id come from the shard.
-_LOAD_GDRIVE_INSTALL_SQL = """
-SELECT id, tenant_id, workspace_domain, service_account_email,
-       scope, disabled_at
-  FROM google_drive_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-17: Jira is a per-site install (not in provider_installations). The
-# fetcher works one project at a time via shard_identifier; the install row
-# carries base_url + account_email + secret_ref the JiraClient needs.
-_LOAD_JIRA_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, account_email, secret_ref, cloud_id,
-       disabled_at
-  FROM jira_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# Finance: Mercury is a per-tenant API-token install (not in
-# provider_installations). The fetcher works one account at a time via
-# shard_identifier; the install row carries base_url + secret_ref the
-# MercuryClient needs.
-_LOAD_MERCURY_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, secret_ref, disabled_at
-  FROM mercury_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# Finance: QuickBooks is a per-tenant OAuth install (not in
-# provider_installations). The fetcher works one entity type at a time via
-# shard_identifier; the install row carries realm_id + base_url + secret_ref
-# (access token) + refresh_secret_ref the QuickBooksClient needs.
-_LOAD_QUICKBOOKS_INSTALL_SQL = """
-SELECT id, tenant_id, realm_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
-  FROM quickbooks_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# Grafana is a per-tenant service-account install (not in
-# provider_installations). There is ONE shard per install (annotation/alert
-# state is org-wide), so the fetcher does not need a child row — the install
-# row carries base_url + secret_ref the GrafanaClient needs and base_url for
-# the `_instance_of` external_id namespace. Without this dedicated branch a
-# grafana shard would fall through to the provider_installations lookup, find
-# nothing, and park forever — its install never lands in that table.
-_LOAD_GRAFANA_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, org_id, secret_ref, disabled_at
-  FROM grafana_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-TELEGRAM: Telegram is a per-tenant MTProto-session install (not in
-# provider_installations). The fetcher works one dialog at a time via
-# shard_identifier; the install row carries the api credentials + the persisted
-# session refs the TelegramClient needs. Backfill uses the second authorization
-# (backfill_session_secret_ref); without this dedicated branch a telegram shard
-# would fall through to provider_installations, find nothing, and park forever.
-_LOAD_TELEGRAM_INSTALL_SQL = """
-SELECT id, tenant_id, account_label, api_id, api_hash_secret_ref,
-       session_secret_ref, backfill_session_secret_ref, disabled_at
-  FROM telegram_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-FIN2: Brex is a per-tenant API-token (Bearer) install (Mercury archetype;
-# not in provider_installations). The fetcher works one account at a time via
-# shard_identifier; the install row carries base_url + secret_ref the BrexClient
-# needs. Without this dedicated branch a brex shard would fall through to the
-# provider_installations lookup, find nothing, and park forever.
-_LOAD_BREX_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, secret_ref, disabled_at
-  FROM brex_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-FIN2: Ramp is a per-tenant OAuth install (QuickBooks archetype; not in
-# provider_installations). The fetcher works one entity type at a time via
-# shard_identifier; the install row carries business_id (scope id) + base_url +
-# secret_ref (access token) + refresh_secret_ref the RampClient needs.
-_LOAD_RAMP_INSTALL_SQL = """
-SELECT id, tenant_id, business_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
-  FROM ramp_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-FIN2: Gusto is a per-tenant OAuth install (QuickBooks archetype; not in
-# provider_installations). The install row carries company_uuid (scope id) +
-# base_url + secret_ref (access token) + refresh_secret_ref the GustoClient needs.
-_LOAD_GUSTO_INSTALL_SQL = """
-SELECT id, tenant_id, company_uuid, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
-  FROM gusto_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-FIN2: Deel is a per-tenant API-token (Bearer) install (Mercury archetype;
-# not in provider_installations). The install row carries base_url + secret_ref
-# the DeelClient needs.
-_LOAD_DEEL_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, secret_ref, disabled_at
-  FROM deel_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: Fireflies is a per-tenant API-token (Bearer) install (Brex
-# archetype; not in provider_installations). The install row carries base_url +
-# workspace_id + secret_ref the FirefliesClient + fetcher need. Without this
-# dedicated branch a fireflies shard would fall through to provider_installations,
-# find nothing, and park forever.
-_LOAD_FIREFLIES_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, workspace_id, transcript_cursor, secret_ref,
-       disabled_at
-  FROM fireflies_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: Signal is a per-tenant linked-device-session install (Telegram
-# archetype; not in provider_installations). The fetcher works one thread at a
-# time via shard_identifier; the install row carries account_label + the
-# persisted session refs the SignalClient needs (backfill uses the second
-# session). NO MTProto api credentials.
-_LOAD_SIGNAL_INSTALL_SQL = """
-SELECT id, tenant_id, account_label, session_secret_ref,
-       backfill_session_secret_ref, disabled_at
-  FROM signal_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: AWS is a per-tenant (account, region) install (poll-live edge;
-# not in provider_installations). The install row carries account_id + region +
-# credential_kind + secret_ref the AwsClient needs.
-_LOAD_AWS_INSTALL_SQL = """
-SELECT id, tenant_id, account_id, region, credential_kind, secret_ref,
-       events_cursor_ms, disabled_at
-  FROM aws_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: Miro is a per-tenant API-token (Bearer) install (Brex archetype;
-# not in provider_installations). The fetcher works one board at a time via
-# shard_identifier; the install row carries base_url + org_id + secret_ref the
-# MiroClient needs.
-_LOAD_MIRO_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, org_id, secret_ref, disabled_at
-  FROM miro_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: Figma is a per-tenant API-token (Bearer) install (Brex archetype;
-# not in provider_installations). The fetcher works one file at a time via
-# shard_identifier; the install row carries base_url + team_id + secret_ref the
-# FigmaClient needs.
-_LOAD_FIGMA_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, team_id, secret_ref, auth_kind,
-       refresh_secret_ref, token_expires_at, disabled_at
-  FROM figma_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: Carta is a per-tenant OAuth install (Gusto archetype;
-# not in provider_installations). The install row carries firm_id (scope id) +
-# base_url + secret_ref (access token) + refresh_secret_ref the CartaClient needs.
-_LOAD_CARTA_INSTALL_SQL = """
-SELECT id, tenant_id, firm_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
-  FROM carta_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-PEOPLE: HiBob is a per-tenant service-user Basic-auth install (Gusto/Brex
-# archetype; not in provider_installations). The fetcher works one entity type
-# at a time via shard_identifier; the install row carries company_id (scope) +
-# service_user_id (Basic public half) + base_url + secret_ref (token half).
-_LOAD_HIBOB_INSTALL_SQL = """
-SELECT id, tenant_id, company_id, service_user_id, base_url, secret_ref,
-       disabled_at
-  FROM hibob_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-PEOPLE: Ashby is a per-tenant API-key Basic-auth install (Brex/Jira
-# archetype; not in provider_installations). The install row carries org_id
-# (scope) + base_url + secret_ref (the API key Basic username).
-_LOAD_ASHBY_INSTALL_SQL = """
-SELECT id, tenant_id, org_id, base_url, secret_ref, disabled_at
-  FROM ashby_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-PEOPLE: LinkedIn is a per-tenant OAuth install (Carta archetype; partner-
-# gated, poll-only; not in provider_installations). The install row carries
-# organization_urn (scope) + base_url + secret_ref (access token) +
-# refresh_secret_ref the LinkedinClient needs.
-_LOAD_LINKEDIN_INSTALL_SQL = """
-SELECT id, tenant_id, organization_urn, base_url, secret_ref,
-       refresh_secret_ref, disabled_at
-  FROM linkedin_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-_LOAD_FACEBOOK_PAGES_INSTALL_SQL = """
-SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
-       app_secret_ref, verify_token_ref, enabled
-  FROM facebook_page_installations
- WHERE tenant_id = $1 AND enabled = true
- ORDER BY updated_at DESC
- LIMIT 1
-"""
-
-_LOAD_FACEBOOK_PAGES_INSTALL_BY_ID_SQL = """
-SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
-       app_secret_ref, verify_token_ref, enabled
-  FROM facebook_page_installations
- WHERE id = $1 AND tenant_id = $2 AND enabled = true
- LIMIT 1
-"""
-
 
 # ---------------------------------------------------------------------
 # Config.
@@ -676,9 +589,6 @@ class ShardFetchConfig:
     instance_name: str = DEFAULT_DIAGNOSTIC_INSTANCE
     # Raw-tier env prefix for S3 keys (A27.1). Mirrors INGESTION_ENV.
     ingestion_env: str = DEFAULT_INGESTION_ENV
-    # Bound on a single page fetch's rate-limit wait (LLD §13 FetchPage
-    # gate). Past this, the loop exits transiently for orphan-scan retry.
-    rate_limit_max_wait_seconds: float = DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS
     # Independent shards can drain concurrently; each shard still preserves
     # its internal page order and N1 cursor barrier. 0 means auto: derive the
     # width from the backlog, bounded by auto_concurrency_limit.
@@ -690,6 +600,109 @@ class ShardFetchConfig:
     # Per-page raw-tier S3 write fan-out. All writes must finish before the
     # page's Kafka flush/cursor advance barrier runs.
     s3_write_concurrency: int = 1
+    # Transitional safety boundary for legacy fetchers that still encode a
+    # provider cooldown as an empty, unchanged, nonterminal page. The workflow
+    # converts that forbidden shape into durable RetryLater instead of spinning.
+    zero_progress_retry_seconds: float = 60.0
+
+
+class ShardLeaseLost(RuntimeError):
+    """The caller no longer owns the shard lease generation."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ShardLease:
+    shard_id: UUID
+    owner: str
+    version: int
+
+
+def _effective_lease_timeout_seconds(configured_seconds: float) -> float:
+    if configured_seconds <= 0:
+        raise ValueError("lease_timeout_seconds must be > 0")
+    return max(MIN_EFFECTIVE_LEASE_TIMEOUT_SECONDS, configured_seconds)
+
+
+async def _advance_state_under_lease(
+    pool: asyncpg.Pool,
+    lease: _ShardLease,
+    *,
+    state_data_json: str,
+    workflow_kind: str,
+    workflow_id: str,
+) -> asyncpg.Record | None:
+    return await pool.fetchrow(
+        _ADVANCE_STATE_WITH_SHARD_LEASE_SQL,
+        state_data_json,
+        workflow_kind,
+        workflow_id,
+        lease.shard_id,
+        lease.owner,
+        lease.version,
+    )
+
+
+async def _workflow_state_exists(
+    pool: asyncpg.Pool,
+    *,
+    workflow_kind: str,
+    workflow_id: str,
+) -> bool:
+    return bool(
+        await pool.fetchval(
+            _WORKFLOW_STATE_EXISTS_SQL,
+            workflow_kind,
+            workflow_id,
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _LeaseFencedStateExecutor:
+    """Duck-typed pool used by the N1 primitive for its final state UPDATE.
+
+    Publishing and flushing remain owned by
+    ``advance_cursor_atomic_with_kafka_publish``.  Its final ``fetchrow`` is
+    replaced with an UPDATE that row-locks and verifies the shard lease before
+    changing the cursor.  This preserves the existing N1 API while adding a
+    generation fence local to ShardFetch.
+    """
+
+    pool: asyncpg.Pool
+    lease: _ShardLease
+
+    async def fetchrow(
+        self,
+        _sql: str,
+        state_data_json: str,
+        workflow_kind: str,
+        workflow_id: str,
+    ) -> asyncpg.Record | None:
+        row = await _advance_state_under_lease(
+            self.pool,
+            self.lease,
+            state_data_json=state_data_json,
+            workflow_kind=workflow_kind,
+            workflow_id=workflow_id,
+        )
+        if row is not None:
+            return row
+
+        # Let the substrate preserve its precise missing-state error. If the
+        # state exists, the only failed predicate is the owner/version/expiry
+        # fence, so surface lease loss directly.
+        state_exists = await _workflow_state_exists(
+            self.pool,
+            workflow_kind=workflow_kind,
+            workflow_id=workflow_id,
+        )
+        if state_exists:
+            raise ShardLeaseLost(
+                f"lease lost for shard {self.lease.shard_id} "
+                f"(owner={self.lease.owner!r}, "
+                f"version={self.lease.version})",
+            )
+        return None
 
 
 # ---------------------------------------------------------------------
@@ -702,38 +715,248 @@ async def _load_shard(
 
 
 async def _claim_shard_for_fetch(
-    conn: asyncpg.Connection, shard_id: UUID,
-) -> bool:
+    conn: asyncpg.Connection,
+    shard_id: UUID,
+    *,
+    lease_owner: str = DEFAULT_DIAGNOSTIC_INSTANCE,
+    lease_timeout_seconds: float = DEFAULT_LEASE_TIMEOUT_SECONDS,
+) -> _ShardLease | None:
     """CLAIM-VIA-UPDATE: mark shard 'in_progress' if it's currently
     'pending'. Returns True iff this caller won the claim.
     """
-    row = await conn.fetchval(_MARK_SHARD_IN_PROGRESS_SQL, shard_id)
-    return row is not None
+    version = await conn.fetchval(
+        _MARK_SHARD_IN_PROGRESS_SQL,
+        shard_id,
+        lease_owner,
+        lease_timeout_seconds,
+    )
+    if version is None:
+        return None
+    return _ShardLease(
+        shard_id=shard_id,
+        owner=lease_owner,
+        version=int(version),
+    )
 
 
 async def _refresh_shard_lease(
-    conn: asyncpg.Connection, shard_id: UUID,
-) -> bool:
+    conn: asyncpg.Connection,
+    shard_id: UUID,
+    *,
+    lease_owner: str = DEFAULT_DIAGNOSTIC_INSTANCE,
+    lease_timeout_seconds: float = DEFAULT_LEASE_TIMEOUT_SECONDS,
+) -> _ShardLease | None:
     """Extend the lease on an orphan in-progress shard. Returns True
     iff this caller now holds the lease (the UPDATE matched a row
     still in 'in_progress' state)."""
-    row = await conn.fetchval(_REFRESH_SHARD_LEASE_SQL, shard_id)
+    version = await conn.fetchval(
+        _REFRESH_SHARD_LEASE_SQL,
+        shard_id,
+        lease_owner,
+        lease_timeout_seconds,
+    )
+    if version is None:
+        return None
+    return _ShardLease(
+        shard_id=shard_id,
+        owner=lease_owner,
+        version=int(version),
+    )
+
+
+async def _heartbeat_shard_lease(
+    executor: asyncpg.Pool | asyncpg.Connection,
+    shard_id: UUID,
+    *,
+    lease_owner: str,
+    lease_version: int,
+    lease_timeout_seconds: float,
+) -> bool:
+    """Extend only the lease generation still owned by this worker.
+
+    Expiry makes a generation eligible for takeover; it does not by itself
+    supersede the generation.  Renewal and orphan takeover both update the
+    same row, so PostgreSQL serializes the race: renewal wins and makes the
+    lease live again, or takeover increments ``lease_version`` and this
+    fenced update matches nothing.  Allowing the current generation to renew
+    after a short scheduler/DB delay avoids making very small lease windows
+    impossible to heartbeat without weakening the owner/version fence.
+    """
+    row = await executor.fetchval(
+        _HEARTBEAT_SHARD_LEASE_SQL,
+        shard_id,
+        lease_owner,
+        lease_version,
+        lease_timeout_seconds,
+    )
+    return row is not None
+
+
+async def _schedule_shard_retry(
+    executor: asyncpg.Pool | asyncpg.Connection,
+    shard_id: UUID,
+    *,
+    not_before: dt.datetime,
+    reason: str,
+    detail: str,
+    lease: _ShardLease,
+) -> bool:
+    """Persist a retry deadline and relinquish the shard lease."""
+    if not_before.tzinfo is None or not_before.utcoffset() is None:
+        raise ValueError("not_before must be timezone-aware")
+    retry_at = not_before.astimezone(dt.timezone.utc)
+    row = await executor.fetchval(
+        _SCHEDULE_SHARD_RETRY_SQL,
+        shard_id,
+        retry_at,
+        reason,
+        detail[:1000],
+        lease.owner,
+        lease.version,
+    )
     return row is not None
 
 
 async def _mark_shard_done(
-    executor: asyncpg.Pool | asyncpg.Connection, shard_id: UUID,
-) -> None:
-    await executor.execute(_MARK_SHARD_DONE_SQL, shard_id)
+    executor: asyncpg.Pool | asyncpg.Connection,
+    shard_id: UUID,
+    *,
+    lease: _ShardLease,
+) -> bool:
+    row = await executor.fetchval(
+        _MARK_SHARD_DONE_SQL,
+        shard_id,
+        lease.owner,
+        lease.version,
+    )
+    return row is not None
 
 
 async def _mark_shard_failed(
     executor: asyncpg.Pool | asyncpg.Connection,
-    shard_id: UUID, last_error: str,
-) -> None:
-    await executor.execute(
-        _MARK_SHARD_FAILED_SQL, shard_id, last_error,
+    shard_id: UUID,
+    last_error: str,
+    *,
+    lease: _ShardLease,
+) -> bool:
+    row = await executor.fetchval(
+        _MARK_SHARD_FAILED_SQL,
+        shard_id,
+        last_error,
+        lease.owner,
+        lease.version,
     )
+    return row is not None
+
+
+async def _run_shard_lease_heartbeat(
+    pool: asyncpg.Pool,
+    lease: _ShardLease,
+    *,
+    lease_timeout_seconds: float,
+    stop: asyncio.Event,
+    lost: asyncio.Event,
+) -> None:
+    """Refresh one lease until stopped; fail closed on any refresh error."""
+    interval_seconds = max(0.001, lease_timeout_seconds / 3.0)
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
+            return
+        except TimeoutError:
+            pass
+
+        try:
+            held = await _heartbeat_shard_lease(
+                pool,
+                lease.shard_id,
+                lease_owner=lease.owner,
+                lease_version=lease.version,
+                lease_timeout_seconds=lease_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - ownership must fail closed
+            log.warning(
+                "shard_fetch.lease_heartbeat_failed",
+                extra={
+                    "shard_id": str(lease.shard_id),
+                    "lease_owner": lease.owner,
+                    "lease_version": lease.version,
+                    "error": f"{type(exc).__name__}: {exc}"[:200],
+                },
+            )
+            lost.set()
+            return
+
+        if not held:
+            log.warning(
+                "shard_fetch.lease_heartbeat_lost",
+                extra={
+                    "shard_id": str(lease.shard_id),
+                    "lease_owner": lease.owner,
+                    "lease_version": lease.version,
+                },
+            )
+            lost.set()
+            return
+
+
+@asynccontextmanager
+async def _maintain_shard_lease(
+    pool: asyncpg.Pool,
+    lease: _ShardLease,
+    *,
+    lease_timeout_seconds: float,
+) -> AsyncIterator[asyncio.Event]:
+    """Keep a claimed lease alive for the whole provider-side operation."""
+    if lease_timeout_seconds <= 0:
+        raise ValueError("lease_timeout_seconds must be > 0")
+
+    # Verify and extend before starting any external work. An expired
+    # generation can renew only while it remains the current owner/version;
+    # an orphan takeover increments the version and makes this fail closed.
+    held = await _heartbeat_shard_lease(
+        pool,
+        lease.shard_id,
+        lease_owner=lease.owner,
+        lease_version=lease.version,
+        lease_timeout_seconds=lease_timeout_seconds,
+    )
+    if not held:
+        raise ShardLeaseLost(
+            f"lease expired before fetch start for shard {lease.shard_id}",
+        )
+
+    stop = asyncio.Event()
+    lost = asyncio.Event()
+    task = asyncio.create_task(
+        _run_shard_lease_heartbeat(
+            pool,
+            lease,
+            lease_timeout_seconds=lease_timeout_seconds,
+            stop=stop,
+            lost=lost,
+        ),
+        name=f"shard-fetch-lease-{lease.shard_id}",
+    )
+    try:
+        yield lost
+    finally:
+        stop.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+def _raise_if_lease_lost(
+    lost: asyncio.Event,
+    lease: _ShardLease,
+) -> None:
+    if lost.is_set():
+        raise ShardLeaseLost(
+            f"lease heartbeat lost for shard {lease.shard_id} "
+            f"(owner={lease.owner!r}, version={lease.version})",
+        )
 
 
 async def _load_orphan_shards(
@@ -776,71 +999,19 @@ def parse_auto_parallelism(value: str | None, *, default: str = "auto") -> int:
 
 
 async def _load_install(
-    pool: asyncpg.Pool, *, tenant_id: UUID, source: str,
-    shard_identifier: dict[str, Any] | None = None,
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    source: str,
+    installation_row_id: UUID,
 ) -> asyncpg.Record | None:
-    """Load the active install row for this (tenant, source)."""
-    if source == "gmail":
-        return await pool.fetchrow(_LOAD_GMAIL_INSTALL_SQL, tenant_id)
-    if source == "google_calendar":
-        return await pool.fetchrow(_LOAD_GCAL_INSTALL_SQL, tenant_id)
-    if source == "google_drive":
-        return await pool.fetchrow(_LOAD_GDRIVE_INSTALL_SQL, tenant_id)
-    if source == "jira":
-        return await pool.fetchrow(_LOAD_JIRA_INSTALL_SQL, tenant_id)
-    if source == "mercury":
-        return await pool.fetchrow(_LOAD_MERCURY_INSTALL_SQL, tenant_id)
-    if source == "quickbooks":
-        return await pool.fetchrow(_LOAD_QUICKBOOKS_INSTALL_SQL, tenant_id)
-    if source == "grafana":
-        return await pool.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, tenant_id)
-    if source == "telegram":
-        return await pool.fetchrow(_LOAD_TELEGRAM_INSTALL_SQL, tenant_id)
-    if source == "brex":
-        return await pool.fetchrow(_LOAD_BREX_INSTALL_SQL, tenant_id)
-    if source == "ramp":
-        return await pool.fetchrow(_LOAD_RAMP_INSTALL_SQL, tenant_id)
-    if source == "gusto":
-        return await pool.fetchrow(_LOAD_GUSTO_INSTALL_SQL, tenant_id)
-    if source == "deel":
-        return await pool.fetchrow(_LOAD_DEEL_INSTALL_SQL, tenant_id)
-    if source == "fireflies":
-        return await pool.fetchrow(_LOAD_FIREFLIES_INSTALL_SQL, tenant_id)
-    if source == "signal":
-        return await pool.fetchrow(_LOAD_SIGNAL_INSTALL_SQL, tenant_id)
-    if source == "aws":
-        return await pool.fetchrow(_LOAD_AWS_INSTALL_SQL, tenant_id)
-    if source == "miro":
-        return await pool.fetchrow(_LOAD_MIRO_INSTALL_SQL, tenant_id)
-    if source == "figma":
-        return await pool.fetchrow(_LOAD_FIGMA_INSTALL_SQL, tenant_id)
-    if source == "carta":
-        return await pool.fetchrow(_LOAD_CARTA_INSTALL_SQL, tenant_id)
-    if source == "hibob":
-        return await pool.fetchrow(_LOAD_HIBOB_INSTALL_SQL, tenant_id)
-    if source == "ashby":
-        return await pool.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
-    if source == "linkedin":
-        return await pool.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
-    if source == "facebook_pages":
-        installation_id = (shard_identifier or {}).get("installation_id")
-        if isinstance(installation_id, str) and installation_id.strip():
-            return await pool.fetchrow(
-                _LOAD_FACEBOOK_PAGES_INSTALL_BY_ID_SQL,
-                UUID(installation_id),
-                tenant_id,
-            )
-        return await pool.fetchrow(_LOAD_FACEBOOK_PAGES_INSTALL_SQL, tenant_id)
-    if source == "discord":
-        guild_id = (shard_identifier or {}).get("guild_id")
-        if isinstance(guild_id, str) and guild_id.strip():
-            return await pool.fetchrow(
-                _LOAD_PROVIDER_INSTALL_BY_INSTALLATION_ID_SQL,
-                tenant_id,
-                source,
-                guild_id,
-            )
-    return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
+    """Load only the exact enabled installation bound to this shard."""
+    loader = resolve_installation_loader(source)
+    return await loader(
+        pool,
+        tenant_id=tenant_id,
+        installation_id=installation_row_id,
+    )
 
 
 async def _write_record_and_build_message(
@@ -849,6 +1020,7 @@ async def _write_record_and_build_message(
     tenant_id: UUID,
     source: str,
     shard_id: UUID,
+    installation_row_id: UUID,
     cursor: dict[str, Any] | None,
     record: dict[str, Any],
     env: str,
@@ -871,7 +1043,7 @@ async def _write_record_and_build_message(
     The S3 write (content-addressed PutIfAbsent) happens HERE, before
     the caller's `advance_cursor_atomic_with_kafka_publish`. See the
     module docstring's S3-WRITE-BEFORE-PUBLISH section + A27.1. Raises
-    on S3 failure; the fetch loop's A19 boundary marks the shard failed.
+    a durable `RetryLater` on S3 failure.
 
     Partition key = tenant_id bytes (LLD §5.2 partition affinity).
     """
@@ -881,7 +1053,11 @@ async def _write_record_and_build_message(
     webhook_metadata = record_body.pop("webhook_metadata", {})
     blob = {
         "record": record_body,
-        "shard_context": {"shard_id": str(shard_id), "cursor": cursor},
+        "shard_context": {
+            "shard_id": str(shard_id),
+            "installation_row_id": str(installation_row_id),
+            "cursor": cursor,
+        },
         "webhook_metadata": webhook_metadata,
     }
     blob_bytes = orjson.dumps(blob)
@@ -905,6 +1081,9 @@ async def _write_record_and_build_message(
         content_hash=content_hash,
         ingested_at=now,
         ingress_kind="backfill",
+        ingress_metadata={
+            "installation_row_id": str(installation_row_id),
+        },
     )
     return KafkaMessage(
         # Per-source raw topic so backfill traffic for one source cannot
@@ -921,21 +1100,56 @@ class _FetchLoopContext:
     tenant_id: UUID
     source: str
     shard_identifier: dict[str, Any]
+    installation_row_id: UUID
+    lease: _ShardLease
     loop_started_at: dt.datetime
     records_fetched: int = 0
 
     @classmethod
-    def from_shard(cls, shard: asyncpg.Record) -> "_FetchLoopContext":
+    def from_shard(
+        cls,
+        shard: asyncpg.Record,
+        *,
+        lease: _ShardLease,
+    ) -> "_FetchLoopContext":
         ident_raw = shard["shard_identifier"]
         shard_identifier = (
             orjson.loads(ident_raw) if isinstance(ident_raw, (str, bytes))
             else dict(ident_raw)
         )
+        try:
+            installation_row_id = require_installation_row_id(
+                shard["installation_row_id"],
+            )
+        except (KeyError, InstallationIdentityError) as exc:
+            raise InstallationIdentityError(
+                "shard is missing its exact installation_row_id",
+            ) from exc
+        try:
+            descriptor_installation_id = require_installation_row_id(
+                shard_identifier.get("installation_row_id"),
+            )
+        except InstallationIdentityError as exc:
+            raise InstallationIdentityError(
+                "shard descriptor is missing a valid installation_row_id",
+            ) from exc
+        if descriptor_installation_id != installation_row_id:
+            raise InstallationIdentityError(
+                "shard column and descriptor reference different "
+                "installation rows",
+            )
+        if shard["id"] != lease.shard_id:
+            raise ValueError(
+                f"lease shard {lease.shard_id} does not match "
+                f"loaded shard {shard['id']}",
+            )
         return cls(
             shard_id=shard["id"],
             tenant_id=shard["tenant_id"],
             source=shard["source"],
             shard_identifier=shard_identifier,
+            installation_row_id=installation_row_id,
+            lease=lease,
             loop_started_at=dt.datetime.now(tz=dt.timezone.utc),
         )
 
@@ -946,16 +1160,36 @@ class _FetchLoopContext:
 
 
 async def _persist_initial_workflow_state(
-    conn: asyncpg.Connection, shard_id: UUID,
-) -> None:
-    state = WorkflowState(
-        workflow_kind=WORKFLOW_KIND,
-        workflow_id=str(shard_id),
-        tenant_id=None,
-        state_data={"cursor": None, "pages_fetched": 0},
-        last_advanced_at=dt.datetime.now(tz=dt.timezone.utc),
+    conn: asyncpg.Connection,
+    lease: _ShardLease,
+) -> bool:
+    row = await conn.fetchval(
+        _INSERT_INITIAL_STATE_WITH_SHARD_LEASE_SQL,
+        lease.shard_id,
+        lease.owner,
+        lease.version,
     )
-    await persist_state(conn, state)
+    if row is not None:
+        return True
+    # ON CONFLICT means an existing cursor home is also a successful
+    # bootstrap, provided the lease itself still matches.
+    lease_held = await conn.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1
+              FROM onboarding_shards
+             WHERE id = $1
+               AND state = 'in_progress'
+               AND lease_owner = $2
+               AND lease_version = $3
+               AND lease_expires_at > now()
+        )
+        """,
+        lease.shard_id,
+        lease.owner,
+        lease.version,
+    )
+    return bool(lease_held)
 
 
 def _log_fetch_install_unavailable(ctx: _FetchLoopContext) -> None:
@@ -980,7 +1214,14 @@ async def _ensure_fetch_loop_state(
     if initial_state is None:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await _persist_initial_workflow_state(conn, ctx.shard_id)
+                inserted = await _persist_initial_workflow_state(
+                    conn,
+                    ctx.lease,
+                )
+                if not inserted:
+                    raise ShardLeaseLost(
+                        f"lease lost while bootstrapping shard {ctx.shard_id}",
+                    )
         return
     # Resume: carry forward the count from prior passes.
     ctx.records_fetched = int(initial_state.state_data.get("records_fetched", 0))
@@ -997,18 +1238,15 @@ async def _load_fetch_cursor(
 
 
 async def _fetch_page(
-    rate_limiter: FetchRateLimiter | None,
     ctx: _FetchLoopContext,
     *,
     install: asyncpg.Record,
     cursor: dict[str, Any] | None,
 ) -> Any:
-    # FetchPage rate-limit gate (LLD §13): acquire one token for the
-    # (source, method) bucket BEFORE the upstream page call. A bounded wait
-    # raises RateLimitWaitExceeded, caught by _run_fetch_loop as transient.
-    if rate_limiter is not None:
-        await rate_limiter.acquire(source=ctx.source, tenant_id=ctx.tenant_id)
-    fetcher = FETCHER_DISPATCH[ctx.source]
+    # Provider clients own quota acquisition, retry-after propagation, and
+    # per-actual-call retry policy. ShardFetch must not guess one fixed budget
+    # per logical page or sleep while holding workflow work.
+    fetcher = resolve_fetcher(ctx.source)
     return await fetcher(install, ctx.shard_identifier, cursor)
 
 
@@ -1019,7 +1257,7 @@ async def _write_fetch_page_messages(
     *,
     cursor: dict[str, Any] | None,
     records: list[dict[str, Any]],
-) -> list[KafkaMessage] | None:
+) -> list[KafkaMessage]:
     if records and s3_client is None:
         raise RuntimeError(
             "shard_fetch backfill producer requires an "
@@ -1037,6 +1275,7 @@ async def _write_fetch_page_messages(
                     tenant_id=ctx.tenant_id,
                     source=ctx.source,
                     shard_id=ctx.shard_id,
+                    installation_row_id=ctx.installation_row_id,
                     cursor=cursor,
                     record=rec,
                     env=config.ingestion_env,
@@ -1055,7 +1294,17 @@ async def _write_fetch_page_messages(
                 "error": f"{type(exc).__name__}: {exc}"[:200],
             },
         )
-        return None
+        raise RetryLater.after(
+            request_context=RequestContext(
+                source=ctx.source,
+                operation="write_raw_page",
+                tenant_id=str(ctx.tenant_id),
+            ),
+            delay_seconds=config.zero_progress_retry_seconds,
+            reason=RetryReason.TRANSIENT,
+            cause_code=type(exc).__name__,
+            message=f"raw-tier write failed: {type(exc).__name__}: {exc}",
+        ) from exc
 
 
 async def _advance_fetch_cursor(
@@ -1070,7 +1319,7 @@ async def _advance_fetch_cursor(
 ) -> bool:
     try:
         await advance_cursor_atomic_with_kafka_publish(
-            pool,
+            _LeaseFencedStateExecutor(pool=pool, lease=ctx.lease),
             kafka_producer,
             workflow_kind=WORKFLOW_KIND,
             workflow_id=str(ctx.shard_id),
@@ -1100,30 +1349,70 @@ async def _advance_fetch_cursor(
                 "failure_kind": type(exc).__name__,
             },
         )
-        return False
+        raise RetryLater.after(
+            request_context=RequestContext(
+                source=ctx.source,
+                operation="publish_raw_page",
+                tenant_id=str(ctx.tenant_id),
+            ),
+            delay_seconds=config.zero_progress_retry_seconds,
+            reason=RetryReason.TRANSIENT,
+            cause_code=type(exc).__name__,
+            message=f"raw-page publish failed: {type(exc).__name__}: {exc}",
+        ) from exc
 
 
 async def _run_fetch_pages(
     pool: asyncpg.Pool,
     kafka_producer: Any,
     s3_client: S3Client | None,
-    rate_limiter: FetchRateLimiter | None,
     config: ShardFetchConfig,
     ctx: _FetchLoopContext,
     *,
     install: asyncpg.Record,
+    lease_lost: asyncio.Event,
 ) -> bool:
     while True:
+        _raise_if_lease_lost(lease_lost, ctx.lease)
         current_state, cursor = await _load_fetch_cursor(pool, ctx)
         result = await _fetch_page(
-            rate_limiter, ctx, install=install, cursor=cursor,
+            ctx,
+            install=install,
+            cursor=cursor,
         )
+        _raise_if_lease_lost(lease_lost, ctx.lease)
+        try:
+            validate_fetch_progress(
+                cursor_before=cursor,
+                cursor_after=result.next_cursor,
+                records_emitted=len(result.records),
+                end_of_data=result.end_of_data,
+            )
+        except ZeroProgressError as exc:
+            try:
+                installation_id = str(install["id"])
+            except (KeyError, TypeError):
+                installation_id = None
+            raise RetryLater.after(
+                request_context=RequestContext(
+                    source=ctx.source,
+                    operation="fetch_page",
+                    tenant_id=str(ctx.tenant_id),
+                    installation_id=installation_id,
+                ),
+                delay_seconds=config.zero_progress_retry_seconds,
+                reason=RetryReason.TRANSIENT,
+                cause_code=exc.code,
+                message=(
+                    "legacy fetcher returned an empty unchanged nonterminal "
+                    "page; scheduling instead of hot-looping"
+                ),
+            ) from exc
         ctx.records_fetched += len(result.records)
         messages = await _write_fetch_page_messages(
             s3_client, config, ctx, cursor=cursor, records=result.records,
         )
-        if messages is None:
-            return False
+        _raise_if_lease_lost(lease_lost, ctx.lease)
         advanced = await _advance_fetch_cursor(
             pool,
             kafka_producer,
@@ -1135,22 +1424,9 @@ async def _run_fetch_pages(
         )
         if not advanced:
             return False
+        _raise_if_lease_lost(lease_lost, ctx.lease)
         if result.end_of_data:
             return True
-
-
-def _log_fetch_rate_limited_exit(
-    ctx: _FetchLoopContext, exc: RateLimitWaitExceeded,
-) -> None:
-    log.warning(
-        "shard_fetch.rate_limited_exit_loop",
-        extra={
-            "shard_id": str(ctx.shard_id),
-            "source": ctx.source,
-            "bucket_key": exc.bucket_key,
-            "waited_seconds": exc.waited_seconds,
-        },
-    )
 
 
 def _log_recoverable_fetch_error(
@@ -1164,6 +1440,28 @@ def _log_recoverable_fetch_error(
             "error": f"{type(exc).__name__}: {exc}"[:200],
         },
     )
+
+
+async def _schedule_retry_for_context(
+    pool: asyncpg.Pool,
+    ctx: _FetchLoopContext,
+    *,
+    not_before: dt.datetime,
+    reason: str,
+    detail: str,
+) -> None:
+    scheduled = await _schedule_shard_retry(
+        pool,
+        ctx.shard_id,
+        not_before=not_before,
+        reason=reason,
+        detail=detail,
+        lease=ctx.lease,
+    )
+    if not scheduled:
+        raise ShardLeaseLost(
+            f"lease lost while scheduling retry for shard {ctx.shard_id}",
+        )
 
 
 # ---------------------------------------------------------------------
@@ -1187,7 +1485,6 @@ class ShardFetch(LongRunningService):
         *,
         config: ShardFetchConfig | None = None,
         s3_client: S3Client | None = None,
-        rate_limiter: FetchRateLimiter | None = None,
     ) -> None:
         self._pool = pool
         self._kafka_producer = kafka_producer
@@ -1197,18 +1494,13 @@ class ShardFetch(LongRunningService):
         # raises a clear error if it's missing so a misconfigured
         # subprocess fails loudly rather than silently dropping records.
         self._s3_client = s3_client
-        # FetchPage rate-limit gate (LLD §13). Optional: when None (no
-        # REDIS_URL / tests) the fetch loop runs unthrottled, preserving
-        # prior behaviour. When set, one token is consumed per page fetch
-        # from the (source, method) bucket before the upstream call.
-        self._rate_limiter = rate_limiter
 
     @property
     def tick_interval_seconds(self) -> float:
         return self._config.tick_interval_seconds
 
     async def tick(self) -> None:
-        """One tick: drain signals + scan for orphans.
+        """One tick: interleave due orphan recovery with fresh signals.
 
         Signal handlers run the FULL fetch loop for their shard. Work
         is concurrent only across independent shards; each shard keeps
@@ -1217,10 +1509,17 @@ class ShardFetch(LongRunningService):
         SKIP LOCKED.
         """
         signals_processed = 0
+        orphans_resumed = 0
         remaining = await self._signal_tick_budget()
         width = self._claim_wave_width(remaining)
         while remaining > 0:
             wave_size = min(width, remaining)
+            # A due retry/orphan gets one fair wave before each fresh backfill
+            # wave. A large new-install backlog therefore cannot postpone
+            # already-due recovery work until the entire snapshot drains.
+            orphans_resumed += await self._scan_and_resume_orphans(
+                limit=wave_size,
+            )
             results = await asyncio.gather(
                 *(self._process_one_signal() for _ in range(wave_size)),
                 return_exceptions=True,
@@ -1237,7 +1536,11 @@ class ShardFetch(LongRunningService):
             if processed_in_wave < wave_size:
                 break
 
-        orphans_resumed = await self._scan_and_resume_orphans()
+        # Auto mode historically drains the complete orphan snapshot. Preserve
+        # that throughput after the fair interleaving pass; explicitly bounded
+        # mode keeps its configured per-tick ceiling.
+        if self._config.max_signals_per_tick <= 0:
+            orphans_resumed += await self._scan_and_resume_orphans()
 
         await self._persist_scan_state(
             signals_processed=signals_processed,
@@ -1273,7 +1576,7 @@ class ShardFetch(LongRunningService):
         section).
         """
         shard: asyncpg.Record | None
-        is_new_claim: bool
+        lease: _ShardLease | None = None
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 signals = await claim_signals(
@@ -1282,6 +1585,7 @@ class ShardFetch(LongRunningService):
                     workflow_id=WORKFLOW_ID_INBOX,
                     consumed_by=self._config.instance_name,
                     batch_size=1,
+                    fairness="shard",
                 )
                 if not signals:
                     return False
@@ -1312,36 +1616,53 @@ class ShardFetch(LongRunningService):
                     return True
 
                 if shard["state"] == "pending":
-                    is_new_claim = await _claim_shard_for_fetch(
-                        conn, shard_id,
+                    lease_timeout_seconds = _effective_lease_timeout_seconds(
+                        self._config.lease_timeout_seconds,
                     )
-                    if not is_new_claim:
+                    lease = await _claim_shard_for_fetch(
+                        conn,
+                        shard_id,
+                        lease_owner=self._config.instance_name,
+                        lease_timeout_seconds=lease_timeout_seconds,
+                    )
+                    if lease is None:
                         # Race: another replica claimed between our
                         # SELECT and UPDATE. That replica will run the
                         # loop; we return.
                         return True
-                    await self._bootstrap_workflow_state(conn, shard_id)
+                    await self._bootstrap_workflow_state(conn, lease)
                 else:
                     # state == 'in_progress' — claim is being handled
                     # by the orphan scan path; we don't double-claim
-                    # here. Just consume the signal.
-                    pass
+                    # here. Consume the signal, but never run provider
+                    # work without an owner/version lease.
+                    return True
 
         # Fetch loop runs OUTSIDE the claim transaction — see module
         # docstring's transactional discipline section.
-        await self._run_fetch_loop(shard)
+        if lease is None:  # pragma: no cover - guarded by branches above
+            return True
+        await self._run_fetch_loop(shard, lease)
         return True
 
-    async def _scan_and_resume_orphans(self) -> int:
+    async def _scan_and_resume_orphans(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> int:
         """Find in-progress shards with stale N1 heartbeat; resume
         each fetch loop after extending the lease.
 
         Returns count of orphans resumed. Concurrent replicas use
         CLAIM-VIA-UPDATE for the lease extension so only one wins.
         """
-        limit = self._config.max_signals_per_tick
-        if limit <= 0:
-            limit = max(
+        claim_limit = limit
+        if claim_limit is not None and claim_limit <= 0:
+            return 0
+        if claim_limit is None:
+            claim_limit = self._config.max_signals_per_tick
+        if claim_limit <= 0:
+            claim_limit = max(
                 1,
                 await _count_orphan_shards(
                     self._pool,
@@ -1351,7 +1672,7 @@ class ShardFetch(LongRunningService):
         orphans = await _load_orphan_shards(
             self._pool,
             lease_timeout_seconds=self._config.lease_timeout_seconds,
-            limit=limit,
+            limit=claim_limit,
         )
         sem = asyncio.Semaphore(self._claim_wave_width(len(orphans)))
 
@@ -1360,10 +1681,20 @@ class ShardFetch(LongRunningService):
             async with sem:
                 async with self._pool.acquire() as conn:
                     async with conn.transaction():
-                        won = await _refresh_shard_lease(conn, shard_id)
-                if not won:
+                        lease_timeout_seconds = (
+                            _effective_lease_timeout_seconds(
+                                self._config.lease_timeout_seconds,
+                            )
+                        )
+                        lease = await _refresh_shard_lease(
+                            conn,
+                            shard_id,
+                            lease_owner=self._config.instance_name,
+                            lease_timeout_seconds=lease_timeout_seconds,
+                        )
+                if lease is None:
                     return 0
-                await self._run_fetch_loop(orphan)
+                await self._run_fetch_loop(orphan, lease)
                 return 1
 
         results = await asyncio.gather(
@@ -1376,7 +1707,9 @@ class ShardFetch(LongRunningService):
         return sum(int(r) for r in results)
 
     async def _bootstrap_workflow_state(
-        self, conn: asyncpg.Connection, shard_id: UUID,
+        self,
+        conn: asyncpg.Connection,
+        lease: _ShardLease,
     ) -> None:
         """Initialize the N1 home for this shard.
 
@@ -1384,44 +1717,87 @@ class ShardFetch(LongRunningService):
         (which raises `CursorAdvanceMissingState` if the row doesn't
         exist; the substrate refuses to silently create state).
         """
-        await _persist_initial_workflow_state(conn, shard_id)
+        bootstrapped = await _persist_initial_workflow_state(conn, lease)
+        if not bootstrapped:
+            raise ShardLeaseLost(
+                f"lease lost while bootstrapping shard {lease.shard_id}",
+            )
 
-    async def _run_fetch_loop(self, shard: asyncpg.Record) -> None:
-        """Run the fetch loop for one shard until end-of-data or
-        N1 flush failure.
+    async def _run_fetch_loop(
+        self,
+        shard: asyncpg.Record,
+        lease: _ShardLease,
+    ) -> None:
+        """Run one shard while a background task maintains its lease."""
+        try:
+            lease_timeout_seconds = _effective_lease_timeout_seconds(
+                self._config.lease_timeout_seconds,
+            )
+            async with _maintain_shard_lease(
+                self._pool,
+                lease,
+                lease_timeout_seconds=lease_timeout_seconds,
+            ) as lease_lost:
+                try:
+                    ctx = _FetchLoopContext.from_shard(shard, lease=lease)
+                except InstallationIdentityError as exc:
+                    await self._terminate_shard(
+                        lease=lease,
+                        state="failed",
+                        failure_reason=str(exc),
+                    )
+                    return
+                await self._run_fetch_loop_owned(ctx, lease_lost)
+        except ShardLeaseLost as exc:
+            # Losing a lease is a normal handoff. The current worker must stop
+            # without retry/terminal/cursor writes; the new generation owns all
+            # subsequent mutations.
+            log.warning(
+                "shard_fetch.lease_lost_stop",
+                extra={
+                    "shard_id": str(lease.shard_id),
+                    "lease_owner": lease.owner,
+                    "lease_version": lease.version,
+                    "error": str(exc),
+                },
+            )
+
+    async def _run_fetch_loop_owned(
+        self,
+        ctx: _FetchLoopContext,
+        lease_lost: asyncio.Event,
+    ) -> None:
+        """Fetch until end-of-data, durable retry, or lease loss.
 
         Per the module docstring: this runs OUTSIDE the claim
         transaction. Each iteration:
           1. Load current cursor from workflow_states (N1 home).
           2. Load install (from provider_installations or
              gmail_installations).
-          3. Call FETCHER_DISPATCH[source](install, shard_identifier,
-             cursor) → FetchResult.
+          3. Resolve the source contract's fetcher and call it with
+             `(install, shard_identifier, cursor)` → FetchResult.
           4. Build Kafka messages for result.records.
           5. Call advance_cursor_atomic_with_kafka_publish — N1.
           6. If end_of_data: exit loop.
 
         Exit conditions:
           - end_of_data → mark shard 'done' + emit completion.
-          - Transient infra fault → exit silently; shard stays in_progress;
-            next tick's orphan scan resumes. Covers: CursorAdvanceFlushFailure
-            (flush timeout), CursorAdvancePublishFailure (produce-enqueue:
-            broker down / unprovisioned topic / queue full), and raw-tier
-            (S3) write failures. These must NOT terminal-fail a shard —
-            doing so silently drops that shard's history with no auto-recovery.
+          - Transient infra fault → persist a due time and release ownership.
+            Covers Kafka enqueue/flush and raw-tier S3 failures. These must NOT
+            terminal-fail a shard; doing so silently drops history.
           - NotImplementedError (fetcher stub) → mark shard 'failed'
             + emit completion with failure_reason.
           - Other exception → mark 'failed' + emit with failure_reason.
         """
-        ctx = _FetchLoopContext.from_shard(shard)
-
         try:
+            _raise_if_lease_lost(lease_lost, ctx.lease)
             install = await _load_install(
                 self._pool,
                 tenant_id=ctx.tenant_id,
                 source=ctx.source,
-                shard_identifier=ctx.shard_identifier,
+                installation_row_id=ctx.installation_row_id,
             )
+            _raise_if_lease_lost(lease_lost, ctx.lease)
             if install is None:
                 # Install disabled mid-flight — suspended/revoked via the
                 # lifecycle webhook, or an A14 race. This is RECOVERABLE:
@@ -1432,6 +1808,18 @@ class ShardFetch(LongRunningService):
                 # parked until an operator cleans up the onboarding run —
                 # the retry is one cheap query per lease interval.
                 _log_fetch_install_unavailable(ctx)
+                await _schedule_retry_for_context(
+                    self._pool,
+                    ctx,
+                    not_before=(
+                        dt.datetime.now(tz=dt.timezone.utc)
+                        + dt.timedelta(
+                            seconds=self._config.zero_progress_retry_seconds
+                        )
+                    ),
+                    reason=RetryReason.TRANSIENT.value,
+                    detail="active installation unavailable",
+                )
                 return  # stay in_progress; orphan-scan retries on re-enable
 
             await _ensure_fetch_loop_state(self._pool, ctx)
@@ -1439,30 +1827,48 @@ class ShardFetch(LongRunningService):
                 self._pool,
                 self._kafka_producer,
                 self._s3_client,
-                self._rate_limiter,
                 self._config,
                 ctx,
                 install=install,
+                lease_lost=lease_lost,
             ):
                 return
 
-        except RateLimitWaitExceeded as exc:
-            # Transient: the (source, method) bucket stayed empty past the
-            # bounded wait. Exit without terminating — the shard stays
-            # in_progress and the orphan scan resumes it once the bucket
-            # refills (or the operator lifts the pause). Same recovery
-            # shape as a CursorAdvanceFlushFailure.
-            _log_fetch_rate_limited_exit(ctx, exc)
+        except ShardLeaseLost:
+            raise
+
+        except RetryLater as exc:
+            _raise_if_lease_lost(lease_lost, ctx.lease)
+            await _schedule_retry_for_context(
+                self._pool,
+                ctx,
+                not_before=exc.not_before,
+                reason=exc.reason.value,
+                detail=str(exc),
+            )
+            log.info(
+                "shard_fetch.retry_scheduled",
+                extra={
+                    "shard_id": str(ctx.shard_id),
+                    "source": ctx.source,
+                    "not_before": exc.not_before.isoformat(),
+                    "retry_reason": exc.reason.value,
+                    "blocked_scope": exc.blocked_scope,
+                },
+            )
             return
 
         except NotImplementedError as exc:
+            _raise_if_lease_lost(lease_lost, ctx.lease)
             await self._terminate_shard(
-                shard_id=ctx.shard_id, state="failed",
+                lease=ctx.lease,
+                state="failed",
                 failure_reason=str(exc),
             )
             return
 
         except Exception as exc:  # noqa: BLE001 — terminal recovery boundary
+            _raise_if_lease_lost(lease_lost, ctx.lease)
             if getattr(exc, "recoverable", False):
                 # Transient upstream fault (rate limit, 5xx). Park the shard —
                 # leave it in_progress so the orphan-scan retries — rather than
@@ -1470,33 +1876,50 @@ class ShardFetch(LongRunningService):
                 # manual requeue). Same posture as the S3/Kafka transient
                 # handling above.
                 _log_recoverable_fetch_error(ctx, exc)
+                await _schedule_retry_for_context(
+                    self._pool,
+                    ctx,
+                    not_before=(
+                        dt.datetime.now(tz=dt.timezone.utc)
+                        + dt.timedelta(
+                            seconds=self._config.zero_progress_retry_seconds
+                        )
+                    ),
+                    reason=RetryReason.TRANSIENT.value,
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
                 return  # stay in_progress; orphan-scan retries
             log.exception(
                 "shard_fetch.unexpected_exception",
                 extra={"shard_id": str(ctx.shard_id)},
             )
             await self._terminate_shard(
-                shard_id=ctx.shard_id, state="failed",
+                lease=ctx.lease,
+                state="failed",
                 failure_reason=f"{type(exc).__name__}: {exc}",
             )
             return
 
         # Clean end-of-data exit. Pass the fetch metrics so the terminal
         # transition can emit the `shard.fetched` progress event.
+        _raise_if_lease_lost(lease_lost, ctx.lease)
         await self._terminate_shard(
-            shard_id=ctx.shard_id, state="done", failure_reason=None,
+            lease=ctx.lease,
+            state="done",
+            failure_reason=None,
             observation_count=ctx.records_fetched,
             fetched_in_seconds=ctx.fetched_in_seconds(),
         )
 
     async def _terminate_shard(
-        self, *,
-        shard_id: UUID,
+        self,
+        *,
+        lease: _ShardLease,
         state: str,  # 'done' or 'failed'
         failure_reason: str | None,
         observation_count: int | None = None,
         fetched_in_seconds: float | None = None,
-    ) -> None:
+    ) -> bool:
         """Mark shard terminal + emit shard_fetch_completed.
 
         One transaction: shard state update + emit, atomic. If the
@@ -1517,15 +1940,33 @@ class ShardFetch(LongRunningService):
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 if state == "done":
-                    await _mark_shard_done(conn, shard_id)
-                else:
-                    await _mark_shard_failed(
-                        conn, shard_id, failure_reason or "<unknown>",
+                    changed = await _mark_shard_done(
+                        conn,
+                        lease.shard_id,
+                        lease=lease,
                     )
+                else:
+                    changed = await _mark_shard_failed(
+                        conn,
+                        lease.shard_id,
+                        failure_reason or "<unknown>",
+                        lease=lease,
+                    )
+                if not changed:
+                    log.warning(
+                        "shard_fetch.stale_terminal_write_rejected",
+                        extra={
+                            "shard_id": str(lease.shard_id),
+                            "lease_owner": lease.owner,
+                            "lease_version": lease.version,
+                            "requested_state": state,
+                        },
+                    )
+                    return False
                 # Re-load to get the shard's run/source for the signal.
-                shard = await _load_shard(conn, shard_id)
+                shard = await _load_shard(conn, lease.shard_id)
                 if shard is None:
-                    return
+                    return False
                 await self._emit_shard_completed(
                     conn, shard=shard, status=state,
                     failure_reason=failure_reason,
@@ -1539,6 +1980,7 @@ class ShardFetch(LongRunningService):
                         fetched_in_seconds=fetched_in_seconds or 0.0,
                     ))
         await publish_progress_events(self._kafka_producer, events)
+        return True
 
     async def _emit_shard_completed(
         self, conn: asyncpg.Connection, *,
@@ -1620,24 +2062,16 @@ class ShardFetch(LongRunningService):
 #                               0 restores unbounded fan-out.
 #   SHARD_FETCH_S3_WRITE_CONCURRENCY — per-page S3 PUT fan-out (default 1).
 #   SHARD_FETCH_INSTANCE      — instance name for diagnostics.
-#   REDIS_URL                 — Redis for the FetchPage rate-limit gate
-#                               (LLD §13). Unset → gate disabled.
-#   SHARD_FETCH_RATE_LIMIT    — "0" disables the gate even with REDIS_URL.
-#   SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC — per-page rate-limit wait bound
-#                               (default 30.0).
 #   WORKFLOWS_LOG_LEVEL       — log level (default INFO).
 async def _run_service() -> None:
     import asyncio
     import os
     import signal as sig_module
 
-    from redis.asyncio import Redis as AsyncRedis
-
     from services.ingest.ingestion.kafka.producer import (
         IdempotentProducer,
         ProducerConfig,
     )
-    from services.ingest.ingestion.rate_limit import RateLimiter
     from services.ingest.ingestion.workflows.runtime import make_workflow_pool
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
@@ -1676,12 +2110,6 @@ async def _run_service() -> None:
             "SHARD_FETCH_INSTANCE", DEFAULT_DIAGNOSTIC_INSTANCE,
         ),
         ingestion_env=os.environ.get("INGESTION_ENV", DEFAULT_INGESTION_ENV),
-        rate_limit_max_wait_seconds=float(
-            os.environ.get(
-                "SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC",
-                str(DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS),
-            ),
-        ),
         max_concurrent_shards=parse_auto_parallelism(
             os.environ.get("SHARD_FETCH_CONCURRENCY"),
         ),
@@ -1694,23 +2122,11 @@ async def _run_service() -> None:
         ),
     )
 
-    # FetchPage rate-limit gate (LLD §13). Enabled when REDIS_URL is set
-    # (it is, in compose's app-env) unless SHARD_FETCH_RATE_LIMIT=0
-    # explicitly disables it. When off, the fetch loop runs unthrottled.
-    redis = None
-    rate_limiter = None
-    redis_url = os.environ.get("REDIS_URL")
-    if redis_url and os.environ.get("SHARD_FETCH_RATE_LIMIT", "1") != "0":
-        redis = AsyncRedis.from_url(redis_url, decode_responses=False)
-        rate_limiter = FetchRateLimiter(
-            RateLimiter(redis),
-            max_wait_seconds=config.rate_limit_max_wait_seconds,
-        )
-        log.info("workflow.shard_fetch.rate_limit_enabled")
-
     service = ShardFetch(
-        pool, producer, config=config, s3_client=s3_client,
-        rate_limiter=rate_limiter,
+        pool,
+        producer,
+        config=config,
+        s3_client=s3_client,
     )
 
     stop_event = asyncio.Event()
@@ -1745,8 +2161,6 @@ async def _run_service() -> None:
             health.shutdown()
         await producer.stop()
         await s3_client.close()
-        if redis is not None:
-            await redis.aclose()
         await pool.close()
     log.info("workflow.shard_fetch.exited")
 

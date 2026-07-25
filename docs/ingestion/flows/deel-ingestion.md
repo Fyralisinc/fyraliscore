@@ -86,7 +86,7 @@ Deel uses a **single credential model: one long-lived API token presented as a
 and *not* an access+refresh pair.
 
 - The token is resolved **once** from the secret store (via the install's
-  `secret_ref`) and reused for the life of the client; in spammer mode it is
+  `secret_ref`) and reused for the life of the client; in Provider Lab mode it is
   preset ([client.py:102‑124](../../../services/ingest/integrations/deel/client.py#L102-L124)).
 - The auth header is `Authorization: Bearer {token}`
   ([client.py:126‑128](../../../services/ingest/integrations/deel/client.py#L126-L128)).
@@ -540,7 +540,7 @@ Practical consequences (inferred):
 | `DEEL_RL_MAX_ATTEMPTS` | `4` | 429 retry budget in `DeelClient._request` ([client.py:150](../../../services/ingest/integrations/deel/client.py#L150)) |
 | `DEEL_RL_MAX_SLEEP_SEC` | `30` | max backoff per `Retry-After` ([client.py:151](../../../services/ingest/integrations/deel/client.py#L151)) |
 | `DEEL_BACKFILL_PAGE_SIZE` | `100` (capped 500) | payments page size ([fetchers/deel.py:62‑66](../../../services/ingest/ingestion/fetchers/deel.py#L62-L66)) |
-| `DEEL_API_BASE_URL` | `https://api.letsdeel.com` | canonical API host; spammer override ([endpoints.py:80](../../../lib/integrations/endpoints.py#L80), [134](../../../lib/integrations/endpoints.py#L134)) |
+| `DEEL_API_BASE_URL` | `https://api.letsdeel.com` | canonical API host; explicit Provider Lab override ([endpoints.py:80](../../../lib/integrations/endpoints.py#L80), [134](../../../lib/integrations/endpoints.py#L134)) |
 
 > **TODO(human)** *(reproduced from [endpoints.py:80](../../../lib/integrations/endpoints.py#L80))*:
 > confirm the canonical Deel API host.
@@ -557,15 +557,15 @@ Practical consequences (inferred):
   ids masked before the reasoning layer. ✅
 - **Revocation chokepoint** — **absent** (§9). ⚠️
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
-For local testing, `build_deel_client` detects spammer mode and **presets** the
+For local testing, `build_deel_client` detects Provider Lab mode and **presets** the
 API token to `spam-deel`, skipping the secret-store resolution, and points the
-client base at the local mock under the `/deel` sub-path
+client base at Provider Lab's `/deel` sub-path
 ([_clients.py:515‑540](../../../services/ingest/ingestion/fetchers/_clients.py#L515-L540),
 [endpoints.py:164](../../../lib/integrations/endpoints.py#L164)).
-The mock server serves the three read routes the client calls — `GET /contracts`,
+The canonical
+[Provider Lab Deel adapter](../../../services/ingest/synthetic/provider_lab/wave_b.py)
+serves the three read routes the client calls — `GET /contracts`,
 `GET /contract/{id}`, `GET /contract/{id}/payments?limit&offset&start` — matching
-on the path **suffix** so the `/deel` prefix is transparent
-([mock_servers/deel.py:7‑22](../../../services/ingest/synthetic/mock_servers/deel.py#L7-L22),
-[43‑44](../../../services/ingest/synthetic/mock_servers/deel.py#L43-L44)).
+on the path **suffix** so the `/deel` prefix is transparent.

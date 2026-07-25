@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -52,7 +52,7 @@ async def _open_slack_user_client(
     *, tenant_id: Any, team_id: str, user_id: str, base_url: str | None,
 ):  # noqa: ANN202
     """Per-user DM client factory seam. Real builder resolves the xoxp token
-    (or presets the spammer token in spammer mode). The X3 mock harness
+    (or presets the Provider Lab token in lab mode). The X3 mock harness
     monkeypatches this symbol to inject a MockSlackUserClient."""
     from services.ingest.ingestion.fetchers._clients import build_slack_user_client
     return await build_slack_user_client(
@@ -153,7 +153,6 @@ async def plan_shards_slack(ctx: PlannerContext) -> list[Shard]:
     return shards
 
 
-PLANNER_DISPATCH["slack"] = plan_shards_slack
 
 
 __all__ = [

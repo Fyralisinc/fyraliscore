@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from lib.shared.errors import NotionApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
+from services.ingest.source_contract.runtime import resolve_fetcher
 from services.ingest.ingestion.fetchers import notion as nt
 from services.ingest.ingestion.fetchers.notion import (
     SHARD_KIND_DATABASE,
@@ -36,8 +40,14 @@ class _FakeNotionClient:
         self.calls.append("query_database")
         if self.rate_limited:
             self.rate_limited = False
-            raise NotionApiError("429", code="notion_api_rate_limited",
-                                 context={"http_status": 429})
+            raise RetryLater.after(
+                request_context=RequestContext(
+                    source="notion",
+                    operation="databases.query",
+                ),
+                delay_seconds=60,
+                reason=RetryReason.RATE_LIMIT,
+            )
         return ([{
             "object": "page", "id": "p1",
             "last_edited_time": "2025-03-01T00:00:00.000Z",
@@ -116,17 +126,15 @@ async def test_page_tree_shard_skips_database_rows(monkeypatch):
     assert page_ids == ["loose1"]  # "dbrow" (database row) was skipped
 
 
-async def test_rate_limit_repushes_item_and_preserves_cursor(monkeypatch):
+async def test_retry_later_propagates_without_cursor_advance(monkeypatch):
     fake = _FakeNotionClient(rate_limit_once=True)
     _patch(monkeypatch, fake)
     shard = {"shard_kind": SHARD_KIND_DATABASE, "database_id": "db1", "workspace_id": "w1"}
-    r1 = await fetch_page_notion(_FakeInst(), shard, None)
-    assert r1.records == []
-    assert r1.end_of_data is False
-    # the db_rows work item is still on the stack for the next tick.
-    assert any(it["kind"] == "db_rows" for it in r1.next_cursor["stack"])
-    # next tick succeeds and the walk proceeds.
-    r2 = await fetch_page_notion(_FakeInst(), shard, r1.next_cursor)
+    with pytest.raises(RetryLater):
+        await fetch_page_notion(_FakeInst(), shard, None)
+    # No FetchResult was returned, so ShardFetch keeps the previously persisted
+    # cursor (None). Retrying from that same cursor repeats the exact work item.
+    r2 = await fetch_page_notion(_FakeInst(), shard, None)
     assert any(rec["object"] == "page" for rec in r2.records)
 
 
@@ -157,7 +165,7 @@ async def test_cursor_strict():
 
 
 async def test_dispatch_and_routing_wired():
-    assert FETCHER_DISPATCH["notion"] is fetch_page_notion
+    assert resolve_fetcher("notion") is fetch_page_notion
     assert resolve_channel("notion", "backfill") == "notion:object"
     assert resolve_channel("notion", "poll") == "notion:object"
 

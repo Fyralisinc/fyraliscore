@@ -574,7 +574,7 @@ Verified against Google's Drive v3 docs (Changes API, DWD, push notifications).
 | Env var | Default | Meaning |
 |---------|---------|---------|
 | `GMAIL_SERVICE_ACCOUNT_CLIENT_ID` | — (required) | DWD client ID (numeric); surfaced in the Admin-Console remediation payload |
-| `GOOGLE_DRIVE_API_BASE_URL` | `https://www.googleapis.com/drive/v3` | Drive v3 base; pointed at the local spammer in dev (`endpoint("google_drive_api")`) |
+| `GOOGLE_DRIVE_API_BASE_URL` | `https://www.googleapis.com/drive/v3` | Drive v3 base; pointed explicitly at Provider Lab in dev (`endpoint("google_drive_api")`) |
 | `GOOGLE_DRIVE_BACKFILL_DAYS` | `180` | windowed-backfill horizon (`modifiedTime > now − N days`) |
 | `GOOGLE_DRIVE_EXTRACT_MAX_BYTES` | `65536` | cap on extracted text per file |
 | `GOOGLE_DRIVE_PDF_MAX_PAGES` | `50` | cap on PDF pages parsed by pypdf |
@@ -598,15 +598,15 @@ Verified against Google's Drive v3 docs (Changes API, DWD, push notifications).
 - **Least secret surface** — no stored per-drive token; DWD grant lives in the
   customer's Admin Console. ✅
 
-### 12.3 Dev / spammer mode
+### 12.3 Dev / Provider Lab mode
 
 Drive has **no `_clients.py` builder branch and no token preseed** (unlike
 GitHub/Slack/Discord/Notion — verified: `_clients.py` has no `google_drive`
 reference). The fetcher always builds a real `GoogleDriveClient` over the shared
 Gmail DWD minter via `_open_drive_client`
 ([fetchers/google_drive.py:147-161](../../../services/ingest/ingestion/fetchers/google_drive.py#L147-L161)).
-Dev/spammer testing is **pure config**: setting `GOOGLE_DRIVE_API_BASE_URL` (or
-the spammer sub-path `/gdrive/drive/v3`,
+Dev/Provider Lab testing is **pure config**: set `GOOGLE_DRIVE_API_BASE_URL` to
+the explicit Provider Lab path `/gdrive/drive/v3`,
 [endpoints.py:156](../../../lib/integrations/endpoints.py#L156)) points the client
 at the local Drive mock while auth still flows through the (sandbox) minter. The
 sandbox harness (`scripts/sandbox_google_drive.py`) drives the real minter →

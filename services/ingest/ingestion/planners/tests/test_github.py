@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_planner
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.github import (
     EVENT_TYPES,
@@ -137,4 +137,4 @@ async def test_check_runs_enabled_by_env(monkeypatch):
 
 
 async def test_dispatch_table_wired():
-    assert PLANNER_DISPATCH["github"] is plan_shards_github
+    assert resolve_planner("github") is plan_shards_github

@@ -55,8 +55,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from lib.shared.errors import JiraApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -269,24 +268,14 @@ async def fetch_page_jira(
 
     client, close = await _open_jira_client(install)
     try:
-        try:
-            issues, next_token, is_last = await client.search_issues(
-                jql=jql, next_page_token=cur.next_page_token, max_results=page_size,
-            )
-        except JiraApiError as exc:
-            if (exc.context or {}).get("code") == "jira_api_rate_limited" or \
-               getattr(exc, "_code", None) == "jira_api_rate_limited":
-                # Retry budget spent — leave the cursor unadvanced, end this
-                # round empty so ShardFetch re-enters next tick.
-                log.info(
-                    "jira_backfill_rate_limited",
-                    extra={"project_key": project_key},
-                )
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        # Provider cooldowns escape as RetryLater. ShardFetch persists the
+        # not-before timestamp and releases the lease; an empty unchanged page
+        # would violate the zero-progress invariant and hot-loop this shard.
+        issues, next_token, is_last = await client.search_issues(
+            jql=jql,
+            next_page_token=cur.next_page_token,
+            max_results=page_size,
+        )
 
         records: list[dict[str, Any]] = []
         for issue in issues:
@@ -315,7 +304,6 @@ async def fetch_page_jira(
         await close()
 
 
-FETCHER_DISPATCH["jira"] = fetch_page_jira
 
 
 __all__ = [

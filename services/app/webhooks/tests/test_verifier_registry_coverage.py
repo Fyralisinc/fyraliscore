@@ -10,8 +10,9 @@ import json
 
 import pytest
 
-from services.app.webhooks.signatures import VERIFIERS
+from services.app.webhooks.signatures import verifier_for_provider
 from services.app.webhooks.verifier import Secret, WebhookVerificationError
+from services.ingest.source_contract import WEBHOOK_INGRESS_CATALOG
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,7 +117,11 @@ def _sign(
 
 
 def test_registered_provider_verifiers_have_negative_test_coverage() -> None:
-    assert set(VERIFIERS) == _NEGATIVE_COVERED_PROVIDERS
+    assert set(WEBHOOK_INGRESS_CATALOG) == _NEGATIVE_COVERED_PROVIDERS
+    assert all(
+        verifier_for_provider(provider) is not None
+        for provider in WEBHOOK_INGRESS_CATALOG
+    )
 
 
 @pytest.mark.parametrize("case", _HMAC_CASES, ids=lambda case: case.provider)

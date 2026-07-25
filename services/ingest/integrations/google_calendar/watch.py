@@ -15,16 +15,30 @@ from services.ingest.integrations._google_watch import (
     WatchSpec,
     run_watch_scheduler as _run_scheduler,
 )
-from services.ingest.integrations.google_calendar.client import GoogleCalendarClient
+from services.ingest.integrations.google_calendar.client import (
+    GoogleCalendarClient,
+    resolve_scope,
+)
+from services.ingest.source_contract.catalog import dedicated_ingress_definition
 
 
-async def _make_client(scope: str):  # noqa: ANN202
-    from services.ingest.integrations.gmail.client import GoogleHttpClient
+_INGRESS = dedicated_ingress_definition("google_calendar_push")
+
+
+async def _make_client(
+    scope: str, *, tenant_id: Any, installation_id: Any,
+):  # noqa: ANN202
+    from services.ingest.integrations.gmail.client import build_google_http_client
     from services.ingest.integrations.gmail.dwd import get_minter
 
-    http = GoogleHttpClient(get_minter())
+    http = build_google_http_client(
+        get_minter(),
+        source="google_calendar",
+        tenant_id=str(tenant_id),
+        installation_id=str(installation_id),
+    )
     await http.__aenter__()
-    client = GoogleCalendarClient(http, scope=scope)
+    client = GoogleCalendarClient(http, scope=resolve_scope(scope))
 
     async def close() -> None:
         await http.__aexit__(None, None, None)
@@ -62,20 +76,21 @@ def _build_shard(row: asyncpg.Record | dict) -> dict[str, Any]:
     return {
         "calendar_id": row["calendar_id"],
         "owner_email": row["owner_email"],
+        "installation_id": str(row["installation_id"]),
         "sync_token": row["cursor_token"],
     }
 
 
 SPEC = WatchSpec(
-    source="google_calendar",
+    source=_INGRESS.source_id,
     table="google_calendar_calendars",
     install_table="google_calendar_installations",
     install_fk="google_calendar_installation_id",
     cursor_col="sync_token",
     cursor_next_key="next_sync_token",
-    channel="google_calendar:event",
+    channel=_INGRESS.channel,
     id_cols=("calendar_id", "owner_email"),
-    push_path="/webhooks/google_calendar/push",
+    push_path=_INGRESS.route_path,
     make_client=_make_client,
     do_watch=_do_watch,
     do_stop=_do_stop,

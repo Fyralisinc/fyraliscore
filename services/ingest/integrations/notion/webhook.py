@@ -129,7 +129,7 @@ async def _build_workspace_client(outcome: Any, workspace_id: str | None) -> Any
 
     Reuses the fetcher's ``build_notion_client`` so the bot-token
     resolution, shared httpx pool, endpoint-resolver base URL, and sandbox
-    spammer mode are all identical to the backfill/poll path. The
+    Provider Lab mode are all identical to the backfill/poll path. The
     ``install`` shape it consumes is just three fields, which we synthesize
     from the resolver outcome (a plain dict satisfies its ``[...]`` /
     ``in`` access).
@@ -137,6 +137,7 @@ async def _build_workspace_client(outcome: Any, workspace_id: str | None) -> Any
     from services.ingest.ingestion.fetchers._clients import build_notion_client
 
     install = {
+        "id": outcome.installation_row_id,
         "installation_id": workspace_id,
         "tenant_id": outcome.tenant_id,
         "secret_ref": outcome.secret_ref,
@@ -151,9 +152,11 @@ async def handle_notion_event(
     payload: Mapping[str, Any],
 ) -> JSONResponse:
     """Fetch the changed page and shadow-write it onto the data plane.
-    Always returns 200 — Notion retries non-2xx, and an unsupported
-    entity / transient fetch miss is not worth a retry storm. The periodic
-    backfill/poll reconcile is the correctness backstop.
+
+    Unsupported entities and terminal provider errors are acknowledged with
+    200 because periodic reconciliation is their correctness backstop.
+    ``RetryLater`` deliberately is not caught: transport cooldowns must escape
+    instead of being converted into a successful ACK that loses the delivery.
     """
     workspace_id = payload.get("workspace_id")
     event_type = payload.get("type") if isinstance(payload.get("type"), str) else None
@@ -175,9 +178,9 @@ async def handle_notion_event(
     try:
         page = await client.retrieve_page(entity_id)
     except NotionApiError as exc:
-        # 404 (page deleted / un-shared since the event fired), 401 (token
-        # rotated), rate-limit-exhausted — ack and let backfill/poll
-        # reconcile. Retrying via a non-2xx would not change the outcome.
+        # 404 (page deleted / un-shared since the event fired) and terminal
+        # auth/provider failures are acknowledged and left to reconciliation.
+        # RetryLater is not a NotionApiError and therefore propagates.
         status = (exc.context or {}).get("http_status")
         log.info(
             "notion_webhook_fetch_failed",

@@ -14,10 +14,11 @@ event TYPE from the `X-GitHub-Event` header. So the fetcher reshapes
 each REST item into that event-body shape and emits the header under
 the reserved `webhook_metadata` key (lifted into the RawEnvelope blob
 by the producer; replayed to the handler by the normalizer). The
-handler derives `external_id` from the object's `node_id`, which is
-identical in the REST item and the webhook payload — so a backfilled
-event and its live webhook twin dedup to one observation. Backfill is
-authenticated by the REST call, so no signature is attached.
+handler derives the lifecycle `external_id` from the object's stable
+`node_id` plus the event action. The REST shaper deterministically maps
+the current state to the equivalent action, so a backfilled event and its
+live webhook twin dedup while later lifecycle transitions remain distinct.
+Backfill is authenticated by the REST call, so no signature is attached.
 
 ============================================================
 ENDPOINT DISPATCH
@@ -57,10 +58,10 @@ Paging is plain offset paging via `?per_page=N&page=K`. End-of-data
 when the response is an empty list (no more pages).
 
 ============================================================
-WIRE-IN
+SOURCE CONTRACT
 ============================================================
-This module assigns into `FETCHER_DISPATCH['github']` at module-
-import time.
+`SourceDefinition.fetcher_binding` points directly to
+`fetch_page_github`; importing this module has no registration side effect.
 """
 from __future__ import annotations
 
@@ -70,7 +71,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ class GithubCursor(BaseModel):
 # install's auth; tests rebind to return a fake.
 async def _open_github_client(install: asyncpg.Record):  # noqa: ANN202
     # Builds a real GithubClient pointed at the resolver's github_api base
-    # (production, or the local spammer when *_API_BASE_URL points at it).
+    # (production, or Provider Lab when the explicit API base points at it).
     # The X3 mock harness monkeypatches this symbol to inject a fixture
     # client instead.
     from services.ingest.ingestion.fetchers._clients import open_github_client
@@ -135,9 +136,10 @@ def _derive_action(event_type: str, item: dict[str, Any]) -> str:
     """Synthesize the webhook `action` from the REST item's state.
 
     The REST list objects carry `state` ("open"/"closed") but no
-    `action`. external_id parity does NOT depend on `action` (it's
-    derived from `node_id`); this only shapes content/trust_tier so the
-    backfilled observation reads sensibly.
+    `action`. external_id parity depends on this action because mutable
+    PR/issue lifecycle observations use ``{node_id}:{action}``; the REST
+    shaper must therefore synthesize the same action as the equivalent
+    webhook.
     """
     if event_type == "pull_requests" and bool(item.get("merged")):
         return "closed"
@@ -474,7 +476,6 @@ async def fetch_page_github(
         await close()
 
 
-FETCHER_DISPATCH["github"] = fetch_page_github
 
 
 __all__ = [

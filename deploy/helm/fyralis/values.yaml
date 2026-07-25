@@ -100,6 +100,36 @@ gateway:
     type: ClusterIP
     port: 8000
 
+# Signal is stateful at the linked-device boundary. Enabling this section
+# renders exactly one Deployment per explicit tenant/installation binding.
+# The linked-device session itself remains in Fyralis's tenant-scoped secret
+# store; Helm values contain only identity and network routing.
+signalGateway:
+  enabled: false
+  signalCliVersion: "0.14.4.1"
+  installations: []
+  # Example:
+  # installations:
+  #   - name: finance-phone
+  #     tenantId: 00000000-0000-4000-8000-000000000001
+  #     installationId: 00000000-0000-4000-8000-000000000002
+  #     jsonrpcEndpoint: http://signal-cli-finance:8080/api/v1/rpc
+  #     sseEndpoint: ""
+  #     multiAccount: false
+
+# Telegram is stateful at the MTProto authorization boundary. Enabling this
+# section renders exactly one Deployment per explicit tenant/installation
+# binding. Telethon session and API hash material stay in Fyralis's
+# tenant-scoped secret store; Helm values contain identity only.
+telegramGateway:
+  enabled: false
+  installations: []
+  # Example:
+  # installations:
+  #   - name: executive-account
+  #     tenantId: 00000000-0000-4000-8000-000000000001
+  #     installationId: 00000000-0000-4000-8000-000000000002
+
 jobs:
   migrate:
     enabled: true

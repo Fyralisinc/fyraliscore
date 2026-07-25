@@ -25,7 +25,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class SlackCursor(BaseModel):
 
 async def _open_slack_client(install: asyncpg.Record):  # noqa: ANN202
     # Real SlackClient pointed at the resolver's slack_api base (prod or
-    # local spammer). X3 mock harness monkeypatches this symbol.
+    # local Provider Lab). The synthetic harness monkeypatches this symbol.
     from services.ingest.ingestion.fetchers._clients import open_slack_client
     return await open_slack_client(install)
 
@@ -166,7 +166,6 @@ async def fetch_page_slack(
         await close()
 
 
-FETCHER_DISPATCH["slack"] = fetch_page_slack
 
 
 __all__ = [

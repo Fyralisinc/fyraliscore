@@ -9,7 +9,13 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from lib.shared.errors import AwsApiError
+from lib.shared.provider_transport import RetryLater
+from services.ingest.integrations.aws.client import AwsClient
 from services.ingest.integrations.aws.onboarding import finalize_install
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 
 
 router = APIRouter(prefix="/integrations/aws", tags=["aws"])
@@ -67,11 +73,73 @@ def _inputs(body: dict[str, Any]) -> tuple[str, str, str, dict[str, Any], int]:
     return account_id, region, credential_kind, material, backfill_days
 
 
+class _InlineCredentialStore:
+    """Ephemeral secret-store seam for a probe before persistence."""
+
+    def __init__(self, material: dict[str, Any]) -> None:
+        self._material = json.dumps(material, sort_keys=True)
+
+    async def get(self, _ref: str, *, tenant_id: UUID) -> str:
+        del tenant_id
+        return self._material
+
+
+async def _probe_credentials(
+    *,
+    tenant_id: UUID,
+    account_id: str,
+    region: str,
+    credential_kind: str,
+    material: dict[str, Any],
+) -> dict[str, Any]:
+    client = AwsClient(
+        account_id=account_id,
+        region=region,
+        secret_store=_InlineCredentialStore(material),
+        credential_kind=credential_kind,
+        secret_ref="aws-preinstall-probe",
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
+    try:
+        identity = await client.describe_account()
+    except RetryLater as exc:
+        retry_after = float(exc.context.get("retry_after_seconds") or 60)
+        raise HTTPException(
+            status_code=503,
+            detail="AWS temporarily deferred the credential probe",
+            headers={"Retry-After": str(max(1, int(retry_after)))},
+        ) from exc
+    except AwsApiError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": getattr(exc, "code", "aws_api_error"),
+                "message": "AWS rejected the submitted installation credentials.",
+            },
+        ) from exc
+    finally:
+        await client.aclose()
+    discovered = str(identity.get("account_id") or "")
+    if discovered and discovered != account_id:
+        raise HTTPException(
+            status_code=400,
+            detail="AWS credentials resolved a different account_id",
+        )
+    return identity
+
+
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
-    _tenant_from_request(request)
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
-    account_id, region, credential_kind, _material, backfill_days = _inputs(body)
+    account_id, region, credential_kind, material, backfill_days = _inputs(body)
+    identity = await _probe_credentials(
+        tenant_id=tenant_id,
+        account_id=account_id,
+        region=region,
+        credential_kind=credential_kind,
+        material=material,
+    )
     return JSONResponse(
         content={
             "ok": True,
@@ -79,7 +147,8 @@ async def connect_preflight(request: Request) -> JSONResponse:
             "region": region,
             "credential_kind": credential_kind,
             "backfill_window_days": backfill_days,
-            "verification": "shape_only_before_secret_storage",
+            "verification": "sts_get_caller_identity",
+            "identity": identity,
         }
     )
 
@@ -91,6 +160,13 @@ async def connect_finalize(request: Request) -> JSONResponse:
     store = _secret_store_from_request(request)
     body = await request.json()
     account_id, region, credential_kind, material, backfill_days = _inputs(body)
+    await _probe_credentials(
+        tenant_id=tenant_id,
+        account_id=account_id,
+        region=region,
+        credential_kind=credential_kind,
+        material=material,
+    )
     secret_ref = await store.put(
         json.dumps(material, sort_keys=True),
         label=f"aws_{credential_kind}:{account_id}:{region}",

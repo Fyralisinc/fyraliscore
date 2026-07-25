@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
@@ -21,6 +20,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import HibobApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -45,15 +58,6 @@ _PEOPLE_FIELDS = [
 ]
 
 
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
-
-
 class HibobClient:
     """Outbound HiBob REST client, one per backfill/poll shard open."""
 
@@ -70,6 +74,12 @@ class HibobClient:
         token: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
@@ -82,6 +92,27 @@ class HibobClient:
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="hibob",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(installation_row_id)
+                if installation_row_id is not None
+                else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -119,6 +150,7 @@ class HibobClient:
         *,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        operation: str,
     ) -> Any:
         from services.ingest.integrations.hibob import metrics
 
@@ -130,13 +162,9 @@ class HibobClient:
         }
         if json_body is not None:
             headers["Content-Type"] = "application/json"
-        max_attempts = int(os.environ.get("HIBOB_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("HIBOB_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
-        while True:
-            attempt += 1
+        async def _once() -> httpx.Response:
             try:
                 response = await client.request(
                     method,
@@ -145,29 +173,54 @@ class HibobClient:
                     params=params,
                     json=json_body,
                 )
+            except httpx.TimeoutException as exc:
+                metrics.record_request("error")
+                raise ProviderTimeoutError(
+                    "HiBob request timed out",
+                    source="hibob",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
             except httpx.TransportError as exc:
                 metrics.record_request("error")
-                raise HibobApiError(
-                    "transport error calling hibob",
-                    code="hibob_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
+                raise ProviderTransientError(
+                    "HiBob transport error",
+                    source="hibob",
+                    operation=operation,
+                    error_type=type(exc).__name__,
                 ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
+            if response.status_code == 429:
                 metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
-
-            if response.status_code // 100 == 2:
-                metrics.record_request("ok")
-                return _safe_json(response)
-
-            if response.status_code in (401, 403):
-                metrics.record_request("unauthorized")
-            else:
+                raise ProviderRateLimited(
+                    "HiBob rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="hibob",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
                 metrics.record_request("error")
-            raise _api_error_from_response(response, path)
+                raise ProviderTransientError(
+                    f"HiBob returned HTTP {response.status_code}",
+                    source="hibob",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
+
+        response = await self._provider.execute(operation, _once)
+        if response.status_code // 100 == 2:
+            metrics.record_request("ok")
+            return _safe_json(response)
+        if response.status_code in (401, 403):
+            metrics.record_request("unauthorized")
+        else:
+            metrics.record_request("error")
+        raise _api_error_from_response(response, path)
 
     # -----------------------------------------------------------------
     # Public read surface
@@ -195,6 +248,7 @@ class HibobClient:
             return await self._cursor_table(
                 "/v1/bulk/people/salaries",
                 result_key="results",
+                operation="people.salaries.list",
                 limit=eff_limit,
                 cursor=page_cursor,
                 modified_since=modified_since,
@@ -203,6 +257,7 @@ class HibobClient:
             return await self._cursor_table(
                 "/v1/bulk/people/work",
                 result_key="results",
+                operation="people.work.list",
                 limit=eff_limit,
                 cursor=page_cursor,
                 modified_since=modified_since,
@@ -228,7 +283,12 @@ class HibobClient:
             "fields": _PEOPLE_FIELDS,
             "showInactive": True,
         }
-        response = await self._request("POST", "/v1/people/search", json_body=body)
+        response = await self._request(
+            "POST",
+            "/v1/people/search",
+            json_body=body,
+            operation="people.search",
+        )
         rows = _extract_list(response, "employees")
         rows = [_normalise_employee(r) for r in rows]
         if modified_since:
@@ -241,7 +301,10 @@ class HibobClient:
         since = modified_since or _six_month_floor()
         params = {"since": since, "to": _now_iso()}
         response = await self._request(
-            "GET", "/v1/timeoff/requests/changes", params=params,
+            "GET",
+            "/v1/timeoff/requests/changes",
+            params=params,
+            operation="timeoff.changes.list",
         )
         rows = _extract_list(response, "requests", "changes", "values")
         rows = [_stamp_entity_kind(r, "timeoff") for r in rows]
@@ -252,6 +315,7 @@ class HibobClient:
         path: str,
         *,
         result_key: str,
+        operation: str,
         limit: int,
         cursor: str | None,
         modified_since: str | None,
@@ -262,7 +326,12 @@ class HibobClient:
         }
         if cursor:
             params["cursor"] = cursor
-        response = await self._request("GET", path, params=params)
+        response = await self._request(
+            "GET",
+            path,
+            params=params,
+            operation=operation,
+        )
         rows = _extract_list(response, result_key, "results", "values")
         if modified_since:
             rows = [r for r in rows if (_row_modified(r) or "") > modified_since]

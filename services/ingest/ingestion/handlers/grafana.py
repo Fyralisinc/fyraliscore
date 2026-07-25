@@ -33,9 +33,7 @@ from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -186,7 +184,6 @@ def _annotation_draft(ann: dict[str, Any], instance: str) -> ObservationDraft:
     )
 
 
-@register(_CHANNEL_ANNOTATION)
 async def handle_grafana_annotation(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -225,7 +222,6 @@ def _representative_ts(alerts: list[dict[str, Any]], status: str) -> datetime:
     return best or _utcnow()
 
 
-@register(_CHANNEL_ALERT)
 async def handle_grafana_alert(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -305,8 +301,6 @@ async def handle_grafana_alert(
     )
 
 
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL_ANNOTATION, _TRUST)
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL_ALERT, _TRUST)
 
 
 __all__ = ["handle_grafana_annotation", "handle_grafana_alert"]

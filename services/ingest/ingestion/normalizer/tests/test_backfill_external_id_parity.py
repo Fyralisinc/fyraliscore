@@ -177,7 +177,11 @@ async def test_backfill_record_produces_same_external_id_as_webhook_github():
     backfill_eid = await _backfill_external_id(
         source="github", fetcher_record=backfill_record,
     )
-    assert webhook_eid == backfill_eid == node_id
+    # Fyralis versions mutable GitHub lifecycle objects by action because
+    # observation dedup intentionally treats ``external_id`` as stable across
+    # occurred-at changes. The REST backfill shaper must synthesize the same
+    # action as the equivalent webhook.
+    assert webhook_eid == backfill_eid == f"{node_id}:opened"
 
 
 @pytest.mark.asyncio
@@ -392,4 +396,4 @@ async def test_normalizer_extracts_webhook_metadata_from_backfill_envelope():
     )
     assert record["webhook_metadata"] == {"X-GitHub-Event": "issues"}
     eid = await _backfill_external_id(source="github", fetcher_record=record)
-    assert eid == "I_meta"
+    assert eid == "I_meta:opened"

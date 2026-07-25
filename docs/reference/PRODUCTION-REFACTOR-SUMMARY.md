@@ -4,6 +4,10 @@ Status: Paused after incremental implementation work
 Last measured from this checkout: 2026-06-13  
 Primary plan: `docs/reference/PRODUCTION-REFACTOR-PLAN.md`
 
+> Historical snapshot: references below to
+> `services/ingest/synthetic/mock_servers/` describe the pre-Provider-Lab
+> implementation. That directory has since been retired and deleted.
+
 ## Executive Summary
 
 This refactor goal made the codebase more production-shaped by adding
@@ -131,7 +135,7 @@ Ingestion-related hotspots were split while preserving workflow semantics:
 - `services/ingest/ingestion/feature_flags/circuit_breaker.py:_process_tick`
 - `services/ingest/synthetic/backfill_harness/harness.py:_write_install_and_trigger`
 - `services/ingest/synthetic/live_generators/hmac_webhook.py:_build_payload`
-- `services/ingest/synthetic/mock_servers/google_workspace.py:_make_handler`
+- retired `services/ingest/synthetic/mock_servers/google_workspace.py:_make_handler`
 - `services/ingest/synthetic/validation_runs/composition.py:build_live_drivers`
 - `services/ingest/synthetic/validation_runs/run4_concurrent.py:run4`
 

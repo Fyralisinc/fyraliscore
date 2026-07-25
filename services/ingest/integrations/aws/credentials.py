@@ -33,6 +33,15 @@ from uuid import UUID
 
 import structlog
 
+from lib.shared.errors import AwsApiError
+from lib.shared.provider_transport import (
+    ProviderPermanentError,
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    parse_retry_after,
+)
+
 
 log = structlog.get_logger("integrations.aws.credentials")
 
@@ -84,6 +93,9 @@ async def resolve_credentials(
     credential_kind: str | None,
     secret_ref: str | None,
     region: str | None = None,
+    request_binding: Any | None = None,
+    endpoint_override: str | None = None,
+    botocore_config: Any | None = None,
 ) -> AwsCredentials:
     """Resolve IAM credentials for one install.
 
@@ -96,8 +108,6 @@ async def resolve_credentials(
     Raises `AwsApiError(code="aws_api_unauthorized")` rather than returning empty
     credentials so a production caller can never issue an unsigned/anonymous call.
     """
-    from lib.shared.errors import AwsApiError
-
     if not secret_ref or secret_store is None or tenant_id is None:
         raise AwsApiError(
             "aws credential resolution missing secret_ref/secret_store/tenant",
@@ -147,12 +157,41 @@ async def resolve_credentials(
             kwargs["ExternalId"] = str(material["external_id"])
         if material.get("duration_seconds"):
             kwargs["DurationSeconds"] = int(material["duration_seconds"])
+        async def _once() -> Any:
+            client_kwargs: dict[str, Any] = {"region_name": region}
+            if endpoint_override:
+                client_kwargs["endpoint_url"] = endpoint_override
+            if botocore_config is not None:
+                client_kwargs["config"] = botocore_config
+            try:
+                session = aioboto3.Session()
+                async with session.client("sts", **client_kwargs) as sts:
+                    return await sts.assume_role(**kwargs)
+            except (
+                ProviderPermanentError,
+                ProviderRateLimited,
+                ProviderTransientError,
+            ):
+                raise
+            except Exception as exc:  # noqa: BLE001 — botocore taxonomy.
+                raise _map_botocore_provider_error(
+                    exc,
+                    region=region,
+                    operation="sts.assume_role",
+                ) from exc
+
         try:
-            session = aioboto3.Session()
-            async with session.client("sts", region_name=region) as sts:
-                resp = await sts.assume_role(**kwargs)
-        except Exception as exc:  # noqa: BLE001 — map any STS failure.
-            raise _map_botocore_error(exc, region=region) from exc
+            resp = (
+                await request_binding.execute("sts.assume_role", _once)
+                if request_binding is not None
+                else await _once()
+            )
+        except ProviderPermanentError as exc:
+            raise _provider_permanent_to_aws(
+                exc,
+                region=region,
+                operation="sts.assume_role",
+            ) from exc
         creds = resp.get("Credentials") or {}
         expiration = creds.get("Expiration")
         expires_at_ms = (
@@ -175,8 +214,6 @@ async def resolve_credentials(
 def _map_botocore_error(exc: Exception, *, region: str | None) -> Exception:
     """Map a botocore ClientError to the shared AwsApiError taxonomy. Falls back
     to a generic AwsApiError for non-botocore failures (transport, etc.)."""
-    from lib.shared.errors import AwsApiError
-
     code = "aws_api_error"
     http_status = None
     err_code = None
@@ -201,10 +238,121 @@ def _map_botocore_error(exc: Exception, *, region: str | None) -> Exception:
     )
 
 
+def _map_botocore_provider_error(
+    exc: Exception,
+    *,
+    region: str | None,
+    operation: str,
+) -> Exception:
+    """Translate one botocore attempt into ProviderTransport's taxonomy."""
+    response = getattr(exc, "response", None)
+    err_code = None
+    http_status = None
+    headers: dict[str, Any] = {}
+    if isinstance(response, dict):
+        err_code = (response.get("Error") or {}).get("Code")
+        metadata = response.get("ResponseMetadata") or {}
+        http_status = metadata.get("HTTPStatusCode")
+        raw_headers = metadata.get("HTTPHeaders")
+        if isinstance(raw_headers, dict):
+            headers = raw_headers
+
+    context: dict[str, Any] = {
+        "source": "aws",
+        "operation": operation,
+        "region": region,
+        **({"status_code": http_status} if http_status is not None else {}),
+        **({"aws_code": err_code} if err_code is not None else {}),
+    }
+    class_name = type(exc).__name__
+    if class_name in {
+        "ConnectTimeoutError",
+        "ReadTimeoutError",
+        "ReadTimeout",
+    }:
+        return ProviderTimeoutError("AWS request timed out", **context)
+    if err_code in {
+        "Throttling",
+        "ThrottlingException",
+        "ThrottledException",
+        "RequestLimitExceeded",
+        "TooManyRequestsException",
+        "RequestThrottled",
+        "RequestThrottledException",
+        "SlowDown",
+    } or http_status == 429:
+        return ProviderRateLimited(
+            "AWS request throttled",
+            retry_after_seconds=parse_retry_after(
+                headers.get("retry-after")
+                or headers.get("x-amz-retry-after")
+            ),
+            status_code=http_status or 429,
+            header_parser_id="aws.sdk_throttle_headers",
+            **{
+                key: value
+                for key, value in context.items()
+                if key != "status_code"
+            },
+        )
+    if (
+        isinstance(http_status, int)
+        and http_status >= 500
+    ) or class_name in {
+        "EndpointConnectionError",
+        "ConnectionClosedError",
+        "HTTPClientError",
+        "ProxyConnectionError",
+    }:
+        return ProviderTransientError(
+            "AWS service or transport unavailable",
+            error_type=class_name,
+            **context,
+        )
+    return ProviderPermanentError(
+        "AWS request rejected",
+        error_type=class_name,
+        **context,
+    )
+
+
+def _provider_permanent_to_aws(
+    exc: ProviderPermanentError,
+    *,
+    region: str | None,
+    operation: str,
+) -> AwsApiError:
+    status = exc.context.get("status_code")
+    aws_code = exc.context.get("aws_code")
+    code = "aws_api_error"
+    if status in {401, 403} or aws_code in {
+        "AccessDenied",
+        "UnrecognizedClientException",
+        "InvalidClientTokenId",
+        "SignatureDoesNotMatch",
+        "ExpiredToken",
+        "ExpiredTokenException",
+    }:
+        code = "aws_api_unauthorized"
+    elif status == 404:
+        code = "aws_api_not_found"
+    return AwsApiError(
+        exc.message,
+        code=code,
+        context={
+            "region": region,
+            "operation": operation,
+            **({"http_status": status} if status is not None else {}),
+            **({"aws_code": aws_code} if aws_code is not None else {}),
+        },
+    )
+
+
 __all__ = [
     "AwsCredentials",
     "resolve_credentials",
     "CREDENTIAL_KIND_ASSUME_ROLE",
     "CREDENTIAL_KIND_STATIC_KEYS",
     "_map_botocore_error",
+    "_map_botocore_provider_error",
 ]

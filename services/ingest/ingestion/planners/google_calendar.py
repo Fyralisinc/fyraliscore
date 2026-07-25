@@ -18,7 +18,7 @@ from typing import Any
 
 import orjson
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -79,7 +79,6 @@ async def plan_shards_google_calendar(ctx: PlannerContext) -> list[Shard]:
     return shards
 
 
-PLANNER_DISPATCH["google_calendar"] = plan_shards_google_calendar
 
 
 __all__ = ["SHARD_KIND_EVENTS", "plan_shards_google_calendar"]

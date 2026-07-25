@@ -107,7 +107,7 @@ The read client carries **only the current access token** and reuses it for the
 life of the client ([client.py:107‑129](../../../services/ingest/integrations/ramp/client.py#L107-L129)):
 
 - The token is resolved **once** from the secret store via the install's
-  `secret_ref` (or preset in spammer mode), guarded by an `asyncio.Lock`.
+  `secret_ref` (or preset in Provider Lab mode), guarded by an `asyncio.Lock`.
 - Every request sends `Authorization: Bearer {token}` + `Accept: application/json`
   ([client.py:136‑141](../../../services/ingest/integrations/ramp/client.py#L136-L141)).
 - The token / auth header are **never logged** (the module header states this as
@@ -604,7 +604,7 @@ fail until an operator re-finalizes the install with a fresh token.
 | `RAMP_BACKFILL_PAGE_SIZE` | `100` (cap 1000) | offset page size for the query endpoint ([fetchers/ramp.py:64‑68](../../../services/ingest/ingestion/fetchers/ramp.py#L64-L68)) |
 | `RAMP_RL_MAX_ATTEMPTS` | `4` | `429` retry budget ([client.py:142](../../../services/ingest/integrations/ramp/client.py#L142)) |
 | `RAMP_RL_MAX_SLEEP_SEC` | `30` | max sleep per `Retry-After` ([client.py:143](../../../services/ingest/integrations/ramp/client.py#L143)) |
-| `SYNTHETIC_SOURCE_API_BASE` | — | when set, activates spammer mode (§11.3) ([_clients.py:50‑51](../../../services/ingest/ingestion/fetchers/_clients.py#L50-L51)) |
+| `PROVIDER_LAB_URL` | — | when set outside production, activates Provider Lab credentials (§11.3) |
 | `finance_panel_enabled` (setting) | — | mounts the dev `finance_router` that today is the only way to install Ramp ([route_mounts.py:105‑109](../../../services/app/gateway/route_mounts.py#L105-L109)) |
 
 ### 11.2 Verified-against-code checklist
@@ -619,21 +619,16 @@ fail until an operator re-finalizes the install with a fresh token.
 - **Production install router mounted.** ❌ not wired (TODO §2.3).
 - **Revocation / expiry recovery.** ❌ absent (TODO §9).
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
-For local testing, spammer mode is gated by the `SYNTHETIC_SOURCE_API_BASE` env
-var ([_clients.py:50‑51](../../../services/ingest/ingestion/fetchers/_clients.py#L50-L51)).
-`build_ramp_client` then **presets** the access token to `spam-ramp` (skipping the
-secret-store resolve entirely) and points the API base at the local spammer's
-`/ramp` sub-path via the endpoint resolver
-([_clients.py:467‑481](../../../services/ingest/ingestion/fetchers/_clients.py#L467-L481),
-[endpoints.py:162](../../../lib/integrations/endpoints.py#L162)).
+For local testing, `PROVIDER_LAB_URL` makes `build_ramp_client` **preset** the
+access token to `spam-ramp` (skipping the secret-store resolve entirely).
+`RAMP_API_BASE_URL=<lab>/ramp` supplies the API route explicitly.
 
 A self-contained end-to-end harness lives at
-[scripts/sandbox_ramp.py](../../../scripts/sandbox_ramp.py): it stands up a real
-local mock of the archetype query endpoint
-([synthetic/mock_servers/ramp.py](../../../services/ingest/synthetic/mock_servers/ramp.py),
-which serves `/v3/company/{business}/query` and `/companyinfo/`) and drives
+[scripts/sandbox_ramp.py](../../../scripts/sandbox_ramp.py): it starts the
+canonical [Provider Lab Ramp adapter](../../../services/ingest/synthetic/provider_lab/wave_b.py),
+which serves `/v3/company/{business}/query` and `/companyinfo/`, and drives
 `RampClient → fetch_page_ramp → handle_ramp_transaction → ObservationDraft` with
 QBO-shaped fixtures. The dev **finance panel** (`finance_router`,
 [finance_router.py:705‑719](../../../services/app/gateway/finance_router.py#L705-L719))

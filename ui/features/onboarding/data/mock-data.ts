@@ -14,6 +14,7 @@ import type {
   Validation,
   Workspace
 } from "../types";
+import sourceCatalogArtifact from "./source-catalog.generated.json";
 
 export const ONBOARDING_STEPS: StepDefinition[] = [
   {
@@ -288,35 +289,17 @@ export const DEPLOYMENT: Deployment = {
   ]
 };
 
-export const SOURCES: Source[] = [
-  source("slack", "Slack", "Communication", "Channels, events, and consented DMs.", "OAuth", ["channels:history", "groups:history", "users:read", "team:read"], "Slack workspace admin approval, app/OAuth install, signing secret, channel allowlist, optional DM consent.", ["Dry run", "Limited backfill", "Live events", "Backfill plus live"], ["/integrations/slack/callback", "/webhooks/slack/events"]),
-  source("gmail", "Gmail", "Productivity", "Workspace email with watch and history polling.", "Workspace DWD", ["gmail.readonly", "pubsub.topics.attachSubscription"], "Google Workspace admin approval, domain-wide delegation setup, mailbox scope, Pub/Sub watch topic, history-poller access.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/gmail/pubsub"]),
-  source("google-calendar", "Google Calendar", "Productivity", "Calendar events and shared calendars.", "Workspace DWD", ["calendar.readonly"], "Google Workspace admin approval, domain-wide delegation setup, calendar scope, allowlist, and local polling access.", ["Dry run", "Limited backfill"], [], "Google Calendar DWD install is poll-only; no webhook or push watch is configured."),
-  source("google-drive", "Google Drive", "Knowledge", "Files, metadata, and Drive watches.", "Workspace DWD", ["drive.metadata.readonly", "drive.readonly"], "Google Workspace admin approval, domain-wide delegation setup, Drive scopes, shared-drive scope, change watch setup, large-file policy.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/google_drive/push"]),
-  source("github", "GitHub", "Engineering", "Repositories, pull requests, issues, and code intelligence.", "OAuth", ["repository metadata", "pull requests", "issues", "webhooks"], "GitHub App installation, repository selection, webhook secret, org admin approval, installation ID mapping.", ["Dry run", "Limited backfill", "Live events", "Backfill plus live"], ["/integrations/github/callback", "/webhooks/github"]),
-  source("jira", "Jira", "Engineering", "Issues, projects, and work tracking signals.", "API token", ["read:jira-work", "read:jira-user", "webhook registration"], "Jira site URL, project scope, API token or OAuth app, webhook callback approval, issue/comment permissions.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/jira/events"]),
-  source("notion", "Notion", "Knowledge", "Pages, databases, and workspace knowledge.", "OAuth", ["read content", "read users", "database access"], "Workspace integration token, pages and databases shared to integration, workspace owner approval, selector scope.", ["Dry run", "Limited backfill"], ["/integrations/notion/callback", "/webhooks/notion/events"]),
-  source("discord", "Discord", "Communication", "Community and team message streams.", "Gateway", ["bot token", "message content intent", "guild read"], "Discord app or bot token, guild/channel allowlist, gateway intents, single-worker lease readiness.", ["Dry run", "Limited backfill", "Live events"], ["/integrations/discord/callback", "/webhooks/discord"]),
-  source("facebook_pages", "Facebook Page Messages", "Communication", "All available Page message history via Graph API, plus live webhooks.", "OAuth", ["pages_show_list", "pages_messaging", "pages_manage_metadata", "pages_read_engagement"], "Meta app review, Page selection, OAuth approval, Page message permissions, app secret, verify token, and messages webhook subscription.", ["Dry run", "Limited backfill", "Live events", "Backfill plus live"], ["/integrations/facebook_pages/callback", "/integrations/facebook_pages/webhook"]),
-  source("telegram", "Telegram", "Communication", "MTProto user-account backfill and live updates.", "Gateway", ["api id", "api hash", "approved chats"], "Telegram API ID/hash, authorized user session, chats allowlist, backfill approval, gateway worker readiness.", ["Dry run", "Limited backfill", "Live events"], [], "Local MTProto gateway session runs from the customer cloud."),
-  source("signal", "Signal", "Communication", "Linked-device message ingestion.", "Gateway", ["linked device session", "approved contacts", "approved groups"], "Linked-device session, account approval, contact or group scope, gateway worker readiness.", ["Dry run", "Live events"], [], "Linked-device gateway session runs from the customer cloud."),
-  source("whatsapp", "WhatsApp", "Communication", "Cloud API live webhook ingestion.", "Webhook", ["business account read", "messages webhook", "phone id"], "WhatsApp Cloud API app, business account and phone IDs, generated verify token, app secret, and optional customer-local access token.", ["Live events"], ["/integrations/whatsapp/webhook"]),
-  source("fireflies", "Fireflies", "Meetings", "Meeting transcripts and conversation records.", "API token", ["transcripts read", "meetings read"], "Workspace approval, API token, transcript scope, meeting history window, webhook or poll setup.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/fireflies"]),
-  source("figma", "Figma", "Design", "Selected design files, durable snapshots, comments, and versions.", "OAuth", ["file metadata read", "file content read", "file comments read", "file versions read"], "A deployment administrator configures one customer-owned Figma OAuth app, then users paste the Figma file URLs to approve. The file allowlist is kept current by scheduled polling.", ["Dry run", "Limited backfill", "Backfill plus polling"], ["/integrations/figma/oauth/callback"], "Figma OAuth starts with a durable snapshot and scheduled polling. Provider webhooks are an optional future acceleration, not required for correctness."),
-  source("miro", "Miro", "Design", "Boards, items, and collaboration artifacts.", "API token", ["boards read", "team read"], "Workspace admin approval, bearer token, board allowlist, polling setup, API base confirmation.", ["Dry run", "Limited backfill"], [], "Miro is poll-only from the customer data plane; provider webhooks are not configured."),
-  source("grafana", "Grafana", "Operations", "Dashboards, alerts, and operations signals.", "API token", ["dashboards read", "alerts read", "folders read"], "Grafana instance URL, service account token, dashboard/folder scope, alert scope, network reachability from BYOC.", ["Dry run", "Limited backfill"], ["/webhooks/grafana/events"]),
-  source("aws", "AWS", "Cloud", "Cloud inventory and operational events.", "IAM role", ["inventory read", "cloudtrail read", "eventbridge read"], "AWS account and region, customer IAM role or access ref, inventory scope, CloudTrail/EventBridge scope if enabled.", ["Dry run", "Limited backfill", "Live events"], [], "Fyralis polls customer-authorized AWS APIs from the local data plane."),
-  source("mercury", "Mercury", "Finance", "Banking, cash accounts, and transactions.", "API token", ["accounts read", "transactions read"], "Mercury organization ID, account IDs, API token, webhook secret if live events are enabled, account scope.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/mercury/events"]),
-  source("quickbooks", "QuickBooks", "Finance", "Accounting, company, and ledger signals.", "OAuth", ["accounting read", "company info", "webhooks"], "QuickBooks company realm ID, OAuth token path, sandbox or production base URL, webhook verifier.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/quickbooks/events"]),
-  source("brex", "Brex", "Finance", "Corporate cards, cash, and transactions.", "API token", ["accounts read", "transactions read", "cards read"], "Brex organization ID, account IDs, API token, webhook secret if live events are enabled, transaction scope.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/brex"]),
-  source("ramp", "Ramp", "Finance", "Spend management and finance events.", "OAuth", ["transactions read", "reimbursements read", "cards read", "users read", "business read"], "Ramp business scope, access token or OAuth client credentials, entity allowlist, webhook verifier, and poll schedule approval.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/ramp"]),
-  source("carta", "Carta", "Finance", "Cap table, grants, and equity-management signals.", "OAuth", ["issuer read", "securities read", "stakeholders read"], "Carta firm or issuer ID, OAuth access token or client-credentials path, entity scope, token re-mint process.", ["Dry run", "Limited backfill"], [], "Carta is poll-only from the customer data plane."),
-  source("gusto", "Gusto", "People", "Payroll and company HR finance records.", "OAuth", ["company read", "employee read", "payroll read"], "Gusto company UUID, OAuth app approval, access/refresh token path, payroll and employee scopes.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/gusto"]),
-  source("hibob", "HiBob", "People", "People directory and HRIS signals.", "API token", ["people read", "fields read", "reports read"], "HiBob company ID, service user/API credentials, people-field scope, employee directory approval.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/hibob"]),
-  source("ashby", "Ashby", "People", "Recruiting pipeline and hiring signals.", "API token", ["jobs read", "candidates read", "interviews read"], "Ashby organization access, API token, jobs/candidates scope, recruiting data approval.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/ashby/{install-id}"]),
-  source("deel", "Deel", "People", "Contractor, payroll, and workforce records.", "API token", ["workers read", "contracts read", "payments read"], "Deel organization access, API token, worker/contract scope, payroll or contractor data approval.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/deel"]),
-  source("linkedin", "LinkedIn", "CRM", "Company and professional-network signals.", "Poll", ["organization read", "profile read", "rate-limit approval"], "LinkedIn organization/page access, OAuth app access token, optional refresh token, company/profile scope, rate-limit approval.", ["Dry run", "Limited backfill"], [], "LinkedIn is poll-only from the customer data plane.")
-];
+type SourceCatalogArtifact = {
+  schemaVersion: "fyralis.source-catalog.ui.v1";
+  canonicalSourceIds: string[];
+  canonicalProviderIds: string[];
+  sources: Source[];
+};
+
+const sourceCatalog =
+  sourceCatalogArtifact as SourceCatalogArtifact;
+
+export const SOURCES: Source[] = sourceCatalog.sources;
 
 export const CONNECTIONS: SourceConnection[] = [];
 
@@ -425,32 +408,6 @@ export const ONBOARDING_SNAPSHOT: OnboardingSnapshot = {
   sourceObservations: SOURCE_OBSERVATIONS,
   progress: PROGRESS
 };
-
-function source(
-  id: Source["id"],
-  name: Source["name"],
-  category: Source["category"],
-  description: Source["description"],
-  method: Source["method"],
-  requiredPermissions: Source["requiredPermissions"],
-  setupRequirements: Source["setupRequirements"],
-  supportedSyncModes: Source["supportedSyncModes"],
-  providerIngressPaths: Source["providerIngressPaths"],
-  noIngressReason?: Source["noIngressReason"]
-): Source {
-  return {
-    id,
-    name,
-    category,
-    description,
-    method,
-    requiredPermissions,
-    setupRequirements,
-    supportedSyncModes,
-    providerIngressPaths,
-    noIngressReason
-  };
-}
 
 function observation(
   id: SourceObservation["id"],

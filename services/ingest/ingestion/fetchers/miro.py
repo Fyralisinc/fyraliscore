@@ -47,8 +47,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from lib.shared.errors import MiroApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -152,22 +151,11 @@ async def fetch_page_miro(
                 cur.high_water_modified = warm
             cur.seeded = True
 
-        try:
-            items, next_cursor, total = await client.list_items(
-                board_id,
-                limit=_page_size(),
-                cursor=cur.page_cursor,
-            )
-        except MiroApiError as exc:
-            if (exc.context or {}).get("code") == "miro_api_rate_limited" or \
-               getattr(exc, "_code", None) == "miro_api_rate_limited":
-                log.info("miro_backfill_rate_limited",
-                         extra={"board_id": board_id})
-                return FetchResult(
-                    records=records, next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        items, next_cursor, total = await client.list_items(
+            board_id,
+            limit=_page_size(),
+            cursor=cur.page_cursor,
+        )
 
         for item in items:
             records.append({
@@ -196,7 +184,6 @@ async def fetch_page_miro(
         await close()
 
 
-FETCHER_DISPATCH["miro"] = fetch_page_miro
 
 
 __all__ = [

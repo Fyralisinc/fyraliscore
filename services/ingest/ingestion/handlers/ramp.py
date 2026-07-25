@@ -52,9 +52,7 @@ from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -553,7 +551,6 @@ def _business_of(payload: dict[str, Any]) -> str:
 # Handler
 # ---------------------------------------------------------------------
 
-@register(_CHANNEL)
 async def handle_ramp_transaction(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -602,7 +599,6 @@ async def handle_ramp_transaction(
     )
 
 
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL, _TRUST)
 
 
 __all__ = ["handle_ramp_transaction"]

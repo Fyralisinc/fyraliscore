@@ -212,9 +212,9 @@ architecture/services updates. ✅ *(landing now)*
 20. `synthetic/live_generators/telegram_gateway.py` — `TelegramGatewayGenerator`
     driving the live worker's dispatch in-process with synthetic updates.
     Register in `live_generators/__init__.py`.
-21. `synthetic/validation_runs/run_all_sources.py` — add `telegram` to
-    `_EXPECTED`, `_scen_params`, the live dispatch, and the per-source live
-    coroutine (source #12).
+21. `synthetic/provider_lab/` + `source_contract/catalog.py` — require Telegram
+    adapter coverage through catalog parity. The former manual all-source
+    runner was retired because its copied source/count tables drifted.
 
 **Phase 5 — Tests & acceptance.**
 22. Per-layer edge-case tests (pagination/cursor-resume, `getDifference` gap

@@ -1,71 +1,28 @@
-"""services/app/webhooks/signatures — per-provider Verifier implementations.
+"""Contract-derived webhook signature verification lookup.
 
-Each module exports a verifier class instance bound under its provider
-name. `VERIFIERS` is the registry the router dispatches on.
-
-Adding a sixth provider (Twilio, Shopify, …):
-
-1. Add `services/app/webhooks/signatures/<provider>.py` exposing a
-   `verifier: Verifier` module attribute.
-2. Add `<provider>: <module>.verifier` to the VERIFIERS map below.
-3. Add a per-provider id extractor in
-   `services/app/webhooks/tenant_resolver.py::PROVIDER_EXTRACTORS`.
-4. Add a `CHANNEL_TRUST_MAP` entry in
-   `services/ingest/ingestion/handlers/__init__.py` plus a handler module.
-
-The Verifier Protocol is in `services/app/webhooks/verifier.py`.
+Verifier implementations remain provider-specific modules, while route
+ownership lives exclusively in ``services.ingest.source_contract``. Adding a
+webhook source therefore requires one provider ingress declaration instead of
+mutating a second verifier registry.
 """
 from __future__ import annotations
 
-from services.app.webhooks.signatures import (
-    ashby,
-    brex,
-    deel,
-    discord,
-    figma,
-    fireflies,
-    github,
-    grafana,
-    gusto,
-    hibob,
-    jira,
-    linear,
-    mercury,
-    miro,
-    notion,
-    quickbooks,
-    ramp,
-    slack,
-    stripe,
-)
-from services.app.webhooks.verifier import Verifier
+from collections.abc import Callable
+from typing import Any, cast
+
+from services.ingest.source_contract import resolve_webhook_verifier
 
 
-VERIFIERS: dict[str, Verifier] = {
-    "slack": slack.verifier,
-    "github": github.verifier,
-    "linear": linear.verifier,
-    "stripe": stripe.verifier,
-    "discord": discord.verifier,
-    "notion": notion.verifier,
-    "jira": jira.verifier,
-    "mercury": mercury.verifier,
-    "quickbooks": quickbooks.verifier,
-    "grafana": grafana.verifier,
-    "brex": brex.verifier,
-    "ramp": ramp.verifier,
-    "gusto": gusto.verifier,
-    "deel": deel.verifier,
-    # IN-FF/IN-MIRO/IN-FIGMA: HMAC-signed webhook sources (Brex archetype).
-    "fireflies": fireflies.verifier,
-    "miro": miro.verifier,
-    "figma": figma.verifier,
-    # People/Recruiting: HiBob (HMAC-SHA512/base64/Bob-Signature) + Ashby
-    # (HMAC-SHA256/hex/Ashby-Signature, sha256= prefix). LinkedIn is poll-only
-    # (no webhook) so it has NO verifier here.
-    "hibob": hibob.verifier,
-    "ashby": ashby.verifier,
-}
+WebhookVerifyCallable = Callable[..., Any]
 
 
-__all__ = ["VERIFIERS"]
+def verifier_for_provider(provider: str) -> WebhookVerifyCallable | None:
+    """Resolve an immutable contract-declared verifier, or ``None``."""
+
+    try:
+        return cast(WebhookVerifyCallable, resolve_webhook_verifier(provider))
+    except KeyError:
+        return None
+
+
+__all__ = ["WebhookVerifyCallable", "verifier_for_provider"]

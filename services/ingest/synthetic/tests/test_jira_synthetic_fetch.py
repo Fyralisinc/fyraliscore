@@ -27,7 +27,6 @@ from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
 from services.ingest.synthetic.fault_profiles import FaultProfile, HAPPY_PATH
 from services.ingest.synthetic.fixtures.jira_generator import make_jira
 from services.ingest.synthetic.mock_clients.jira import MockJiraClient
-from lib.shared.errors import JiraApiError
 
 
 # The fetcher reads `install["base_url"]` (via `_site_of`) and the shard's
@@ -181,8 +180,10 @@ def test_synthetic_jira_pagination_multi_page(monkeypatch):
 
 def test_synthetic_jira_rate_limit_fault(monkeypatch):
     """A rate-limit FaultProfile makes `search_issues` raise
-    JiraApiError(jira_api_rate_limited); the fetcher catches it and ends the
-    round empty WITHOUT advancing (end_of_data False)."""
+    RetryLater; the fetcher propagates it so ShardFetch can persist the
+    not-before timestamp without advancing the cursor."""
+    from lib.shared.provider_transport import RetryLater, RetryReason
+
     site_host = "acme.atlassian.net"
     fixture = make_jira(
         site_host=site_host,
@@ -196,22 +197,20 @@ def test_synthetic_jira_rate_limit_fault(monkeypatch):
     # rate_limit_after_n_requests=0 -> the very first call raises.
     profile = FaultProfile(rate_limit_after_n_requests=0)
 
-    # 1. Raw client surface raises the production error type + code.
+    # 1. Raw client surface raises the production scheduling signal.
     raw_client = MockJiraClient(fixture=fixture, profile=profile)
-    with pytest.raises(JiraApiError) as exc_info:
+    with pytest.raises(RetryLater) as exc_info:
         asyncio.run(raw_client.search_issues(jql=f'project = "{project_key}"'))
-    err = exc_info.value
-    assert getattr(err, "_code", None) == "jira_api_rate_limited"
+    assert exc_info.value.reason is RetryReason.RATE_LIMIT
 
-    # 2. Through the fetcher: the rate-limit fallback returns an empty,
-    #    non-terminal page (cursor unadvanced) so ShardFetch re-enters.
+    # 2. Through the fetcher: the typed cooldown escapes unchanged.
     fetch_client = MockJiraClient(fixture=fixture, profile=profile)
     _patch_client(monkeypatch, fetch_client)
-    result = asyncio.run(
-        fetch_page_jira(_install(site_host), _shard(project_key), None)
-    )
-    assert result.records == []
-    assert result.end_of_data is False
+    with pytest.raises(RetryLater) as fetch_exc:
+        asyncio.run(
+            fetch_page_jira(_install(site_host), _shard(project_key), None)
+        )
+    assert fetch_exc.value.reason is RetryReason.RATE_LIMIT
 
 
 def test_mock_jira_implements_methods_called_by_fetcher_and_reconciler():

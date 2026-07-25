@@ -78,8 +78,8 @@ def _ensure_test_fetcher_module() -> str:
             f.write("# Test helpers for M6.2a subprocess tests.\n")
 
     content = '''"""Subprocess-loadable test fetcher for the
-shard_fetch resume-from-cursor test. Installs itself into
-FETCHER_DISPATCH on import.
+shard_fetch resume-from-cursor test. Activates a subprocess-scoped
+history binding override on import.
 
 Strategy: returns one fake record per page, with an asyncio.sleep
 between pages so the test can SIGKILL the subprocess between
@@ -88,12 +88,15 @@ encodes which page was last successfully emitted.
 """
 from __future__ import annotations
 
+import atexit
 import asyncio
+from contextlib import ExitStack
 from typing import Any
 
 import asyncpg
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
+from services.ingest.source_contract.runtime import override_history_bindings
 
 
 # Per-page artificial delay. Picked to make the resume test
@@ -120,8 +123,11 @@ async def _resume_test_fetcher(
     )
 
 
-# Install into the dispatch table at import time.
-FETCHER_DISPATCH["github"] = _resume_test_fetcher
+_OVERRIDE_SCOPE = ExitStack()
+_OVERRIDE_SCOPE.enter_context(
+    override_history_bindings(fetchers={"github": _resume_test_fetcher})
+)
+atexit.register(_OVERRIDE_SCOPE.close)
 '''
     fetcher_file = os.path.join(helpers_dir, "shard_fetch_resume_fetcher.py")
     with open(fetcher_file, "w") as f:
@@ -153,6 +159,7 @@ async def test_shard_fetch_sigterm_subprocess(
     diagnostic row to appear. SIGTERM. Assert rc=0 within 15s.
     """
     tid = uuid4()
+    installation_row_id = uuid7()
     await fresh_db.execute(
         "INSERT INTO tenants (id, name) VALUES ($1, $2)",
         tid, f"shf-subproc-{tid.hex[:8]}",
@@ -163,7 +170,7 @@ async def test_shard_fetch_sigterm_subprocess(
             (id, tenant_id, provider, installation_id, enabled)
         VALUES ($1, $2, 'slack', $3, TRUE)
         """,
-        uuid7(), tid, f"inst-{tid.hex[:8]}",
+        installation_row_id, tid, f"inst-{tid.hex[:8]}",
     )
     run_id = uuid7()
     await fresh_db.execute(
@@ -181,11 +188,18 @@ async def test_shard_fetch_sigterm_subprocess(
         """
         INSERT INTO onboarding_shards
             (id, onboarding_run_id, tenant_id, source, shard_kind,
-             shard_identifier, recency_score, state, created_at)
+             shard_identifier, installation_row_id, recency_score, state,
+             created_at)
         VALUES ($1, $2, $3, 'slack', 'slack_channel_window',
-                '{}'::jsonb, 1.0, 'pending', now())
+                $4::jsonb, $5, 1.0, 'pending', now())
         """,
-        shard_id, run_id, tid,
+        shard_id,
+        run_id,
+        tid,
+        orjson.dumps({
+            "installation_row_id": str(installation_row_id),
+        }).decode("utf-8"),
+        installation_row_id,
     )
     await emit_signal(
         fresh_db,
@@ -209,10 +223,6 @@ async def test_shard_fetch_sigterm_subprocess(
     env["SHARD_FETCH_LEASE_SEC"] = "30.0"
     env["SHARD_FETCH_INSTANCE"] = instance
     env["WORKFLOWS_LOG_LEVEL"] = "WARNING"
-    # This test exercises cursor/resume semantics, not rate limiting.
-    # Disable the FetchPage gate so an ambient REDIS_URL can't couple the
-    # spawned subprocess to Redis availability.
-    env["SHARD_FETCH_RATE_LIMIT"] = "0"
 
     proc = subprocess.Popen(
         [sys.executable, "-m",
@@ -287,6 +297,7 @@ class _ResumeFixture:
 
 async def _seed_resume_fixture(fresh_db: asyncpg.Pool) -> _ResumeFixture:
     tid = uuid4()
+    installation_row_id = uuid7()
     await fresh_db.execute(
         "INSERT INTO tenants (id, name) VALUES ($1, $2)",
         tid, f"shf-resume-{tid.hex[:8]}",
@@ -297,7 +308,7 @@ async def _seed_resume_fixture(fresh_db: asyncpg.Pool) -> _ResumeFixture:
             (id, tenant_id, provider, installation_id, enabled)
         VALUES ($1, $2, 'github', $3, TRUE)
         """,
-        uuid7(), tid, f"inst-{tid.hex[:8]}",
+        installation_row_id, tid, f"inst-{tid.hex[:8]}",
     )
     run_id = uuid7()
     await fresh_db.execute(
@@ -315,11 +326,18 @@ async def _seed_resume_fixture(fresh_db: asyncpg.Pool) -> _ResumeFixture:
         """
         INSERT INTO onboarding_shards
             (id, onboarding_run_id, tenant_id, source, shard_kind,
-             shard_identifier, recency_score, state, created_at)
+             shard_identifier, installation_row_id, recency_score, state,
+             created_at)
         VALUES ($1, $2, $3, 'github', 'github_repo_events',
-                '{}'::jsonb, 1.0, 'pending', now())
+                $4::jsonb, $5, 1.0, 'pending', now())
         """,
-        shard_id, run_id, tid,
+        shard_id,
+        run_id,
+        tid,
+        orjson.dumps({
+            "installation_row_id": str(installation_row_id),
+        }).decode("utf-8"),
+        installation_row_id,
     )
     await emit_signal(
         fresh_db,
@@ -357,7 +375,6 @@ def _resume_env(
     env["SHARD_FETCH_FLUSH_SEC"] = "2.0"
     env["SHARD_FETCH_INSTANCE"] = instance
     env["WORKFLOWS_LOG_LEVEL"] = "INFO"
-    env["SHARD_FETCH_RATE_LIMIT"] = "0"
     env["PYTHONPATH"] = helpers_dir + os.pathsep + env.get("PYTHONPATH", "")
     return env
 
@@ -582,8 +599,8 @@ async def test_shard_fetch_resumes_from_persisted_cursor_after_restart(
     PYTHONPATH gymnastics: the test fetcher needs to be importable
     in the subprocess. We materialize it into tests/_helpers/ and
     add that dir to PYTHONPATH so the subprocess can import
-    `shard_fetch_resume_fetcher` (importing it installs the
-    FETCHER_DISPATCH override). The subprocess's entry module
+    `shard_fetch_resume_fetcher` (importing it activates the scoped
+    fetcher binding override). The subprocess's entry module
     (services/ingest/ingestion/workflows/shard_fetch.py) doesn't import
     the test fetcher itself; we use PYTHONSTARTUP-style trickery
     via a small bootstrap module.

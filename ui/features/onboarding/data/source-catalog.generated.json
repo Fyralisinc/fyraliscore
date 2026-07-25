@@ -1,0 +1,741 @@
+{
+  "schemaVersion": "fyralis.source-catalog.ui.v1",
+  "canonicalSourceIds": [
+    "slack",
+    "github",
+    "discord",
+    "gmail",
+    "notion",
+    "google_calendar",
+    "google_drive",
+    "jira",
+    "mercury",
+    "quickbooks",
+    "grafana",
+    "telegram",
+    "brex",
+    "ramp",
+    "gusto",
+    "deel",
+    "fireflies",
+    "signal",
+    "aws",
+    "miro",
+    "figma",
+    "carta",
+    "hibob",
+    "ashby",
+    "linkedin",
+    "whatsapp",
+    "facebook_pages"
+  ],
+  "canonicalProviderIds": [
+    "slack",
+    "github",
+    "discord",
+    "google",
+    "notion",
+    "atlassian",
+    "mercury",
+    "intuit",
+    "grafana",
+    "telegram",
+    "brex",
+    "ramp",
+    "gusto",
+    "deel",
+    "fireflies",
+    "signal",
+    "aws",
+    "miro",
+    "figma",
+    "carta",
+    "hibob",
+    "ashby",
+    "linkedin",
+    "meta",
+    "linear",
+    "stripe"
+  ],
+  "sources": [
+    {
+      "id": "slack",
+      "canonicalId": "slack",
+      "providerId": "slack",
+      "aliases": [],
+      "name": "Slack",
+      "category": "Communication",
+      "description": "Channels, events, and consented DMs.",
+      "method": "OAuth",
+      "requiredPermissions": [
+        "channels:history",
+        "groups:history",
+        "users:read",
+        "team:read"
+      ],
+      "setupRequirements": "Slack workspace admin approval, app/OAuth install, signing secret, channel allowlist, optional DM consent.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events",
+        "Backfill plus live"
+      ],
+      "providerIngressPaths": [
+        "/integrations/slack/callback",
+        "/webhooks/slack/events"
+      ]
+    },
+    {
+      "id": "gmail",
+      "canonicalId": "gmail",
+      "providerId": "google",
+      "aliases": [
+        "google_mail"
+      ],
+      "name": "Gmail",
+      "category": "Productivity",
+      "description": "Workspace email with watch and history polling.",
+      "method": "Workspace DWD",
+      "requiredPermissions": [
+        "Domain-Wide Delegation",
+        "gmail.metadata",
+        "directory users/groups read",
+        "pubsub.topics.attachSubscription"
+      ],
+      "setupRequirements": "Google Workspace admin approval, domain-wide delegation setup, mailbox scope, Pub/Sub watch topic, history-poller access.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/gmail/pubsub"
+      ]
+    },
+    {
+      "id": "google-calendar",
+      "canonicalId": "google_calendar",
+      "providerId": "google",
+      "aliases": [
+        "gcal",
+        "calendar"
+      ],
+      "name": "Google Calendar",
+      "category": "Productivity",
+      "description": "Calendar events and shared calendars.",
+      "method": "Workspace DWD",
+      "requiredPermissions": [
+        "Domain-Wide Delegation",
+        "calendar.readonly",
+        "directory users/groups read"
+      ],
+      "setupRequirements": "Google Workspace admin approval, domain-wide delegation setup, calendar scope, allowlist, and local polling access.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill"
+      ],
+      "providerIngressPaths": [],
+      "noIngressReason": "Google Calendar DWD install is poll-only; no webhook or push watch is configured."
+    },
+    {
+      "id": "google-drive",
+      "canonicalId": "google_drive",
+      "providerId": "google",
+      "aliases": [
+        "gdrive",
+        "drive"
+      ],
+      "name": "Google Drive",
+      "category": "Knowledge",
+      "description": "Files, metadata, and Drive watches.",
+      "method": "Workspace DWD",
+      "requiredPermissions": [
+        "Domain-Wide Delegation",
+        "drive.readonly",
+        "directory users/groups read"
+      ],
+      "setupRequirements": "Google Workspace admin approval, domain-wide delegation setup, Drive scopes, shared-drive scope, change watch setup, large-file policy.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/google_drive/push"
+      ]
+    },
+    {
+      "id": "github",
+      "canonicalId": "github",
+      "providerId": "github",
+      "aliases": [
+        "git_hub"
+      ],
+      "name": "GitHub",
+      "category": "Engineering",
+      "description": "Repositories, pull requests, issues, and code intelligence.",
+      "method": "OAuth",
+      "requiredPermissions": [
+        "repository metadata",
+        "pull requests",
+        "issues",
+        "webhooks"
+      ],
+      "setupRequirements": "GitHub App installation, repository selection, webhook secret, org admin approval, installation ID mapping.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events",
+        "Backfill plus live"
+      ],
+      "providerIngressPaths": [
+        "/integrations/github/callback",
+        "/webhooks/github"
+      ]
+    },
+    {
+      "id": "jira",
+      "canonicalId": "jira",
+      "providerId": "atlassian",
+      "aliases": [
+        "jira_cloud"
+      ],
+      "name": "Jira",
+      "category": "Engineering",
+      "description": "Issues, projects, and work tracking signals.",
+      "method": "API token",
+      "requiredPermissions": [
+        "read:jira-work",
+        "read:jira-user",
+        "webhook registration"
+      ],
+      "setupRequirements": "Jira site URL, project scope, API token or OAuth app, webhook callback approval, issue/comment permissions.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/jira/events"
+      ]
+    },
+    {
+      "id": "notion",
+      "canonicalId": "notion",
+      "providerId": "notion",
+      "aliases": [],
+      "name": "Notion",
+      "category": "Knowledge",
+      "description": "Pages, databases, and workspace knowledge.",
+      "method": "OAuth",
+      "requiredPermissions": [
+        "read content",
+        "read users",
+        "database access"
+      ],
+      "setupRequirements": "Workspace integration token, pages and databases shared to integration, workspace owner approval, selector scope.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill"
+      ],
+      "providerIngressPaths": [
+        "/integrations/notion/callback",
+        "/webhooks/notion/events"
+      ]
+    },
+    {
+      "id": "discord",
+      "canonicalId": "discord",
+      "providerId": "discord",
+      "aliases": [],
+      "name": "Discord",
+      "category": "Communication",
+      "description": "Community and team message streams.",
+      "method": "Gateway",
+      "requiredPermissions": [
+        "bot token",
+        "message content intent",
+        "guild read"
+      ],
+      "setupRequirements": "Discord app or bot token, guild/channel allowlist, gateway intents, single-worker lease readiness.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/integrations/discord/callback",
+        "/webhooks/discord"
+      ]
+    },
+    {
+      "id": "facebook_pages",
+      "canonicalId": "facebook_pages",
+      "providerId": "meta",
+      "aliases": [
+        "facebook",
+        "facebook_messenger",
+        "messenger"
+      ],
+      "name": "Facebook Page Messages",
+      "category": "Communication",
+      "description": "All available Page message history via Graph API, plus live webhooks.",
+      "method": "OAuth",
+      "requiredPermissions": [
+        "pages_show_list",
+        "pages_messaging",
+        "pages_manage_metadata",
+        "pages_read_engagement"
+      ],
+      "setupRequirements": "Meta app review, Page selection, OAuth approval, Page message permissions, app secret, verify token, and messages webhook subscription.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events",
+        "Backfill plus live"
+      ],
+      "providerIngressPaths": [
+        "/integrations/facebook_pages/callback",
+        "/integrations/facebook_pages/webhook"
+      ]
+    },
+    {
+      "id": "telegram",
+      "canonicalId": "telegram",
+      "providerId": "telegram",
+      "aliases": [],
+      "name": "Telegram",
+      "category": "Communication",
+      "description": "MTProto user-account backfill and live updates.",
+      "method": "Gateway",
+      "requiredPermissions": [
+        "api id",
+        "api hash",
+        "approved chats"
+      ],
+      "setupRequirements": "Telegram API ID/hash, authorized user session, chats allowlist, backfill approval, gateway worker readiness.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [],
+      "noIngressReason": "Local MTProto gateway session runs from the customer cloud."
+    },
+    {
+      "id": "signal",
+      "canonicalId": "signal",
+      "providerId": "signal",
+      "aliases": [
+        "signal_messenger"
+      ],
+      "name": "Signal",
+      "category": "Communication",
+      "description": "Linked-device message ingestion.",
+      "method": "Gateway",
+      "requiredPermissions": [
+        "linked device session",
+        "approved contacts",
+        "approved groups"
+      ],
+      "setupRequirements": "Linked-device session, account approval, contact or group scope, gateway worker readiness.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Live events"
+      ],
+      "providerIngressPaths": [],
+      "noIngressReason": "Linked-device gateway session runs from the customer cloud."
+    },
+    {
+      "id": "whatsapp",
+      "canonicalId": "whatsapp",
+      "providerId": "meta",
+      "aliases": [
+        "whatsapp_business",
+        "whatsapp_cloud"
+      ],
+      "name": "WhatsApp",
+      "category": "Communication",
+      "description": "Cloud API live webhook ingestion.",
+      "method": "Webhook",
+      "requiredPermissions": [
+        "business account read",
+        "messages webhook",
+        "phone id"
+      ],
+      "setupRequirements": "WhatsApp Cloud API app, business account and phone IDs, generated verify token, app secret, and optional customer-local access token.",
+      "supportedSyncModes": [
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/integrations/whatsapp/webhook"
+      ]
+    },
+    {
+      "id": "fireflies",
+      "canonicalId": "fireflies",
+      "providerId": "fireflies",
+      "aliases": [
+        "fireflies_ai"
+      ],
+      "name": "Fireflies",
+      "category": "Meetings",
+      "description": "Meeting transcripts and conversation records.",
+      "method": "API token",
+      "requiredPermissions": [
+        "transcripts read",
+        "meetings read"
+      ],
+      "setupRequirements": "Workspace approval, API token, transcript scope, meeting history window, webhook or poll setup.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/fireflies"
+      ]
+    },
+    {
+      "id": "figma",
+      "canonicalId": "figma",
+      "providerId": "figma",
+      "aliases": [],
+      "name": "Figma",
+      "category": "Design",
+      "description": "Selected design files, durable snapshots, comments, and versions.",
+      "method": "OAuth",
+      "requiredPermissions": [
+        "current user identity read",
+        "file metadata read",
+        "file document content read",
+        "file comments read",
+        "file version history read"
+      ],
+      "setupRequirements": "A deployment administrator configures one customer-owned Figma OAuth app, then users paste the Figma file URLs to approve. The file allowlist is kept current by scheduled polling.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Backfill plus polling"
+      ],
+      "providerIngressPaths": [
+        "/integrations/figma/oauth/callback"
+      ],
+      "noIngressReason": "Figma OAuth starts with a durable snapshot and scheduled polling. Provider webhooks are an optional future acceleration, not required for correctness."
+    },
+    {
+      "id": "miro",
+      "canonicalId": "miro",
+      "providerId": "miro",
+      "aliases": [],
+      "name": "Miro",
+      "category": "Design",
+      "description": "Boards, items, and collaboration artifacts.",
+      "method": "API token",
+      "requiredPermissions": [
+        "boards read",
+        "team read"
+      ],
+      "setupRequirements": "Workspace admin approval, bearer token, board allowlist, polling setup, API base confirmation.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill"
+      ],
+      "providerIngressPaths": [],
+      "noIngressReason": "Miro is poll-only from the customer data plane; provider webhooks are not configured."
+    },
+    {
+      "id": "grafana",
+      "canonicalId": "grafana",
+      "providerId": "grafana",
+      "aliases": [],
+      "name": "Grafana",
+      "category": "Operations",
+      "description": "Dashboards, alerts, and operations signals.",
+      "method": "API token",
+      "requiredPermissions": [
+        "dashboards read",
+        "alerts read",
+        "folders read"
+      ],
+      "setupRequirements": "Grafana instance URL, service account token, dashboard/folder scope, alert scope, network reachability from BYOC.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/grafana/events"
+      ]
+    },
+    {
+      "id": "aws",
+      "canonicalId": "aws",
+      "providerId": "aws",
+      "aliases": [
+        "amazon_web_services",
+        "cloudtrail"
+      ],
+      "name": "AWS",
+      "category": "Cloud",
+      "description": "Cloud inventory and operational events.",
+      "method": "IAM role",
+      "requiredPermissions": [
+        "inventory read",
+        "cloudtrail read",
+        "eventbridge read"
+      ],
+      "setupRequirements": "AWS account and region, customer IAM role or access ref, inventory scope, CloudTrail/EventBridge scope if enabled.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [],
+      "noIngressReason": "Fyralis polls customer-authorized AWS APIs from the local data plane."
+    },
+    {
+      "id": "mercury",
+      "canonicalId": "mercury",
+      "providerId": "mercury",
+      "aliases": [],
+      "name": "Mercury",
+      "category": "Finance",
+      "description": "Banking, cash accounts, and transactions.",
+      "method": "API token",
+      "requiredPermissions": [
+        "accounts read",
+        "transactions read"
+      ],
+      "setupRequirements": "Mercury organization ID, account IDs, API token, webhook secret if live events are enabled, account scope.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/mercury/events"
+      ]
+    },
+    {
+      "id": "quickbooks",
+      "canonicalId": "quickbooks",
+      "providerId": "intuit",
+      "aliases": [
+        "qbo",
+        "quickbooks_online"
+      ],
+      "name": "QuickBooks",
+      "category": "Finance",
+      "description": "Accounting, company, and ledger signals.",
+      "method": "OAuth",
+      "requiredPermissions": [
+        "accounting read",
+        "company info",
+        "webhooks"
+      ],
+      "setupRequirements": "QuickBooks company realm ID, OAuth token path, sandbox or production base URL, webhook verifier.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/quickbooks/events"
+      ]
+    },
+    {
+      "id": "brex",
+      "canonicalId": "brex",
+      "providerId": "brex",
+      "aliases": [],
+      "name": "Brex",
+      "category": "Finance",
+      "description": "Corporate cards, cash, and transactions.",
+      "method": "API token",
+      "requiredPermissions": [
+        "accounts read",
+        "transactions read",
+        "cards read"
+      ],
+      "setupRequirements": "Brex organization ID, account IDs, API token, webhook secret if live events are enabled, transaction scope.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/brex"
+      ]
+    },
+    {
+      "id": "ramp",
+      "canonicalId": "ramp",
+      "providerId": "ramp",
+      "aliases": [],
+      "name": "Ramp",
+      "category": "Finance",
+      "description": "Spend management and finance events.",
+      "method": "OAuth",
+      "requiredPermissions": [
+        "transactions read",
+        "reimbursements read",
+        "cards read",
+        "users read",
+        "business read"
+      ],
+      "setupRequirements": "Ramp business scope, access token or OAuth client credentials, entity allowlist, webhook verifier, and poll schedule approval.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/ramp"
+      ]
+    },
+    {
+      "id": "carta",
+      "canonicalId": "carta",
+      "providerId": "carta",
+      "aliases": [],
+      "name": "Carta",
+      "category": "Finance",
+      "description": "Cap table, grants, and equity-management signals.",
+      "method": "OAuth",
+      "requiredPermissions": [
+        "issuer read",
+        "securities read",
+        "stakeholders read"
+      ],
+      "setupRequirements": "Carta firm or issuer ID, OAuth access token or client-credentials path, entity scope, token re-mint process.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill"
+      ],
+      "providerIngressPaths": [],
+      "noIngressReason": "Carta is poll-only from the customer data plane."
+    },
+    {
+      "id": "gusto",
+      "canonicalId": "gusto",
+      "providerId": "gusto",
+      "aliases": [],
+      "name": "Gusto",
+      "category": "People",
+      "description": "Payroll and company HR finance records.",
+      "method": "OAuth",
+      "requiredPermissions": [
+        "company read",
+        "employee read",
+        "payroll read"
+      ],
+      "setupRequirements": "Gusto company UUID, OAuth app approval, access/refresh token path, payroll and employee scopes.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/gusto"
+      ]
+    },
+    {
+      "id": "hibob",
+      "canonicalId": "hibob",
+      "providerId": "hibob",
+      "aliases": [
+        "bob"
+      ],
+      "name": "HiBob",
+      "category": "People",
+      "description": "People directory and HRIS signals.",
+      "method": "API token",
+      "requiredPermissions": [
+        "people read",
+        "fields read",
+        "reports read"
+      ],
+      "setupRequirements": "HiBob company ID, service user/API credentials, people-field scope, employee directory approval.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/hibob"
+      ]
+    },
+    {
+      "id": "ashby",
+      "canonicalId": "ashby",
+      "providerId": "ashby",
+      "aliases": [],
+      "name": "Ashby",
+      "category": "People",
+      "description": "Recruiting pipeline and hiring signals.",
+      "method": "API token",
+      "requiredPermissions": [
+        "jobs read",
+        "candidates read",
+        "interviews read"
+      ],
+      "setupRequirements": "Ashby organization access, API token, jobs/candidates scope, recruiting data approval.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/ashby/{install-id}"
+      ]
+    },
+    {
+      "id": "deel",
+      "canonicalId": "deel",
+      "providerId": "deel",
+      "aliases": [],
+      "name": "Deel",
+      "category": "People",
+      "description": "Contractor, payroll, and workforce records.",
+      "method": "API token",
+      "requiredPermissions": [
+        "workers read",
+        "contracts read",
+        "payments read"
+      ],
+      "setupRequirements": "Deel organization access, API token, worker/contract scope, payroll or contractor data approval.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ],
+      "providerIngressPaths": [
+        "/webhooks/deel"
+      ]
+    },
+    {
+      "id": "linkedin",
+      "canonicalId": "linkedin",
+      "providerId": "linkedin",
+      "aliases": [
+        "linked_in"
+      ],
+      "name": "LinkedIn",
+      "category": "CRM",
+      "description": "Company and professional-network signals.",
+      "method": "Poll",
+      "requiredPermissions": [
+        "organization read",
+        "profile read",
+        "rate-limit approval"
+      ],
+      "setupRequirements": "LinkedIn organization/page access, OAuth app access token, optional refresh token, company/profile scope, rate-limit approval.",
+      "supportedSyncModes": [
+        "Dry run",
+        "Limited backfill"
+      ],
+      "providerIngressPaths": [],
+      "noIngressReason": "LinkedIn is poll-only from the customer data plane."
+    }
+  ]
+}

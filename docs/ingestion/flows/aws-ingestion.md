@@ -76,8 +76,10 @@ central design invariant of AWS ingestion — the one handler, one dedup namespa
 AWS ingestion authenticates with **IAM credentials** and **SigV4-signs every
 request**. There is no OAuth token, no per-user token, and no webhook secret. The
 signing is performed internally by the `aioboto3` / `botocore` service clients
-(`cloudtrail`, `sts`), which also own endpoint resolution and throttle-retry, so
-Fyralis never hand-rolls a SigV4 signer
+(`cloudtrail`, `sts`), which own endpoint resolution and signing. Botocore is
+configured for exactly one attempt; the shared `ProviderTransport` owns quota,
+timeouts, retries, concurrency, and distributed cooldowns, so Fyralis neither
+hand-rolls a SigV4 signer nor hides provider calls inside an SDK retry loop
 ([client.py:1-41](../../../services/ingest/integrations/aws/client.py#L1-L41)).
 
 ### 2.1 Two credential kinds
@@ -144,15 +146,16 @@ There is no OAuth handshake. `finalize_install`
 
 ## 3. The AWS API surface that is actually called
 
-All reads funnel through `AwsClient`, which builds an `aioboto3` service client
-signed from the resolved credentials and lets a botocore `Config` own
-throttle-retry (standard mode, exponential backoff + jitter,
-`AWS_RL_MAX_ATTEMPTS`=4)
-([client.py:163-198](../../../services/ingest/integrations/aws/client.py#L163-L198)).
-Botocore `ClientError`s are mapped into the shared `AwsApiError` taxonomy
-(`aws_api_throttled` / `aws_api_unauthorized` / `aws_api_not_found` /
-`aws_api_error`) by `_map_botocore_error`
-([credentials.py:175-201](../../../services/ingest/integrations/aws/credentials.py#L175-L201)).
+All reads funnel through `AwsClient`, which builds a SigV4-signed `aioboto3`
+service client with botocore `total_max_attempts=1`. Every actual provider call
+then executes through `ProviderTransport` under its exact operation id:
+`sts.assume_role`, `sts.get_caller_identity`, or
+`cloudtrail.lookup_events`
+([client.py](../../../services/ingest/integrations/aws/client.py)).
+Botocore failures are mapped into the shared provider taxonomy. Throttles and
+transient exhaustion become durable `RetryLater`; permanent auth/not-found
+failures are converted to the stable `AwsApiError` taxonomy
+([credentials.py](../../../services/ingest/integrations/aws/credentials.py)).
 
 | AWS API | Wrapper | Purpose | Code |
 |---------|---------|---------|------|
@@ -184,16 +187,14 @@ restorability invariant).
 
 ### 3.2 Rate limits
 
-There is **no dedicated client-side token bucket for AWS** —
-`rate_limit/buckets.py` declares no `("aws", …)` entry (verified: zero `aws`
-references in that file). Throttle handling is delegated to **botocore's own
-standard retry mode** (backoff + jitter), and if that budget is spent the client
-surfaces `AwsApiError(code="aws_api_throttled")`, which the fetcher treats as a
-soft empty round — it leaves the cursor unadvanced and ends the round
-`end_of_data=False` so ShardFetch re-enters on the next tick
-([fetchers/aws.py:202-210](../../../services/ingest/ingestion/fetchers/aws.py#L202-L210)).
-This contrasts with GitHub's single per-app bucket and Slack's per-method
-buckets.
+AWS uses the universal `ProviderTransport`, not a source-local bucket or SDK
+retry loop. Each operation acquires its declared quota scopes before the one
+botocore attempt. A provider 429/throttle response feeds the shared Redis
+cooldown; exhausted retry budget raises `RetryLater(not_before, …)`.
+ShardFetch persists that retry schedule and releases the worker without
+advancing the cursor. The reconciler likewise re-raises `RetryLater` instead of
+treating a missing response as “no gap.” This keeps both replicas and all work
+for the same quota scope behind the same cooldown.
 
 ---
 
@@ -428,12 +429,13 @@ The reconciler resolves the install with `set_pool_provider`-injected pool acces
 > **TODO(human):** AWS has **no automatic revocation chokepoint** today. Unlike
 > GitHub (whose client flips `enabled=FALSE` on a `401 Bad credentials` / app
 > `404`), no AWS code path sets `aws_installations.disabled_at` in response to an
-> `aws_api_unauthorized` error. `_map_botocore_error` classifies
+> `aws_api_unauthorized` error. `_map_botocore_provider_error` classifies
 > `AccessDenied` / `ExpiredToken` / `InvalidClientTokenId` / etc. as
-> `aws_api_unauthorized` ([credentials.py:187-190](../../../services/ingest/integrations/aws/credentials.py#L187-L190)),
-> but that error simply **propagates** (the fetcher only special-cases
-> `aws_api_throttled` — [fetchers/aws.py:202-210](../../../services/ingest/ingestion/fetchers/aws.py#L202-L210))
-> and the run fails rather than disabling the install. `disabled_at` is only ever
+> a permanent provider error and the client exposes it as
+> `aws_api_unauthorized`
+> ([credentials.py](../../../services/ingest/integrations/aws/credentials.py)),
+> but that error simply **propagates** and the run fails rather than disabling
+> the install. `disabled_at` is only ever
 > *cleared* (by a re-install — [onboarding.py:63](../../../services/ingest/integrations/aws/onboarding.py#L63))
 > and only ever *read* (by the planner load SQL, the poll-edge resolve, and the
 > reconciler). Confirm whether a revocation chokepoint is intended for AWS, and
@@ -443,11 +445,11 @@ The reconciler resolves the install with `set_pool_provider`-injected pool acces
 
 **Recoverable errors that *are* handled:**
 
-- **Throttling** (`aws_api_throttled`) — the fetcher leaves the cursor unadvanced
-  and returns an empty, non-terminal round so ShardFetch retries on the next tick
-  ([fetchers/aws.py:202-210](../../../services/ingest/ingestion/fetchers/aws.py#L202-L210)).
-  Below that, botocore's standard retry mode already absorbs transient throttles
-  ([client.py:163-173](../../../services/ingest/integrations/aws/client.py#L163-L173)).
+- **Throttling / transient exhaustion** — `ProviderTransport` observes response
+  headers, applies the shared cooldown and bounded full-jitter retry policy,
+  then raises `RetryLater` when the call must leave the worker. ShardFetch
+  persists `next_attempt_at`; the fetcher and reconciler never convert this into
+  an empty successful response or advance a cursor.
 - **AssumeRole expiry** — credentials are proactively refreshed 5 min before
   expiry (§2.1), so a long backfill never signs with a stale STS token.
 
@@ -502,10 +504,10 @@ The reconciler resolves the install with `set_pool_provider`-injected pool acces
 4. **The live edge is a poll, not a webhook.** No HMAC verification; the trust
    boundary is the IAM-authenticated poll of the customer's own queue. AWS is
    deliberately absent from the webhook `VERIFIERS` map.
-5. **Window walk with a 90-day floor + opaque `NextToken`**, throttle absorbed by
-   botocore retry + a soft non-terminal round; reconciler probes with an
-   exclusive high-water floor and reshares incrementally (over-reshares safely,
-   never under-reshares).
+5. **Window walk with a 90-day floor + opaque `NextToken`**, with
+   ProviderTransport-owned retries and durable `RetryLater` scheduling;
+   reconciler probes with an exclusive high-water floor and reshares
+   incrementally (over-reshares safely, never under-reshares).
 
 ---
 
@@ -521,7 +523,6 @@ SigV4 / STS AssumeRole semantics, as referenced inline in the client + migration
 |---------|---------|---------|
 | `AWS_BACKFILL_WINDOW_DAYS` | `90` | lower-bound window (days) for the FULL walk; `0` = no floor. Default matches CloudTrail's `LookupEvents` retention ([fetchers/aws.py:65-75](../../../services/ingest/ingestion/fetchers/aws.py#L65-L75)) |
 | `AWS_EVENTS_PAGE_SIZE` | `50` | per-page `MaxResults`, clamped to `[1, 50]` (CloudTrail's cap) ([fetchers/aws.py:58-62](../../../services/ingest/ingestion/fetchers/aws.py#L58-L62)) |
-| `AWS_RL_MAX_ATTEMPTS` | `4` | botocore standard-mode retry budget for throttle/transient errors ([client.py:169](../../../services/ingest/integrations/aws/client.py#L169)) |
 | `AWS_CLOUDTRAIL_ENDPOINT_TEMPLATE` | `https://cloudtrail.{region}.amazonaws.com` | logging + the moto/localstack override seam ([client.py:67-70](../../../services/ingest/integrations/aws/client.py#L67-L70)) |
 
 Per-install knobs live on the `aws_installations` row, not env: `account_id`,
@@ -544,9 +545,9 @@ Per-install knobs live on the `aws_installations` row, not env: `account_id`,
   `secret_ref`; no webhook secret; creds never logged, account id hashed. ✅
 - **Revocation chokepoint** — **absent** (see §9 TODO). ⚠️
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
-There is **no spammer base-URL override** in `build_aws_client` (unlike the
+There is **no Provider Lab base-URL override** in `build_aws_client` (unlike the
 HTTP-based sources): the synthetic harness instead **rebinds the fetcher's
 `_open_aws_client` seam to a `MockAwsClient`**, so backfill runs against the mock
 without resolving any real credentials

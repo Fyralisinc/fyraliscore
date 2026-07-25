@@ -87,7 +87,7 @@ live webhook (thin change, no SyncToken)
 `QuickBooksClient` authenticates **every** call with
 `Authorization: Bearer {access_token}` and scopes the path to `{realmId}`
 ([client.py:118-128](../../../services/ingest/integrations/quickbooks/client.py#L118-L128)).
-The access token is resolved **once** — either preset (spammer/test) or read from
+The access token is resolved **once** — either preset (Provider Lab/test) or read from
 the secret store via `secret_ref` — and reused for the life of the client
 ([client.py:94-116](../../../services/ingest/integrations/quickbooks/client.py#L94-L116)).
 There is **no in-client refresh**: a `401`/`403` maps to a
@@ -528,7 +528,7 @@ which cite Intuit's query/webhook/rate-limit behavior).
 | `QUICKBOOKS_RL_MAX_ATTEMPTS` | `4` | `429` retry budget in the client ([client.py:129](../../../services/ingest/integrations/quickbooks/client.py#L129-L129)) |
 | `QUICKBOOKS_RL_MAX_SLEEP_SEC` | `30` | max backoff per `Retry-After` ([client.py:130](../../../services/ingest/integrations/quickbooks/client.py#L130-L130)) |
 | `QUICKBOOKS_API_BASE_URL` | `https://quickbooks.api.intuit.com` | endpoint-resolver override (production host) ([lib/integrations/endpoints.py:62, 129](../../../lib/integrations/endpoints.py#L62-L62)) |
-| `SYNTHETIC_SOURCE_API_BASE` | — | spammer-mode switch (§11.3) ([fetchers/_clients.py:50-51](../../../services/ingest/ingestion/fetchers/_clients.py#L50-L51)) |
+| `PROVIDER_LAB_URL` | — | test-only credential mode (§11.3); routing remains explicit |
 
 > Note: `base_url` (production vs. Intuit `https://sandbox-quickbooks.api.intuit.com`)
 > is **per-install** (`quickbooks_installations.base_url`), not an env var; the
@@ -548,18 +548,14 @@ which cite Intuit's query/webhook/rate-limit behavior).
 - **Least secret surface** — access/refresh/verifier tokens encrypted-at-rest; only
   opaque refs in the DB; tokens never logged. ✅
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
-For local testing against the mock source servers, `build_quickbooks_client`
-detects spammer mode (`SYNTHETIC_SOURCE_API_BASE` set) and **presets** the access
-token to `spam-quickbooks`, skips the secret store, and points `api_base_url` at
-the resolver's local `/quickbooks` sub-path
-([fetchers/_clients.py:366-393](../../../services/ingest/ingestion/fetchers/_clients.py#L366-L393),
-[lib/integrations/endpoints.py:159](../../../lib/integrations/endpoints.py#L159-L159)).
-The mock server lives at
-[services/ingest/synthetic/mock_servers/quickbooks.py](../../../services/ingest/synthetic/mock_servers/quickbooks.py).
+For local testing, `build_quickbooks_client` detects `PROVIDER_LAB_URL`,
+**presets** the access token to `spam-quickbooks`, and skips the secret store.
+`QUICKBOOKS_API_BASE_URL=<lab>/quickbooks` supplies the route explicitly; the
+production resolver never derives it from the lab origin.
 
 > **TODO(human):** the ground-truth hint expected an exact backfill row count
 > parity check (as Notion has "4200 exact"). No such fixture-count assertion was
-> found in the QuickBooks code path; confirm the expected spammer entity volumes
+> found in the QuickBooks code path; confirm the expected Provider Lab entity volumes
 > if a parity SLO exists.

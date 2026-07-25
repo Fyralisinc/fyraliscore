@@ -11,6 +11,21 @@ import httpx
 
 from lib.integrations.endpoints import endpoint
 from lib.shared.errors import SecretNotFoundError, SecretStoreError
+from lib.shared.provider_transport import (
+    ProviderPermanentError,
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 
 
 _DEFAULT_GRAPH_VERSION = "v23.0"
@@ -43,6 +58,12 @@ class FacebookPagesClient:
         secret_store: Any = None,
         tenant_id: UUID | None = None,
         http_client: httpx.AsyncClient | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._base_url = (base_url or graph_api_base_url()).rstrip("/")
         self._access_token = access_token
@@ -52,6 +73,27 @@ class FacebookPagesClient:
         self._tenant_id = tenant_id
         self._http = http_client or httpx.AsyncClient(timeout=30.0)
         self._owns_http = http_client is None
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="facebook_pages",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(installation_row_id)
+                if installation_row_id is not None
+                else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     async def aclose(self) -> None:
         if self._owns_http:
@@ -84,18 +126,91 @@ class FacebookPagesClient:
         access_token: str | None = None,
         params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
+        operation: str,
     ) -> dict[str, Any]:
         qs = dict(params or {})
         qs["access_token"] = await self._token(access_token)
-        response = await self._http.request(
+        return await self._execute_json(
             method,
             f"{self._base_url}/{path.lstrip('/')}",
             params=qs,
             data=data,
+            operation=operation,
         )
-        response.raise_for_status()
-        payload = response.json()
-        return payload if isinstance(payload, dict) else {}
+
+    async def _execute_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, Any] | None,
+        data: dict[str, Any] | None = None,
+        operation: str,
+    ) -> dict[str, Any]:
+        async def _once() -> dict[str, Any]:
+            try:
+                response = await self._http.request(
+                    method,
+                    url,
+                    params=params,
+                    data=data,
+                )
+            except httpx.TimeoutException as exc:
+                raise ProviderTimeoutError(
+                    "Facebook Pages request timed out",
+                    source="facebook_pages",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
+            except httpx.TransportError as exc:
+                raise ProviderTransientError(
+                    "Facebook Pages transport error",
+                    source="facebook_pages",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
+            if response.status_code == 429:
+                raise ProviderRateLimited(
+                    "Facebook Pages Graph rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="facebook_pages",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
+                raise ProviderTransientError(
+                    f"Facebook Pages returned HTTP {response.status_code}",
+                    source="facebook_pages",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            if response.status_code // 100 != 2:
+                raise ProviderPermanentError(
+                    f"Facebook Pages returned HTTP {response.status_code}",
+                    source="facebook_pages",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise ProviderTransientError(
+                    "Facebook Pages returned malformed JSON",
+                    source="facebook_pages",
+                    operation=operation,
+                ) from exc
+            if not isinstance(payload, dict):
+                raise ProviderTransientError(
+                    "Facebook Pages response was not a JSON object",
+                    source="facebook_pages",
+                    operation=operation,
+                )
+            return payload
+
+        return await self._provider.execute(operation, _once)
 
     async def exchange_code(
         self,
@@ -105,7 +220,8 @@ class FacebookPagesClient:
         client_secret: str,
         redirect_uri: str,
     ) -> dict[str, Any]:
-        response = await self._http.get(
+        return await self._execute_json(
+            "GET",
             f"{self._base_url}/oauth/access_token",
             params={
                 "client_id": client_id,
@@ -113,10 +229,8 @@ class FacebookPagesClient:
                 "redirect_uri": redirect_uri,
                 "code": code,
             },
+            operation="oauth.token.exchange",
         )
-        response.raise_for_status()
-        payload = response.json()
-        return payload if isinstance(payload, dict) else {}
 
     async def list_pages(self, user_access_token: str) -> list[dict[str, Any]]:
         pages: list[dict[str, Any]] = []
@@ -131,6 +245,7 @@ class FacebookPagesClient:
                     "limit": 100,
                     **({"after": after} if after else {}),
                 },
+                operation="pages.list",
             )
             pages.extend(p for p in payload.get("data", []) if isinstance(p, dict))
             after = _next_after(payload)
@@ -149,6 +264,7 @@ class FacebookPagesClient:
             f"/{page_id}/subscribed_apps",
             access_token=page_access_token,
             data={"subscribed_fields": ",".join(fields)},
+            operation="pages.subscribe",
         )
 
     async def list_conversations(
@@ -166,6 +282,7 @@ class FacebookPagesClient:
                 "limit": limit,
                 **({"after": after} if after else {}),
             },
+            operation="conversations.list",
         )
         data = [c for c in payload.get("data", []) if isinstance(c, dict)]
         return data, _next_after(payload)
@@ -187,6 +304,7 @@ class FacebookPagesClient:
                 "limit": limit,
                 **({"after": after} if after else {}),
             },
+            operation="messages.list",
         )
         data = [m for m in payload.get("data", []) if isinstance(m, dict)]
         return data, _next_after(payload)

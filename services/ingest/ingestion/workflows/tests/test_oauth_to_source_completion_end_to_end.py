@@ -113,8 +113,8 @@ def _ensure_e2e_helpers() -> str:
             f.write("# Test helpers for M6.2a subprocess tests.\n")
 
     content = '''"""Subprocess-loadable test planner + fetcher + reconciler
-for the M6.2a Phase 3 multi-subprocess end-to-end test. Installs all
-three into their respective dispatch tables on import.
+for the M6.2a Phase 3 multi-subprocess end-to-end test. Activates all
+three overrides for the subprocess lifetime.
 
 Test planner: returns 2 shards for source='slack' (channel C001
 and C002 windows).
@@ -130,18 +130,20 @@ sidesteps that.
 """
 from __future__ import annotations
 
+import atexit
+from contextlib import ExitStack
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.fetchers import FetchResult
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
 )
+from services.ingest.source_contract.runtime import override_history_bindings
 
 
 async def _e2e_test_planner(ctx: PlannerContext) -> list[Shard]:
@@ -185,10 +187,15 @@ async def _e2e_test_reconciler(
     return ReconciliationDecision(has_gaps=False, message="e2e clean")
 
 
-# Install all three into the dispatch tables at import time.
-PLANNER_DISPATCH["slack"] = _e2e_test_planner
-FETCHER_DISPATCH["slack"] = _e2e_test_fetcher
-RECONCILER_DISPATCH["slack"] = _e2e_test_reconciler
+_OVERRIDE_SCOPE = ExitStack()
+_OVERRIDE_SCOPE.enter_context(
+    override_history_bindings(
+        planners={"slack": _e2e_test_planner},
+        fetchers={"slack": _e2e_test_fetcher},
+        reconcilers={"slack": _e2e_test_reconciler},
+    )
+)
+atexit.register(_OVERRIDE_SCOPE.close)
 '''
     helpers_file = os.path.join(helpers_dir, "e2e_test_dispatch.py")
     with open(helpers_file, "w") as f:

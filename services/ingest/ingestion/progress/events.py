@@ -32,14 +32,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from services.ingest.source_contract.catalog import CANONICAL_SOURCE_IDS
 
-# MUST stay in sync with RawEnvelope.SourceLiteral / INGESTION_SOURCES. A
-# missing source here is a latent crash: tenant_onboarding builds a
-# `TenantOnboardingStarted(sources=[...])` progress event from the applicable
-# sources, and an omitted member (previously 'grafana') makes Pydantic raise a
-# literal_error that propagates out of the orchestrator tick and crashes the
-# worker — so onboarding a grafana tenant never completes.
-Source = Literal["slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp", "facebook_pages"]
+
+# Derived from the same immutable catalog as RawEnvelope and Kafka topics.
+# This prevents a newly added source from crashing onboarding progress-event
+# validation because a second hand-maintained Literal was not updated.
+Source = Literal[*CANONICAL_SOURCE_IDS]
 
 
 class ProgressEventBase(BaseModel):

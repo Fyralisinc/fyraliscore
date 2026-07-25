@@ -6,9 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
-)
+from services.ingest.source_contract.runtime import resolve_reconciler
 from services.ingest.ingestion.reconcilers import slack as sl_rec
 from services.ingest.ingestion.reconcilers.slack import (
     RESHARE_RECENCY_SCORE,
@@ -155,4 +153,4 @@ async def test_no_done_shards_clean_without_install_load(monkeypatch):
 
 
 async def test_dispatch_wired():
-    assert RECONCILER_DISPATCH["slack"] is reconcile_slack
+    assert resolve_reconciler("slack") is reconcile_slack

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from services.app.webhooks.router import _PROVIDER_CHANNEL
+from services.ingest.source_contract import WEBHOOK_INGRESS_CATALOG
 
 
 _ROOT = Path(__file__).resolve().parents[4]
@@ -31,7 +31,12 @@ _DEDUP_EVIDENCE: dict[str, Path] = {
 
 
 def test_webhook_providers_have_retry_dedup_test_evidence() -> None:
-    assert set(_PROVIDER_CHANNEL) == set(_DEDUP_EVIDENCE)
+    generic_routes = {
+        route_id
+        for route_id, ingress in WEBHOOK_INGRESS_CATALOG.items()
+        if ingress.handler_mode == "generic"
+    }
+    assert generic_routes == set(_DEDUP_EVIDENCE)
     for provider, path in _DEDUP_EVIDENCE.items():
         full_path = _ROOT / path
         assert full_path.exists(), f"{provider} missing dedup evidence file: {path}"

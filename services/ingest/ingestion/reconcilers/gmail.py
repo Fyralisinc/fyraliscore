@@ -65,12 +65,10 @@ the long-term resolution because it ensures the watch is `active`
 (with an `initial_history_id`) before the planner runs.
 
 ============================================================
-WIRE-IN
+SOURCE CONTRACT
 ============================================================
-This module assigns into `RECONCILER_DISPATCH['gmail']` at import
-time; `services/ingest/ingestion/reconcilers/__init__.py` imports this
-module to trigger the assignment. Tests rebind via
-`monkeypatch.setitem(RECONCILER_DISPATCH, "gmail", test_fn)`.
+`SourceDefinition.reconciler_binding` points directly to
+`reconcile_gmail`; importing this module has no registration side effect.
 """
 from __future__ import annotations
 
@@ -78,11 +76,12 @@ import logging
 from typing import Any
 
 import asyncpg
+
+from services.ingest.ingestion.installations import load_source_installation
 import orjson
 
 from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
@@ -93,8 +92,8 @@ from services.ingest.integrations.gmail.client import (
     GMAIL_READONLY_SCOPE,
     GmailClient,
     GoogleApiError,
-    GoogleHttpClient,
     GoogleRateLimited,
+    build_google_http_client,
 )
 from services.ingest.integrations.gmail.dwd import get_minter
 
@@ -121,7 +120,7 @@ _SCOPE_ALIAS = {
 # ---------------------------------------------------------------------
 # The reconciler reads workflow_states (for shard cursors) outside the
 # Reconciler service's own transaction. We need a pool reference; the
-# RECONCILER_DISPATCH contract doesn't pass one, so we resolve via
+# The reconciler callable contract doesn't pass one, so we resolve via
 # this module-level seam.
 _pool_provider: Any = None
 
@@ -156,48 +155,17 @@ async def _open_gmail_client(install_or_shard_install: asyncpg.Record):  # noqa:
     """Yield (gmail_client, http_close_callable). Same shape as
     fetchers/gmail.py:_open_gmail_client; tests patch this symbol."""
     minter = get_minter()
-    http = GoogleHttpClient(minter)
+    http = build_google_http_client(
+        minter,
+        tenant_id=str(install_or_shard_install["tenant_id"]),
+        installation_id=str(install_or_shard_install["id"]),
+    )
     await http.__aenter__()
 
     async def close() -> None:
         await http.__aexit__(None, None, None)
 
     return GmailClient(http), close
-
-
-# ---------------------------------------------------------------------
-# Install-load helper.
-# ---------------------------------------------------------------------
-_LOAD_GMAIL_INSTALL_FOR_RECONCILE_SQL = """
-SELECT id, tenant_id, workspace_domain, service_account_email,
-       scope, disabled_at
-  FROM gmail_installations
- WHERE id = $1 AND disabled_at IS NULL
-"""
-
-
-async def _load_install_for_run(
-    pool: Any, *, tenant_id: Any, scope_hint: dict[str, Any] | None = None,
-) -> asyncpg.Record | None:
-    """Load the Gmail install for the run's tenant.
-
-    Tenancy is the right scope (1 active install per tenant). We
-    don't use the S1-amended loader from M6.2a here because it
-    aggregates mailboxes — we just need the install row for scope +
-    workspace_domain. Local helper keeps the reconciler decoupled
-    from the planner's loader.
-    """
-    _ = scope_hint  # reserved for future per-source disambiguation
-    return await pool.fetchrow(
-        """
-        SELECT id, tenant_id, workspace_domain, service_account_email,
-               scope, disabled_at
-          FROM gmail_installations
-         WHERE tenant_id = $1 AND disabled_at IS NULL
-         LIMIT 1
-        """,
-        tenant_id,
-    )
 
 
 # ---------------------------------------------------------------------
@@ -328,7 +296,7 @@ async def _check_one_mailbox_for_gap(
 
 
 # ---------------------------------------------------------------------
-# Main entrypoint — RECONCILER_DISPATCH['gmail'].
+# Main entrypoint declared by Gmail's SourceDefinition.
 # ---------------------------------------------------------------------
 async def reconcile_gmail(
     shards: list[asyncpg.Record], run: asyncpg.Record,
@@ -348,7 +316,12 @@ async def reconcile_gmail(
 
     pool = _get_pool()
     tenant_id = run["tenant_id"]
-    install = await _load_install_for_run(pool, tenant_id=tenant_id)
+    install = await load_source_installation(
+        pool,
+        source="gmail",
+        tenant_id=tenant_id,
+        installation_id=run["installation_row_id"],
+    )
     if install is None:
         # Install gone (disabled mid-flight). Nothing to reconcile;
         # treat as clean. M6.2b's Reconciler service stamps
@@ -389,7 +362,6 @@ async def reconcile_gmail(
 
 
 # Wire into the dispatch table at module-import time.
-RECONCILER_DISPATCH["gmail"] = reconcile_gmail
 
 
 __all__ = [

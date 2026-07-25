@@ -7,7 +7,7 @@ query surface (GET /contracts, /contract/{id}/payments) and a live push surface
 (HMAC-signed webhooks). This sandbox stands up a REAL local mock of the Deel
 v1 endpoints and drives the REAL pipeline against it:
 
-    DeelClient (real httpx, spammer auth) -> fetch_page_deel (real cursor +
+    DeelClient (real httpx, Provider Lab auth) -> fetch_page_deel (real cursor +
     fan-out) -> handle_deel_payment (real ObservationDraft) -> ingest()
     (real observation insert + dedup)
 
@@ -153,13 +153,15 @@ async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
 
 
 async def run(args) -> int:
-    from services.ingest.synthetic.mock_servers.deel import start_mock_deel
+    from services.ingest.synthetic.provider_lab.server import start_provider_lab
 
     fixtures = _build_fixtures()
-    server, base_url = start_mock_deel(fixtures)
-    os.environ["SYNTHETIC_SOURCE_API_BASE"] = base_url
-    _hr("MOCK SERVER")
-    print(f"  Deel API base : {base_url} (served under /deel via spammer routing)")
+    server = start_provider_lab({"deel": [fixtures]})
+    base_url = server.url("deel")
+    os.environ["PROVIDER_LAB_URL"] = server.base_url
+    os.environ["DEEL_API_BASE_URL"] = base_url
+    _hr("PROVIDER LAB")
+    print(f"  Deel API base : {base_url} (explicit local override)")
 
     admin_url = os.environ.get("SANDBOX_ADMIN_URL", _DEFAULT_ADMIN_URL)
     provided_url = os.environ.get("DATABASE_URL")
@@ -232,8 +234,13 @@ async def run(args) -> int:
         _hr("PLAN (planner over the loader SQL)")
         from services.ingest.ingestion.planners.context import PlannerContext
         from services.ingest.ingestion.planners.deel import plan_shards_deel
-        from services.ingest.ingestion.workflows.source_onboarding import _LOAD_DEEL_INSTALL_SQL
-        install_row = await pool.fetchrow(_LOAD_DEEL_INSTALL_SQL, _TENANT_ID)
+        from services.ingest.ingestion.installations import load_source_installation
+        install_row = await load_source_installation(
+            pool,
+            source="deel",
+            tenant_id=_TENANT_ID,
+            installation_id=install_id,
+        )
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_deel(ctx)
         print(f"  planned {len(shards)} shard(s): "

@@ -1,20 +1,18 @@
-"""`BackfillHarness` — OAuth-callback-driven multi-tenant backfill orchestrator.
+"""Provider-Lab-driven multi-tenant backfill certification harness.
 
-Per A22. Operates in three phases:
+It operates in three phases:
 
   Phase A — Setup:
     1. Seed tenants (one row in `tenants` per scenario).
-    2. Build per-tenant fixtures via X2 generators.
-    3. Write the multi-tenant helper module to a temp directory; the
-       helper registers fixture-aware mock-client factories at import.
-    4. Invoke OAuth callbacks in-process (via httpx ASGITransport) to
-       write install + onboarding_triggers rows.
+    2. Resolve each source certification kit's immutable fixture and
+       installation-seeder callables.
+    3. Start Provider Lab with those fixtures.
+    4. Write install + onboarding_triggers rows.
 
   Phase B — Run:
-    5. Spawn 7 shared subprocesses (oauth_poller, tenant_onboarding,
+    5. Spawn seven unmodified production service subprocesses (oauth_poller,
        source_onboarding, shard_fetch, reconciler, normalizer,
-       observation_writer) with PYTHONPATH +
-       `-c "import <helper>; from <svc> import main; main()"`.
+       observation_writer).
     6. Concurrently (bounded by `concurrency`) poll for each tenant's
        `tenant_onboarding_completed` signal in the Bridge inbox.
 
@@ -55,34 +53,12 @@ import asyncpg
 
 from lib.shared.ids import uuid7
 from services.ingest.ingestion.feature_flags.client import KAFKA_PATH_ENABLED
-from services.ingest.synthetic.backfill_harness.scenarios import BackfillScenario
-from services.ingest.synthetic.fixtures import (
-    make_discord_guild,
-    make_github_repos,
-    make_gmail_mailbox,
-    make_google_calendar,
-    make_google_drive,
-    make_grafana,
-    make_jira,
-    make_mercury,
-    make_notion,
-    make_quickbooks,
-    make_slack_workspace,
-    make_telegram,
-    make_brex,
-    make_ramp,
-    make_gusto,
-    make_deel,
-    make_fireflies,
-    make_signal,
-    make_aws,
-    make_miro,
-    make_figma,
-    make_carta,
-    make_hibob,
-    make_ashby,
-    make_linkedin,
+from services.ingest.source_certification.runtime import (
+    certification_callable,
+    resolve_fixture_factory,
+    resolve_installation_seeder,
 )
+from services.ingest.synthetic.backfill_harness.scenarios import BackfillScenario
 
 
 # Raw-tier (S3) env for the backfill producer + normalizer (A27.4).
@@ -125,6 +101,7 @@ class TenantOutcome:
     reconciliation_pass_count: int = 0
     expected_reshare: bool = False
     install_error: str | None = None
+    fixture: dict[str, Any] | None = None
 
 
 @dataclass
@@ -137,329 +114,29 @@ class HarnessResult:
     wall_time_seconds: float = 0.0
 
 
-# =====================================================================
-# Fixture builder dispatch.
-# =====================================================================
-def _build_fixture(source: str, params: dict[str, Any]) -> dict[str, Any]:
-    if source == "gmail":
-        return make_gmail_mailbox(**params)
-    if source == "github":
-        return make_github_repos(**params)
-    if source == "slack":
-        return make_slack_workspace(**params)
-    if source == "discord":
-        return make_discord_guild(**params)
-    if source == "google_calendar":
-        return make_google_calendar(**params)
-    if source == "google_drive":
-        return make_google_drive(**params)
-    if source == "jira":
-        return make_jira(**params)
-    if source == "mercury":
-        return make_mercury(**params)
-    if source == "notion":
-        return make_notion(**params)
-    if source == "quickbooks":
-        return make_quickbooks(**params)
-    if source == "grafana":
-        return make_grafana(**params)
-    if source == "telegram":
-        return make_telegram(**params)
-    if source == "brex":
-        return make_brex(**params)
-    if source == "ramp":
-        return make_ramp(**params)
-    if source == "gusto":
-        return make_gusto(**params)
-    if source == "deel":
-        return make_deel(**params)
-    if source == "fireflies":
-        return make_fireflies(**params)
-    if source == "signal":
-        return make_signal(**params)
-    if source == "aws":
-        return make_aws(**params)
-    if source == "miro":
-        return make_miro(**params)
-    if source == "figma":
-        return make_figma(**params)
-    if source == "carta":
-        return make_carta(**params)
-    if source == "hibob":
-        return make_hibob(**params)
-    if source == "ashby":
-        return make_ashby(**params)
-    if source == "linkedin":
-        return make_linkedin(**params)
-    raise ValueError(f"unknown source: {source!r}")
+def _fixture_installation_id(outcome: TenantOutcome) -> str:
+    return (
+        f"x3-{outcome.scenario.tenant_slug}-"
+        f"{outcome.scenario.source}"
+    )
 
 
-# =====================================================================
-# Helper-module writer.
-# =====================================================================
-_HELPER_TEMPLATE = '''"""Auto-generated X3 harness helper.
+def _certification_fixture(outcome: TenantOutcome) -> dict[str, Any]:
+    """Build and cache the source-owned Provider Lab fixture."""
 
-Loaded into each M6 subprocess via PYTHONPATH + `-c "import {module}"`.
-Reads the per-tenant fixture registry from FIXTURE_REGISTRY_PATH,
-registers fixture-aware mock-client factories, and overrides
-PLANNER / FETCHER / RECONCILER dispatch where the source's planner /
-reconciler needs the source_client wired or the pool-provider injected.
-"""
-from __future__ import annotations
-
-import json
-import os
-from typing import Any
-from uuid import UUID
-
-from services.ingest.synthetic.fault_profiles import FaultProfile
-from services.ingest.synthetic.mock_clients import (
-    MockDiscordClient, MockGithubClient, MockGmailClient,
-    MockGoogleCalendarClient, MockGoogleDriveClient, MockGrafanaClient,
-    MockJiraClient, MockMercuryClient, MockNotionClient,
-    MockQuickBooksClient, MockSlackClient, MockTelegramClient,
-    MockBrexClient, MockRampClient, MockGustoClient, MockDeelClient,
-    MockFirefliesClient, MockSignalClient, MockAwsClient,
-    MockMiroClient, MockFigmaClient, MockCartaClient,
-    MockHibobClient, MockAshbyClient, MockLinkedinClient,
-)
-
-
-_REGISTRY: dict[str, Any] = {{}}
-
-
-def _load_registry() -> None:
-    global _REGISTRY
-    path = os.environ.get("X3_FIXTURE_REGISTRY_PATH")
-    if not path or not os.path.exists(path):
-        return
-    with open(path) as f:
-        _REGISTRY = json.load(f)
-
-
-_load_registry()
-
-
-def _profile_from(p: dict[str, Any] | None) -> FaultProfile:
-    if not p:
-        return FaultProfile()
-    return FaultProfile(**p)
-
-
-def _lookup_by_tenant_id(tenant_id: Any) -> dict[str, Any] | None:
-    tid = str(tenant_id)
-    for entry in _REGISTRY.get("entries", []):
-        if entry["tenant_id"] == tid:
-            return entry
-    return None
-
-
-def _make_mock(source: str, fixture: dict[str, Any],
-               profile: FaultProfile) -> Any:
-    if source == "gmail":
-        return MockGmailClient(fixture=fixture, profile=profile)
-    if source == "github":
-        return MockGithubClient(fixture=fixture, profile=profile)
-    if source == "slack":
-        return MockSlackClient(fixture=fixture, profile=profile)
-    if source == "discord":
-        return MockDiscordClient(fixture=fixture, profile=profile)
-    if source == "google_calendar":
-        return MockGoogleCalendarClient(fixture=fixture, profile=profile)
-    if source == "google_drive":
-        return MockGoogleDriveClient(fixture=fixture, profile=profile)
-    if source == "jira":
-        return MockJiraClient(fixture=fixture, profile=profile)
-    if source == "mercury":
-        return MockMercuryClient(fixture=fixture, profile=profile)
-    if source == "notion":
-        return MockNotionClient(fixture=fixture, profile=profile)
-    if source == "quickbooks":
-        return MockQuickBooksClient(fixture=fixture, profile=profile)
-    if source == "grafana":
-        return MockGrafanaClient(fixture=fixture, profile=profile)
-    if source == "telegram":
-        return MockTelegramClient(fixture=fixture, profile=profile)
-    if source == "brex":
-        return MockBrexClient(fixture=fixture, profile=profile)
-    if source == "ramp":
-        return MockRampClient(fixture=fixture, profile=profile)
-    if source == "gusto":
-        return MockGustoClient(fixture=fixture, profile=profile)
-    if source == "deel":
-        return MockDeelClient(fixture=fixture, profile=profile)
-    if source == "fireflies":
-        return MockFirefliesClient(fixture=fixture, profile=profile)
-    if source == "signal":
-        return MockSignalClient(fixture=fixture, profile=profile)
-    if source == "aws":
-        return MockAwsClient(fixture=fixture, profile=profile)
-    if source == "miro":
-        return MockMiroClient(fixture=fixture, profile=profile)
-    if source == "figma":
-        return MockFigmaClient(fixture=fixture, profile=profile)
-    if source == "carta":
-        return MockCartaClient(fixture=fixture, profile=profile)
-    if source == "hibob":
-        return MockHibobClient(fixture=fixture, profile=profile)
-    if source == "ashby":
-        return MockAshbyClient(fixture=fixture, profile=profile)
-    if source == "linkedin":
-        return MockLinkedinClient(fixture=fixture, profile=profile)
-    raise ValueError(f"unknown source: {{source!r}}")
-
-
-# Per-source factory installer. Bound at import time.
-def _install_factories() -> None:
-    from services.ingest.ingestion.fetchers import gmail as gf
-    from services.ingest.ingestion.fetchers import github as ghf
-    from services.ingest.ingestion.fetchers import slack as sf
-    from services.ingest.ingestion.fetchers import discord as df
-    from services.ingest.ingestion.reconcilers import gmail as gr
-    from services.ingest.ingestion.reconcilers import github as ghr
-    from services.ingest.ingestion.reconcilers import slack as sr
-    from services.ingest.ingestion.reconcilers import discord as dr
-    from services.ingest.ingestion.fetchers import google_calendar as gcf
-    from services.ingest.ingestion.reconcilers import google_calendar as gcr
-    from services.ingest.ingestion.fetchers import google_drive as gdf
-    from services.ingest.ingestion.reconcilers import google_drive as gdr
-    from services.ingest.ingestion.fetchers import jira as jf
-    from services.ingest.ingestion.reconcilers import jira as jr
-    from services.ingest.ingestion.fetchers import mercury as mf
-    from services.ingest.ingestion.reconcilers import mercury as mr
-    from services.ingest.ingestion.fetchers import quickbooks as qf
-    from services.ingest.ingestion.reconcilers import quickbooks as qr
-    from services.ingest.ingestion.fetchers import grafana as graf
-    from services.ingest.ingestion.reconcilers import grafana as grar
-    from services.ingest.ingestion.fetchers import notion as nf
-    from services.ingest.ingestion.reconcilers import notion as nr
-    from services.ingest.ingestion.fetchers import telegram as tf
-    from services.ingest.ingestion.reconcilers import telegram as tr
-    from services.ingest.ingestion.fetchers import brex as brf
-    from services.ingest.ingestion.reconcilers import brex as brr
-    from services.ingest.ingestion.fetchers import ramp as raf
-    from services.ingest.ingestion.reconcilers import ramp as rar
-    from services.ingest.ingestion.fetchers import gusto as guf
-    from services.ingest.ingestion.reconcilers import gusto as gur
-    from services.ingest.ingestion.fetchers import deel as dlf
-    from services.ingest.ingestion.reconcilers import deel as dlr
-    from services.ingest.ingestion.fetchers import fireflies as fff
-    from services.ingest.ingestion.reconcilers import fireflies as ffr
-    from services.ingest.ingestion.fetchers import signal as sigf
-    from services.ingest.ingestion.reconcilers import signal as sigr
-    from services.ingest.ingestion.fetchers import aws as awf
-    from services.ingest.ingestion.reconcilers import aws as awr
-    from services.ingest.ingestion.fetchers import miro as mif
-    from services.ingest.ingestion.reconcilers import miro as mir
-    from services.ingest.ingestion.fetchers import figma as fgf
-    from services.ingest.ingestion.reconcilers import figma as fgr
-    from services.ingest.ingestion.fetchers import carta as caf
-    from services.ingest.ingestion.reconcilers import carta as car
-    from services.ingest.ingestion.fetchers import hibob as hbf
-    from services.ingest.ingestion.reconcilers import hibob as hbr
-    from services.ingest.ingestion.fetchers import ashby as asf
-    from services.ingest.ingestion.reconcilers import ashby as asr
-    from services.ingest.ingestion.fetchers import linkedin as lif
-    from services.ingest.ingestion.reconcilers import linkedin as lir
-    from services.ingest.ingestion.workflows import source_onboarding as so
-
-    def _factory_for(_source):
-        async def _factory(install):
-            entry = _lookup_by_tenant_id(install["tenant_id"])
-            if entry is None or entry["source"] != _source:
-                raise RuntimeError(
-                    f"X3 helper: no fixture for tenant={{install['tenant_id']}} "
-                    f"source={{_source}}"
-                )
-            mock = _make_mock(
-                _source, entry["fixture"],
-                _profile_from(entry.get("fault_profile")),
-            )
-            async def _close() -> None: return None
-            return mock, _close
-        return _factory
-
-    # Sources whose client seam follows the canonical `_open_{{source}}_client`
-    # name on BOTH the fetcher and the reconciler module.
-    for source, modules in (
-        ("gmail", (gf, gr)),
-        ("github", (ghf, ghr)),
-        ("slack", (sf, sr)),
-        ("discord", (df, dr)),
-        ("jira", (jf, jr)),
-        ("mercury", (mf, mr)),
-        ("quickbooks", (qf, qr)),
-        ("grafana", (graf, grar)),
-        ("notion", (nf, nr)),
-        ("telegram", (tf, tr)),
-        ("brex", (brf, brr)),
-        ("ramp", (raf, rar)),
-        ("gusto", (guf, gur)),
-        ("deel", (dlf, dlr)),
-        ("fireflies", (fff, ffr)),
-        ("signal", (sigf, sigr)),
-        ("aws", (awf, awr)),
-        ("miro", (mif, mir)),
-        ("figma", (fgf, fgr)),
-        ("carta", (caf, car)),
-        ("hibob", (hbf, hbr)),
-        ("ashby", (asf, asr)),
-        ("linkedin", (lif, lir)),
-    ):
-        for mod in modules:
-            setattr(mod, f"_open_{{source}}_client", _factory_for(source))
-
-    # google_calendar (IN-15) is a DWD source like gmail (planner reads DB
-    # state → source_client=None), but its client seam is `_open_calendar_client`
-    # (not `_open_google_calendar_client`), so wire it explicitly.
-    _gcal_factory = _factory_for("google_calendar")
-    setattr(gcf, "_open_calendar_client", _gcal_factory)
-    setattr(gcr, "_open_calendar_client", _gcal_factory)
-
-    # google_drive (IN-16) is also a DWD source whose seam is `_open_drive_client`
-    # (not `_open_google_drive_client`); wire it explicitly on both modules.
-    _gdrive_factory = _factory_for("google_drive")
-    setattr(gdf, "_open_drive_client", _gdrive_factory)
-    setattr(gdr, "_open_drive_client", _gdrive_factory)
-
-    # source_onboarding builds a source_client via _build_source_client
-    # for the planners that enumerate resources at plan time. GitHub
-    # (repos), Slack (channels), Discord (guilds/channels) and Notion
-    # (databases via search) all need a client; the Discord/Notion planners
-    # RAISE on source_client=None, so they must be wired here. Gmail and the
-    # other DWD/finance planners read DB state only → None.
-    async def _build_source_client(source: str, pool: Any, install: Any):
-        if source not in ("github", "slack", "discord", "notion"):
-            return None
-        entry = _lookup_by_tenant_id(install["tenant_id"])
-        if entry is None or entry["source"] != source:
-            return None
-        return _make_mock(
-            source, entry["fixture"],
-            _profile_from(entry.get("fault_profile")),
+    if outcome.fixture is None:
+        factory = resolve_fixture_factory(outcome.scenario.source)
+        outcome.fixture = factory(
+            fixture_params=outcome.scenario.fixture_params,
+            installation_id=_fixture_installation_id(outcome),
         )
-    so._build_source_client = _build_source_client
+    return outcome.fixture
 
 
-_install_factories()
-'''
-
-
-def _write_helper(workdir: str, helper_module: str) -> str:
-    """Write the helper module under `workdir` and return its
-    directory (for PYTHONPATH)."""
-    helpers_dir = os.path.join(workdir, "_x3_helpers")
-    os.makedirs(helpers_dir, exist_ok=True)
-    init_path = os.path.join(helpers_dir, "__init__.py")
-    if not os.path.exists(init_path):
-        with open(init_path, "w") as f:
-            f.write("")
-    module_path = os.path.join(helpers_dir, f"{helper_module}.py")
-    with open(module_path, "w") as f:
-        f.write(_HELPER_TEMPLATE.format(module=helper_module))
-    return helpers_dir
-
-
+@certification_callable(
+    source_id="gmail",
+    role="installation_seeder",
+)
 async def _write_gmail_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -487,7 +164,7 @@ async def _write_gmail_install_and_trigger(
     # clean scenarios show no gap and reshare scenarios
     # (history_events>0 → current_history_id advances)
     # still trigger the reconciler gap-fill.
-    fp = outcome.scenario.fixture_params
+    fp = _certification_fixture(outcome)
     await conn.execute(
         """
         INSERT INTO gmail_mailbox_watches (
@@ -516,6 +193,10 @@ async def _write_gmail_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="google_calendar",
+    role="installation_seeder",
+)
 async def _write_google_calendar_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -539,9 +220,8 @@ async def _write_google_calendar_install_and_trigger(
         f"x3-{outcome.scenario.tenant_slug}.example",
         "sa@x3-test.iam.gserviceaccount.com",
     )
-    for cal in outcome.scenario.fixture_params.get(
-        "calendars", ["alice@acme.example", "bob@acme.example"],
-    ):
+    fixture = _certification_fixture(outcome)
+    for cal in fixture.get("events", {}):
         await conn.execute(
             """
             INSERT INTO google_calendar_calendars (
@@ -567,6 +247,10 @@ async def _write_google_calendar_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="google_drive",
+    role="installation_seeder",
+)
 async def _write_google_drive_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -576,9 +260,7 @@ async def _write_google_drive_install_and_trigger(
     # planner's loader aggregates a non-empty `targets` list →
     # one shard each. start_page_token left NULL → FULL backfill
     # (list_files) on first fetch.
-    fixture = _build_fixture(
-        "google_drive", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     install_id = await conn.fetchval(
         """
         INSERT INTO google_drive_installations (
@@ -622,6 +304,10 @@ async def _write_google_drive_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="jira",
+    role="installation_seeder",
+)
 async def _write_jira_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -630,9 +316,7 @@ async def _write_jira_install_and_trigger(
     # project so the planner emits one shard per project.
     # base_url host must equal the fixture's site_host so the
     # fetcher's `_fyralis_site` (→ external_id namespace) matches.
-    fixture = _build_fixture(
-        "jira", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     site_host = fixture.get("site_host", "acme.atlassian.net")
     install_id = await conn.fetchval(
         """
@@ -673,15 +357,17 @@ async def _write_jira_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="mercury",
+    role="installation_seeder",
+)
 async def _write_mercury_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
 ) -> None:
     # Finance: install + one mercury_accounts row per fixture
     # account so the planner emits one shard per account.
-    fixture = _build_fixture(
-        "mercury", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     install_id = await conn.fetchval(
         """
         INSERT INTO mercury_installations (
@@ -723,6 +409,10 @@ async def _write_mercury_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="quickbooks",
+    role="installation_seeder",
+)
 async def _write_quickbooks_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -730,9 +420,7 @@ async def _write_quickbooks_install_and_trigger(
     # Finance: realm install + one quickbooks_entities row per
     # fixture entity type so the planner emits one shard per
     # (realm, entity_type).
-    fixture = _build_fixture(
-        "quickbooks", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     realm_id = fixture.get("realm_id", "9341452000000001")
     install_id = await conn.fetchval(
         """
@@ -772,6 +460,10 @@ async def _write_quickbooks_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="grafana",
+    role="installation_seeder",
+)
 async def _write_grafana_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -779,9 +471,7 @@ async def _write_grafana_install_and_trigger(
     # IN-GRAFANA: org-wide install (no child table) → planner
     # emits exactly one shard. base_url matches the fixture so
     # the fetcher's instance derivation is consistent.
-    fixture = _build_fixture(
-        "grafana", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     install_id = await conn.fetchval(
         """
         INSERT INTO grafana_installations (
@@ -807,20 +497,21 @@ async def _write_grafana_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="telegram",
+    role="installation_seeder",
+)
 async def _write_telegram_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
 ) -> None:
     # IN-TELEGRAM: account install + one telegram_dialogs row per
     # fixture dialog so the planner's loader aggregates a non-empty
-    # `dialogs` list → one shard each. The MTProto session refs are
-    # NULL: the backfill client seam (_open_telegram_client) is
-    # monkeypatched to the mock, so the real Telethon client is
-    # never built. offset_id_cursor left NULL → FULL backward
-    # sweep on first fetch.
-    fixture = _build_fixture(
-        "telegram", outcome.scenario.fixture_params,
-    )
+    # `dialogs` list → one shard each. Provider Lab mode supplies a
+    # deterministic linked session to the production Telegram client,
+    # so persisted session refs may remain NULL. offset_id_cursor left
+    # NULL → FULL backward sweep on first fetch.
+    fixture = _certification_fixture(outcome)
     install_id = await conn.fetchval(
         """
         INSERT INTO telegram_installations (
@@ -871,6 +562,10 @@ async def _write_telegram_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="brex",
+    role="installation_seeder",
+)
 async def _write_brex_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -878,9 +573,7 @@ async def _write_brex_install_and_trigger(
     # IN-FIN2: Bearer finance source (Mercury-shaped). Install +
     # one brex_accounts row per fixture account → one shard per
     # account.
-    fixture = _build_fixture(
-        "brex", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     install_id = await conn.fetchval(
         """
         INSERT INTO brex_installations (
@@ -922,15 +615,17 @@ async def _write_brex_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="deel",
+    role="installation_seeder",
+)
 async def _write_deel_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
 ) -> None:
     # IN-FIN2: Bearer finance source (Mercury-shaped); shard target
     # is a CONTRACT. Install + one deel_contracts row per contract.
-    fixture = _build_fixture(
-        "deel", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     install_id = await conn.fetchval(
         """
         INSERT INTO deel_installations (
@@ -969,15 +664,17 @@ async def _write_deel_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="ramp",
+    role="installation_seeder",
+)
 async def _write_ramp_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
 ) -> None:
     # IN-FIN2: OAuth finance source (QuickBooks-shaped). business_id
     # is the scope id; one ramp_entities row per entity type.
-    fixture = _build_fixture(
-        "ramp", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     business_id = fixture.get("business_id", "ramp-biz-0001")
     install_id = await conn.fetchval(
         """
@@ -1016,6 +713,10 @@ async def _write_ramp_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="gusto",
+    role="installation_seeder",
+)
 async def _write_gusto_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1023,9 +724,7 @@ async def _write_gusto_install_and_trigger(
     # IN-FIN2: OAuth payroll REST source (real /v1 contract —
     # employee/payroll taxonomy). company_uuid is the scope id;
     # one gusto_entities row per entity type.
-    fixture = _build_fixture(
-        "gusto", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     company_uuid = fixture.get(
         "company_uuid", "gusto-co-0001",
     )
@@ -1066,6 +765,10 @@ async def _write_gusto_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="fireflies",
+    role="installation_seeder",
+)
 async def _write_fireflies_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1076,9 +779,7 @@ async def _write_fireflies_install_and_trigger(
     # provider_installations row (installation_id=workspace_id)
     # is seeded so the webhook tenant_resolver._extract_fireflies
     # maps the live HMAC payload back to this tenant.
-    fixture = _build_fixture(
-        "fireflies", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     workspace_id = fixture.get(
         "workspace_id",
         f"x3-{outcome.scenario.tenant_slug}-ws",
@@ -1121,6 +822,10 @@ async def _write_fireflies_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="miro",
+    role="installation_seeder",
+)
 async def _write_miro_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1129,9 +834,7 @@ async def _write_miro_install_and_trigger(
     # install row; one miro_boards row per fixture board → one
     # shard each. provider_installations.installation_id=org_id
     # for tenant_resolver._extract_miro.
-    fixture = _build_fixture(
-        "miro", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     org_id = fixture.get(
         "org_id", f"x3-{outcome.scenario.tenant_slug}-org",
     )
@@ -1187,6 +890,10 @@ async def _write_miro_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="figma",
+    role="installation_seeder",
+)
 async def _write_figma_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1195,9 +902,7 @@ async def _write_figma_install_and_trigger(
     # install row; one figma_files row per fixture file → one
     # shard each. provider_installations.installation_id=team_id
     # for tenant_resolver._extract_figma.
-    fixture = _build_fixture(
-        "figma", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     team_id = fixture.get(
         "team_id", f"x3-{outcome.scenario.tenant_slug}-team",
     )
@@ -1254,6 +959,10 @@ async def _write_figma_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="signal",
+    role="installation_seeder",
+)
 async def _write_signal_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1261,12 +970,10 @@ async def _write_signal_install_and_trigger(
     # Gateway-session source (Telegram-shaped). Direct-dispatch
     # live edge → NO provider_installations / webhook secret.
     # Install + one signal_threads row per fixture thread → one
-    # shard each, plus the signal_update_state singleton. The
-    # linked-device session refs are NULL: _open_signal_client is
-    # monkeypatched to the mock.
-    fixture = _build_fixture(
-        "signal", outcome.scenario.fixture_params,
-    )
+    # shard each, plus the signal_update_state singleton. Provider Lab
+    # supplies the deterministic linked-device session, so stored refs
+    # may remain NULL.
+    fixture = _certification_fixture(outcome)
     install_id = await conn.fetchval(
         """
         INSERT INTO signal_installations (
@@ -1317,6 +1024,10 @@ async def _write_signal_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="aws",
+    role="installation_seeder",
+)
 async def _write_aws_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1325,9 +1036,7 @@ async def _write_aws_install_and_trigger(
     # dispatch live). Direct-dispatch → NO provider_installations
     # / webhook secret. SINGLE install table — account_id+region
     # ON the install row; planner emits ONE event shard.
-    fixture = _build_fixture(
-        "aws", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     account_id = fixture.get("account_id", "123456789012")
     region = fixture.get("region", "us-east-1")
     install_id = await conn.fetchval(
@@ -1354,6 +1063,10 @@ async def _write_aws_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="carta",
+    role="installation_seeder",
+)
 async def _write_carta_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1362,9 +1075,7 @@ async def _write_carta_install_and_trigger(
     # dispatch live). Direct-dispatch → NO provider_installations
     # / webhook secret. firm_id is the scope id; one carta_entities
     # row per fixture entity type → one shard each.
-    fixture = _build_fixture(
-        "carta", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     firm_id = fixture.get(
         "firm_id", "firm_9341452000000001",
     )
@@ -1405,6 +1116,10 @@ async def _write_carta_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="hibob",
+    role="installation_seeder",
+)
 async def _write_hibob_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1414,9 +1129,7 @@ async def _write_hibob_install_and_trigger(
     # Figma-shaped HMAC webhook live edge. company_id is the
     # scope-id; provider_installations.installation_id=company_id
     # for tenant_resolver._extract_hibob (payload "companyId").
-    fixture = _build_fixture(
-        "hibob", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     company_id = fixture.get(
         "company_id",
         f"x3-{outcome.scenario.tenant_slug}-co",
@@ -1470,6 +1183,10 @@ async def _write_hibob_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="ashby",
+    role="installation_seeder",
+)
 async def _write_ashby_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1479,9 +1196,7 @@ async def _write_ashby_install_and_trigger(
     # Figma-shaped HMAC webhook live edge. org_id is the scope-id;
     # provider_installations.installation_id=org_id for
     # tenant_resolver._extract_ashby (payload "organizationId").
-    fixture = _build_fixture(
-        "ashby", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     org_id = fixture.get(
         "org_id", f"x3-{outcome.scenario.tenant_slug}-org",
     )
@@ -1533,6 +1248,10 @@ async def _write_ashby_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+@certification_callable(
+    source_id="linkedin",
+    role="installation_seeder",
+)
 async def _write_linkedin_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1542,9 +1261,7 @@ async def _write_linkedin_install_and_trigger(
     # NO provider_installations / webhook secret. organization_urn
     # is the scope-id; one linkedin_entities row per fixture entity
     # type → one shard each.
-    fixture = _build_fixture(
-        "linkedin", outcome.scenario.fixture_params,
-    )
+    fixture = _certification_fixture(outcome)
     organization_urn = fixture.get(
         "organization_urn",
         f"x3-{outcome.scenario.tenant_slug}-org",
@@ -1587,6 +1304,66 @@ async def _write_linkedin_install_and_trigger(
         uuid7(), outcome.tenant_id, install_id,
     )
 
+
+@certification_callable(
+    source_id="facebook_pages",
+    role="installation_seeder",
+)
+async def _write_facebook_pages_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    fixture = _certification_fixture(outcome)
+    pages = fixture.get("pages") or {}
+    page = next(
+        (item for item in pages.values() if isinstance(item, dict)),
+        {},
+    )
+    page_id = str(page.get("id") or _fixture_installation_id(outcome))
+    page_name = str(page.get("name") or "Synthetic Page")
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO facebook_page_installations (
+            id, tenant_id, page_id, page_name,
+            page_access_token_ref, app_secret_ref, verify_token_ref,
+            granted_scopes, subscribed_fields, enabled
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            ARRAY['pages_messaging', 'pages_manage_metadata'],
+            ARRAY['messages', 'message_echoes'], TRUE
+        )
+        ON CONFLICT (page_id) DO UPDATE SET
+            page_name = EXCLUDED.page_name,
+            enabled = TRUE,
+            updated_at = now()
+        RETURNING id
+        """,
+        uuid7(),
+        outcome.tenant_id,
+        page_id,
+        page_name,
+        f"provider-lab://facebook_pages/{page_id}/page-token",
+        f"provider-lab://facebook_pages/{page_id}/app-secret",
+        f"provider-lab://facebook_pages/{page_id}/verify-token",
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES (
+            $1, $2, 'facebook_pages', 'install', $3, '{}'::jsonb
+        )
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(),
+        outcome.tenant_id,
+        install_id,
+    )
+
+
 async def _write_generic_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
@@ -1621,6 +1398,50 @@ async def _write_generic_install_and_trigger(
     )
 
 
+@certification_callable(
+    source_id="slack",
+    role="installation_seeder",
+)
+async def _write_slack_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    await _write_generic_install_and_trigger(conn, outcome)
+
+
+@certification_callable(
+    source_id="github",
+    role="installation_seeder",
+)
+async def _write_github_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    await _write_generic_install_and_trigger(conn, outcome)
+
+
+@certification_callable(
+    source_id="discord",
+    role="installation_seeder",
+)
+async def _write_discord_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    await _write_generic_install_and_trigger(conn, outcome)
+
+
+@certification_callable(
+    source_id="notion",
+    role="installation_seeder",
+)
+async def _write_notion_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    await _write_generic_install_and_trigger(conn, outcome)
+
+
 
 # =====================================================================
 # Harness.
@@ -1649,25 +1470,18 @@ class BackfillHarness:
         kafka_bootstrap_servers: str = "localhost:9092",
         drain_timeout_s: float = 30.0,
         drain_poll_interval_s: float = 2.0,
-        real_clients: bool = False,
-        spammer_rate_limit_every: int = 0,
+        provider_lab_rate_limit_every: int = 0,
     ) -> None:
         self._pool = pool
         self._scenarios = scenarios
         self._concurrency = max(1, concurrency)
         self._deadline_s = completion_deadline_s
         self._kafka_bootstrap = kafka_bootstrap_servers
-        # Real-client mode (A30.7): instead of monkeypatching in-process
-        # mock clients, spawn the source-mock SPAMMER on a real port and
-        # let the subprocesses' REAL source clients hit it over HTTP
-        # (token exchange → authed request → pagination → 429 backoff).
-        # The X3 mock helper is NOT installed; backfill resolves
-        # `*_API_BASE_URL` → the spammer via lib.integrations.endpoints.
-        # Gmail is the proven vertical (clean email-keyed identity); the
-        # spammer is seeded from the SAME registry so counts match.
-        self._real_clients = real_clients
-        self._spammer_rate_limit_every = spammer_rate_limit_every
-        self._spammer: Any = None
+        # Production source clients always hit Provider Lab over loopback
+        # HTTP, including their normal auth, pagination, and retry paths.
+        self._provider_lab_rate_limit_every = provider_lab_rate_limit_every
+        self._provider_lab: Any = None
+        self._provider_lab_fixtures: dict[str, list[dict[str, Any]]] = {}
         self._sa_json_path: str | None = None
         # Configurable consumer-drain window (A30.6): the 30s default
         # matches the historical hardcode (Runs 1-3); the concurrent
@@ -1684,16 +1498,11 @@ class BackfillHarness:
         self._s3_bucket = os.environ.get("S3_RAW_BUCKET", _DEFAULT_S3_BUCKET)
         self._ingestion_env = os.environ.get("INGESTION_ENV", "dev")
         self._workdir: str | None = None
-        self._helpers_dir: str | None = None
-        self._helper_module = (
-            f"x3_helper_{uuid4().hex[:8]}"
-        )
         # Unique consumer-group suffix so this run's normalizer +
         # observation_writer NEVER share a Kafka group with a concurrent
         # live/dogfood stack on the same broker (which would split the
         # per-source partitions and steal observations into the other DB).
         self._cg_suffix = uuid4().hex[:8]
-        self._registry_path: str | None = None
         self._procs: dict[str, subprocess.Popen | None] = {}
 
     async def run(self) -> HarnessResult:
@@ -1717,9 +1526,8 @@ class BackfillHarness:
     # ---- Decomposed phases (used directly by the concurrent runner) ----
     async def setup(self) -> list[TenantOutcome]:
         """Phase A: seed tenants + fixtures + flags, ensure S3 bucket,
-        write helper + registry, write install/onboarding rows. Returns
-        (and stores) the outcomes so a caller can read tenant_ids before
-        the producer/live phases run."""
+        start Provider Lab, and write install/onboarding rows. Returns the
+        outcomes so a caller can read tenant IDs before producer/live phases."""
         self._start = time.monotonic()
         self._outcomes = [
             TenantOutcome(
@@ -1732,34 +1540,130 @@ class BackfillHarness:
         self._workdir = tempfile.mkdtemp(prefix="x3-harness-")
         await self._setup_tenants_and_fixtures(self._outcomes)
         await self._ensure_s3_bucket()
-        self._registry_path = self._write_registry(self._outcomes)
-        if self._real_clients:
-            # No mock helper: the real source clients hit the spammer,
-            # seeded from the registry we just wrote.
-            self._start_spammer()
-        else:
-            self._helpers_dir = _write_helper(
-                self._workdir, self._helper_module,
-            )
+        self._prepare_provider_lab_fixtures(self._outcomes)
+        self._start_provider_lab()
         await self._invoke_oauth_callbacks(self._outcomes)
         return self._outcomes
 
-    def _start_spammer(self) -> None:
-        """Spawn the spammer on a real port + write the gmail DWD service-
-        account JSON whose token_uri points at it (real-client mode)."""
-        from services.ingest.synthetic.spammer.process import SpammerProcess
+    def _start_provider_lab(self) -> None:
+        """Start Provider Lab and write its Gmail DWD service-account JSON."""
+        from services.ingest.synthetic.provider_lab import start_provider_lab
 
-        self._spammer = SpammerProcess(
-            registry_path=self._registry_path,
-            rate_limit_every=self._spammer_rate_limit_every,
-        ).start()
-        self._sa_json_path = self._write_spammer_sa_json(
-            f"{self._spammer.base_url}/gmail/token",
+        self._provider_lab = start_provider_lab(self._provider_lab_fixtures)
+        self._configure_scenario_faults()
+        self._configure_provider_lab_rate_limits()
+        self._sa_json_path = self._write_provider_lab_sa_json(
+            self._provider_lab.url("gmail", "/token"),
         )
 
-    def _write_spammer_sa_json(self, token_uri: str) -> str:
+    def _configure_provider_lab_rate_limits(self) -> None:
+        """Inject a periodic 429 on each used non-auth Provider Lab route."""
+        every = self._provider_lab_rate_limit_every
+        if every <= 0 or self._provider_lab is None:
+            return
+        runtime = self._provider_lab.app.state.provider_lab
+        for source in sorted(self._provider_lab_fixtures):
+            adapter = runtime.registry.require(source)
+            for route in adapter.routes:
+                if route.quota_bucket is None:
+                    continue
+                runtime.faults.create(
+                    source=source,
+                    route_id=route.route_id,
+                    status_code=429,
+                    body={
+                        "error": {
+                            "code": "rate_limit_exceeded",
+                            "message": "Provider Lab periodic rate limit",
+                        }
+                    },
+                    headers={"Retry-After": "0"},
+                    after_requests=every - 1,
+                    every=every,
+                )
+
+    def _configure_scenario_faults(self) -> None:
+        """Translate supported FaultProfiles to deterministic lab rules."""
+
+        if self._provider_lab is None:
+            return
+        profiles_by_source: dict[str, set[Any]] = {}
+        for scenario in self._scenarios:
+            profiles_by_source.setdefault(scenario.source, set()).add(
+                scenario.fault_profile
+            )
+        runtime = self._provider_lab.app.state.provider_lab
+        for source, profiles in profiles_by_source.items():
+            if len(profiles) != 1:
+                raise ValueError(
+                    "Provider Lab requires one fault profile per source "
+                    f"within a harness run; {source!r} has {len(profiles)}"
+                )
+            profile = next(iter(profiles))
+            if profile.auth_expires_after_n_seconds is not None:
+                raise ValueError(
+                    "time-based credential expiry is not representable by "
+                    f"Provider Lab request rules for {source!r}"
+                )
+            routes = tuple(
+                route
+                for route in runtime.registry.require(source).routes
+                if route.quota_bucket is not None
+            )
+            if profile.rate_limit_after_n_requests is not None:
+                for route in routes:
+                    runtime.faults.create(
+                        source=source,
+                        route_id=route.route_id,
+                        status_code=429,
+                        body={"error": "provider_lab_rate_limit"},
+                        headers={"Retry-After": "0"},
+                        after_requests=profile.rate_limit_after_n_requests,
+                    )
+            self._configure_probability_fault(
+                runtime,
+                source=source,
+                routes=routes,
+                probability=profile.random_5xx_probability,
+                action="response",
+                status_code=503,
+            )
+            self._configure_probability_fault(
+                runtime,
+                source=source,
+                routes=routes,
+                probability=profile.transient_network_error_probability,
+                action="disconnect",
+                status_code=503,
+            )
+
+    @staticmethod
+    def _configure_probability_fault(
+        runtime: Any,
+        *,
+        source: str,
+        routes: tuple[Any, ...],
+        probability: float,
+        action: str,
+        status_code: int,
+    ) -> None:
+        if probability <= 0:
+            return
+        interval = max(1, round(1.0 / probability))
+        for route in routes:
+            runtime.faults.create(
+                source=source,
+                route_id=route.route_id,
+                action=action,
+                status_code=status_code,
+                body={"error": "provider_lab_injected_fault"},
+                after_requests=interval - 1,
+                every=interval,
+            )
+
+    def _write_provider_lab_sa_json(self, token_uri: str) -> str:
         """A throwaway service-account JSON (real RSA key so the DWD
-        minter signs a valid RS256 JWT) whose token_uri is the spammer."""
+        minter signs a valid RS256 JWT) whose token_uri is Provider Lab."""
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -1770,12 +1674,12 @@ class BackfillHarness:
             encryption_algorithm=serialization.NoEncryption(),
         ).decode()
         sa = {
-            "type": "service_account", "project_id": "x3-spammer",
+            "type": "service_account", "project_id": "x3-provider-lab",
             "private_key_id": "k1", "private_key": pem,
             "client_email": "sa@x3-test.iam.gserviceaccount.com",
             "client_id": "1", "token_uri": token_uri,
         }
-        path = os.path.join(self._workdir, "spammer_sa.json")
+        path = os.path.join(self._workdir, "provider_lab_sa.json")
         with open(path, "w") as f:
             json.dump(sa, f)
         return path
@@ -1888,46 +1792,20 @@ class BackfillHarness:
                 ):
                     log.warning("x3.s3_bucket_create_failed: %r", exc)
 
-    def _align_identity(
-        self, outcome: TenantOutcome, params: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Real-client mode: make the fixture's source-native identity match
-        the install row's `installation_id` (`x3-{slug}-{source}`), so the
-        spammer (seeded from this registry), the backfill client's token, and
-        the live targets all address the same tenant. Gmail keys on email
-        (already unique) and needs no alignment."""
-        source = outcome.scenario.source
-        ident = f"x3-{outcome.scenario.tenant_slug}-{source}"
-        if source == "github":
-            return {**params, "installation_id": ident}
-        if source == "slack":
-            return {**params, "team_id": ident}
-        if source == "discord":
-            return {**params, "guild_id": ident}
-        return params
+    def _prepare_provider_lab_fixtures(
+        self,
+        outcomes: list[TenantOutcome],
+    ) -> None:
+        """Resolve each certification fixture once and seed Provider Lab."""
 
-    def _write_registry(self, outcomes: list[TenantOutcome]) -> str:
-        entries = []
+        provider_lab_fixtures: dict[str, list[dict[str, Any]]] = {}
         for outcome in outcomes:
-            params = outcome.scenario.fixture_params
-            if self._real_clients:
-                params = self._align_identity(outcome, params)
-            fixture = _build_fixture(outcome.scenario.source, params)
-            entries.append({
-                "tenant_id": str(outcome.tenant_id),
-                "tenant_slug": outcome.scenario.tenant_slug,
-                "source": outcome.scenario.source,
-                "fixture": fixture,
-                "fault_profile": (
-                    outcome.scenario.fault_profile.__dict__
-                    if outcome.scenario.fault_profile.__dict__
-                    else None
-                ),
-            })
-        path = os.path.join(self._workdir, "registry.json")
-        with open(path, "w") as f:
-            json.dump({"entries": entries}, f)
-        return path
+            fixture = _certification_fixture(outcome)
+            provider_lab_fixtures.setdefault(
+                outcome.scenario.source,
+                [],
+            ).append(fixture)
+        self._provider_lab_fixtures = provider_lab_fixtures
 
     async def _invoke_oauth_callbacks(
         self, outcomes: list[TenantOutcome],
@@ -1961,6 +1839,7 @@ class BackfillHarness:
         self, outcome: TenantOutcome,
     ) -> None:
         source = outcome.scenario.source
+        seeder = resolve_installation_seeder(source)
         async with self._pool.acquire() as conn:
             try:
                 async with conn.transaction():
@@ -1968,36 +1847,7 @@ class BackfillHarness:
                         "SELECT set_config('app.current_tenant', $1::text, true)",
                         str(outcome.tenant_id),
                     )
-                    handlers = {
-                        "gmail": _write_gmail_install_and_trigger,
-                        "google_calendar": (
-                            _write_google_calendar_install_and_trigger
-                        ),
-                        "google_drive": _write_google_drive_install_and_trigger,
-                        "jira": _write_jira_install_and_trigger,
-                        "mercury": _write_mercury_install_and_trigger,
-                        "quickbooks": _write_quickbooks_install_and_trigger,
-                        "grafana": _write_grafana_install_and_trigger,
-                        "telegram": _write_telegram_install_and_trigger,
-                        "brex": _write_brex_install_and_trigger,
-                        "deel": _write_deel_install_and_trigger,
-                        "ramp": _write_ramp_install_and_trigger,
-                        "gusto": _write_gusto_install_and_trigger,
-                        "fireflies": _write_fireflies_install_and_trigger,
-                        "miro": _write_miro_install_and_trigger,
-                        "figma": _write_figma_install_and_trigger,
-                        "signal": _write_signal_install_and_trigger,
-                        "aws": _write_aws_install_and_trigger,
-                        "carta": _write_carta_install_and_trigger,
-                        "hibob": _write_hibob_install_and_trigger,
-                        "ashby": _write_ashby_install_and_trigger,
-                        "linkedin": _write_linkedin_install_and_trigger,
-                    }
-                    handler = handlers.get(source)
-                    if handler is None:
-                        await _write_generic_install_and_trigger(conn, outcome)
-                    else:
-                        await handler(conn, outcome)
+                    await seeder(conn, outcome)
             finally:
                 await conn.execute("RESET app.current_tenant")
 
@@ -2012,18 +1862,20 @@ class BackfillHarness:
         # honour these overrides; absent them they'd join the shared groups.
         env["NORMALIZER_CONSUMER_GROUP"] = f"x3-normalizer-{self._cg_suffix}"
         env["WRITER_CONSUMER_GROUP"] = f"x3-observation-writer-{self._cg_suffix}"
-        if self._real_clients:
-            # Point the REAL source clients at the spammer (config-only).
-            base = self._spammer.base_url
-            env["SYNTHETIC_SOURCE_API_BASE"] = base
-            env["GMAIL_API_BASE_URL"] = f"{base}/gmail/gmail/v1"
-            env["GMAIL_SERVICE_ACCOUNT_JSON_FILE"] = self._sa_json_path or ""
-        else:
-            env["PYTHONPATH"] = (
-                (self._helpers_dir or "") + os.pathsep
-                + env.get("PYTHONPATH", "")
+        if self._provider_lab is None:
+            raise RuntimeError(
+                "BackfillHarness.setup() has not started Provider Lab"
             )
-            env["X3_FIXTURE_REGISTRY_PATH"] = self._registry_path or ""
+        # Point production clients at loopback with explicit endpoint
+        # overrides. PROVIDER_LAB_URL enables deterministic lab credentials.
+        from lib.integrations.provider_lab import (
+            provider_lab_endpoint_overrides,
+        )
+
+        base = self._provider_lab.base_url
+        env["PROVIDER_LAB_URL"] = base
+        env.update(provider_lab_endpoint_overrides(base))
+        env["GMAIL_SERVICE_ACCOUNT_JSON_FILE"] = self._sa_json_path or ""
         # A27.4 — S3 raw-tier wiring for the shard_fetch producer + the
         # normalizer. INGESTION_ENV pins the key prefix on both sides.
         env["S3_RAW_BUCKET"] = self._s3_bucket
@@ -2111,15 +1963,7 @@ class BackfillHarness:
         for name, (mod, extra_env) in self._service_specs().items():
             penv = env.copy()
             penv.update(extra_env)
-            if self._real_clients:
-                # No mock helper import — the default real openers run.
-                code = f"from {mod} import main; main()"
-            else:
-                code = (
-                    f"import {self._helper_module}; "
-                    f"from {mod} import main; main()"
-                )
-            cmd = [sys.executable, "-c", code]
+            cmd = [sys.executable, "-m", mod]
             self._procs[name] = subprocess.Popen(
                 cmd,
                 env=penv,
@@ -2255,14 +2099,14 @@ class BackfillHarness:
                     )[-2000:]
             except Exception as exc:  # noqa: BLE001
                 stderrs[name] = f"teardown error: {exc!r}"
-        if self._spammer is not None:
+        if self._provider_lab is not None:
             try:
-                tail = self._spammer.stop()
-                if tail:
-                    stderrs["spammer"] = tail
+                self._provider_lab.shutdown()
             except Exception as exc:  # noqa: BLE001
-                stderrs["spammer"] = f"spammer teardown error: {exc!r}"
-            self._spammer = None
+                stderrs["provider_lab"] = (
+                    f"Provider Lab teardown error: {exc!r}"
+                )
+            self._provider_lab = None
         return stderrs
 
     async def _collect_state(

@@ -54,6 +54,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import RampApiError
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 from services.ingest.integrations.ramp.client import (
     DEFAULT_ENTITIES,
     RampClient,
@@ -148,6 +151,8 @@ def _auth_failure_response(exc: RampApiError) -> JSONResponse:
 
 async def _verify_and_probe(
     creds: dict[str, Any],
+    *,
+    tenant_id: UUID,
 ) -> tuple[dict[str, Any], str | None, datetime | None]:
     """Mint a token if needed and probe `GET /business`.
 
@@ -159,6 +164,7 @@ async def _verify_and_probe(
         client_id=creds["client_id"],
         client_secret=creds["client_secret"],
         scopes=creds["scopes"],
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         expires_at: datetime | None = None
@@ -180,12 +186,12 @@ async def _verify_and_probe(
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
     """Verify the credentials via mint (if needed) + the `GET /business` probe."""
-    _tenant_from_request(request)  # auth check
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     creds = _require_creds(body)
 
     try:
-        info, _, _ = await _verify_and_probe(creds)
+        info, _, _ = await _verify_and_probe(creds, tenant_id=tenant_id)
     except RampApiError as exc:
         return _auth_failure_response(exc)
 
@@ -223,7 +229,10 @@ async def connect_finalize(request: Request) -> JSONResponse:
 
     # 1. Verify creds + discover the business — before any write.
     try:
-        info, access_token, token_expires_at = await _verify_and_probe(creds)
+        info, access_token, token_expires_at = await _verify_and_probe(
+            creds,
+            tenant_id=tenant_id,
+        )
     except RampApiError as exc:
         return _auth_failure_response(exc)
 

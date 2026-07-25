@@ -38,7 +38,8 @@ import orjson
 import pytest
 
 from lib.shared.ids import uuid7
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
+import services.ingest.ingestion.workflows.shard_fetch as shard_fetch_module
 from services.ingest.ingestion.workflows.shard_fetch import (
     SIGNAL_KIND_COMPLETED,
     SIGNAL_KIND_REQUESTED,
@@ -49,8 +50,12 @@ from services.ingest.ingestion.workflows.shard_fetch import (
     WORKFLOW_ID_INBOX,
     WORKFLOW_KIND,
     _load_install,
+    _load_orphan_shards,
 )
-from services.ingest.ingestion.workflows.signals import emit_signal
+from services.ingest.ingestion.workflows.signals import (
+    claim_signals,
+    emit_signal,
+)
 from services.ingest.ingestion.workflows.state import load_state
 from services.ingest.ingestion.workflows.tests._fake_s3 import FakeS3Client
 
@@ -127,7 +132,7 @@ async def _seed_onboarding_run(
              sources_enabled, started_at)
         VALUES ($1, $2, 'install', $3, 'running', $4::text[], now())
         """,
-        run_id, tenant_id, f"wf-{run_id.hex[:8]}", [source],
+        run_id, tenant_id, f"wf-{run_id.hex}", [source],
     )
     return run_id
 
@@ -136,18 +141,40 @@ async def _seed_shard(
     pool: asyncpg.Pool, *, run_id: UUID, tenant_id: UUID, source: str,
     state: str = "pending", shard_kind: str = "slack_channel_window",
     identifier: dict | None = None,
+    installation_row_id: UUID | None = None,
 ) -> UUID:
     shard_id = uuid7()
+    descriptor = dict(identifier or {"channel_id": "C001"})
+    declared_installation = descriptor.get("installation_row_id")
+    if installation_row_id is None and declared_installation is not None:
+        installation_row_id = UUID(str(declared_installation))
+    if installation_row_id is None:
+        installation_row_id = await pool.fetchval(
+            """
+            SELECT id
+              FROM provider_installations
+             WHERE tenant_id = $1 AND provider = $2 AND enabled = TRUE
+             ORDER BY id
+             LIMIT 1
+            """,
+            tenant_id,
+            source,
+        )
+    # Tests that exercise a missing/disabled installation still need a durable
+    # exact identity on the shard; production never infers this value.
+    installation_row_id = installation_row_id or uuid7()
+    descriptor["installation_row_id"] = str(installation_row_id)
     await pool.execute(
         """
         INSERT INTO onboarding_shards
             (id, onboarding_run_id, tenant_id, source, shard_kind,
-             shard_identifier, recency_score, state, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, now())
+             shard_identifier, installation_row_id, recency_score, state,
+             created_at)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, now())
         """,
         shard_id, run_id, tenant_id, source, shard_kind,
-        orjson.dumps(identifier or {"channel_id": "C001"}).decode("utf-8"),
-        1.0, state,
+        orjson.dumps(descriptor).decode("utf-8"),
+        installation_row_id, 1.0, state,
     )
     return shard_id
 
@@ -248,7 +275,9 @@ async def test_shard_fetch_picks_up_request_and_calls_fetcher(
         [{"id": 3}, {"id": 4}, {"id": 5}],
     ]
     fetcher = _make_three_page_fetcher(pages)
-    monkeypatch.setitem(FETCHER_DISPATCH, "slack", fetcher)
+    monkeypatch.setattr(
+        shard_fetch_module, "resolve_fetcher", lambda _source: fetcher,
+    )
 
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
@@ -353,7 +382,9 @@ async def test_shard_fetch_N1_invariant_holds(
         [{"id": 6}],                      # page 2 — never reached
     ]
     fetcher = _make_three_page_fetcher(pages)
-    monkeypatch.setitem(FETCHER_DISPATCH, "github", fetcher)
+    monkeypatch.setattr(
+        shard_fetch_module, "resolve_fetcher", lambda _source: fetcher,
+    )
 
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="github")
@@ -444,15 +475,18 @@ async def test_shard_fetch_handles_not_implemented_fetcher(
       (c) shard_fetch_completed emitted with status='failed' and
           failure_reason set.
 
-    Pre-M6.5 this exercised the real stub. Post-M6.5 the slack entry
-    is a real fetcher, so we monkeypatch the factory-built stub back
-    in to keep verifying the dispatch's raise-NotImplementedError
-    handling.
+    Keep verifying the fetcher's raise-NotImplementedError handling.
     """
-    from services.ingest.ingestion.fetchers import _not_implemented_fetcher
-    monkeypatch.setitem(
-        FETCHER_DISPATCH, "slack",
-        _not_implemented_fetcher("slack", "M6.5"),
+    async def _not_implemented(*_args: object) -> FetchResult:
+        raise NotImplementedError(
+            "historical backfill fetcher for source 'slack' is not "
+            "implemented (owned by M6.5)"
+        )
+
+    monkeypatch.setattr(
+        shard_fetch_module,
+        "resolve_fetcher",
+        lambda _source: _not_implemented,
     )
 
     tid = await _seed_tenant(fresh_db)
@@ -509,7 +543,11 @@ async def test_shard_fetch_handles_unexpected_fetcher_exception(
     async def _exploding_fetcher(install, shard_identifier, cursor):
         raise RuntimeError("simulated fetcher failure")
 
-    monkeypatch.setitem(FETCHER_DISPATCH, "slack", _exploding_fetcher)
+    monkeypatch.setattr(
+        shard_fetch_module,
+        "resolve_fetcher",
+        lambda _source: _exploding_fetcher,
+    )
 
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
@@ -557,7 +595,7 @@ async def test_shard_fetch_handles_unexpected_fetcher_exception(
 # 4. Signal-replay idempotency (emit_signal UNIQUE constraint).
 # =====================================================================
 
-async def test_discord_shard_fetch_loads_install_for_shard_guild(
+async def test_discord_shard_fetch_loads_exact_bound_installation(
     fresh_db: asyncpg.Pool,
 ) -> None:
     tid = await _seed_tenant(fresh_db)
@@ -578,7 +616,7 @@ async def test_discord_shard_fetch_loads_install_for_shard_guild(
         fresh_db,
         tenant_id=tid,
         source="discord",
-        shard_identifier={"guild_id": "guild-b", "channel_id": "channel-b"},
+        installation_row_id=install_b,
     )
 
     assert install is not None
@@ -595,7 +633,9 @@ async def test_shard_fetch_idempotent_on_signal_replay(
     it once."""
     pages = [[{"id": 1}]]
     fetcher = _make_three_page_fetcher(pages)
-    monkeypatch.setitem(FETCHER_DISPATCH, "discord", fetcher)
+    monkeypatch.setattr(
+        shard_fetch_module, "resolve_fetcher", lambda _source: fetcher,
+    )
 
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="discord")
@@ -669,7 +709,9 @@ async def test_discord_channel_shards_fetch_in_parallel(
         finally:
             state["in_flight"] -= 1
 
-    monkeypatch.setitem(FETCHER_DISPATCH, "discord", _fetcher)
+    monkeypatch.setattr(
+        shard_fetch_module, "resolve_fetcher", lambda _source: _fetcher,
+    )
 
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(
@@ -761,7 +803,9 @@ async def test_discord_auto_parallelism_bounds_each_wave_and_drains_all_shards(
         finally:
             state["in_flight"] -= 1
 
-    monkeypatch.setitem(FETCHER_DISPATCH, "discord", _fetcher)
+    monkeypatch.setattr(
+        shard_fetch_module, "resolve_fetcher", lambda _source: _fetcher,
+    )
 
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(
@@ -890,7 +934,11 @@ async def test_shard_fetch_handles_missing_install(
 
     async def _should_not_be_called(*args, **kwargs):
         raise AssertionError("Fetcher should not have been called.")
-    monkeypatch.setitem(FETCHER_DISPATCH, "slack", _should_not_be_called)
+    monkeypatch.setattr(
+        shard_fetch_module,
+        "resolve_fetcher",
+        lambda _source: _should_not_be_called,
+    )
 
     tid = await _seed_tenant(fresh_db)
     # No provider_install seeded.
@@ -910,9 +958,10 @@ async def test_shard_fetch_handles_missing_install(
         "SELECT state, last_error FROM onboarding_shards WHERE id = $1",
         shard_id,
     )
-    # Parked for orphan-scan resume — NOT terminal-failed.
+    # Parked for a durable scheduled retry — NOT terminal-failed. The reason
+    # is persisted for operators while the shard remains resumable.
     assert row["state"] == "in_progress"
-    assert row["last_error"] is None
+    assert row["last_error"] == "active installation unavailable"
 
 
 # =====================================================================
@@ -931,7 +980,9 @@ async def test_shard_fetch_resumes_orphan_with_stale_lease(
     resume-from-cursor test."""
     pages = [[{"id": 1}], [{"id": 2}]]
     fetcher = _make_three_page_fetcher(pages)
-    monkeypatch.setitem(FETCHER_DISPATCH, "github", fetcher)
+    monkeypatch.setattr(
+        shard_fetch_module, "resolve_fetcher", lambda _source: fetcher,
+    )
 
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="github")
@@ -961,6 +1012,167 @@ async def test_shard_fetch_resumes_orphan_with_stale_lease(
         f"Orphan shard not resumed: state={state!r}. The orphan-scan "
         f"path is broken."
     )
+
+
+# =====================================================================
+# 7b. Fair scheduling — tenants/installations rotate in both lanes.
+# =====================================================================
+
+async def test_shard_fetch_fair_claims_cover_tenants_and_installations(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """One busy installation cannot fill a bounded claim batch."""
+    tenant_a = await _seed_tenant(fresh_db, "fair-a")
+    tenant_b = await _seed_tenant(fresh_db, "fair-b")
+    install_a1 = await _seed_provider_install(
+        fresh_db,
+        tenant_id=tenant_a,
+        provider="slack",
+        installation_id="fair-a-1",
+    )
+    install_a2 = await _seed_provider_install(
+        fresh_db,
+        tenant_id=tenant_a,
+        provider="slack",
+        installation_id="fair-a-2",
+    )
+    install_b1 = await _seed_provider_install(
+        fresh_db,
+        tenant_id=tenant_b,
+        provider="slack",
+        installation_id="fair-b-1",
+    )
+
+    seeded: list[tuple[UUID, UUID, UUID]] = []
+    for tenant_id, installation_id in (
+        (tenant_a, install_a1),
+        (tenant_a, install_a1),
+        (tenant_a, install_a2),
+        (tenant_b, install_b1),
+    ):
+        run_id = await _seed_onboarding_run(
+            fresh_db,
+            tenant_id=tenant_id,
+            source="slack",
+        )
+        shard_id = await _seed_shard(
+            fresh_db,
+            run_id=run_id,
+            tenant_id=tenant_id,
+            source="slack",
+            installation_row_id=installation_id,
+        )
+        await _emit_shard_requested(
+            fresh_db,
+            shard_id=shard_id,
+            run_id=run_id,
+            tenant_id=tenant_id,
+            source="slack",
+        )
+        seeded.append((shard_id, tenant_id, installation_id))
+
+    async with fresh_db.acquire() as conn:
+        async with conn.transaction():
+            claimed = await claim_signals(
+                conn,
+                workflow_kind=WORKFLOW_KIND,
+                workflow_id=WORKFLOW_ID_INBOX,
+                consumed_by="fair-shard-test",
+                batch_size=3,
+                fairness="shard",
+            )
+
+    claimed_ids = {
+        UUID(signal.signal_data["shard_id"])
+        for signal in claimed
+    }
+    claimed_bindings = {
+        (tenant_id, installation_id)
+        for shard_id, tenant_id, installation_id in seeded
+        if shard_id in claimed_ids
+    }
+    assert len(claimed) == 3
+    assert {tenant_id for tenant_id, _ in claimed_bindings} == {
+        tenant_a,
+        tenant_b,
+    }
+    assert claimed_bindings == {
+        (tenant_a, install_a1),
+        (tenant_a, install_a2),
+        (tenant_b, install_b1),
+    }
+
+
+async def test_orphan_scan_fairly_covers_tenants_and_installations(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Due retry/orphan selection uses the same bounded fair shape."""
+    tenant_a = await _seed_tenant(fresh_db, "orphan-a")
+    tenant_b = await _seed_tenant(fresh_db, "orphan-b")
+    install_a1 = await _seed_provider_install(
+        fresh_db,
+        tenant_id=tenant_a,
+        provider="slack",
+        installation_id="orphan-a-1",
+    )
+    install_a2 = await _seed_provider_install(
+        fresh_db,
+        tenant_id=tenant_a,
+        provider="slack",
+        installation_id="orphan-a-2",
+    )
+    install_b1 = await _seed_provider_install(
+        fresh_db,
+        tenant_id=tenant_b,
+        provider="slack",
+        installation_id="orphan-b-1",
+    )
+
+    for tenant_id, installation_id in (
+        (tenant_a, install_a1),
+        (tenant_a, install_a1),
+        (tenant_a, install_a2),
+        (tenant_b, install_b1),
+    ):
+        run_id = await _seed_onboarding_run(
+            fresh_db,
+            tenant_id=tenant_id,
+            source="slack",
+        )
+        shard_id = await _seed_shard(
+            fresh_db,
+            run_id=run_id,
+            tenant_id=tenant_id,
+            source="slack",
+            state="in_progress",
+            installation_row_id=installation_id,
+        )
+        await fresh_db.execute(
+            """
+            UPDATE onboarding_shards
+               SET next_attempt_at = now() - interval '1 second',
+                   lease_expires_at = now() - interval '1 second',
+                   started_at = NULL
+             WHERE id = $1
+            """,
+            shard_id,
+        )
+
+    orphans = await _load_orphan_shards(
+        fresh_db,
+        lease_timeout_seconds=1.0,
+        limit=3,
+    )
+    bindings = {
+        (row["tenant_id"], row["installation_row_id"])
+        for row in orphans
+    }
+    assert len(orphans) == 3
+    assert bindings == {
+        (tenant_a, install_a1),
+        (tenant_a, install_a2),
+        (tenant_b, install_b1),
+    }
 
 
 # =====================================================================
@@ -1002,8 +1214,9 @@ async def test_shard_fetch_emits_shard_fetched_progress_event(
     )
 
     pages = [[{"id": 1}, {"id": 2}], [{"id": 3}, {"id": 4}, {"id": 5}]]
-    monkeypatch.setitem(
-        FETCHER_DISPATCH, "slack", _make_three_page_fetcher(pages),
+    fetcher = _make_three_page_fetcher(pages)
+    monkeypatch.setattr(
+        shard_fetch_module, "resolve_fetcher", lambda _source: fetcher,
     )
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")

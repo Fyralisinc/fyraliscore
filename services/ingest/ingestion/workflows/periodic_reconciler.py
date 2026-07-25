@@ -16,7 +16,7 @@ an event AFTER onboarding completes, nothing re-fetches it. The
 operator runbook flagged this as the headline steady-state gap.
 
 This service closes it. On a schedule it re-runs the SAME per-source
-reconciler (`RECONCILER_DISPATCH[source]`) for already-reconciled
+reconciler resolved from SourceDefinition for already-reconciled
 runs and, when it finds new activity past the last-seen cursor,
 re-shares exactly as the at-completion path does — re-using
 `reconciler.apply_reshare` so the two services share one re-share
@@ -66,17 +66,20 @@ from dataclasses import dataclass
 
 import asyncpg
 
+from lib.shared.provider_transport import RetryLater
 from services.ingest.ingestion.observability import (
     Heartbeat,
     run_heartbeat_ticker,
     start_health_server,
 )
-from services.ingest.ingestion.reconcilers import RECONCILER_DISPATCH
 from services.ingest.ingestion.workflows.reconciler import (
     RECONCILER_DISPATCH_TIMEOUT_S,
     _load_shards,
     apply_reshare,
+    reconciliation_timeout_retry,
+    schedule_reconciliation_retry,
 )
+from services.ingest.source_contract.runtime import resolve_reconciler
 from services.ingest.ingestion.workflows.runtime import LongRunningService
 from services.ingest.ingestion.workflows.state import (
     WorkflowState,
@@ -102,6 +105,7 @@ _metrics: dict[str, float] = {
     "periodic_reconciler.gaps_found":       0.0,
     "periodic_reconciler.shards_resharded": 0.0,
     "periodic_reconciler.check_errors":     0.0,
+    "periodic_reconciler.retries_scheduled": 0.0,
     "periodic_reconciler.last_tick_checked": 0.0,
 }
 
@@ -122,27 +126,180 @@ def _bump(key: str, by: float = 1.0) -> None:
 # ---------------------------------------------------------------------
 # SQL.
 # ---------------------------------------------------------------------
-# Claim one settled, due-for-recheck run. FOR UPDATE SKIP LOCKED so
-# multiple instances cooperate and a row mid-check is skipped, never
-# double-processed. NULLS FIRST so never-checked runs go first.
-_CLAIM_ELIGIBLE_RUN_SQL = """
-SELECT onboarding_run_id, source, tenant_id, status,
-       reconciled_at, reconciliation_pass_count
-  FROM source_onboarding_runs
- WHERE status = 'completed'
-   AND reconciled_at IS NOT NULL
-   AND (last_reconcile_check_at IS NULL OR last_reconcile_check_at < $1)
- ORDER BY last_reconcile_check_at NULLS FIRST
- LIMIT 1
- FOR UPDATE SKIP LOCKED
+# Snapshot eligible generations once per tick.  A retry scheduled during this
+# tick cannot immediately re-enter the same batch, and attempt_count fences two
+# workers that snapshotted the same due retry generation.
+_LIST_ELIGIBLE_RUN_CANDIDATES_SQL = """
+WITH eligible AS MATERIALIZED (
+    SELECT run.onboarding_run_id,
+           run.source,
+           run.tenant_id,
+           run.installation_row_id,
+           run.reconcile_attempt_count,
+           run.reconcile_next_attempt_at,
+           run.last_reconcile_check_at,
+           CASE
+               WHEN run.reconcile_next_attempt_at IS NOT NULL THEN 0
+               ELSE 1
+           END AS scheduling_lane,
+           COALESCE(
+               run.installation_row_id::text,
+               run.onboarding_run_id::text
+           ) AS installation_key,
+           tenant_history.last_served_at AS tenant_last_served_at,
+           installation_history.last_served_at
+               AS installation_last_served_at,
+           row_number() OVER (
+               PARTITION BY
+                   CASE
+                       WHEN run.reconcile_next_attempt_at IS NOT NULL THEN 0
+                       ELSE 1
+                   END,
+                   run.tenant_id,
+                   COALESCE(
+                       run.installation_row_id::text,
+                       run.onboarding_run_id::text
+                   )
+               ORDER BY run.reconcile_next_attempt_at NULLS LAST,
+                        run.last_reconcile_check_at NULLS FIRST,
+                        run.onboarding_run_id,
+                        run.source
+           ) AS installation_turn
+      FROM source_onboarding_runs run
+      LEFT JOIN LATERAL (
+          SELECT max(prior.reconcile_last_claimed_at) AS last_served_at
+            FROM source_onboarding_runs prior
+           WHERE prior.tenant_id = run.tenant_id
+      ) tenant_history ON TRUE
+      LEFT JOIN LATERAL (
+          SELECT max(prior.reconcile_last_claimed_at) AS last_served_at
+            FROM source_onboarding_runs prior
+           WHERE prior.tenant_id = run.tenant_id
+             AND (
+                  (
+                    run.installation_row_id IS NOT NULL
+                    AND prior.installation_row_id = run.installation_row_id
+                  )
+                  OR (
+                    run.installation_row_id IS NULL
+                    AND prior.installation_row_id IS NULL
+                    AND prior.onboarding_run_id = run.onboarding_run_id
+                    AND prior.source = run.source
+                  )
+             )
+      ) installation_history ON TRUE
+     WHERE run.status = 'completed'
+       AND run.reconciled_at IS NOT NULL
+       AND (
+            (
+              run.reconcile_next_attempt_at IS NOT NULL
+              AND run.reconcile_next_attempt_at <= now()
+            )
+            OR (
+              run.reconcile_next_attempt_at IS NULL
+              AND (
+                run.last_reconcile_check_at IS NULL
+                OR run.last_reconcile_check_at < $1
+              )
+            )
+       )
+),
+tenant_ranked AS MATERIALIZED (
+    SELECT eligible.*,
+           row_number() OVER (
+               PARTITION BY scheduling_lane, tenant_id
+               ORDER BY installation_turn,
+                        installation_last_served_at NULLS FIRST,
+                        installation_key,
+                        reconcile_next_attempt_at NULLS LAST,
+                        last_reconcile_check_at NULLS FIRST,
+                        onboarding_run_id,
+                        source
+           ) AS tenant_turn
+      FROM eligible
+),
+lane_ranked AS MATERIALIZED (
+    SELECT tenant_ranked.*,
+           row_number() OVER (
+               PARTITION BY scheduling_lane
+               ORDER BY tenant_turn,
+                        tenant_last_served_at NULLS FIRST,
+                        tenant_id,
+                        installation_turn,
+                        installation_last_served_at NULLS FIRST,
+                        installation_key,
+                        reconcile_next_attempt_at NULLS LAST,
+                        last_reconcile_check_at NULLS FIRST,
+                        onboarding_run_id,
+                        source
+           ) AS lane_turn
+      FROM tenant_ranked
+)
+SELECT onboarding_run_id, source, reconcile_attempt_count
+  FROM lane_ranked
+ ORDER BY lane_turn,
+          scheduling_lane,
+          tenant_turn,
+          tenant_last_served_at NULLS FIRST,
+          tenant_id,
+          installation_turn,
+          installation_last_served_at NULLS FIRST,
+          installation_key,
+          reconcile_next_attempt_at NULLS LAST,
+          last_reconcile_check_at NULLS FIRST,
+          onboarding_run_id,
+          source
+ LIMIT $2
 """
 
-# Advance the watermark. Stamped on EVERY pass (clean, gap, or
-# indeterminate) so a failing run throttles to one attempt per
-# min_age window instead of being hammered every tick.
+# Claim one still-eligible generation. FOR UPDATE SKIP LOCKED makes multiple
+# instances cooperate without waiting or double-dispatching a provider call.
+_CLAIM_ELIGIBLE_RUN_SQL = """
+WITH claimed AS MATERIALIZED (
+    SELECT onboarding_run_id, source
+      FROM source_onboarding_runs
+     WHERE onboarding_run_id = $1
+       AND source = $2
+       AND reconcile_attempt_count = $3
+       AND status = 'completed'
+       AND reconciled_at IS NOT NULL
+       AND (
+            (
+              reconcile_next_attempt_at IS NOT NULL
+              AND reconcile_next_attempt_at <= now()
+            )
+            OR (
+              reconcile_next_attempt_at IS NULL
+              AND (
+                last_reconcile_check_at IS NULL
+                OR last_reconcile_check_at < $4
+              )
+            )
+       )
+     FOR UPDATE SKIP LOCKED
+)
+UPDATE source_onboarding_runs run
+   SET reconcile_last_claimed_at = now()
+  FROM claimed
+ WHERE run.onboarding_run_id = claimed.onboarding_run_id
+   AND run.source = claimed.source
+RETURNING run.onboarding_run_id, run.source, run.tenant_id, run.status,
+          run.installation_row_id, run.reconciled_at,
+          run.reconciliation_pass_count, run.started_at,
+          run.reconcile_next_attempt_at, run.reconcile_attempt_count,
+          run.reconcile_retry_reason, run.reconcile_retry_operation,
+          run.reconcile_last_claimed_at
+"""
+
+# Advance the normal periodic watermark and clear a completed retry schedule.
+# Stamped on clean, gap, or ordinary indeterminate checks. Timeout and explicit
+# RetryLater take the separate durable not-before path instead.
 _STAMP_CHECK_SQL = """
 UPDATE source_onboarding_runs
-   SET last_reconcile_check_at = now()
+   SET last_reconcile_check_at = now(),
+       reconcile_next_attempt_at = NULL,
+       reconcile_retry_reason = NULL,
+       reconcile_retry_operation = NULL
  WHERE onboarding_run_id = $1 AND source = $2
 """
 
@@ -150,10 +307,38 @@ UPDATE source_onboarding_runs
 # ---------------------------------------------------------------------
 # Named side-effect functions (Rule 1).
 # ---------------------------------------------------------------------
+async def _list_eligible_run_candidates(
+    pool: asyncpg.Pool,
+    *,
+    cutoff: dt.datetime,
+    limit: int,
+) -> list[asyncpg.Record]:
+    if limit <= 0:
+        return []
+    return list(
+        await pool.fetch(
+            _LIST_ELIGIBLE_RUN_CANDIDATES_SQL,
+            cutoff,
+            limit,
+        )
+    )
+
+
 async def _claim_eligible_run(
-    conn: asyncpg.Connection, *, cutoff: dt.datetime,
+    conn: asyncpg.Connection,
+    *,
+    run_id,
+    source: str,
+    expected_attempt_count: int,
+    cutoff: dt.datetime,
 ) -> asyncpg.Record | None:
-    return await conn.fetchrow(_CLAIM_ELIGIBLE_RUN_SQL, cutoff)
+    return await conn.fetchrow(
+        _CLAIM_ELIGIBLE_RUN_SQL,
+        run_id,
+        source,
+        expected_attempt_count,
+        cutoff,
+    )
 
 
 async def _stamp_check(
@@ -200,43 +385,93 @@ class PeriodicReconciler(LongRunningService):
         return self._config.tick_interval_seconds
 
     async def tick(self) -> None:
-        """Check up to `batch_size` due runs this tick."""
-        checked = 0
-        for _ in range(self._config.batch_size):
-            processed = await self._check_one_run()
-            if not processed:
-                break
-            checked += 1
-        _metrics["periodic_reconciler.last_tick_checked"] = float(checked)
-        await self._persist_scan_state(checked=checked)
-
-    async def _check_one_run(self) -> bool:
-        """Claim + re-reconcile one eligible run. Returns True iff a
-        run was claimed (False = nothing due → stop this tick)."""
+        """Check one snapshotted, bounded generation of each due run."""
         cutoff = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(
             seconds=self._config.min_age_seconds,
         )
+        candidates = await _list_eligible_run_candidates(
+            self._pool,
+            cutoff=cutoff,
+            limit=self._config.batch_size,
+        )
+        checked = 0
+        for candidate in candidates:
+            processed = await self._check_one_run(
+                candidate,
+                cutoff=cutoff,
+            )
+            if processed:
+                checked += 1
+        _metrics["periodic_reconciler.last_tick_checked"] = float(checked)
+        await self._persist_scan_state(checked=checked)
+
+    async def _check_one_run(
+        self,
+        candidate: asyncpg.Record,
+        *,
+        cutoff: dt.datetime,
+    ) -> bool:
+        """Claim + re-reconcile one eligible run. Returns True iff a
+        run was claimed (False = nothing due → stop this tick)."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                run = await _claim_eligible_run(conn, cutoff=cutoff)
+                run = await _claim_eligible_run(
+                    conn,
+                    run_id=candidate["onboarding_run_id"],
+                    source=candidate["source"],
+                    expected_attempt_count=int(
+                        candidate["reconcile_attempt_count"],
+                    ),
+                    cutoff=cutoff,
+                )
                 if run is None:
                     return False
                 run_id = run["onboarding_run_id"]
                 source = run["source"]
-                # Advance the watermark first — committed even if the
-                # check below errors, so a failing run is retried only
-                # after min_age, not every tick.
-                await _stamp_check(conn, run_id=run_id, source=source)
                 _bump("periodic_reconciler.runs_checked")
 
                 shards = await _load_shards(
                     conn, run_id=run_id, source=source,
                 )
-                decision = await self._gap_check(source, shards, run)
+                try:
+                    decision = await self._gap_check(source, shards, run)
+                except RetryLater as exc:
+                    attempt_count = await schedule_reconciliation_retry(
+                        conn,
+                        run=run,
+                        retry=exc,
+                    )
+                    _bump("periodic_reconciler.retries_scheduled")
+                    log.info(
+                        "periodic_reconciler.retry_scheduled",
+                        extra={
+                            "source": source,
+                            "run_id": str(run_id),
+                            "tenant_id": str(run["tenant_id"]),
+                            "installation_row_id": str(
+                                run["installation_row_id"],
+                            ),
+                            "next_attempt_at": exc.not_before.isoformat(),
+                            "retry_reason": exc.reason.value,
+                            "retry_operation": (
+                                exc.request_context.operation
+                            ),
+                            "attempt_count": attempt_count,
+                            "blocked_scope": exc.blocked_scope,
+                        },
+                    )
+                    return True
+
+                # An ordinary result (including a swallowed permanent error)
+                # completes this check generation and returns to min-age
+                # scheduling. RetryLater deliberately bypasses this watermark.
+                await _stamp_check(conn, run_id=run_id, source=source)
                 if decision is not None and decision.has_gaps:
                     await apply_reshare(
                         conn, run_id=run_id, source=source,
-                        tenant_id=run["tenant_id"], decision=decision,
+                        tenant_id=run["tenant_id"],
+                        installation_row_id=run["installation_row_id"],
+                        decision=decision,
                     )
                     _bump("periodic_reconciler.gaps_found")
                     _bump(
@@ -254,23 +489,29 @@ class PeriodicReconciler(LongRunningService):
 
     async def _gap_check(self, source, shards, run):
         """Run the bounded per-source gap check. A timeout or any
-        dispatch error is logged and swallowed (decision=None) — the
-        watermark already advanced, so it re-checks next cycle. This
-        is what makes the best-effort per-source checks self-healing
-        rather than lossy."""
+        permanent dispatch error is logged and swallowed (decision=None) — the
+        caller advances the watermark, so it re-checks next cycle. Timeout and
+        RetryLater are control flow and propagate to the durable scheduler."""
         try:
+            reconciler = resolve_reconciler(source)
             return await asyncio.wait_for(
-                RECONCILER_DISPATCH[source](shards, run),
+                reconciler(shards, run),
                 timeout=self._config.dispatch_timeout_seconds,
             )
         except asyncio.TimeoutError:
             _bump("periodic_reconciler.check_errors")
             log.warning(
-                "periodic_reconciler.dispatch_timeout",
+                "periodic_reconciler.dispatch_timeout_retry_scheduled",
                 extra={"source": source,
                        "timeout_s": self._config.dispatch_timeout_seconds},
             )
-            return None
+            raise reconciliation_timeout_retry(
+                run,
+                source=source,
+                timeout_seconds=self._config.dispatch_timeout_seconds,
+            )
+        except RetryLater:
+            raise
         except Exception as exc:  # noqa: BLE001 — best-effort gap check
             _bump("periodic_reconciler.check_errors")
             log.warning(
@@ -325,7 +566,7 @@ async def _run_service() -> None:
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     # Per-source reconcilers need pool access for auxiliary reads (shard
     # cursors, installation rows) and raise if their pool isn't registered.
-    # Register ALL sources (derived from RECONCILER_DISPATCH) — the same
+    # Register ALL historical sources (derived from SourceDefinition) — the same
     # registration the at-completion Reconciler does. This block previously
     # listed only 7 of 25 sources by hand, so every steady-state gap re-check
     # of the other 18 raised RuntimeError (silently swallowed as a dispatch

@@ -239,13 +239,16 @@ async def _drain_shard_into_observations(pool, install_row, shard_identifier) ->
 
 
 async def run(args) -> int:
-    from services.ingest.synthetic.mock_servers.google_calendar import start_mock_calendar
+    from services.ingest.synthetic.provider_lab.server import start_provider_lab
 
     fixtures = _build_fixtures()
 
-    # 1. Start the mock (token + Calendar API) on a random local port.
-    server, base_url, token_url = start_mock_calendar(fixtures)
-    _hr("MOCK SERVER")
+    # 1. Start Provider Lab (token + Calendar API) on a random local port.
+    server = start_provider_lab({"google_calendar": [fixtures]})
+    base_url = server.url("google_calendar")
+    token_url = server.url("google_calendar", "/token")
+    os.environ["PROVIDER_LAB_URL"] = server.base_url
+    _hr("PROVIDER LAB")
     print(f"  Calendar API base : {base_url}")
     print(f"  Token endpoint    : {token_url}")
 
@@ -308,10 +311,17 @@ async def run(args) -> int:
 
         # 5. Plan shards exactly as SourceOnboarding does (loader SQL -> planner).
         _hr("PLAN (planner over the loader SQL)")
+        from services.ingest.ingestion.installations import (
+            load_source_installation,
+        )
         from services.ingest.ingestion.planners.context import PlannerContext
         from services.ingest.ingestion.planners.google_calendar import plan_shards_google_calendar
-        from services.ingest.ingestion.workflows.source_onboarding import _LOAD_GCAL_INSTALL_SQL
-        install_row = await pool.fetchrow(_LOAD_GCAL_INSTALL_SQL, _TENANT_ID)
+        install_row = await load_source_installation(
+            pool,
+            source="google_calendar",
+            tenant_id=_TENANT_ID,
+            installation_id=install_id,
+        )
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_google_calendar(ctx)
         print(f"  planned {len(shards)} shard(s): "
@@ -384,7 +394,13 @@ async def run(args) -> int:
         from services.ingest.integrations.gmail.client import GoogleHttpClient
         from services.ingest.integrations.gmail.dwd import get_minter
         from services.ingest.integrations.google_calendar.client import GoogleCalendarClient
-        http = GoogleHttpClient(get_minter())
+        http = GoogleHttpClient(
+            get_minter(),
+            source="google_calendar",
+            tenant_id=str(_TENANT_ID),
+            installation_id=str(install_id),
+            allow_unlimited_local=True,
+        )
         await http.__aenter__()
         try:
             client = GoogleCalendarClient(http)
@@ -416,7 +432,14 @@ async def run(args) -> int:
                    and r["trust_tier"] == "authoritative" for r in rows))
 
         # Mock server actually served the traffic (no accidental real calls).
-        _check("mock token endpoint was hit", server.request_hits.get("token", 0) > 0)
+        _check(
+            "Provider Lab token endpoint was hit",
+            server.request_count(
+                source="google_calendar",
+                route_id="google_calendar.token",
+            )
+            > 0,
+        )
 
     finally:
         await pool.close()

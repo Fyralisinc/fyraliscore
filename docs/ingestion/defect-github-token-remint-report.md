@@ -6,7 +6,7 @@
 | **Severity** | Medium → **must-fix-before-scale** — secondary-rate-limit risk that scales with PR/commit count via the pr_reviews fan-out (not a correctness bug) |
 | **Component** | `services/ingestion` — GitHub backfill fetch + reconcile path |
 | **Status** | ✅ **RESOLVED** 2026-06-03 — `services/ingestion/fetchers/_clients.py` now memoizes one `GithubClient` per `installation_id` process-wide |
-| **Found during** | GitHub backfill+live ingestion test against the local mock (spammer), 2026-06-03 |
+| **Found during** | GitHub backfill+live ingestion test against the local provider simulator, 2026-06-03 |
 
 ---
 
@@ -62,10 +62,10 @@ thing thrown away on each fetch.
 The same per-call construction exists on the reconcile path:
 `services/ingestion/reconcilers/github.py` → `_open_github_client()`.
 
-> **Note on environments:** in spammer-mode (`SYNTHETIC_SOURCE_API_BASE` set) the
-> token is preset to `spam-gh::<inst>`, so no mint happens and the storm is
-> hidden. It only occurs under **real App-JWT auth** — i.e. production, and
-> real-auth runs against the mock.
+> **Note on environments:** with `PROVIDER_LAB_URL` and an explicit
+> `GITHUB_API_BASE_URL`, the token is preset to `spam-gh::<inst>`, so no mint
+> happens and the storm is hidden. It only occurs under **real App-JWT auth** —
+> i.e. production, and real-auth runs against the lab.
 
 ---
 
@@ -86,7 +86,7 @@ The same per-call construction exists on the reconcile path:
 
 ## Reproduction / evidence
 
-1. Run a real-auth GitHub backfill (not spammer-mode) over multiple repos.
+1. Run a real-auth GitHub backfill (not Provider Lab mode) over multiple repos.
 2. Tail the `shard_fetch` worker log.
 3. Observe a `POST .../app/installations/{id}/access_tokens` line immediately
    before almost every `GET /repos/{owner}/{repo}/...` line.

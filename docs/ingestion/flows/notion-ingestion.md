@@ -56,7 +56,7 @@ invariant of Notion ingestion
 Notion ingestion uses a **single credential model: a per‑workspace integration
 ("bot") token**, issued once at OAuth install. There are no per‑user tokens, no
 PATs, and — unlike GitHub — **no per‑request token mint or JWT**. The token is
-**long‑lived**: resolved once from the secret store (or preset in spammer mode)
+**long‑lived**: resolved once from the secret store (or preset in Provider Lab mode)
 and reused for the life of the client
 ([client.py:1‑22](../../../services/ingest/integrations/notion/client.py#L1-L22),
 [112‑134](../../../services/ingest/integrations/notion/client.py#L112-L134)).
@@ -538,7 +538,7 @@ pagination, rate limits, webhook signing).
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
-| `NOTION_API_BASE_URL` | `https://api.notion.com` | outbound API base (set to the local spammer in dev) |
+| `NOTION_API_BASE_URL` | `https://api.notion.com` | outbound API base (set explicitly to Provider Lab in dev) |
 | `NOTION_API_VERSION` | `2022-06-28` | pinned `Notion-Version` header |
 | `NOTION_CLIENT_ID` / `NOTION_CLIENT_SECRET` | — (required for install) | OAuth app credentials |
 | `NOTION_REDIRECT_URI` | — (required for install) | OAuth callback URL |
@@ -561,15 +561,11 @@ pagination, rate limits, webhook signing).
 - **Least secret surface** — bot token in `secret_ref` (outbound), App‑level
   verification token (inbound); two distinct secrets. ✅
 
-### 10.3 Dev / spammer mode
+### 10.3 Dev / Provider Lab mode
 
-For local testing, `build_notion_client` detects spammer mode
-(`SYNTHETIC_SOURCE_API_BASE` set) and **presets** the bot token to
+For local testing, `build_notion_client` detects `PROVIDER_LAB_URL` and
+**presets** the bot token to
 `spam-notion::{workspace_id}`, skipping secret‑store resolution; the base URL
-then routes through the endpoint resolver (`notion_api` → `NOTION_API_BASE_URL`,
-or `/notion` sub‑path) to the local Notion mock
-([_clients.py:252‑275](../../../services/ingest/ingestion/fetchers/_clients.py#L252-L275),
-[endpoints.py:41](../../../lib/integrations/endpoints.py#L41),
-[74](../../../lib/integrations/endpoints.py#L74),
-[92](../../../lib/integrations/endpoints.py#L92)). The Notion mock serves API
-version `2022-06-28` and authenticates a Bearer integration token.
+is supplied explicitly as `NOTION_API_BASE_URL=<lab>/notion`. The Notion
+adapter serves API version `2022-06-28` and authenticates a Bearer integration
+token.

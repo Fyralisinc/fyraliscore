@@ -140,6 +140,144 @@
       "required": [
         "figmaOAuth"
       ]
+    },
+    "signalGateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "signalCliVersion": {
+          "type": "string",
+          "const": "0.14.4.1"
+        },
+        "installations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 63,
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+              },
+              "tenantId": {
+                "type": "string",
+                "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+              },
+              "installationId": {
+                "type": "string",
+                "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+              },
+              "jsonrpcEndpoint": {
+                "type": "string",
+                "pattern": "^https?://.+"
+              },
+              "sseEndpoint": {
+                "type": "string"
+              },
+              "multiAccount": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "tenantId",
+              "installationId",
+              "jsonrpcEndpoint"
+            ]
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "signalCliVersion",
+        "installations"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "properties": {
+              "installations": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "telegramGateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "installations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 63,
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+              },
+              "tenantId": {
+                "type": "string",
+                "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+              },
+              "installationId": {
+                "type": "string",
+                "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+              }
+            },
+            "required": [
+              "name",
+              "tenantId",
+              "installationId"
+            ]
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "installations"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "properties": {
+              "installations": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

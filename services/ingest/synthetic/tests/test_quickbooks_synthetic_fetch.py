@@ -90,8 +90,8 @@ async def _drain_shard(install, shard) -> list[dict]:
 # ---------------------------------------------------------------------
 
 async def test_dispatch_and_channel_wired():
-    from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
-    assert FETCHER_DISPATCH["quickbooks"] is fetch_page_quickbooks
+    from services.ingest.source_contract.runtime import resolve_fetcher
+    assert resolve_fetcher("quickbooks") is fetch_page_quickbooks
     assert resolve_channel("quickbooks", "backfill") == "quickbooks:object"
 
 

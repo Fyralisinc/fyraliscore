@@ -15,8 +15,6 @@ ENV_KEY_RE = re.compile(r"^\s*#?\s*([A-Z0-9_]+)\s*=")
 
 REQUIRED_SOURCE_RATE_LIMIT_KEYS = {
     "REDIS_URL",
-    "SHARD_FETCH_RATE_LIMIT",
-    "SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC",
     "SLACK_API_TIER",
 }
 

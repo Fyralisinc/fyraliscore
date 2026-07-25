@@ -77,6 +77,7 @@ def _stub_fetcher(monkeypatch, pages: list[FetchResult], *, captured: dict) -> N
 
     async def _fetch(install, shard_identifier, cursor):
         captured["shard_identifier"] = shard_identifier
+        captured["install"] = dict(install)
         i = calls["i"]
         calls["i"] += 1
         return pages[min(i, len(pages) - 1)]
@@ -87,7 +88,7 @@ def _stub_fetcher(monkeypatch, pages: list[FetchResult], *, captured: dict) -> N
 async def test_poll_drains_and_advances_start_page_token(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tenant, _install, tgt = await _seed_target(fresh_db, start_page_token="tok-0")
+    tenant, install, tgt = await _seed_target(fresh_db, start_page_token="tok-0")
 
     recorder: list = []
     _stub_ingest(monkeypatch, recorder=recorder)
@@ -106,6 +107,12 @@ async def test_poll_drains_and_advances_start_page_token(
     assert n == 1
     assert captured["shard_identifier"]["start_page_token"] == "tok-0"
     assert captured["shard_identifier"]["drive_kind"] == "my_drive"
+    assert captured["shard_identifier"]["installation_id"] == str(install)
+    assert captured["install"] == {
+        "id": install,
+        "tenant_id": tenant,
+        "scope": "drive.readonly",
+    }
     assert [c[0] for c in recorder] == ["google_drive:file"]
 
     row = await fresh_db.fetchrow(

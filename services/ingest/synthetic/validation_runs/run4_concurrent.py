@@ -135,7 +135,11 @@ async def _migrate_and_truncate(pool: asyncpg.Pool) -> None:
                AND c.relispartition = FALSE
             """
         )
-        names = ", ".join(f'"{r["relname"]}"' for r in rows)
+        names = ", ".join(
+            f'"{r["relname"]}"'
+            for r in rows
+            if r["relname"] != "ingestion_source_catalog"
+        )
         if names:
             await conn.execute(f"TRUNCATE {names} RESTART IDENTITY CASCADE")
 
@@ -192,19 +196,13 @@ async def _wait_for_total_drain(
         await asyncio.sleep(poll_interval_s)
 
 
-def _run4_report(*, scenarios: list[BackfillScenario], real_clients: bool) -> RunReport:
-    if real_clients:
-        run_name = (
-            "Concurrent backfill (REAL clients \u2192 spammer) + live-via-Kafka "
-            "(50 tenants, 4 sources)"
-        )
-        run_number = 5
-    else:
-        run_name = "Concurrent backfill + live-via-Kafka (50 tenants, 4 sources)"
-        run_number = 4
+def _run4_report(*, scenarios: list[BackfillScenario]) -> RunReport:
     return RunReport(
-        run_name=run_name,
-        run_number=run_number,
+        run_name=(
+            "Concurrent backfill (production clients \u2192 Provider Lab) + "
+            "live-via-Kafka (50 tenants, 4 sources)"
+        ),
+        run_number=4,
         tenant_count=len(scenarios),
         started_at=dt.datetime.now(tz=dt.timezone.utc),
         wall_seconds=0.0,
@@ -399,7 +397,6 @@ def _record_live_summary(
     concurrency: int,
     peak: dict[str, int],
     live_result: Any,
-    real_clients: bool,
 ) -> None:
     report.live_lines = [
         f"concurrency={concurrency}; live={_LIVE_EVENTS_PER_TENANT} "
@@ -416,15 +413,13 @@ def _record_live_summary(
         "push-handler cutover). Consumer rc=-9/-15 expected per "
         "ticket #45."
     )
-    if real_clients:
-        report.notes.append(
-            "BACKFILL drove the REAL source clients "
-            "(Github/Slack/Discord/Gmail) over HTTP against the local "
-            "spammer (services/ingest/synthetic/spammer) — token exchange, "
-            "pagination, rate-limit backoff — instead of in-process "
-            "mock clients. Live ingestion remains inbound (webhook / "
-            "gateway / pubsub) routed via the Kafka cutover."
-        )
+    report.notes.append(
+        "BACKFILL drove the production source clients "
+        "(Github/Slack/Discord/Gmail) over HTTP against Provider Lab "
+        "— token exchange, pagination, and rate-limit backoff. Live "
+        "ingestion remains inbound (webhook / gateway / pubsub) routed "
+        "via the Kafka cutover."
+    )
 
 
 async def run4(
@@ -433,12 +428,11 @@ async def run4(
     concurrency: int = 10,
     distribution: dict[str, int] | None = None,
     drain_timeout_s: float = 180.0,
-    real_clients: bool = False,
 ) -> RunReport:
     t0 = time.monotonic()
     dsn = os.environ["DATABASE_URL"]
     scenarios = run4_scenarios(distribution)
-    report = _run4_report(scenarios=scenarios, real_clients=real_clients)
+    report = _run4_report(scenarios=scenarios)
     from services.ingest.synthetic.validation_runs.moto_lifecycle import moto_s3
 
     with moto_s3() as endpoint:
@@ -464,7 +458,7 @@ async def run4(
                 completion_deadline_s=600.0,
                 kafka_bootstrap_servers=bootstrap_servers,
                 drain_timeout_s=drain_timeout_s,
-                real_clients=real_clients)
+            )
 
             # Phase A: seed tenants + installs + kafka_path_enabled=TRUE.
             outcomes = await harness.setup()
@@ -518,7 +512,6 @@ async def run4(
                 concurrency=concurrency,
                 peak=peak,
                 live_result=live_result,
-                real_clients=real_clients,
             )
         finally:
             if live_runtime is not None:
@@ -548,16 +541,18 @@ async def run5(
     distribution: dict[str, int] | None = None,
     drain_timeout_s: float = 300.0,
 ) -> RunReport:
-    """Run 5 — the capstone: identical to Run 4 (concurrent backfill +
-    live-via-Kafka, 50 tenants, 4 sources) but BACKFILL is driven by the
-    REAL source clients over HTTP against the local spammer (no in-process
-    mock clients). Live ingestion stays inbound, routed via the Kafka
-    cutover. A longer default drain accommodates the real HTTP round-trips."""
-    return await run4(
+    """Run 5 — the longer capstone form of the Provider Lab-backed Run 4."""
+    report = await run4(
         bootstrap_servers=bootstrap_servers, concurrency=concurrency,
         distribution=distribution, drain_timeout_s=drain_timeout_s,
-        real_clients=True,
     )
+    report.run_number = 5
+    report.run_name = report.run_name.replace(
+        "Concurrent",
+        "Capstone concurrent",
+        1,
+    )
+    return report
 
 
 def _assert_run4(

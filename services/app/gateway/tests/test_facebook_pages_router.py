@@ -175,3 +175,81 @@ async def test_signed_webhook_fans_out_messages(
     assert captured[0]["tenant_id"] == tenant_id
     assert captured[0]["headers"] == {"x-facebook-page-id": page_id}
     assert captured[0]["payload"]["message"]["mid"] == "m_1"
+
+
+async def test_signed_webhook_is_scoped_to_exact_page_installation(
+    facebook_pages_client: tuple[
+        httpx.AsyncClient,
+        asyncpg.Pool,
+        FernetSecretStore,
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, pool, store = facebook_pages_client
+    tenant_a, page_a = await _register(
+        pool,
+        store,
+        app_secret="page-secret-a",
+    )
+    tenant_b, page_b = await _register(
+        pool,
+        store,
+        app_secret="page-secret-b",
+    )
+    captured_tenants: list[UUID] = []
+
+    async def fake_ingest_item(
+        deps: Any,
+        tenant_id: UUID,
+        item_payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        captured_tenants.append(tenant_id)
+        return {
+            "channel": "facebook_pages:message",
+            "observation_id": str(uuid4()),
+            "deduped": False,
+        }
+
+    monkeypatch.setattr(
+        facebook_pages_router,
+        "_ingest_item",
+        fake_ingest_item,
+    )
+    payload = {
+        "entry": [
+            {
+                "id": page_b,
+                "messaging": [
+                    {
+                        "sender": {"id": "PSID-EXACT"},
+                        "recipient": {"id": page_b},
+                        "message": {"mid": "m_exact", "text": "hello"},
+                    }
+                ],
+            }
+        ]
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+
+    accepted = await client.post(
+        "/integrations/facebook_pages/webhook",
+        content=raw,
+        headers={
+            "X-Hub-Signature-256": sign_payload("page-secret-b", raw),
+        },
+    )
+    sibling_secret = await client.post(
+        "/integrations/facebook_pages/webhook",
+        content=raw,
+        headers={
+            "X-Hub-Signature-256": sign_payload("page-secret-a", raw),
+        },
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["tenant_id"] == str(tenant_b)
+    assert captured_tenants == [tenant_b]
+    assert tenant_a != tenant_b
+    assert page_a != page_b
+    assert sibling_secret.status_code == 401

@@ -13,6 +13,11 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from lib.shared.provider_transport import (
+    RequestPolicy,
+    RetryLater,
+    RetryReason,
+)
 from services.ingest.integrations.fireflies.client import FirefliesClient
 from tests.contract.framework import load_fixture
 
@@ -28,6 +33,7 @@ def _client(http: httpx.AsyncClient) -> FirefliesClient:
         base_url="https://api.fireflies.ai/graphql",
         api_token="test-token",          # preset → no secret_store needed
         http_client=http,
+        request_policy=RequestPolicy(max_attempts=1),
     )
 
 
@@ -68,8 +74,6 @@ async def test_fireflies_graphql_request_and_response_shape():
 async def test_fireflies_graphql_errors_raise():
     """The real API returns 200 with an `errors` array on failure (incl. rate
     limit) — that must raise, not be parsed as an empty transcript list."""
-    from lib.shared.errors import FirefliesApiError
-
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={
             "data": None,
@@ -77,6 +81,7 @@ async def test_fireflies_graphql_errors_raise():
         })
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        with pytest.raises(FirefliesApiError) as exc:
+        with pytest.raises(RetryLater) as exc:
             await _client(http).list_transcripts_graphql(limit=50, skip=0)
-    assert exc.value.code == "fireflies_api_rate_limited"
+    assert exc.value.reason is RetryReason.RATE_LIMIT
+    assert exc.value.request_context.operation == "transcripts.list"

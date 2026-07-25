@@ -52,9 +52,7 @@ from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -124,7 +122,6 @@ def _mime_label(mime: Any) -> str:
     return _MIME_LABEL.get(mime, mime.split("/")[-1] or "file")
 
 
-@register(_CHANNEL)
 async def handle_google_drive_file(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -444,7 +441,6 @@ def _build_revision_draft(payload: dict[str, Any]) -> ObservationDraft:
 # One routing channel for all three record types (file / comment / revision);
 # they share source_channel=google_drive:file and are distinguished by
 # content.object_type + external_id namespace.
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL, _TRUST)
 
 
 __all__ = ["handle_google_drive_file"]

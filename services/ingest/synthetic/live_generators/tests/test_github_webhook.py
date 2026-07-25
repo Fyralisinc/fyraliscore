@@ -419,9 +419,11 @@ async def test_github_webhook_default_kwarg_preserves_existing_behavior(
 async def test_github_webhook_injected_identity_propagates_to_observation(
     fresh_db: asyncpg.Pool,
 ) -> None:
-    """Injected node_id + occurred_at_iso flow to the observation's
-    external_id (= node_id) and occurred_at. The twin seam: GitHub's
-    dedup key is (source_channel, node_id, occurred_at)."""
+    """Injected node_id + occurred_at_iso flow to the observation.
+
+    The lifecycle external ID includes the action; a backfill twin derives
+    the same action from the REST object's state.
+    """
     from datetime import datetime, timezone
 
     iid = "999INJ"

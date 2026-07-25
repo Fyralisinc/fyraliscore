@@ -54,6 +54,9 @@ from services.ingest.integrations.jira.onboarding import (
     register_webhook_installation,
     site_host,
 )
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 
 
 log = structlog.get_logger("integrations.jira.oauth")
@@ -148,12 +151,15 @@ async def _enumerate_projects(
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
     """Verify the API token and enumerate projects for the selector UI."""
-    _tenant_from_request(request)  # auth check
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     base_url, account_email, api_token = _require_credentials(body)
 
     client = JiraClient(
-        base_url=base_url, account_email=account_email, api_token=api_token,
+        base_url=base_url,
+        account_email=account_email,
+        api_token=api_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         me = await client.myself()
@@ -200,7 +206,10 @@ async def connect_finalize(request: Request) -> JSONResponse:
     # 1. Verify creds (and resolve the project set if not pinned) — before any
     #    write, so a bad token can't leave half-state.
     client = JiraClient(
-        base_url=base_url, account_email=account_email, api_token=api_token,
+        base_url=base_url,
+        account_email=account_email,
+        api_token=api_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         await client.myself()

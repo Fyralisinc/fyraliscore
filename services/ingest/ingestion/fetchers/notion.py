@@ -49,7 +49,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 from services.ingest.integrations.notion import metrics
 
 
@@ -231,17 +231,6 @@ async def fetch_page_notion(
                     ))
 
         except NotionApiError as e:
-            # Rate-limit budget exhausted: re-push the SAME work item with
-            # its cursor unadvanced and end this round empty so ShardFetch
-            # re-enters next tick (cursor preserved). Other API errors
-            # propagate → shard marked failed.
-            if (e.context or {}).get("http_status") == 429:
-                cur.stack.append(item)
-                metrics.record_fetch_event("rate_limited")
-                log.info("notion_backfill_rate_limited", extra={"shard_kind": shard_kind})
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur), end_of_data=False,
-                )
             # 404 on a single object (page un-shared mid-walk): skip this
             # item, keep walking the rest of the tree.
             if (e.context or {}).get("http_status") == 404:
@@ -264,7 +253,6 @@ async def fetch_page_notion(
         await close()
 
 
-FETCHER_DISPATCH["notion"] = fetch_page_notion
 
 
 __all__ = [

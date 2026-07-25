@@ -46,7 +46,7 @@ from lib.shared.product_workflow_metrics import (
     PRODUCT_WORKFLOW_EVENTS,
     PRODUCT_WORKFLOWS,
 )
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.workflows.signals import emit_signal
 import services.ingest.ingestion.workflows.source_onboarding as source_onboarding_module
 from services.ingest.ingestion.workflows.source_onboarding import (
@@ -176,16 +176,37 @@ async def _seed_onboarding_run(
 
 async def _seed_source_run(
     pool: asyncpg.Pool, *, run_id: UUID, source: str, tenant_id: UUID,
-    status: str = "pending",
-) -> None:
+    status: str = "pending", installation_row_id: UUID | None = None,
+) -> UUID:
+    if installation_row_id is None:
+        table = (
+            "gmail_installations"
+            if source == "gmail"
+            else "figma_installations"
+            if source == "figma"
+            else "provider_installations"
+        )
+        provider_filter = " AND provider = $2" if table == "provider_installations" else ""
+        args: tuple[object, ...] = (
+            (tenant_id, source) if provider_filter else (tenant_id,)
+        )
+        installation_row_id = await pool.fetchval(
+            f"SELECT id FROM {table} WHERE tenant_id = $1"
+            f"{provider_filter} ORDER BY id LIMIT 1",
+            *args,
+        )
+    # Missing-install tests still carry an exact durable identity; the runtime
+    # must fail because that row does not exist, not because identity was lost.
+    installation_row_id = installation_row_id or uuid7()
     await pool.execute(
         """
         INSERT INTO source_onboarding_runs
-            (onboarding_run_id, source, tenant_id, status)
-        VALUES ($1, $2, $3, $4)
+            (onboarding_run_id, source, tenant_id, status, installation_row_id)
+        VALUES ($1, $2, $3, $4, $5)
         """,
-        run_id, source, tenant_id, status,
+        run_id, source, tenant_id, status, installation_row_id,
     )
+    return installation_row_id
 
 
 async def _emit_source_requested(
@@ -193,13 +214,22 @@ async def _emit_source_requested(
     installation_row_id: UUID | None = None,
 ) -> None:
     """Inject a source_onboarding_requested signal (simulates M6.1)."""
+    if installation_row_id is None:
+        installation_row_id = await pool.fetchval(
+            """
+            SELECT installation_row_id
+              FROM source_onboarding_runs
+             WHERE onboarding_run_id = $1 AND source = $2
+            """,
+            run_id,
+            source,
+        )
     signal_data = {
         "onboarding_run_id": str(run_id),
         "tenant_id": str(tenant_id),
         "source": source,
+        "installation_row_id": str(installation_row_id),
     }
-    if installation_row_id is not None:
-        signal_data["installation_row_id"] = str(installation_row_id)
 
     await emit_signal(
         pool,
@@ -241,18 +271,27 @@ async def _seed_shard(
     """Seed an onboarding_shards row directly using the existing 0045
     schema columns (A15)."""
     shard_id = uuid7()
+    installation_row_id = await pool.fetchval(
+        """
+        SELECT installation_row_id
+          FROM source_onboarding_runs
+         WHERE onboarding_run_id = $1 AND source = $2
+        """,
+        run_id,
+        source,
+    )
     await pool.execute(
         """
         INSERT INTO onboarding_shards
             (id, onboarding_run_id, tenant_id, source, shard_kind,
              shard_identifier, recency_score, state, last_error,
-             created_at, completed_at)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, now(),
+             installation_row_id, created_at, completed_at)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, now(),
                 CASE WHEN $8 IN ('done','failed') THEN now() ELSE NULL END)
         """,
         shard_id, run_id, tenant_id, source, shard_kind,
         orjson.dumps(identifier or {"k": "v"}).decode("utf-8"),
-        1.0, state, last_error,
+        1.0, state, last_error, installation_row_id,
     )
     return shard_id
 
@@ -331,8 +370,10 @@ async def test_source_onboarding_handles_request_with_test_planner(
 
     All four changes are part of the same transaction (the service's
     per-signal claim_signals + writes block)."""
-    monkeypatch.setitem(
-        PLANNER_DISPATCH, "slack", _test_planner_three_shards,
+    monkeypatch.setattr(
+        source_onboarding_module,
+        "resolve_planner",
+        lambda _source: _test_planner_three_shards,
     )
 
     tid = await _seed_tenant(fresh_db)
@@ -413,7 +454,11 @@ async def test_source_onboarding_uses_requested_provider_installation(
     async def _no_source_client(*args, **kwargs):  # noqa: ANN002, ANN003
         return None
 
-    monkeypatch.setitem(PLANNER_DISPATCH, "discord", _capturing_planner)
+    monkeypatch.setattr(
+        source_onboarding_module,
+        "resolve_planner",
+        lambda _source: _capturing_planner,
+    )
     monkeypatch.setattr(
         source_onboarding_module, "_build_source_client", _no_source_client,
     )
@@ -436,7 +481,11 @@ async def test_source_onboarding_uses_requested_provider_installation(
         fresh_db, tenant_id=tid, source="discord",
     )
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="discord", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="discord",
+        tenant_id=tid,
+        installation_row_id=second_install,
     )
     await _emit_source_requested(
         fresh_db, run_id=run_id, tenant_id=tid, source="discord",
@@ -467,8 +516,10 @@ async def test_source_onboarding_atomic_rollback_on_shard_insert_failure(
     This is the A12 + A13 transactional contract at the service-
     integration level — same shape as M6.1's
     test_oauth_poller_atomic_rollback_on_signal_failure."""
-    monkeypatch.setitem(
-        PLANNER_DISPATCH, "slack", _test_planner_three_shards,
+    monkeypatch.setattr(
+        source_onboarding_module,
+        "resolve_planner",
+        lambda _source: _test_planner_three_shards,
     )
 
     # Patch _insert_shard to raise on the second call.
@@ -556,15 +607,18 @@ async def test_source_onboarding_handles_not_implemented_planner(
           inbox with failure_reason in signal_data.
       (c) No shard rows created.
 
-    Pre-M6.5 this exercised the real stub registered in PLANNER_DISPATCH.
-    Post-M6.5 the slack entry is the real planner, so we monkeypatch
-    the factory-built stub back in to keep verifying the dispatch's
-    raise-NotImplementedError handling.
+    Keep verifying the planner's raise-NotImplementedError handling.
     """
-    from services.ingest.ingestion.planners import _not_implemented_planner
-    monkeypatch.setitem(
-        PLANNER_DISPATCH, "slack",
-        _not_implemented_planner("slack", "M6.5"),
+    async def _not_implemented(_ctx: PlannerContext) -> list[Shard]:
+        raise NotImplementedError(
+            "historical backfill planner for source 'slack' is not "
+            "implemented (owned by M6.5)"
+        )
+
+    monkeypatch.setattr(
+        source_onboarding_module,
+        "resolve_planner",
+        lambda _source: _not_implemented,
     )
 
     tid = await _seed_tenant(fresh_db)
@@ -642,7 +696,11 @@ async def test_source_onboarding_handles_unexpected_planner_exception(
     async def _exploding_planner(ctx):
         raise RuntimeError("simulated planner failure")
 
-    monkeypatch.setitem(PLANNER_DISPATCH, "slack", _exploding_planner)
+    monkeypatch.setattr(
+        source_onboarding_module,
+        "resolve_planner",
+        lambda _source: _exploding_planner,
+    )
 
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
@@ -695,7 +753,11 @@ async def test_source_onboarding_handles_empty_planner_result(
 ) -> None:
     """Test planner returns []; assert run immediately completes
     (source has nothing to fetch — edge case)."""
-    monkeypatch.setitem(PLANNER_DISPATCH, "gmail", _test_planner_empty)
+    monkeypatch.setattr(
+        source_onboarding_module,
+        "resolve_planner",
+        lambda _source: _test_planner_empty,
+    )
 
     tid = await _seed_tenant(fresh_db)
     await _seed_gmail_install(fresh_db, tenant_id=tid)
@@ -939,7 +1001,11 @@ async def test_figma_planner_failure_degrades_triggered_install(
     async def _exploding_figma_planner(ctx: PlannerContext) -> list[Shard]:
         raise RuntimeError("Figma provider unavailable")
 
-    monkeypatch.setitem(PLANNER_DISPATCH, "figma", _exploding_figma_planner)
+    monkeypatch.setattr(
+        source_onboarding_module,
+        "resolve_planner",
+        lambda _source: _exploding_figma_planner,
+    )
     tenant_id = await _seed_tenant(fresh_db, "figma-planner")
     install_id = await _seed_figma_install(
         fresh_db, tenant_id=tenant_id, connection_state="pending",
@@ -1219,8 +1285,10 @@ async def test_source_onboarding_emits_source_started_progress_event(
         TOPIC_ONBOARDING_PROGRESS,
     )
 
-    monkeypatch.setitem(
-        PLANNER_DISPATCH, "slack", _test_planner_three_shards,
+    monkeypatch.setattr(
+        source_onboarding_module,
+        "resolve_planner",
+        lambda _source: _test_planner_three_shards,
     )
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")

@@ -26,7 +26,7 @@ from typing import Any
 
 import orjson
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -110,7 +110,6 @@ async def plan_shards_figma(ctx: PlannerContext) -> list[Shard]:
     return shards
 
 
-PLANNER_DISPATCH["figma"] = plan_shards_figma
 
 
 __all__ = [

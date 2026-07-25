@@ -92,23 +92,6 @@ def test_env_contract_reports_invalid_positive_integer_values(tmp_path: Path) ->
     ]
 
 
-def test_env_contract_reports_invalid_positive_number_values(tmp_path: Path) -> None:
-    template = tmp_path / ".env.production.example"
-    _write_template(
-        template,
-        overrides={"SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC": "0"},
-    )
-
-    violations = check_env_contract(template)
-
-    assert [(violation.key, violation.message) for violation in violations] == [
-        (
-            "SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC",
-            "must be a positive number; found '0'",
-        )
-    ]
-
-
 def test_env_contract_reports_invalid_allowed_values(tmp_path: Path) -> None:
     template = tmp_path / ".env.production.example"
     _write_template(template, overrides={"MASTER_KEK_PROVIDER": "local-file"})

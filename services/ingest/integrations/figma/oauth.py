@@ -44,15 +44,30 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from lib.shared.errors import FigmaApiError, SecretStoreError, StateTokenInvalidError
 from lib.shared.ids import uuid7
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
 from lib.shared.secrets import load_app_secret_text_from_env
 from lib.shared.tenant_context import tenant_transaction
-from services.platform.access_control.roles import has_role
 from services.ingest.integrations.figma.artifact_router import router as artifact_router
 from services.ingest.integrations.figma.client import FigmaClient
 from services.ingest.integrations.figma.onboarding import (
     finalize_install,
     register_webhook_installation,
 )
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+    tenant_preinstall_transport_kwargs,
+)
+from services.platform.access_control.roles import has_role
 
 
 log = structlog.get_logger("integrations.figma.oauth")
@@ -681,14 +696,68 @@ async def _verify_and_consume_figma_state(
     raise StateTokenInvalidError("state_expired", "state token expired")
 
 
-async def _exchange_oauth_code(code: str, code_verifier: str) -> dict[str, Any]:
+def _oauth_provider_binding(
+    *,
+    tenant_id: UUID | None,
+    installation_id: Any | None,
+    http_client: httpx.AsyncClient | None,
+    provider_transport: ProviderExecutor | None,
+    request_policy: RequestPolicy | PolicyResolver | None,
+    quota_resolver: QuotaResolver | None,
+    allow_unlimited_local: bool | None,
+    require_tenant_installation: bool,
+) -> ProviderRequestBinding:
+    local_unlimited = explicit_local_transport(
+        requested=allow_unlimited_local,
+        has_local_injection=http_client is not None,
+    )
+    return ProviderRequestBinding(
+        source="figma",
+        tenant_id=str(tenant_id) if tenant_id is not None else None,
+        installation_id=(
+            str(installation_id) if installation_id is not None else None
+        ),
+        transport=provider_transport,
+        request_policy=request_policy,
+        quota_resolver=quota_resolver,
+        allow_unlimited_local=local_unlimited,
+        require_tenant=True,
+        require_installation=require_tenant_installation,
+    )
+
+
+async def _exchange_oauth_code(
+    code: str,
+    code_verifier: str,
+    *,
+    tenant_id: UUID | None = None,
+    http_client: httpx.AsyncClient | None = None,
+    provider_transport: ProviderExecutor | None = None,
+    request_policy: RequestPolicy | PolicyResolver | None = None,
+    quota_resolver: QuotaResolver | None = None,
+    allow_unlimited_local: bool | None = None,
+    require_tenant_installation: bool = False,
+) -> dict[str, Any]:
     """Exchange Figma's short-lived authorization code using Basic auth +
     PKCE.  Provider response bodies are intentionally not propagated."""
     client_id, client_secret, redirect_uri = _oauth_settings()
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(
+    provider = _oauth_provider_binding(
+        tenant_id=tenant_id,
+        installation_id=None,
+        http_client=http_client,
+        provider_transport=provider_transport,
+        request_policy=request_policy,
+        quota_resolver=quota_resolver,
+        allow_unlimited_local=allow_unlimited_local,
+        require_tenant_installation=require_tenant_installation,
+    )
+    http = http_client or httpx.AsyncClient(timeout=15.0)
+    owns_http = http_client is None
+
+    async def _once() -> httpx.Response:
+        try:
+            response = await http.post(
                 _token_url(),
                 headers={
                     "Authorization": f"Basic {basic}",
@@ -702,8 +771,45 @@ async def _exchange_oauth_code(code: str, code_verifier: str) -> dict[str, Any]:
                     "code_verifier": code_verifier,
                 },
             )
-    except httpx.TransportError as exc:
-        raise FigmaOAuthError("token_exchange_unavailable", "could not reach Figma token endpoint") from exc
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError(
+                "Figma OAuth code exchange timed out",
+                source="figma",
+                operation="oauth.token.exchange",
+                error_type=type(exc).__name__,
+            ) from exc
+        except httpx.TransportError as exc:
+            raise ProviderTransientError(
+                "Figma OAuth code exchange transport error",
+                source="figma",
+                operation="oauth.token.exchange",
+                error_type=type(exc).__name__,
+            ) from exc
+        if response.status_code == 429:
+            raise ProviderRateLimited(
+                "Figma OAuth code exchange rate limit",
+                retry_after_seconds=parse_retry_after(
+                    response.headers.get("Retry-After"),
+                ),
+                status_code=429,
+                header_parser_id="http.retry_after",
+                source="figma",
+                operation="oauth.token.exchange",
+            )
+        if response.status_code >= 500:
+            raise ProviderTransientError(
+                f"Figma OAuth token endpoint returned HTTP {response.status_code}",
+                source="figma",
+                operation="oauth.token.exchange",
+                http_status=response.status_code,
+            )
+        return response
+
+    try:
+        response = await provider.execute("oauth.token.exchange", _once)
+    finally:
+        if owns_http:
+            await http.aclose()
     if response.status_code // 100 != 2:
         raise FigmaOAuthError("token_exchange_failed", "Figma rejected the authorization code")
     try:
@@ -723,7 +829,16 @@ class FigmaOAuthRefreshError(RuntimeError):
 
 
 async def _exchange_oauth_refresh(
-    refresh_token: str, http: httpx.AsyncClient,
+    refresh_token: str,
+    http: httpx.AsyncClient,
+    *,
+    tenant_id: UUID | None = None,
+    installation_id: Any | None = None,
+    provider_binding: ProviderRequestBinding | None = None,
+    provider_transport: ProviderExecutor | None = None,
+    request_policy: RequestPolicy | PolicyResolver | None = None,
+    quota_resolver: QuotaResolver | None = None,
+    allow_unlimited_local: bool | None = None,
 ) -> dict[str, Any]:
     """Refresh an OAuth access token through Figma's current token endpoint.
 
@@ -735,18 +850,69 @@ async def _exchange_oauth_refresh(
     client_id, client_secret, _ = _oauth_settings()
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
     refresh_url = os.environ.get("FIGMA_OAUTH_REFRESH_URL", _token_url()).rstrip("/")
-    try:
-        response = await http.post(
-            refresh_url,
-            headers={
-                "Authorization": f"Basic {basic}",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "application/json",
-            },
-            data={"grant_type": "refresh_token", "refresh_token": refresh_token},
-        )
-    except httpx.TransportError as exc:
-        raise FigmaOAuthRefreshError("refresh_unavailable") from exc
+    provider = provider_binding or _oauth_provider_binding(
+        tenant_id=tenant_id,
+        installation_id=installation_id,
+        http_client=http,
+        provider_transport=provider_transport,
+        request_policy=request_policy,
+        quota_resolver=quota_resolver,
+        allow_unlimited_local=allow_unlimited_local,
+        require_tenant_installation=True,
+    )
+
+    async def _once() -> httpx.Response:
+        try:
+            response = await http.post(
+                refresh_url,
+                headers={
+                    "Authorization": f"Basic {basic}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                },
+            )
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError(
+                "Figma OAuth refresh timed out",
+                source="figma",
+                operation="oauth.token.refresh",
+                error_type=type(exc).__name__,
+            ) from exc
+        except httpx.TransportError as exc:
+            raise ProviderTransientError(
+                "Figma OAuth refresh transport error",
+                source="figma",
+                operation="oauth.token.refresh",
+                error_type=type(exc).__name__,
+            ) from exc
+        if response.status_code == 429:
+            raise ProviderRateLimited(
+                "Figma OAuth refresh rate limit",
+                retry_after_seconds=parse_retry_after(
+                    response.headers.get("Retry-After"),
+                ),
+                status_code=429,
+                header_parser_id="http.retry_after",
+                source="figma",
+                operation="oauth.token.refresh",
+            )
+        if response.status_code >= 500:
+            raise ProviderTransientError(
+                f"Figma OAuth token endpoint returned HTTP {response.status_code}",
+                source="figma",
+                operation="oauth.token.refresh",
+                http_status=response.status_code,
+            )
+        return response
+
+    response = await provider.execute(
+        "oauth.token.refresh",
+        _once,
+    )
     if response.status_code in {400, 401, 403}:
         raise FigmaOAuthRefreshError(
             "reauthorization_required", reauthorization_required=True,
@@ -788,6 +954,11 @@ async def refresh_installation_access_token(
     expected_access_ref: str | None,
     force: bool = False,
     http_client: httpx.AsyncClient | None = None,
+    provider_binding: ProviderRequestBinding | None = None,
+    provider_transport: ProviderExecutor | None = None,
+    request_policy: RequestPolicy | PolicyResolver | None = None,
+    quota_resolver: QuotaResolver | None = None,
+    allow_unlimited_local: bool | None = None,
 ) -> tuple[str, str, str | None, datetime] | None:
     """Refresh a Figma OAuth token once per tenant/install under a PostgreSQL
     advisory transaction lock.
@@ -849,7 +1020,17 @@ async def refresh_installation_access_token(
                 )
             raw_refresh = await secret_store.get(refresh_ref, tenant_id=tenant_id)
             refresh_token = raw_refresh.decode("utf-8") if isinstance(raw_refresh, bytes) else str(raw_refresh)
-            refreshed = await _exchange_oauth_refresh(refresh_token, http)
+            refreshed = await _exchange_oauth_refresh(
+                refresh_token,
+                http,
+                tenant_id=tenant_id,
+                installation_id=installation_id,
+                provider_binding=provider_binding,
+                provider_transport=provider_transport,
+                request_policy=request_policy,
+                quota_resolver=quota_resolver,
+                allow_unlimited_local=allow_unlimited_local,
+            )
             access_token = str(refreshed["access_token"])
             new_access_ref = await secret_store.put(
                 access_token,
@@ -954,7 +1135,10 @@ def _oauth_user_id(identity: dict[str, Any], token_response: dict[str, Any]) -> 
 
 
 async def _validate_selected_files(
-    *, access_token: str, file_keys: list[str],
+    *,
+    access_token: str,
+    file_keys: list[str],
+    tenant_id: UUID,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
     """Verify the OAuth identity and materialize only exactly-selected,
     accessible files.  A partial grant is still useful, but a zero-file grant
@@ -963,6 +1147,7 @@ async def _validate_selected_files(
         base_url=_figma_api_base_url(),
         api_token=access_token,
         auth_kind="oauth",
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     accessible: list[dict[str, Any]] = []
     skipped = 0
@@ -1098,7 +1283,11 @@ async def oauth_callback(request: Request) -> Response:
 
         raw_verifier = await secret_store.get(verifier_ref, tenant_id=tenant_id)
         verifier = raw_verifier.decode("utf-8") if isinstance(raw_verifier, bytes) else str(raw_verifier)
-        token_response = await _exchange_oauth_code(code, verifier)
+        token_response = await _exchange_oauth_code(
+            code,
+            verifier,
+            **tenant_preinstall_transport_kwargs(tenant_id),
+        )
         access_token = token_response.get("access_token")
         refresh_token = token_response.get("refresh_token")
         if not isinstance(access_token, str) or not access_token:
@@ -1107,7 +1296,9 @@ async def oauth_callback(request: Request) -> Response:
             raise FigmaOAuthError("token_exchange_failed", "Figma did not return a refresh token")
 
         identity, files, skipped_files = await _validate_selected_files(
-            access_token=access_token, file_keys=file_keys,
+            access_token=access_token,
+            file_keys=file_keys,
+            tenant_id=tenant_id,
         )
         oauth_user_id = _oauth_user_id(identity, token_response)
         if not oauth_user_id:
@@ -1572,11 +1763,17 @@ def _normalize_file(file: dict[str, Any]) -> dict[str, Any]:
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
     """Legacy PAT preflight.  OAuth onboarding calls ``/oauth/start``."""
-    _tenant_from_request(request)
+    tenant_id = _tenant_from_request(request)
     body = await _json_body(request)
     api_token, base_url = _require_token(body)
     team_id = _require_team_id(body)
-    client = FigmaClient(base_url=base_url, api_token=api_token, team_id=team_id, auth_kind="pat")
+    client = FigmaClient(
+        base_url=base_url,
+        api_token=api_token,
+        team_id=team_id,
+        auth_kind="pat",
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         files = await client.list_files(team_id)
     except FigmaApiError as exc:
@@ -1607,7 +1804,13 @@ async def connect_finalize(request: Request) -> JSONResponse:
     webhook_id = (body.get("webhook_id") or "").strip() or None
     webhook_secret = (body.get("webhook_secret") or "").strip() or None
 
-    client = FigmaClient(base_url=base_url, api_token=api_token, team_id=team_id, auth_kind="pat")
+    client = FigmaClient(
+        base_url=base_url,
+        api_token=api_token,
+        team_id=team_id,
+        auth_kind="pat",
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         raw_files = await client.list_files(team_id)
     except FigmaApiError as exc:

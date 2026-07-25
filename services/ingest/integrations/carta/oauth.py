@@ -70,6 +70,9 @@ from services.ingest.integrations.carta.client import (
     CartaClient,
 )
 from services.ingest.integrations.carta.onboarding import finalize_install
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 
 
 log = structlog.get_logger("integrations.carta.oauth")
@@ -181,12 +184,15 @@ async def _verify_and_resolve_issuer(
 async def connect_preflight(request: Request) -> JSONResponse:
     """Verify the access token via issuer enumeration; verify the issuer if
     one was specified."""
-    _tenant_from_request(request)  # auth check
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     access_token, base_url, issuer_id = _require_creds(body)
 
     client = CartaClient(
-        base_url=base_url, issuer_id=issuer_id, access_token=access_token,
+        base_url=base_url,
+        issuer_id=issuer_id,
+        access_token=access_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         resolved, visible = await _verify_and_resolve_issuer(client, issuer_id)
@@ -234,7 +240,10 @@ async def connect_finalize(request: Request) -> JSONResponse:
 
     # 1. Verify creds + resolve the issuer — before any write.
     client = CartaClient(
-        base_url=base_url, issuer_id=issuer_id, access_token=access_token,
+        base_url=base_url,
+        issuer_id=issuer_id,
+        access_token=access_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         resolved, visible = await _verify_and_resolve_issuer(client, issuer_id)

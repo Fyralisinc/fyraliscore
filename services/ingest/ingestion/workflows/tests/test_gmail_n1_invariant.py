@@ -150,20 +150,28 @@ async def _seed_onboarding_run(
 
 
 async def _seed_source_run(
-    pool: asyncpg.Pool, *, run_id: UUID, tenant_id: UUID,
+    pool: asyncpg.Pool,
+    *,
+    run_id: UUID,
+    tenant_id: UUID,
+    installation_row_id: UUID,
 ) -> None:
     await pool.execute(
         """
         INSERT INTO source_onboarding_runs
-            (onboarding_run_id, source, tenant_id, status)
-        VALUES ($1, 'gmail', $2, 'in_progress')
+            (onboarding_run_id, source, tenant_id, installation_row_id, status)
+        VALUES ($1, 'gmail', $2, $3, 'in_progress')
         """,
-        run_id, tenant_id,
+        run_id, tenant_id, installation_row_id,
     )
 
 
 async def _seed_gmail_shard(
-    pool: asyncpg.Pool, *, run_id: UUID, tenant_id: UUID,
+    pool: asyncpg.Pool,
+    *,
+    run_id: UUID,
+    tenant_id: UUID,
+    installation_row_id: UUID,
 ) -> UUID:
     shard_id = uuid7()
     identifier = {
@@ -171,17 +179,20 @@ async def _seed_gmail_shard(
         "mailbox_email": "alice@acme.com",
         "user_id": "118273645",
         "initial_history_id": "100",
+        "installation_row_id": str(installation_row_id),
     }
     await pool.execute(
         """
         INSERT INTO onboarding_shards
             (id, onboarding_run_id, tenant_id, source, shard_kind,
-             shard_identifier, recency_score, state, created_at)
-        VALUES ($1, $2, $3, 'gmail', $4, $5::jsonb, 1.0,
+             shard_identifier, installation_row_id, recency_score, state,
+             created_at)
+        VALUES ($1, $2, $3, 'gmail', $4, $5::jsonb, $6, 1.0,
                 'pending', now())
         """,
         shard_id, run_id, tenant_id, SHARD_KIND_MAILBOX_WINDOW,
         orjson.dumps(identifier).decode("utf-8"),
+        installation_row_id,
     )
     return shard_id
 
@@ -268,11 +279,22 @@ async def test_fetch_page_gmail_n1_invariant_holds_at_service_level(
     monkeypatch.setattr(gmail_fetcher, "_open_gmail_client", fake_open)
 
     tid = await _seed_tenant(fresh_db)
-    await _seed_gmail_install(fresh_db, tenant_id=tid)
+    installation_row_id = await _seed_gmail_install(
+        fresh_db,
+        tenant_id=tid,
+    )
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
-    await _seed_source_run(fresh_db, run_id=run_id, tenant_id=tid)
+    await _seed_source_run(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        installation_row_id=installation_row_id,
+    )
     shard_id = await _seed_gmail_shard(
-        fresh_db, run_id=run_id, tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        installation_row_id=installation_row_id,
     )
     await _emit_shard_requested(
         fresh_db, shard_id=shard_id, run_id=run_id, tenant_id=tid,
@@ -379,11 +401,22 @@ async def test_fetch_page_gmail_runs_to_completion_in_service(
     monkeypatch.setattr(gmail_fetcher, "_open_gmail_client", fake_open)
 
     tid = await _seed_tenant(fresh_db)
-    await _seed_gmail_install(fresh_db, tenant_id=tid)
+    installation_row_id = await _seed_gmail_install(
+        fresh_db,
+        tenant_id=tid,
+    )
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
-    await _seed_source_run(fresh_db, run_id=run_id, tenant_id=tid)
+    await _seed_source_run(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        installation_row_id=installation_row_id,
+    )
     shard_id = await _seed_gmail_shard(
-        fresh_db, run_id=run_id, tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        installation_row_id=installation_row_id,
     )
     await _emit_shard_requested(
         fresh_db, shard_id=shard_id, run_id=run_id, tenant_id=tid,

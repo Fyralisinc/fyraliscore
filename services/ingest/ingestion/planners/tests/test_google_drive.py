@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_planner
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.google_drive import (
     SHARD_KIND_FILES,
@@ -26,7 +26,7 @@ def _ctx(targets):
 
 
 async def test_dispatch_registered():
-    assert PLANNER_DISPATCH["google_drive"] is plan_shards_google_drive
+    assert resolve_planner("google_drive") is plan_shards_google_drive
 
 
 async def test_one_shard_per_active_target():

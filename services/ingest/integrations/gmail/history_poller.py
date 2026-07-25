@@ -25,8 +25,8 @@ from lib.shared.tenant_context import bind_tenant
 from services.ingest.integrations.gmail.client import (
     GmailClient,
     GoogleApiError,
-    GoogleHttpClient,
     GoogleRateLimited,
+    build_google_http_client,
 )
 from services.ingest.integrations.gmail.dwd import get_minter
 from services.ingest.integrations.gmail.fetcher import drain_mailbox_history
@@ -78,7 +78,11 @@ async def poll_one(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
     gmail_installation_id: UUID = row["gmail_installation_id"]
     email = row["email_address"]
     minter = get_minter()
-    async with GoogleHttpClient(minter) as http:
+    async with build_google_http_client(
+        minter,
+        tenant_id=str(tenant_id),
+        installation_id=str(gmail_installation_id),
+    ) as http:
         gmail = GmailClient(http)
         try:
             await drain_mailbox_history(

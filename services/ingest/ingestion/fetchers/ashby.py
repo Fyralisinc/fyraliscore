@@ -48,8 +48,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from lib.shared.errors import AshbyApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -154,23 +153,12 @@ async def fetch_page_ashby(
 
     client, close = await _open_ashby_client(install)
     try:
-        try:
-            rows, next_cursor, next_sync_token = await client.list_entities(
-                entity_type,
-                cursor=cur.cursor,
-                sync_token=cur.sync_token,
-                limit=_page_size(),
-            )
-        except AshbyApiError as exc:
-            code = (exc.context or {}).get("code") or getattr(exc, "_code", None)
-            if code == "ashby_api_rate_limited":
-                log.info("ashby_backfill_rate_limited",
-                         extra={"entity_type": entity_type})
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        rows, next_cursor, next_sync_token = await client.list_entities(
+            entity_type,
+            cursor=cur.cursor,
+            sync_token=cur.sync_token,
+            limit=_page_size(),
+        )
 
         records: list[dict[str, Any]] = []
         for row in rows:
@@ -203,7 +191,6 @@ async def fetch_page_ashby(
         await close()
 
 
-FETCHER_DISPATCH["ashby"] = fetch_page_ashby
 
 
 __all__ = [

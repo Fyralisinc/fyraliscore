@@ -12,7 +12,7 @@ The fix is ADDITIVE: `_parse_transactions_page` reads `items` + `next_cursor`
 (real shape) and recognizes a null/absent `next_cursor` as terminal, while
 `list_transactions` follows the cursor across pages when one is present — and
 still serves the legacy offset/`total` single-page shape (the synthetic mock
-spammer) unchanged as a fallback. Verified against developer.brex.com
+Provider Lab) unchanged as a fallback. Verified against developer.brex.com
 (Transactions API + Pagination docs).
 """
 from __future__ import annotations

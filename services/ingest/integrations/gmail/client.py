@@ -6,10 +6,11 @@ small and the call sites async-friendly.
 
 Each call:
   1. Asks the DwdTokenMinter for an impersonated bearer token.
-  2. Issues the request with `Authorization: Bearer <token>`.
+  2. Issues every HTTP attempt through ProviderTransport with
+     `Authorization: Bearer <token>`.
   3. On 401, invalidates the cached token and retries once.
-  4. On 429 / 5xx, raises a typed error carrying the suggested
-     retry_after (callers propagate to backoff state machines).
+  4. Classifies 429/quota, timeout, transport, and 5xx outcomes for the
+     transport's distributed cooldown and bounded retry policy.
 
 Scope strings:
   GMAIL_METADATA_SCOPE  — gmail.metadata (headers only)
@@ -19,13 +20,27 @@ Scope strings:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import httpx
 
 from lib.shared.errors import CompanyOSError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
 
 from services.ingest.integrations.gmail.dwd import DwdTokenMinter
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 
 
 GMAIL_METADATA_SCOPE = "https://www.googleapis.com/auth/gmail.metadata"
@@ -70,10 +85,39 @@ class GoogleHttpClient:
         minter: DwdTokenMinter,
         *,
         http_client: httpx.AsyncClient | None = None,
+        source: str = "gmail",
+        tenant_id: str | None = None,
+        installation_id: str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        quota_dimensions: Mapping[str, str] | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._minter = minter
         self._client = http_client
         self._owns_client = http_client is None
+        self._source = source
+        self._tenant_id = tenant_id
+        self._installation_id = installation_id
+        self._quota_dimensions = dict(quota_dimensions or {})
+        self._require_tenant_installation = require_tenant_installation
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=http_client is not None,
+        )
+        self._provider = ProviderRequestBinding(
+            source=source,
+            tenant_id=tenant_id,
+            installation_id=installation_id,
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     async def __aenter__(self) -> "GoogleHttpClient":
         if self._client is None:
@@ -94,18 +138,39 @@ class GoogleHttpClient:
         scopes: Iterable[str],
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        operation_id: str = "api.request",
+        source: str | None = None,
+        tenant_id: str | None = None,
+        installation_id: str | None = None,
     ) -> dict[str, Any]:
         scopes_t = tuple(scopes)
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=30.0)
         for attempt in (1, 2):
-            token = await self._minter.mint(user_email=user_email, scopes=list(scopes_t))
+            token = await self._minter.mint(
+                user_email=user_email,
+                scopes=list(scopes_t),
+                source=source or self._source,
+                tenant_id=tenant_id or self._tenant_id,
+                installation_id=installation_id or self._installation_id,
+                quota_dimensions=self._quota_dimensions,
+                require_tenant_installation=self._require_tenant_installation,
+            )
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
             }
-            resp = await self._client.request(
-                method, url, params=params, json=json_body, headers=headers,
+            resp = await self._request_attempt(
+                method,
+                url,
+                operation_id=operation_id,
+                headers=headers,
+                params=params,
+                json_body=json_body,
+                source=source,
+                tenant_id=tenant_id,
+                installation_id=installation_id,
+                user_email=user_email,
             )
             if resp.status_code == 401 and attempt == 1:
                 # Token may have been revoked or rotated — drop the cache and retry.
@@ -122,6 +187,10 @@ class GoogleHttpClient:
         user_email: str,
         scopes: Iterable[str],
         params: dict[str, Any] | None = None,
+        operation_id: str = "api.request_bytes",
+        source: str | None = None,
+        tenant_id: str | None = None,
+        installation_id: str | None = None,
     ) -> bytes:
         """Like `request`, but returns the raw response body bytes instead of
         parsed JSON — for endpoints that return non-JSON content (Drive's
@@ -131,10 +200,26 @@ class GoogleHttpClient:
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=30.0)
         for attempt in (1, 2):
-            token = await self._minter.mint(user_email=user_email, scopes=list(scopes_t))
+            token = await self._minter.mint(
+                user_email=user_email,
+                scopes=list(scopes_t),
+                source=source or self._source,
+                tenant_id=tenant_id or self._tenant_id,
+                installation_id=installation_id or self._installation_id,
+                quota_dimensions=self._quota_dimensions,
+                require_tenant_installation=self._require_tenant_installation,
+            )
             headers = {"Authorization": f"Bearer {token}"}
-            resp = await self._client.request(
-                method, url, params=params, headers=headers,
+            resp = await self._request_attempt(
+                method,
+                url,
+                operation_id=operation_id,
+                headers=headers,
+                params=params,
+                source=source,
+                tenant_id=tenant_id,
+                installation_id=installation_id,
+                user_email=user_email,
             )
             if resp.status_code == 401 and attempt == 1:
                 self._minter.invalidate(user_email=user_email, scopes=list(scopes_t))
@@ -143,6 +228,130 @@ class GoogleHttpClient:
                 return resp.content
             self._raise_for_error(resp)
         raise GoogleApiError("unreachable: retry loop fell through")
+
+    async def _request_attempt(
+        self,
+        method: str,
+        url: str,
+        *,
+        operation_id: str,
+        headers: dict[str, str],
+        params: dict[str, Any] | None,
+        json_body: dict[str, Any] | None = None,
+        source: str | None,
+        tenant_id: str | None,
+        installation_id: str | None,
+        user_email: str,
+    ) -> httpx.Response:
+        if self._client is None:  # pragma: no cover - caller initializes it
+            self._client = httpx.AsyncClient(timeout=30.0)
+
+        async def _once() -> httpx.Response:
+            assert self._client is not None
+            try:
+                response = await self._client.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    headers=headers,
+                )
+            except httpx.TimeoutException as exc:
+                raise ProviderTimeoutError(
+                    "Google request timed out",
+                    source=source or self._source,
+                    operation=operation_id,
+                    error_type=type(exc).__name__,
+                ) from exc
+            except httpx.TransportError as exc:
+                raise ProviderTransientError(
+                    "Google transport error",
+                    source=source or self._source,
+                    operation=operation_id,
+                    error_type=type(exc).__name__,
+                ) from exc
+
+            self._raise_transport_outcome(
+                response,
+                source=source or self._source,
+                operation=operation_id,
+            )
+            return response
+
+        return await self._provider.execute(
+            operation_id,
+            _once,
+            source=source,
+            tenant_id=tenant_id,
+            installation_id=installation_id,
+            quota_dimensions={
+                **self._quota_dimensions,
+                "user": user_email,
+            },
+        )
+
+    @staticmethod
+    def _raise_transport_outcome(
+        resp: httpx.Response,
+        *,
+        source: str,
+        operation: str,
+    ) -> None:
+        if resp.status_code == 429:
+            raise ProviderRateLimited(
+                "Google rate limit",
+                retry_after_seconds=parse_retry_after(
+                    resp.headers.get("Retry-After"),
+                ),
+                status_code=429,
+                header_parser_id="http.retry_after",
+                source=source,
+                operation=operation,
+            )
+        if resp.status_code == 403:
+            try:
+                payload = resp.json()
+            except ValueError:
+                payload = {}
+            reason = (
+                (payload.get("error") or {})
+                .get("errors", [{}])[0]
+                .get("reason", "")
+                if isinstance(payload, dict)
+                else ""
+            )
+            if reason in {
+                "quotaExceeded",
+                "userRateLimitExceeded",
+                "rateLimitExceeded",
+            }:
+                raise ProviderRateLimited(
+                    f"Google quota: {reason}",
+                    retry_after_seconds=parse_retry_after(
+                        resp.headers.get("Retry-After"),
+                    ),
+                    status_code=403,
+                    header_parser_id="http.retry_after",
+                    source=source,
+                    operation=operation,
+                )
+        if resp.status_code in {500, 502, 503, 504}:
+            retry_after = parse_retry_after(resp.headers.get("Retry-After"))
+            if retry_after is not None:
+                raise ProviderRateLimited(
+                    "Google service cooldown",
+                    retry_after_seconds=retry_after,
+                    status_code=resp.status_code,
+                    header_parser_id="http.retry_after",
+                    source=source,
+                    operation=operation,
+                )
+            raise ProviderTransientError(
+                f"Google returned {resp.status_code}",
+                source=source,
+                operation=operation,
+                http_status=resp.status_code,
+            )
 
     @classmethod
     def _handle_response(cls, resp: httpx.Response) -> dict[str, Any]:
@@ -186,7 +395,78 @@ class GoogleHttpClient:
         raise GoogleApiError(
             f"google api error: status={resp.status_code} body={resp.text[:200]!r}",
             status=resp.status_code,
-        )
+            )
+
+
+def build_google_http_client(
+    minter: DwdTokenMinter,
+    *,
+    tenant_id: str,
+    installation_id: str,
+    source: str = "gmail",
+    http_client: httpx.AsyncClient | None = None,
+) -> GoogleHttpClient:
+    """Build the production-bound Google client for one exact installation."""
+
+    from services.ingest.integrations.provider_transport_runtime import (
+        get_provider_transport_runtime,
+    )
+
+    runtime = get_provider_transport_runtime()
+    return GoogleHttpClient(
+        minter,
+        http_client=http_client,
+        source=source,
+        tenant_id=tenant_id,
+        installation_id=installation_id,
+        provider_transport=(
+            runtime.transport if runtime is not None else None
+        ),
+        quota_resolver=(
+            runtime.quota_resolver if runtime is not None else None
+        ),
+        allow_unlimited_local=runtime is None,
+    )
+
+
+def build_google_onboarding_http_client(
+    minter: DwdTokenMinter,
+    *,
+    tenant_id: str,
+    source: str = "gmail",
+    quota_dimensions: Mapping[str, str] | None = None,
+    http_client: httpx.AsyncClient | None = None,
+) -> GoogleHttpClient:
+    """Build a tenant-bound client before a durable installation exists.
+
+    Onboarding probes are real provider traffic, but fabricating a row id such
+    as ``preflight:<domain>`` would make audit and quota attribution lie.  The
+    transport context therefore carries the authenticated tenant and an
+    explicit ``installation_id=None``. Provider quota policies for onboarding
+    operations must use tenant/app/user/provider dimensions, not installation.
+    """
+
+    from services.ingest.integrations.provider_transport_runtime import (
+        get_provider_transport_runtime,
+    )
+
+    runtime = get_provider_transport_runtime()
+    return GoogleHttpClient(
+        minter,
+        http_client=http_client,
+        source=source,
+        tenant_id=tenant_id,
+        installation_id=None,
+        provider_transport=(
+            runtime.transport if runtime is not None else None
+        ),
+        quota_resolver=(
+            runtime.quota_resolver if runtime is not None else None
+        ),
+        allow_unlimited_local=runtime is None,
+        quota_dimensions=quota_dimensions,
+        require_tenant_installation=False,
+    )
 
 
 # =====================================================================
@@ -196,7 +476,7 @@ class GoogleHttpClient:
 
 class GmailClient:
     """Operations against gmail.googleapis.com (base URL resolved via
-    lib.integrations.endpoints so it can be pointed at a local spammer)."""
+    lib.integrations.endpoints so it can be pointed at Provider Lab)."""
 
     def __init__(self, http: GoogleHttpClient, *, base_url: str | None = None) -> None:
         from lib.integrations.endpoints import endpoint
@@ -220,6 +500,7 @@ class GmailClient:
             user_email=user_email,
             scopes=(scope,),
             json_body=body,
+            operation_id="watch.create",
         )
 
     async def stop(self, *, user_email: str, scope: str) -> None:
@@ -228,6 +509,7 @@ class GmailClient:
             f"{self._base}/users/me/stop",
             user_email=user_email,
             scopes=(scope,),
+            operation_id="watch.stop",
         )
 
     async def messages_list(
@@ -264,6 +546,7 @@ class GmailClient:
             user_email=user_email,
             scopes=(scope,),
             params=params,
+            operation_id="messages.list",
         )
 
     async def history_list(
@@ -287,6 +570,7 @@ class GmailClient:
             user_email=user_email,
             scopes=(scope,),
             params=params,
+            operation_id="history.list",
         )
 
     async def get_message(
@@ -304,6 +588,7 @@ class GmailClient:
             user_email=user_email,
             scopes=(scope,),
             params={"format": format_},
+            operation_id="messages.get",
         )
 
     async def get_profile(self, *, user_email: str, scope: str) -> dict[str, Any]:
@@ -312,6 +597,7 @@ class GmailClient:
             f"{self._base}/users/me/profile",
             user_email=user_email,
             scopes=(scope,),
+            operation_id="profile.get",
         )
 
 
@@ -344,6 +630,7 @@ class DirectoryClient:
             user_email=self._admin,
             scopes=(DIRECTORY_USER_SCOPE,),
             params=params,
+            operation_id="directory.users.list",
         )
         return PagedResult(
             items=body.get("users") or [],
@@ -362,6 +649,7 @@ class DirectoryClient:
             user_email=self._admin,
             scopes=(DIRECTORY_GROUP_SCOPE,),
             params=params,
+            operation_id="directory.groups.list",
         )
         return PagedResult(
             items=body.get("groups") or [],
@@ -380,6 +668,7 @@ class DirectoryClient:
             user_email=self._admin,
             scopes=(DIRECTORY_GROUP_SCOPE,),
             params=params,
+            operation_id="directory.group_members.list",
         )
         return PagedResult(
             items=body.get("members") or [],
@@ -393,6 +682,7 @@ class DirectoryClient:
             user_email=self._admin,
             scopes=(DIRECTORY_ORGUNIT_SCOPE,),
             params={"type": "all"},
+            operation_id="directory.org_units.list",
         )
         return body.get("organizationUnits") or []
 
@@ -417,6 +707,7 @@ class DirectoryClient:
             user_email=self._admin,
             scopes=(DIRECTORY_USER_SCOPE,),
             params=params,
+            operation_id="directory.users_by_org_unit.list",
         )
         return PagedResult(
             items=body.get("users") or [],
@@ -437,4 +728,6 @@ __all__ = [
     "GoogleHttpClient",
     "GoogleRateLimited",
     "PagedResult",
+    "build_google_http_client",
+    "build_google_onboarding_http_client",
 ]

@@ -4,10 +4,10 @@
 
 Mercury is a banking REST API (Bearer API token) with BOTH a historical query
 surface (GET /accounts, /account/{id}/transactions) and a live push surface
-(HMAC-signed webhooks). This sandbox stands up a REAL local mock of the Mercury
-v1 endpoints and drives the REAL pipeline against it:
+(HMAC-signed webhooks). This sandbox stands up the canonical local Provider Lab
+implementation of the Mercury v1 endpoints and drives the REAL pipeline:
 
-    MercuryClient (real httpx, spammer auth) -> fetch_page_mercury (real cursor +
+    MercuryClient (real httpx, Provider Lab auth) -> fetch_page_mercury (real cursor +
     fan-out) -> handle_mercury_transaction (real ObservationDraft) -> ingest()
     (real observation insert + dedup)
 
@@ -153,13 +153,15 @@ async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
 
 
 async def run(args) -> int:
-    from services.ingest.synthetic.mock_servers.mercury import start_mock_mercury
+    from services.ingest.synthetic.provider_lab.server import start_provider_lab
 
     fixtures = _build_fixtures()
-    server, base_url = start_mock_mercury(fixtures)
-    os.environ["SYNTHETIC_SOURCE_API_BASE"] = base_url
-    _hr("MOCK SERVER")
-    print(f"  Mercury API base : {base_url} (served under /mercury via spammer routing)")
+    server = start_provider_lab({"mercury": [fixtures]})
+    base_url = server.url("mercury")
+    os.environ["PROVIDER_LAB_URL"] = server.base_url
+    os.environ["MERCURY_API_BASE_URL"] = base_url
+    _hr("PROVIDER LAB")
+    print(f"  Mercury API base : {base_url} (explicit local override)")
 
     admin_url = os.environ.get("SANDBOX_ADMIN_URL", _DEFAULT_ADMIN_URL)
     provided_url = os.environ.get("DATABASE_URL")
@@ -232,8 +234,13 @@ async def run(args) -> int:
         _hr("PLAN (planner over the loader SQL)")
         from services.ingest.ingestion.planners.context import PlannerContext
         from services.ingest.ingestion.planners.mercury import plan_shards_mercury
-        from services.ingest.ingestion.workflows.source_onboarding import _LOAD_MERCURY_INSTALL_SQL
-        install_row = await pool.fetchrow(_LOAD_MERCURY_INSTALL_SQL, _TENANT_ID)
+        from services.ingest.ingestion.installations import load_source_installation
+        install_row = await load_source_installation(
+            pool,
+            source="mercury",
+            tenant_id=_TENANT_ID,
+            installation_id=install_id,
+        )
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_mercury(ctx)
         print(f"  planned {len(shards)} shard(s): "
@@ -258,6 +265,12 @@ async def run(args) -> int:
 
         # 6. Incremental: warm-start from the high-water -> delta (t-1001 fails).
         _hr("INCREMENTAL (status transition: sent -> failed)")
+        # Mercury applies ``start`` as a timestamp filter over the account's
+        # current transaction collection. Mutate that collection before the
+        # warm poll instead of relying on the retired mock server's synthetic
+        # "any start means delta" branch.
+        fixtures[_ACCOUNT]["transactions"][0] = fixtures[_ACCOUNT]["delta"][0]
+        server.replace_fixtures("mercury", [fixtures])
         hw = await pool.fetchval(
             "SELECT max(content->>'created_at') FROM observations "
             "WHERE tenant_id=$1 AND content->>'object_type'='transaction'", _TENANT_ID,

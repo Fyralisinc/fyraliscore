@@ -10,6 +10,7 @@ import respx
 from cryptography.fernet import Fernet
 
 from lib.shared.ids import uuid7
+from lib.shared.provider_transport import RetryLater, RetryReason
 from lib.shared.secrets import FernetSecretStore
 from services.ingest.integrations.slack.client import SlackApiError, SlackClient
 
@@ -125,7 +126,7 @@ async def test_429_retry_after_honored(fresh_db: asyncpg.Pool) -> None:
 
 
 async def test_429_budget_exhausted_raises(fresh_db: asyncpg.Pool) -> None:
-    """Continuous 429s eventually surface as SlackApiError."""
+    """Continuous 429s park the operation for durable retry."""
     store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
     tenant, install = await _seed_install(fresh_db, store)
     client = SlackClient(
@@ -143,11 +144,11 @@ async def test_429_budget_exhausted_raises(fresh_db: asyncpg.Pool) -> None:
         router.get("/api/users.info").respond(
             429, headers={"Retry-After": "0"},
         )
-        with pytest.raises(SlackApiError) as exc_info:
+        with pytest.raises(RetryLater) as exc_info:
             await client.users_info("U1")
         await client.aclose()
 
-    assert "429" in exc_info.value.message
+    assert exc_info.value.reason is RetryReason.RATE_LIMIT
 
 
 async def test_slack_ok_false_raises_api_error(fresh_db: asyncpg.Pool) -> None:

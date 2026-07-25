@@ -81,6 +81,7 @@ from services.ingest.ingestion.payload_validation import (
 )
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingest.ingestion.raw_tier.s3 import S3Client
+from services.ingest.source_contract.runtime import validate_runtime_bindings
 
 
 log = logging.getLogger(__name__)
@@ -183,6 +184,8 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
 
     This function NEVER touches asyncpg / a Postgres pool. Path B.
     """
+    validate_runtime_bindings()
+
     # Construct WITHOUT topic so we can call subscribe(...) below
     # with an optional listener. Constructor-subscription doesn't
     # support listeners (the listener arg lives on subscribe()).

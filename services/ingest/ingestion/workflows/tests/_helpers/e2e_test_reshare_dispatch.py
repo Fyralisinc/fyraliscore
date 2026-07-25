@@ -13,20 +13,22 @@ schema-first discipline).
 """
 from __future__ import annotations
 
+import atexit
+from contextlib import ExitStack
 from typing import Any
 
 import asyncpg
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.fetchers import FetchResult
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
 
 
 from services.ingest.ingestion.planners.context import PlannerContext
+from services.ingest.source_contract.runtime import override_history_bindings
 
 
 async def _planner(ctx: PlannerContext) -> list[Shard]:
@@ -93,7 +95,12 @@ async def _reshare_then_clean_reconciler(
     )
 
 
-# Install all three dispatch overrides at import time.
-PLANNER_DISPATCH["slack"] = _planner
-FETCHER_DISPATCH["slack"] = _fetcher
-RECONCILER_DISPATCH["slack"] = _reshare_then_clean_reconciler
+_OVERRIDE_SCOPE = ExitStack()
+_OVERRIDE_SCOPE.enter_context(
+    override_history_bindings(
+        planners={"slack": _planner},
+        fetchers={"slack": _fetcher},
+        reconcilers={"slack": _reshare_then_clean_reconciler},
+    )
+)
+atexit.register(_OVERRIDE_SCOPE.close)

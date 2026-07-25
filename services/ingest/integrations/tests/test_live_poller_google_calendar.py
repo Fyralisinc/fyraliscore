@@ -81,7 +81,7 @@ def _stub_fetcher(monkeypatch, pages: list[FetchResult], *, captured: dict) -> N
 
     async def _fetch(install, shard_identifier, cursor):
         captured["shard_identifier"] = shard_identifier
-        captured["scope"] = install.get("scope")
+        captured["install"] = dict(install)
         i = calls["i"]
         calls["i"] += 1
         return pages[min(i, len(pages) - 1)]
@@ -92,7 +92,7 @@ def _stub_fetcher(monkeypatch, pages: list[FetchResult], *, captured: dict) -> N
 async def test_poll_drains_and_advances_sync_token(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tenant, _install, cal = await _seed_calendar(fresh_db, sync_token="sync-0")
+    tenant, install, cal = await _seed_calendar(fresh_db, sync_token="sync-0")
 
     recorder: list = []
     _stub_ingest(monkeypatch, recorder=recorder)
@@ -113,7 +113,12 @@ async def test_poll_drains_and_advances_sync_token(
     # Incremental warm-start: the shard carried the stored sync_token + scope.
     assert captured["shard_identifier"]["sync_token"] == "sync-0"
     assert captured["shard_identifier"]["calendar_id"] == "alice@acme.com"
-    assert captured["scope"] == "calendar.readonly"
+    assert captured["install"] == {
+        "id": install,
+        "tenant_id": tenant,
+        "scope": "calendar.readonly",
+    }
+    assert captured["shard_identifier"]["installation_id"] == str(install)
     # Both events ingested on the live channel.
     assert [c[0] for c in recorder] == ["google_calendar:event", "google_calendar:event"]
 

@@ -47,7 +47,7 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict
 
 from lib.shared.errors import RampApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -190,18 +190,9 @@ async def fetch_page_ramp(
 
     client, close = await _open_ramp_client(install)
     try:
-        try:
-            rows, next_url = await _fetch_entity_page(client, entity_type, cur)
-        except RampApiError as exc:
-            code = (exc.context or {}).get("code") or getattr(exc, "_code", None)
-            if code == "ramp_api_rate_limited":
-                log.info("ramp_backfill_rate_limited",
-                         extra={"entity_type": entity_type})
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        # RetryLater must reach shard_fetch so it persists next_attempt_at
+        # instead of hot-looping an empty page with an unchanged cursor.
+        rows, next_url = await _fetch_entity_page(client, entity_type, cur)
 
         records: list[dict[str, Any]] = []
         for row in rows:
@@ -230,7 +221,6 @@ async def fetch_page_ramp(
         await close()
 
 
-FETCHER_DISPATCH["ramp"] = fetch_page_ramp
 
 
 __all__ = [

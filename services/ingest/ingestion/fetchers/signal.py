@@ -50,7 +50,7 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict
 
 from lib.shared.errors import SignalApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 from services.ingest.integrations.signal.records import build_message_record
 
 
@@ -196,7 +196,6 @@ async def fetch_page_signal(
         await close()
 
 
-FETCHER_DISPATCH["signal"] = fetch_page_signal
 
 
 __all__ = [

@@ -25,9 +25,7 @@ from typing import Any
 from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 from services.ingest.integrations.signal.records import (
     CHANNEL,
@@ -42,7 +40,6 @@ def _truncate(text: str, limit: int = 600) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-@register(CHANNEL)
 async def handle_signal(
     payload: dict[str, Any], headers: dict[str, str],
 ) -> ObservationDraft:
@@ -101,7 +98,6 @@ async def handle_signal(
     )
 
 
-CHANNEL_TRUST_MAP.setdefault(CHANNEL, _TRUST)
 
 
 __all__ = ["handle_signal"]

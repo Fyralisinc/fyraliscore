@@ -58,7 +58,7 @@ class WatchSpec:
     id_cols: tuple[str, ...]          # columns identifying the resource
     push_path: str                    # "/webhooks/google_calendar/push"
     # Per-source callables (close over the source's client + fetcher):
-    make_client: Callable[[str], Awaitable[tuple[Any, Callable[[], Awaitable[None]]]]]
+    make_client: Callable[..., Awaitable[tuple[Any, Callable[[], Awaitable[None]]]]]
     do_watch: Callable[..., Awaitable[dict[str, Any]]]
     do_stop: Callable[..., Awaitable[None]]
     fetcher: Callable[..., Awaitable[Any]]
@@ -102,10 +102,11 @@ async def _lease_due_watches(
         f"""
         SELECT r.id, r.tenant_id, {cols}, r.{spec.cursor_col} AS cursor_token,
                r.watch_channel_id, r.watch_resource_id,
-               (SELECT scope FROM {spec.install_table}
-                 WHERE id = r.{spec.install_fk}) AS scope
+               r.{spec.install_fk} AS installation_id, gi.scope
           FROM {spec.table} r
-          JOIN {spec.install_table} gi ON gi.id = r.{spec.install_fk}
+          JOIN {spec.install_table} gi
+            ON gi.id = r.{spec.install_fk}
+           AND gi.tenant_id = r.tenant_id
          WHERE r.state = 'active'
            AND r.{spec.cursor_col} IS NOT NULL
            AND gi.disabled_at IS NULL
@@ -132,7 +133,11 @@ async def register_watch(
     token = secrets.token_urlsafe(24)
     scope = row["scope"]
 
-    client, close = await spec.make_client(scope)
+    client, close = await spec.make_client(
+        scope,
+        tenant_id=tenant_id,
+        installation_id=row["installation_id"],
+    )
     try:
         # Best-effort teardown of the prior channel.
         if row["watch_channel_id"] and row["watch_resource_id"]:
@@ -249,10 +254,12 @@ async def resolve_push(
         row = await conn.fetchrow(
             f"""
             SELECT r.id, r.tenant_id, {cols}, r.{spec.cursor_col} AS cursor_token,
-                   r.watch_token,
-                   (SELECT scope FROM {spec.install_table}
-                     WHERE id = r.{spec.install_fk}) AS scope
+                   r.watch_token, r.{spec.install_fk} AS installation_id,
+                   gi.scope
               FROM {spec.table} r
+              JOIN {spec.install_table} gi
+                ON gi.id = r.{spec.install_fk}
+               AND gi.tenant_id = r.tenant_id
              WHERE r.watch_channel_id = $1
             """,
             channel_id,
@@ -275,6 +282,7 @@ async def drain_push(
     ingested, new_token = await drain_live(
         pool=pool,
         tenant_id=tenant_id,
+        installation_id=row["installation_id"],
         scope=row["scope"],
         channel=spec.channel,
         fetcher=spec.fetcher,

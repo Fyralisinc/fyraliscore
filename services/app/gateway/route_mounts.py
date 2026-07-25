@@ -1,12 +1,18 @@
 """Gateway route mounting orchestration."""
 from __future__ import annotations
 
-from importlib import import_module
-
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 
 from services.app.gateway.logging_config import get_logger
 from services.app.gateway.settings import GatewaySettings
+from services.ingest.source_contract.catalog import (
+    DEDICATED_INGRESS_DEFINITIONS,
+    SOURCE_DEFINITIONS,
+)
+from services.ingest.source_contract.runtime import (
+    resolve_callable_reference,
+    validate_runtime_bindings,
+)
 
 
 log = get_logger("gateway")
@@ -38,7 +44,6 @@ def register_gateway_routes(
     )
     from services.app.gateway.dead_letter_router import build_dead_letter_admin_router
     from services.app.gateway.extension_router import build_extension_router
-    from services.app.gateway.facebook_pages_router import build_facebook_pages_router
     from services.app.gateway.map_routes import register_map_routes
     from services.app.gateway.recommendations_router import (
         build_recommendations_router,
@@ -47,8 +52,7 @@ def register_gateway_routes(
     from services.app.gateway.structure_router import build_structure_router
     from services.app.gateway.substrate_router import build_substrate_router
     from services.app.gateway.today_core_router import build_today_core_router
-    from services.app.gateway.whatsapp_router import build_whatsapp_router
-
+    _mount_dedicated_ingress_routers(app, settings=settings)
     app.include_router(build_core_router())
     app.include_router(build_clarifications_router())
     app.include_router(build_substrate_router())
@@ -63,18 +67,54 @@ def register_gateway_routes(
         from services.app.gateway.document_ingest_router import build_document_ingest_router
 
         app.include_router(build_document_ingest_router())
-    app.include_router(
-        build_whatsapp_router(
-            debug_endpoints_enabled=settings.debug_endpoints_enabled,
-        )
-    )
-    app.include_router(build_facebook_pages_router())
     app.include_router(build_sage_internal_router())
     app.include_router(build_recommendations_router())
     app.include_router(build_structure_router())
     app.include_router(build_today_core_router())
     app.include_router(build_extension_router())
     register_map_routes(app)
+
+
+def _mount_dedicated_ingress_routers(
+    app: FastAPI,
+    *,
+    settings: GatewaySettings,
+) -> None:
+    """Mount each contract-declared dedicated ingress router exactly once."""
+
+    by_factory: dict[str, list] = {}
+    for ingress in DEDICATED_INGRESS_DEFINITIONS:
+        by_factory.setdefault(ingress.router_factory_binding, []).append(ingress)
+
+    for factory_binding, definitions in by_factory.items():
+        factory = resolve_callable_reference(factory_binding)
+        accepts_debug = definitions[0].router_factory_accepts_debug_endpoints
+        router = (
+            factory(debug_endpoints_enabled=settings.debug_endpoints_enabled)
+            if accepts_debug
+            else factory()
+        )
+        if not isinstance(router, APIRouter):
+            raise RuntimeError(
+                f"dedicated ingress router factory {factory_binding!r} "
+                "did not return APIRouter"
+            )
+
+        mounted_routes = {
+            (str(getattr(route, "path", "")), method)
+            for route in router.routes
+            for method in (getattr(route, "methods", None) or ())
+        }
+        for ingress in definitions:
+            for method in ingress.methods:
+                if (ingress.route_path, method) not in mounted_routes:
+                    raise RuntimeError(
+                        f"dedicated ingress {ingress.ingress_id!r} factory "
+                        f"{factory_binding!r} did not mount {method} "
+                        f"{ingress.route_path}"
+                    )
+
+        app.include_router(router)
 
 
 def mount_gateway_routes(
@@ -84,6 +124,8 @@ def mount_gateway_routes(
     emit_mount_logs: bool = True,
 ) -> None:
     """Mount all route families whose construction does not await lifespan."""
+    validate_runtime_bindings()
+
     settings = settings or getattr(app.state, "gateway_settings", None)
     if settings is None:
         settings = GatewaySettings.from_env()
@@ -142,7 +184,7 @@ def mount_gateway_routes(
             from services.app.gateway.finance_router import build_finance_router
 
             app.include_router(build_finance_router())
-        except Exception as exc:  # noqa: BLE001 - never block startup
+        except Exception as exc:  # noqa: BLE001 - report exact source contract gap
             log.error("finance_router_mount_failed", error=str(exc))
 
     if settings.slack_dm_panel_enabled:
@@ -160,47 +202,22 @@ def _mount_native_connect_routers(
     emit_mount_logs: bool,
 ) -> None:
     """Mount source-native connect routers that own table-backed finalizers."""
-    sources = (
-        "ashby",
-        "aws",
-        "brex",
-        "carta",
-        "deel",
-        "discord",
-        "figma",
-        "fireflies",
-        "facebook_pages",
-        "github",
-        "gmail",
-        "google_calendar",
-        "google_drive",
-        "grafana",
-        "gusto",
-        "hibob",
-        "jira",
-        "linkedin",
-        "mercury",
-        "miro",
-        "notion",
-        "quickbooks",
-        "ramp",
-        "signal",
-        "slack",
-        "telegram",
-        "whatsapp",
-    )
     mounted: list[str] = []
-    for source in sources:
+    for source in SOURCE_DEFINITIONS:
         try:
-            module = import_module(f"services.ingest.integrations.{source}.oauth")
-            app.include_router(module.router)
-            mounted.append(source)
-        except Exception as exc:  # noqa: BLE001 - never block startup
-            if emit_mount_logs:
-                log.error(
-                    "native_connect_router_mount_failed",
-                    source=source,
-                    error=str(exc),
-                )
+            router = resolve_callable_reference(source.connect_router_binding)
+        except Exception as exc:  # noqa: BLE001 - startup must identify source
+            raise RuntimeError(
+                f"canonical source {source.source_id!r} connect binding "
+                f"{source.connect_router_binding!r} is unavailable"
+            ) from exc
+        if not isinstance(router, APIRouter):
+            raise RuntimeError(
+                f"canonical source {source.source_id!r} connect binding "
+                f"{source.connect_router_binding!r} did not resolve to "
+                "APIRouter"
+            )
+        app.include_router(router)
+        mounted.append(source.source_id)
     if emit_mount_logs and mounted:
         log.info("native_connect_routers_mounted", sources=mounted)

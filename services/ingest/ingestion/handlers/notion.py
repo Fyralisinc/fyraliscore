@@ -24,9 +24,7 @@ from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -246,7 +244,6 @@ _OBJECT_SHAPERS = {
 }
 
 
-@register(_CHANNEL)
 async def handle_notion_object(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -269,7 +266,6 @@ async def handle_notion_object(
 # content.object_type + kind. Register the trust default so any code that
 # looks up source_channel → trust finds it (the handler also sets it
 # explicitly per draft).
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL, _TRUST)
 
 
 __all__ = ["handle_notion_object"]

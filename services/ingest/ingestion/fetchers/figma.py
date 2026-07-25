@@ -50,8 +50,7 @@ from uuid import UUID
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from services.ingest.integrations.figma.client import FigmaApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -362,23 +361,15 @@ async def fetch_page_figma(
                 cur.high_water_created = warm
             cur.seeded = True
 
-        try:
-            events, next_offset, total = await client.list_events(
-                file_key,
-                limit=_page_size(),
-                offset=cur.offset,
-                start=_iso_date(cur.incremental_floor),
-            )
-        except FigmaApiError as exc:
-            if (exc.context or {}).get("code") == "figma_api_rate_limited" or \
-               getattr(exc, "_code", None) == "figma_api_rate_limited":
-                log.info("figma_backfill_rate_limited",
-                         extra={"file_key": file_key})
-                return FetchResult(
-                    records=records, next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        # Provider cooldowns escape as RetryLater. ShardFetch persists the
+        # not-before timestamp and releases the lease; an empty unchanged page
+        # would violate the zero-progress invariant and hot-loop this shard.
+        events, next_offset, total = await client.list_events(
+            file_key,
+            limit=_page_size(),
+            offset=cur.offset,
+            start=_iso_date(cur.incremental_floor),
+        )
 
         for event in events:
             records.append({
@@ -407,7 +398,6 @@ async def fetch_page_figma(
         await close()
 
 
-FETCHER_DISPATCH["figma"] = fetch_page_figma
 
 
 __all__ = [

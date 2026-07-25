@@ -4,13 +4,19 @@ from __future__ import annotations
 import pytest
 
 from lib.shared.errors import CompanyOSError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
 from services.ingest.ingestion.fetchers import google_drive as gd
 from services.ingest.ingestion.fetchers.google_drive import (
+    GoogleDriveCursor,
     SHARD_KIND_FILES,
     fetch_page_google_drive,
 )
 from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
+from services.ingest.source_contract.runtime import resolve_fetcher
 
 
 pytestmark = pytest.mark.asyncio
@@ -121,7 +127,7 @@ async def _drain(monkeypatch, fake, shard, cursor=None):
 
 
 async def test_dispatch_registered():
-    assert FETCHER_DISPATCH["google_drive"] is fetch_page_google_drive
+    assert resolve_fetcher("google_drive") is fetch_page_google_drive
     assert resolve_channel("google_drive", "backfill") == "google_drive:file"
 
 
@@ -178,16 +184,50 @@ async def test_expired_token_reseeds_full_sync(monkeypatch):
     assert r.next_cursor["seeded"] is False
 
 
-async def test_rate_limit_preserves_cursor(monkeypatch):
-    # Patch the retry helper to a no-retry passthrough so the test doesn't sit
-    # through real backoff sleeps (same approach as the calendar fetcher test).
-    async def _no_retry(fn, retry_on, **kw):
-        return await fn()
-    monkeypatch.setattr(gd, "retry_with_backoff_on_429", _no_retry)
+@pytest.mark.parametrize("child_operation", ["files.export", "comments.list", "revisions.list"])
+async def test_child_hydration_retry_later_prevents_cursor_advance(
+    monkeypatch, child_operation,
+):
+    retry = RetryLater.after(
+        request_context=RequestContext(
+            source="google_drive",
+            operation=child_operation,
+            tenant_id="tenant-1",
+            installation_id="install-1",
+        ),
+        delay_seconds=60,
+        reason=RetryReason.RATE_LIMIT,
+    )
 
-    fake = _FakeDriveClient(rate_limit_always=True)
-    _patch(monkeypatch, fake)
-    # First call seeds (captures token) then hits a persistent 429 on list_files.
-    r = await fetch_page_google_drive(_FakeInst(), _shard(), None)
-    assert r.records == []
-    assert r.end_of_data is False
+    class _DeferredChild(_FakeDriveClient):
+        async def export_text(self, **kw):
+            if child_operation == "files.export":
+                raise retry
+            return await super().export_text(**kw)
+
+        async def list_comments(self, **kw):
+            if child_operation == "comments.list":
+                raise retry
+            return await super().list_comments(**kw)
+
+        async def list_revisions(self, **kw):
+            if child_operation == "revisions.list":
+                raise retry
+            return await super().list_revisions(**kw)
+
+    monkeypatch.setenv("GOOGLE_DRIVE_FETCH_COMMENTS", "true")
+    monkeypatch.setenv("GOOGLE_DRIVE_FETCH_REVISIONS", "true")
+    cursor = GoogleDriveCursor(
+        seeded=True,
+        start_page_token="spt-before",
+        page_token="page-before",
+        next_start_page_token="spt-before",
+    ).model_dump(mode="json")
+    original = dict(cursor)
+    _patch(monkeypatch, _DeferredChild())
+
+    with pytest.raises(RetryLater) as raised:
+        await fetch_page_google_drive(_FakeInst(), _shard(), cursor)
+
+    assert raised.value is retry
+    assert cursor == original

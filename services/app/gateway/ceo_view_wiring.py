@@ -189,30 +189,6 @@ def _include_conversation_router(
     app_.state.conversations = {"repo": conv_repo, "handler": probe_handler}
 
 
-def _include_push_ingress_routers(app_: FastAPI) -> None:
-    try:
-        from services.app.webhooks.gmail_pubsub import (
-            is_pubsub_configured,
-            router as _gmail_pubsub_router,
-        )
-
-        app_.include_router(_gmail_pubsub_router)
-        if is_pubsub_configured():
-            log.info("gmail_pubsub_ingress_mounted", configured=True)
-        else:
-            log.warning("gmail_pubsub_ingress_mounted_unconfigured", configured=False)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("gmail_pubsub_mount_failed", error=str(exc))
-
-    try:
-        from services.app.webhooks.google_push import router as _google_push_router
-
-        app_.include_router(_google_push_router)
-        log.info("google_push_ingress_mounted")
-    except Exception as exc:  # noqa: BLE001
-        log.warning("google_push_mount_failed", error=str(exc))
-
-
 def _include_google_admin_routers(app_: FastAPI) -> None:
     if not (
         os.environ.get("GMAIL_SERVICE_ACCOUNT_JSON_FILE")
@@ -315,7 +291,6 @@ async def configure_ceo_view(
     # Simulation authoring endpoints moved to the demo overlay, which contributes
     # the /simulation panel (router + slack_ui static) via its gateway extension
     # startup hook. Core no longer imports the `simulation` package.
-    _include_push_ingress_routers(app_)
     _include_google_admin_routers(app_)
     _include_debug_router(app_, settings=resolved_settings)
     _publish_ceo_view_state(app_, greeting=greeting, qry_handler=qry_handler)

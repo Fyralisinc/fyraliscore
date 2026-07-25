@@ -20,7 +20,7 @@ Content extraction (D8): Google-native docs are exported to text via
 so they use the shared client's `request_bytes`. Binary types are metadata-only.
 
 Base URL is resolved via `lib.integrations.endpoints.endpoint("google_drive_api")`
-so backfill can be pointed at a local spammer for tests — pure config.
+so backfill can be pointed at Provider Lab for tests through explicit config.
 """
 from __future__ import annotations
 
@@ -158,6 +158,7 @@ class GoogleDriveClient:
             user_email=user_email,
             scopes=(self._scope,),
             params=params,
+            operation_id="drives.list",
         )
 
     async def get_start_page_token(
@@ -174,6 +175,7 @@ class GoogleDriveClient:
             user_email=user_email,
             scopes=(self._scope,),
             params=params,
+            operation_id="changes.getStartPageToken",
         )
         token = body.get("startPageToken")
         if not isinstance(token, str) or not token:
@@ -218,6 +220,7 @@ class GoogleDriveClient:
             user_email=user_email,
             scopes=(self._scope,),
             params=params,
+            operation_id="files.list",
         )
 
     async def list_changes(
@@ -251,6 +254,7 @@ class GoogleDriveClient:
             user_email=user_email,
             scopes=(self._scope,),
             params=params,
+            operation_id="changes.list",
         )
 
     async def export_text(
@@ -281,7 +285,14 @@ class GoogleDriveClient:
             return None
 
         raw = await self._http.request_bytes(
-            "GET", url, user_email=user_email, scopes=(self._scope,), params=params,
+            "GET",
+            url,
+            user_email=user_email,
+            scopes=(self._scope,),
+            params=params,
+            operation_id=(
+                "files.export" if mime_type in _EXPORT_MIME else "files.get"
+            ),
         )
         if not raw:
             return None
@@ -315,6 +326,7 @@ class GoogleDriveClient:
             user_email=user_email,
             scopes=(self._scope,),
             params=params,
+            operation_id="comments.list",
         )
 
     async def list_revisions(
@@ -340,6 +352,7 @@ class GoogleDriveClient:
             user_email=user_email,
             scopes=(self._scope,),
             params=params,
+            operation_id="revisions.list",
         )
 
     async def has_changes_since(
@@ -396,6 +409,7 @@ class GoogleDriveClient:
             scopes=(self._scope,),
             params=params,
             json_body=body,
+            operation_id="changes.watch",
         )
 
     async def stop_channel(
@@ -408,6 +422,7 @@ class GoogleDriveClient:
             user_email=user_email,
             scopes=(self._scope,),
             json_body={"id": channel_id, "resourceId": resource_id},
+            operation_id="channels.stop",
         )
 
 

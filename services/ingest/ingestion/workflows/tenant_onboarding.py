@@ -13,12 +13,13 @@ all sources finish.
 RESPONSIBILITY (the two per-tick phases)
 ============================================================
 (a) **New-runs phase.** Consume `onboarding_run_created` signals
-    from the inbox `(tenant_onboarding, tenant_onboarding)`. Per
-    signal: load the run row, query active installs to determine
-    applicable sources, INSERT one `source_onboarding_runs` row per
-    source, emit one `source_onboarding_requested` signal per
-    source to M6.2's inbox `(source_onboarding, source_onboarding)`.
-    Mark the parent run status='running'.
+    from the inbox `(tenant_onboarding, tenant_onboarding)`. Each
+    signal identifies exactly one canonical historical source and one
+    Fyralis installation-row UUID. Validate that exact enabled row
+    belongs to the signal tenant/source, INSERT one
+    `source_onboarding_runs` row, and emit one
+    `source_onboarding_requested` signal. Mark the parent run
+    status='running'.
 
 (b) **Completion phase.** Consume `source_onboarding_completed`
     signals from the same inbox `(tenant_onboarding,
@@ -50,32 +51,19 @@ Emits from the orchestrator:
     consumption inbox (Bridge implementation is out of M6.1 scope).
 
 ============================================================
-SOURCE APPLICABILITY (the Phase 2 design moment)
+EXACT-INSTALLATION SEMANTICS (contract cutover)
 ============================================================
-Per the M6.1 Phase 2 design decision:
+The former tick-time "fan out every active source for this tenant"
+behavior was ambiguous for tenants with two installations of the same
+source and duplicated unrelated backfills whenever another source was
+connected. Contract-only onboarding deliberately uses one
+trigger → one run → one source → one exact installation UUID.
 
-  `provider_installations` (for slack/github/discord) +
-  `gmail_installations` (for gmail), filtered to ACTIVE rows at
-  orchestrator-tick-time, IS the source of truth for which sources
-  apply to a tenant's onboarding.
-
-  `onboarding_runs.sources_enabled[]` is a SNAPSHOT artifact for
-  audit, NOT a controlling input.
-
-Rationale: provider_installations reflects current reality. If a
-tenant installs slack at t=0 (trigger fires), then installs gmail
-at t=5s (another trigger fires), then the orchestrator picks up the
-slack-trigger run at t=10s, it sees BOTH active installs. The slack
-trigger's run fans out to both sources. The gmail trigger's run
-(picked up next) ALSO sees both active installs and ALSO fans out
-to both — duplicate work for slack across two runs.
-
-This duplicate-work cost is accepted at M6.1 scope. M6.2's
-SourceOnboarding service is responsible for deciding whether to
-re-backfill an already-backfilled (tenant, source) pair —
-idempotent backfill is an M6.2 design concern, not M6.1's. This
-trade-off is documented in [05-lld-amendments.md A13] cross-
-reference and in the M6.1 final gate output.
+Gmail's legacy `gmail_installation_id` is accepted only at this ingress
+boundary and normalized to `installation_row_id`. WhatsApp has
+`history=None`, so it cannot enter this workflow. Missing, malformed,
+disabled, cross-tenant, and wrong-source installation identities fail
+closed before a source request is emitted.
 
 ============================================================
 PARTIAL-FAILURE HANDLING (M6.1 default)
@@ -147,6 +135,8 @@ from services.ingest.ingestion.workflows.state import (
     load_state,
     persist_state,
 )
+from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
+from services.ingest.source_contract.runtime import resolve_installation_loader
 
 
 log = logging.getLogger(__name__)
@@ -171,7 +161,11 @@ BRIDGE_INBOX_ID = "bridge"
 DEFAULT_TICK_INTERVAL_SECONDS = 10.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp", "facebook_pages")
+VALID_SOURCES = frozenset(
+    definition.source_id
+    for definition in SOURCE_DEFINITIONS
+    if definition.history is not None
+)
 
 # Coarse, NON-BINDING per-source estimate for the `tenant.onboarding.started`
 # event's `eta_minutes`. The event model documents this field as a
@@ -190,128 +184,14 @@ SELECT id, tenant_id, status, sources_enabled
  WHERE id = $1
 """
 
-# Source applicability: active installs at tick-time per A13's
-# "provider_installations is the source of truth" decision.
-_LOAD_ACTIVE_SOURCES_SQL = """
-SELECT provider AS source
-  FROM provider_installations
- WHERE tenant_id = $1
-   AND enabled = TRUE
-   AND provider IN ('slack', 'github', 'discord', 'notion')
-UNION
-SELECT 'gmail' AS source
-  FROM gmail_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'google_calendar' AS source
-  FROM google_calendar_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'google_drive' AS source
-  FROM google_drive_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'jira' AS source
-  FROM jira_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'mercury' AS source
-  FROM mercury_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'quickbooks' AS source
-  FROM quickbooks_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'grafana' AS source
-  FROM grafana_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'telegram' AS source
-  FROM telegram_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'brex' AS source
-  FROM brex_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'ramp' AS source
-  FROM ramp_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'gusto' AS source
-  FROM gusto_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'deel' AS source
-  FROM deel_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'fireflies' AS source
-  FROM fireflies_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'signal' AS source
-  FROM signal_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'aws' AS source
-  FROM aws_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'miro' AS source
-  FROM miro_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'figma' AS source
-  FROM figma_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'carta' AS source
-  FROM carta_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'hibob' AS source
-  FROM hibob_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'ashby' AS source
-  FROM ashby_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'linkedin' AS source
-  FROM linkedin_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-"""
-
 # ON CONFLICT DO NOTHING: defensive against concurrent claims racing
 # on the same signal (which SKIP LOCKED prevents but cost-free to
 # guard) or duplicate emits at the producer side.
 _INSERT_SOURCE_ROW_SQL = """
 INSERT INTO source_onboarding_runs
-    (onboarding_run_id, source, tenant_id, status, started_at)
-VALUES ($1, $2, $3, 'pending', now())
+    (onboarding_run_id, source, tenant_id, installation_row_id,
+     status, started_at)
+VALUES ($1, $2, $3, $4, 'pending', now())
 ON CONFLICT (onboarding_run_id, source) DO NOTHING
 """
 
@@ -413,30 +293,18 @@ async def _load_run_row(
     return await conn.fetchrow(_LOAD_RUN_SQL, run_id)
 
 
-async def _determine_applicable_sources(
-    conn: asyncpg.Connection, tenant_id: UUID,
-) -> list[str]:
-    """Query provider_installations + gmail_installations at
-    tick-time. Returns the list of sources that are CURRENTLY
-    active for this tenant.
-
-    Per A13: this is the source of truth for source applicability.
-    The trigger's source (recorded in onboarding_runs.sources_enabled
-    as a snapshot) is informational only. Cited file:line for the
-    decision rationale: this function, plus the module docstring's
-    "SOURCE APPLICABILITY" section above.
-    """
-    rows = await conn.fetch(_LOAD_ACTIVE_SOURCES_SQL, tenant_id)
-    return [r["source"] for r in rows if r["source"] in VALID_SOURCES]
-
-
 async def _insert_source_row(
     conn: asyncpg.Connection,
     *,
     run_id: UUID, source: str, tenant_id: UUID,
+    installation_row_id: UUID,
 ) -> None:
     await conn.execute(
-        _INSERT_SOURCE_ROW_SQL, run_id, source, tenant_id,
+        _INSERT_SOURCE_ROW_SQL,
+        run_id,
+        source,
+        tenant_id,
+        installation_row_id,
     )
 
 
@@ -595,13 +463,11 @@ class TenantOnboardingOrchestrator(LongRunningService):
     async def _handle_run_created(
         self, conn: asyncpg.Connection, sig: WorkflowSignal,
     ) -> list[ProgressEvent]:
-        """New-runs phase. Source-applicability determined by
-        provider_installations + gmail_installations at tick-time
-        (A13 / Phase 2 decision).
+        """Validate and start one exact source-installation run.
 
         Returns `[TenantOnboardingStarted]` on the pending→running
         transition (the moment tenant onboarding actually begins);
-        `[]` on the idempotent no-op and the no-active-installs failure
+        `[]` on the idempotent no-op and any fail-closed identity failure
         (a run that never starts emits no `started`)."""
         run_id = UUID(sig.signal_data["onboarding_run_id"])
         tenant_id = UUID(sig.signal_data["tenant_id"])
@@ -618,45 +484,75 @@ class TenantOnboardingOrchestrator(LongRunningService):
             # advanced is a no-op success.
             return []
 
-        sources = await _determine_applicable_sources(conn, tenant_id)
-        if not sources:
-            # No active installs at tick-time. Fail the run loudly
-            # rather than create a zero-source onboarding that
-            # never completes — same shape as M3.3's "DLQ the row
-            # and advance" rather than loop forever.
+        if run["tenant_id"] != tenant_id:
             await conn.execute(
                 _MARK_RUN_FAILED_SQL,
                 run_id,
-                "No active installs for tenant at orchestrator tick-time.",
+                "Onboarding signal tenant does not own the onboarding run.",
             )
             return []
 
-        for source in sources:
-            await _insert_source_row(
-                conn, run_id=run_id, source=source, tenant_id=tenant_id,
+        source = sig.signal_data.get("source")
+        if source not in VALID_SOURCES:
+            await conn.execute(
+                _MARK_RUN_FAILED_SQL,
+                run_id,
+                f"Source {source!r} is not a historical canonical source.",
             )
-            source_signal_data = {
+            return []
+
+        # Gmail's pre-contract ingress field is accepted at this one boundary,
+        # then immediately normalized. Downstream workflows receive only the
+        # common installation_row_id field.
+        raw_installation_id = (
+            sig.signal_data.get("installation_row_id")
+            or sig.signal_data.get("gmail_installation_id")
+        )
+        try:
+            installation_row_id = UUID(str(raw_installation_id))
+        except (TypeError, ValueError):
+            await conn.execute(
+                _MARK_RUN_FAILED_SQL,
+                run_id,
+                "Historical onboarding requires an exact installation UUID.",
+            )
+            return []
+
+        loader = resolve_installation_loader(source)
+        install = await loader(
+            conn,
+            tenant_id=tenant_id,
+            installation_id=installation_row_id,
+        )
+        if install is None:
+            await conn.execute(
+                _MARK_RUN_FAILED_SQL,
+                run_id,
+                "The exact installation is missing, disabled, belongs to "
+                "another tenant, or belongs to another source.",
+            )
+            return []
+
+        await _insert_source_row(
+            conn,
+            run_id=run_id,
+            source=source,
+            tenant_id=tenant_id,
+            installation_row_id=installation_row_id,
+        )
+        await emit_signal(
+            conn,
+            workflow_kind=SOURCE_ONBOARDING_INBOX_KIND,
+            workflow_id=SOURCE_ONBOARDING_INBOX_ID,
+            signal_kind=SIGNAL_KIND_SOURCE_REQUESTED,
+            idempotency_key=f"{run_id}:{source}:{installation_row_id}",
+            signal_data={
                 "onboarding_run_id": str(run_id),
                 "tenant_id": str(tenant_id),
                 "source": source,
-            }
-            if source == sig.signal_data.get("source"):
-                if sig.signal_data.get("installation_row_id"):
-                    source_signal_data["installation_row_id"] = (
-                        sig.signal_data["installation_row_id"]
-                    )
-                if sig.signal_data.get("gmail_installation_id"):
-                    source_signal_data["gmail_installation_id"] = (
-                        sig.signal_data["gmail_installation_id"]
-                    )
-            await emit_signal(
-                conn,
-                workflow_kind=SOURCE_ONBOARDING_INBOX_KIND,
-                workflow_id=SOURCE_ONBOARDING_INBOX_ID,
-                signal_kind=SIGNAL_KIND_SOURCE_REQUESTED,
-                idempotency_key=f"{run_id}:{source}",
-                signal_data=source_signal_data,
-            )
+                "installation_row_id": str(installation_row_id),
+            },
+        )
 
         # Default this tenant onto the full Kafka pipeline so its
         # observations persist (idempotent; never overrides a later
@@ -669,8 +565,8 @@ class TenantOnboardingOrchestrator(LongRunningService):
         return [TenantOnboardingStarted(
             tenant_id=tenant_id,
             started_at=dt.datetime.now(tz=dt.timezone.utc),
-            sources=[s for s in sources if s in VALID_SOURCES],  # type: ignore[misc]
-            eta_minutes=ETA_MINUTES_PER_SOURCE * len(sources),
+            sources=[source],  # type: ignore[list-item]
+            eta_minutes=ETA_MINUTES_PER_SOURCE,
         )]
 
     async def _handle_source_completed(

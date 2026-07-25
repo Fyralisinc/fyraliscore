@@ -55,6 +55,14 @@ from lib.shared.errors import (
     StateTokenInvalidError,
 )
 from lib.shared.ids import uuid7
+from lib.shared.provider_transport import (
+    ProviderPermanentError,
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
 from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.discord import commands as discord_commands
 from services.ingest.integrations.discord import metrics
@@ -64,6 +72,16 @@ from services.ingest.integrations.slack.oauth import (
 )
 from services.ingest.integrations.oauth_native_connect import (
     build_oauth_native_connect_router,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
+from services.ingest.integrations.provider_transport_runtime import (
+    get_provider_transport_runtime,
 )
 
 
@@ -275,34 +293,141 @@ async def _connect_handoff(
 # Callback handler — GET /integrations/discord/callback
 # ---------------------------------------------------------------------
 
-async def _exchange_code_for_tokens(code: str) -> dict[str, Any]:
+async def _exchange_code_for_tokens(
+    code: str,
+    *,
+    tenant_id: UUID | str,
+    http_client: httpx.AsyncClient | None = None,
+    provider_transport: ProviderExecutor | None = None,
+    request_policy: RequestPolicy | PolicyResolver | None = None,
+    quota_resolver: QuotaResolver | None = None,
+    allow_unlimited_local: bool | None = None,
+) -> dict[str, Any]:
     """POST `https://discord.com/api/v10/oauth2/token`. Returns parsed JSON.
 
     Discord requires HTTP Basic with (client_id, client_secret) — NOT
     body parameters like Slack. Body is form-urlencoded grant_type +
     code + redirect_uri.
 
-    Raises on HTTP-level errors; caller maps to `discord_oauth_token_exchange_failed`.
+    The signed state establishes the exact Fyralis tenant. The Discord guild
+    and durable installation row do not exist until after this exchange, so
+    this operation is honestly tenant-scoped rather than assigned a synthetic
+    installation id.
     """
     client_id = os.environ.get("DISCORD_CLIENT_ID", "")
     client_secret = load_app_secret_text_from_env("DISCORD_CLIENT_SECRET")
     redirect_uri = os.environ.get("DISCORD_REDIRECT_URI", "")
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        r = await client.post(
-            _DISCORD_TOKEN_URL,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-            },
-            headers={
-                "Authorization": f"Basic {basic}",
-                "Content-Type": "application/x-www-form-urlencoded",
+    runtime = get_provider_transport_runtime()
+    owns_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=15.0)
+    local_unlimited = explicit_local_transport(
+        requested=(
+            runtime is None
+            if allow_unlimited_local is None
+            else allow_unlimited_local
+        ),
+        has_local_injection=http_client is not None,
+    )
+    binding = ProviderRequestBinding(
+        source="discord",
+        tenant_id=str(tenant_id),
+        installation_id=None,
+        transport=(
+            provider_transport
+            or (runtime.transport if runtime is not None else None)
+        ),
+        request_policy=request_policy,
+        quota_resolver=(
+            quota_resolver
+            or (runtime.quota_resolver if runtime is not None else None)
+        ),
+        allow_unlimited_local=(
+            local_unlimited if runtime is None else False
+        ),
+        require_tenant=True,
+        require_installation=False,
+    )
+
+    async def _once() -> httpx.Response:
+        try:
+            response = await client.post(
+                _DISCORD_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                },
+                headers={
+                    "Authorization": f"Basic {basic}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError(
+                "Discord OAuth token exchange timed out",
+                source="discord",
+                operation="/oauth2/token",
+            ) from exc
+        except httpx.TransportError as exc:
+            raise ProviderTransientError(
+                "Discord OAuth token exchange transport error",
+                source="discord",
+                operation="/oauth2/token",
+                error_type=type(exc).__name__,
+            ) from exc
+        if response.status_code == 429:
+            retry_after = parse_retry_after(
+                response.headers.get("Retry-After"),
+            )
+            if retry_after is None:
+                retry_after = parse_retry_after(
+                    response.headers.get("X-RateLimit-Reset-After"),
+                )
+            if retry_after is None:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+                if isinstance(payload, dict):
+                    retry_after = parse_retry_after(
+                        payload.get("retry_after"),
+                    )
+            raise ProviderRateLimited(
+                "Discord OAuth token exchange rate limit",
+                retry_after_seconds=retry_after,
+                status_code=429,
+                header_parser_id="discord.rate_limit_headers",
+            )
+        if response.status_code >= 500:
+            raise ProviderTransientError(
+                f"Discord OAuth token exchange returned {response.status_code}",
+                source="discord",
+                operation="/oauth2/token",
+                http_status=response.status_code,
+            )
+        if response.status_code >= 400:
+            raise ProviderPermanentError(
+                f"Discord OAuth token exchange returned {response.status_code}",
+                source="discord",
+                operation="/oauth2/token",
+                http_status=response.status_code,
+            )
+        return response
+
+    try:
+        response = await binding.execute(
+            "/oauth2/token",
+            _once,
+            quota_dimensions={
+                "app": client_id,
+                "route": "/oauth2/token",
             },
         )
-    r.raise_for_status()
-    return r.json()
+        return response.json()
+    finally:
+        if owns_client:
+            await client.aclose()
 
 
 def _extract_guild_id(discord_response: dict[str, Any]) -> str | None:
@@ -568,7 +693,10 @@ async def callback_handler(request: Request) -> Any:
 
     # 2. Exchange code for tokens.
     try:
-        discord_response = await _exchange_code_for_tokens(code)
+        discord_response = await _exchange_code_for_tokens(
+            code,
+            tenant_id=tenant_id,
+        )
     except Exception as exc:  # noqa: BLE001
         log.error(
             "discord_install_failure",
@@ -671,7 +799,11 @@ async def callback_handler(request: Request) -> Any:
     registration_context: dict[str, Any] = {}
     try:
         cmd_resp = await discord_commands.register_fyralis_command(
-            application_id, bot_token,
+            application_id,
+            bot_token,
+            tenant_id=tenant_id,
+            installation_id=installation_row_id,
+            guild_id=guild_id,
         )
         registration_context["registered_command_id"] = cmd_resp.get("id")
     except DiscordOAuthError as exc:
@@ -684,6 +816,20 @@ async def callback_handler(request: Request) -> Any:
             "discord_install_command_registration_failed",
             code=exc.code,
             http_status=exc.context.get("http_status"),
+        )
+    except Exception as exc:  # noqa: BLE001 — registration is best-effort
+        # ProviderTransport may return RetryLater after a 429/5xx/timeout.
+        # The installation row is already committed and command registration
+        # is explicitly non-blocking, so preserve the install and audit the
+        # deferred operation instead of turning success into a 500.
+        registration_status = "error"
+        registration_context = {
+            "failure_code": "discord_command_registration_deferred",
+            "error_code": getattr(exc, "code", type(exc).__name__),
+        }
+        log.info(
+            "discord_install_command_registration_deferred",
+            error_code=registration_context["error_code"],
         )
 
     # 7. Audit.

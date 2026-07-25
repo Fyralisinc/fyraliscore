@@ -47,7 +47,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-import asyncpg
+import asyncpg  # noqa: E402
 
 
 def _parse_args() -> argparse.Namespace:
@@ -84,6 +84,9 @@ async def _run(args: argparse.Namespace) -> int:
     from services.ingest.integrations.grafana.onboarding import (
         finalize_install, register_webhook_installation,
     )
+    from services.ingest.integrations.provider_transport import (
+        tenant_preinstall_transport_kwargs,
+    )
     from services.ingest.ingestion.feature_flags.client import (
         KAFKA_PATH_ENABLED, TenantFlags,
     )
@@ -91,7 +94,11 @@ async def _run(args: argparse.Namespace) -> int:
     pool = await asyncpg.create_pool(dsn=args.dsn, min_size=1, max_size=3, init=_register_codecs)
     try:
         # 1. Verify the token with a live org probe.
-        probe = GrafanaClient(base_url=base_url, api_token=args.token)
+        probe = GrafanaClient(
+            base_url=base_url,
+            api_token=args.token,
+            **tenant_preinstall_transport_kwargs(tenant_id),
+        )
         try:
             org = await probe.get_org()
         finally:

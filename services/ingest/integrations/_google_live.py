@@ -33,6 +33,7 @@ async def drain_live(
     *,
     pool: Any,
     tenant_id: Any,
+    installation_id: Any,
     scope: str,
     channel: str,
     fetcher: Callable[[Any, dict[str, Any], dict[str, Any] | None], Awaitable[Any]],
@@ -43,17 +44,21 @@ async def drain_live(
     """Run the real fetch loop for one resource shard incrementally, ingesting
     each record. Returns ``(ingested_count, advanced_token)``.
 
-    `install` is reconstructed as a minimal mapping — the Calendar/Drive
-    fetchers' `_open_*_client` only read `install["scope"]`. `shard_identifier`
-    must already carry the warm cursor (sync_token / start_page_token) so the
-    fetcher starts in incremental mode. `advanced_token` is the new cursor to
-    persist; it falls back to `warm_token` when the delta produced no new token
-    (e.g. a rate-limited empty round), so a transient failure never erases the
-    bookmark.
+    `install` is reconstructed with the exact tenant + installation row
+    identity required by ProviderTransport, as well as the stored scope.
+    `shard_identifier` must already carry the warm cursor (sync_token /
+    start_page_token) so the fetcher starts in incremental mode.
+    `advanced_token` is the new cursor to persist; a RetryLater escapes this
+    function before the caller writes it, so transient provider pressure never
+    advances or erases the bookmark.
     """
     from services.ingest.ingestion.core import ingest
 
-    install = {"scope": scope}
+    install = {
+        "id": installation_id,
+        "tenant_id": tenant_id,
+        "scope": scope,
+    }
     cursor: dict[str, Any] | None = None
     advanced = warm_token
     ingested = 0

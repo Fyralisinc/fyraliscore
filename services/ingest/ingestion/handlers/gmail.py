@@ -5,14 +5,14 @@ Channel: `gmail:` (note: namespace-prefixed; not the same as
 
 Two surfaces in this module:
 
-1. The classic handler registered via @register("gmail:"). Used by
-   any caller that hands us a pre-shaped raw_payload through the
-   standard ingest() entry point.
+1. The contract-declared `handle_gmail` normalizer. Used by any caller
+   that hands us a pre-shaped raw payload through the standard ingest()
+   entry point.
 
 2. dispatch_gmail_message_resource(...) — the path used by the push
    handler and the history poller. Wraps:
        (a) thread canonicalization (RFC 5322)
-       (b) ingest() through the registered handler
+       (b) ingest() through the contract-declared handler
        (c) a post-insert UPDATE to stamp observations.thread_canonical_id
    The post-insert UPDATE is non-atomic with the insert but observation
    rows are useful even before the thread linkage column is written.
@@ -39,7 +39,7 @@ import structlog
 from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
-from services.ingest.ingestion.handlers import ObservationDraft, register
+from services.ingest.ingestion.handlers import ObservationDraft
 
 # Note: the following modules are DB-touching and used ONLY by
 # `dispatch_gmail_message_resource` (the inline-path dispatcher used
@@ -161,7 +161,6 @@ def _content_text(payload: dict[str, Any]) -> str:
     return "\n".join(bits)
 
 
-@register(CHANNEL)
 async def handle_gmail(
     payload: dict[str, Any],
     request_headers: dict[str, str],

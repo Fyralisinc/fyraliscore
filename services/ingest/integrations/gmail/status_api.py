@@ -12,17 +12,23 @@ from uuid import UUID
 from lib.shared.tenant_context import tenant_transaction
 
 
-async def get_gmail_status(*, tenant_id: UUID) -> dict[str, Any]:
+async def get_gmail_status(
+    *,
+    tenant_id: UUID,
+    gmail_installation_id: UUID,
+) -> dict[str, Any]:
     async with tenant_transaction(tenant_id) as tctx:
         install = await tctx.fetchrow(
             """
             SELECT id, workspace_domain, scope, resolved_user_count,
                    resolved_at, created_at, disabled_at
               FROM gmail_installations
-             WHERE disabled_at IS NULL
-             ORDER BY created_at DESC
-             LIMIT 1
+             WHERE id = $1
+               AND tenant_id = $2
+               AND disabled_at IS NULL
             """,
+            gmail_installation_id,
+            tenant_id,
         )
         if install is None:
             return {"connected": False}

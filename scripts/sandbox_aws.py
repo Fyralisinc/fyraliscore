@@ -316,7 +316,14 @@ async def run(args) -> int:
             "SELECT count(*) FROM observations WHERE tenant_id=$1 "
             "AND source_channel='aws:event'", _TENANT_ID,
         )
-        await handle_polled_event(poll_event, PollDeps(pool=pool))
+        await handle_polled_event(
+            poll_event,
+            PollDeps(
+                pool=pool,
+                tenant_id=_TENANT_ID,
+                installation_id=str(install_id),
+            ),
+        )
         after = await pool.fetchval(
             "SELECT count(*) FROM observations WHERE tenant_id=$1 "
             "AND source_channel='aws:event'", _TENANT_ID,

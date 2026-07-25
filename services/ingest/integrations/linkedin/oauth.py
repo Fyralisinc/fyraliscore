@@ -53,6 +53,9 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 from services.ingest.integrations.linkedin.client import (
     DEFAULT_ENTITIES,
     LinkedinApiError,
@@ -136,7 +139,7 @@ def _auth_failure_response(exc: LinkedinApiError) -> JSONResponse:
 async def connect_preflight(request: Request) -> JSONResponse:
     """Verify the access token + organization via the
     `GET /rest/organizations/{id}` probe."""
-    _tenant_from_request(request)  # auth check
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     organization_urn, access_token, base_url = _require_creds(body)
 
@@ -144,6 +147,7 @@ async def connect_preflight(request: Request) -> JSONResponse:
         base_url=base_url,
         organization_urn=organization_urn,
         access_token=access_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         info = await client.get_organization()
@@ -192,6 +196,7 @@ async def connect_finalize(request: Request) -> JSONResponse:
         base_url=base_url,
         organization_urn=organization_urn,
         access_token=access_token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         await client.get_organization()

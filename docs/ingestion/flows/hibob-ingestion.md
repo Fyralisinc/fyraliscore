@@ -79,7 +79,7 @@ Authorization: Basic base64("{service_user_id}:{token}")
   store via the install's `secret_ref`, then cached in‑process for the client's
   life; guarded by an `asyncio.Lock` so concurrent first calls don't double‑fetch
   ([client.py:113‑141](../../../services/ingest/integrations/hibob/client.py#L113-L141)).
-  In spammer mode the token is **preset** to `spam-hibob`, skipping the secret
+  In Provider Lab mode the token is **preset** to `spam-hibob`, skipping the secret
   store entirely
   ([_clients.py:742](../../../services/ingest/ingestion/fetchers/_clients.py#L742)).
 
@@ -91,7 +91,7 @@ The service‑user token and the assembled Basic header are **never logged**
 | Credential | Where | Notes |
 |-----------|-------|-------|
 | `service_user_id` (public id half) | `hibob_installations.service_user_id` | rides on the install row |
-| service‑user `token` (secret half) | secret store, referenced by `hibob_installations.secret_ref` | resolved once, no refresh; preset `spam-hibob` in spammer mode |
+| service‑user `token` (secret half) | secret store, referenced by `hibob_installations.secret_ref` | resolved once, no refresh; preset `spam-hibob` in Provider Lab mode |
 | `company_id` (scope id) | `hibob_installations.company_id` | per‑install; also the `external_id` namespace and the webhook tenant key |
 | webhook HMAC secret | secret store, referenced by `provider_installations.secret_ref` (and `hibob_installations.webhook_secret_ref`) | App/per‑install HMAC secret for inbound webhook verification |
 
@@ -554,11 +554,11 @@ disable/park path — contrast the Notion recoverable‑401 + revocation chokepo
 - **Rate limits** — no dedicated bucket; per‑account concurrency limit + 429 signalling. 🔶 UNVERIFIED.
 - **Webhook tenant resolution** — `companyId` body field is a synthetic stand‑in; real per‑endpoint secret model. 🔶 UNVERIFIED.
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
 For local testing against the mock source servers, `build_hibob_client` detects
-spammer mode and **presets** the service‑user token to `spam-hibob` (skipping the
-secret store) and points `api_base_url` at the local spammer's `/hibob` sub‑path
+Provider Lab mode and **presets** the service‑user token to `spam-hibob` (skipping the
+secret store) and points `api_base_url` at Provider Lab's `/hibob` URL
 via the endpoint resolver
 ([_clients.py:727‑744](../../../services/ingest/ingestion/fetchers/_clients.py#L727-L744),
 [endpoints.py:169](../../../lib/integrations/endpoints.py#L169)). The webhook

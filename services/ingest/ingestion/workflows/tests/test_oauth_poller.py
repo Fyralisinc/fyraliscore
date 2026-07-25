@@ -60,6 +60,11 @@ async def _seed_trigger(
     """INSERT one onboarding_triggers row (simulates OAuth callback)."""
     import orjson
     trigger_id = uuid7()
+    stored_installation_id = installation_row_id
+    if stored_installation_id is None and not (payload or {}).get(
+        "installation_row_id"
+    ):
+        stored_installation_id = uuid7()
     await pool.execute(
         """
         INSERT INTO onboarding_triggers
@@ -67,7 +72,7 @@ async def _seed_trigger(
         VALUES ($1, $2, $3, $4, $5, $6::jsonb)
         """,
         trigger_id, tenant_id, source, trigger_kind,
-        installation_row_id,
+        stored_installation_id,
         orjson.dumps(payload or {}).decode("utf-8"),
     )
     return trigger_id

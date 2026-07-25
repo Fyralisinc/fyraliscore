@@ -5,6 +5,11 @@ Last reviewed from this checkout: 2026-06-13
 Scope: Fyralis Core backend, workers, database, tests, scripts, and docs. The UI
 overlay repo is out of scope except where API contracts are affected.
 
+> Historical plan: references to
+> `services/ingest/synthetic/mock_servers/` record the implementation that
+> existed when this plan was measured. Those servers are retired and deleted;
+> `services/ingest/synthetic/provider_lab/` is now canonical.
+
 ## 0. Executive Summary
 
 Fyralis Core does not need a ground-up rewrite. The existing architecture has
@@ -478,12 +483,12 @@ runtime behavior:
   `services/reasoning/think/reconciler.py:_reconcile_inner` at 45 lines and
   `services/reasoning/think/reconciler.py` at 1,387 lines while lowering the
   long-function ratchet to 51
-- Google Workspace synthetic mock routing now moves the HTTP request handler
+- The now-retired Google Workspace synthetic mock moved the HTTP request handler
   class out of the `_make_handler` closure in
   `services/ingest/synthetic/mock_servers/google_workspace.py`, reducing
   `_make_handler` from 275 to 5 lines while preserving token binding,
   Directory, Gmail, Calendar, Drive, export/media, and request-hit behavior
-- the technical-debt budget now caps
+- the historical technical-debt budget capped
   `services/ingest/synthetic/mock_servers/google_workspace.py:_make_handler` at
   5 lines while lowering the long-function ratchet to 50
 - Domain bridge revenue-at-risk reporting now delegates the SQL fetch,

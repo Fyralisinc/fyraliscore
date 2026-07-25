@@ -5,7 +5,7 @@ with a long-lived **API key** presented as HTTP Basic: the key is the username
 and the password is EMPTY, i.e. the ``Authorization: Basic <base64("KEY:")>``
 header (CONFIRMED from Ashby's first-party API docs — same posture as a Jira
 api-token, but Ashby uses an empty password rather than email:token). The key is
-resolved once from the secret store (or preset in spammer mode) and reused for
+resolved once from the secret store (or preset in Provider Lab mode) and reused for
 the life of the client. No token refresh (API-key archetype, like Brex/Jira).
 
 Read surface (CONFIRMED): Ashby exposes an RPC-style API — every call is an
@@ -18,10 +18,9 @@ when a ``syncToken`` was supplied or the listing supports sync — a refreshed
 are single-shot lists and omit cursor/syncToken request fields.
 
 TODO(human): confirm Ashby concurrent rate-limit numbers + the exact rate-limit
-    signal. UNVERIFIED. The default below is 429 + ``Retry-After`` (env knobs
-    ASHBY_RL_MAX_ATTEMPTS / ASHBY_RL_MAX_SLEEP_SEC); Ashby's docs describe a
-    burst/sustained quota whose concurrent number is not pinned here — tune the
-    retry budget once the real limits are confirmed.
+    signal. UNVERIFIED. Fyralis currently normalizes 429 + ``Retry-After``
+    through the universal provider transport; the quota declarations must stay
+    conservative until the real limits are confirmed.
 
 Logging redaction: the API key and the Authorization header are NEVER logged.
 """
@@ -29,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import os
 from typing import Any
 from uuid import UUID
 
@@ -37,6 +35,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import AshbyApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -47,15 +59,6 @@ _DEFAULT_TIMEOUT_S = 30.0
 # Ashby's .list endpoints cap the page size; 100 keeps parity with the other
 # entity-model sources and bounds payload size.
 _DEFAULT_PAGE_SIZE = 100
-
-
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
 
 
 def _basic_auth_value(api_key: str) -> str:
@@ -69,7 +72,7 @@ class AshbyClient:
     """Outbound Ashby RPC client, one per backfill/poll shard open.
 
     Built by `services/ingest/ingestion/fetchers/_clients.py::build_ashby_client`
-    (production / spammer; added during the wiring phase). Shares the
+    (production / Provider Lab; added during the wiring phase). Shares the
     process-wide httpx client when one is injected.
     """
 
@@ -85,21 +88,48 @@ class AshbyClient:
         api_key: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
         self._org_id = org_id
-        # Preset key (spammer mode presets a recognized key); otherwise resolved
+        # Preset key (Provider Lab mode supplies a recognized key); otherwise resolved
         # lazily from the secret store on first request.
         self._api_key_cache = SecretValueCache(preset=api_key)
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical Ashby host; a spammer/test
+        # In production the base is the canonical Ashby host; a lab/test
         # override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="ashby",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(installation_row_id)
+                if installation_row_id is not None
+                else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -129,11 +159,13 @@ class AshbyClient:
         return _basic_auth_value(await self._key())
 
     async def _rpc(
-        self, method_path: str, body: dict[str, Any] | None = None,
+        self,
+        method_path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        operation: str,
     ) -> dict[str, Any]:
-        """One Ashby RPC `POST /<method_path>` with bounded Retry-After-aware
-        429 retry. Returns the parsed JSON object. Non-2xx (including a still-429
-        after the budget is spent) is mapped to `AshbyApiError`.
+        """Execute one Ashby RPC through ProviderTransport.
 
         Ashby returns 200 even for application-level failures, wrapping the
         result in ``{"success": bool, "errors": [...], "results": ...}``; a
@@ -149,59 +181,86 @@ class AshbyClient:
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        max_attempts = int(os.environ.get("ASHBY_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("ASHBY_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
-        while True:
-            attempt += 1
+        async def _once() -> httpx.Response:
             try:
                 response = await client.request(
                     "POST", url, headers=headers, json=(body or {}),
                 )
+            except httpx.TimeoutException as exc:
+                metrics.record_request("error")
+                raise ProviderTimeoutError(
+                    "Ashby request timed out",
+                    source="ashby",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
             except httpx.TransportError as exc:
                 metrics.record_request("error")
-                raise AshbyApiError(
-                    "transport error calling ashby",
-                    code="ashby_api_error",
-                    context={"error_type": type(exc).__name__,
-                             "path": method_path},
+                raise ProviderTransientError(
+                    "Ashby transport error",
+                    source="ashby",
+                    operation=operation,
+                    error_type=type(exc).__name__,
                 ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
+            if response.status_code == 429:
                 metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
-
-            if response.status_code // 100 == 2:
-                body_json = _safe_json(response)
-                if not isinstance(body_json, dict):
-                    metrics.record_request("error")
-                    raise AshbyApiError(
-                        "ashby response was not a JSON object",
-                        code="ashby_api_error",
-                        context={"path": method_path},
-                    )
-                # Ashby's envelope: success flag + results. A False success at
-                # HTTP 200 is an application error (bad cursor, scope, …).
-                if body_json.get("success") is False:
-                    metrics.record_request("error")
-                    raise AshbyApiError(
-                        "ashby rpc returned success=false",
-                        code="ashby_api_error",
-                        context={"path": method_path,
-                                 "errors": body_json.get("errors")},
-                    )
-                metrics.record_request("ok")
-                return body_json
-
-            if response.status_code in (401, 403):
-                metrics.record_request("unauthorized")
-            else:
+                raise ProviderRateLimited(
+                    "Ashby rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="ashby",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
                 metrics.record_request("error")
-            raise _api_error_from_response(response, method_path)
+                raise ProviderTransientError(
+                    f"Ashby returned HTTP {response.status_code}",
+                    source="ashby",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
+
+        response = await self._provider.execute(
+            operation,
+            _once,
+            quota_dimensions={"rpc_method": method_path},
+        )
+        if response.status_code // 100 == 2:
+            body_json = _safe_json(response)
+            if not isinstance(body_json, dict):
+                metrics.record_request("error")
+                raise AshbyApiError(
+                    "ashby response was not a JSON object",
+                    code="ashby_api_error",
+                    context={"path": method_path},
+                )
+            # Ashby's envelope: success flag + results. A False success at
+            # HTTP 200 is an application error (bad cursor, scope, …).
+            if body_json.get("success") is False:
+                metrics.record_request("error")
+                raise AshbyApiError(
+                    "ashby rpc returned success=false",
+                    code="ashby_api_error",
+                    context={
+                        "path": method_path,
+                        "errors": body_json.get("errors"),
+                    },
+                )
+            metrics.record_request("ok")
+            return body_json
+
+        if response.status_code in (401, 403):
+            metrics.record_request("unauthorized")
+        else:
+            metrics.record_request("error")
+        raise _api_error_from_response(response, method_path)
 
     # -----------------------------------------------------------------
     # Public read surface
@@ -243,7 +302,11 @@ class AshbyClient:
         if sync_token and bool(spec.get("supports_sync_token", True)):
             payload["syncToken"] = sync_token
         method = str(spec.get("method") or category)
-        resp = await self._rpc(f"{method}.list", payload)
+        resp = await self._rpc(
+            f"{method}.list",
+            payload,
+            operation="entities.list",
+        )
 
         results = resp.get("results")
         results = [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
@@ -263,7 +326,11 @@ class AshbyClient:
         Returns the bare entity object (unwrapped from the ``results`` envelope
         when present).
         """
-        resp = await self._rpc(f"{category}.info", {"id": entity_id})
+        resp = await self._rpc(
+            f"{category}.info",
+            {"id": entity_id},
+            operation="entities.info",
+        )
         results = resp.get("results")
         return results if isinstance(results, dict) else resp
 

@@ -5,10 +5,10 @@
 Carta's API Platform is an **issuer** cap-table REST suite under `/v1alpha1`
 (OAuth 2.0 access token, ~1 h, no refresh grant) with AIP-158 pageToken list
 pagination and a POLL-ONLY live edge (NO webhook). This sandbox stands up a
-REAL local mock of that wire contract (`mock_servers/carta.py`) and drives the
+REAL local Provider Lab implementation of that wire contract and drives the
 REAL pipeline:
 
-    CartaClient (real httpx, spammer auth) -> fetch_page_carta (real pageToken
+    CartaClient (real httpx, Provider Lab auth) -> fetch_page_carta (real pageToken
     cursor) -> handle_carta_object (real ObservationDraft, wrapper decoding) ->
     ingest() (real observation insert + dedup)
 
@@ -19,7 +19,7 @@ cross-path content-digest dedup, and the reconciler gap probe.
 
 Because `_clients.py` / `source_onboarding.py` are SHARED files owned by the
 wiring phase, this sandbox is SELF-CONTAINED: it rebinds the fetcher's
-`_open_carta_client` seam to a real CartaClient pointed at the mock, and loads
+`_open_carta_client` seam to a real CartaClient pointed at Provider Lab, and loads
 the install row with an inline SQL clone of the loader SQL.
 
 Database: DATABASE_URL if set, else a throwaway DB on SANDBOX_ADMIN_URL
@@ -56,29 +56,6 @@ _BASE_URL = "https://api.carta.com"
 # predates the issuer naming).
 _FIRM = "f6e1d4a0-0000-4000-8000-00000000ca01"
 
-# Inline clone of the _LOAD_CARTA_INSTALL_SQL loader — aggregates the
-# active entity list onto the install so the planner stays stateless.
-_LOAD_CARTA_INSTALL_SQL = """
-SELECT ci.id, ci.tenant_id, ci.firm_id, ci.base_url, ci.secret_ref,
-       ci.refresh_secret_ref, ci.disabled_at,
-       COALESCE(
-         json_agg(
-           json_build_object(
-             'entity_type', ce.entity_type,
-             'updated_cursor', ce.updated_cursor
-           ) ORDER BY ce.entity_type
-         ) FILTER (WHERE ce.id IS NOT NULL),
-         '[]'::json
-       ) AS entities
-  FROM carta_installations ci
-  LEFT JOIN carta_entities ce
-    ON ce.carta_installation_id = ci.id AND ce.state = 'active'
- WHERE ci.tenant_id = $1 AND ci.disabled_at IS NULL
- GROUP BY ci.id
- LIMIT 1
-"""
-
-
 def _hr(title: str) -> None:
     print(f"\n{'=' * 4} {title} {'=' * (72 - len(title))}")
 
@@ -107,8 +84,7 @@ def _money(amount, currency: str = "USD") -> dict:
 
 def _build_fixtures() -> dict:
     """A make_carta-shaped fixture: one issuer, one row per /v1alpha1
-    collection, REAL wrapper-shaped fields. The mock server reads this dict
-    LIVE, so mutating a row simulates a poll-window change."""
+    collection, with real wrapper-shaped fields."""
     now = datetime.now(timezone.utc)
     return {
         "firm_id": _FIRM,
@@ -174,7 +150,7 @@ async def _drop_throwaway_db(admin_url: str, name: str) -> None:
 
 
 def _make_real_client(base_url: str):
-    """Build a REAL CartaClient pointed at the mock (spammer auth, no secrets)."""
+    """Build a real CartaClient pointed at Provider Lab."""
     from services.ingest.integrations.carta.client import CartaClient
     return CartaClient(
         base_url=base_url, issuer_id=_FIRM, access_token="spam-carta",
@@ -204,7 +180,7 @@ async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
 
 
 async def run(args) -> int:
-    from services.ingest.synthetic.mock_servers.carta import start_mock_carta
+    from services.ingest.synthetic.provider_lab.server import start_provider_lab
 
     # Import side-effects register the dispatch entries: the handler's @register
     # decorator (carta:object) and the fetcher/planner/reconciler dispatch slots.
@@ -216,10 +192,12 @@ async def run(args) -> int:
     import services.ingest.ingestion.reconcilers.carta  # noqa: F401
 
     fixtures = _build_fixtures()
-    server, base_url = start_mock_carta(fixtures)
-    os.environ["SYNTHETIC_SOURCE_API_BASE"] = base_url
-    _hr("MOCK SERVER")
-    print(f"  Carta API base : {base_url} (served under /carta via spammer routing)")
+    server = start_provider_lab({"carta": [fixtures]})
+    base_url = server.url("carta")
+    os.environ["PROVIDER_LAB_URL"] = server.base_url
+    os.environ["CARTA_API_BASE_URL"] = base_url
+    _hr("PROVIDER LAB")
+    print(f"  Carta API base : {base_url} (explicit local override)")
 
     # Rebind the fetcher + reconciler seam to a real client at the mock, so the
     # sandbox does not depend on the (wiring-owned) _clients.py builder.
@@ -301,9 +279,15 @@ async def run(args) -> int:
 
         # 4. Plan shards.
         _hr("PLAN (planner over the loader SQL)")
+        from services.ingest.ingestion.installations import load_source_installation
         from services.ingest.ingestion.planners.context import PlannerContext
         from services.ingest.ingestion.planners.carta import plan_shards_carta
-        install_row = await pool.fetchrow(_LOAD_CARTA_INSTALL_SQL, _TENANT_ID)
+        install_row = await load_source_installation(
+            pool,
+            source="carta",
+            tenant_id=_TENANT_ID,
+            installation_id=install_id,
+        )
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_carta(ctx)
         print(f"  planned {len(shards)} shard(s): "
@@ -324,10 +308,10 @@ async def run(args) -> int:
         print(f"  observations: total={counts['tot']} signal={counts['sig']} state_change={counts['sc']}")
         _check("backfill produced 4 observations", counts["tot"] == 4)
 
-        # 6. Incremental: grant 5001 gets EXERCISED in the poll window. The mock
-        #    serves the fixtures dict LIVE, so mutating the row in place is the
-        #    delta; lastModifiedDatetimeAfter (optionGrants only) picks it up
-        #    and the content-digest version re-observes the mutation.
+        # 6. Incremental: grant 5001 gets EXERCISED in the poll window.
+        #    Replace the source state through Provider Lab's control plane;
+        #    lastModifiedDatetimeAfter (optionGrants only) picks it up and the
+        #    content-digest version re-observes the mutation.
         _hr("INCREMENTAL (option grant exercised: cap-table state_change)")
         hw = await pool.fetchval(
             "SELECT max(content->>'last_modified') FROM observations "
@@ -340,6 +324,7 @@ async def run(args) -> int:
         grant["lastModifiedDatetime"] = _dec(
             _iso_z(datetime.now(timezone.utc) - timedelta(hours=1)),
         )
+        server.replace_fixtures("carta", [fixtures])
         incr_shard = {"shard_kind": "carta_entity", "entity_type": "optionGrant",
                       "firm_id": _FIRM, "updated_cursor": hw}
         incr = await _drain_shard(pool, install_row, incr_shard)

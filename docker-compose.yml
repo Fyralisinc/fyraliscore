@@ -8,6 +8,7 @@
 #   one-shot: migrate, kafka-init (topics), minio-init (bucket)
 #   ingress : gateway (webhooks + Pub/Sub push + OAuth callbacks)
 #   live    : discord_gateway_worker, telegram_gateway_worker,
+#             signal_gateway_worker,
 #             gmail_watch_scheduler, gmail_history_poller,
 #             google_calendar_live_poller, google_drive_live_poller,
 #             google_calendar_watch_scheduler, google_drive_watch_scheduler
@@ -375,14 +376,20 @@ services:
 
   telegram_gateway_worker:
     <<: *worker
-    container_name: company_os_telegram_gateway_worker
     command: python scripts/run_telegram_gateway_worker.py
+    # One service instance is one exact Telegram installation. Render distinct
+    # services with TELEGRAM_TENANT_ID and TELEGRAM_INSTALLATION_ID for multiple
+    # installations; each receives an installation-scoped Redis lease.
     healthcheck: *consumer-healthcheck
 
   signal_gateway_worker:
     <<: *worker
-    container_name: company_os_signal_gateway_worker
     command: python scripts/run_signal_gateway_worker.py
+    # One service instance is one exact Signal installation. For additional
+    # installations, render distinct Compose services with their own env_file;
+    # do not scale this service because replicas would share one binding. This
+    # base service reads SIGNAL_TENANT_ID, SIGNAL_INSTALLATION_ID, and the HTTP
+    # JSON-RPC/SSE settings from the inherited `.env.production`.
     healthcheck: *consumer-healthcheck
 
   gmail_watch_scheduler:

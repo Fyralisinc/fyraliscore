@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_planner
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.notion import (
     SHARD_KIND_DATABASE,
@@ -84,4 +84,4 @@ async def test_missing_source_client_raises():
 
 
 async def test_dispatch_wired():
-    assert PLANNER_DISPATCH["notion"] is plan_shards_notion
+    assert resolve_planner("notion") is plan_shards_notion

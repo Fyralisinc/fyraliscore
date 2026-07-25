@@ -9,9 +9,8 @@ in-process ingest() shortcut:
       -> normalizer -> (Kafka ingestion.normalized)
       -> observation_writer -> observations
 
-The google_calendar source is mocked in-process at the `_open_calendar_client`
-seam (via the X3 helper, injected into each subprocess), so no real Google
-credentials are needed; everything else is the real worker chain.
+The unmodified Google Calendar client runs against Provider Lab, so no real
+Google credentials are needed; everything else is the production worker chain.
 
 Run with `scripts/sandbox_google_calendar_full.py` (stands up Kafka + moto +
 a throwaway DB and invokes the harness), or manually:

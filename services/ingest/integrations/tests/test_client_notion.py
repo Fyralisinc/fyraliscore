@@ -12,6 +12,7 @@ import pytest
 import respx
 
 from lib.shared.errors import NotionApiError
+from lib.shared.provider_transport import RequestPolicy, RetryLater, RetryReason
 from services.ingest.integrations.notion.client import (
     NotionClient,
     _api_error_from_response,
@@ -22,11 +23,12 @@ from services.ingest.integrations.notion.client import (
 pytestmark = pytest.mark.asyncio
 
 
-def _client() -> NotionClient:
+def _client(**kwargs: object) -> NotionClient:
     return NotionClient(
         bot_token="secret-bot-token",
         http_client=httpx.AsyncClient(),
         api_base_url="https://api.notion.com",
+        **kwargs,
     )
 
 
@@ -82,9 +84,7 @@ async def test_401_maps_to_unauthorized():
     assert ei.value.code == "notion_api_unauthorized"
 
 
-async def test_429_retries_then_succeeds(monkeypatch):
-    monkeypatch.setenv("NOTION_RL_MAX_SLEEP_SEC", "0")
-    monkeypatch.setenv("NOTION_RL_MAX_ATTEMPTS", "4")
+async def test_429_retries_then_succeeds():
     responses = [
         httpx.Response(429, headers={"Retry-After": "0"}),
         httpx.Response(200, json={"results": [{"object": "page", "id": "p1"}],
@@ -101,14 +101,19 @@ async def test_429_retries_then_succeeds(monkeypatch):
     assert responses == []  # both responses consumed (one retry happened)
 
 
-async def test_429_exhausts_budget_raises_rate_limited(monkeypatch):
-    monkeypatch.setenv("NOTION_RL_MAX_SLEEP_SEC", "0")
-    monkeypatch.setenv("NOTION_RL_MAX_ATTEMPTS", "2")
+async def test_429_exhausts_budget_schedules_retry_later():
     with respx.mock(base_url="https://api.notion.com") as router:
-        router.post("/v1/search").respond(429, headers={"Retry-After": "0"})
-        with pytest.raises(NotionApiError) as ei:
-            await _client().search()
-    assert ei.value.code == "notion_api_rate_limited"
+        router.post("/v1/search").respond(429, headers={"Retry-After": "60"})
+        with pytest.raises(RetryLater) as raised:
+            await _client(
+                request_policy=RequestPolicy(
+                    max_attempts=1,
+                    max_inline_retry_after_seconds=0,
+                )
+            ).search()
+    assert raised.value.reason is RetryReason.RATE_LIMIT
+    assert raised.value.request_context.operation == "search"
+    assert raised.value.retry_after_seconds == 60
 
 
 async def test_latest_database_edit_probe():
@@ -210,7 +215,7 @@ async def test_401_fires_revocation_chokepoint_and_is_recoverable():
 
 
 async def test_401_without_db_context_skips_chokepoint_no_crash():
-    # No pool/tenant/workspace (spammer mode / OAuth probe): chokepoint is
+    # No pool/tenant/workspace (Provider Lab mode / OAuth probe): chokepoint is
     # skipped, but the 401 still raises cleanly (and stays recoverable).
     client = NotionClient(
         bot_token="secret-bot-token",

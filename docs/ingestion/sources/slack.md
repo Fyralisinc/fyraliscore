@@ -27,7 +27,12 @@ Self-serve OAuth ([services/ingest/integrations/slack/oauth.py](../../../service
 
 Outbound client [slack/client.py](../../../services/ingest/integrations/slack/client.py)
 (`chat.postMessage`, `users.info`, `conversations.info`) honors 429
-`Retry-After`. Uninstall ([slack/uninstall.py](../../../services/ingest/integrations/slack/uninstall.py))
+`Retry-After`. Short cooldowns retry inline, but waits longer than
+`SLACK_MAX_INLINE_RETRY_AFTER_S` (30 seconds by default) return a typed
+`RetryLater`; the ingestion scheduler persists the requested `next_attempt_at`
+and releases the worker. The separate `SLACK_RETRY_WALL_BUDGET_S` bounds the
+entire operation and never overrides that inline-wait ceiling. Uninstall
+([slack/uninstall.py](../../../services/ingest/integrations/slack/uninstall.py))
 handles inbound `app_uninstalled` / `tokens_revoked`: disables the install row,
 zeroes the encrypted secrets, writes an audit row.
 

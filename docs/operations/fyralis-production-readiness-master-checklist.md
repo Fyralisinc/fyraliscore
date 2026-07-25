@@ -527,7 +527,7 @@ Current state:
   default 300s; `0` disables caching). Brex, Jira, Notion, Mercury, Grafana,
   Deel, Fireflies, Figma, Miro, HiBob, Ashby, QuickBooks, Gusto, Ramp, Carta,
   and LinkedIn clients use it so secret-store token rotation is picked up
-  without process restart while preset test/spammer tokens remain fixed.
+  without process restart while preset Provider Lab/test tokens remain fixed.
 - Static source-token and OAuth access-token cache coverage now includes
   parametrized regression tests that prove TTL-disabled clients re-read
   `secret_ref` material for each call. QuickBooks reactive refresh coverage
@@ -1036,12 +1036,12 @@ Current state:
   methods. Recoverable source errors count toward breaker state; permanent 4xx
   failures do not; an open breaker fast-fails before calling the upstream
   client.
-- ShardFetch declares `REDIS_URL`, `SHARD_FETCH_RATE_LIMIT=1`, and
-  `SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC` in the production env contract, so
-  primary source page fetches consume token-bucket capacity before upstream
-  calls. Integration clients expose bounded 429/`Retry-After` budgets in
-  `.env.production.example`, and an audit test fails when a client adds an
-  undocumented `_RL_` budget env.
+- Provider clients, not ShardFetch, own quota acquisition for every actual
+  outbound operation through the shared provider transport and
+  `RedisQuotaCoordinator`. Integration clients expose bounded
+  429/`Retry-After` budgets in `.env.production.example`, and an audit test
+  fails when a client adds an undocumented `_RL_` budget env. Long cooldowns
+  become durable `RetryLater` schedules rather than sleeps under a shard lease.
 
 Must solve:
 
@@ -1316,9 +1316,10 @@ Current state:
   production startup unless `GATEWAY_REQUIRE_INGESTION_DATA_PLANE=1`.
   `scripts/check_production_env_contract.py` keeps the template aligned with
   these fail-closed startup requirements.
-- The outbound source endpoint resolver now rejects `SYNTHETIC_SOURCE_API_BASE`
-  in production, so worker/client code cannot silently redirect production
-  source API calls to the fixture-backed spammer. Shared production detection
+- The outbound source endpoint resolver and Provider Lab URL helper reject
+  `PROVIDER_LAB_URL` in production. The resolver accepts only explicit
+  per-source overrides and never derives production routing from a lab origin.
+  Shared production detection
   now treats `FYRALIS_ENV`, `COMPANY_OS_ENV`, `APP_ENV`, or `ENVIRONMENT` as
   hardened-mode signals.
 

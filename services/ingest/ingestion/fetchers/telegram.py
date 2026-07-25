@@ -31,10 +31,9 @@ gateway worker uses — so a backfilled message and its live `updateNewMessage`
 twin derive an identical external_id (`telegram:{install}:{dialog}:{id}:{edit}`)
 and collapse to one observation.
 
-FLOOD_WAIT (error 420): the client raises `TelegramApiError(telegram_api_flood_wait)`
-carrying the server's `retry_after`. The fetcher leaves the cursor unadvanced and
-ends the round empty (end_of_data=False) so ShardFetch re-enters next tick — the
-canonical Telegram backoff (wait the server's value, do not client-choose).
+FLOOD_WAIT is normalized by ProviderTransport into ``RetryLater``. The fetcher
+does not manufacture an empty unchanged-cursor page; the workflow persists
+``next_attempt_at`` and releases the shard lease.
 """
 from __future__ import annotations
 
@@ -45,8 +44,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from lib.shared.errors import TelegramApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 from services.ingest.integrations.telegram.records import build_message_record
 
 
@@ -130,31 +128,14 @@ async def fetch_page_telegram(
     page_size = _page_size()
     client, close = await _open_telegram_client(install)
     try:
-        try:
-            messages, next_offset_id, is_last = await client.get_history(
-                dialog_id=dialog_id,
-                access_hash=access_hash,
-                dialog_kind=dialog_kind,
-                offset_id=cur.offset_id,
-                min_id=cur.min_id,
-                limit=page_size,
-            )
-        except TelegramApiError as exc:
-            if getattr(exc, "code", None) == "telegram_api_flood_wait":
-                # Retry budget deferred to ShardFetch — leave the cursor
-                # unadvanced, end this round empty so it re-enters next tick.
-                log.info(
-                    "telegram_backfill_flood_wait",
-                    extra={
-                        "dialog_id": dialog_id,
-                        "retry_after": (exc.context or {}).get("retry_after"),
-                    },
-                )
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        messages, next_offset_id, is_last = await client.get_history(
+            dialog_id=dialog_id,
+            access_hash=access_hash,
+            dialog_kind=dialog_kind,
+            offset_id=cur.offset_id,
+            min_id=cur.min_id,
+            limit=page_size,
+        )
 
         records: list[dict[str, Any]] = []
         for msg in messages:
@@ -194,7 +175,6 @@ async def fetch_page_telegram(
         await close()
 
 
-FETCHER_DISPATCH["telegram"] = fetch_page_telegram
 
 
 __all__ = [

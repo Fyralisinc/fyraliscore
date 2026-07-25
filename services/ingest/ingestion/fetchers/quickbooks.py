@@ -35,8 +35,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from lib.shared.errors import QuickBooksApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -136,23 +135,15 @@ async def fetch_page_quickbooks(
 
     client, close = await _open_quickbooks_client(install)
     try:
-        try:
-            rows, next_start = await client.query(
-                entity_type,
-                where=where,
-                start_position=cur.start_position,
-                max_results=_page_size(),
-            )
-        except QuickBooksApiError as exc:
-            code = (exc.context or {}).get("code") or getattr(exc, "_code", None)
-            if code == "quickbooks_api_rate_limited":
-                log.info("quickbooks_backfill_rate_limited",
-                         extra={"entity_type": entity_type})
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur),
-                    end_of_data=False,
-                )
-            raise
+        # ProviderTransport raises RetryLater for exhausted quota/retry
+        # budgets. Let it reach shard_fetch so the durable next_attempt_at
+        # schedule is written; returning an unchanged cursor here would spin.
+        rows, next_start = await client.query(
+            entity_type,
+            where=where,
+            start_position=cur.start_position,
+            max_results=_page_size(),
+        )
 
         records: list[dict[str, Any]] = []
         for row in rows:
@@ -182,7 +173,6 @@ async def fetch_page_quickbooks(
         await close()
 
 
-FETCHER_DISPATCH["quickbooks"] = fetch_page_quickbooks
 
 
 __all__ = [

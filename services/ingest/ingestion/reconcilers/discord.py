@@ -9,11 +9,11 @@ import logging
 from typing import Any
 
 import asyncpg
+from services.ingest.ingestion.installations import load_source_installation
 import orjson
 
 from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
@@ -121,14 +121,11 @@ async def reconcile_discord(
         return ReconciliationDecision(has_gaps=False)
 
     pool = _get_pool()
-    install = await pool.fetchrow(
-        """
-        SELECT id, tenant_id, provider, installation_id, enabled
-          FROM provider_installations
-         WHERE tenant_id = $1 AND provider = 'discord' AND enabled = TRUE
-         LIMIT 1
-        """,
-        run["tenant_id"],
+    install = await load_source_installation(
+        pool,
+        source="discord",
+        tenant_id=run["tenant_id"],
+        installation_id=run["installation_row_id"],
     )
     if install is None:
         return ReconciliationDecision(has_gaps=False)
@@ -153,7 +150,6 @@ async def reconcile_discord(
     return ReconciliationDecision(has_gaps=False)
 
 
-RECONCILER_DISPATCH["discord"] = reconcile_discord
 
 
 __all__ = [

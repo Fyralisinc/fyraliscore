@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "description": "Exact legacy source-architecture findings. Remove entries as debt is retired; do not add entries without architectural review.",
+  "entries": []
+}

@@ -24,10 +24,10 @@ also returns a refreshed `next_sync_token` (the max `updatedAt` it walked) so th
 NEXT incremental poll resumes from it — the production round-trip the reconciler's
 gap probe relies on.
 
-Fault injection: `self._check_fault()` runs first on every public method and the
-four raisers surface `AshbyApiError` with the same stable `code`s the real client
-emits, so the fetcher's rate-limit branch (and reconciler error mapping) see
-exactly the production exception shape.
+Fault injection: `self._check_fault()` runs first on every public method. This
+legacy in-process mock surfaces pre-transport `AshbyApiError` values;
+production retryable responses instead emerge from `ProviderTransport` as
+typed retry outcomes.
 """
 from __future__ import annotations
 

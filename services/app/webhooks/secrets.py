@@ -1,4 +1,4 @@
-"""services/app/webhooks/secrets.py — per-(provider, tenant) secret resolution.
+"""Exact webhook-installation secret resolution.
 
 IN-08 cutover: the canonical source of truth for webhook signing
 secrets is now `provider_installations.secret_ref` resolved via the
@@ -8,9 +8,10 @@ is retained as a development-only fallback, gated by
 
 Public surface
 --------------
-* `load_secrets(provider, tenant_id, *, app_state=None)` — async.
-  Resolves the active signing secret(s) for a given (provider, tenant)
-  pair. Returns a list of `Secret` records compatible with the
+* `load_secrets(provider, tenant_id, *, installation_row_id, app_state=None)`
+  — async. Resolves the active signing secret for the exact installation
+  selected by tenant resolution. Returns a list of `Secret` records compatible
+  with the
   verifier Protocol. Empty list ⇒ caller emits the same
   `secret_not_configured` shape as before this feature shipped.
 
@@ -22,9 +23,9 @@ Public surface
 Resolution order
 ----------------
 When `app_state` is provided and `tenant_id` is non-None:
-  1. Query `provider_installations` for the enabled row keyed by
-     `(provider, tenant_id)`. (The router has the tenant already by
-     this point — IN-07 / IN-08 path.)
+  1. Query `provider_installations` for the exact enabled row keyed by
+     `(id, provider, tenant_id)`. The resolver has already selected that row
+     from the provider-native installation identifier.
   2. If `secret_ref` is populated, decrypt via
      `app_state.integration_runtime.secret_store.get(ref, tenant_id=...)`
      and return. Legacy `app_state.secret_store` remains supported as a
@@ -166,63 +167,54 @@ def _app_state_attr(app_state: Any, name: str) -> Any | None:
 async def _load_from_db(
     provider: str,
     tenant_id: UUID,
+    installation_row_id: UUID,
     app_state: Any,
 ) -> list[Secret]:
-    """Read `provider_installations.secret_ref` for the enabled row
-    matching `(provider, tenant_id)` and resolve it via the secret
-    store. Returns [] when no enabled row or no secret_ref."""
+    """Resolve the secret for one exact enabled installation.
+
+    The row UUID is carried forward from tenant resolution.  Falling back to
+    every row for a tenant/provider would allow one installation's delivery to
+    verify with another installation's secret.
+    """
     pool = _app_state_attr(app_state, "pool")
     secret_store = _app_state_attr(app_state, "secret_store")
     if pool is None or secret_store is None:
         return []
 
-    # Return EVERY active secret_ref for (provider, tenant), newest first —
-    # NOT just one. Zero-downtime webhook-secret rotation (FR-010) overlaps the
-    # old and new secret for a window; the sender keeps signing with the old
-    # secret until it picks up the new one. The verifier tries each secret and
-    # accepts the first match, so it must be handed the whole overlap set. A
-    # prior `LIMIT 1` here silently dropped old-secret-signed deliveries with a
-    # 401 during every rotation, gapping the observation stream.
-    rows = await pool.fetch(
+    row = await pool.fetchrow(
         """
         SELECT secret_ref
           FROM provider_installations
-         WHERE provider = $1
-           AND tenant_id = $2
+         WHERE id = $1
+           AND provider = $2
+           AND tenant_id = $3
            AND enabled = TRUE
            AND secret_ref IS NOT NULL
-         ORDER BY installed_at DESC
         """,
+        installation_row_id,
         provider,
         tenant_id,
     )
-    if not rows:
+    if row is None:
         return []
 
-    secrets: list[Secret] = []
-    for row in rows:
-        ref = row["secret_ref"]
-        try:
-            plaintext = await secret_store.get(ref, tenant_id=tenant_id)
-        except SecretNotFoundError:
-            # Dangling ref — installation row points at a deleted secret. Skip
-            # it; a sibling active ref may still verify. (If none resolve we
-            # return [] and the verifier emits the standard
-            # secret_not_configured / signature_mismatch error.)
-            continue
-        except SecretStoreError:
-            # Transient backend trouble for this ref. Skip and try the rest;
-            # if all fail we return [] → 401, safer than 500 for a hiccup.
-            continue
-        secrets.append(
-            Secret(
-                provider=provider,
-                value=plaintext.decode("utf-8") if isinstance(plaintext, (bytes, bytearray)) else str(plaintext),
-                tenant_id=str(tenant_id),
-                label=f"installation:{ref}",
-            )
+    ref = row["secret_ref"]
+    try:
+        plaintext = await secret_store.get(ref, tenant_id=tenant_id)
+    except (SecretNotFoundError, SecretStoreError):
+        return []
+    return [
+        Secret(
+            provider=provider,
+            value=(
+                plaintext.decode("utf-8")
+                if isinstance(plaintext, (bytes, bytearray))
+                else str(plaintext)
+            ),
+            tenant_id=str(tenant_id),
+            label=f"installation:{installation_row_id}:{ref}",
         )
-    return secrets
+    ]
 
 
 # ---------------------------------------------------------------------
@@ -233,9 +225,10 @@ async def load_secrets(
     provider: str,
     tenant_id: UUID | None = None,
     *,
+    installation_row_id: UUID | None = None,
     app_state: Any | None = None,
 ) -> Sequence[Secret]:
-    """Return the active signing secret(s) for `(provider, tenant_id)`.
+    """Return signing secrets for one resolved installation.
 
     Resolution order (see module docstring):
       1. GitHub special-case (IN-13): App-level secret, never
@@ -246,8 +239,8 @@ async def load_secrets(
          GitHub in prod WITHOUT the `WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW`
          flag because the secret is App-level (single value across the
          whole deployment), not tenant-scoped — see Clarifications Q1.
-      2. DB ref via secret store (when `app_state` and `tenant_id`
-         are provided; for slack / discord / linear / stripe).
+      2. Exact DB ref via secret store (when `app_state`, `tenant_id`, and
+         `installation_row_id` are provided).
       3. Env-var fallback (when DB lookup yielded nothing AND the
          fallback flag is on, OR when `app_state` is absent).
 
@@ -261,11 +254,25 @@ async def load_secrets(
     if provider == "notion":
         return _load_notion_app_secrets()
 
-    if app_state is not None and tenant_id is not None:
-        db_secrets = await _load_from_db(provider, tenant_id, app_state)
+    if (
+        app_state is not None
+        and tenant_id is not None
+        and installation_row_id is not None
+    ):
+        db_secrets = await _load_from_db(
+            provider,
+            tenant_id,
+            installation_row_id,
+            app_state,
+        )
         if db_secrets:
             return db_secrets
         # Fall through to env path only when explicitly allowed.
+        if not _env_fallback_allowed():
+            return []
+    elif app_state is not None and tenant_id is not None:
+        # A runtime caller that resolved a tenant but lost the installation
+        # identity must never broaden the lookup to sibling installations.
         if not _env_fallback_allowed():
             return []
     # Legacy / fallback path.

@@ -175,7 +175,7 @@ which:
 
 The endpoints invoked for ingestion (base URL resolved via
 `lib.integrations.endpoints.endpoint("gmail_api")` so it can be pointed at a
-local spammer, [client.py:201‑204](../../../services/ingest/integrations/gmail/client.py#L201-L204)):
+Provider Lab, [client.py:201‑204](../../../services/ingest/integrations/gmail/client.py#L201-L204)):
 
 | Gmail endpoint | Wrapper | Purpose | Code |
 |----------------|---------|---------|------|
@@ -588,8 +588,9 @@ Verified against Google's official docs (DWD JWT‑bearer grant, Gmail
 | `GMAIL_SERVICE_ACCOUNT_CLIENT_ID` | — | numeric DWD client id surfaced to admins for scope authorization |
 | `GMAIL_PUBSUB_PUSH_OIDC_AUDIENCE` (or `GMAIL_PUBSUB_PUSH_ENDPOINT`) | — | expected `aud` of the push OIDC token; if unset the ingress returns `503 not_configured` |
 | `GMAIL_PUBSUB_PUSH_OIDC_SA` | — | expected `email` claim of the push OIDC token |
-| `GMAIL_API_BASE_URL` / `GOOGLE_DIRECTORY_BASE_URL` | Google prod | override the Gmail / Directory base (used by the endpoint resolver / spammer) ([endpoints.py:117‑118](../../../lib/integrations/endpoints.py#L117-L118)) |
-| `SYNTHETIC_SOURCE_API_BASE` | unset | spammer mode — points all sources (incl. `gmail_api` → `/gmail/gmail/v1`) at one local host ([endpoints.py:144‑187](../../../lib/integrations/endpoints.py#L144-L187)) |
+| `GMAIL_API_BASE_URL` / `GOOGLE_DIRECTORY_BASE_URL` | Google prod | explicit Gmail / Directory base override ([endpoints.py](../../../lib/integrations/endpoints.py)) |
+| `GOOGLE_TOKEN_URI` | Google OAuth | explicit DWD token endpoint override |
+| `PROVIDER_LAB_URL` | unset | test-only Provider Lab origin; does not override production endpoints by itself |
 | `ingestion.kafka_path_enabled` (tenant flag, not env) | `TRUE` (kafka‑first) | kill‑switch: `FALSE` forces the live drain to ingest inline instead of publishing to `ingestion.raw` ([fetcher.py:134‑142](../../../services/ingest/integrations/gmail/fetcher.py#L134-L142)) |
 
 ### 11.2 Verified compliant
@@ -609,23 +610,16 @@ Verified against Google's official docs (DWD JWT‑bearer grant, Gmail
 - **No secret sprawl** — single service‑account key + admin DWD grant; no
   per‑install token, no `secret_ref`. ✅
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
 Gmail does **not** have a `build_*` entry in
 `services/ingest/ingestion/fetchers/_clients.py` (unlike Slack/GitHub/Notion/
 finance sources) — it builds its own client via `get_minter()` +
 `GoogleHttpClient` in the fetcher/reconciler `_open_gmail_client` hooks
 ([fetchers/gmail.py:256‑266](../../../services/ingest/ingestion/fetchers/gmail.py#L256-L266)).
-So there is **no `spam-gmail::…` token preseed** in `_clients.py`. Instead,
-spammer mode is driven purely by the **endpoint resolver**: with
-`SYNTHETIC_SOURCE_API_BASE` set, `endpoint("gmail_api")` resolves to the local
-host's `/gmail/gmail/v1` sub‑path
-([endpoints.py:147](../../../lib/integrations/endpoints.py#L147)), so the same
-`GmailClient` calls hit the mock instead of `gmail.googleapis.com`.
-
-> **TODO(human):** the DWD minter (`get_minter()`) still mints against
-> `https://oauth2.googleapis.com/token` even in spammer mode — confirm how a
-> local spammer run satisfies the token mint (a fake service‑account key the
-> mock accepts? a token‑uri override?). The endpoint resolver overrides the
-> *Gmail API* base but not the OAuth2 *token* URI, and the code doesn't say how
-> the two are reconciled for local runs.
+So there is **no `spam-gmail::…` token preseed** in `_clients.py`. A lab run
+sets the three explicit overrides `GMAIL_API_BASE_URL`,
+`GOOGLE_DIRECTORY_BASE_URL`, and `GOOGLE_TOKEN_URI`; the helper
+`provider_lab_endpoint_overrides()` produces all three from
+`PROVIDER_LAB_URL`. This keeps the Gmail and DWD token calls on the loopback
+lab without adding a single-host fallback to the production resolver.

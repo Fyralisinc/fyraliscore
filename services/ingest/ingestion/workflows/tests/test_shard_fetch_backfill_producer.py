@@ -27,7 +27,7 @@ import asyncpg
 import orjson
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+import services.ingest.ingestion.workflows.shard_fetch as shard_fetch_module
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingest.ingestion.workflows.shard_fetch import (
     RAW_TOPIC,
@@ -102,7 +102,9 @@ async def _seed_and_request(
     fetcher: Any, monkeypatch: pytest.MonkeyPatch,
     identifier: dict | None = None,
 ) -> tuple[UUID, UUID]:
-    monkeypatch.setitem(FETCHER_DISPATCH, source, fetcher)
+    monkeypatch.setattr(
+        shard_fetch_module, "resolve_fetcher", lambda _source: fetcher,
+    )
     tid = await _seed_tenant(pool)
     await _seed_provider_install(pool, tenant_id=tid, provider=source)
     run_id = await _seed_onboarding_run(pool, tenant_id=tid, source=source)
@@ -158,6 +160,10 @@ async def test_shard_fetch_publishes_raw_envelope_shape(
         fresh_db, source="slack", shard_kind="slack_channel_window",
         fetcher=fetcher, monkeypatch=monkeypatch,
     )
+    installation_row_id = await fresh_db.fetchval(
+        "SELECT installation_row_id FROM onboarding_shards WHERE id = $1",
+        shard_id,
+    )
     await _service(fresh_db, producer, s3).run(max_ticks=1)
 
     # Exclude the shard.fetched progress event (onboarding.progress) so
@@ -175,6 +181,9 @@ async def test_shard_fetch_publishes_raw_envelope_shape(
         assert env.ingress_kind == "backfill"
         assert env.source == "slack"
         assert env.tenant_id == tid
+        assert env.ingress_metadata["installation_row_id"] == str(
+            installation_row_id,
+        )
         assert env.raw_s3_key  # non-empty
         assert env.content_hash
         # The pointer's key must address an object actually written.
@@ -203,6 +212,10 @@ async def test_shard_fetch_s3_blob_contains_record_and_metadata(
         fetcher=fetcher, monkeypatch=monkeypatch,
         identifier={"repo": "o/r"},
     )
+    installation_row_id = await fresh_db.fetchval(
+        "SELECT installation_row_id FROM onboarding_shards WHERE id = $1",
+        shard_id,
+    )
     await _service(fresh_db, producer, s3).run(max_ticks=1)
 
     raw_published = [
@@ -219,6 +232,9 @@ async def test_shard_fetch_s3_blob_contains_record_and_metadata(
     assert "webhook_metadata" not in blob["record"]
     assert blob["webhook_metadata"] == {"X-GitHub-Event": "issues"}
     assert blob["shard_context"]["shard_id"] == str(shard_id)
+    assert blob["shard_context"]["installation_row_id"] == str(
+        installation_row_id,
+    )
 
 
 # =====================================================================

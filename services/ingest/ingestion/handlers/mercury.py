@@ -37,9 +37,7 @@ from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -296,7 +294,6 @@ def _account_id_of(payload: dict[str, Any], obj: dict[str, Any] | None) -> str:
 # Handler
 # ---------------------------------------------------------------------
 
-@register(_CHANNEL)
 async def handle_mercury_transaction(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -342,7 +339,6 @@ async def handle_mercury_transaction(
     )
 
 
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL, _TRUST)
 
 
 __all__ = ["handle_mercury_transaction"]

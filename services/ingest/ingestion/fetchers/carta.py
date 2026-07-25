@@ -52,7 +52,7 @@ from services.ingest.integrations.carta.client import (
     ENTITY_COLLECTIONS,
     CartaApiError,
 )
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -208,7 +208,6 @@ async def fetch_page_carta(
         await close()
 
 
-FETCHER_DISPATCH["carta"] = fetch_page_carta
 
 
 __all__ = [

@@ -39,8 +39,8 @@ BACKWARD COMPATIBILITY
 M6.3 Gmail's planner is refactored as part of M6.4 to accept the
 new context shape. The Planner type alias is updated; per-source
 planners take a single argument going forward. The change is NOT
-backward-compatible at the type level (callers of PLANNER_DISPATCH
-must build a PlannerContext); this is intentional per A18.6's
+backward-compatible at the type level (planner callers must build a
+PlannerContext); this is intentional per A18.6's
 "single contract" framing.
 
 ============================================================

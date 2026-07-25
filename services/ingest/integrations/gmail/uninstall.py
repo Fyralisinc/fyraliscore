@@ -29,7 +29,7 @@ from services.ingest.integrations.gmail.client import (
     GMAIL_READONLY_SCOPE,
     GmailClient,
     GoogleApiError,
-    GoogleHttpClient,
+    build_google_http_client,
 )
 from services.ingest.integrations.gmail.dwd import get_minter
 from services.ingest.integrations.gmail.pubsub import PubsubAdmin
@@ -70,7 +70,11 @@ async def uninstall_install(
 
     if watches:
         minter = get_minter()
-        async with GoogleHttpClient(minter) as http:
+        async with build_google_http_client(
+            minter,
+            tenant_id=str(tenant_id),
+            installation_id=str(gmail_installation_id),
+        ) as http:
             gmail = GmailClient(http)
             for w in watches:
                 try:
@@ -86,7 +90,10 @@ async def uninstall_install(
     pubsub_teardown_succeeded = True
     try:
         async with PubsubAdmin() as admin:
-            await admin.teardown(tenant_id)
+            await admin.teardown(
+                tenant_id,
+                installation_id=gmail_installation_id,
+            )
     except Exception as exc:  # pragma: no cover - backend-specific
         pubsub_teardown_succeeded = False
         log.warning(
@@ -176,7 +183,11 @@ async def stop_mailbox(
         pass
 
     minter = get_minter()
-    async with GoogleHttpClient(minter) as http:
+    async with build_google_http_client(
+        minter,
+        tenant_id=str(tenant_id),
+        installation_id=str(gmail_installation_id),
+    ) as http:
         gmail = GmailClient(http)
         try:
             await gmail.stop(user_email=email_address, scope=scope)

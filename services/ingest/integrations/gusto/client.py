@@ -23,10 +23,10 @@ The optional `X-Gusto-API-Version` header pins the API version (date string,
 e.g. "2026-02-01" — the reference default); omitted requests fall back to the
 app's Developer Portal minimum. Pin via GUSTO_API_VERSION.
 
-Rate limits: 429 + Retry-After (env knobs GUSTO_RL_MAX_ATTEMPTS /
-GUSTO_RL_MAX_SLEEP_SEC). Non-2xx maps to ``GustoApiError``. A 401/403 triggers
-one reactive token re-mint via `refresh_on_unauthorized` (inert in spammer
-mode), then retries once.
+Every outbound attempt executes through the shared ``ProviderTransport``,
+which owns distributed quotas, bounded full-jitter retries, timeout budgets,
+concurrency and shared ``Retry-After`` cooldowns. A 401/403 triggers one
+transport-governed reactive token re-mint, then retries once.
 
 Logging redaction: the access token / auth header are NEVER logged.
 """
@@ -42,6 +42,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import GustoApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -54,15 +68,6 @@ _DEFAULT_PAGE_SIZE = 100
 _MAX_PAGE_SIZE = 100
 # Pinned API version (docs.gusto.com reference default). Overridable per env.
 _DEFAULT_API_VERSION = "2026-02-01"
-
-
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
 
 
 def _api_version() -> str:
@@ -89,22 +94,46 @@ class GustoClient:
         api_base_url: str | None = None,
         install_row_id: Any | None = None,
         refresh_secret_ref: str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
         self._company_uuid = company_uuid
-        # Phase 3: reactive OAuth re-mint on 401 (inert in spammer mode).
+        # Phase 3: reactive OAuth re-mint on 401 (inert in Provider Lab mode).
         self._install_row_id = install_row_id
         self._refresh_secret_ref = refresh_secret_ref
         self._access_token_cache = SecretValueCache(preset=access_token)
         self._token_lock = asyncio.Lock()
-        # In production the base is the canonical Gusto host; a spammer/test
+        # In production the base is the canonical Gusto host; a lab/test
         # override (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="gusto",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(install_row_id) if install_row_id is not None else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -131,7 +160,12 @@ class GustoClient:
         )
 
     async def _request(
-        self, method: str, path: str, *, params: dict[str, Any] | None = None,
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        operation: str,
     ) -> httpx.Response:
         from services.ingest.integrations.gusto import metrics
         from services.ingest.integrations.oauth_refresh import (
@@ -139,39 +173,66 @@ class GustoClient:
         )
 
         url = f"{self._api_base_url}{path}"
-        max_attempts = int(os.environ.get("GUSTO_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("GUSTO_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
         reminted = False
         refreshed_token: str | None = None
         while True:
-            attempt += 1
             token = refreshed_token or await self._token()
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
                 "X-Gusto-API-Version": _api_version(),
             }
-            try:
-                response = await client.request(
-                    method, url, headers=headers, params=params,
-                )
-            except httpx.TransportError as exc:
-                metrics.record_request("error")
-                raise GustoApiError(
-                    "transport error calling gusto",
-                    code="gusto_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
-                ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
-                metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
+            async def _once() -> httpx.Response:
+                try:
+                    response = await client.request(
+                        method,
+                        url,
+                        headers=headers,
+                        params=params,
+                    )
+                except httpx.TimeoutException as exc:
+                    metrics.record_request("error")
+                    raise ProviderTimeoutError(
+                        "Gusto request timed out",
+                        source="gusto",
+                        operation=operation,
+                        error_type=type(exc).__name__,
+                    ) from exc
+                except httpx.TransportError as exc:
+                    metrics.record_request("error")
+                    raise ProviderTransientError(
+                        "Gusto transport error",
+                        source="gusto",
+                        operation=operation,
+                        error_type=type(exc).__name__,
+                    ) from exc
 
+                if response.status_code == 429:
+                    metrics.record_request("rate_limited")
+                    raise ProviderRateLimited(
+                        "Gusto rate limit",
+                        retry_after_seconds=parse_retry_after(
+                            response.headers.get("Retry-After"),
+                        ),
+                        status_code=429,
+                        header_parser_id="http.retry_after",
+                        source="gusto",
+                        operation=operation,
+                    )
+                if response.status_code >= 500:
+                    metrics.record_request("error")
+                    raise ProviderTransientError(
+                        f"Gusto returned HTTP {response.status_code}",
+                        source="gusto",
+                        operation=operation,
+                        http_status=response.status_code,
+                    )
+                return response
+
+            response = await self._provider.execute(operation, _once)
             if response.status_code // 100 == 2:
                 metrics.record_request("ok")
                 return response
@@ -187,6 +248,7 @@ class GustoClient:
                         install_row_id=self._install_row_id,
                         current_access_ref=self._secret_ref,
                         refresh_secret_ref=self._refresh_secret_ref,
+                        request_binding=self._provider,
                     )
                     if new_token is not None:
                         self._access_token_cache.set(new_token)
@@ -256,7 +318,12 @@ class GustoClient:
         if terminated is not None:
             params["terminated"] = "true" if terminated else "false"
         path = f"/v1/companies/{quote(self._company_uuid)}/employees"
-        response = await self._request("GET", path, params=params)
+        response = await self._request(
+            "GET",
+            path,
+            params=params,
+            operation="employees.list",
+        )
         rows = self._list_rows(response, path)
         return rows, self._next_page(page, rows, per, response.headers)
 
@@ -297,7 +364,12 @@ class GustoClient:
         if sort_order:
             params["sort_order"] = sort_order
         path = f"/v1/companies/{quote(self._company_uuid)}/payrolls"
-        response = await self._request("GET", path, params=params)
+        response = await self._request(
+            "GET",
+            path,
+            params=params,
+            operation="payrolls.list",
+        )
         rows = self._list_rows(response, path)
         return rows, self._next_page(page, rows, per, response.headers)
 
@@ -306,7 +378,11 @@ class GustoClient:
         probe. Returns the single company object (uuid, name, trade_name,
         company_status, ...)."""
         path = f"/v1/companies/{quote(self._company_uuid)}"
-        response = await self._request("GET", path)
+        response = await self._request(
+            "GET",
+            path,
+            operation="companies.get",
+        )
         body = _safe_json(response)
         if not isinstance(body, dict):
             raise GustoApiError(

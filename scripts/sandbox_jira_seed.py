@@ -87,8 +87,14 @@ async def _run(args: argparse.Namespace) -> int:
     pool = await asyncpg.create_pool(dsn=args.dsn, min_size=1, max_size=3, init=_register_codecs)
     try:
         # 1. Verify credentials with a live probe.
-        probe = JiraClient(base_url=base_url, account_email=args.email,
-                           api_token=args.api_token)
+        probe = JiraClient(
+            base_url=base_url,
+            account_email=args.email,
+            api_token=args.api_token,
+            tenant_id=tenant_id,
+            allow_unlimited_local=True,
+            require_tenant_installation=False,
+        )
         try:
             me = await probe.myself()
         finally:
@@ -106,8 +112,14 @@ async def _run(args: argparse.Namespace) -> int:
             project_keys = [k.strip() for k in args.projects.split(",") if k.strip()]
             meta: dict = {}
         else:
-            client = JiraClient(base_url=base_url, account_email=args.email,
-                                api_token=args.api_token)
+            client = JiraClient(
+                base_url=base_url,
+                account_email=args.email,
+                api_token=args.api_token,
+                tenant_id=tenant_id,
+                allow_unlimited_local=True,
+                require_tenant_installation=False,
+            )
             try:
                 project_keys, meta, start = [], {}, 0
                 while True:

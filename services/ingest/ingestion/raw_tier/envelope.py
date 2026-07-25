@@ -20,21 +20,18 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from services.ingest.source_contract.catalog import CANONICAL_SOURCE_IDS
+from services.ingest.source_contract.models import IngressKind
 
-SourceLiteral = Literal[
-    "slack", "github", "discord", "gmail", "notion", "google_calendar",
-    "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram",
-    "brex", "ramp", "gusto", "deel",
-    "fireflies", "signal", "aws", "miro", "figma", "carta",
-    "hibob", "ashby", "linkedin",
-    "whatsapp", "facebook_pages",
-]
-# "poll" is the Gmail live-via-Kafka cutover ingress: the push handler /
-# history poller fetches the message resource (a real Gmail message, NOT
-# the Pub/Sub notification) and publishes it here instead of ingesting
-# inline. Maps to the same "gmail:" handler as backfill (channel_mapping),
-# so external_id parity holds. Additive within v1 (envelope_version stays 1).
-IngressKindLiteral = Literal["webhook", "gateway", "pubsub", "backfill", "poll"]
+
+# PEP 646 unpacking keeps the wire-schema Literal tied to the immutable
+# contract catalog. Adding or removing a canonical source anywhere else can
+# no longer silently fork Pydantic validation from topic/runtime membership.
+SourceLiteral = Literal[*CANONICAL_SOURCE_IDS]
+# The source contract owns this wire vocabulary because ingress-kind routing
+# is declared there. Keep the historical public alias for callers that import
+# the envelope model's type names.
+IngressKindLiteral = IngressKind
 
 
 class RawEnvelope(BaseModel):

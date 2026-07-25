@@ -1,8 +1,7 @@
 """Run 2 — fault injection (A30.3).
 
-Same 16-tenant shape as Run 1, but every backfill mock runs the `FLAKY`
-fault profile (10% random 5xx) — propagated to the X3 backfill
-subprocesses through the fixture registry's `fault_profile` field — plus
+Same 16-tenant shape as Run 1, but every backfill source runs the `FLAKY`
+fault profile (a deterministic one-in-ten Provider Lab 503 rule) — plus
 a deliberate **partition-missing injection**: one out-of-range
 `occurred_at` event per source driven through the real
 `observation_writer` to verify A28's permanent-error DLQ routing fires
@@ -60,8 +59,7 @@ _MIGRATIONS = pathlib.Path("db/migrations")
 
 def run2_scenarios(tenants_per_source: int = 4):
     """Run 1's scenarios with the FLAKY fault profile applied to every
-    tenant (the profile is serialized into the fixture registry the X3
-    subprocesses read)."""
+    tenant (the harness translates it to Provider Lab fault rules)."""
     return [
         dataclasses.replace(s, fault_profile=FLAKY)
         for s in run1_scenarios(tenants_per_source)
@@ -80,7 +78,11 @@ async def _migrate_and_truncate(pool: asyncpg.Pool) -> None:
                AND c.relispartition = FALSE
             """
         )
-        names = ", ".join(f'"{r["relname"]}"' for r in rows)
+        names = ", ".join(
+            f'"{r["relname"]}"'
+            for r in rows
+            if r["relname"] != "ingestion_source_catalog"
+        )
         if names:
             await conn.execute(f"TRUNCATE {names} RESTART IDENTITY CASCADE")
 
@@ -157,7 +159,7 @@ async def run2(
             expected_pm = await partition_missing_probe(
                 pool, targets, bootstrap_servers=bootstrap_servers)
             report.live_lines = [
-                f"FLAKY (10% 5xx) applied to all backfill mocks",
+                "FLAKY (one-in-ten 503) applied to all Provider Lab sources",
                 f"partition-missing injections (one/source): {expected_pm}",
                 f"live per-source deltas: {live.per_source_counts}",
             ]

@@ -1,10 +1,10 @@
 """services/ingest/integrations/miro/client.py — outbound Miro REST client.
 
-Single outbound surface for backfill + poll-incremental + the planner's board
-enumeration. Miro is authenticated with a long-lived Bearer token issued to an
-org-level app. The token is resolved once from the secret store (or preset in
-spammer mode) and reused for the life of the client — same posture as the
-Brex/Notion/Jira clients. No token refresh (Bearer archetype).
+Single outbound surface for backfill, reconciliation, and the planner's board
+enumeration. The currently supported installation kind is a manually supplied
+Bearer token. Every actual provider attempt runs through ``ProviderTransport``;
+HTTP 429, timeouts, and 5xx responses become typed retry outcomes instead of
+sleeping or retrying inside this client.
 
 TODO(human): confirm Miro API host + read endpoints/scopes (board enumeration +
 board-items list). The host defaults via the endpoint resolver
@@ -15,10 +15,10 @@ paths (e.g. `/v2/boards`, `/v2/boards/{board_id}/items`) and the required OAuth
 scopes must be confirmed and the read methods adjusted. Implement only the
 verified read surface.
 
-TODO(human): confirm Miro rate-limit signalling. Defaults to 429 +
-`Retry-After` (Brex's scheme); tune via `MIRO_RL_MAX_ATTEMPTS` /
-`MIRO_RL_MAX_SLEEP_SEC`. Miro may instead signal credit-based limits via
-`X-RateLimit-*` headers.
+Miro rate-limit responses are normalized from HTTP 429 plus ``Retry-After``.
+Operation-specific plan, seat, endpoint-tier, and resource quota declarations
+remain deployment evidence, while ProviderTransport owns retries and shared
+cooldowns.
 
 Pagination: list helpers return `(items, next_cursor, total)`, `next_cursor is
 None` terminal — OPAQUE CURSOR token (Miro's `cursor` query param + the
@@ -40,6 +40,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import MiroApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -53,20 +67,11 @@ _DEFAULT_TIMEOUT_S = 30.0
 _DEFAULT_PAGE_SIZE = 50
 
 
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
-
-
 class MiroClient:
     """Outbound Miro REST client, one per backfill/poll shard open.
 
     Built by `services/ingest/ingestion/fetchers/_clients.py::build_miro_client`
-    (production / spammer) and by the seed/onboarding board probe. Shares the
+    (production / Provider Lab) and by the seed/onboarding board probe. Shares the
     process-wide httpx client when one is injected.
     """
 
@@ -81,20 +86,47 @@ class MiroClient:
         api_token: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
-        # Preset token (spammer mode presets a recognized token); otherwise
+        # Preset token (Provider Lab mode supplies a recognized token); otherwise
         # resolved lazily from the secret store on first request.
         self._api_token_cache = SecretValueCache(preset=api_token)
         self._token_lock = asyncio.Lock()
         # In production the base is the canonical Miro API host; a
-        # spammer/test override (api_base_url) wins so backfill points at the mock.
+        # Lab/test override (api_base_url) points backfill at Provider Lab.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="miro",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(installation_row_id)
+                if installation_row_id is not None
+                else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -130,12 +162,9 @@ class MiroClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        operation: str,
     ) -> dict[str, Any]:
-        """One Miro API call with bounded Retry-After-aware 429 retry.
-
-        Returns the parsed JSON object. Non-2xx (including a still-429 after the
-        budget is spent) is mapped to `MiroApiError`.
-        """
+        """Execute one semantic Miro operation through ProviderTransport."""
         from services.ingest.integrations.miro import metrics
 
         auth = await self._auth_header()
@@ -144,47 +173,69 @@ class MiroClient:
             "Authorization": auth,
             "Accept": "application/json",
         }
-        max_attempts = int(os.environ.get("MIRO_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("MIRO_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
-        while True:
-            attempt += 1
+        async def _once() -> httpx.Response:
             try:
                 response = await client.request(
                     method, url, headers=headers, params=params,
                 )
+            except httpx.TimeoutException as exc:
+                metrics.record_request("error")
+                raise ProviderTimeoutError(
+                    "Miro request timed out",
+                    source="miro",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
             except httpx.TransportError as exc:
                 metrics.record_request("error")
-                raise MiroApiError(
-                    "transport error calling miro",
-                    code="miro_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
+                raise ProviderTransientError(
+                    "Miro transport error",
+                    source="miro",
+                    operation=operation,
+                    error_type=type(exc).__name__,
                 ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
+            if response.status_code == 429:
                 metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
-
-            if response.status_code // 100 == 2:
-                metrics.record_request("ok")
-                body = _safe_json(response)
-                if not isinstance(body, dict):
-                    raise MiroApiError(
-                        "miro response was not a JSON object",
-                        code="miro_api_error",
-                        context={"path": path},
-                    )
-                return body
-
-            if response.status_code in (401, 403):
-                metrics.record_request("unauthorized")
-            else:
+                raise ProviderRateLimited(
+                    "Miro rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="miro",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
                 metrics.record_request("error")
-            raise _api_error_from_response(response, path)
+                raise ProviderTransientError(
+                    f"Miro returned HTTP {response.status_code}",
+                    source="miro",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
+
+        response = await self._provider.execute(operation, _once)
+        if response.status_code // 100 == 2:
+            metrics.record_request("ok")
+            body = _safe_json(response)
+            if not isinstance(body, dict):
+                raise MiroApiError(
+                    "miro response was not a JSON object",
+                    code="miro_api_error",
+                    context={"path": path},
+                )
+            return body
+
+        if response.status_code in (401, 403):
+            metrics.record_request("unauthorized")
+        else:
+            metrics.record_request("error")
+        raise _api_error_from_response(response, path)
 
     # -----------------------------------------------------------------
     # Public read surface
@@ -220,7 +271,11 @@ class MiroClient:
         pages = 0
         while next_path is not None and pages < max_pages:
             pages += 1
-            resp = await self._request("GET", next_path)
+            resp = await self._request(
+                "GET",
+                next_path,
+                operation="boards.list",
+            )
             out.extend(_boards_from_response(resp))
 
             # 1) Prefer the explicit server cursor (links.next). Absent => done.
@@ -265,7 +320,11 @@ class MiroClient:
 
     async def get_board(self, board_id: str) -> dict[str, Any]:
         """`GET /boards/{id}` — one board (metadata probe)."""
-        return await self._request("GET", f"/boards/{board_id}")
+        return await self._request(
+            "GET",
+            f"/boards/{board_id}",
+            operation="boards.get",
+        )
 
     async def list_items(
         self,
@@ -284,7 +343,10 @@ class MiroClient:
         if cursor:
             params["cursor"] = cursor
         resp = await self._request(
-            "GET", f"/boards/{board_id}/items", params=params,
+            "GET",
+            f"/boards/{board_id}/items",
+            params=params,
+            operation="board_items.list",
         )
         items = resp.get("data")
         if not isinstance(items, list):

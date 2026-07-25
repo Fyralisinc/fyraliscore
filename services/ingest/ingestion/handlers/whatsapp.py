@@ -38,7 +38,6 @@ from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -245,7 +244,6 @@ def _draft_status(payload: dict[str, Any]) -> ObservationDraft:
     )
 
 
-@register(_CHANNEL)
 async def handle_whatsapp(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:

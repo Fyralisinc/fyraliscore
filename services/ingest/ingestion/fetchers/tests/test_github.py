@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
+from services.ingest.source_contract.runtime import resolve_fetcher
 from services.ingest.ingestion.fetchers import github as gh_fetcher
 from services.ingest.ingestion.fetchers.github import (
     GithubCursor,
@@ -413,4 +414,4 @@ async def test_cursor_strict_pydantic():
 
 
 async def test_dispatch_wired():
-    assert FETCHER_DISPATCH["github"] is fetch_page_github
+    assert resolve_fetcher("github") is fetch_page_github

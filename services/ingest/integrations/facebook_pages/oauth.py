@@ -22,6 +22,7 @@ from lib.shared.errors import (
     StateTokenInvalidError,
 )
 from lib.shared.ids import uuid7
+from lib.shared.provider_transport import RetryLater
 from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.facebook_pages.client import (
     FACEBOOK_PAGES_WEBHOOK_FIELDS,
@@ -29,6 +30,9 @@ from services.ingest.integrations.facebook_pages.client import (
 )
 from services.ingest.integrations.oauth_native_connect import (
     build_oauth_native_connect_router,
+)
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
 )
 from services.ingest.integrations.slack.oauth import (
     _b64url,
@@ -382,7 +386,9 @@ async def callback_handler(request: Request) -> Any:
     if not client_id or not client_secret or not redirect_uri:
         return _error_redirect("facebook_pages_unconfigured")
 
-    client = FacebookPagesClient()
+    client = FacebookPagesClient(
+        **tenant_preinstall_transport_kwargs(tenant_id),
+    )
     try:
         token_response = await client.exchange_code(
             code=code,
@@ -412,6 +418,8 @@ async def callback_handler(request: Request) -> Any:
             page_access_token=page_token,
             fields=FACEBOOK_PAGES_WEBHOOK_FIELDS,
         )
+    except RetryLater:
+        raise
     except Exception as exc:  # noqa: BLE001
         log.error(
             "facebook_pages_install_failure",

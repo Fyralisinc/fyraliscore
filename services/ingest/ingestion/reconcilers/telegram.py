@@ -27,11 +27,13 @@ import logging
 from typing import Any
 
 import asyncpg
+from lib.shared.provider_transport import RetryLater
+
+from services.ingest.ingestion.installations import load_source_installation
 import orjson
 
 from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
@@ -110,6 +112,10 @@ async def _check_one_shard_for_gap(
             dialog_kind=identifier.get("dialog_kind") or "chat",
             min_id=high_water,
         )
+    except RetryLater:
+        # FloodWait/cooldown is scheduled durably by the workflow. Returning
+        # "no gap" here would hide missing messages.
+        raise
     except Exception as exc:  # noqa: BLE001 — best-effort gap check
         log.warning(
             "reconcilers.telegram.probe_failed",
@@ -136,15 +142,6 @@ async def _check_one_shard_for_gap(
     )
 
 
-_LOAD_TELEGRAM_INSTALL_SQL = """
-SELECT id, tenant_id, account_label, api_id, api_hash_secret_ref,
-       session_secret_ref, backfill_session_secret_ref, disabled_at
-  FROM telegram_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-
 async def reconcile_telegram(
     shards: list[asyncpg.Record], run: asyncpg.Record,
 ) -> ReconciliationDecision:
@@ -153,7 +150,12 @@ async def reconcile_telegram(
         return ReconciliationDecision(has_gaps=False)
 
     pool = _get_pool()
-    install = await pool.fetchrow(_LOAD_TELEGRAM_INSTALL_SQL, run["tenant_id"])
+    install = await load_source_installation(
+        pool,
+        source="telegram",
+        tenant_id=run["tenant_id"],
+        installation_id=run["installation_row_id"],
+    )
     if install is None:
         return ReconciliationDecision(has_gaps=False)
 
@@ -177,7 +179,6 @@ async def reconcile_telegram(
     return ReconciliationDecision(has_gaps=False)
 
 
-RECONCILER_DISPATCH["telegram"] = reconcile_telegram
 
 
 __all__ = [

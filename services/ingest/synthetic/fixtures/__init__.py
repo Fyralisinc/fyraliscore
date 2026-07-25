@@ -1,8 +1,7 @@
-"""Programmatically-generated fixtures for X2 mock clients.
+"""Programmatically generated fixtures for Provider Lab and focused tests.
 
 Each generator produces a deterministic fixture for the same input
-parameters (seeded RNG for any randomness). Tests pass these into the
-mock client constructors.
+parameters (seeded RNG for any randomness).
 """
 from services.ingest.synthetic.fixtures.ashby_generator import make_ashby
 from services.ingest.synthetic.fixtures.aws_generator import make_aws
@@ -10,6 +9,9 @@ from services.ingest.synthetic.fixtures.brex_generator import make_brex
 from services.ingest.synthetic.fixtures.carta_generator import make_carta
 from services.ingest.synthetic.fixtures.deel_generator import make_deel
 from services.ingest.synthetic.fixtures.discord_generator import make_discord_guild
+from services.ingest.synthetic.fixtures.facebook_pages_generator import (
+    make_facebook_pages,
+)
 from services.ingest.synthetic.fixtures.figma_generator import make_figma
 from services.ingest.synthetic.fixtures.fireflies_generator import make_fireflies
 from services.ingest.synthetic.fixtures.gmail_generator import make_gmail_mailbox
@@ -38,16 +40,28 @@ from services.ingest.synthetic.fixtures.slack_generator import make_slack_worksp
 from services.ingest.synthetic.fixtures.telegram_generator import make_telegram
 
 
+# Conventional source-id aliases used by certification bindings and callers
+# that should not need to know a generator's historical noun suffix.
+make_discord = make_discord_guild
+make_github = make_github_repos
+make_gmail = make_gmail_mailbox
+make_slack = make_slack_workspace
+
+
 __all__ = [
     "make_ashby",
     "make_aws",
     "make_brex",
     "make_carta",
     "make_deel",
+    "make_discord",
     "make_discord_guild",
+    "make_facebook_pages",
     "make_figma",
     "make_fireflies",
     "make_github_repos",
+    "make_github",
+    "make_gmail",
     "make_gmail_mailbox",
     "make_google_calendar",
     "make_google_drive",
@@ -62,6 +76,7 @@ __all__ = [
     "make_quickbooks",
     "make_ramp",
     "make_signal",
+    "make_slack",
     "make_slack_dm_workspace",
     "make_slack_workspace",
     "make_telegram",

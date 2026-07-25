@@ -1,0 +1,143 @@
+name: Source Certification
+
+on:
+  workflow_dispatch:
+    inputs:
+      certification_evidence_run_id:
+        description: "Successful Source Certification Evidence run for this exact main commit."
+        required: true
+        type: string
+      certification_evidence_artifact_name:
+        description: "Artifact containing exactly one <source>.json input for every canonical source."
+        required: true
+        default: "source-certification-inputs"
+        type: string
+      confirm_complete_evidence:
+        description: "I confirm all local suites, 60-minute soaks, and 27 low-rate real-provider canaries completed without waivers."
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  certify:
+    name: Validate and sign the 27-source release manifest
+    if: inputs.confirm_complete_evidence == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: source-certification
+
+    steps:
+      - name: Check out the exact main commit
+        uses: actions/checkout@v4
+
+      - name: Require a main-branch commit
+        env:
+          TARGET_SHA: ${{ github.sha }}
+          TARGET_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${TARGET_REF}" != "refs/heads/main" ]; then
+            echo "Source Certification must be dispatched on main, got ${TARGET_REF}" >&2
+            exit 1
+          fi
+          if [[ ! "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "github.sha must be a lowercase full 40-character commit SHA" >&2
+            exit 1
+          fi
+
+      - name: Verify the evidence workflow and artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVIDENCE_RUN_ID: ${{ inputs.certification_evidence_run_id }}
+          EVIDENCE_ARTIFACT_NAME: ${{ inputs.certification_evidence_artifact_name }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${EVIDENCE_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "certification_evidence_run_id must be numeric" >&2
+            exit 1
+          fi
+          if [[ ! "${EVIDENCE_ARTIFACT_NAME}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "certification_evidence_artifact_name contains unsupported characters" >&2
+            exit 1
+          fi
+
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${EVIDENCE_RUN_ID}")"
+          workflow_name="$(jq -r '.name' <<< "${run_json}")"
+          conclusion="$(jq -r '.conclusion' <<< "${run_json}")"
+          head_sha="$(jq -r '.head_sha' <<< "${run_json}")"
+          head_branch="$(jq -r '.head_branch' <<< "${run_json}")"
+          head_repository="$(jq -r '.head_repository.full_name' <<< "${run_json}")"
+          if [ "${workflow_name}" != "Source Certification Evidence" ]; then
+            echo "evidence run must reference Source Certification Evidence, got ${workflow_name}" >&2
+            exit 1
+          fi
+          if [ "${conclusion}" != "success" ]; then
+            echo "evidence workflow must be successful, got ${conclusion}" >&2
+            exit 1
+          fi
+          if [ "${head_repository}" != "${GITHUB_REPOSITORY}" ]; then
+            echo "evidence workflow must run in ${GITHUB_REPOSITORY}, got ${head_repository}" >&2
+            exit 1
+          fi
+          if [ "${head_branch}" != "main" ] || [ "${head_sha}" != "${TARGET_SHA}" ]; then
+            echo "evidence workflow must certify this exact main commit" >&2
+            exit 1
+          fi
+
+          artifacts_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${EVIDENCE_RUN_ID}/artifacts?per_page=100"
+          )"
+          artifact_count="$(
+            jq --arg name "${EVIDENCE_ARTIFACT_NAME}" \
+              '[.artifacts[] | select(.name == $name and .expired == false)] | length' \
+              <<< "${artifacts_json}"
+          )"
+          if [ "${artifact_count}" != "1" ]; then
+            echo "evidence run must contain exactly one non-expired ${EVIDENCE_ARTIFACT_NAME} artifact" >&2
+            exit 1
+          fi
+
+      - name: Download certification inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.certification_evidence_artifact_name }}
+          path: ${{ runner.temp }}/source-certification-inputs
+          run-id: ${{ inputs.certification_evidence_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Require locked provider evidence and contract-only architecture
+        run: |
+          set -euo pipefail
+          python -m services.ingest.source_certification inventory --require-ready
+          python scripts/check_source_architecture_ratchet.py --no-baseline
+
+      - name: Evaluate and sign the exact release manifest
+        env:
+          SOURCE_CERTIFICATION_MANIFEST_SIGNING_KEY: ${{ secrets.SOURCE_CERTIFICATION_MANIFEST_SIGNING_KEY }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/source-certification-bundle"
+          python -m services.ingest.source_certification manifest \
+            --input-dir "${RUNNER_TEMP}/source-certification-inputs" \
+            --output "${RUNNER_TEMP}/source-certification-bundle/source-certification-manifest.json" \
+            --commit-sha "${TARGET_SHA}" \
+            --signing-key-env SOURCE_CERTIFICATION_MANIFEST_SIGNING_KEY
+          python scripts/validate_source_certification_manifest.py \
+            --manifest "${RUNNER_TEMP}/source-certification-bundle/source-certification-manifest.json" \
+            --target-sha "${TARGET_SHA}" \
+            --signing-key-env SOURCE_CERTIFICATION_MANIFEST_SIGNING_KEY
+
+      - name: Upload signed certification bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-certification-bundle
+          path: ${{ runner.temp }}/source-certification-bundle/source-certification-manifest.json
+          if-no-files-found: error
+          retention-days: 30

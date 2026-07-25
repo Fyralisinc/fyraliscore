@@ -18,8 +18,9 @@ import services.ingest.ingestion.fetchers._clients as clients
 async def test_build_github_client_is_memoized_per_installation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Spammer mode: token is preset (no real App-JWT mint), pool not touched.
-    monkeypatch.setenv("SYNTHETIC_SOURCE_API_BASE", "http://localhost:7003")
+    # Provider Lab mode: token is preset (no real App-JWT mint), pool untouched.
+    monkeypatch.setenv("PROVIDER_LAB_URL", "http://localhost:7003")
+    monkeypatch.setenv("GITHUB_API_BASE_URL", "http://localhost:7003/github")
     clients._GITHUB_CLIENTS.clear()
 
     inst_a = {"installation_id": "111", "tenant_id": "t", "id": "row-a"}
@@ -34,7 +35,7 @@ async def test_build_github_client_is_memoized_per_installation(
     assert c1 is c2
     # Different installation_id → distinct client.
     assert c3 is not c1
-    # The preset spammer token is present and reused (no re-mint).
+    # The preset Provider Lab token is present and reused (no re-mint).
     assert c1._installation_tokens["111"].token == "spam-gh::111"
 
 
@@ -44,7 +45,8 @@ async def test_explicit_pool_is_not_memoized(
 ) -> None:
     """The planner factory passes an explicit pool and must get a fresh
     (non-shared) client, preserving its semantics."""
-    monkeypatch.setenv("SYNTHETIC_SOURCE_API_BASE", "http://localhost:7003")
+    monkeypatch.setenv("PROVIDER_LAB_URL", "http://localhost:7003")
+    monkeypatch.setenv("GITHUB_API_BASE_URL", "http://localhost:7003/github")
     clients._GITHUB_CLIENTS.clear()
 
     inst = {"installation_id": "333", "tenant_id": "t", "id": "row-c"}

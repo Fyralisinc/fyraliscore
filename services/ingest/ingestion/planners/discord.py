@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from lib.shared.errors import DiscordApiError
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -182,7 +182,6 @@ async def plan_shards_discord(ctx: PlannerContext) -> list[Shard]:
     return shards
 
 
-PLANNER_DISPATCH["discord"] = plan_shards_discord
 
 
 __all__ = [

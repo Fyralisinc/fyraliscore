@@ -128,21 +128,21 @@ async def test_harness_parallel_4_tenants_mixed_sources(
 
 
 @pytest.mark.asyncio
-async def test_harness_gmail_against_real_port_spammer(
+async def test_harness_gmail_against_provider_lab(
     fresh_db: asyncpg.Pool,
 ) -> None:
-    """Gmail backfill driven against the REAL-PORT spammer (A30.7).
+    """Gmail backfill driven against the real-port Provider Lab (A30.7).
 
-    No mock client is monkeypatched: the harness spawns the spammer on a
+    No mock client is monkeypatched: the harness starts Provider Lab on a
     TCP port, points GMAIL_API_BASE_URL + the DWD SA-JSON token_uri at it,
     and the real GmailClient pages messages over real HTTP (token mint →
-    list → hydrate → profile). The spammer is seeded from the same fixture
-    registry, so the observation count still matches the fixture.
+    list → hydrate → profile). Provider Lab is seeded from the source
+    certification fixture, so the observation count still matches.
 
     This is the "plug the real API endpoints" capstone for gmail."""
     scenarios = [
         BackfillScenario(
-            tenant_slug="e2e-gmail-spammer",
+            tenant_slug="e2e-gmail-provider-lab",
             source="gmail",
             fixture_params={"email": "spam@e2e.example", "messages": 5},
             expected_observation_count=5,
@@ -152,7 +152,6 @@ async def test_harness_gmail_against_real_port_spammer(
         pool=fresh_db,
         scenarios=scenarios,
         completion_deadline_s=90.0,
-        real_clients=True,
     )
     result = await harness.run()
     assert_all_complete(result)

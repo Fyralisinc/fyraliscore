@@ -26,8 +26,8 @@ from services.ingest.integrations.gmail.client import (
     GMAIL_READONLY_SCOPE,
     GmailClient,
     GoogleApiError,
-    GoogleHttpClient,
     GoogleRateLimited,
+    build_google_http_client,
 )
 from services.ingest.integrations.gmail.dwd import get_minter
 
@@ -160,7 +160,11 @@ async def renew_one(
     topic_name = meta["topic_name"]
 
     minter = get_minter()
-    async with GoogleHttpClient(minter) as http:
+    async with build_google_http_client(
+        minter,
+        tenant_id=str(tenant_id),
+        installation_id=str(gmail_installation_id),
+    ) as http:
         gmail = GmailClient(http)
         try:
             result = await gmail.watch(

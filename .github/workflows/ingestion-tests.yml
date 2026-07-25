@@ -171,6 +171,27 @@ jobs:
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -e ".[dev]"
 
+      - name: Verify contract-driven source foundation
+        run: |
+          set -o pipefail
+          .venv/bin/python -m pytest \
+            services/ingest/source_contract/tests \
+            services/ingest/source_certification/tests \
+            services/ingest/synthetic/provider_lab/tests \
+            services/ingest/synthetic/tests/test_production_guard.py \
+            lib/shared/tests/test_provider_transport.py \
+            lib/shared/tests/test_provider_transport_contracts.py \
+            lib/shared/tests/test_provider_transport_progress.py \
+            services/ingest/integrations/tests/test_wave_a_provider_transport.py \
+            -v --tb=short --timeout=300 \
+            2>&1 | tee source-contract-tests.log
+
+      # Pull-request/nightly CI is a shrink-only ratchet while the explicit
+      # legacy inventory is non-empty. Production promotion runs the strict
+      # no-baseline gate; it cannot pass until P9 deletes every allowance.
+      - name: Verify source architecture ratchet
+        run: .venv/bin/python scripts/check_source_architecture_ratchet.py
+
       - name: Run services/ingest/ingestion/tests/test_ingest_core.py
         # Scope: the work-unit (GitHub #31) closes M5 pre-cutover gate
         # condition (7) by giving the legacy `ingest()` path automated
@@ -208,6 +229,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ingestion-tests-${{ github.run_id }}
-          path: ingestion-tests.log
+          path: |
+            ingestion-tests.log
+            source-contract-tests.log
           if-no-files-found: warn
           retention-days: 14

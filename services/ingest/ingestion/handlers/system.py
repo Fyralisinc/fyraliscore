@@ -35,7 +35,6 @@ from lib.shared.errors import ValidationError
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -120,7 +119,6 @@ async def _handle_internal(
     )
 
 
-@register("internal:state_change")
 async def handle_state_change(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -130,7 +128,6 @@ async def handle_state_change(
     )
 
 
-@register("internal:anomaly")
 async def handle_anomaly(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -140,7 +137,6 @@ async def handle_anomaly(
     )
 
 
-@register("internal:prediction_resolution")
 async def handle_prediction_resolution(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:

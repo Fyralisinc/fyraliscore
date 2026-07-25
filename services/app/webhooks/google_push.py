@@ -29,12 +29,15 @@ from fastapi.responses import JSONResponse
 from services.ingest.integrations._google_watch import WatchSpec, drain_push, resolve_push
 from services.ingest.integrations.google_calendar.watch import SPEC as _CALENDAR_SPEC
 from services.ingest.integrations.google_drive.watch import SPEC as _DRIVE_SPEC
+from services.ingest.source_contract import dedicated_ingress_definition
 
 
 log = structlog.get_logger("webhooks.google_push")
+_CALENDAR_INGRESS = dedicated_ingress_definition("google_calendar_push")
+_DRIVE_INGRESS = dedicated_ingress_definition("google_drive_push")
 
 
-router = APIRouter(prefix="/webhooks", tags=["webhooks", "google"])
+router = APIRouter(tags=["webhooks", "google"])
 
 
 def _pool(request: Request) -> asyncpg.Pool | None:
@@ -75,14 +78,25 @@ async def _handle(request: Request, spec: WatchSpec) -> JSONResponse:
     return JSONResponse(content={"status": "ok", "ingested": ingested})
 
 
-@router.post("/google_calendar/push")
+@router.post(_CALENDAR_INGRESS.route_path)
 async def google_calendar_push(request: Request) -> JSONResponse:
     return await _handle(request, _CALENDAR_SPEC)
 
 
-@router.post("/google_drive/push")
+@router.post(_DRIVE_INGRESS.route_path)
 async def google_drive_push(request: Request) -> JSONResponse:
     return await _handle(request, _DRIVE_SPEC)
 
 
-__all__ = ["router"]
+def build_google_push_router() -> APIRouter:
+    """Return the shared Calendar/Drive dedicated push router."""
+
+    return router
+
+
+__all__ = [
+    "build_google_push_router",
+    "google_calendar_push",
+    "google_drive_push",
+    "router",
+]

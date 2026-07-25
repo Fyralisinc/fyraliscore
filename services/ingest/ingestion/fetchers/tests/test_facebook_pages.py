@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_fetcher
 from services.ingest.ingestion.fetchers import facebook_pages as fb
 from services.ingest.ingestion.fetchers.facebook_pages import (
     FacebookPagesCursor,
@@ -97,7 +97,7 @@ def _shard(install: _FakeInstall):
 
 
 async def test_dispatch_and_channel_wired():
-    assert FETCHER_DISPATCH["facebook_pages"] is fetch_page_facebook_pages
+    assert resolve_fetcher("facebook_pages") is fetch_page_facebook_pages
     assert resolve_channel("facebook_pages", "webhook") == "facebook_pages:message"
     assert resolve_channel("facebook_pages", "backfill") == "facebook_pages:message"
 

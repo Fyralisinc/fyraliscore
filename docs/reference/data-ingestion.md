@@ -628,24 +628,19 @@ mechanisms, in one place:
   completion, then asserts **property-based invariants** (every tenant completed,
   no duplicate `external_id`, monotonic cursors, exactly-one completion signal,
   counts match fixtures).
-- **Live generators + spammer** (`live_generators/`, `spammer/`) — in-process
+- **Live generators + Provider Lab** (`live_generators/`, `provider_lab/`) — in-process
   drivers that fire live webhook/gateway/push/poll events (with valid signatures)
   *concurrently with* backfill.
-- **The overlap gate** (`validation_runs/run_all_sources.py`) — the capstone. It
-  runs **backfill + live across all 25 sources simultaneously**, and for *each*
-  source it waits until that source's backfill is `in_progress` before firing the
-  source's live burst — proving **live-during-backfill overlap** per source. It
-  asserts observation counts match fixtures, cross-path dedup holds (a backfilled
-  observation replayed live collapses to one row), every live ingress took its
-  expected status (`202` cutover / `200` inline / gateway dispatch), and tampered
-  signatures are rejected. The run prints a **`READY` / `NOT_READY` verdict** and
-  writes a markdown report under `docs/validation/path_i/`. **"READY" = the all-25
-  ingestion gate passed for this milestone.**
+- **Provider Lab + source certification** — Provider Lab validates adapter
+  coverage against the canonical 27-source catalog and exercises real clients
+  through explicit source base URLs. The release gate consumes per-source
+  certification artifacts, Provider Lab calibration, and the strict source
+  architecture ratchet. This replaces the former 25-source runner whose copied
+  source/count tables drifted from the catalog.
 
-Run it:
+Inspect the canonical certification inventory:
 ```bash
-COMPANY_OS_ENV=test DATABASE_URL=… KAFKA_BOOTSTRAP_SERVERS=… \
-  python -m services.ingest.synthetic.validation_runs.run_all_sources
+python -m services.ingest.source_certification inventory --require-ready
 ```
 
 ---
@@ -734,7 +729,7 @@ A fast lookup for "I need to change/understand X":
 | Embedding retry / backlog | `services/ingest/ingestion/writers/embedding_worker/`, `…/recovery/embedding_backlog/` |
 | DLQ | `services/ingest/ingestion/dlq/`, `…/writers/dlq_writer/` |
 | GitHub/code enrichment *(extracted)* | `Fyralisinc/github-intel` (separate repo) |
-| Prove ingestion correctness | `services/ingest/synthetic/validation_runs/run_all_sources.py` |
+| Prove ingestion correctness | `services/ingest/source_certification/`, `services/ingest/synthetic/provider_lab/` |
 | Gateway workers (Discord/Telegram/Signal) | `services/ingest/integrations/{discord,telegram,signal}/gateway/`, `scripts/run_*_gateway_worker.py` |
 
 ---

@@ -1,9 +1,9 @@
 """Slack per-user DM workspace fixture generator.
 
 `make_slack_dm_workspace(team_id=..., user_id=..., ...)` produces a fixture
-shaped for the spammer's `_SlackStore` DM support (and `MockSlackUserClient`):
+shaped for Provider Lab's Slack DM state (and `MockSlackUserClient`):
 the consenting user's `im` (1:1) + `mpim` (group) conversations plus a couple
-of bot-visible `channels`. Feeds the worker-fetch DM backfill in spammer mode.
+of bot-visible `channels`. Feeds the worker-fetch DM backfill in lab mode.
 
 DM channel ids are derived with the SAME blake2b scheme the gateway DM debug
 console uses (`services/app/gateway/slack_router.py:_dm_channel`/`_mpim_channel`),
@@ -90,7 +90,7 @@ def make_slack_dm_workspace(
 
     Returns a fixture dict with `team_id`, `channels` (bot-visible), and
     `dm_users` (the consenting user's im/mpim conversations), consumable by
-    the spammer `_SlackStore` and `MockSlackUserClient`.
+    Provider Lab's Slack adapter and `MockSlackUserClient`.
     """
     # Spread ts backwards from base_ts at 600s intervals; a single global
     # counter keeps every message ts unique across all conversations.

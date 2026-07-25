@@ -565,11 +565,11 @@ wins over the env default in production
 - **Tenant isolation** — `carta_installations` / `carta_entities` ENABLE + FORCE
   RLS on `app.current_tenant` ([0104_carta.sql:108‑132](../../../db/migrations/0104_carta.sql#L108-L132)). ✅
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
 For local testing against the mock source servers, `build_carta_client` detects
-spammer mode and **preseeds** the access token with `spam-carta`, skipping any
-real secret-store resolution, and points the API base at the local spammer's
+Provider Lab mode and **preseeds** the access token with `spam-carta`, skipping any
+real secret-store resolution, and points the API base at Provider Lab's
 `/carta` sub-path via the endpoint resolver
 ([_clients.py:622‑649](../../../services/ingest/ingestion/fetchers/_clients.py#L622-L649),
 [endpoints.py:168](../../../lib/integrations/endpoints.py#L168)). The synthetic

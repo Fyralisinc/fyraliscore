@@ -17,7 +17,7 @@ mutually exclusive in `list_events`. An expired token yields HTTP 410, which
 the fetcher catches to reseed a full sync.
 
 Base URL is resolved via `lib.integrations.endpoints.endpoint("google_calendar_api")`
-so backfill can be pointed at a local spammer for tests — pure config.
+so backfill can be pointed at Provider Lab for tests through explicit config.
 """
 from __future__ import annotations
 
@@ -78,6 +78,7 @@ class GoogleCalendarClient:
             user_email=user_email,
             scopes=(self._scope,),
             params=params,
+            operation_id="calendarList.list",
         )
 
     async def list_events(
@@ -132,6 +133,7 @@ class GoogleCalendarClient:
             user_email=user_email,
             scopes=(self._scope,),
             params=params,
+            operation_id="events.list",
         )
 
     async def has_updates_since(
@@ -184,6 +186,7 @@ class GoogleCalendarClient:
             user_email=user_email,
             scopes=(self._scope,),
             json_body=body,
+            operation_id="events.watch",
         )
 
     async def stop_channel(
@@ -196,6 +199,7 @@ class GoogleCalendarClient:
             user_email=user_email,
             scopes=(self._scope,),
             json_body={"id": channel_id, "resourceId": resource_id},
+            operation_id="channels.stop",
         )
 
 

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.reconcilers import RECONCILER_DISPATCH
+from services.ingest.source_contract.runtime import resolve_reconciler
 from services.ingest.ingestion.reconcilers import figma as figma_reconciler
 from services.ingest.ingestion.workflows.state import WorkflowState
 
@@ -113,4 +113,4 @@ async def test_new_figma_event_reshare_also_probes_snapshot_version(
 
 
 async def test_figma_reconciler_is_wired() -> None:
-    assert RECONCILER_DISPATCH["figma"] is figma_reconciler.reconcile_figma
+    assert resolve_reconciler("figma") is figma_reconciler.reconcile_figma

@@ -12,7 +12,6 @@ GraphQL errors are terminal even when returned with HTTP 200.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -21,6 +20,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import FirefliesApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -86,15 +99,6 @@ query Transcript($id: String!) {
 """.strip()
 
 
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
-
-
 class FirefliesClient:
     """Outbound Fireflies GraphQL client, one per backfill/poll shard open."""
 
@@ -109,6 +113,12 @@ class FirefliesClient:
         api_token: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
@@ -119,6 +129,27 @@ class FirefliesClient:
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="fireflies",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(installation_row_id)
+                if installation_row_id is not None
+                else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -152,7 +183,11 @@ class FirefliesClient:
         )
 
     async def _graphql(
-        self, query: str, variables: dict[str, Any] | None = None,
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        operation: str,
     ) -> dict[str, Any]:
         from services.ingest.integrations.fireflies import metrics
 
@@ -166,29 +201,50 @@ class FirefliesClient:
         if variables is not None:
             payload["variables"] = variables
 
-        max_attempts = int(os.environ.get("FIREFLIES_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("FIREFLIES_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
-        attempt = 0
-        while True:
-            attempt += 1
+
+        async def _once() -> dict[str, Any]:
             try:
                 response = await client.post(
                     self._graphql_url(), headers=headers, json=payload,
                 )
+            except httpx.TimeoutException as exc:
+                metrics.record_request("error")
+                raise ProviderTimeoutError(
+                    "Fireflies GraphQL request timed out",
+                    source="fireflies",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
             except httpx.TransportError as exc:
                 metrics.record_request("error")
-                raise FirefliesApiError(
-                    "transport error calling fireflies graphql",
-                    code="fireflies_api_error",
-                    context={"error_type": type(exc).__name__, "path": "/graphql"},
+                raise ProviderTransientError(
+                    "Fireflies GraphQL transport error",
+                    source="fireflies",
+                    operation=operation,
+                    error_type=type(exc).__name__,
                 ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
+            if response.status_code == 429:
                 metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
+                raise ProviderRateLimited(
+                    "Fireflies rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="fireflies",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
+                metrics.record_request("error")
+                raise ProviderTransientError(
+                    f"Fireflies returned HTTP {response.status_code}",
+                    source="fireflies",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
 
             if response.status_code // 100 != 2:
                 if response.status_code in (401, 403):
@@ -209,6 +265,15 @@ class FirefliesClient:
                 code = _graphql_error_code(errors)
                 if code == "fireflies_api_rate_limited":
                     metrics.record_request("rate_limited")
+                    raise ProviderRateLimited(
+                        "Fireflies GraphQL rate limit",
+                        retry_after_seconds=parse_retry_after(
+                            response.headers.get("Retry-After"),
+                        ),
+                        header_parser_id="http.retry_after",
+                        source="fireflies",
+                        operation=operation,
+                    )
                 else:
                     metrics.record_request("error")
                 raise FirefliesApiError(
@@ -219,6 +284,8 @@ class FirefliesClient:
             metrics.record_request("ok")
             data = body.get("data")
             return data if isinstance(data, dict) else {}
+
+        return await self._provider.execute(operation, _once)
 
     # -----------------------------------------------------------------
     # Public read surface
@@ -231,7 +298,10 @@ class FirefliesClient:
         object is the durable owner identity we store in the existing
         workspace_id column.
         """
-        data = await self._graphql(_USER_QUERY)
+        data = await self._graphql(
+            _USER_QUERY,
+            operation="user.get",
+        )
         user = data.get("user")
         if not isinstance(user, dict):
             return {}
@@ -244,7 +314,11 @@ class FirefliesClient:
         }
 
     async def get_transcript(self, transcript_id: str) -> dict[str, Any]:
-        data = await self._graphql(_TRANSCRIPT_QUERY, {"id": transcript_id})
+        data = await self._graphql(
+            _TRANSCRIPT_QUERY,
+            {"id": transcript_id},
+            operation="transcript.get",
+        )
         transcript = data.get("transcript")
         return _normalise_transcript(transcript) if isinstance(transcript, dict) else {}
 
@@ -275,7 +349,11 @@ class FirefliesClient:
             variables["fromDate"] = from_date
         if to_date:
             variables["toDate"] = to_date
-        data = await self._graphql(_TRANSCRIPTS_QUERY, variables)
+        data = await self._graphql(
+            _TRANSCRIPTS_QUERY,
+            variables,
+            operation="transcripts.list",
+        )
         raw_items = data.get("transcripts")
         items = [
             _normalise_transcript(t)

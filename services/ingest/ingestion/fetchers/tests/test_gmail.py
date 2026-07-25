@@ -6,7 +6,7 @@ Covers:
   - Record envelope shape matches A18's two-path coexistence framing.
   - users.history.list gap-fill path.
   - Dispatch on shard_kind (mailbox_window vs history_gap).
-  - FETCHER_DISPATCH['gmail'] wire-in.
+  - Gmail's SourceDefinition fetcher binding resolves correctly.
   - N1 invariant verification at service level (separate file —
     test_gmail_n1_invariant.py).
 """
@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import pytest
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
+from services.ingest.source_contract.runtime import resolve_fetcher
 from services.ingest.ingestion.fetchers import gmail as gmail_fetcher
 from services.ingest.ingestion.fetchers.gmail import (
     GmailCursor,
@@ -364,7 +365,7 @@ async def test_unknown_scope_raises_value_error(monkeypatch):
 # Wire-in assertion
 # =====================================================================
 async def test_dispatch_table_has_gmail_wired_in():
-    assert FETCHER_DISPATCH["gmail"] is fetch_page_gmail
+    assert resolve_fetcher("gmail") is fetch_page_gmail
 
 
 async def test_gmail_cursor_model_rejects_extra_fields():

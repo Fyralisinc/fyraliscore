@@ -160,7 +160,7 @@ New files →             fetchers/ramp.py · planners/ramp.py · handlers/ramp.
                         (channels: ramp:transaction, ramp:bill, ramp:reimbursement) ·
                         signatures/ramp.py (HMAC verifier) ·
                         _clients.py: build_ramp_client + open_ramp_client (OAuth2 token mint
-                        + refresh, SYNTHETIC_SOURCE_API_BASE seam) ·
+                        + refresh, Provider Lab credential seam + explicit base URL) ·
                         idempotency/__init__.py: ramp_transaction / ramp_bill / ramp_reimbursement
                         key constructors ·
                         _load_install branch in shard_fetch.py (_LOAD_RAMP_INSTALL_SQL) ·
@@ -202,7 +202,7 @@ Effort →                M — mechanical reuse of the finance source contract 
                         substrate concepts.
 ```
 
-**Auth archetype:** Clones **QuickBooks** (OAuth2 app, token mint + refresh, encrypted `secret_ref` + `refresh_secret_ref`) without the `realm_id` dimension, degrading to **Mercury** (single org bearer token) if Ramp offers a static long-lived token. The install row holds `base_url`, `client_id`, `secret_ref`, and `refresh_secret_ref`. The `open_ramp_client` builder in `_clients.py` must implement the `SYNTHETIC_SOURCE_API_BASE` seam (set a recognizable `spam-ramp` token and override `api_base_url` via `lib.integrations.endpoints::endpoint("ramp_api")`) so it is testable in the synthetic harness without real credentials.
+**Auth archetype:** Clones **QuickBooks** (OAuth2 app, token mint + refresh, encrypted `secret_ref` + `refresh_secret_ref`) without the `realm_id` dimension, degrading to **Mercury** (single org bearer token) if Ramp offers a static long-lived token. The install row holds `base_url`, `client_id`, `secret_ref`, and `refresh_secret_ref`. In local tests the builder uses `PROVIDER_LAB_URL` to select a recognizable `spam-ramp` credential and `RAMP_API_BASE_URL=<lab>/ramp` for explicit routing.
 
 **Install table and sharding:** `ramp_installations` is a dedicated per-tenant install table (not `provider_installations`), consistent with the other finance sources. The planner fans out three shards per install — `ramp_transaction`, `ramp_bill`, `ramp_reimbursement` — each with its own `workflow_states` cursor. If Ramp exposes sub-account or legal-entity resources, a `ramp_entities` child table can be added mirroring `mercury_accounts`.
 

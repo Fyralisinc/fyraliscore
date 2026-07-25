@@ -33,12 +33,13 @@ def _outcome(
     )
 
 
-def test_run4_report_uses_real_client_identity_for_run5() -> None:
-    report = _run4_report(scenarios=[object(), object()], real_clients=True)
+def test_run4_report_uses_provider_lab_production_client_identity() -> None:
+    report = _run4_report(scenarios=[object(), object()])
 
-    assert report.run_number == 5
+    assert report.run_number == 4
     assert report.tenant_count == 2
-    assert "REAL clients" in report.run_name
+    assert "production clients" in report.run_name
+    assert "Provider Lab" in report.run_name
 
 
 def test_expected_combined_observation_totals_adds_live_events() -> None:

@@ -27,7 +27,7 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict
 
 from lib.shared.errors import DiscordApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class DiscordCursor(BaseModel):
 
 async def _open_discord_client(install: asyncpg.Record):  # noqa: ANN202
     # Real DiscordClient pointed at the resolver's discord_api base (prod
-    # or local spammer). X3 mock harness monkeypatches this symbol.
+    # or local Provider Lab). The synthetic harness monkeypatches this symbol.
     from services.ingest.ingestion.fetchers._clients import open_discord_client
     return await open_discord_client(install)
 
@@ -123,7 +123,6 @@ async def fetch_page_discord(
         await close()
 
 
-FETCHER_DISPATCH["discord"] = fetch_page_discord
 
 
 __all__ = ["DiscordCursor", "SHARD_KIND_CHANNEL_WINDOW",

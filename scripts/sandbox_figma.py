@@ -8,14 +8,15 @@ V2 — passcode-in-body in reality; HMAC-signed for the synthetic gate). This
 sandbox stands up a REAL local mock of the Figma v1 endpoints and drives the REAL
 pipeline against it:
 
-    FigmaClient (real httpx, spammer auth) -> fetch_page_figma (real cursor +
+    FigmaClient (real httpx, Provider Lab auth) -> fetch_page_figma (real cursor +
     fan-out) -> handle_figma_event (real ObservationDraft) -> ingest()
     (real observation insert + dedup)
 
-It exercises: file enumeration, per-file backfill event fan-out, the incremental
-delta (a re-published event -> a NEW observation), the live-webhook path through
-the SAME handler (asserting external_id parity / dedup with backfill), cross-path
-dedup, and the reconciler gap probe — then prints the observations that landed.
+It exercises: file enumeration, per-file event and durable snapshot shards, the
+incremental delta (a re-published event -> a NEW observation), the live-webhook
+path through the SAME handler (asserting external_id parity / dedup with
+backfill), cross-path dedup, and the reconciler gap probe — then prints the
+observations and artifact link that landed.
 
 Database:
   - If DATABASE_URL is set, it is used as-is (migrations applied idempotently).
@@ -34,6 +35,7 @@ import asyncio
 import os
 import pathlib
 import sys
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -149,7 +151,12 @@ async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
             raise RuntimeError("fetch loop did not terminate")
         result = await fetch_page_figma(install_row, shard_identifier, cursor)
         for record in result.records:
-            res = await ingest("figma:event", record, pool=pool, tenant_id=_TENANT_ID)
+            channel = (
+                "figma:file_snapshot"
+                if record.get("_fyralis_record_type") == "file_snapshot"
+                else "figma:event"
+            )
+            res = await ingest(channel, record, pool=pool, tenant_id=_TENANT_ID)
             if not res.deduped:
                 ingested.append(res.observation.external_id)
         cursor = result.next_cursor
@@ -159,13 +166,20 @@ async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
 
 
 async def run(args) -> int:
-    from services.ingest.synthetic.mock_servers.figma import start_mock_figma
+    from services.ingest.synthetic.provider_lab.server import start_provider_lab
+    from services.ingest.synthetic.validation_runs.moto_lifecycle import moto_s3
 
     fixtures = _build_fixtures()
-    server, base_url = start_mock_figma(fixtures)
-    os.environ["SYNTHETIC_SOURCE_API_BASE"] = base_url
-    _hr("MOCK SERVER")
-    print(f"  Figma API base : {base_url} (served under /figma via spammer routing)")
+    local_services = ExitStack()
+    # Figma snapshots are durable evidence. Exercise the production S3 client
+    # against local S3-compatible storage alongside the Provider Lab API.
+    local_services.enter_context(moto_s3("fyralis-blobs"))
+    server = start_provider_lab({"figma": [fixtures]})
+    base_url = server.url("figma")
+    os.environ["PROVIDER_LAB_URL"] = server.base_url
+    os.environ["FIGMA_API_BASE_URL"] = base_url
+    _hr("PROVIDER LAB")
+    print(f"  Figma API base : {base_url} (explicit local override)")
 
     admin_url = os.environ.get("SANDBOX_ADMIN_URL", _DEFAULT_ADMIN_URL)
     provided_url = os.environ.get("DATABASE_URL")
@@ -239,13 +253,24 @@ async def run(args) -> int:
         _hr("PLAN (planner over the loader SQL)")
         from services.ingest.ingestion.planners.context import PlannerContext
         from services.ingest.ingestion.planners.figma import plan_shards_figma
-        from services.ingest.ingestion.workflows.source_onboarding import _LOAD_FIGMA_INSTALL_SQL
-        install_row = await pool.fetchrow(_LOAD_FIGMA_INSTALL_SQL, _TENANT_ID)
+        from services.ingest.ingestion.installations import load_source_installation
+        install_row = await load_source_installation(
+            pool,
+            source="figma",
+            tenant_id=_TENANT_ID,
+            installation_id=install_id,
+        )
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_figma(ctx)
         print(f"  planned {len(shards)} shard(s): "
-              + ", ".join(s.shard_identifier["file_key"] for s in shards))
-        _check("one shard per file", len(shards) == len(file_keys))
+              + ", ".join(
+                  f"{s.shard_kind}:{s.shard_identifier['file_key']}"
+                  for s in shards
+              ))
+        _check(
+            "one event shard and one snapshot shard per file",
+            len(shards) == len(file_keys) * 2,
+        )
 
         # 5. Backfill: real fetcher -> real ingest.
         _hr("BACKFILL (event fan-out -> ingest)")
@@ -253,14 +278,28 @@ async def run(args) -> int:
             ext = await _drain_shard(pool, install_row, shard.shard_identifier)
             print(f"  {shard.shard_identifier['file_key']}: ingested {len(ext)} observations")
         counts = await pool.fetchrow(
-            "SELECT count(*) AS tot FROM observations "
-            "WHERE tenant_id=$1 AND source_channel='figma:event'",
+            "SELECT count(*) FILTER (WHERE source_channel='figma:event') AS events, "
+            "count(*) FILTER (WHERE source_channel='figma:file_snapshot') AS snapshots, "
+            "count(*) AS tot FROM observations "
+            "WHERE tenant_id=$1 AND source_channel LIKE 'figma:%'",
             _TENANT_ID,
         )
-        print(f"  observations: total={counts['tot']}")
-        # 2 events -> 2 observations (no snapshot record).
-        _check("backfill produced 2 observations (event fan-out, no snapshot)",
-               counts["tot"] == 2)
+        artifact_count = await pool.fetchval(
+            "SELECT count(*) FROM observation_artifacts oa "
+            "JOIN observations o ON o.id=oa.observation_id AND o.tenant_id=oa.tenant_id "
+            "WHERE o.tenant_id=$1 AND o.source_channel='figma:file_snapshot'",
+            _TENANT_ID,
+        )
+        print(
+            f"  observations: total={counts['tot']} events={counts['events']} "
+            f"snapshots={counts['snapshots']} artifacts={artifact_count}"
+        )
+        _check(
+            "backfill produced 2 events and 1 durable file snapshot",
+            counts["events"] == 2
+            and counts["snapshots"] == 1
+            and artifact_count == 1,
+        )
 
         # 6. Incremental: warm-start from the high-water -> delta (e-1001 re-published).
         _hr("INCREMENTAL (re-publish: new version)")
@@ -323,12 +362,13 @@ async def run(args) -> int:
             print(f"  [{r['kind']:<12} {r['trust_tier']:<13}] {r['external_id']}")
             print(f"       {r['content_text']}")
         print(f"\n  total observations: {len(rows)}")
-        _check("all observations are authoritative figma:event",
+        _check("all Figma observations are authoritative",
                all(r["trust_tier"] == "authoritative" for r in rows))
 
     finally:
         await pool.close()
         server.shutdown()
+        local_services.close()
         if created_db and not args.keep:
             await _drop_throwaway_db(admin_url, created_db)
             print(f"\n  Dropped throwaway DB {created_db}.")

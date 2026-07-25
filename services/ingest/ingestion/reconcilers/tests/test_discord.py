@@ -6,9 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
-)
+from services.ingest.source_contract.runtime import resolve_reconciler
 from services.ingest.ingestion.reconcilers import discord as dc_rec
 from services.ingest.ingestion.reconcilers.discord import (
     RESHARE_RECENCY_SCORE,
@@ -161,4 +159,4 @@ async def test_resharded_failed_excluded(monkeypatch):
 
 
 async def test_dispatch_wired():
-    assert RECONCILER_DISPATCH["discord"] is reconcile_discord
+    assert resolve_reconciler("discord") is reconcile_discord

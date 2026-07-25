@@ -1,15 +1,10 @@
 """services/ingest/integrations/mercury/client.py — outbound Mercury banking REST client.
 
-Single outbound surface for backfill + poll-incremental + the planner's account
-enumeration. Mercury is authenticated with a long-lived API token presented as a
-**Bearer** token (the token is also accepted as the Basic-auth username with an
-empty password). The token is resolved once from the secret store (or preset in
-spammer mode) and reused for the life of the client — same posture as the
-Notion/Jira clients.
-
-Rate limits: Mercury returns HTTP 429 with a `Retry-After` header. All read
-methods route through `_request`, which honours `Retry-After` with a bounded
-retry budget before surfacing `MercuryApiError(mercury_api_rate_limited)`.
+Single outbound surface for backfill, reconciliation, and the planner's account
+enumeration. Mercury is authenticated with a long-lived Bearer API token.
+Every actual provider attempt runs through ``ProviderTransport``; HTTP 429,
+timeouts, and 5xx responses become typed retry outcomes instead of sleeping or
+retrying inside this client.
 
 Pagination: list endpoints return `{total, accounts|transactions: [...]}` and
 accept `limit` + `offset`. The list helpers return `(items, next_offset,
@@ -20,7 +15,6 @@ Logging redaction: the API token and the auth header are NEVER logged.
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 from uuid import UUID
 
@@ -28,6 +22,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import MercuryApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import SecretValueCache
 
 
@@ -40,20 +48,11 @@ _DEFAULT_TIMEOUT_S = 30.0
 _DEFAULT_PAGE_SIZE = 100
 
 
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
-
-
 class MercuryClient:
     """Outbound Mercury REST client, one per backfill/poll shard open.
 
     Built by `services/ingest/ingestion/fetchers/_clients.py::build_mercury_client`
-    (production / spammer) and by the seed/onboarding account probe. Shares the
+    (production / Provider Lab) and by the seed/onboarding account probe. Shares the
     process-wide httpx client when one is injected.
     """
 
@@ -68,20 +67,47 @@ class MercuryClient:
         api_token: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        installation_row_id: UUID | str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
-        # Preset token (spammer mode presets a recognized token); otherwise
+        # Preset token (Provider Lab mode supplies a recognized token); otherwise
         # resolved lazily from the secret store on first request.
         self._api_token_cache = SecretValueCache(preset=api_token)
         self._token_lock = asyncio.Lock()
         # In production the base is the canonical Mercury API host; a
-        # spammer/test override (api_base_url) wins so backfill points at the mock.
+        # Lab/test override (api_base_url) points backfill at Provider Lab.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="mercury",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(installation_row_id)
+                if installation_row_id is not None
+                else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -117,12 +143,9 @@ class MercuryClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        operation: str,
     ) -> dict[str, Any]:
-        """One Mercury API call with bounded Retry-After-aware 429 retry.
-
-        Returns the parsed JSON object. Non-2xx (including a still-429 after the
-        budget is spent) is mapped to `MercuryApiError`.
-        """
+        """Execute one semantic Mercury operation through ProviderTransport."""
         from services.ingest.integrations.mercury import metrics
 
         auth = await self._auth_header()
@@ -131,47 +154,69 @@ class MercuryClient:
             "Authorization": auth,
             "Accept": "application/json",
         }
-        max_attempts = int(os.environ.get("MERCURY_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("MERCURY_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
-        while True:
-            attempt += 1
+        async def _once() -> httpx.Response:
             try:
                 response = await client.request(
                     method, url, headers=headers, params=params,
                 )
+            except httpx.TimeoutException as exc:
+                metrics.record_request("error")
+                raise ProviderTimeoutError(
+                    "Mercury request timed out",
+                    source="mercury",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
             except httpx.TransportError as exc:
                 metrics.record_request("error")
-                raise MercuryApiError(
-                    "transport error calling mercury",
-                    code="mercury_api_error",
-                    context={"error_type": type(exc).__name__, "path": path},
+                raise ProviderTransientError(
+                    "Mercury transport error",
+                    source="mercury",
+                    operation=operation,
+                    error_type=type(exc).__name__,
                 ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
+            if response.status_code == 429:
                 metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
-
-            if response.status_code // 100 == 2:
-                metrics.record_request("ok")
-                body = _safe_json(response)
-                if not isinstance(body, dict):
-                    raise MercuryApiError(
-                        "mercury response was not a JSON object",
-                        code="mercury_api_error",
-                        context={"path": path},
-                    )
-                return body
-
-            if response.status_code in (401, 403):
-                metrics.record_request("unauthorized")
-            else:
+                raise ProviderRateLimited(
+                    "Mercury rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="mercury",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
                 metrics.record_request("error")
-            raise _api_error_from_response(response, path)
+                raise ProviderTransientError(
+                    f"Mercury returned HTTP {response.status_code}",
+                    source="mercury",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
+
+        response = await self._provider.execute(operation, _once)
+        if response.status_code // 100 == 2:
+            metrics.record_request("ok")
+            body = _safe_json(response)
+            if not isinstance(body, dict):
+                raise MercuryApiError(
+                    "mercury response was not a JSON object",
+                    code="mercury_api_error",
+                    context={"path": path},
+                )
+            return body
+
+        if response.status_code in (401, 403):
+            metrics.record_request("unauthorized")
+        else:
+            metrics.record_request("error")
+        raise _api_error_from_response(response, path)
 
     # -----------------------------------------------------------------
     # Public read surface
@@ -183,7 +228,11 @@ class MercuryClient:
         Used at seed/install time to populate `mercury_accounts`, and by the
         fetcher to emit per-account balance snapshots.
         """
-        resp = await self._request("GET", "/accounts")
+        resp = await self._request(
+            "GET",
+            "/accounts",
+            operation="accounts.list",
+        )
         accounts = resp.get("accounts")
         if not isinstance(accounts, list):
             # Some Mercury responses return the bare list.
@@ -192,7 +241,11 @@ class MercuryClient:
 
     async def get_account(self, account_id: str) -> dict[str, Any]:
         """`GET /account/{id}` — one account (balance snapshot probe)."""
-        return await self._request("GET", f"/account/{account_id}")
+        return await self._request(
+            "GET",
+            f"/account/{account_id}",
+            operation="accounts.get",
+        )
 
     async def list_transactions(
         self,
@@ -212,7 +265,10 @@ class MercuryClient:
         if start:
             params["start"] = start
         resp = await self._request(
-            "GET", f"/account/{account_id}/transactions", params=params,
+            "GET",
+            f"/account/{account_id}/transactions",
+            params=params,
+            operation="transactions.list",
         )
         txns = resp.get("transactions")
         txns = [t for t in txns if isinstance(t, dict)] if isinstance(txns, list) else []

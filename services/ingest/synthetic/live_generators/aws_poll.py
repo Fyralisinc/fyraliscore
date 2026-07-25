@@ -165,6 +165,8 @@ class AwsPollGenerator:
         event = self._mint_event(resolved, content)
         deps = PollDeps(
             pool=self._pool,
+            tenant_id=target.tenant_id,
+            installation_id=resolved.installation_id,
             actor_repo=self._actor_repo,
             alias_repo=self._alias_repo,
             embedder=None,

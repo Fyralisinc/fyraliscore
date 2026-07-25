@@ -43,6 +43,7 @@ from services.ingest.integrations.gmail.push_handler import (
     decode_pubsub_message,
     handle_push,
 )
+from services.ingest.source_contract import dedicated_ingress_definition
 from services.app.webhooks.signatures.google_oidc import (
     GoogleOidcError,
     verify_pubsub_oidc_token,
@@ -50,6 +51,7 @@ from services.app.webhooks.signatures.google_oidc import (
 
 
 log = structlog.get_logger("webhooks.gmail_pubsub")
+_INGRESS = dedicated_ingress_definition("gmail_pubsub")
 
 
 async def _maybe_shadow_write_pubsub(
@@ -106,8 +108,8 @@ async def _maybe_shadow_write_pubsub(
 
         await shadow_write_raw(
             tenant_id=tenant_id,
-            source="gmail",
-            ingress_kind="pubsub",
+            source=_INGRESS.source_id,  # type: ignore[arg-type]
+            ingress_kind=_INGRESS.ingress_kind,
             raw_body=raw_body,
             s3_client=s3_client,
             kafka_producer=kafka_producer,
@@ -123,7 +125,7 @@ async def _maybe_shadow_write_pubsub(
         )
 
 
-router = APIRouter(prefix="/webhooks/gmail", tags=["webhooks", "gmail"])
+router = APIRouter(tags=["webhooks", "gmail"])
 
 
 def _expected_audience() -> str | None:
@@ -144,7 +146,7 @@ def is_pubsub_configured() -> bool:
     return bool(_expected_audience() and _expected_email())
 
 
-@router.post("/pubsub")
+@router.post(_INGRESS.route_path)
 async def gmail_pubsub_push(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -273,4 +275,15 @@ async def gmail_pubsub_push(
     return JSONResponse(content=result)
 
 
-__all__ = ["is_pubsub_configured", "router"]
+def build_gmail_pubsub_router() -> APIRouter:
+    """Return the router declared by the dedicated ingress contract."""
+
+    return router
+
+
+__all__ = [
+    "build_gmail_pubsub_router",
+    "gmail_pubsub_push",
+    "is_pubsub_configured",
+    "router",
+]

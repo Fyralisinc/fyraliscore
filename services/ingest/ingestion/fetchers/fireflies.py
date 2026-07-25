@@ -51,7 +51,7 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict
 
 from lib.shared.errors import FirefliesApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -197,7 +197,6 @@ async def fetch_page_fireflies(
         await close()
 
 
-FETCHER_DISPATCH["fireflies"] = fetch_page_fireflies
 
 
 __all__ = [

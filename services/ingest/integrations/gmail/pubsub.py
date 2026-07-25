@@ -28,8 +28,25 @@ import httpx
 import structlog
 
 from lib.shared.errors import CompanyOSError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
 
 from services.ingest.integrations.gmail.dwd import ServiceAccountKey, DwdTokenMinter
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
+from services.ingest.integrations.provider_transport_runtime import (
+    get_provider_transport_runtime,
+)
 
 
 log = structlog.get_logger("integrations.gmail.pubsub")
@@ -115,13 +132,59 @@ class PubsubAdmin:
         minter: DwdTokenMinter | None = None,
         *,
         http_client: httpx.AsyncClient | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
     ) -> None:
         # Reuse the DWD key for token minting against pubsub.googleapis.com.
         # The pubsub scope is granted to the service account at the
         # Google Cloud IAM level (pubsub.admin role).
-        self._minter = minter or DwdTokenMinter(ServiceAccountKey.from_env())
+        runtime = get_provider_transport_runtime()
+        self._owns_minter = minter is None
+        self._minter = minter or DwdTokenMinter(
+            ServiceAccountKey.from_env(),
+            provider_transport=(
+                provider_transport
+                or (runtime.transport if runtime is not None else None)
+            ),
+            quota_resolver=(
+                quota_resolver
+                or (runtime.quota_resolver if runtime is not None else None)
+            ),
+            allow_unlimited_local=(
+                runtime is None
+                if allow_unlimited_local is None
+                else allow_unlimited_local
+            ),
+        )
         self._client = http_client
         self._owns_client = http_client is None
+        local_unlimited = explicit_local_transport(
+            requested=(
+                runtime is None
+                if allow_unlimited_local is None
+                else allow_unlimited_local
+            ),
+            has_local_injection=http_client is not None,
+        )
+        self._provider = ProviderRequestBinding(
+            source="gmail",
+            tenant_id=None,
+            installation_id=None,
+            transport=(
+                provider_transport
+                or (runtime.transport if runtime is not None else None)
+            ),
+            request_policy=request_policy,
+            quota_resolver=(
+                quota_resolver
+                or (runtime.quota_resolver if runtime is not None else None)
+            ),
+            allow_unlimited_local=(
+                local_unlimited if runtime is None else False
+            ),
+        )
 
     async def __aenter__(self) -> "PubsubAdmin":
         if self._client is None:
@@ -132,30 +195,53 @@ class PubsubAdmin:
         if self._owns_client and self._client is not None:
             await self._client.aclose()
             self._client = None
+        if self._owns_minter:
+            await self._minter.__aexit__(*exc)
 
-    async def _token(self) -> str:
+    async def _token(
+        self,
+        *,
+        tenant_id: UUID,
+        installation_id: UUID | str,
+    ) -> str:
         # For service-to-service (non-user) calls we mint a token
         # impersonating the SA itself. Google's DWD endpoint accepts
         # sub == iss for non-user grants.
         return await self._minter.mint(
             user_email=self._minter.service_account_email,
             scopes=[PUBSUB_SCOPE],
+            source="gmail",
+            tenant_id=str(tenant_id),
+            installation_id=str(installation_id),
+            quota_dimensions={"project": _project_id()},
         )
 
-    async def provision(self, tenant_id: UUID) -> PubsubResources:
+    async def provision(
+        self,
+        tenant_id: UUID,
+        *,
+        installation_id: UUID | str,
+    ) -> PubsubResources:
         """Idempotent: creates topic + subscription if missing, grants
         Gmail's push SA publisher rights, configures push endpoint."""
         resources = resource_names_for_tenant(tenant_id)
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=30.0)
-        token = await self._token()
+        token = await self._token(
+            tenant_id=tenant_id,
+            installation_id=installation_id,
+        )
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
         # 1. Create topic (PUT is idempotent in Pub/Sub).
-        resp = await self._client.put(
-            f"{_PUBSUB_BASE}/{resources.topic_name}",
+        resp = await self._request(
+            "PUT",
+            resources.topic_name,
+            operation="pubsub.topic.create",
+            tenant_id=tenant_id,
+            installation_id=installation_id,
             headers=headers,
-            json={},
+            json_body={},
         )
         if resp.status_code not in (200, 409):
             raise PubsubProvisioningError(
@@ -168,6 +254,8 @@ class PubsubAdmin:
             role="roles/pubsub.publisher",
             member=GMAIL_PUSH_SA,
             token=token,
+            tenant_id=tenant_id,
+            installation_id=installation_id,
         )
 
         # 3. Create subscription with push config (PUT idempotent).
@@ -183,10 +271,14 @@ class PubsubAdmin:
                 },
             },
         }
-        resp = await self._client.put(
-            f"{_PUBSUB_BASE}/{resources.subscription_name}",
+        resp = await self._request(
+            "PUT",
+            resources.subscription_name,
+            operation="pubsub.subscription.create",
+            tenant_id=tenant_id,
+            installation_id=installation_id,
             headers=headers,
-            json=sub_body,
+            json_body=sub_body,
         )
         if resp.status_code not in (200, 409):
             raise PubsubProvisioningError(
@@ -194,17 +286,36 @@ class PubsubAdmin:
             )
         return resources
 
-    async def teardown(self, tenant_id: UUID) -> None:
+    async def teardown(
+        self,
+        tenant_id: UUID,
+        *,
+        installation_id: UUID | str,
+    ) -> None:
         """Delete the per-tenant subscription + topic. Idempotent
         — 404s on missing resources are tolerated."""
         resources = resource_names_for_tenant(tenant_id)
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=30.0)
-        token = await self._token()
+        token = await self._token(
+            tenant_id=tenant_id,
+            installation_id=installation_id,
+        )
         headers = {"Authorization": f"Bearer {token}"}
-        for path in (resources.subscription_name, resources.topic_name):
-            resp = await self._client.delete(
-                f"{_PUBSUB_BASE}/{path}", headers=headers,
+        for path, operation in (
+            (
+                resources.subscription_name,
+                "pubsub.subscription.delete",
+            ),
+            (resources.topic_name, "pubsub.topic.delete"),
+        ):
+            resp = await self._request(
+                "DELETE",
+                path,
+                operation=operation,
+                tenant_id=tenant_id,
+                installation_id=installation_id,
+                headers=headers,
             )
             if resp.status_code not in (200, 404):
                 raise PubsubProvisioningError(
@@ -218,15 +329,21 @@ class PubsubAdmin:
         role: str,
         member: str,
         token: str,
+        tenant_id: UUID,
+        installation_id: UUID | str,
     ) -> None:
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=30.0)
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         # getIamPolicy → modify → setIamPolicy
-        resp = await self._client.post(
-            f"{_PUBSUB_BASE}/{topic_name}:getIamPolicy",
+        resp = await self._request(
+            "POST",
+            f"{topic_name}:getIamPolicy",
+            operation="pubsub.iam.get",
+            tenant_id=tenant_id,
+            installation_id=installation_id,
             headers=headers,
-            json={},
+            json_body={},
         )
         if resp.status_code != 200:
             raise PubsubProvisioningError(
@@ -245,14 +362,129 @@ class PubsubAdmin:
         else:
             bindings.append({"role": role, "members": [member]})
         policy["bindings"] = bindings
-        resp = await self._client.post(
-            f"{_PUBSUB_BASE}/{topic_name}:setIamPolicy",
+        resp = await self._request(
+            "POST",
+            f"{topic_name}:setIamPolicy",
+            operation="pubsub.iam.set",
+            tenant_id=tenant_id,
+            installation_id=installation_id,
             headers=headers,
-            json={"policy": policy},
+            json_body={"policy": policy},
         )
         if resp.status_code != 200:
             raise PubsubProvisioningError(
                 f"setIamPolicy failed: {resp.status_code} {resp.text[:200]!r}",
+            )
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        operation: str,
+        tenant_id: UUID,
+        installation_id: UUID | str,
+        headers: dict[str, str],
+        json_body: dict[str, object] | None = None,
+    ) -> httpx.Response:
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=30.0)
+
+        async def _once() -> httpx.Response:
+            assert self._client is not None
+            try:
+                response = await self._client.request(
+                    method,
+                    f"{_PUBSUB_BASE}/{path}",
+                    headers=headers,
+                    json=json_body,
+                )
+            except httpx.TimeoutException as exc:
+                raise ProviderTimeoutError(
+                    "Google Pub/Sub admin request timed out",
+                    source="gmail",
+                    operation=operation,
+                ) from exc
+            except httpx.TransportError as exc:
+                raise ProviderTransientError(
+                    "Google Pub/Sub admin transport error",
+                    source="gmail",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
+            self._raise_transport_outcome(response, operation=operation)
+            return response
+
+        return await self._provider.execute(
+            operation,
+            _once,
+            tenant_id=str(tenant_id),
+            installation_id=str(installation_id),
+            quota_dimensions={"project": _project_id()},
+        )
+
+    @staticmethod
+    def _raise_transport_outcome(
+        response: httpx.Response,
+        *,
+        operation: str,
+    ) -> None:
+        if response.status_code == 429:
+            raise ProviderRateLimited(
+                "Google Pub/Sub admin rate limit",
+                retry_after_seconds=parse_retry_after(
+                    response.headers.get("Retry-After"),
+                ),
+                status_code=429,
+                header_parser_id="http.retry_after",
+                source="gmail",
+                operation=operation,
+            )
+        if response.status_code == 403:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            reason = (
+                (payload.get("error") or {})
+                .get("errors", [{}])[0]
+                .get("reason", "")
+                if isinstance(payload, dict)
+                else ""
+            )
+            if reason in {
+                "quotaExceeded",
+                "userRateLimitExceeded",
+                "rateLimitExceeded",
+            }:
+                raise ProviderRateLimited(
+                    f"Google Pub/Sub quota: {reason}",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=403,
+                    header_parser_id="http.retry_after",
+                    source="gmail",
+                    operation=operation,
+                )
+        if response.status_code in {500, 502, 503, 504}:
+            retry_after = parse_retry_after(
+                response.headers.get("Retry-After"),
+            )
+            if retry_after is not None:
+                raise ProviderRateLimited(
+                    "Google Pub/Sub service cooldown",
+                    retry_after_seconds=retry_after,
+                    status_code=response.status_code,
+                    header_parser_id="http.retry_after",
+                    source="gmail",
+                    operation=operation,
+                )
+            raise ProviderTransientError(
+                f"Google Pub/Sub returned {response.status_code}",
+                source="gmail",
+                operation=operation,
+                http_status=response.status_code,
             )
 
 

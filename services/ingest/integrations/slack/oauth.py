@@ -49,7 +49,25 @@ from lib.shared.errors import (
     StateTokenInvalidError,
 )
 from lib.shared.ids import uuid7
+from lib.shared.provider_transport import (
+    ProviderPermanentError,
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
 from lib.shared.secrets import load_app_secret_text_from_env
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
+from services.ingest.integrations.provider_transport_runtime import (
+    get_provider_transport_runtime,
+)
 from services.ingest.integrations.slack import metrics
 from services.ingest.integrations.oauth_native_connect import (
     build_oauth_native_connect_router,
@@ -385,27 +403,116 @@ async def _connect_handoff(
 # Callback handler — GET /integrations/slack/callback
 # ---------------------------------------------------------------------
 
-async def _exchange_code_for_tokens(code: str) -> dict[str, Any]:
+async def _exchange_code_for_tokens(
+    code: str,
+    *,
+    tenant_id: UUID | str,
+    http_client: httpx.AsyncClient | None = None,
+    provider_transport: ProviderExecutor | None = None,
+    request_policy: RequestPolicy | PolicyResolver | None = None,
+    quota_resolver: QuotaResolver | None = None,
+    allow_unlimited_local: bool | None = None,
+) -> dict[str, Any]:
     """Call Slack's `oauth.v2.access`. Returns the parsed JSON.
 
-    Raises a generic Exception on HTTP-level errors; the caller maps
-    those to a `slack_oauth_error` redirect.
+    The OAuth callback has an HMAC-authenticated tenant but cannot know the
+    Slack installation until this response yields ``team.id``.  The request is
+    therefore intentionally tenant-bound with ``installation_id=None``; it
+    never invents a provisional installation identity.
     """
     client_id = os.environ.get("SLACK_CLIENT_ID", "")
     client_secret = load_app_secret_text_from_env("SLACK_CLIENT_SECRET")
     redirect_uri = os.environ.get("SLACK_REDIRECT_URI", "")
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        r = await client.post(
-            _SLACK_OAUTH_ACCESS_URL,
-            data={
-                "code": code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
-            },
+    runtime = get_provider_transport_runtime()
+    owns_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=15.0)
+    local_unlimited = explicit_local_transport(
+        requested=(
+            runtime is None
+            if allow_unlimited_local is None
+            else allow_unlimited_local
+        ),
+        has_local_injection=http_client is not None,
+    )
+    binding = ProviderRequestBinding(
+        source="slack",
+        tenant_id=str(tenant_id),
+        installation_id=None,
+        transport=(
+            provider_transport
+            or (runtime.transport if runtime is not None else None)
+        ),
+        request_policy=request_policy,
+        quota_resolver=(
+            quota_resolver
+            or (runtime.quota_resolver if runtime is not None else None)
+        ),
+        allow_unlimited_local=(
+            local_unlimited if runtime is None else False
+        ),
+        require_tenant=True,
+        require_installation=False,
+    )
+
+    async def _once() -> httpx.Response:
+        try:
+            response = await client.post(
+                _SLACK_OAUTH_ACCESS_URL,
+                data={
+                    "code": code,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "redirect_uri": redirect_uri,
+                },
+            )
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError(
+                "Slack OAuth token exchange timed out",
+                source="slack",
+                operation="oauth.v2.access",
+            ) from exc
+        except httpx.TransportError as exc:
+            raise ProviderTransientError(
+                "Slack OAuth token exchange transport error",
+                source="slack",
+                operation="oauth.v2.access",
+                error_type=type(exc).__name__,
+            ) from exc
+        if response.status_code == 429:
+            raise ProviderRateLimited(
+                "Slack OAuth token exchange rate limit",
+                retry_after_seconds=parse_retry_after(
+                    response.headers.get("Retry-After"),
+                ),
+                status_code=429,
+                header_parser_id="http.retry_after",
+            )
+        if response.status_code >= 500:
+            raise ProviderTransientError(
+                f"Slack OAuth token exchange returned {response.status_code}",
+                source="slack",
+                operation="oauth.v2.access",
+                http_status=response.status_code,
+            )
+        if response.status_code >= 400:
+            raise ProviderPermanentError(
+                f"Slack OAuth token exchange returned {response.status_code}",
+                source="slack",
+                operation="oauth.v2.access",
+                http_status=response.status_code,
+            )
+        return response
+
+    try:
+        response = await binding.execute(
+            "oauth.v2.access",
+            _once,
+            quota_dimensions={"app": client_id},
         )
-    r.raise_for_status()
-    return r.json()
+        return response.json()
+    finally:
+        if owns_client:
+            await client.aclose()
 
 
 async def _persist_secrets(
@@ -676,7 +783,10 @@ async def callback_handler(request: Request) -> Any:
 
     # 4. Exchange code for tokens.
     try:
-        slack_response = await _exchange_code_for_tokens(code)
+        slack_response = await _exchange_code_for_tokens(
+            code,
+            tenant_id=tenant_id,
+        )
     except Exception as exc:  # noqa: BLE001 — Slack API errors
         log.error(
             "slack_install_failure",

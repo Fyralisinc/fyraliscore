@@ -7,7 +7,7 @@ Covers:
   - shard_identifier carries the discriminator + per-mailbox fields.
   - Inactive mailboxes (excluded by the S1 loader) don't appear here.
   - Mailboxes with null history_id propagate as None (no synthesis).
-  - PLANNER_DISPATCH['gmail'] is wired in.
+  - Gmail's SourceDefinition planner binding resolves correctly.
 """
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
+from services.ingest.source_contract.runtime import resolve_planner
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.gmail import (
     SHARD_KIND_MAILBOX_WINDOW,
@@ -133,7 +134,7 @@ async def test_dispatch_table_has_gmail_wired_in():
     # The module-level wire-in must register the planner. This is
     # the cross-cutting "M6.3 plumbed correctly" assertion that
     # M6.4-M6.6 will mirror for their sources.
-    assert PLANNER_DISPATCH["gmail"] is plan_shards_gmail
+    assert resolve_planner("gmail") is plan_shards_gmail
     # And it's no longer the not-implemented stub:
     assert plan_shards_gmail.__name__ == "plan_shards_gmail"
 

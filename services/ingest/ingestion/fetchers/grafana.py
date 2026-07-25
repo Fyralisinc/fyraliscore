@@ -51,8 +51,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from lib.shared.errors import GrafanaApiError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -165,21 +164,11 @@ async def fetch_page_grafana(
 
     client, close = await _open_grafana_client(install)
     try:
-        try:
-            annotations = await client.list_annotations(
-                from_ms=cur.floor_ms,
-                to_ms=cur.page_to_ms,
-                limit=page_size,
-            )
-        except GrafanaApiError as exc:
-            if (getattr(exc, "code", None) == "grafana_api_rate_limited"):
-                # Retry budget spent — leave the cursor unadvanced, end this
-                # round empty so ShardFetch re-enters next tick.
-                log.info("grafana_backfill_rate_limited")
-                return FetchResult(
-                    records=[], next_cursor=_encode_cursor(cur), end_of_data=False,
-                )
-            raise
+        annotations = await client.list_annotations(
+            from_ms=cur.floor_ms,
+            to_ms=cur.page_to_ms,
+            limit=page_size,
+        )
 
         records: list[dict[str, Any]] = []
         min_time: int | None = None
@@ -219,7 +208,6 @@ async def fetch_page_grafana(
         await close()
 
 
-FETCHER_DISPATCH["grafana"] = fetch_page_grafana
 
 
 __all__ = [

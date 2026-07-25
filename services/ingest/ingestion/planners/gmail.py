@@ -51,9 +51,8 @@ M6.3 uses TWO shard_kind values for Gmail:
     mailbox's current historyId.
 
 The fetcher (`services/ingest/ingestion/fetchers/gmail.py`) dispatches on
-shard_kind to pick the right Gmail API. This is per-source dispatch
-inside the per-source fetcher; the M6.2a FETCHER_DISPATCH keys on
-`source`, not on shard_kind.
+shard_kind to pick the right Gmail API. This is internal to the bound Gmail
+fetcher; SourceDefinition selects the source-level callable.
 
 ============================================================
 TWO-PATH COEXISTENCE (per A18)
@@ -68,12 +67,10 @@ is documented in A18 and resolved in the M7-territory ticket
 in M6.3 Phase 3).
 
 ============================================================
-WIRE-IN
+SOURCE CONTRACT
 ============================================================
-This module assigns into `PLANNER_DISPATCH['gmail']` at import time.
-The package `services/ingest/ingestion/planners/__init__.py` imports this
-module to trigger the assignment. Tests rebind via
-`monkeypatch.setitem(PLANNER_DISPATCH, "gmail", test_fn)`.
+`SourceDefinition.planner_binding` points directly to
+`plan_shards_gmail`; importing this module has no registration side effect.
 """
 from __future__ import annotations
 
@@ -82,7 +79,7 @@ from typing import Any
 import asyncpg
 import orjson
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -147,7 +144,6 @@ async def plan_shards_gmail(ctx: PlannerContext) -> list[Shard]:
 
 # Wire into the dispatch table at module-import time. Module-level
 # assignment is intentional (same shape M6.4-M6.6 will follow).
-PLANNER_DISPATCH["gmail"] = plan_shards_gmail
 
 
 __all__ = ["SHARD_KIND_MAILBOX_WINDOW", "plan_shards_gmail"]

@@ -8,7 +8,7 @@ Covers:
   - Reshared shards carry parent_shard_id linkage + recency_score=1.5.
   - Reshared shard_kind is "gmail_history_gap".
   - reconciliation_resharded + failed shards are excluded from check.
-  - RECONCILER_DISPATCH['gmail'] wire-in.
+  - Gmail's SourceDefinition reconciler binding resolves correctly.
 """
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ from uuid import uuid4
 
 import pytest
 
+from services.ingest.source_contract.runtime import resolve_reconciler
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ResharedShard,
 )
 from services.ingest.ingestion.reconcilers import gmail as gmail_reconciler
@@ -377,7 +377,7 @@ async def test_non_numeric_history_id_treated_as_clean(monkeypatch):
 # Wire-in
 # =====================================================================
 async def test_dispatch_table_has_gmail_wired_in():
-    assert RECONCILER_DISPATCH["gmail"] is reconcile_gmail
+    assert resolve_reconciler("gmail") is reconcile_gmail
     # Stub message should no longer be emitted by this entry.
 
 

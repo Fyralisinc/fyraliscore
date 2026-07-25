@@ -27,9 +27,7 @@ from typing import Any
 from lib.shared.errors import ValidationError
 
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -68,7 +66,7 @@ def _utcnow() -> datetime:
 def _dual(event: dict[str, Any], camel: str, pascal: str) -> Any:
     """Read a CloudTrail event field tolerant of BOTH key casings.
 
-    The synthetic spammer / normalized records emit camelCase (`eventId`,
+    Provider Lab / normalized records emit camelCase (`eventId`,
     `eventTime`, …); a REAL botocore LookupEvents element is PascalCase
     (`EventId`, `EventTime`, …). camelCase is read first so the existing
     synthetic path is unchanged; PascalCase is the additive fallback.
@@ -316,7 +314,6 @@ def _event_draft(event: dict[str, Any], account_id: str, region: str) -> Observa
     )
 
 
-@register(_CHANNEL_EVENT)
 async def handle_aws_event(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
@@ -328,7 +325,6 @@ async def handle_aws_event(
     return _event_draft(payload, account_id, region)
 
 
-CHANNEL_TRUST_MAP.setdefault(_CHANNEL_EVENT, _TRUST)
 
 
 __all__ = ["handle_aws_event", "aws_event"]

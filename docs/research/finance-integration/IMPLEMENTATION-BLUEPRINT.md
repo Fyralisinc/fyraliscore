@@ -2,6 +2,10 @@ All seams confirmed against the live tree. I now have everything needed. Here is
 
 ---
 
+> Historical blueprint: the `synthetic/mock_servers` paths below were the
+> original implementation targets. They are retired and deleted; executable
+> HTTP conformance now lives in `services/ingest/synthetic/provider_lab/`.
+
 # IMPLEMENTATION BLUEPRINT — Wiring Brex / Deel (Bearer archetype) + Ramp / Gusto (OAuth archetype) into Fyralis
 
 **Archetype assignment**
@@ -134,9 +138,9 @@ Add **8 builder/opener functions** (clone `build_mercury_client`/`open_mercury_c
     "build_brex_client", "build_ramp_client", "build_gusto_client", "build_deel_client",
     "open_brex_client", "open_ramp_client", "open_gusto_client", "open_deel_client",
 ```
-Brex/Deel builders read `install["base_url"]`, `install["secret_ref"]`, `install["tenant_id"]`; spammer token `"spam-brex"`/`"spam-deel"`, `api_base_url=endpoint("brex_api")`/`endpoint("deel_api")`. Ramp/Gusto builders additionally read `install["realm_id"]` (the scope id — `business_id`/`company_uuid`) and pass `access_token="spam-ramp"`/`"spam-gusto"`.
+Brex/Deel builders read `install["base_url"]`, `install["secret_ref"]`, `install["tenant_id"]`; Provider Lab runs preset the `"spam-brex"`/`"spam-deel"` fixture tokens and pass explicit `BREX_API_BASE_URL`/`DEEL_API_BASE_URL` overrides. Ramp/Gusto builders additionally read `install["realm_id"]` (the scope id — `business_id`/`company_uuid`) and use their explicit per-source endpoint overrides in Provider Lab runs.
 
-### 2.7 `lib/integrations/endpoints.py` — three dicts (default host / env var / spammer sub-path)
+### 2.7 Provider endpoint URLs — production resolver + Provider Lab contract
 After the `grafana_api` lines (56/85/104):
 ```python
 # default-host dict (after line 56):
@@ -147,9 +151,13 @@ After the `grafana_api` lines (56/85/104):
 # env-override dict (after line 87):
     "brex_api": "BREX_API_BASE_URL",  "ramp_api": "RAMP_API_BASE_URL",
     "gusto_api": "GUSTO_API_BASE_URL", "deel_api": "DEEL_API_BASE_URL",
-# spammer sub-path dict (after line 106):
+# Provider Lab path map in lib/integrations/provider_lab.py:
     "brex_api": "/brex", "ramp_api": "/ramp", "gusto_api": "/gusto", "deel_api": "/deel",
 ```
+
+`PROVIDER_LAB_URL` is a non-production, loopback-only origin. Test harnesses
+materialize its path map into the explicit per-source environment variables;
+`endpoint()` never treats the lab origin as an implicit fallback.
 
 ### 2.8 `services/ingest/ingestion/idempotency/__init__.py`
 Add constructors after the telegram block (line ~191), and append names to `__all__` (alphabetical, lines 194–214):
@@ -273,13 +281,16 @@ _SOURCES = ("mercury", "quickbooks", "brex", "ramp", "gusto", "deel")
 **`_CHANNEL`** (line 57) — add `"brex": "brex:transaction", "ramp": "ramp:transaction", "gusto": "gusto:object", "deel": "deel:payment"`.
 Add per-source API-base constants alongside `_MERCURY_BASE`/`_QBO_BASE` (lines 58–59), and add install/backfill branches mirroring the mercury branch (lines 405–425) and qbo branch. This is what gives each source its `/finance/{source}/install|backfill|live/emit|status` dev console.
 
-### 2.18 Validation harness — `run_all_sources.py`, `composition.py`, `live_generators/hmac_webhook.py`, `preflight.py`
+### 2.18 Validation — Provider Lab + source certification
 **`live_generators/hmac_webhook.py:55`**:
 ```python
 HMAC_PROVIDERS = ("jira", "mercury", "quickbooks", "grafana", "brex", "ramp", "gusto", "deel")
 ```
 and teach `HmacWebhookGenerator.simulate_event` how to build each provider's payload + external_id from the `LiveTarget` fields.
-**`run_all_sources.py`**: `_EXPECTED` (line 70) += `"brex": 5, "ramp": 4, "gusto": 4, "deel": 5`; `_EXPECTED_LIVE_STATUS` (line 80) += `"brex": {202}, "ramp": {202}, "gusto": {202}, "deel": {202}`; `_HMAC_SOURCES` (line 88) append the four; `_scen_params` (line 91) add slug-seeded kwargs per source.
+Add each source once to the canonical source contract, implement its Provider
+Lab adapter, and attach its count/live-status/overlap evidence to the
+source-certification artifact. The retired manual all-source runner must not
+regain copied `_EXPECTED`, live-status, or source tables.
 **`composition.py`**: `SigningSecrets` (line 87) add 4 fields + 4 `WEBHOOK_SECRET_<P>` env exports (after line 111); `LiveTarget` (line 130) add `brex_org/brex_account`, `ramp_business`, `gusto_company`, `deel_org`; `live_target_for` (line 169) add 4 branches; `_hmac_secret` map (line 409) add 4 entries; `seed_live_installs` `inst` chain (lines 502–509) add 4 `elif`; `dispatch_live_concurrent` tuple (line 848) append the four.
 **`preflight.py`**: add `_<s>_records` helper + `_SOURCE_SPECS` entry per source (finance sources are not yet covered there — additive).
 Register new fixtures in `fixtures/__init__.py` (after line 41) and mock clients in `mock_clients/__init__.py` (after line 42).
@@ -410,7 +421,7 @@ Rationale: the shared files are a **serialization point** — 12 of the ~22 seam
 - `signatures/__init__.py`, `tenant_resolver.py`, `router.py`, `envelope.py`, `idempotency/__init__.py`, `channel_mapping.py`, `_clients.py`, `endpoints.py`, `lib/shared/errors.py`
 - `workflows/{shard_fetch.py, source_onboarding.py, tenant_onboarding.py, reconciler.py}` (the two drift-bug surfaces live here: `tenant_onboarding` UNION + `reconciler.py` `set_pool_provider`)
 - `gateway/finance_router.py`
-- harness: `run_all_sources.py`, `composition.py`, `preflight.py`, `live_generators/hmac_webhook.py`, `fixtures/__init__.py`, `mock_clients/__init__.py`
+- validation: Provider Lab adapters, source-certification evidence, `composition.py`, `preflight.py`, `live_generators/hmac_webhook.py`
 - The **migration CHECK chain** — `0095…0098` must be authored together so each IN-list is a strict superset (a parallel author who writes `0097_gusto` without `'ramp'` breaks the chain).
 
 **Suggested sequence**: (1) Brex slice end-to-end incl. all shared edits + `0095` → green all-13 gate. (2) Replicate Deel (second Bearer) → `0096`-equivalent slot but **renumber to 0098** so OAuth pair stays contiguous; recommend keeping numeric order = build order: do Brex(0095), Ramp(0096), Gusto(0097), Deel(0098) even if Bearer pair is built first conceptually — the migration NUMBER must match disk order. (3) Ramp + Gusto (OAuth pair, share the refresh-seam decision). (4) Final consolidation pass on all shared files + the 4-migration CHECK chain + harness in one commit per source-pair to keep diffs reviewable.
@@ -452,11 +463,13 @@ Assertion sets (clone Mercury/QBO tests): full backfill → `1 snapshot + N chil
 
 4. **Signature-verifier round-trip:** add `signatures/tests/test_<s>.py` asserting `verifier.verify` accepts a correctly-signed body and rejects a tampered one; rotation across multiple active secrets.
 
-5. **The headline gate — all-16 overlap (concurrent backfill + live):**
+5. **The headline gate — catalog-complete source certification:**
 ```bash
-.venv/bin/python -m services.ingest.synthetic.validation_runs.run_all_sources
+.venv/bin/python -m services.ingest.source_certification inventory --require-ready
 ```
-After the §2.18 harness edits, `SOURCES` (derived from `_EXPECTED.keys()`) must enumerate **16** sources. The gate asserts, per source: (#1) backfill observation count == `_EXPECTED[<s>]` per tenant with **no cross-tenant collision** on the global `observations UNIQUE(source_channel, external_id, occurred_at)` index (this is why the fixture `seed=slug` / slug-embedded external_id is mandatory — see the tenant-unique-fixture gotcha); (#3) live webhook dispatch returns `_EXPECTED_LIVE_STATUS[<s>] == {202}` (M5.3 Kafka cutover); (#4) `_HMAC_SOURCES` coverage row green. **Target: the gate prints READY for all 16 sources** (today it's all-12 / all-13-with-telegram).
+Provider Lab registry parity must cover every canonical source. Per-source
+certification evidence carries backfill counts, cross-tenant uniqueness, live
+ingress status, and HMAC coverage without a parallel source list.
 
 6. **Preflight gate** (handler-real, partition-coverage): `run_preflight` over the extended `_SOURCE_SPECS` — asserts each fetched record runs through the REAL handler without raising, `draft.external_id` non-null, `draft.occurred_at` inside the live `observations` partition window (timestamps anchored 2026-01 in the generators).
 
@@ -484,4 +497,6 @@ mkdocs build --strict
 - `services/app/webhooks/{router.py:124,tenant_resolver.py:76,signatures/__init__.py:35}`
 - `services/app/gateway/finance_router.py:56`
 - `lib/integrations/endpoints.py:56` ; `lib/shared/errors.py:521`
-- Harness: `services/ingest/synthetic/validation_runs/{run_all_sources.py:70,composition.py:87,preflight.py}` ; `services/ingest/synthetic/live_generators/hmac_webhook.py:55`
+- Validation: `services/ingest/source_certification/`,
+  `services/ingest/synthetic/provider_lab/`, and
+  `services/ingest/synthetic/validation_runs/{composition.py,preflight.py}`

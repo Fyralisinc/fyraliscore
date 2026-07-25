@@ -48,9 +48,21 @@ from services.ingest.ingestion.workflows.tenant_onboarding import (
     WORKFLOW_ID_INBOX,
     WORKFLOW_KIND,
 )
+from services.ingest.source_contract.catalog import source_definition
 
 
 pytestmark = [pytest.mark.timeout(60)]
+
+
+def test_historical_source_discovery_includes_facebook_pages_not_whatsapp() -> None:
+    """The catalog has one explicit live-only source.
+
+    Facebook Pages supports Graph history and must be discovered for tenant
+    onboarding. WhatsApp Cloud API does not expose the historical surface
+    Fyralis requires, so an installation must not create a backfill run.
+    """
+    assert source_definition("facebook_pages").history == "api"
+    assert source_definition("whatsapp").history is None
 
 
 # =====================================================================
@@ -79,7 +91,7 @@ async def _seed_provider_install(
         VALUES ($1, $2, $3, $4, $5)
         """,
         install_id, tenant_id, provider,
-        f"inst-{tenant_id.hex[:8]}-{provider}", enabled,
+        f"inst-{install_id}", enabled,
     )
     return install_id
 
@@ -126,6 +138,13 @@ async def _emit_run_created_signal(
 ) -> None:
     """Inject an onboarding_run_created signal directly (simulates
     what the poller would emit)."""
+    if installation_row_id is None:
+        installation_row_id = await pool.fetchval(
+            "SELECT id FROM provider_installations "
+            "WHERE tenant_id = $1 AND provider = $2 AND enabled = TRUE",
+            tenant_id,
+            source,
+        )
     signal_data = {
         "onboarding_run_id": str(run_id),
         "tenant_id": str(tenant_id),
@@ -224,7 +243,9 @@ async def test_orchestrator_handles_run_created_signal_atomically(
     All four changes are part of the same transaction (the
     orchestrator's per-signal claim_signals + writes block)."""
     tid = await _seed_tenant(fresh_db)
-    await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
+    install_id = await _seed_provider_install(
+        fresh_db, tenant_id=tid, provider="slack",
+    )
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="github")
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
     await _emit_run_created_signal(fresh_db, run_id=run_id, tenant_id=tid)
@@ -237,8 +258,8 @@ async def test_orchestrator_handles_run_created_signal_atomically(
         "WHERE onboarding_run_id = $1 ORDER BY source",
         run_id,
     )
-    assert len(source_rows) == 2
-    assert {r["source"] for r in source_rows} == {"slack", "github"}
+    assert len(source_rows) == 1
+    assert {r["source"] for r in source_rows} == {"slack"}
     assert all(r["status"] == "pending" for r in source_rows)
 
     # ----- (b) source_onboarding_requested signals -----
@@ -249,8 +270,8 @@ async def test_orchestrator_handles_run_created_signal_atomically(
         SOURCE_ONBOARDING_INBOX_KIND, SOURCE_ONBOARDING_INBOX_ID,
         SIGNAL_KIND_SOURCE_REQUESTED,
     )
-    assert len(requested) == 2
-    expected_keys = {f"{run_id}:slack", f"{run_id}:github"}
+    assert len(requested) == 1
+    expected_keys = {f"{run_id}:slack:{install_id}"}
     assert {r["idempotency_key"] for r in requested} == expected_keys
 
     # ----- (c) original run_created signal consumed -----
@@ -296,7 +317,7 @@ async def test_orchestrator_forwards_trigger_installation_to_matching_source(
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
         SOURCE_ONBOARDING_INBOX_KIND, SOURCE_ONBOARDING_INBOX_ID,
-        SIGNAL_KIND_SOURCE_REQUESTED, f"{run_id}:discord",
+        SIGNAL_KIND_SOURCE_REQUESTED, f"{run_id}:discord:{install_id}",
     )
     assert signal_row is not None
     raw = signal_row["signal_data"]
@@ -432,25 +453,19 @@ async def test_orchestrator_claim_signals_rolls_back_on_failure(
 
 
 # =====================================================================
-# 3. Source applicability — provider_installations + gmail at tick-time.
+# 3. Exact source-installation semantics.
 # =====================================================================
 
-async def test_orchestrator_determines_applicable_sources_from_installs(
+async def test_orchestrator_processes_only_triggering_exact_installation(
     fresh_db: asyncpg.Pool,
 ) -> None:
-    """Tenant has slack + gmail active installs; tick orchestrator
-    on a run created from a discord trigger (not installed). Assert
-    EXACTLY 2 source_onboarding_runs rows — slack + gmail — because
-    provider_installations + gmail_installations are the source of
-    truth, NOT the trigger's source. Per A13 / Phase 2 design
-    decision."""
+    """Unrelated active installs never fan out from an exact trigger."""
     tid = await _seed_tenant(fresh_db)
-    await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
+    slack_install = await _seed_provider_install(
+        fresh_db, tenant_id=tid, provider="slack",
+    )
     await _seed_gmail_install(fresh_db, tenant_id=tid)
-    # NOT installed: github, discord.
-    # Note the run's sources_enabled snapshot is ["slack"] (from a
-    # hypothetical slack trigger), but applicability is decided
-    # from installs at tick-time.
+    # Gmail is active too, but the Slack trigger must remain Slack-only.
     run_id = await _seed_onboarding_run(
         fresh_db, tenant_id=tid, source="slack",
     )
@@ -463,12 +478,13 @@ async def test_orchestrator_determines_applicable_sources_from_installs(
         "WHERE onboarding_run_id = $1 ORDER BY source",
         run_id,
     )
-    actual = {r["source"] for r in rows}
-    assert actual == {"slack", "gmail"}, (
-        f"Source applicability rule broken: expected {{slack, gmail}} "
-        f"(both installed); got {actual}. provider_installations + "
-        f"gmail_installations is the source of truth per A13."
+    assert [r["source"] for r in rows] == ["slack"]
+    stored_install = await fresh_db.fetchval(
+        "SELECT installation_row_id FROM source_onboarding_runs "
+        "WHERE onboarding_run_id = $1 AND source = 'slack'",
+        run_id,
     )
+    assert stored_install == slack_install
 
 
 async def test_orchestrator_fails_run_when_no_installs_active(
@@ -490,7 +506,7 @@ async def test_orchestrator_fails_run_when_no_installs_active(
         run_id,
     )
     assert run_row["status"] == "failed"
-    assert "No active installs" in run_row["error_summary"]
+    assert "exact installation UUID" in run_row["error_summary"]
 
 
 # =====================================================================
@@ -664,18 +680,22 @@ async def test_poller_and_orchestrator_run_concurrently_without_deadlock(
     deadlocked the other, the bounded-tick budget runs out without
     all 20 runs draining."""
     tid = await _seed_tenant(fresh_db, "stress")
-    await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
-    await _seed_provider_install(fresh_db, tenant_id=tid, provider="github")
 
     n = 20
     for _ in range(n):
+        slack_install = await _seed_provider_install(
+            fresh_db,
+            tenant_id=tid,
+            provider="slack",
+        )
         await fresh_db.execute(
             """
             INSERT INTO onboarding_triggers
-                (id, tenant_id, source, trigger_kind, payload)
-            VALUES ($1, $2, 'slack', 'install', '{}'::jsonb)
+                (id, tenant_id, source, trigger_kind,
+                 installation_row_id, payload)
+            VALUES ($1, $2, 'slack', 'install', $3, '{}'::jsonb)
             """,
-            uuid7(), tid,
+            uuid7(), tid, slack_install,
         )
 
     poller = OAuthPoller(
@@ -725,12 +745,12 @@ async def test_poller_and_orchestrator_run_concurrently_without_deadlock(
         f"Orchestrator did not drain its inbox."
     )
 
-    # Source rows materialized (2 per run × n runs).
+    # One exact source-install row materialized per trigger/run.
     source_count = await fresh_db.fetchval(
         "SELECT count(*) FROM source_onboarding_runs "
         "WHERE tenant_id = $1", tid,
     )
-    assert source_count == 2 * n
+    assert source_count == n
 
 
 # =====================================================================
@@ -843,7 +863,7 @@ async def test_orchestrator_emits_tenant_started_progress_event(
     val, key = started_msgs[0]
     ev = TenantOnboardingStarted.model_validate_json(val)
     assert ev.tenant_id == tid
-    assert set(ev.sources) == {"slack", "github"}
+    assert set(ev.sources) == {"slack"}
     assert ev.eta_minutes > 0
     # Keyed by tenant_id for per-tenant ordering (LLD §6).
     assert key == tid.bytes

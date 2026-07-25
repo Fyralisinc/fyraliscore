@@ -24,7 +24,7 @@ from typing import Any
 
 import orjson
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -83,7 +83,6 @@ async def plan_shards_carta(ctx: PlannerContext) -> list[Shard]:
     return shards
 
 
-PLANNER_DISPATCH["carta"] = plan_shards_carta
 
 
 __all__ = ["SHARD_KIND_ENTITY", "plan_shards_carta"]

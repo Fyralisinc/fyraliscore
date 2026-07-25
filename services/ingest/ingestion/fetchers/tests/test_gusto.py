@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from lib.shared.errors import GustoApiError
+from lib.shared.provider_transport import (
+    RequestContext,
+    RetryLater,
+    RetryReason,
+)
 from services.ingest.ingestion.fetchers import gusto as gusto_fetcher
 from services.ingest.ingestion.fetchers.gusto import (
     GustoCursor,
@@ -197,20 +201,26 @@ async def test_employee_warm_start_is_full_rewalk(monkeypatch):
     assert cur.high_water is None
 
 
-async def test_rate_limited_returns_same_cursor_not_terminal(monkeypatch):
+async def test_retry_later_propagates_without_unchanged_cursor_page(monkeypatch):
+    retry = RetryLater.after(
+        request_context=RequestContext(
+            source="gusto",
+            operation="employees.list",
+        ),
+        delay_seconds=120,
+        reason=RetryReason.RATE_LIMIT,
+    )
+
     class _Limited:
         async def list_employees(self, **kwargs):
-            raise GustoApiError("429", code="gusto_api_rate_limited",
-                                context={"http_status": 429})
+            raise retry
 
     _wire(monkeypatch, _Limited())
     shard = {"shard_kind": SHARD_KIND_ENTITY, "entity_type": "employee",
              "company_uuid": _COMPANY}
-    res = await fetch_page_gusto(_FakeInst(), shard, None)
-    assert res.records == []
-    assert res.end_of_data is False  # retried later from the same cursor
-    cur = GustoCursor.model_validate(res.next_cursor)
-    assert cur.page == 1
+    with pytest.raises(RetryLater) as caught:
+        await fetch_page_gusto(_FakeInst(), shard, None)
+    assert caught.value is retry
 
 
 async def test_empty_entity_terminates(monkeypatch):

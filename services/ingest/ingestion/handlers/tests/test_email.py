@@ -6,6 +6,7 @@ import hmac
 
 import pytest
 
+from services.ingest.ingestion.handlers import get_handler
 from services.ingest.ingestion.handlers.email import (
     EmailSignatureError,
     handle_email_webhook,
@@ -19,6 +20,10 @@ from services.ingest.ingestion.handlers.email import (
 
 def _sig(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def test_email_handler_is_declared_in_the_source_contract():
+    assert get_handler("email:inbound") is handle_email_webhook
 
 
 def test_email_signature_happy_path():

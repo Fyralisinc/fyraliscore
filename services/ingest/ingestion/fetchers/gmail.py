@@ -9,8 +9,8 @@ users.messages.list, NOT a refactor of the existing inline path).
 ============================================================
 TWO SHARD-KIND PATHS (per-source dispatch in the fetcher)
 ============================================================
-The M6.2a FETCHER_DISPATCH keys on `source`, so all Gmail shards
-land here. Inside this module we dispatch on `shard_kind`:
+The Gmail SourceDefinition binding sends all Gmail shards here. Inside this
+module we dispatch on `shard_kind`:
 
   - `"gmail_mailbox_window"` (initial backfill from the planner):
     Pages through `users.messages.list` from the start of the
@@ -105,12 +105,10 @@ Both retry helpers live in
 `services/ingest/ingestion/workflows/retry.py` (substrate, M6.0).
 
 ============================================================
-WIRE-IN
+SOURCE CONTRACT
 ============================================================
-This module assigns into `FETCHER_DISPATCH['gmail']` at import time;
-the package `services/ingest/ingestion/fetchers/__init__.py` imports this
-module to trigger the assignment. Tests rebind via
-`monkeypatch.setitem(FETCHER_DISPATCH, "gmail", test_fn)`.
+`SourceDefinition.fetcher_binding` points directly to
+`fetch_page_gmail`; importing this module has no registration side effect.
 """
 from __future__ import annotations
 
@@ -120,14 +118,14 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 from services.ingest.integrations.gmail.client import (
     GMAIL_METADATA_SCOPE,
     GMAIL_READONLY_SCOPE,
     GmailClient,
     GoogleApiError,
-    GoogleHttpClient,
     GoogleRateLimited,
+    build_google_http_client,
 )
 from services.ingest.integrations.gmail.dwd import get_minter
 from services.ingest.ingestion.workflows.retry import (
@@ -257,7 +255,11 @@ async def _open_gmail_client(install: asyncpg.Record):  # noqa: ANN202
     """Yield (gmail_client, http_close_callable). The http_close
     callable releases the underlying httpx client when done."""
     minter = get_minter()
-    http = GoogleHttpClient(minter)
+    http = build_google_http_client(
+        minter,
+        tenant_id=str(install["tenant_id"]),
+        installation_id=str(install["id"]),
+    )
     await http.__aenter__()
 
     async def close() -> None:
@@ -518,7 +520,6 @@ async def _fetch_page_history_gap(
 
 
 # Wire into the dispatch table at module-import time.
-FETCHER_DISPATCH["gmail"] = fetch_page_gmail
 
 
 __all__ = [

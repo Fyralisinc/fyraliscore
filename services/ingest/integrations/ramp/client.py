@@ -15,7 +15,7 @@ official Ramp Developer API (docs.ramp.com, OpenAPI `/openapi/developer-api.json
   - Pagination: **KEYSET** — every list response is the envelope
     ``{"data": [...], "page": {"next": "<full URL embedding start=<last id>>"
     or null}}``. ``page_size`` default 20, allowed 2..100. The client follows
-    ``page.next`` URLs; when an ``api_base_url`` override is set (spammer /
+    ``page.next`` URLs; when an ``api_base_url`` override is set (Provider Lab /
     mock), foreign-host next-URLs are re-rooted onto the override so mocks work.
   - Incremental: transactions support ``from_date``/``to_date`` (filter on
     ``user_transaction_time``, ISO8601); reimbursements support
@@ -23,12 +23,13 @@ official Ramp Developer API (docs.ramp.com, OpenAPI `/openapi/developer-api.json
     server-side incremental filter — callers fall back to a full idempotent
     re-walk (dedup via the deterministic external_id).
 
-Spammer/test mode: a preset ``access_token`` (or ``api_base_url`` override)
+Provider Lab/test mode: a preset ``access_token`` (or ``api_base_url`` override)
 skips real OAuth entirely — no client credentials needed.
 
-Rate limits: 429 + ``Retry-After`` honoured with a bounded retry budget
-(env knobs RAMP_RL_MAX_ATTEMPTS / RAMP_RL_MAX_SLEEP_SEC). Non-2xx maps to
-``RampApiError`` with the stable ``ramp_api_*`` codes.
+Every outbound attempt, including client-credentials token minting, executes
+through the shared ``ProviderTransport``.  It owns distributed quota,
+concurrency, bounded full-jitter retries, timeout budgets, and shared
+``Retry-After`` cooldowns. Non-retryable responses map to ``RampApiError``.
 
 Logging redaction: the access token / client secret / auth header are NEVER
 logged.
@@ -46,6 +47,20 @@ import httpx
 import structlog
 
 from lib.shared.errors import RampApiError
+from lib.shared.provider_transport import (
+    ProviderRateLimited,
+    ProviderTimeoutError,
+    ProviderTransientError,
+    RequestPolicy,
+    parse_retry_after,
+)
+from services.ingest.integrations.provider_transport import (
+    PolicyResolver,
+    ProviderExecutor,
+    ProviderRequestBinding,
+    QuotaResolver,
+    explicit_local_transport,
+)
 from services.ingest.integrations.secret_cache import (
     SecretValueCache,
     coerce_secret_text,
@@ -65,15 +80,6 @@ _MIN_PAGE_SIZE = 2
 DEFAULT_SCOPES = (
     "transactions:read reimbursements:read cards:read users:read business:read"
 )
-
-
-def _parse_retry_after(value: str | None) -> float:
-    if not value:
-        return 1.0
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 1.0
 
 
 class RampClient:
@@ -99,13 +105,18 @@ class RampClient:
         client_id: str | None = None,
         client_secret: str | None = None,
         scopes: str | None = None,
+        provider_transport: ProviderExecutor | None = None,
+        request_policy: RequestPolicy | PolicyResolver | None = None,
+        quota_resolver: QuotaResolver | None = None,
+        allow_unlimited_local: bool | None = None,
+        require_tenant_installation: bool = True,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
         self._business_id = business_id
-        # Phase 3: reactive OAuth re-mint on 401 (inert in spammer mode).
+        # Phase 3: reactive OAuth re-mint on 401 (inert in Provider Lab mode).
         self._install_row_id = install_row_id
         self._refresh_secret_ref = refresh_secret_ref
         self._access_token_cache = SecretValueCache(preset=access_token)
@@ -118,11 +129,30 @@ class RampClient:
         self._client_secret_lock = asyncio.Lock()
         self._scopes = scopes
         # In production the base is the canonical Ramp host
-        # (https://api.ramp.com/developer/v1); a spammer/test override
+        # (https://api.ramp.com/developer/v1); a lab/test override
         # (api_base_url) wins so backfill points at the mock.
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
         self._http: httpx.AsyncClient | None = http_client
+        local_unlimited = explicit_local_transport(
+            requested=allow_unlimited_local,
+            has_local_injection=(
+                http_client is not None or api_base_url is not None
+            ),
+        )
+        self._provider = ProviderRequestBinding(
+            source="ramp",
+            tenant_id=str(tenant_id) if tenant_id is not None else None,
+            installation_id=(
+                str(install_row_id) if install_row_id is not None else None
+            ),
+            transport=provider_transport,
+            request_policy=request_policy,
+            quota_resolver=quota_resolver,
+            allow_unlimited_local=local_unlimited,
+            require_tenant=True,
+            require_installation=require_tenant_installation,
+        )
 
     @property
     def business_id(self) -> str:
@@ -140,7 +170,7 @@ class RampClient:
             self._http = None
 
     # -----------------------------------------------------------------
-    # Token: preset (spammer) → secret store → client-credentials mint
+    # Token: preset (Provider Lab) → secret store → client-credentials mint
     # -----------------------------------------------------------------
 
     async def _mint_credentials(self) -> tuple[str | None, str | None]:
@@ -191,22 +221,61 @@ class RampClient:
             )
         basic = base64.b64encode(f"{cid}:{csec}".encode("utf-8")).decode("ascii")
         scopes = self._scopes or os.environ.get("RAMP_OAUTH_SCOPES", DEFAULT_SCOPES)
-        try:
-            response = await self._httpx().post(
-                f"{self._api_base_url}/token",
-                headers={
-                    "Authorization": f"Basic {basic}",
-                    "Accept": "application/json",
-                },
-                data={"grant_type": "client_credentials", "scope": scopes},
-            )
-        except httpx.TransportError as exc:
-            metrics.record_request("error")
-            raise RampApiError(
-                "transport error minting ramp token",
-                code="ramp_api_error",
-                context={"error_type": type(exc).__name__, "path": "/token"},
-            ) from exc
+        operation = "oauth.token.mint"
+
+        async def _once() -> httpx.Response:
+            try:
+                response = await self._httpx().post(
+                    f"{self._api_base_url}/token",
+                    headers={
+                        "Authorization": f"Basic {basic}",
+                        "Accept": "application/json",
+                    },
+                    data={
+                        "grant_type": "client_credentials",
+                        "scope": scopes,
+                    },
+                )
+            except httpx.TimeoutException as exc:
+                metrics.record_request("error")
+                raise ProviderTimeoutError(
+                    "Ramp token request timed out",
+                    source="ramp",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
+            except httpx.TransportError as exc:
+                metrics.record_request("error")
+                raise ProviderTransientError(
+                    "Ramp token transport error",
+                    source="ramp",
+                    operation=operation,
+                    error_type=type(exc).__name__,
+                ) from exc
+            if response.status_code == 429:
+                metrics.record_request("rate_limited")
+                raise ProviderRateLimited(
+                    "Ramp token rate limit",
+                    retry_after_seconds=parse_retry_after(
+                        response.headers.get("Retry-After"),
+                    ),
+                    status_code=429,
+                    header_parser_id="http.retry_after",
+                    source="ramp",
+                    operation=operation,
+                )
+            if response.status_code >= 500:
+                metrics.record_request("error")
+                raise ProviderTransientError(
+                    f"Ramp token endpoint returned HTTP "
+                    f"{response.status_code}",
+                    source="ramp",
+                    operation=operation,
+                    http_status=response.status_code,
+                )
+            return response
+
+        response = await self._provider.execute(operation, _once)
         if response.status_code // 100 != 2:
             metrics.record_request("unauthorized")
             raise RampApiError(
@@ -264,7 +333,7 @@ class RampClient:
 
         Production next-URLs already start with the canonical base and pass
         through untouched. When an `api_base_url` override is in effect
-        (spammer/mock) a foreign-host next-URL is re-rooted: the collection
+        (Provider Lab/mock) a foreign-host next-URL is re-rooted: the collection
         segment + query are grafted onto the override base so the keyset walk
         stays on the mock."""
         if next_url.startswith(self._api_base_url + "/"):
@@ -281,6 +350,7 @@ class RampClient:
         *,
         params: dict[str, Any] | None = None,
         url: str | None = None,
+        operation: str,
     ) -> dict[str, Any]:
         from services.ingest.integrations.ramp import metrics
         from services.ingest.integrations.oauth_refresh import (
@@ -290,38 +360,65 @@ class RampClient:
         if url is None:
             url = f"{self._api_base_url}{path}"
         log_path = path or urlsplit(url).path
-        max_attempts = int(os.environ.get("RAMP_RL_MAX_ATTEMPTS", "4"))
-        max_sleep = float(os.environ.get("RAMP_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
-        attempt = 0
         reminted = False
         refreshed_token: str | None = None
         while True:
-            attempt += 1
             token = refreshed_token or await self._token()
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
             }
-            try:
-                response = await client.request(
-                    method, url, headers=headers, params=params,
-                )
-            except httpx.TransportError as exc:
-                metrics.record_request("error")
-                raise RampApiError(
-                    "transport error calling ramp",
-                    code="ramp_api_error",
-                    context={"error_type": type(exc).__name__, "path": log_path},
-                ) from exc
 
-            if response.status_code == 429 and attempt < max_attempts:
-                metrics.record_request("rate_limited")
-                delay = _parse_retry_after(response.headers.get("Retry-After"))
-                await asyncio.sleep(min(max_sleep, delay))
-                continue
+            async def _once() -> httpx.Response:
+                try:
+                    response = await client.request(
+                        method,
+                        url,
+                        headers=headers,
+                        params=params,
+                    )
+                except httpx.TimeoutException as exc:
+                    metrics.record_request("error")
+                    raise ProviderTimeoutError(
+                        "Ramp request timed out",
+                        source="ramp",
+                        operation=operation,
+                        error_type=type(exc).__name__,
+                    ) from exc
+                except httpx.TransportError as exc:
+                    metrics.record_request("error")
+                    raise ProviderTransientError(
+                        "Ramp transport error",
+                        source="ramp",
+                        operation=operation,
+                        error_type=type(exc).__name__,
+                    ) from exc
 
+                if response.status_code == 429:
+                    metrics.record_request("rate_limited")
+                    raise ProviderRateLimited(
+                        "Ramp rate limit",
+                        retry_after_seconds=parse_retry_after(
+                            response.headers.get("Retry-After"),
+                        ),
+                        status_code=429,
+                        header_parser_id="http.retry_after",
+                        source="ramp",
+                        operation=operation,
+                    )
+                if response.status_code >= 500:
+                    metrics.record_request("error")
+                    raise ProviderTransientError(
+                        f"Ramp returned HTTP {response.status_code}",
+                        source="ramp",
+                        operation=operation,
+                        http_status=response.status_code,
+                    )
+                return response
+
+            response = await self._provider.execute(operation, _once)
             if response.status_code // 100 == 2:
                 metrics.record_request("ok")
                 body = _safe_json(response)
@@ -339,7 +436,7 @@ class RampClient:
                     reminted = True
                     # Reactive re-mint: refresh_on_unauthorized's ramp config
                     # performs the client-credentials exchange + persists the
-                    # new token ref (inert in spammer mode — preset token, no
+                    # new token ref (inert in Provider Lab mode — preset token, no
                     # secret store).
                     new_token = await refresh_on_unauthorized(
                         provider="ramp", pool=self._pool,
@@ -348,6 +445,7 @@ class RampClient:
                         install_row_id=self._install_row_id,
                         current_access_ref=self._secret_ref,
                         refresh_secret_ref=self._refresh_secret_ref,
+                        request_binding=self._provider,
                     )
                     if new_token is not None:
                         self._access_token_cache.set(new_token)
@@ -377,15 +475,21 @@ class RampClient:
         path: str,
         params: dict[str, Any],
         page_url: str | None,
+        operation: str,
     ) -> tuple[list[dict[str, Any]], str | None]:
         """One keyset page. Returns `(rows, next_page_url)`;
         `next_page_url is None` is terminal (`page.next` null at EOF)."""
         if page_url:
-            resp = await self._request("GET", url=self._resolve_page_url(page_url))
+            resp = await self._request(
+                "GET",
+                url=self._resolve_page_url(page_url),
+                operation=operation,
+            )
         else:
             resp = await self._request(
                 "GET", path,
                 params={k: v for k, v in params.items() if v is not None},
+                operation=operation,
             )
         data = resp.get("data")
         rows = [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
@@ -417,6 +521,7 @@ class RampClient:
                 "start": start,
             },
             page_url,
+            "transactions.list",
         )
 
     async def list_reimbursements(
@@ -439,6 +544,7 @@ class RampClient:
                 "start": start,
             },
             page_url,
+            "reimbursements.list",
         )
 
     async def list_cards(
@@ -454,6 +560,7 @@ class RampClient:
             "/cards",
             {"page_size": _clamp_page_size(page_size), "start": start},
             page_url,
+            "cards.list",
         )
 
     async def list_users(
@@ -469,12 +576,17 @@ class RampClient:
             "/users",
             {"page_size": _clamp_page_size(page_size), "start": start},
             page_url,
+            "users.list",
         )
 
     async def business(self) -> dict[str, Any]:
         """`GET /business` — cheap connectivity/credential probe. Returns the
         company info (`id` is the business_id every webhook carries at root)."""
-        return await self._request("GET", "/business")
+        return await self._request(
+            "GET",
+            "/business",
+            operation="business.get",
+        )
 
 
 # ---------------------------------------------------------------------

@@ -141,10 +141,8 @@ def test_mercury_backfill_pagination(monkeypatch):
     assert len(snapshot_records) == 1
 
 
-def test_mercury_rate_limit_surfaces_and_fetcher_swallows(monkeypatch):
-    """A rate-limit fault raises MercuryApiError(mercury_api_rate_limited); the
-    fetcher's documented handling returns the snapshot page with
-    end_of_data=False (non-terminal) rather than raising."""
+def test_mercury_rate_limit_propagates_without_cursor_result(monkeypatch):
+    """A legacy pre-transport rate-limit error cannot return a cursor result."""
     fixture = make_mercury(accounts=1, transactions_per_account=4)
     account_id = fixture["account_order"][0]
 
@@ -158,19 +156,21 @@ def test_mercury_rate_limit_surfaces_and_fetcher_swallows(monkeypatch):
     assert getattr(exc_info.value, "_code", None) == "mercury_api_rate_limited"
 
     # 2) Drive the fetcher: get_account succeeds (request 1), list_transactions
-    #    trips the rate limit (request 2). The fetcher swallows the rate-limit on
-    #    the transaction call, returning the already-built snapshot record with
-    #    end_of_data=False (it will be retried on the next claim).
+    #    trips the rate limit (request 2). No FetchResult is returned, so the
+    #    workflow cannot persist the locally-mutated cursor or partial snapshot.
+    #    The production client emits RetryLater at this boundary.
     fetch_mock = MockMercuryClient(
         fixture=fixture,
         profile=FaultProfile(rate_limit_after_n_requests=1),
     )
     _bind_mock(monkeypatch, fetch_mock)
 
-    result = asyncio.run(
-        mercury_fetcher.fetch_page_mercury(_INSTALL, _shard_for(account_id), None)
-    )
-    assert result.end_of_data is False  # non-terminal: shard re-fetches
-    # The snapshot was built before list_transactions tripped the limit.
-    assert len(result.records) == 1
-    assert result.records[0]["_fyralis_record_type"] == "account_snapshot"
+    with pytest.raises(MercuryApiError) as fetch_error:
+        asyncio.run(
+            mercury_fetcher.fetch_page_mercury(
+                _INSTALL,
+                _shard_for(account_id),
+                None,
+            )
+        )
+    assert getattr(fetch_error.value, "_code", None) == "mercury_api_rate_limited"

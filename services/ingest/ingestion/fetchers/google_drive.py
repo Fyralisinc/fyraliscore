@@ -52,14 +52,14 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict
 
 from lib.shared.errors import CompanyOSError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 from services.ingest.integrations.google_drive import metrics
 from services.ingest.integrations.google_drive.client import (
     GoogleDriveClient,
     is_extractable,
     resolve_scope,
 )
-from services.ingest.ingestion.workflows.retry import retry_with_backoff_on_429
+from lib.shared.provider_transport import ProviderTransportError
 
 
 log = logging.getLogger(__name__)
@@ -147,11 +147,16 @@ def _encode_cursor(c: GoogleDriveCursor) -> dict[str, Any]:
 async def _open_drive_client(install: asyncpg.Record):  # noqa: ANN202
     """Test seam — monkeypatched by tests. Production builds a real
     GoogleDriveClient over the shared Gmail DWD minter + GoogleHttpClient."""
-    from services.ingest.integrations.gmail.client import GoogleHttpClient
+    from services.ingest.integrations.gmail.client import build_google_http_client
     from services.ingest.integrations.gmail.dwd import get_minter
 
     scope = resolve_scope(install["scope"])
-    http = GoogleHttpClient(get_minter())
+    http = build_google_http_client(
+        get_minter(),
+        source="google_drive",
+        tenant_id=str(install["tenant_id"]),
+        installation_id=str(install["id"]),
+    )
     await http.__aenter__()
     client = GoogleDriveClient(http, scope=scope)
 
@@ -194,6 +199,11 @@ async def _maybe_extract(
             max_bytes=_extract_max_bytes(),
             pdf_max_pages=_pdf_max_pages(),
         )
+    except ProviderTransportError:
+        # Child hydration is part of this page's correctness boundary. Preserve
+        # transport outcomes so RetryLater is durably scheduled and binding /
+        # policy defects fail closed instead of advancing past missing content.
+        raise
     except Exception as exc:  # noqa: BLE001 — extraction is best-effort
         metrics.record_fetch_event("extract_failed")
         log.info(
@@ -247,6 +257,8 @@ async def _collab_records(
                     out.append(rec)
             if out:
                 metrics.record_fetch_event("comments", by=len(out))
+        except ProviderTransportError:
+            raise
         except Exception as exc:  # noqa: BLE001 — best-effort
             log.info("google_drive_comments_failed",
                      extra={"file_id": file_id, "error": str(exc)[:200]})
@@ -263,6 +275,8 @@ async def _collab_records(
                     out.append(rec)
             if revs:
                 metrics.record_fetch_event("revisions", by=len(revs))
+        except ProviderTransportError:
+            raise
         except Exception as exc:  # noqa: BLE001 — best-effort
             log.info("google_drive_revisions_failed",
                      extra={"file_id": file_id, "error": str(exc)[:200]})
@@ -300,8 +314,6 @@ async def fetch_page_google_drive(
     cur = _decode_cursor(cursor)
     client, close = await _open_drive_client(install)
     try:
-        from services.ingest.integrations.gmail.client import GoogleRateLimited
-
         # First-call setup: choose the sync mode + freeze the backfill window.
         # For a FULL backfill, capture the start-page-token UP FRONT so changes
         # made during the backfill window aren't lost.
@@ -313,55 +325,28 @@ async def fetch_page_google_drive(
                 cur.time_min = (
                     datetime.now(timezone.utc) - timedelta(days=_backfill_days())
                 ).isoformat().replace("+00:00", "Z")
-                try:
-                    cur.next_start_page_token = await retry_with_backoff_on_429(
-                        lambda: client.get_start_page_token(
-                            user_email=owner_email,
-                            drive_id=drive_id,
-                        ),
-                        retry_on=GoogleRateLimited,
-                    )
-                except GoogleRateLimited:
-                    metrics.record_fetch_event("rate_limited")
-                    return FetchResult(
-                        records=[], next_cursor=_encode_cursor(cur),
-                        end_of_data=False,
-                    )
+                cur.next_start_page_token = await client.get_start_page_token(
+                    user_email=owner_email,
+                    drive_id=drive_id,
+                )
             cur.seeded = True
 
         incremental = cur.start_page_token is not None
 
         try:
             if incremental:
-                body = await retry_with_backoff_on_429(
-                    lambda: client.list_changes(
-                        user_email=owner_email,
-                        page_token=cur.page_token or cur.start_page_token,
-                        drive_id=drive_id,
-                    ),
-                    retry_on=GoogleRateLimited,
+                body = await client.list_changes(
+                    user_email=owner_email,
+                    page_token=cur.page_token or cur.start_page_token,
+                    drive_id=drive_id,
                 )
             else:
-                body = await retry_with_backoff_on_429(
-                    lambda: client.list_files(
-                        user_email=owner_email,
-                        drive_id=drive_id,
-                        modified_after=cur.time_min,
-                        page_token=cur.page_token,
-                    ),
-                    retry_on=GoogleRateLimited,
+                body = await client.list_files(
+                    user_email=owner_email,
+                    drive_id=drive_id,
+                    modified_after=cur.time_min,
+                    page_token=cur.page_token,
                 )
-        except GoogleRateLimited:
-            # Retry budget spent — leave the cursor unadvanced and end this
-            # round empty so ShardFetch re-enters next tick (cursor preserved).
-            metrics.record_fetch_event("rate_limited")
-            log.info(
-                "google_drive_backfill_rate_limited",
-                extra={"drive_id": drive_id},
-            )
-            return FetchResult(
-                records=[], next_cursor=_encode_cursor(cur), end_of_data=False,
-            )
         except CompanyOSError as exc:
             status = (exc.context or {}).get("status")
             if status in (400, 410) and incremental:
@@ -454,7 +439,6 @@ async def fetch_page_google_drive(
         await close()
 
 
-FETCHER_DISPATCH["google_drive"] = fetch_page_google_drive
 
 
 __all__ = [

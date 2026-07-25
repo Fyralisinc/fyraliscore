@@ -46,7 +46,7 @@ from services.ingest.integrations.gmail.client import (
     DIRECTORY_READ_SCOPES,
     DirectoryClient,
     GoogleApiError,
-    GoogleHttpClient,
+    build_google_onboarding_http_client,
 )
 from services.ingest.integrations.gmail.directory import enumerate_domain
 from services.ingest.integrations.gmail.dwd import DwdError, get_minter
@@ -126,7 +126,7 @@ def _dwd_remediation(scope_alias: str, exc: Exception) -> JSONResponse:
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
     """Verify DWD is set up and enumerate the domain for the selector."""
-    _tenant_from_request(request)  # auth check
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     workspace_domain = (body.get("workspace_domain") or "").strip().lower()
     admin_email = (body.get("admin_email") or "").strip().lower()
@@ -138,7 +138,12 @@ async def connect_preflight(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="admin_email is required")
 
     minter = get_minter()
-    async with GoogleHttpClient(minter) as http:
+    async with build_google_onboarding_http_client(
+        minter,
+        source="google_drive",
+        tenant_id=str(tenant_id),
+        quota_dimensions={"workspace": workspace_domain},
+    ) as http:
         directory = DirectoryClient(http, admin_email)
         try:
             enumeration = await enumerate_domain(
@@ -186,7 +191,12 @@ async def connect_finalize(request: Request) -> JSONResponse:
 
     minter = get_minter()
     try:
-        async with GoogleHttpClient(minter) as http:
+        async with build_google_onboarding_http_client(
+            minter,
+            source="google_drive",
+            tenant_id=str(tenant_id),
+            quota_dimensions={"workspace": workspace_domain},
+        ) as http:
             directory = DirectoryClient(http, admin_email)
             # The Drive client is only needed to enumerate Shared Drives; skip
             # building it when the caller opts out.

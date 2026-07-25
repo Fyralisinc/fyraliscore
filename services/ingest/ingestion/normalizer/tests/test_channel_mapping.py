@@ -76,10 +76,7 @@ def test_unknown_source_backfill_returns_none():
 
 
 def test_resolved_channels_all_have_callable_handlers():
-    """Belt-and-braces: every mapping value must resolve to a
-    callable handler via the registry. A typo in the mapping
-    ('discord:msg' instead of 'discord:message') would lock 100% of
-    Discord-gateway traffic out of normalization.
+    """Every contract ingress route must resolve to a callable handler.
 
     Two assertions per entry:
       (i) `get_handler(channel)` returns without raising
@@ -90,12 +87,22 @@ def test_resolved_channels_all_have_callable_handlers():
          hypothetical regression where the registry holds a
          non-function placeholder.
     """
-    from services.ingest.ingestion.normalizer.channel_mapping import _CHANNEL_MAP
     from services.ingest.ingestion.handlers import get_handler
+    from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
 
-    for (source, ingress_kind), channel in _CHANNEL_MAP.items():
-        handler = get_handler(channel)  # raises HandlerNotFound on miss
-        assert callable(handler), (
-            f"channel_mapping has {(source, ingress_kind)} -> {channel!r}, "
-            f"and the registry returned a non-callable: {handler!r}"
-        )
+    for source in SOURCE_DEFINITIONS:
+        for route in source.ingress_routes:
+            handler = get_handler(route.channel)  # raises on a missing binding
+            assert callable(handler), (
+                f"source contract has "
+                f"{(source.source_id, route.ingress_kind)} -> "
+                f"{route.channel!r}, and the normalizer returned a "
+                f"non-callable: {handler!r}"
+            )
+
+
+def test_legacy_channel_map_is_not_exposed():
+    """Ingress routing has one owner: immutable SourceDefinition rows."""
+    from services.ingest.ingestion.normalizer import channel_mapping
+
+    assert not hasattr(channel_mapping, "_CHANNEL_MAP")

@@ -14,6 +14,9 @@ from services.ingest.integrations.hibob.onboarding import (
     finalize_install,
     register_webhook_installation,
 )
+from services.ingest.integrations.provider_transport import (
+    tenant_preinstall_transport_kwargs,
+)
 
 
 router = APIRouter(prefix="/integrations/hibob", tags=["hibob"])
@@ -88,7 +91,7 @@ def _auth_failure(exc: HibobApiError) -> JSONResponse:
 
 @router.post("/connect/preflight")
 async def connect_preflight(request: Request) -> JSONResponse:
-    _tenant_from_request(request)
+    tenant_id = _tenant_from_request(request)
     body = await request.json()
     company_id, service_user_id, token, base_url = _inputs(body)
     client = HibobClient(
@@ -96,6 +99,7 @@ async def connect_preflight(request: Request) -> JSONResponse:
         company_id=company_id,
         service_user_id=service_user_id,
         token=token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         info = await client.company_info()
@@ -121,6 +125,7 @@ async def connect_finalize(request: Request) -> JSONResponse:
         company_id=company_id,
         service_user_id=service_user_id,
         token=token,
+        **tenant_preinstall_transport_kwargs(tenant_id),
     )
     try:
         await client.company_info()

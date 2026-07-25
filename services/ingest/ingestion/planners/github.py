@@ -42,18 +42,17 @@ all-repos signal, remains for the OAuth callback's
 `selected_repositories` column.)
 
 ============================================================
-WIRE-IN
+SOURCE CONTRACT
 ============================================================
-This module assigns into `PLANNER_DISPATCH['github']` at module-
-import time. `services/ingest/ingestion/planners/__init__.py` imports the
-module to trigger the assignment.
+`SourceDefinition.planner_binding` points directly to
+`plan_shards_github`; importing this module has no registration side effect.
 """
 from __future__ import annotations
 
 import logging
 import os
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -125,7 +124,6 @@ async def plan_shards_github(ctx: PlannerContext) -> list[Shard]:
     return shards
 
 
-PLANNER_DISPATCH["github"] = plan_shards_github
 
 
 __all__ = [

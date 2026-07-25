@@ -53,13 +53,12 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict
 
 from lib.shared.errors import CompanyOSError
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 from services.ingest.integrations.google_calendar import metrics
 from services.ingest.integrations.google_calendar.client import (
     GoogleCalendarClient,
     resolve_scope,
 )
-from services.ingest.ingestion.workflows.retry import retry_with_backoff_on_429
 
 
 log = logging.getLogger(__name__)
@@ -124,11 +123,16 @@ def _bump_high_water(cur: GoogleCalendarCursor, event: dict[str, Any]) -> None:
 async def _open_calendar_client(install: asyncpg.Record):  # noqa: ANN202
     """Test seam — monkeypatched by tests. Production builds a real
     GoogleCalendarClient over the shared Gmail DWD minter + GoogleHttpClient."""
-    from services.ingest.integrations.gmail.client import GoogleHttpClient
+    from services.ingest.integrations.gmail.client import build_google_http_client
     from services.ingest.integrations.gmail.dwd import get_minter
 
     scope = resolve_scope(install["scope"])
-    http = GoogleHttpClient(get_minter())
+    http = build_google_http_client(
+        get_minter(),
+        source="google_calendar",
+        tenant_id=str(install["tenant_id"]),
+        installation_id=str(install["id"]),
+    )
     await http.__aenter__()
     client = GoogleCalendarClient(http, scope=scope)
 
@@ -166,42 +170,23 @@ async def fetch_page_google_calendar(
     incremental = cur.sync_token is not None
     client, close = await _open_calendar_client(install)
     try:
-        from services.ingest.integrations.gmail.client import GoogleRateLimited
-
         try:
             if incremental:
-                body = await retry_with_backoff_on_429(
-                    lambda: client.list_events(
-                        calendar_id=calendar_id,
-                        user_email=owner_email,
-                        sync_token=cur.sync_token,
-                        page_token=cur.page_token,
-                        show_deleted=True,
-                    ),
-                    retry_on=GoogleRateLimited,
+                body = await client.list_events(
+                    calendar_id=calendar_id,
+                    user_email=owner_email,
+                    sync_token=cur.sync_token,
+                    page_token=cur.page_token,
+                    show_deleted=True,
                 )
             else:
-                body = await retry_with_backoff_on_429(
-                    lambda: client.list_events(
-                        calendar_id=calendar_id,
-                        user_email=owner_email,
-                        time_min=cur.time_min,
-                        page_token=cur.page_token,
-                        order_by="startTime",
-                    ),
-                    retry_on=GoogleRateLimited,
+                body = await client.list_events(
+                    calendar_id=calendar_id,
+                    user_email=owner_email,
+                    time_min=cur.time_min,
+                    page_token=cur.page_token,
+                    order_by="startTime",
                 )
-        except GoogleRateLimited:
-            # Retry budget spent — leave the cursor unadvanced and end this
-            # round empty so ShardFetch re-enters next tick (cursor preserved).
-            metrics.record_fetch_event("rate_limited")
-            log.info(
-                "google_calendar_backfill_rate_limited",
-                extra={"calendar_id": calendar_id},
-            )
-            return FetchResult(
-                records=[], next_cursor=_encode_cursor(cur), end_of_data=False,
-            )
         except CompanyOSError as exc:
             status = (exc.context or {}).get("status")
             if status == 410 and incremental:
@@ -255,7 +240,6 @@ async def fetch_page_google_calendar(
         await close()
 
 
-FETCHER_DISPATCH["google_calendar"] = fetch_page_google_calendar
 
 
 __all__ = [

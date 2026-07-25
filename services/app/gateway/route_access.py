@@ -13,6 +13,11 @@ from typing import Iterable
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, APIWebSocketRoute
 
+from services.ingest.source_contract import (
+    DEDICATED_INGRESS_DEFINITIONS,
+    OAUTH_INGRESS_CATALOG,
+)
+
 
 class RouteAccess(str, Enum):
     PUBLIC = "public"
@@ -115,32 +120,23 @@ _BEARER = RouteAccessPolicy(
 )
 
 
+_OAUTH_PUBLIC_PATH_POLICIES = {
+    path: _OAUTH_CALLBACK
+    for ingress in OAUTH_INGRESS_CATALOG.values()
+    for path in (ingress.callback_path, *ingress.public_result_paths)
+}
+_DEDICATED_PROVIDER_PATH_POLICIES = {
+    ingress.route_path: _PROVIDER_SIGNED
+    for ingress in DEDICATED_INGRESS_DEFINITIONS
+}
+
 GATEWAY_BEARER_BYPASS_PATH_POLICIES: dict[str, RouteAccessPolicy] = {
     "/healthz": _PUBLIC,
     "/readyz": _PUBLIC,
     "/metrics": _PUBLIC,
     "/auth/session": _BOOTSTRAP,
-    "/integrations/slack/callback": _OAUTH_CALLBACK,
-    "/integrations/slack/installed": _OAUTH_CALLBACK,
-    "/integrations/slack/install-error": _OAUTH_CALLBACK,
-    "/integrations/discord/callback": _OAUTH_CALLBACK,
-    "/integrations/discord/installed": _OAUTH_CALLBACK,
-    "/integrations/discord/install-error": _OAUTH_CALLBACK,
-    "/integrations/github/callback": _OAUTH_CALLBACK,
-    "/integrations/github/installed": _OAUTH_CALLBACK,
-    "/integrations/github/install-error": _OAUTH_CALLBACK,
-    "/integrations/notion/callback": _OAUTH_CALLBACK,
-    "/integrations/notion/installed": _OAUTH_CALLBACK,
-    "/integrations/notion/install-error": _OAUTH_CALLBACK,
-    # Figma returns the browser here with a signed, single-use OAuth state.
-    # Keep the normal start/status/retry routes bearer-protected; only this
-    # provider callback may bypass actor-session authentication.
-    "/integrations/figma/oauth/callback": _OAUTH_CALLBACK,
-    "/integrations/whatsapp/webhook": _PROVIDER_SIGNED,
-    "/integrations/facebook_pages/callback": _OAUTH_CALLBACK,
-    "/integrations/facebook_pages/installed": _OAUTH_CALLBACK,
-    "/integrations/facebook_pages/install-error": _OAUTH_CALLBACK,
-    "/integrations/facebook_pages/webhook": _PROVIDER_SIGNED,
+    **_OAUTH_PUBLIC_PATH_POLICIES,
+    **_DEDICATED_PROVIDER_PATH_POLICIES,
 }
 
 GATEWAY_BEARER_BYPASS_PATHS = frozenset(GATEWAY_BEARER_BYPASS_PATH_POLICIES)

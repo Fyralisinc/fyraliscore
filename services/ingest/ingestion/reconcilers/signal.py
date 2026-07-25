@@ -28,11 +28,12 @@ import logging
 from typing import Any
 
 import asyncpg
+
+from services.ingest.ingestion.installations import load_source_installation
 import orjson
 
 from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
     ReconciliationDecision,
     ResharedShard,
 )
@@ -136,15 +137,6 @@ async def _check_one_shard_for_gap(
     )
 
 
-_LOAD_SIGNAL_INSTALL_SQL = """
-SELECT id, tenant_id, account_label,
-       session_secret_ref, backfill_session_secret_ref, disabled_at
-  FROM signal_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-
 async def reconcile_signal(
     shards: list[asyncpg.Record], run: asyncpg.Record,
 ) -> ReconciliationDecision:
@@ -153,7 +145,12 @@ async def reconcile_signal(
         return ReconciliationDecision(has_gaps=False)
 
     pool = _get_pool()
-    install = await pool.fetchrow(_LOAD_SIGNAL_INSTALL_SQL, run["tenant_id"])
+    install = await load_source_installation(
+        pool,
+        source="signal",
+        tenant_id=run["tenant_id"],
+        installation_id=run["installation_row_id"],
+    )
     if install is None:
         return ReconciliationDecision(has_gaps=False)
 
@@ -177,7 +174,6 @@ async def reconcile_signal(
     return ReconciliationDecision(has_gaps=False)
 
 
-RECONCILER_DISPATCH["signal"] = reconcile_signal
 
 
 __all__ = [

@@ -33,7 +33,6 @@ from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
-    register,
 )
 
 
@@ -156,7 +155,6 @@ def _extract_event(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-@register("slack:message")
 async def handle_slack_message(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:

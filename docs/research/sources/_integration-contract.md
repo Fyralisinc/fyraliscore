@@ -42,12 +42,11 @@ envelope-encrypted `lib.shared.secrets` store.
 | **DWD + Google push** | `gmail`, `google_calendar`, `google_drive` | service account impersonating `owner_email` (DWD) | gmail = Pub/Sub OIDC JWT; calendar/drive = Google `web_hook` push w/ `X-Goog-Channel-Token` | `gmail_installations`, `google_calendar_installations`, `google_drive_installations` |
 | **MTProto persistent session** | `telegram` | persisted Telethon `StringSession` (`backfill_session_secret_ref`); `api_id` + `api_hash_secret_ref` | gateway-style persistent MTProto connection (no HTTP) | `telegram_installations` |
 
-**Spammer seam.** When `SYNTHETIC_SOURCE_API_BASE` is set, every client builder
-skips real auth, presets a recognizable token (`spam-mercury`, `spam-jira`,
-`spam-gh::<inst>`…), and overrides `api_base_url` via
-`lib.integrations.endpoints::endpoint("<source>_api")` so backfill points at the
-local mock. A new source's client builder **must** implement this seam to be
-testable in the synthetic harness.
+**Provider Lab seam.** When `PROVIDER_LAB_URL` is set outside production,
+shared client builders use deterministic lab credentials (`spam-mercury`,
+`spam-jira`, `spam-gh::<inst>`…). Routing remains explicit through each
+source's `*_API_BASE_URL`; multi-source subprocesses derive those variables
+with `lib.integrations.provider_lab.provider_lab_endpoint_overrides`.
 
 ---
 
@@ -211,13 +210,13 @@ a resolved tenant is on the full pipeline unless an operator/circuit-breaker set
 flag FALSE. The default lives in one place (`TenantFlags.kafka_path_enabled()`),
 shared by ingress and the observation writer.
 
-**Backfill + live run simultaneously** (`run_all_sources.py::_live_for_source`): for
-each source the live coroutine polls `source_onboarding_runs WHERE source=$1 AND
-status='in_progress'` and waits until **that source's** backfill is in progress
-before dispatching, so every recorded live burst overlaps a live backfill. Dedup
-holds: a backfilled record and its live twin collapse via identical `external_id`
-(the `_fyralis_<namespace>` on backfill must equal what the webhook handler derives —
-jira `_fyralis_site` == host of `issue.self`; grafana `_fyralis_instance` == host of `externalURL`).
+**Backfill + live overlap evidence:** source certification artifacts record the
+per-source overlap and dedup invariants. Provider Lab coverage is checked against
+the canonical source catalog, avoiding copied source/count tables. A backfilled
+record and its live twin still collapse via identical `external_id` (the
+`_fyralis_<namespace>` on backfill must equal what the webhook handler derives —
+jira `_fyralis_site` == host of `issue.self`; grafana `_fyralis_instance` == host
+of `externalURL`).
 
 ---
 
@@ -261,18 +260,16 @@ drop one tenant's data.
 
 ## 6. Validation / acceptance
 
-Capstone gate: `services/ingest/synthetic/validation_runs/run_all_sources.py` (Run 6,
-"All-source concurrent backfill + live overlap", verdict `READY`/`NOT_READY`). To add
-a source:
+The release gate is `services/ingest/source_certification/`, backed by Provider
+Lab and the canonical source contract. To add a source:
 
-- **`_EXPECTED[source]`** — per-tenant backfill observation count.
-- **`_scen_params(source, slug)`** — fixture params, with the per-tenant `slug`
-  embedded into the source's external-id-keying identifier (site/account/realm/instance/...).
-- **`_EXPECTED_LIVE_STATUS[source]`** — `{202}` HMAC-cutover, `{200}` push/pubsub/shadow-write, `set()` direct-dispatch.
-- **`_HMAC_SOURCES`** — drives the HMAC live driver + the tampered-signature gate probe.
-- **Live driver** — a branch in `_dispatch_one` + wiring in `composition.py`.
-- **Preflight** — `preflight.py` runs the real fetcher→handler and asserts no raise,
-  non-null `external_id`, and `occurred_at` within partition coverage.
+- add it once to the canonical source contract;
+- implement a Provider Lab adapter (registry/catalog parity is fail-fast);
+- attach versioned, pinned per-source certification evidence;
+- record live-ingress, overlap, dedup, tampered-signature, and count evidence in
+  that source's artifact;
+- keep preflight coverage on the real fetcher→handler path, including non-null
+  `external_id` and an `occurred_at` inside partition coverage.
 
 **Migration shape** (every `NNNN_<source>.sql`): (1) `CREATE TABLE IF NOT EXISTS
 <source>_installations` (`tenant_id` FK, `base_url`, `secret_ref`, optional

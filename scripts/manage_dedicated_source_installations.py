@@ -15,7 +15,6 @@ import json
 import os
 import pathlib
 import sys
-from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -30,6 +29,10 @@ from lib.shared.ids import uuid7  # noqa: E402
 from lib.shared.secrets import SecretStore, build_secret_store  # noqa: E402
 from lib.shared.tenant_context import bind_tenant  # noqa: E402
 from services.app.gateway.db_bootstrap import _register_codecs  # noqa: E402
+from services.ingest.source_contract import (  # noqa: E402
+    INSTALLATION_MANAGEMENT_CATALOG,
+    InstallationManagementDefinition,
+)
 from services.platform.operator_auth import require_tenant_operator  # noqa: E402
 
 
@@ -37,232 +40,7 @@ class DedicatedSourceInstallationCliError(ValueError):
     """Operator-facing validation error."""
 
 
-@dataclass(frozen=True, slots=True)
-class SourceSpec:
-    source: str
-    table: str
-    scope_column: str
-    ref_columns: tuple[str, ...]
-    entity_table: str | None
-    entity_install_column: str | None
-    base_url_column: str | None = "base_url"
-    extra_output_columns: tuple[str, ...] = ()
-    webhook_installation_id_column: str | None = None
-    webhook_installation_id_transform: str | None = None
-    enabled_column: str | None = None
-    updated_at_column: str | None = None
-    native_google_watch_table: bool = False
-
-
-SPECS: dict[str, SourceSpec] = {
-    "gmail": SourceSpec(
-        source="gmail",
-        table="gmail_installations",
-        scope_column="workspace_domain",
-        ref_columns=(),
-        entity_table="gmail_mailbox_watches",
-        entity_install_column="gmail_installation_id",
-        base_url_column=None,
-    ),
-    "google_calendar": SourceSpec(
-        source="google_calendar",
-        table="google_calendar_installations",
-        scope_column="workspace_domain",
-        ref_columns=(),
-        entity_table="google_calendar_calendars",
-        entity_install_column="google_calendar_installation_id",
-        base_url_column=None,
-        native_google_watch_table=True,
-    ),
-    "google_drive": SourceSpec(
-        source="google_drive",
-        table="google_drive_installations",
-        scope_column="workspace_domain",
-        ref_columns=(),
-        entity_table="google_drive_targets",
-        entity_install_column="google_drive_installation_id",
-        base_url_column=None,
-        native_google_watch_table=True,
-    ),
-    "whatsapp": SourceSpec(
-        source="whatsapp",
-        table="whatsapp_installations",
-        scope_column="phone_number_id",
-        ref_columns=("app_secret_ref", "verify_token_ref", "access_token_ref"),
-        entity_table=None,
-        entity_install_column=None,
-        base_url_column=None,
-        enabled_column="enabled",
-        updated_at_column="updated_at",
-    ),
-    "quickbooks": SourceSpec(
-        source="quickbooks",
-        table="quickbooks_installations",
-        scope_column="realm_id",
-        ref_columns=("secret_ref", "refresh_secret_ref", "webhook_secret_ref"),
-        entity_table="quickbooks_entities",
-        entity_install_column="quickbooks_installation_id",
-        webhook_installation_id_column="realm_id",
-    ),
-    "gusto": SourceSpec(
-        source="gusto",
-        table="gusto_installations",
-        scope_column="company_uuid",
-        ref_columns=("secret_ref", "refresh_secret_ref", "webhook_secret_ref"),
-        entity_table="gusto_entities",
-        entity_install_column="gusto_installation_id",
-        webhook_installation_id_column="company_uuid",
-    ),
-    "ramp": SourceSpec(
-        source="ramp",
-        table="ramp_installations",
-        scope_column="business_id",
-        ref_columns=("secret_ref", "refresh_secret_ref", "webhook_secret_ref"),
-        entity_table="ramp_entities",
-        entity_install_column="ramp_installation_id",
-        webhook_installation_id_column="business_id",
-    ),
-    "carta": SourceSpec(
-        source="carta",
-        table="carta_installations",
-        scope_column="firm_id",
-        ref_columns=("secret_ref", "refresh_secret_ref"),
-        entity_table="carta_entities",
-        entity_install_column="carta_installation_id",
-    ),
-    "linkedin": SourceSpec(
-        source="linkedin",
-        table="linkedin_installations",
-        scope_column="organization_urn",
-        ref_columns=("secret_ref", "refresh_secret_ref"),
-        entity_table="linkedin_entities",
-        entity_install_column="linkedin_installation_id",
-    ),
-    "jira": SourceSpec(
-        source="jira",
-        table="jira_installations",
-        scope_column="base_url",
-        ref_columns=("secret_ref", "webhook_secret_ref"),
-        entity_table="jira_projects",
-        entity_install_column="jira_installation_id",
-        webhook_installation_id_column="base_url",
-        webhook_installation_id_transform="host",
-    ),
-    "mercury": SourceSpec(
-        source="mercury",
-        table="mercury_installations",
-        scope_column="organization_id",
-        ref_columns=("secret_ref", "webhook_secret_ref"),
-        entity_table="mercury_accounts",
-        entity_install_column="mercury_installation_id",
-        webhook_installation_id_column="organization_id",
-    ),
-    "brex": SourceSpec(
-        source="brex",
-        table="brex_installations",
-        scope_column="organization_id",
-        ref_columns=("secret_ref", "webhook_secret_ref"),
-        entity_table="brex_accounts",
-        entity_install_column="brex_installation_id",
-        webhook_installation_id_column="organization_id",
-    ),
-    "deel": SourceSpec(
-        source="deel",
-        table="deel_installations",
-        scope_column="organization_id",
-        ref_columns=("secret_ref", "webhook_secret_ref"),
-        entity_table="deel_contracts",
-        entity_install_column="deel_installation_id",
-        webhook_installation_id_column="organization_id",
-    ),
-    "fireflies": SourceSpec(
-        source="fireflies",
-        table="fireflies_installations",
-        scope_column="workspace_id",
-        ref_columns=("secret_ref", "webhook_secret_ref"),
-        entity_table=None,
-        entity_install_column=None,
-        webhook_installation_id_column="workspace_id",
-    ),
-    "miro": SourceSpec(
-        source="miro",
-        table="miro_installations",
-        scope_column="org_id",
-        ref_columns=("secret_ref", "webhook_secret_ref"),
-        entity_table="miro_boards",
-        entity_install_column="miro_installation_id",
-        webhook_installation_id_column="org_id",
-    ),
-    "grafana": SourceSpec(
-        source="grafana",
-        table="grafana_installations",
-        scope_column="base_url",
-        ref_columns=("secret_ref", "webhook_secret_ref"),
-        entity_table=None,
-        entity_install_column=None,
-        webhook_installation_id_column="base_url",
-        webhook_installation_id_transform="host",
-    ),
-    "figma": SourceSpec(
-        source="figma",
-        table="figma_installations",
-        scope_column="team_id",
-        ref_columns=("secret_ref", "webhook_secret_ref"),
-        entity_table="figma_files",
-        entity_install_column="figma_installation_id",
-        webhook_installation_id_column="team_id",
-    ),
-    "hibob": SourceSpec(
-        source="hibob",
-        table="hibob_installations",
-        scope_column="company_id",
-        ref_columns=("secret_ref", "webhook_secret_ref"),
-        entity_table="hibob_entities",
-        entity_install_column="hibob_installation_id",
-        webhook_installation_id_column="company_id",
-    ),
-    "ashby": SourceSpec(
-        source="ashby",
-        table="ashby_installations",
-        scope_column="org_id",
-        ref_columns=("secret_ref", "webhook_secret_ref"),
-        entity_table="ashby_entities",
-        entity_install_column="ashby_installation_id",
-        webhook_installation_id_column="org_id",
-    ),
-    "aws": SourceSpec(
-        source="aws",
-        table="aws_installations",
-        scope_column="account_id",
-        ref_columns=("secret_ref",),
-        entity_table=None,
-        entity_install_column=None,
-        base_url_column=None,
-        extra_output_columns=("region", "credential_kind"),
-    ),
-    "telegram": SourceSpec(
-        source="telegram",
-        table="telegram_installations",
-        scope_column="account_label",
-        ref_columns=(
-            "api_hash_secret_ref",
-            "session_secret_ref",
-            "backfill_session_secret_ref",
-        ),
-        entity_table="telegram_dialogs",
-        entity_install_column="telegram_installation_id",
-        base_url_column=None,
-    ),
-    "signal": SourceSpec(
-        source="signal",
-        table="signal_installations",
-        scope_column="account_label",
-        ref_columns=("session_secret_ref", "backfill_session_secret_ref"),
-        entity_table="signal_threads",
-        entity_install_column="signal_installation_id",
-        base_url_column=None,
-    ),
-}
+INSTALLATION_MANAGEMENT_SPECS = INSTALLATION_MANAGEMENT_CATALOG
 
 SECRET_FIELD_TO_COLUMN = {
     "access": "secret_ref",
@@ -347,7 +125,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--source",
-        choices=tuple(sorted(SPECS)),
+        choices=tuple(sorted(INSTALLATION_MANAGEMENT_SPECS)),
         required=True,
         help="Dedicated source table to manage.",
     )
@@ -401,7 +179,7 @@ async def run_command(
 ) -> dict[str, Any]:
     tenant_id = _parse_uuid(args.tenant, field="tenant")
     operator_actor_id = _parse_uuid(args.operator_actor, field="operator_actor")
-    spec = SPECS[args.source]
+    spec = INSTALLATION_MANAGEMENT_SPECS[args.source]
 
     async with conn.transaction():
         async with bind_tenant(conn, tenant_id):
@@ -687,7 +465,7 @@ async def run_command(
     raise DedicatedSourceInstallationCliError(f"unknown command {args.command!r}")
 
 
-def _column_for_secret_field(spec: SourceSpec, field: str) -> str:
+def _column_for_secret_field(spec: InstallationManagementDefinition, field: str) -> str:
     column = SECRET_FIELD_TO_COLUMN[field]
     if column not in spec.ref_columns:
         raise DedicatedSourceInstallationCliError(
@@ -699,7 +477,7 @@ def _column_for_secret_field(spec: SourceSpec, field: str) -> str:
 def _selector_clause(
     *,
     args: argparse.Namespace,
-    spec: SourceSpec,
+    spec: InstallationManagementDefinition,
     values: list[Any],
 ) -> list[str]:
     clauses = ["tenant_id = $1"]
@@ -721,7 +499,7 @@ async def _select_installations(
     conn: asyncpg.Connection,
     *,
     tenant_id: UUID,
-    spec: SourceSpec,
+    spec: InstallationManagementDefinition,
     args: argparse.Namespace,
     for_update: bool,
 ) -> list[asyncpg.Record]:
@@ -749,7 +527,7 @@ async def _select_single_installation(
     conn: asyncpg.Connection,
     *,
     tenant_id: UUID,
-    spec: SourceSpec,
+    spec: InstallationManagementDefinition,
     args: argparse.Namespace,
     required_command: str,
     for_update: bool,
@@ -774,7 +552,7 @@ async def _set_disabled_at(
     conn: asyncpg.Connection,
     *,
     tenant_id: UUID,
-    spec: SourceSpec,
+    spec: InstallationManagementDefinition,
     args: argparse.Namespace,
     disabled: bool,
 ) -> asyncpg.Record:
@@ -812,7 +590,7 @@ async def _uninstall_installation(
     conn: asyncpg.Connection,
     *,
     tenant_id: UUID,
-    spec: SourceSpec,
+    spec: InstallationManagementDefinition,
     row_id: UUID,
     clear_columns: tuple[str, ...],
 ) -> asyncpg.Record:
@@ -848,7 +626,7 @@ async def _set_provider_installation_enabled(
     conn: asyncpg.Connection,
     *,
     tenant_id: UUID,
-    spec: SourceSpec,
+    spec: InstallationManagementDefinition,
     installation_id: str | None,
     enabled: bool,
 ) -> bool:
@@ -874,7 +652,7 @@ async def _uninstall_provider_installation(
     conn: asyncpg.Connection,
     *,
     tenant_id: UUID,
-    spec: SourceSpec,
+    spec: InstallationManagementDefinition,
     installation_id: str | None,
     clear_secret_ref: bool,
 ) -> bool:
@@ -900,7 +678,7 @@ async def _uninstall_provider_installation(
 
 def _webhook_cleanup_status(
     *,
-    spec: SourceSpec,
+    spec: InstallationManagementDefinition,
     provider_row_updated: bool,
 ) -> str:
     if "webhook_secret_ref" not in spec.ref_columns:
@@ -921,7 +699,7 @@ async def _clear_native_google_watch_state(
     conn: asyncpg.Connection,
     *,
     tenant_id: UUID,
-    spec: SourceSpec,
+    spec: InstallationManagementDefinition,
     installation_row_id: UUID,
 ) -> int:
     if (
@@ -954,7 +732,7 @@ async def _clear_native_google_watch_state(
     return _rows_changed(status)
 
 
-def _entity_count_sql(spec: SourceSpec) -> str:
+def _entity_count_sql(spec: InstallationManagementDefinition) -> str:
     if spec.entity_table is None or spec.entity_install_column is None:
         return "0::int"
     return (
@@ -965,12 +743,12 @@ def _entity_count_sql(spec: SourceSpec) -> str:
     )
 
 
-def _entity_count_subquery_sql(spec: SourceSpec) -> str:
+def _entity_count_subquery_sql(spec: InstallationManagementDefinition) -> str:
     return _entity_count_sql(spec)
 
 
 def _installation_projection_sql(
-    spec: SourceSpec,
+    spec: InstallationManagementDefinition,
     *,
     entity_count_sql: str,
     extra_fields: tuple[str, ...] = (),
@@ -990,27 +768,27 @@ def _installation_projection_sql(
     return ",\n               ".join(fields)
 
 
-def _base_url_sql(spec: SourceSpec) -> str:
+def _base_url_sql(spec: InstallationManagementDefinition) -> str:
     if spec.base_url_column is None:
         return "NULL::text"
     return f"i.{spec.base_url_column}"
 
 
-def _disabled_state_sql(spec: SourceSpec) -> str:
+def _disabled_state_sql(spec: InstallationManagementDefinition) -> str:
     if spec.enabled_column is None:
         return "i.disabled_at"
     timestamp = f"i.{spec.updated_at_column}" if spec.updated_at_column else "i.created_at"
     return f"CASE WHEN i.{spec.enabled_column} THEN NULL ELSE {timestamp} END"
 
 
-def _disabled_before_sql(spec: SourceSpec) -> str:
+def _disabled_before_sql(spec: InstallationManagementDefinition) -> str:
     if spec.enabled_column is None:
         return "disabled_at AS disabled_before"
     timestamp = spec.updated_at_column or "created_at"
     return f"CASE WHEN {spec.enabled_column} THEN NULL ELSE {timestamp} END AS disabled_before"
 
 
-def _state_assignment_sql(spec: SourceSpec, *, disabled: bool) -> str:
+def _state_assignment_sql(spec: InstallationManagementDefinition, *, disabled: bool) -> str:
     if spec.enabled_column is None:
         return "disabled_at = now()" if disabled else "disabled_at = NULL"
     enabled_value = "FALSE" if disabled else "TRUE"
@@ -1020,7 +798,7 @@ def _state_assignment_sql(spec: SourceSpec, *, disabled: bool) -> str:
     return ", ".join(assignments)
 
 
-def _provider_installation_id(row: asyncpg.Record, spec: SourceSpec) -> str | None:
+def _provider_installation_id(row: asyncpg.Record, spec: InstallationManagementDefinition) -> str | None:
     column = spec.webhook_installation_id_column
     if column is None:
         return None
@@ -1049,7 +827,7 @@ def _rows_changed(status: str) -> int:
         return 0
 
 
-def _refs_from_row(row: asyncpg.Record, spec: SourceSpec) -> dict[str, str]:
+def _refs_from_row(row: asyncpg.Record, spec: InstallationManagementDefinition) -> dict[str, str]:
     refs: dict[str, str] = {}
     for column in spec.ref_columns:
         value = row[column]
@@ -1146,7 +924,7 @@ def _hash_scope_value(scope_id: Any) -> str | None:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
-def _jsonable_installation(row: asyncpg.Record, spec: SourceSpec) -> dict[str, Any]:
+def _jsonable_installation(row: asyncpg.Record, spec: InstallationManagementDefinition) -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": str(row["id"]),
         "tenant_id": str(row["tenant_id"]),

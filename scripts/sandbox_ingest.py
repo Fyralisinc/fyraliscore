@@ -1,15 +1,20 @@
 """Sandbox e2e ingestion driver — drive Fyralis's REAL source clients/fetchers/
-handlers against the external saas-api-mocks ("spammer") sandbox company,
-writing observations into an isolated DB. Ingestion-only (no Kafka, no LLM).
+handlers against the single local Provider Lab data plane, writing observations
+into an isolated DB. Ingestion-only (no Kafka, no LLM).
 
 Pattern (mirrors services/ingest/synthetic/validation_runs/preflight.py): for
-each source, build the REAL integration client pointed at the mock's port,
+each source, build the REAL integration client pointed at ``/{source}``,
 monkeypatch the fetcher's `_open_<src>_client` to return it, enumerate shards
-from the live mock, paginate every page, run the REAL handler, and write the
+from Provider Lab, paginate every page, run the REAL handler, and write the
 draft via core.ingest_from_draft.
 
-Run:  DATABASE_URL=postgresql://company_os:company_os@localhost:5432/company_os_sandbox \
+Run:  PROVIDER_LAB_URL=http://127.0.0.1:9191 \
+      DATABASE_URL=postgresql://company_os:company_os@localhost:5432/company_os_sandbox \
       .venv/bin/python scripts/sandbox_ingest.py mercury [github ...]
+
+This remains a transitional ingestion driver: some onboarding routines still
+read seed metadata from the legacy sandbox database. Provider HTTP traffic,
+however, has one origin and one source-scoped Provider Lab data plane.
 """
 from __future__ import annotations
 
@@ -28,35 +33,47 @@ from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.core import ingest_from_draft
 from services.ingest.ingestion.handlers import get_handler
 from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
+from services.ingest.source_contract import resolve_source_id
 
-# The tenant the spammer prepared (./dev.sh status -> fyralis_tenant_id).
+# The tenant prepared for the sandbox run.
 TENANT = UUID(os.environ.get(
     "SANDBOX_TENANT_ID",
     "90864cdd-731b-44b3-96c5-78f0004af3e2",
 ))
-HOST = os.environ.get("SANDBOX_MOCK_HOST", "http://localhost")
-
-# saas-api-mocks per-provider ports (dev.sh cmd_serve).
-PORTS = {
-    "slack": 7001, "discord": 7002, "github": 7003, "gmail": 7004,
-    "calendar": 7005, "notion": 7006, "drive": 7007, "jira": 7008,
-    "quickbooks": 7009, "grafana": 7010, "mercury": 7011, "ashby": 7012,
-    "brex": 7013, "deel": 7014, "hibob": 7015, "figma": 7016, "miro": 7017,
-    "ramp": 7018, "gusto": 7019, "carta": 7020, "linkedin": 7021,
-    "fireflies": 7022, "aws": 7023, "telegram": 7024, "signal": 7025,
-}
+DEFAULT_PROVIDER_LAB_URL = "http://127.0.0.1:9191"
 
 
-def base(src: str) -> str:
-    return f"{HOST}:{PORTS[src]}"
+def _provider_lab_path_source(source: str) -> str:
+    """Return the Provider Lab URL segment for a catalog source name.
+
+    Calendar and Drive retain the compact URL aliases implemented by Provider
+    Lab. They let the unmodified Google clients keep their production
+    ``/calendar/v3`` and ``/drive/v3`` base paths while ledger identity remains
+    the canonical ``google_calendar`` or ``google_drive`` source.
+    """
+    canonical = resolve_source_id(source)
+    if canonical == "google_calendar":
+        return "gcal"
+    if canonical == "google_drive":
+        return "gdrive"
+    return canonical
 
 
-def rebased(src: str, ep_name: str) -> str:
-    """Mock base URL = mock host:port + the production base's PATH component.
-    The mocks mirror each vendor's real API paths (e.g. Mercury /api/v1/...),
-    so we graft the prod path (from endpoints._PROD) onto the mock port."""
-    path = urlparse(_ep._PROD[ep_name]).path.rstrip("/")
-    return f"{base(src)}{path}"
+def provider_base_url(source: str) -> str:
+    """Build the single-origin Provider Lab URL for a source or source alias."""
+    root = os.environ.get("PROVIDER_LAB_URL", DEFAULT_PROVIDER_LAB_URL).rstrip("/")
+    return f"{root}/{_provider_lab_path_source(source)}"
+
+
+def rebased_provider_url(source: str, endpoint_name: str) -> str:
+    """Graft a production endpoint's path onto its Provider Lab source URL.
+
+    This keeps real clients on their normal provider path shape. Some Provider
+    Lab adapters intentionally expose their client's post-base paths directly;
+    those callers use :func:`provider_base_url` instead.
+    """
+    path = urlparse(_ep._PROD[endpoint_name]).path.rstrip("/")
+    return f"{provider_base_url(source)}{path}"
 
 
 async def _noop(*_a, **_k):
@@ -100,7 +117,7 @@ async def ingest_mercury(pool) -> int:
     from services.ingest.ingestion.fetchers import mercury as fet
     from services.ingest.integrations.mercury.client import MercuryClient
 
-    mbase = rebased("mercury", "mercury_api")
+    mbase = provider_base_url("mercury")
     client = MercuryClient(
         base_url=mbase,
         api_base_url=mbase,
@@ -136,16 +153,16 @@ async def ingest_ashby(pool) -> int:
     from services.ingest.ingestion.fetchers import ashby as fet
     from services.ingest.integrations.ashby.client import AshbyClient, DEFAULT_ENTITIES
 
-    mbase = rebased("ashby", "ashby_api")          # mock host:port + prod /ashby path
+    mbase = provider_base_url("ashby")
 
-    # ORG_ID the mock seeds for the Sandbox run (spammers/ashby/seed.py ORG_ID).
+    # ORG_ID Provider Lab seeds for the sandbox run.
     # It is the external_id namespace (`ashby:{org}:{kind}:{id}`) the handler
     # builds; it MUST be non-empty or _write_records skips every record, and it
     # MUST be "sandbox" to match ground-truth external_ids.
     org_id = "sandbox"
 
     # Any non-empty Basic username authenticates; "spam-ashby" mirrors the
-    # production spammer preset. api_base_url points the client at the mock.
+    # Provider Lab credential preset. api_base_url points at the local lab.
     client = AshbyClient(
         base_url=mbase,
         org_id=org_id,
@@ -186,7 +203,7 @@ async def ingest_aws(pool) -> int:
     # aioboto3 at the mock root with endpoint_override (the mock dispatches on
     # POST /), and (b) preset client._creds with the seeded static keys so
     # resolve_credentials (which needs a secret_store) is never called. AWS has no
-    # endpoints._PROD key, so there is no rebased(...) here.
+    # endpoints._PROD key, so there is no production-path rebasing here.
     import asyncpg
 
     from services.ingest.ingestion.fetchers import aws as fet
@@ -227,7 +244,7 @@ async def ingest_aws(pool) -> int:
         client = AwsClient(
             account_id=account_id,
             region=region,
-            endpoint_override=base("aws"),
+            endpoint_override=provider_base_url("aws"),
         )
         # Preset static creds (no session_token, no expiry) so the client's
         # _credentials() short-circuits before touching secret_store, and aioboto3
@@ -274,11 +291,9 @@ async def ingest_brex(pool) -> int:
     from services.ingest.ingestion.fetchers import brex as fet
     from services.ingest.integrations.brex.client import BrexClient
 
-    # _PROD["brex_api"] is https://platform.brexapis.com (empty path), so
-    # rebased(...) == "http://localhost:7013" and the client hits the mock's
-    # /v2/... routes at root (matching the live probe). The constructor uses
-    # (api_base_url or base_url), so passing both = bbase mirrors Mercury.
-    bbase = rebased("brex", "brex_api")
+    # Brex's production base has no path. Provider Lab exposes the client's
+    # /v2/... request paths directly below the canonical source segment.
+    bbase = provider_base_url("brex")
     client = BrexClient(base_url=bbase, api_base_url=bbase, api_token="bxt_sandbox-brex-token")
 
     # Monkeypatch the fetcher's opener seam -> our pre-built mock-pointed client.
@@ -333,8 +348,8 @@ async def ingest_calendar(pool) -> int:
         CALENDAR_READONLY_SCOPE,
     )
 
-    cal_base = rebased("calendar", "google_calendar_api")   # http://localhost:7005/calendar/v3
-    token_uri = base("calendar").rstrip("/") + "/token"     # http://localhost:7005/token
+    cal_base = rebased_provider_url("google_calendar", "google_calendar_api")
+    token_uri = provider_base_url("google_calendar") + "/token"
 
     # ---- ONBOARDING: pull the seeded service account + enumerate calendars ----
     # The /users/me/calendarList route only returns the *token owner's* own
@@ -438,7 +453,7 @@ async def ingest_carta(pool) -> int:
     from services.ingest.ingestion.fetchers import carta as fet
     from services.ingest.integrations.carta.client import CartaClient, DEFAULT_ENTITIES
 
-    cbase = rebased("carta", "carta_api")  # mock host:port + prod base path (/carta)
+    cbase = provider_base_url("carta")
 
     # ONBOARDING: discover the issuer (the per-install firm_id scope). The mock is
     # single-tenant per run and exposes exactly one issuer via GET /v1alpha1/issuers.
@@ -507,9 +522,9 @@ async def ingest_deel(pool) -> int:
     from services.ingest.ingestion.fetchers import deel as fet
     from services.ingest.integrations.deel.client import DeelClient
 
-    # mock host:port + the prod base PATH from endpoints._PROD["deel_api"]
-    # ("/rest/v2"); DeelClient appends paths like /contracts, /invoices to it.
-    dbase = rebased("deel", "deel_api")
+    # Provider Lab exposes the Deel client's post-base paths (/contracts,
+    # /invoices) directly below the canonical source segment.
+    dbase = provider_base_url("deel")
     # Deel mock accepts any non-empty Bearer token (single-tenant per run).
     client = DeelClient(
         base_url=dbase,
@@ -583,9 +598,8 @@ async def ingest_discord(pool) -> int:
     primary_guild_id = str(rows[0]["guild_id"])
 
     # --- base URL: the discord mock mounts routes at "/api/v10" at the
-    # server ROOT (no "/discord" path prefix), so rebased("discord",
-    # "discord_api") -> ".../discord/api/v10" would 404. Use base()+/api/v10.
-    api_base = base("discord").rstrip("/") + "/api/v10"
+    # Provider Lab keeps Discord's production /api/v10 path shape.
+    api_base = rebased_provider_url("discord", "discord_api")
 
     install = {
         "id": uuid4(),
@@ -676,19 +690,16 @@ async def ingest_discord(pool) -> int:
 
 
 async def ingest_drive(pool) -> int:
-    """Google Drive backfill against the saas-api-mocks Drive mock (:7007).
+    """Google Drive backfill against Provider Lab.
 
-    The Fyralis source/handler name is `google_drive` (fetcher module
-    `fetchers.google_drive`, channel `google_drive:file`), but the driver's
-    PORTS/base() key is `drive`. Auth is Google DWD: the mock mints a `ya29.`
-    token via POST /token from a JWT assertion whose signature it does NOT
-    verify (it only decodes `sub`/`scope`). So we drive the production
-    GoogleDriveClient over the real GoogleHttpClient, swapping the DWD minter
-    for a stub that exchanges an unsigned JWT at the mock's /token endpoint.
+    The canonical source/handler name is ``google_drive`` (fetcher module
+    ``fetchers.google_drive``, channel ``google_drive:file``). Auth is Google
+    DWD: the lab mints a token via POST /token from the JWT assertion. The
+    production GoogleDriveClient and GoogleHttpClient remain unchanged.
 
-    NOTE: the live mock serves `/drive/v3/...` and `/token` directly (no
-    `/gdrive` / `/gmail` prefix), so we do NOT use rebased(); we point the
-    client at base('drive')+'/drive/v3' and the minter at base('drive')+'/token'.
+    Provider Lab's ``gdrive`` URL alias strips the production ``/drive/v3``
+    prefix before dispatch while preserving canonical ``google_drive`` ledger
+    identity.
     """
     import httpx
     import jwt as _jwt
@@ -705,8 +716,8 @@ async def ingest_drive(pool) -> int:
     # production default of 180 days would drop the older history).
     os.environ["GOOGLE_DRIVE_BACKFILL_DAYS"] = "3650"
 
-    api_base = f"{base('drive')}/drive/v3"   # mock serves /drive/v3 directly
-    token_url = f"{base('drive')}/token"     # mock serves /token directly
+    api_base = rebased_provider_url("google_drive", "google_drive_api")
+    token_url = provider_base_url("google_drive") + "/token"
     scope = DRIVE_READONLY_SCOPE
 
     # --- Stub DWD minter: exchange an (unsigned-as-far-as-the-mock-cares) JWT
@@ -725,7 +736,7 @@ async def ingest_drive(pool) -> int:
                     "scope": " ".join(scopes),
                     "aud": self._url,
                 },
-                "spammers-mock-key",   # mock does not verify the signature
+                "provider-lab-mock-key",  # Provider Lab does not verify this
                 algorithm="HS256",
             )
             resp = await self._client.post(
@@ -838,8 +849,7 @@ async def ingest_figma(pool) -> int:
     from services.ingest.ingestion.fetchers import figma as fet
     from services.ingest.integrations.figma.client import FigmaClient
 
-    # Mock host:port + the prod base PATH from endpoints._PROD["figma_api"] (mounts /figma).
-    fbase = rebased("figma", "figma_api")
+    fbase = provider_base_url("figma")
 
     # The seeded single-tenant team. Discoverable via GET /_health on the mock, but
     # the Sandbox run seeds a fixed TEAM_ID; the client + every external_id namespaces
@@ -898,10 +908,8 @@ async def ingest_fireflies(pool) -> int:
     from services.ingest.ingestion.fetchers import fireflies as fet
     from services.ingest.integrations.fireflies.client import FirefliesClient
 
-    # Mock host:port + prod base PATH from endpoints._PROD["fireflies_api"] ("/fireflies").
-    # The client posts /graphql relative to api_base_url, so the effective URL is
-    # http://localhost:7022/fireflies/graphql.
-    fbase = rebased("fireflies", "fireflies_api")
+    # The client posts /graphql relative to this source-scoped base URL.
+    fbase = provider_base_url("fireflies")
     client = FirefliesClient(
         base_url=fbase,
         api_base_url=fbase,
@@ -954,10 +962,9 @@ async def ingest_github(pool) -> int:
         GithubClient,
     )
 
-    # github_api prod path is `https://api.github.com` (root, empty path), so
-    # rebased() yields the bare mock host:port — the github mock mounts /app,
-    # /installation, /repos at the root (NOT under a /github sub-path).
-    gbase = rebased("github", "github_api")  # -> http://localhost:7003
+    # GitHub's production API base has no path; Provider Lab mounts the used
+    # /app, /installation, and /repos routes below /github.
+    gbase = provider_base_url("github")
     MOCK_ORGS_DSN = "postgresql://company_os:company_os@localhost:5432/mock_orgs"
 
     # ONBOARDING (1): resolve the seeded GitHub App (private key + numeric
@@ -1083,18 +1090,17 @@ async def ingest_github(pool) -> int:
 async def ingest_gmail(pool) -> int:
     """Gmail (Google DWD archetype): one mailbox_window shard per mailbox.
 
-    Onboarding discovers mailbox emails from the mock_orgs DB
+    Onboarding discovers mailbox emails from the local sandbox DB
     (app_gmail.mailboxes for the latest org.runs row), since the live
     Gmail client only exposes message ops — directory enumeration would
     need a DirectoryClient + admin-domain wiring we don't have here.
 
     Auth: the real path is DWD JWT-bearer (GoogleHttpClient ->
     DwdTokenMinter). We build our OWN minter with a freshly-generated RSA
-    key whose ServiceAccountKey.token_uri points at the mock's /token
-    endpoint. The mock decodes the assertion WITHOUT verifying the
-    signature (spammers/common/google_token.read_assertion) and mints a
-    ya29.* bearer binding {sub=mailbox_email, scope}; require_mailbox
-    resolves the mailbox from sub. Any RSA key works.
+    key whose ServiceAccountKey.token_uri points at Provider Lab's `/token`
+    endpoint. Provider Lab decodes the assertion without verifying its
+    signature and mints a bearer bound to the impersonated mailbox. Any
+    RSA key works.
     """
     import asyncpg
 
@@ -1122,10 +1128,10 @@ async def ingest_gmail(pool) -> int:
         client_email="sandbox-ingest@mock.iam.gserviceaccount.com",
         private_key_pem=_pem,
         private_key_id="sandbox-mock-kid",
-        token_uri=f"{base('gmail')}/token",  # mock /token (any-assertion DWD)
+        token_uri=f"{provider_base_url('gmail')}/token",
     )
 
-    gbase = rebased("gmail", "gmail_api")  # http://localhost:7004/gmail/v1
+    gbase = rebased_provider_url("gmail", "gmail_api")
 
     # One process-wide minter + http client; opener hands the SAME client to
     # every shard (close is a no-op so pagination across shards is safe).
@@ -1198,10 +1204,9 @@ async def ingest_grafana(pool) -> int:
     # window would clip history to ~100 of 797. Widen it (mirrors Mercury's floor).
     os.environ["GRAFANA_BACKFILL_WINDOW_DAYS"] = "3650"
 
-    # rebased("grafana","grafana_api") -> mock host:port + prod path. The grafana_api
-    # prod base is intentionally empty (""), so this yields the bare mock origin
-    # "http://localhost:7010"; the client appends "/api/annotations" itself.
-    gbase = rebased("grafana", "grafana_api")
+    # Grafana's production base is deployment-specific, so Provider Lab exposes
+    # /api/annotations directly below /grafana.
+    gbase = provider_base_url("grafana")
     client = GrafanaClient(
         base_url=gbase,
         api_base_url=gbase,
@@ -1249,10 +1254,9 @@ async def ingest_gusto(pool) -> int:
     from services.ingest.ingestion.fetchers import gusto as fet
     from services.ingest.integrations.gusto.client import GustoClient, DEFAULT_ENTITIES
 
-    # rebased("gusto","gusto_api") -> mock host:port + prod base PATH. The prod
-    # host is https://api.gusto.com (no path), so this is just the bare mock
-    # origin; GustoClient prepends /v1/companies/{company_uuid}/... itself.
-    gbase = rebased("gusto", "gusto_api")
+    # Gusto's production base has no path; the client appends
+    # /v1/companies/{company_uuid}/... below the source segment.
+    gbase = provider_base_url("gusto")
 
     # --- ONBOARDING: discover the company_uuid (the only shard root) ---------
     # The Gusto mock exposes NO list-companies endpoint (GET /v1/companies/{id}
@@ -1274,7 +1278,7 @@ async def ingest_gusto(pool) -> int:
     except Exception:  # noqa: BLE001
         company_uuid = None
     if not company_uuid:
-        # spammers/gusto/seed.py COMPANY_UUID (seed-stable sandbox company).
+        # Provider Lab's seed-stable sandbox company.
         company_uuid = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
     company_uuid = str(company_uuid)
     print(f"  gusto: company_uuid={company_uuid}, entities={list(DEFAULT_ENTITIES)}")
@@ -1323,8 +1327,7 @@ async def ingest_hibob(pool) -> int:
     from services.ingest.ingestion.fetchers import hibob as fet
     from services.ingest.integrations.hibob.client import HibobClient
 
-    # Mock host:port + the prod base PATH from endpoints._PROD["hibob_api"].
-    hbase = rebased("hibob", "hibob_api")
+    hbase = provider_base_url("hibob")
 
     # The mock authenticates ANY well-formed Basic(id:token) — it does not match a
     # provisioned credential (single-tenant per run). Any non-empty id + token work.
@@ -1408,10 +1411,9 @@ async def ingest_jira(pool) -> int:
     # Real-token: pull the Basic-auth creds + site base_url the mock expects.
     account_email, api_token, site_base_url = await _jira_install_creds()
 
-    # Client hits the mock (api_base_url=rebased) but presents the real creds.
-    # jira_api prod path is "" -> rebased("jira","jira_api") == "http://localhost:7008",
-    # which is exactly the host the client appends /rest/api/3/... to.
-    jbase = rebased("jira", "jira_api")
+    # Jira's deployment-specific production base has no catalog path. The real
+    # client appends /rest/api/3/... below the Provider Lab source segment.
+    jbase = provider_base_url("jira")
     client = JiraClient(
         base_url=jbase,
         api_base_url=jbase,
@@ -1480,24 +1482,20 @@ async def ingest_linkedin(pool) -> int:
         DEFAULT_ENTITIES,
     )
 
-    # --- ONBOARDING: discover the seeded organization URN from the live mock ---
-    # The mock is single-org/run; its root /_health echoes the org_urn its /rest
-    # finders will match. (base("linkedin") is the mock host:port with NO path;
-    # the /rest prefix is added by rebased(...) for the client below.)
+    # --- ONBOARDING: discover the seeded organization URN from Provider Lab ---
+    # The lab is single-org/run; /_health echoes the org_urn used by its finders.
     org_urn = ""
     async with httpx.AsyncClient(timeout=30.0) as probe:
-        resp = await probe.get(base("linkedin") + "/_health")
+        resp = await probe.get(provider_base_url("linkedin") + "/_health")
         if resp.status_code // 100 == 2:
             org_urn = str((resp.json() or {}).get("org_urn") or "")
     if not org_urn:
-        # Fallback to the seed-stable identity (spammers/linkedin/seed.py).
+        # Fallback to Provider Lab's seed-stable identity.
         org_urn = "urn:li:organization:80411507"
 
-    # --- CLIENT: point the REAL LinkedinClient at the mock's /rest surface -----
-    # rebased("linkedin", "linkedin_api") = mock host:port + the prod base PATH
-    # ("/rest" from endpoints._PROD["linkedin_api"]). api_base_url wins over
-    # base_url inside the client, so both are set to the rebased mock URL.
-    mbase = rebased("linkedin", "linkedin_api")
+    # Provider Lab exposes the client's post-base Rest.li paths directly below
+    # /linkedin; the production /rest prefix belongs to the real origin only.
+    mbase = provider_base_url("linkedin")
     client = LinkedinClient(
         base_url=mbase,
         api_base_url=mbase,
@@ -1539,7 +1537,7 @@ async def ingest_miro(pool) -> int:
     from services.ingest.ingestion.fetchers import miro as fet
     from services.ingest.integrations.miro.client import MiroClient
 
-    mbase = rebased("miro", "miro_api")  # http://localhost:7017/v2
+    mbase = provider_base_url("miro")
     client = MiroClient(
         base_url=mbase,
         api_base_url=mbase,
@@ -1555,7 +1553,7 @@ async def ingest_miro(pool) -> int:
     try:
         import httpx as _httpx
         async with _httpx.AsyncClient(timeout=30.0) as hc:
-            resp = await hc.get(f"{base('miro')}/_health")
+            resp = await hc.get(f"{provider_base_url('miro')}/_health")
             if resp.status_code // 100 == 2:
                 body = resp.json()
                 oid = body.get("org_id")
@@ -1618,10 +1616,9 @@ async def ingest_notion(pool) -> int:
     bot_token = row["bot_token"]
     workspace_id = str(row["workspace_id"])
 
-    # rebased("notion","notion_api") = mock host:port + prod base PATH. The
-    # prod base https://api.notion.com has no path, so this is just
-    # http://localhost:7006; the client appends each /v1/... request path.
-    nbase = rebased("notion", "notion_api")
+    # Notion's production base has no path; the client appends /v1/... below
+    # the Provider Lab source segment.
+    nbase = provider_base_url("notion")
     client = NotionClient(
         bot_token=bot_token,
         workspace_id=workspace_id,
@@ -1688,14 +1685,9 @@ async def ingest_quickbooks(pool) -> int:
     """QuickBooks Online: entity-type-sharded (Invoice/Bill/BillPayment/Payment),
     offset-paginated via the QBO query endpoint, scoped to one company realm.
 
-    IMPORTANT base-url note: the QBO mock serves its routes at the bare host
-    (GET {host}/v3/company/{realm}/query) — it is NOT mounted under a /quickbooks
-    sub-path. The real QuickBooksClient itself prepends the full realm-scoped
-    /v3/company/{realm_id}/query path, so api_base_url must be JUST the mock
-    host:port. We therefore use base("quickbooks") here, NOT
-    rebased("quickbooks","quickbooks_api") — the latter would append the prod
-    path "/quickbooks" and every call would 404. (Verified live: bare host -> 200
-    with QueryResponse; /quickbooks -> 404.)
+    The real QuickBooksClient prepends the full realm-scoped
+    /v3/company/{realm_id}/query path below the Provider Lab /quickbooks source
+    segment.
     """
     import httpx
 
@@ -1705,7 +1697,7 @@ async def ingest_quickbooks(pool) -> int:
         DEFAULT_ENTITIES,
     )
 
-    qb_base = base("quickbooks")  # bare host:port; client adds /v3/company/{realm}/...
+    qb_base = provider_base_url("quickbooks")
 
     # ---- ONBOARDING: discover the run's company realm_id ----------------
     # Primary: the mock's run-aware /_health returns the active run's realm_id.
@@ -1739,7 +1731,7 @@ async def ingest_quickbooks(pool) -> int:
     # ---- Build the REAL client pointed at the mock ----------------------
     client = QuickBooksClient(
         base_url=qb_base,
-        api_base_url=qb_base,          # spammer override wins over base_url
+        api_base_url=qb_base,          # explicit Provider Lab URL wins locally
         realm_id=realm_id,
         access_token="sandbox-quickbooks-token",  # any-token mock
         http_client=httpx.AsyncClient(timeout=30),
@@ -1776,7 +1768,8 @@ async def ingest_ramp(pool) -> int:
     from services.ingest.ingestion.fetchers import ramp as fet
     from services.ingest.integrations.ramp.client import RampClient, DEFAULT_ENTITIES
 
-    rbase = rebased("ramp", "ramp_api")  # -> http://localhost:7018/developer/v1
+    # Provider Lab exposes the client's post-base collection paths below /ramp.
+    rbase = provider_base_url("ramp")
 
     # business_id is only the external_id namespace (not auth). Prefer the live
     # seeded org row; fall back to the seed-stable Sandbox constant.
@@ -1838,183 +1831,40 @@ async def ingest_ramp(pool) -> int:
 
 async def ingest_signal(pool) -> int:
     """Signal (gateway / Telegram archetype): shard per thread, backward-paged
-    history. ONE record per message.
-
-    IMPORTANT — why this builds a bespoke HTTP adapter instead of the real
-    SignalClient (the Mercury template's "construct the real client" step):
-    services/ingest/integrations/signal/client.py is a DOCUMENTED STUB. Signal
-    has no server API; the real client's transport is a signal-cli JSON-RPC
-    SOCKET (SIGNAL_JSONRPC_ENDPOINT) and its `_connect()` deliberately RAISES
-    SignalApiError until an operator wires a daemon — it cannot talk HTTP and
-    cannot reach the mock. The saas-api-mocks signal mock (port 7025) instead
-    serves the SignalClient METHOD CONTRACT over HTTP (POST /v1/iter_threads,
-    POST /v1/get_history) returning genuine signal-cli envelopes. So the adapter
-    below implements exactly the two methods the fetcher's `_open_signal_client`
-    seam needs (iter_threads + get_history), translating envelopes -> the raw
-    message dict `integrations/signal/records.build_message_record` consumes.
-
-    Shape notes:
-      * The mock's thread_id is a STRING (contact uuid | base64 groupId), but
-        fetch_page_signal REQUIRES an int thread_id (it guards
-        `isinstance(thread_id, int)` and that int is the external_id thread grain
-        `signal:{install}:{thread}:{id}:none`). So each thread is assigned a
-        STABLE deterministic int (blake2b of the string id); the adapter keeps an
-        int->string map to resolve get_history back to the mock's id.
-      * A Signal message has NO separate integer id — its id IS its `timestamp`
-        in MILLISECONDS. So offset_id/min_id (the fetcher's int cursor) map
-        IDENTITY-wise onto the mock's offset_ts/min_ts. Verified end-to-end
-        against the live mock: 12 threads, 2715 records, exact pagination (1207
-        msgs in the hero group across 121 pages of 10, all unique).
+    history. The production SignalClient talks to Provider Lab's pinned
+    JSON-RPC surface; no script-local protocol adapter is involved.
     """
-    import hashlib
-    import httpx
-
     from services.ingest.ingestion.fetchers import signal as fet
+    from services.ingest.integrations.signal.client import SignalClient
 
-    sbase = base("signal")  # http://localhost:7025 — mock serves /v1/... directly
-
-    # Session credential: prefer the seeded value from mock_orgs, else the
-    # spammer-mode constant preset (seed.py SESSION_STRING).
-    session = "spam-signal"
-    try:
-        import asyncpg
-        conn = await asyncpg.connect(
-            "postgresql://company_os:company_os@localhost:5432/mock_orgs"
-        )
-        try:
-            row = await conn.fetchrow(
-                "SELECT session_string FROM app_signal.installations "
-                "WHERE disabled_at IS NULL ORDER BY created_at DESC LIMIT 1"
-            )
-            if row and row["session_string"]:
-                session = str(row["session_string"])
-        finally:
-            await conn.close()
-    except Exception:  # noqa: BLE001 — fall back to the known preset
-        pass
-
-    def _str_to_int(s: str) -> int:
-        # Stable 56-bit int from the mock's string thread_id. Deterministic ->
-        # the external_id thread grain is consistent across runs / dedup.
-        return int.from_bytes(
-            hashlib.blake2b(s.encode("utf-8"), digest_size=7).digest(), "big"
-        )
-
-    class _SignalMockAdapter:
-        """Implements the fetcher's get_history/iter_threads surface over the
-        mock's HTTP method-contract (see ingest_signal docstring)."""
-
-        def __init__(self, base_url: str, session_str: str) -> None:
-            self._base = base_url.rstrip("/")
-            self._headers = {
-                "Authorization": f"Bearer {session_str}",
-                "Content-Type": "application/json",
-            }
-            self._client = httpx.AsyncClient(timeout=60.0)
-            self._int_to_str: dict[int, str] = {}
-
-        async def iter_threads(self, *, limit: int = 200) -> list:
-            r = await self._client.post(
-                f"{self._base}/v1/iter_threads", headers=self._headers, json={}
-            )
-            r.raise_for_status()
-            out = []
-            for t in r.json().get("threads", []) or []:
-                sid = t.get("thread_id")
-                if not isinstance(sid, str):
-                    continue
-                iid = _str_to_int(sid)
-                self._int_to_str[iid] = sid
-                out.append({
-                    "thread_id": iid,
-                    "thread_kind": t.get("thread_kind") or "direct",
-                    "title": t.get("thread_title"),
-                })
-            return out[:limit]
-
-        @staticmethod
-        def _env_to_raw(env: dict) -> dict:
-            # signal-cli envelope -> the raw dict build_message_record consumes.
-            ts = int(env.get("timestamp") or 0)
-            sync = env.get("syncMessage") or {}
-            sent = sync.get("sentMessage")
-            data = env.get("dataMessage")
-            is_out = sent is not None  # own/linked-device send (out=True)
-            body = (sent or data or {}).get("message") or ""
-            from_id = None
-            src_uuid = env.get("sourceUuid")
-            if not is_out and isinstance(src_uuid, str):
-                # build_message_record wants from_id={"user_id": int}; derive a
-                # stable int sender id from the source uuid (attribution only —
-                # NOT part of the external_id, so a stable surrogate is fine).
-                from_id = {"user_id": _str_to_int(src_uuid)}
-            return {
-                "id": ts,                         # message id == timestamp (ms)
-                "date": ts // 1000 if ts else None,   # epoch SECONDS
-                "edit_date": None,                # Signal v1: no edits
-                "message": body,
-                "out": is_out,
-                "from_id": from_id,
-                "sender_username": env.get("sourceName"),
-            }
-
-        async def get_history(
-            self,
-            *,
-            thread_id: int,
-            thread_kind: str = "direct",
-            offset_id: int = 0,
-            min_id: int = 0,
-            limit: int = 100,
-        ) -> tuple:
-            sid = self._int_to_str.get(thread_id)
-            if sid is None:
-                return [], None, True
-            page_limit = min(100, max(1, int(limit)))
-            payload = {
-                "thread": {"thread_id": sid},
-                "offset_ts": int(offset_id or 0),  # id==ts -> identity mapping
-                "min_ts": int(min_id or 0),
-                "limit": page_limit,
-            }
-            r = await self._client.post(
-                f"{self._base}/v1/get_history", headers=self._headers, json=payload
-            )
-            r.raise_for_status()
-            envs = r.json().get("messages", []) or []
-            messages = [self._env_to_raw(e) for e in envs]
-            ids = [
-                m["id"] for m in messages
-                if isinstance(m.get("id"), int) and m["id"] > 0
-            ]
-            next_offset_id = min(ids) if ids else None
-            is_last = len(messages) < page_limit or next_offset_id is None
-            return messages, next_offset_id, is_last
-
-        async def aclose(self) -> None:
-            await self._client.aclose()
-
-    client = _SignalMockAdapter(sbase, session)
+    install = {"id": uuid4(), "tenant_id": TENANT}
+    client = SignalClient(
+        session="lab-signal::sandbox",
+        account_label="sandbox",
+        tenant_id=TENANT,
+        installation_id=install["id"],
+        jsonrpc_endpoint=provider_base_url("signal") + "/jsonrpc",
+        allow_unlimited_local=True,
+    )
     fet._open_signal_client = lambda _install: _return(client)
 
     try:
         # ONBOARDING: discover the linked account's threads -> one shard each.
         threads = await client.iter_threads(limit=1000)
         print(f"  signal: {len(threads)} threads discovered")
-        install = {"id": uuid4(), "tenant_id": TENANT}
         total = 0
         for t in threads:
             shard = {
                 "shard_kind": fet.SHARD_KIND_THREAD_HISTORY,
-                "thread_id": t["thread_id"],            # int (required by fetcher)
+                "thread_id": t["thread_id"],
                 "thread_kind": t.get("thread_kind") or "direct",
                 "thread_title": t.get("title"),
                 "installation_id": str(install["id"]),
-                "offset_id_cursor": None,               # full backfill (no warm start)
+                "offset_id_cursor": None,
             }
             cursor = None
             records: list = []
-            for _ in range(100_000):  # page guard (hero group ~1200 msgs)
+            for _ in range(100_000):
                 res = await fet.fetch_page_signal(install, shard, cursor)
                 records.extend(res.records)
                 cursor = res.next_cursor
@@ -2030,13 +1880,8 @@ async def ingest_slack(pool) -> int:
     from services.ingest.ingestion.fetchers import slack as fet
     from services.ingest.integrations.slack.client import SlackClient
 
-    # The standalone Slack mock mounts its routes at /api/conversations.* (NOT
-    # /slack/api). rebased("slack","slack_api") grafts the PATH of the prod base
-    # https://slack.com/api -> "/api" onto the mock port, giving exactly
-    # http://localhost:7001/api — the URL the mock serves. (The endpoints _ENV
-    # "/slack/api" sub-path convention is for a unified-gateway mode and 404s on
-    # the per-source mock; do NOT use it here.)
-    sbase = rebased("slack", "slack_api")  # -> http://localhost:7001/api
+    # Preserve Slack's production /api path below the canonical /slack segment.
+    sbase = rebased_provider_url("slack", "slack_api")
 
     # ONBOARDING (real-token): the SlackClient bot token is lazily resolved from
     # the secret store, which we don't have in the driver. Pull the REAL seeded
@@ -2116,130 +1961,77 @@ async def ingest_slack(pool) -> int:
 
 
 async def ingest_telegram(pool) -> int:
-    # Telegram is special: the REAL integration client
-    # (services/ingest/integrations/telegram/client.py) is a Telethon/MTProto
-    # client whose _connect() imports telethon and dials the binary MTProto
-    # transport — it cannot talk to the saas-api-mocks HTTP shim. The mock instead
-    # reproduces the Telethon METHOD contract over HTTP (POST /messages.getDialogs,
-    # POST /messages.getHistory) at the BARE port root (there is no telegram_api
-    # key in endpoints._PROD and no /telegram sub-path), authenticated by the
-    # persisted StringSession ('spam-telegram', the spammer preset) presented as
-    # `Authorization: Session <s>`.
-    #
-    # So we use a thin in-process HTTP client that implements exactly the two
-    # methods the backfill fetcher calls — iter_dialogs() for onboarding and
-    # get_history(...) for paging — returning the SAME shapes the real client's
-    # Telethon->dict conversion yields (from_id flattened to {"user_id": int},
-    # epoch-second dates), so fetchers/telegram.py + build_message_record + the
-    # real handler run unmodified.
+    """Telegram backfill through the production client's injectable boundary.
+
+    Provider Lab deliberately emulates Fyralis's finite ``TelegramTransport``
+    operation surface, not general MTProto. The production ``TelegramClient``
+    still owns authorization, request policy, shaping, and pagination behavior.
+    """
     import httpx
 
     from services.ingest.ingestion.fetchers import telegram as fet
+    from services.ingest.integrations.telegram.client import TelegramClient
 
-    tbase = base("telegram")  # http://localhost:7024 — mock at the bare root
-    SESSION = "spam-telegram"  # the seeded install's session_string / spammer preset
-
-    class _TelegramMockClient:
-        """HTTP stand-in for integrations.telegram.client.TelegramClient that
-        speaks the mock's MTProto-method-over-HTTP contract. Implements only the
-        backfill surface (iter_dialogs, get_history) the fetcher exercises."""
-
-        def __init__(self, base_url: str, session: str) -> None:
+    class _ProviderLabTelegramTransport:
+        def __init__(self, base_url: str) -> None:
             self._base = base_url.rstrip("/")
-            self._headers = {"Authorization": f"Session {session}"}
             self._http = httpx.AsyncClient(timeout=30.0)
-
-        @staticmethod
-        def _flatten(msg: dict) -> dict:
-            # Mirror integrations.telegram.client._message_to_dict: collapse the TL
-            # `from_id` Peer to {"user_id": int} (or None for channel-broadcast /
-            # self-sent), keep id/date/edit_date/message/out as the raw record the
-            # build_message_record builder + parse_message_record handler consume.
-            from_id = msg.get("from_id")
-            sender = None
-            if isinstance(from_id, dict) and isinstance(from_id.get("user_id"), int):
-                sender = {"user_id": from_id["user_id"]}
-            return {
-                "id": int(msg.get("id") or 0),
-                "date": msg.get("date"),
-                "edit_date": msg.get("edit_date"),
-                "message": msg.get("message") or "",
-                "out": bool(msg.get("out", False)),
-                "from_id": sender,
+            self._headers = {
+                "Authorization": "Session lab-telegram::sandbox",
             }
 
-        async def iter_dialogs(self, *, limit: int = 500) -> list[dict]:
-            r = await self._http.post(
-                f"{self._base}/messages.getDialogs",
-                headers=self._headers,
-                json={"limit": limit},
-            )
-            r.raise_for_status()
-            out = []
-            for d in r.json().get("dialogs", []):
-                did = d.get("dialog_id")
-                if not isinstance(did, int):
-                    continue
-                out.append({
-                    "dialog_id": did,
-                    "dialog_kind": d.get("dialog_kind") or "chat",
-                    "access_hash": d.get("access_hash"),
-                    "title": d.get("title"),
-                })
-            return out
+        async def connect(self) -> None:
+            return None
 
-        async def get_history(
-            self,
-            *,
-            dialog_id: int,
-            access_hash,
-            dialog_kind: str,
-            offset_id: int = 0,
-            min_id: int = 0,
-            limit: int = 100,
-        ):
-            # Returns (messages, next_offset_id, is_last) exactly like the real
-            # client: next_offset_id = MIN id of the page (the backward cursor),
-            # is_last = short page. The mock pages messages.getHistory BACKWARD:
-            # id < offset_id (0 = newest), min_id is an EXCLUSIVE floor.
-            peer = {"dialog_id": int(dialog_id), "dialog_kind": dialog_kind}
-            if access_hash is not None:
-                peer["access_hash"] = int(access_hash)
-            limit = min(100, max(1, int(limit)))
-            r = await self._http.post(
-                f"{self._base}/messages.getHistory",
-                headers=self._headers,
-                json={
-                    "peer": peer,
-                    "offset_id": int(offset_id or 0),
-                    "min_id": int(min_id or 0),
-                    "limit": limit,
-                },
-            )
-            r.raise_for_status()
-            raw = r.json().get("messages", [])
-            messages = [self._flatten(m) for m in raw]
-            ids = [m["id"] for m in messages if isinstance(m.get("id"), int) and m["id"] > 0]
-            next_offset_id = min(ids) if ids else None
-            is_last = len(messages) < limit or next_offset_id is None
-            return messages, next_offset_id, is_last
+        async def is_user_authorized(self) -> bool:
+            return True
 
-        async def aclose(self) -> None:
+        async def _post(self, operation: str, body: dict) -> dict:
+            response = await self._http.post(
+                f"{self._base}/transport/{operation}",
+                headers=self._headers,
+                json=body,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        async def get_history(self, **kwargs):
+            payload = await self._post("get_history", dict(kwargs))
+            return (
+                payload["messages"],
+                payload.get("next_offset_id"),
+                payload["is_last"],
+            )
+
+        async def iter_dialogs(self, *, limit: int):
+            payload = await self._post("iter_dialogs", {"limit": limit})
+            return payload["dialogs"]
+
+        async def has_history_since(self, **kwargs) -> bool:
+            payload = await self._post("has_history_since", dict(kwargs))
+            return bool(payload["has_history"])
+
+        async def me(self) -> dict:
+            return await self._post("me", {})
+
+        async def disconnect(self) -> None:
             await self._http.aclose()
 
-    client = _TelegramMockClient(tbase, SESSION)
-    # Monkeypatch the fetcher's opener seam: it is awaited and unpacked as
-    # `client, close = await _open_telegram_client(install)`; _return yields
-    # (client, _noop) so close() is the no-op the harness uses everywhere.
+    install = {"id": uuid4(), "tenant_id": TENANT}
+    client = TelegramClient(
+        tenant_id=TENANT,
+        installation_id=install["id"],
+        telegram_transport=_ProviderLabTelegramTransport(
+            provider_base_url("telegram")
+        ),
+        allow_unlimited_local=True,
+    )
     fet._open_telegram_client = lambda _install: _return(client)
 
-    # ONBOARDING: enumerate the account's dialogs (one shard per dialog). This is
-    # the iter_dialogs shape — there is no separate "list installs" call; the mock
-    # has exactly one seeded install (session 'spam-telegram').
+    # ONBOARDING: enumerate the account's dialogs (one shard per dialog).
     dialogs = await client.iter_dialogs(limit=500)
     print(f"  telegram: {len(dialogs)} dialogs discovered")
 
-    install = {"id": uuid4(), "tenant_id": TENANT}
     installation_id = str(install["id"])
     total = 0
     try:
@@ -2247,9 +2039,6 @@ async def ingest_telegram(pool) -> int:
             dialog_id = dlg["dialog_id"]
             if not isinstance(dialog_id, int):
                 continue
-            # Shard shape copied from preflight._signal_records (the Telegram
-            # archetype: one shard per conversation, backward-paged history),
-            # remapped to telegram's dialog_* fields the fetcher reads.
             shard = {
                 "shard_kind": fet.SHARD_KIND_DIALOG_HISTORY,
                 "dialog_id": dialog_id,
@@ -2257,11 +2046,11 @@ async def ingest_telegram(pool) -> int:
                 "access_hash": dlg.get("access_hash"),
                 "dialog_title": dlg.get("title"),
                 "installation_id": installation_id,
-                "offset_id_cursor": None,  # full initial backfill (no warm-start)
+                "offset_id_cursor": None,
             }
             cursor = None
             records: list = []
-            for _ in range(10_000):  # page guard — backward-walk to start of history
+            for _ in range(10_000):
                 res = await fet.fetch_page_telegram(install, shard, cursor)
                 records.extend(res.records)
                 cursor = res.next_cursor
@@ -2273,13 +2062,26 @@ async def ingest_telegram(pool) -> int:
     return total
 
 
-# ---- dynamic registry: every module-level ingest_<src> ----
-INGESTERS = {
-    name[len("ingest_"):]: fn
-    for name, fn in dict(globals()).items()
-    if name.startswith("ingest_") and callable(fn)
-    and name[len("ingest_"):] in PORTS   # only real source adapters (excl. imported ingest_from_draft)
-}
+# Discover script entry points, then canonicalize their suffix through the
+# source contract. This retains ``ingest_calendar``/``ingest_drive`` as local
+# function names without creating another source registry.
+def _discover_ingesters(namespace: dict[str, object]) -> dict[str, object]:
+    ingesters: dict[str, object] = {}
+    for name, candidate in namespace.items():
+        if not name.startswith("ingest_") or not callable(candidate):
+            continue
+        try:
+            source = resolve_source_id(name.removeprefix("ingest_"))
+        except KeyError:
+            # For example, the imported ingest_from_draft helper.
+            continue
+        if source in ingesters:
+            raise RuntimeError(f"duplicate sandbox ingester for {source!r}")
+        ingesters[source] = candidate
+    return ingesters
+
+
+INGESTERS = _discover_ingesters(dict(globals()))
 ALL = sorted(INGESTERS)
 
 
@@ -2291,23 +2093,31 @@ async def main(sources):
         created = await ensure_test_partition_window(conn, months_back=30, months_ahead=3)
     print(f"partitions ensured ({len(created)} created); sources={len(sources)}\n")
     results = {}
-    for s in sources:
-        if s not in INGESTERS:
-            print(f"[skip] {s}"); continue
-        print(f"[{s}] ingesting ...")
+    for requested_source in sources:
         try:
-            results[s] = await INGESTERS[s](pool)
-            print(f"[{s}] OK -> {results[s]} obs\n")
+            source = resolve_source_id(requested_source)
+        except KeyError:
+            print(f"[skip] {requested_source}")
+            continue
+        if source not in INGESTERS:
+            print(f"[skip] {source}")
+            continue
+        print(f"[{source}] ingesting ...")
+        try:
+            results[source] = await INGESTERS[source](pool)
+            print(f"[{source}] OK -> {results[source]} obs\n")
         except Exception as exc:
             import traceback as tb
-            results[s] = f"ERROR: {type(exc).__name__}: {exc}"
-            print(f"[{s}] FAILED: {type(exc).__name__}: {exc}")
-            tb.print_exc(); print()
+            results[source] = f"ERROR: {type(exc).__name__}: {exc}"
+            print(f"[{source}] FAILED: {type(exc).__name__}: {exc}")
+            tb.print_exc()
+            print()
     print("=== SUMMARY ===")
     tot = 0
     for s in ALL:
         r = results.get(s, "(not run)")
-        if isinstance(r, int): tot += r
+        if isinstance(r, int):
+            tot += r
         print(f"  {s:12} {r}")
     print(f"  {'TOTAL':12} {tot}")
     await close_pool()

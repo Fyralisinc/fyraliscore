@@ -104,7 +104,7 @@ verifier lives in the app webhook subsystem (§8).
 client — the same long‑lived posture as the Jira/Mercury/Notion clients
 ([client.py:106‑132](../../../services/ingest/integrations/grafana/client.py#L106-L132)):
 
-- A **preset** `api_token` (spammer mode, §12.3) short‑circuits the lookup.
+- A **preset** `api_token` (Provider Lab mode, §12.3) short‑circuits the lookup.
 - Otherwise it lazily reads the secret store at `secret_ref` (under the install's
   `tenant_id`), guarded by an `asyncio.Lock`. Missing
   `secret_store`/`secret_ref`/`tenant_id` → `GrafanaApiError(grafana_api_unauthorized)`.
@@ -525,7 +525,7 @@ API, service‑account auth).
 | `GRAFANA_RL_MAX_ATTEMPTS` | `4` | client 429‑retry budget ([client.py:153](../../../services/ingest/integrations/grafana/client.py#L153)) |
 | `GRAFANA_RL_MAX_SLEEP_SEC` | `30` | max sleep per `Retry-After` ([client.py:154](../../../services/ingest/integrations/grafana/client.py#L154)) |
 | `GRAFANA_WEBHOOK_TIMESTAMP_HEADER` | `""` (off) | if set, names the timestamp header for `"{ts}:"+body` HMAC mode ([signatures/grafana.py:46‑48](../../../services/app/webhooks/signatures/grafana.py#L46-L48)) |
-| `GRAFANA_API_BASE_URL` | — | backfill base‑URL override (used by the endpoint resolver / spammer) ([endpoints.py:130](../../../lib/integrations/endpoints.py#L130)) |
+| `GRAFANA_API_BASE_URL` | — | explicit backfill base-URL override used by Provider Lab ([endpoints.py:130](../../../lib/integrations/endpoints.py#L130)) |
 
 ### 12.2 Verified
 
@@ -541,15 +541,15 @@ API, service‑account auth).
 - **Two‑channel independence** — distinct handlers + distinct `external_id`
   namespaces; no cross‑channel collision. ✅
 
-### 12.3 Dev / spammer mode
+### 12.3 Dev / Provider Lab mode
 
-`build_grafana_client` detects spammer mode and **presets** the token to
+`build_grafana_client` detects Provider Lab mode and **presets** the token to
 `spam-grafana`, skipping the secret‑store lookup; the API base is overridden via
-the endpoint resolver to the local spammer's `/grafana` sub‑path
+the endpoint resolver to Provider Lab's explicit `/grafana` URL
 ([_clients.py:337‑363](../../../services/ingest/ingestion/fetchers/_clients.py#L337-L363),
 [endpoints.py:69](../../../lib/integrations/endpoints.py#L69), [160](../../../lib/integrations/endpoints.py#L160)).
-The mock Grafana server
-([synthetic/mock_servers/grafana.py](../../../services/ingest/synthetic/mock_servers/grafana.py))
+The canonical
+[Provider Lab Grafana adapter](../../../services/ingest/synthetic/provider_lab/wave_b.py)
 serves `GET /api/annotations` (bare array, ms‑windowed, newest‑first) and
 `GET /api/org`, so the real `GrafanaClient` + fetcher + reconciler run end‑to‑end
 with no Grafana instance.

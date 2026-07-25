@@ -12,6 +12,7 @@ from lib.shared.product_workflow_metrics import (
     PRODUCT_WORKFLOWS,
 )
 from services.ingest.integrations.router import build_integrations_router
+from services.ingest.source_contract import resolve_callable_reference
 
 
 def _events():
@@ -43,15 +44,22 @@ def _make_app() -> FastAPI:
 def test_oauth_callback_records_source_onboarding_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.ingest.integrations.router import slack_oauth
+    from services.ingest.integrations.slack import oauth as slack_oauth
 
     async def _callback_handler(request: Request) -> RedirectResponse:
         return RedirectResponse("/integrations/slack/installed?team=t123")
 
     monkeypatch.setattr(slack_oauth, "callback_handler", _callback_handler)
+    resolve_callable_reference.cache_clear()
 
-    client = TestClient(_make_app())
-    response = client.get("/integrations/slack/callback", follow_redirects=False)
+    try:
+        client = TestClient(_make_app())
+        response = client.get(
+            "/integrations/slack/callback",
+            follow_redirects=False,
+        )
+    finally:
+        resolve_callable_reference.cache_clear()
 
     assert response.status_code in {302, 307}
     assert (
@@ -67,15 +75,22 @@ def test_oauth_callback_records_source_onboarding_success(
 def test_oauth_callback_records_source_onboarding_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from services.ingest.integrations.router import slack_oauth
+    from services.ingest.integrations.slack import oauth as slack_oauth
 
     async def _callback_handler(request: Request) -> RedirectResponse:
         return RedirectResponse("/integrations/slack/install-error?reason=state_invalid")
 
     monkeypatch.setattr(slack_oauth, "callback_handler", _callback_handler)
+    resolve_callable_reference.cache_clear()
 
-    client = TestClient(_make_app())
-    response = client.get("/integrations/slack/callback", follow_redirects=False)
+    try:
+        client = TestClient(_make_app())
+        response = client.get(
+            "/integrations/slack/callback",
+            follow_redirects=False,
+        )
+    finally:
+        resolve_callable_reference.cache_clear()
 
     assert response.status_code in {302, 307}
     assert (

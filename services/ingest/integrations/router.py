@@ -27,62 +27,66 @@ from lib.shared.product_workflow_metrics import (
     record_product_workflow_event,
 )
 
-from services.ingest.integrations.discord import oauth as discord_oauth
-from services.ingest.integrations.facebook_pages import oauth as facebook_pages_oauth
-from services.ingest.integrations.github import oauth as github_oauth
-from services.ingest.integrations.notion import oauth as notion_oauth
-from services.ingest.integrations.slack import oauth as slack_oauth
+from services.ingest.source_contract import (
+    OAUTH_INGRESS_CATALOG,
+    resolve_callable_reference,
+)
 
 
 def build_integrations_router() -> APIRouter:
-    """Construct the integrations router with all provider sub-routes
-    wired. Stateless — all deps are read off `request.app.state`."""
+    """Mount every contract-declared shared OAuth install/callback route."""
+
     router = APIRouter(prefix="/integrations", tags=["integrations"])
-
-    @router.get("/slack/install")
-    async def slack_install(request: Request):
-        return await slack_oauth.install_handler(request)
-
-    @router.get("/slack/callback")
-    async def slack_callback(request: Request):
-        return await _callback_with_metrics(slack_oauth.callback_handler, request)
-
-    @router.get("/discord/install")
-    async def discord_install(request: Request):
-        return await discord_oauth.install_handler(request)
-
-    @router.get("/discord/callback")
-    async def discord_callback(request: Request):
-        return await _callback_with_metrics(discord_oauth.callback_handler, request)
-
-    @router.get("/github/install")
-    async def github_install(request: Request):
-        return await github_oauth.install_handler(request)
-
-    @router.get("/github/callback")
-    async def github_callback(request: Request):
-        return await _callback_with_metrics(github_oauth.callback_handler, request)
-
-    @router.get("/notion/install")
-    async def notion_install(request: Request):
-        return await notion_oauth.install_handler(request)
-
-    @router.get("/notion/callback")
-    async def notion_callback(request: Request):
-        return await _callback_with_metrics(notion_oauth.callback_handler, request)
-
-    @router.get("/facebook_pages/install")
-    async def facebook_pages_install(request: Request):
-        return await facebook_pages_oauth.install_handler(request)
-
-    @router.get("/facebook_pages/callback")
-    async def facebook_pages_callback(request: Request):
-        return await _callback_with_metrics(
-            facebook_pages_oauth.callback_handler,
-            request,
+    for ingress in OAUTH_INGRESS_CATALOG.values():
+        if ingress.mount_mode != "shared_router":
+            continue
+        install_handler = resolve_callable_reference(
+            ingress.install_handler_binding
+        )
+        callback_handler = resolve_callable_reference(
+            ingress.callback_handler_binding
+        )
+        router.add_api_route(
+            _relative_integration_path(ingress.install_path),
+            _install_endpoint(install_handler),
+            methods=["GET"],
+            name=f"{ingress.source_id}_oauth_install",
+        )
+        router.add_api_route(
+            _relative_integration_path(ingress.callback_path),
+            _callback_endpoint(callback_handler),
+            methods=["GET"],
+            name=f"{ingress.source_id}_oauth_callback",
         )
 
     return router
+
+
+def _relative_integration_path(route_path: str) -> str:
+    prefix = "/integrations"
+    if not route_path.startswith(f"{prefix}/"):
+        raise RuntimeError(
+            f"shared OAuth route must live below {prefix}: {route_path!r}"
+        )
+    return route_path.removeprefix(prefix)
+
+
+def _install_endpoint(
+    handler: Callable[[Request], Awaitable[Any]],
+) -> Callable[[Request], Awaitable[Any]]:
+    async def endpoint(request: Request) -> Any:
+        return await handler(request)
+
+    return endpoint
+
+
+def _callback_endpoint(
+    handler: Callable[[Request], Awaitable[Any]],
+) -> Callable[[Request], Awaitable[Any]]:
+    async def endpoint(request: Request) -> Any:
+        return await _callback_with_metrics(handler, request)
+
+    return endpoint
 
 
 async def _callback_with_metrics(

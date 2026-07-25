@@ -21,10 +21,10 @@ each fetch unit and lets recency ordering run recently-edited databases
 first (high-value intent signal lands early under the rate limit).
 
 ============================================================
-WIRE-IN
+SOURCE CONTRACT
 ============================================================
-Assigns into `PLANNER_DISPATCH['notion']` at module-import time;
-`services/ingest/ingestion/planners/__init__.py` imports this module.
+`SourceDefinition.planner_binding` points directly to
+`plan_shards_notion`; importing this module has no registration side effect.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any
 
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 
 
@@ -128,7 +128,6 @@ async def plan_shards_notion(ctx: PlannerContext) -> list[Shard]:
     return shards
 
 
-PLANNER_DISPATCH["notion"] = plan_shards_notion
 
 
 __all__ = [

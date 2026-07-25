@@ -76,7 +76,7 @@ Bearer token** ([client.py:1‑31](../../../services/ingest/integrations/miro/cl
 [0102_miro.sql:3‑6](../../../db/migrations/0102_miro.sql#L3-L6)). This is the
 Brex/Jira posture, **not** a per-user OAuth code-exchange flow:
 
-- The token is resolved **once** from the secret store (or preset in spammer
+- The token is resolved **once** from the secret store (or preset in Provider Lab
   mode) and reused for the life of the client — there is **no refresh**
   ([client.py:109‑135](../../../services/ingest/integrations/miro/client.py#L109-L135)).
 - Read calls carry `Authorization: Bearer {token}`; the token and the auth
@@ -495,7 +495,7 @@ The connect-wizard preflight itself surfaces an auth failure as a structured
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
-| `MIRO_API_BASE_URL` | `https://api.miro.com/v2` (via `endpoint("miro_api")`) | overrides the API host (spammer/test) ([endpoints.py:88](../../../lib/integrations/endpoints.py#L88), [136](../../../lib/integrations/endpoints.py#L136)) |
+| `MIRO_API_BASE_URL` | `https://api.miro.com/v2` (via `endpoint("miro_api")`) | overrides the API host (Provider Lab/test) ([endpoints.py:88](../../../lib/integrations/endpoints.py#L88), [136](../../../lib/integrations/endpoints.py#L136)) |
 | `MIRO_BACKFILL_PAGE_SIZE` | `50` (capped at 50) | board-items page size ([fetchers/miro.py:61‑65](../../../services/ingest/ingestion/fetchers/miro.py#L61-L65)) |
 | `MIRO_RL_MAX_ATTEMPTS` | `4` | `429` retry budget ([client.py:157](../../../services/ingest/integrations/miro/client.py#L157)) |
 | `MIRO_RL_MAX_SLEEP_SEC` | `30` | max backoff per `Retry-After` ([client.py:158](../../../services/ingest/integrations/miro/client.py#L158)) |
@@ -517,14 +517,15 @@ on `miro_installations` ([0102_miro.sql:41‑59](../../../db/migrations/0102_mir
   round-tripped verbatim. ✅ *(items endpoint CONFIRMED; `/boards` offset paginator
   not yet split out — see §3 TODO.)*
 
-### 11.3 Dev / spammer mode
+### 11.3 Dev / Provider Lab mode
 
-`build_miro_client` detects spammer mode and **presets** the token to `spam-miro`,
+`build_miro_client` detects Provider Lab mode and **presets** the token to `spam-miro`,
 skipping the secret store entirely, and points `api_base_url` at the local
-spammer's `/miro` sub-path via `endpoint("miro_api")`
+Provider Lab's `/miro` URL via `endpoint("miro_api")`
 ([_clients.py:570‑593](../../../services/ingest/ingestion/fetchers/_clients.py#L570-L593)).
-The fetcher's `_open_miro_client` is a rebindable test seam so the mock harness
+The fetcher's `_open_miro_client` is a rebindable test seam so a unit test
 can inject a fake ([fetchers/miro.py:102‑107](../../../services/ingest/ingestion/fetchers/miro.py#L102-L107)).
-A mock Miro server + fixtures live at
-[services/ingest/synthetic/mock_servers/miro.py](../../../services/ingest/synthetic/mock_servers/miro.py)
-and [.../fixtures/miro_generator.py](../../../services/ingest/synthetic/fixtures/miro_generator.py).
+The executable HTTP conformance surface is the canonical
+[Provider Lab Miro adapter](../../../services/ingest/synthetic/provider_lab/wave_b.py);
+deterministic data remains in
+[fixtures/miro_generator.py](../../../services/ingest/synthetic/fixtures/miro_generator.py).

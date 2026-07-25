@@ -10,7 +10,7 @@ from uuid import UUID
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
+from services.ingest.ingestion.fetchers import FetchResult
 
 
 log = logging.getLogger(__name__)
@@ -293,7 +293,6 @@ async def fetch_page_facebook_pages(
         await close()
 
 
-FETCHER_DISPATCH["facebook_pages"] = fetch_page_facebook_pages
 
 
 __all__ = [

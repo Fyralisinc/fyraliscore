@@ -7,7 +7,7 @@ historical query surface (JQL search) and a live push surface (webhooks). This
 sandbox stands up a REAL local mock of the Jira v3 endpoints and drives the
 REAL pipeline against it:
 
-    JiraClient (real httpx, spammer auth) -> fetch_page_jira (real cursor + JQL
+    JiraClient (real httpx, Provider Lab auth) -> fetch_page_jira (real cursor + JQL
     + fan-out) -> handle_jira_issue (real ObservationDraft) -> ingest() (real
     observation insert + dedup)
 
@@ -180,16 +180,17 @@ async def _drain_shard(pool, install_row, shard_identifier) -> list[str]:
 
 
 async def run(args) -> int:
-    from services.ingest.synthetic.mock_servers.jira import start_mock_jira
+    from services.ingest.synthetic.provider_lab.server import start_provider_lab
 
     fixtures = _build_fixtures()
 
-    # 1. Start the mock; route the spammer single-host base at it (the client
-    #    resolves jira_api -> <base>/jira, and the mock matches path suffix).
-    server, base_url = start_mock_jira(fixtures)
-    os.environ["SYNTHETIC_SOURCE_API_BASE"] = base_url
-    _hr("MOCK SERVER")
-    print(f"  Jira API base : {base_url} (served under /jira via spammer routing)")
+    # 1. Start Provider Lab and use Jira's explicit local endpoint override.
+    server = start_provider_lab({"jira": [fixtures]})
+    base_url = server.url("jira")
+    os.environ["PROVIDER_LAB_URL"] = server.base_url
+    os.environ["JIRA_API_BASE_URL"] = base_url
+    _hr("PROVIDER LAB")
+    print(f"  Jira API base : {base_url} (explicit local override)")
 
     admin_url = os.environ.get("SANDBOX_ADMIN_URL", _DEFAULT_ADMIN_URL)
     provided_url = os.environ.get("DATABASE_URL")
@@ -261,8 +262,13 @@ async def run(args) -> int:
         _hr("PLAN (planner over the loader SQL)")
         from services.ingest.ingestion.planners.context import PlannerContext
         from services.ingest.ingestion.planners.jira import plan_shards_jira
-        from services.ingest.ingestion.workflows.source_onboarding import _LOAD_JIRA_INSTALL_SQL
-        install_row = await pool.fetchrow(_LOAD_JIRA_INSTALL_SQL, _TENANT_ID)
+        from services.ingest.ingestion.installations import load_source_installation
+        install_row = await load_source_installation(
+            pool,
+            source="jira",
+            tenant_id=_TENANT_ID,
+            installation_id=install_id,
+        )
         ctx = PlannerContext(tenant_id=_TENANT_ID, install=install_row, conn=None, source_client=None)
         shards = await plan_shards_jira(ctx)
         print(f"  planned {len(shards)} shard(s): "
