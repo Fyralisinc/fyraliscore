@@ -76,8 +76,8 @@ class LinkedinPollGenerator:
         self._s3 = s3_raw_client
         self._flags = tenant_flags
         self._seq = 0
-        # Cache: tenant_id -> (installation_id, organization_urn).
-        self._install_cache: dict[UUID, tuple[str, str]] = {}
+        # Cache: (tenant_id, organization_urn) -> installation binding.
+        self._install_cache: dict[tuple[UUID, str], tuple[str, str]] = {}
         self._actor_repo: Any = None
         self._alias_repo: Any = None
 
@@ -91,25 +91,31 @@ class LinkedinPollGenerator:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         return None
 
-    async def _resolve_install(self, tenant_id: UUID) -> tuple[str, str]:
-        """Resolve (and cache) the tenant's (linkedin_installations.id,
-        organization_urn), so the live external_id is namespaced identically to
-        backfill. Superuser test connection bypasses the table's RLS (the harness
-        convention)."""
-        cached = self._install_cache.get(tenant_id)
+    async def _resolve_install(
+        self,
+        tenant_id: UUID,
+        organization_urn: str,
+    ) -> tuple[str, str]:
+        """Resolve exactly one active install for the target organization."""
+        cache_key = (tenant_id, organization_urn)
+        cached = self._install_cache.get(cache_key)
         if cached is not None:
             return cached
-        row = await self._pool.fetchrow(
+        rows = await self._pool.fetch(
             "SELECT id, organization_urn FROM linkedin_installations "
-            "WHERE tenant_id = $1 AND disabled_at IS NULL "
-            "ORDER BY created_at LIMIT 1",
+            "WHERE tenant_id = $1 AND organization_urn = $2 "
+            "AND disabled_at IS NULL",
             tenant_id,
+            organization_urn,
         )
-        if row is not None:
-            resolved = (str(row["id"]), str(row["organization_urn"]))
-        else:
-            resolved = (str(tenant_id), str(tenant_id))
-        self._install_cache[tenant_id] = resolved
+        if len(rows) != 1:
+            raise ValueError(
+                "linkedin target must resolve to exactly one active installation: "
+                f"tenant_id={tenant_id}, organization_urn={organization_urn!r}, "
+                f"matches={len(rows)}",
+            )
+        resolved = (str(rows[0]["id"]), str(rows[0]["organization_urn"]))
+        self._install_cache[cache_key] = resolved
         return resolved
 
     def _mint_change(self, content: str, entity_type: str) -> dict[str, Any]:
@@ -164,8 +170,12 @@ class LinkedinPollGenerator:
             handle_polled_change,
         )
 
+        organization_urn = target.linkedin_org
+        if organization_urn is None:
+            raise ValueError("linkedin target is missing linkedin_org")
         installation_id, organization_urn = await self._resolve_install(
             target.tenant_id,
+            organization_urn,
         )
         entity_type = (
             getattr(target, "linkedin_entity_type", None) or _DEFAULT_ENTITY_TYPE

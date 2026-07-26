@@ -97,6 +97,10 @@ export function FigmaOAuthConnectionCard({
       <CardContent className="grid gap-5">
         <ConnectionFeedback controller={controller} />
 
+        {controller.installationIds.length > 1 ? (
+          <FigmaInstallationSelector controller={controller} />
+        ) : null}
+
         {deploymentSetupRequired ? (
           <DeploymentSetupRequiredNotice
             loading={controller.loading}
@@ -172,6 +176,60 @@ export function FigmaOAuthConnectionCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function FigmaInstallationSelector({
+  controller,
+}: {
+  controller: FigmaOAuthConnectionController;
+}) {
+  return (
+    <section className="grid gap-2 rounded-lg border border-border bg-background/40 p-4">
+      <label
+        className="text-sm font-semibold"
+        htmlFor="figma-installation-selector"
+      >
+        Figma installation
+      </label>
+      <p className="text-xs leading-5 text-muted-foreground">
+        This tenant has more than one Figma connection. Choose the exact
+        connection whose status and actions you want to manage.
+      </p>
+      <select
+        id="figma-installation-selector"
+        aria-label="Figma installation"
+        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-ring"
+        value={controller.selectedInstallationId ?? ""}
+        onChange={(event) => {
+          void controller.selectInstallation(event.target.value);
+        }}
+        disabled={
+          controller.selectingInstallation ||
+          controller.retrying ||
+          controller.disconnecting
+        }
+      >
+        <option value="">Select an installation</option>
+        {controller.installationIds.map((installationId) => (
+          <option key={installationId} value={installationId}>
+            {installationLabel(installationId)}
+          </option>
+        ))}
+      </select>
+      {controller.selectingInstallation ? (
+        <span
+          className="flex items-center gap-2 text-xs text-muted-foreground"
+          role="status"
+        >
+          <LoaderCircle
+            className="h-3.5 w-3.5 animate-spin"
+            aria-hidden="true"
+          />
+          Loading selected installation…
+        </span>
+      ) : null}
+    </section>
   );
 }
 
@@ -331,6 +389,15 @@ function ConnectionProof({
     );
   }
 
+  if (status.state === "multiple_installations") {
+    return (
+      <div className="rounded-lg border border-info/30 bg-info/10 p-4 text-sm text-foreground">
+        Select a Figma installation above to load its files, observations, and
+        management actions.
+      </div>
+    );
+  }
+
   const inProgress = [
     "ready_for_provider_approval",
     "authorizing",
@@ -481,10 +548,24 @@ function ConnectionStateBadge({
         ? "warning"
       : ["error", "degraded", "reauthorization_required"].includes(state)
         ? "error"
-        : ["syncing", "authorizing", "finalizing", "ready_for_provider_approval"].includes(state)
+        : [
+              "syncing",
+              "authorizing",
+              "finalizing",
+              "ready_for_provider_approval",
+              "multiple_installations",
+            ].includes(state)
           ? "info"
           : "muted";
   return <Badge tone={tone}>{display}</Badge>;
+}
+
+function installationLabel(installationId: string): string {
+  const suffix =
+    installationId.length > 12
+      ? installationId.slice(-12)
+      : installationId;
+  return `Installation …${suffix}`;
 }
 
 function formatDate(value: string | null): string {

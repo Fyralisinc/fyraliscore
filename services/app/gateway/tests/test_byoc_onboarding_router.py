@@ -66,10 +66,10 @@ class _NativeInstallPool:
         self.query = ""
         self.args = ()
 
-    async def fetchrow(self, query, *args):
+    async def fetch(self, query, *args):
         self.query = query
         self.args = args
-        return self.row
+        return [self.row] if self.row is not None else []
 
 
 class _GatewayPrefixedObservationPool:
@@ -91,6 +91,8 @@ class _GatewayPrefixedObservationPool:
         raise AssertionError(f"unexpected fetchrow query: {query}")
 
     async def fetch(self, query, *args):
+        if "FROM ramp_installations" in query:
+            return []
         if "FROM onboarding_runs" in query:
             return []
         if "FROM onboarding_shards" in query:
@@ -582,7 +584,8 @@ async def test_discord_source_access_payload_marks_private_channels(
         tenant_id=tenant_id,
         install={
             "id": installation_row_id,
-            "installation_id": "guild-1",
+            "installation_id": installation_row_id,
+            "external_installation_id": "guild-1",
             "enabled": True,
             "has_secret": True,
             "installed_at": datetime(2026, 7, 8, tzinfo=UTC),
@@ -673,7 +676,8 @@ async def test_discord_source_access_payload_queues_replay_after_access_grant(
         tenant_id=tenant_id,
         install={
             "id": installation_row_id,
-            "installation_id": "guild-1",
+            "installation_id": installation_row_id,
+            "external_installation_id": "guild-1",
             "enabled": True,
             "has_secret": True,
             "installed_at": datetime(2026, 7, 8, tzinfo=UTC),
@@ -746,7 +750,8 @@ async def test_discord_source_access_payload_includes_active_threads_without_arc
         tenant_id=tenant_id,
         install={
             "id": installation_row_id,
-            "installation_id": "guild-1",
+            "installation_id": installation_row_id,
+            "external_installation_id": "guild-1",
             "enabled": True,
             "has_secret": True,
             "installed_at": datetime(2026, 7, 8, tzinfo=UTC),
@@ -810,14 +815,16 @@ async def test_discord_source_access_payload_aggregates_multiple_guilds(
         installations=[
             {
                 "id": installation_a,
-                "installation_id": "guild-a",
+                "installation_id": installation_a,
+                "external_installation_id": "guild-a",
                 "enabled": True,
                 "has_secret": True,
                 "installed_at": datetime(2026, 7, 8, tzinfo=UTC),
             },
             {
                 "id": installation_b,
-                "installation_id": "guild-b",
+                "installation_id": installation_b,
+                "external_installation_id": "guild-b",
                 "enabled": True,
                 "has_secret": True,
                 "installed_at": datetime(2026, 7, 8, tzinfo=UTC),
@@ -836,12 +843,12 @@ async def test_discord_source_access_payload_aggregates_multiple_guilds(
         "observed": 2,
     }
     resources = {item["installation_id"]: item for item in payload["access_resources"]}
-    assert set(resources) == {"guild-a", "guild-b"}
-    assert resources["guild-a"]["resource_id"] == "channel-guild-a"
-    assert resources["guild-a"]["installation_name"] == "Alpha Team"
-    assert resources["guild-a"]["visibility"] == "public"
-    assert resources["guild-b"]["resource_id"] == "channel-guild-b"
-    assert resources["guild-b"]["installation_name"] == "Beta Team"
+    assert set(resources) == {str(installation_a), str(installation_b)}
+    assert resources[str(installation_a)]["resource_id"] == "channel-guild-a"
+    assert resources[str(installation_a)]["installation_name"] == "Alpha Team"
+    assert resources[str(installation_a)]["visibility"] == "public"
+    assert resources[str(installation_b)]["resource_id"] == "channel-guild-b"
+    assert resources[str(installation_b)]["installation_name"] == "Beta Team"
 
 
 @pytest.mark.asyncio
@@ -1396,12 +1403,13 @@ async def test_google_native_install_rows_are_visible_to_onboarding_status(
     count_key: str,
 ) -> None:
     installed_at = datetime(2026, 7, 6, tzinfo=UTC)
+    installation_row_id = uuid4()
     pool = _NativeInstallPool(
         {
-            "installation_id": "acme.example",
+            "id": installation_row_id,
             "enabled": True,
-            "has_secret": True,
             "installed_at": installed_at,
+            "workspace_domain": "acme.example",
             "service_account_email": "fyralis-dwd@acme.example",
             "scope": "readonly",
             count_key: 3,
@@ -1414,11 +1422,13 @@ async def test_google_native_install_rows_are_visible_to_onboarding_status(
         pool,
         tenant_id=uuid4(),
         source=source,
+        installation_row_id=installation_row_id,
     )
 
     assert table_name in pool.query
     assert row is not None
-    assert row["installation_id"] == "acme.example"
+    assert row["installation_id"] == installation_row_id
+    assert row["external_installation_id"] == "acme.example"
     assert row["enabled"] is True
 
 
@@ -1427,11 +1437,13 @@ async def test_github_app_install_row_is_credential_covered_without_row_secret()
     None
 ):
     installed_at = datetime(2026, 7, 6, tzinfo=UTC)
+    installation_row_id = uuid4()
     pool = _NativeInstallPool(
         {
-            "installation_id": "12345678",
+            "id": installation_row_id,
+            "external_installation_id": "12345678",
             "enabled": True,
-            "has_secret": False,
+            "secret_ref": None,
             "installed_at": installed_at,
         }
     )
@@ -1440,12 +1452,14 @@ async def test_github_app_install_row_is_credential_covered_without_row_secret()
         pool,
         tenant_id=uuid4(),
         source="github",
+        installation_row_id=installation_row_id,
     )
 
     assert "provider_installations" in pool.query
     assert pool.args[1] == "github"
     assert row is not None
-    assert row["installation_id"] == "12345678"
+    assert row["installation_id"] == installation_row_id
+    assert row["external_installation_id"] == "12345678"
     assert row["has_secret"] is True
     assert row["details"]["credential_scope"] == (
         "github_app_level_private_key_and_webhook_secret"
@@ -1676,11 +1690,12 @@ async def test_ramp_status_reads_native_install_row(
     payload = response.json()
     assert payload["installed"] is True
     assert payload["installation"] == {
-        "installation_id": "biz_123",
+        "installation_id": str(install_id),
         "enabled": True,
         "has_secret": True,
         "installed_at": payload["installation"]["installed_at"],
         "details": {
+            "business_id": "biz_123",
             "base_url": "https://api.ramp.com/developer/v1",
             "token_expires_at": None,
             "webhook_registered": True,

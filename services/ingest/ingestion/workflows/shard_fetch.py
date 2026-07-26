@@ -127,8 +127,9 @@ ShardFetch's tick() does TWO things, each with its own claim
 mechanism. Both are CLAIM-VIA-UPDATE at the per-shard level;
 concurrent replicas are safe under either.
 
-  (a) **Signal-driven claim** (`_process_one_signal`). Used when
-      SourceOnboarding emits `shard_fetch_requested` for a NEW
+  (a) **Signal-driven claim** (`_process_signal_wave`, with
+      `_process_one_signal` as the one-item compatibility entry point).
+      Used when SourceOnboarding emits `shard_fetch_requested` for a NEW
       shard. The mechanism:
         1. `claim_signals(conn, ...)` — SKIP LOCKED on the inbox.
         2. `_claim_shard_for_fetch(conn, shard_id)` — UPDATE
@@ -1520,17 +1521,7 @@ class ShardFetch(LongRunningService):
             orphans_resumed += await self._scan_and_resume_orphans(
                 limit=wave_size,
             )
-            results = await asyncio.gather(
-                *(self._process_one_signal() for _ in range(wave_size)),
-                return_exceptions=True,
-            )
-            first_error = next(
-                (r for r in results if isinstance(r, Exception)),
-                None,
-            )
-            if first_error is not None:
-                raise first_error
-            processed_in_wave = sum(1 for r in results if r is True)
+            processed_in_wave = await self._process_signal_wave(wave_size)
             signals_processed += processed_in_wave
             remaining -= wave_size
             if processed_in_wave < wave_size:
@@ -1575,8 +1566,22 @@ class ShardFetch(LongRunningService):
         transaction (see module docstring's transactional discipline
         section).
         """
-        shard: asyncpg.Record | None
-        lease: _ShardLease | None = None
+        return bool(await self._process_signal_wave(1))
+
+    async def _process_signal_wave(self, batch_size: int) -> int:
+        """Claim/bootstrap one fair batch, then run provider work concurrently.
+
+        Fair selection is intentionally one database operation per wave. Running
+        ``batch_size`` separate fair-ranking queries made durable setup compete
+        with itself on a small pool and prevented the configured provider
+        concurrency from ever being reached. The transaction below preserves
+        the load-bearing signal-claim + shard-lease + workflow-state atomicity;
+        only the provider calls leave that transaction.
+        """
+
+        if batch_size <= 0:
+            return 0
+        prepared: list[tuple[asyncpg.Record, _ShardLease]] = []
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 signals = await claim_signals(
@@ -1584,66 +1589,84 @@ class ShardFetch(LongRunningService):
                     workflow_kind=WORKFLOW_KIND,
                     workflow_id=WORKFLOW_ID_INBOX,
                     consumed_by=self._config.instance_name,
-                    batch_size=1,
+                    batch_size=batch_size,
                     fairness="shard",
                 )
                 if not signals:
-                    return False
-                sig = signals[0]
-                shard_id = UUID(sig.signal_data["shard_id"])
+                    return 0
+                for sig in signals:
+                    work = await self._prepare_claimed_signal(conn, sig)
+                    if work is not None:
+                        prepared.append(work)
 
-                shard = await _load_shard(conn, shard_id)
-                if shard is None:
-                    log.warning(
-                        "shard_fetch.shard_missing",
-                        extra={
-                            "shard_id": str(shard_id),
-                            "signal_id": str(sig.id),
-                        },
-                    )
-                    return True
-
-                if shard["state"] in ("done", "failed"):
-                    # Idempotent re-emit — the requester is replaying
-                    # but the shard already terminated. Re-emit the
-                    # completion in the same transaction to keep the
-                    # downstream consumer in sync.
-                    await self._emit_shard_completed(
-                        conn, shard=shard,
-                        status=shard["state"],
-                        failure_reason=None,
-                    )
-                    return True
-
-                if shard["state"] == "pending":
-                    lease_timeout_seconds = _effective_lease_timeout_seconds(
-                        self._config.lease_timeout_seconds,
-                    )
-                    lease = await _claim_shard_for_fetch(
-                        conn,
-                        shard_id,
-                        lease_owner=self._config.instance_name,
-                        lease_timeout_seconds=lease_timeout_seconds,
-                    )
-                    if lease is None:
-                        # Race: another replica claimed between our
-                        # SELECT and UPDATE. That replica will run the
-                        # loop; we return.
-                        return True
-                    await self._bootstrap_workflow_state(conn, lease)
-                else:
-                    # state == 'in_progress' — claim is being handled
-                    # by the orphan scan path; we don't double-claim
-                    # here. Consume the signal, but never run provider
-                    # work without an owner/version lease.
-                    return True
-
-        # Fetch loop runs OUTSIDE the claim transaction — see module
+        # Fetch loops run OUTSIDE the claim transaction — see the module
         # docstring's transactional discipline section.
-        if lease is None:  # pragma: no cover - guarded by branches above
-            return True
-        await self._run_fetch_loop(shard, lease)
-        return True
+        results = await asyncio.gather(
+            *(
+                self._run_fetch_loop(shard, lease)
+                for shard, lease in prepared
+            ),
+            return_exceptions=True,
+        )
+        first_error = next(
+            (result for result in results if isinstance(result, Exception)),
+            None,
+        )
+        if first_error is not None:
+            raise first_error
+        return len(signals)
+
+    async def _prepare_claimed_signal(
+        self,
+        conn: asyncpg.Connection,
+        sig: Any,
+    ) -> tuple[asyncpg.Record, _ShardLease] | None:
+        """Stage one already-claimed signal inside its wave transaction."""
+
+        shard_id = UUID(sig.signal_data["shard_id"])
+        shard = await _load_shard(conn, shard_id)
+        if shard is None:
+            log.warning(
+                "shard_fetch.shard_missing",
+                extra={
+                    "shard_id": str(shard_id),
+                    "signal_id": str(sig.id),
+                },
+            )
+            return None
+
+        if shard["state"] in ("done", "failed"):
+            # Idempotent re-emit — the requester is replaying but the shard
+            # already terminated. Keep it atomic with consuming the signal.
+            await self._emit_shard_completed(
+                conn,
+                shard=shard,
+                status=shard["state"],
+                failure_reason=None,
+            )
+            return None
+
+        if shard["state"] != "pending":
+            # state == 'in_progress' — the orphan path owns it. Consume the
+            # duplicate request, but never run provider work without a new
+            # owner/version generation.
+            return None
+
+        lease_timeout_seconds = _effective_lease_timeout_seconds(
+            self._config.lease_timeout_seconds,
+        )
+        lease = await _claim_shard_for_fetch(
+            conn,
+            shard_id,
+            lease_owner=self._config.instance_name,
+            lease_timeout_seconds=lease_timeout_seconds,
+        )
+        if lease is None:
+            # Another replica won between the fair signal selection and shard
+            # claim. Its lease generation owns the fetch.
+            return None
+        await self._bootstrap_workflow_state(conn, lease)
+        return shard, lease
 
     async def _scan_and_resume_orphans(
         self,

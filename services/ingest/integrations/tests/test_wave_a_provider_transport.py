@@ -46,8 +46,9 @@ from services.ingest.integrations.provider_transport_runtime import (
     get_provider_transport_runtime,
     reset_provider_transport_runtime_for_tests,
 )
-from services.ingest.source_contract.catalog import (
-    PROVIDER_TRANSPORT_OPERATION_CATALOG,
+from services.ingest.source_contract.quota_contract import (
+    PROVIDER_QUOTA_CONFIG_SCHEMA_VERSION,
+    PROVIDER_QUOTA_CONTRACT,
 )
 
 
@@ -69,6 +70,19 @@ def _quota(
             refill_per_second=1.0,
         ),
     )
+
+
+def _runtime_quota_payload(
+    rule: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "schema_version": PROVIDER_QUOTA_CONFIG_SCHEMA_VERSION,
+        "catalog_sha256": PROVIDER_QUOTA_CONTRACT.catalog_sha256,
+        "limits": {
+            identity.reference: [dict(rule)]
+            for identity in PROVIDER_QUOTA_CONTRACT.operations
+        },
+    }
 
 
 def _tenant_quota(
@@ -607,24 +621,24 @@ async def test_production_runtime_uses_only_declared_quota_values(
 ) -> None:
     reset_provider_transport_runtime_for_tests()
     monkeypatch.setenv("REDIS_URL", "redis://provider-transport.invalid/0")
-    payload = {
-        source: {
-            operation: [
-                {
-                    "scope": "global",
-                    "identity": "global",
-                    "capacity": 17,
-                    "refill_per_second": 2.5,
-                    "cost": 3,
-                    "evidence_ref": ("https://provider.test/docs/quota-policy"),
-                    "verified_on": "2025-01-01",
-                }
-            ]
-            for operation in operations
+    payload = _runtime_quota_payload(
+        {
+            "scope": "global",
+            "identity": "global",
+            "capacity": 17,
+            "refill_per_second": 2.5,
+            "cost": 3,
+            "evidence_ref": "https://provider.test/docs/quota-policy",
+            "verified_on": "2025-01-01",
         }
-        for source, operations in PROVIDER_TRANSPORT_OPERATION_CATALOG.items()
-    }
-    payload["gmail"]["messages.get"][0].update(
+    )
+    limits = payload["limits"]
+    assert isinstance(limits, dict)
+    gmail_reference = PROVIDER_QUOTA_CONTRACT.reference_for(
+        "gmail",
+        "messages.get",
+    )
+    limits[gmail_reference][0].update(
         {"scope": "user", "identity": "user"},
     )
     monkeypatch.setenv("FYRALIS_PROVIDER_QUOTAS_JSON", json.dumps(payload))
@@ -653,26 +667,22 @@ def test_runtime_rejects_undeclared_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_provider_transport_runtime_for_tests()
-    payload = {
-        source: {
-            operation: [
-                {
-                    "scope": "global",
-                    "identity": "global",
-                    "capacity": 1,
-                    "refill_per_second": 1,
-                    "evidence_ref": ("https://provider.test/docs/quota-policy"),
-                    "verified_on": "2025-01-01",
-                }
-            ]
-            for operation in operations
+    payload = _runtime_quota_payload(
+        {
+            "scope": "global",
+            "identity": "global",
+            "capacity": 1,
+            "refill_per_second": 1,
+            "evidence_ref": "https://provider.test/docs/quota-policy",
+            "verified_on": "2025-01-01",
         }
-        for source, operations in PROVIDER_TRANSPORT_OPERATION_CATALOG.items()
-    }
-    payload["slack"]["typo.operation"] = payload["slack"]["users.info"]
+    )
+    limits = payload["limits"]
+    assert isinstance(limits, dict)
+    limits[f"qop_v1_{'0' * 64}"] = next(iter(limits.values()))
     monkeypatch.setenv("REDIS_URL", "redis://provider-transport.invalid/0")
     monkeypatch.setenv("FYRALIS_PROVIDER_QUOTAS_JSON", json.dumps(payload))
-    with pytest.raises(RuntimeError, match="undeclared operations"):
+    with pytest.raises(RuntimeError, match="undeclared operation references"):
         get_provider_transport_runtime(required=True)
 
 
@@ -680,26 +690,25 @@ def test_runtime_rejects_missing_required_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_provider_transport_runtime_for_tests()
-    payload = {
-        source: {
-            operation: [
-                {
-                    "scope": "global",
-                    "identity": "global",
-                    "capacity": 1,
-                    "refill_per_second": 1,
-                    "evidence_ref": ("https://provider.test/docs/quota-policy"),
-                    "verified_on": "2025-01-01",
-                }
-            ]
-            for operation in operations
+    payload = _runtime_quota_payload(
+        {
+            "scope": "global",
+            "identity": "global",
+            "capacity": 1,
+            "refill_per_second": 1,
+            "evidence_ref": "https://provider.test/docs/quota-policy",
+            "verified_on": "2025-01-01",
         }
-        for source, operations in PROVIDER_TRANSPORT_OPERATION_CATALOG.items()
-    }
-    del payload["discord"]["/gateway/bot"]
+    )
+    limits = payload["limits"]
+    assert isinstance(limits, dict)
+    del limits[PROVIDER_QUOTA_CONTRACT.reference_for("discord", "/gateway/bot")]
     monkeypatch.setenv("REDIS_URL", "redis://provider-transport.invalid/0")
     monkeypatch.setenv("FYRALIS_PROVIDER_QUOTAS_JSON", json.dumps(payload))
-    with pytest.raises(RuntimeError, match="missing required operations"):
+    with pytest.raises(
+        RuntimeError,
+        match="missing required contract operations",
+    ):
         get_provider_transport_runtime(required=True)
 
 

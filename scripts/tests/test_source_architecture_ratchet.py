@@ -6,15 +6,18 @@ from pathlib import Path
 import pytest
 
 from scripts.check_source_architecture_ratchet import (
+    RULE_ARBITRARY_INSTALLATION_SELECTION,
     RULE_DUPLICATE_SOURCE_IDS,
     RULE_HANDLER_IMPORT_REGISTRATION,
     RULE_LEGACY_PROVIDER_HARNESS,
     RULE_MUTABLE_DISPATCH,
     RULE_PARALLEL_SOURCE_MAP,
+    RULE_PROVIDER_TRANSPORT_BYPASS,
     RULE_SOURCE_CLIENT_SWITCH,
     RULE_SQL_SOURCE_CHECK,
     SourceArchitectureCheckError,
     apply_baseline,
+    iter_synthetic_binding_files,
     iter_production_files,
     load_baseline,
     main,
@@ -42,9 +45,7 @@ def _scan(root: Path):
 
 
 def _write_catalog(root: Path) -> None:
-    entries = "\n".join(
-        f'    _source("{source_id}"),' for source_id in CANONICAL
-    )
+    entries = "\n".join(f'    _source("{source_id}"),' for source_id in CANONICAL)
     _write(
         root,
         "services/ingest/source_contract/catalog.py",
@@ -76,6 +77,28 @@ def test_file_discovery_excludes_nonproduction_and_generated_paths(
     assert discovered == (kept,)
 
 
+def test_synthetic_binding_discovery_excludes_tests_but_includes_drivers(
+    tmp_path: Path,
+) -> None:
+    kept = _write(
+        tmp_path,
+        "services/ingest/synthetic/live_generators/slack.py",
+        "VALUE = 1\n",
+    )
+    _write(
+        tmp_path,
+        "services/ingest/synthetic/tests/test_slack.py",
+        "bad = True\n",
+    )
+    _write(
+        tmp_path,
+        "services/ingest/synthetic/provider_lab/tests/test_app.py",
+        "bad = True\n",
+    )
+
+    assert tuple(iter_synthetic_binding_files(tmp_path)) == (kept,)
+
+
 def test_legacy_provider_harness_paths_are_strict_findings(
     tmp_path: Path,
 ) -> None:
@@ -98,10 +121,7 @@ def test_legacy_provider_harness_paths_are_strict_findings(
     _write(
         tmp_path,
         "lib/integrations/endpoints.py",
-        (
-            '_SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"\n'
-            '_SPAMMER_SUBPATH = {}\n'
-        ),
+        ('_SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"\n' "_SPAMMER_SUBPATH = {}\n"),
     )
 
     findings = [
@@ -268,9 +288,7 @@ def request_payload():
 
     findings = _scan(tmp_path)
     maps = [
-        finding
-        for finding in findings
-        if finding.rule_id == RULE_PARALLEL_SOURCE_MAP
+        finding for finding in findings if finding.rule_id == RULE_PARALLEL_SOURCE_MAP
     ]
     assert len(maps) == 1
     assert "SOURCE_CALLBACK_PATHS" in maps[0].signature
@@ -383,6 +401,273 @@ def llm(provider):
     assert len(switches) == 2
     assert {finding.line_number for finding in switches} == {2, 7}
     assert all("notion" not in finding.signature for finding in switches)
+
+
+def test_provider_http_call_must_be_a_transport_callback(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "services/ingest/integrations/github/client.py",
+        """
+import httpx
+
+async def unsafe() -> httpx.Response:
+    client = httpx.AsyncClient()
+    return await client.get("https://api.github.com/user")
+
+async def safe() -> httpx.Response:
+    client = httpx.AsyncClient()
+    binding = ProviderRequestBinding()
+
+    async def _once() -> httpx.Response:
+        return await client.get("https://api.github.com/user")
+
+    return await binding.execute("users.get", _once)
+""".lstrip(),
+    )
+
+    findings = [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_PROVIDER_TRANSPORT_BYPASS
+    ]
+
+    assert len(findings) == 1
+    assert findings[0].line_number == 5
+    assert "unsafe" in findings[0].signature
+
+
+def test_provider_http_rule_tracks_aliases_injected_clients_and_lambda_calls(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "services/ingest/integrations/slack/oauth.py",
+        """
+from httpx import AsyncClient as HttpClient
+
+async def unsafe(http: HttpClient) -> None:
+    await http.post("https://slack.com/api/oauth.v2.access")
+
+async def safe(http: HttpClient) -> None:
+    binding = ProviderRequestBinding()
+    await binding.execute(
+        "oauth.token.exchange",
+        lambda: http.post("https://slack.com/api/oauth.v2.access"),
+    )
+""".lstrip(),
+    )
+
+    findings = [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_PROVIDER_TRANSPORT_BYPASS
+    ]
+
+    assert len(findings) == 1
+    assert findings[0].line_number == 4
+    assert "http.post" in findings[0].message
+
+
+def test_provider_callback_cannot_have_an_unmetered_direct_fallback(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "services/ingest/integrations/aws/credentials.py",
+        """
+async def assume_role(sts, binding: ProviderRequestBinding | None = None):
+    async def _once():
+        return await sts.assume_role(RoleArn="arn:aws:iam::1:role/test")
+
+    if binding is not None:
+        return await binding.execute("sts.assume_role", _once)
+    return await _once()
+""".lstrip(),
+    )
+
+    findings = [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_PROVIDER_TRANSPORT_BYPASS
+    ]
+
+    assert len(findings) == 1
+    assert findings[0].line_number == 3
+    assert "sts.assume_role" in findings[0].signature
+
+
+def test_provider_http_rule_follows_a_binding_owned_execute_helper(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "services/ingest/integrations/github/client.py",
+        """
+import httpx
+
+class GithubClient:
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        self._http = http
+        self._binding = ProviderRequestBinding()
+
+    async def _execute(self, operation, call):
+        return await self._binding.execute(operation, call)
+
+    async def get_user(self):
+        async def _once():
+            return await self._http.get("https://api.github.com/user")
+
+        return await self._execute("users.get", _once)
+""".lstrip(),
+    )
+
+    assert not [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_PROVIDER_TRANSPORT_BYPASS
+    ]
+
+
+def test_provider_http_rule_does_not_mistake_domain_client_for_raw_http(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "services/ingest/integrations/gmail/client.py",
+        """
+class GmailClient:
+    def __init__(self, http: GoogleHttpClient) -> None:
+        self._http = http
+
+    async def list_messages(self) -> dict:
+        return await self._http.request(
+            "GET",
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+        )
+""".lstrip(),
+    )
+
+    assert not [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_PROVIDER_TRANSPORT_BYPASS
+    ]
+
+
+def test_provider_http_rule_exempts_lab_tests_and_transport_implementation(
+    tmp_path: Path,
+) -> None:
+    unsafe = """
+import httpx
+
+async def request() -> None:
+    await httpx.AsyncClient().get("http://provider.invalid")
+""".lstrip()
+    _write(
+        tmp_path,
+        "services/ingest/synthetic/provider_lab/app.py",
+        unsafe,
+    )
+    _write(
+        tmp_path,
+        "services/ingest/integrations/github/tests/test_client.py",
+        unsafe,
+    )
+    _write(
+        tmp_path,
+        "services/ingest/integrations/provider_transport.py",
+        unsafe,
+    )
+
+    assert not [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_PROVIDER_TRANSPORT_BYPASS
+    ]
+
+
+def test_arbitrary_installation_selection_requires_exact_row_or_collection(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "services/app/status.py",
+        '''
+async def latest(pool, tenant_id):
+    return await pool.fetchrow(
+        """
+        SELECT id FROM figma_installations
+         WHERE tenant_id = $1
+         ORDER BY created_at DESC
+         LIMIT 1
+        """,
+        tenant_id,
+    )
+
+async def exact(pool, tenant_id, installation_id):
+    return await pool.fetchrow(
+        """
+        SELECT id FROM figma_installations
+         WHERE tenant_id = $1 AND id = $2
+         LIMIT 1
+        """,
+        tenant_id,
+        installation_id,
+    )
+
+async def collection(pool, tenant_id):
+    return await pool.fetch(
+        "SELECT id FROM figma_installations WHERE tenant_id = $1",
+        tenant_id,
+    )
+
+async def existence(pool):
+    return await pool.fetchval(
+        "SELECT 1 FROM provider_installations LIMIT 1"
+    )
+'''.lstrip(),
+    )
+
+    findings = [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_ARBITRARY_INSTALLATION_SELECTION
+    ]
+
+    assert len(findings) == 1
+    assert findings[0].line_number == 3
+    assert "figma_installations" in findings[0].signature
+
+
+def test_arbitrary_installation_selection_is_enforced_in_synthetic_drivers(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(tmp_path)
+    _write(
+        tmp_path,
+        "services/ingest/synthetic/live_generators/figma.py",
+        """
+async def resolve(pool, tenant_id):
+    return await pool.fetchrow(
+        "SELECT id FROM figma_installations "
+        "WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+        tenant_id,
+    )
+""".lstrip(),
+    )
+
+    findings = [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_ARBITRARY_INSTALLATION_SELECTION
+    ]
+
+    assert len(findings) == 1
+    assert findings[0].path == Path(
+        "services/ingest/synthetic/live_generators/figma.py"
+    )
 
 
 def test_baseline_allows_only_exact_existing_findings(tmp_path: Path) -> None:

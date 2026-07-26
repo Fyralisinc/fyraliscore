@@ -109,6 +109,93 @@ describe("Figma OAuth connection card", () => {
     expect(screen.getByText("1 observations")).toBeInTheDocument();
   });
 
+  it("selects an exact installation for status, retry, and disconnect", async () => {
+    const firstInstallationId = "018f0000-0000-7000-8000-000000000001";
+    const secondInstallationId = "018f0000-0000-7000-8000-000000000002";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ok: true,
+          state: "multiple_installations",
+          installation_id: null,
+          installation_selection_required: true,
+          installations: [
+            { installation_id: firstInstallationId },
+            { installation_id: secondInstallationId },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ok: true,
+          state: "degraded",
+          installation_id: secondInstallationId,
+          last_error: "The previous snapshot failed.",
+          file_count: 1,
+          installations: [{ installation_id: secondInstallationId }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ok: true,
+          state: "syncing",
+          installation_id: secondInstallationId,
+          file_count: 1,
+          retry_queued: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ok: true,
+          state: "disconnected",
+          installation_id: secondInstallationId,
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<FigmaOAuthConnectionCard apiBase="https://gateway.example.test" />);
+
+    const selector = await screen.findByRole("combobox", {
+      name: "Figma installation",
+    });
+    expect(selector).toHaveValue("");
+
+    await user.selectOptions(selector, secondInstallationId);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        2,
+        `https://gateway.example.test/integrations/figma/connect/status?installation_id=${secondInstallationId}`,
+        expect.objectContaining({ method: "GET" }),
+      );
+    });
+    expect(selector).toHaveValue(secondInstallationId);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Retry sync" }),
+    );
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        3,
+        `https://gateway.example.test/integrations/figma/connect/retry?installation_id=${secondInstallationId}`,
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    await user.click(
+      await screen.findByRole("button", { name: "Disconnect" }),
+    );
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        4,
+        `https://gateway.example.test/integrations/figma/connect?installation_id=${secondInstallationId}`,
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    });
+  });
+
   it("keeps BYOC-owned Figma app setup with the deployment administrator", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({

@@ -78,6 +78,7 @@ from services.app.webhooks.verifier import (
 )
 from services.ingest.source_contract import (
     WebhookIngressDefinition,
+    build_webhook_ingress_metadata,
     resolve_callable_reference,
     webhook_ingress_definition,
 )
@@ -226,13 +227,11 @@ async def _attempt_kafka_path(
         )
         return False
     try:
-        ingress_metadata: dict[str, Any] = {
-            "event_type": _event_type_for(provider, request, payload),
-        }
-        if provider == "github":
-            delivery_id = _github_delivery_id(request.headers)
-            if delivery_id:
-                ingress_metadata["delivery_id"] = delivery_id
+        ingress_metadata = build_webhook_ingress_metadata(
+            provider,
+            request.headers,
+            payload,
+        )
 
         await shadow_write_raw(
             tenant_id=tenant_id,
@@ -339,16 +338,13 @@ async def _maybe_shadow_write_webhook(
             if not enabled:
                 return
 
-        # Per-provider hints — populated lazily to keep the unwired
-        # paths cheap. The hints are best-effort; the normalizer
-        # treats them as advisory.
-        ingress_metadata: dict[str, Any] = {
-            "event_type": _event_type_for(provider, request, payload)
-        }
-        if provider == "github":
-            delivery_id = _github_delivery_id(request.headers)
-            if delivery_id:
-                ingress_metadata["delivery_id"] = delivery_id
+        # Per-provider hints come from the immutable webhook contract.
+        # Resolution remains lazy so unwired shadow paths stay cheap.
+        ingress_metadata = build_webhook_ingress_metadata(
+            provider,
+            request.headers,
+            payload,
+        )
 
         await shadow_write_raw(
             tenant_id=tenant_id,
@@ -367,28 +363,6 @@ async def _maybe_shadow_write_webhook(
             error_type=type(exc).__name__,
             error_message=str(exc)[:200],
         )
-
-
-def _event_type_for(
-    provider: str,
-    request: Request,
-    payload: Mapping[str, Any] | None,
-) -> str:
-    """Best-effort event-type extraction for shadow ingress_metadata."""
-    if provider == "github":
-        return _github_event_type(request.headers) or "unknown"
-    if provider == "slack" and isinstance(payload, dict):
-        event = payload.get("event")
-        if isinstance(event, dict):
-            etype = event.get("type")
-            if isinstance(etype, str):
-                return etype
-    if provider == "discord" and isinstance(payload, dict):
-        # Discord interaction type is an int per their docs.
-        itype = payload.get("type")
-        if isinstance(itype, int):
-            return f"interaction:{itype}"
-    return "unknown"
 
 
 _WEBHOOK_RETRY_AFTER_SECONDS = "30"

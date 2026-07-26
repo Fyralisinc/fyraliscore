@@ -5,6 +5,7 @@ Production bindings come from :class:`SourceDefinition` as validated
 inside an explicit context manager; overrides are task-local via ``ContextVar``
 and restore correctly across nested scopes.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -20,6 +21,7 @@ from services.ingest.source_contract.catalog import (
     NORMALIZER_BINDING_CATALOG,
     PROVIDER_DEFINITIONS,
     SOURCE_DEFINITIONS,
+    WEBHOOK_INGRESS_CATALOG,
     dedicated_ingress_definition,
     normalizer_binding_for_channel,
     source_definition,
@@ -32,10 +34,12 @@ HistoryCallable = Callable[..., Any]
 NormalizerCallable = Callable[..., Any]
 IdempotencyBuilderCallable = Callable[..., str | None]
 InstallationLoaderCallable = Callable[..., Any]
+InstallationStatusLoaderCallable = Callable[..., Any]
 PlannerClientBuilderCallable = Callable[..., Any]
 OnboardingFailureCallable = Callable[..., Any]
 WebhookVerifierCallable = Callable[..., Any]
 WebhookTenantExtractorCallable = Callable[..., str | None]
+WebhookIngressMetadataCallable = Callable[..., Mapping[str, Any]]
 DedicatedIngressCallable = Callable[..., Any]
 
 _CALLABLE_REF_RE = re.compile(
@@ -62,6 +66,10 @@ class HistoryNotSupportedError(BindingResolutionError):
 
 class NormalizationChannelNotFoundError(BindingResolutionError):
     """A channel has no normalizer binding in the source contract."""
+
+
+class NormalizerIngressMetadataError(BindingResolutionError):
+    """Webhook metadata cannot satisfy its declared handler projection."""
 
 
 class InstallationBindingNotFoundError(BindingResolutionError):
@@ -110,8 +118,7 @@ def resolve_callable_reference(reference: str) -> HistoryCallable:
             ) from exc
     if not callable(value):
         raise BindingResolutionError(
-            f"binding {reference!r} resolved to non-callable "
-            f"{type(value).__name__}"
+            f"binding {reference!r} resolved to non-callable " f"{type(value).__name__}"
         )
     return value
 
@@ -191,6 +198,20 @@ def resolve_installation_loader(
     return resolve_callable_reference(adapter.loader_binding)
 
 
+def resolve_installation_status_loader(
+    source_name: str,
+) -> InstallationStatusLoaderCallable:
+    """Resolve the source-owned collection/exact-row status loader."""
+
+    source = source_definition(source_name)
+    adapter = source.installation_adapter
+    if adapter is None or adapter.status_loader_binding is None:
+        raise InstallationBindingNotFoundError(
+            f"source {source.source_id!r} has no installation status adapter"
+        )
+    return resolve_callable_reference(adapter.status_loader_binding)
+
+
 def resolve_planner_client_builder(
     source_name: str,
 ) -> PlannerClientBuilderCallable | None:
@@ -237,6 +258,105 @@ def resolve_webhook_tenant_extractor(
     return resolve_callable_reference(ingress.tenant_extractor_binding)
 
 
+def resolve_webhook_ingress_metadata_builder(
+    route_id: str,
+) -> WebhookIngressMetadataCallable:
+    """Resolve the raw-envelope metadata builder declared by a webhook."""
+
+    ingress = webhook_ingress_definition(route_id)
+    return resolve_callable_reference(ingress.ingress_metadata_binding)
+
+
+def build_webhook_ingress_metadata(
+    route_id: str,
+    headers: Mapping[str, str],
+    payload: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Build and validate one webhook's contract-owned envelope metadata."""
+
+    builder = resolve_webhook_ingress_metadata_builder(route_id)
+    value = builder(headers, payload)
+    if not isinstance(value, Mapping):
+        raise BindingResolutionError(
+            f"webhook route {route_id!r} ingress metadata binding returned "
+            f"{type(value).__name__}, expected a mapping"
+        )
+    metadata = dict(value)
+    event_type = metadata.get("event_type")
+    if not isinstance(event_type, str) or not event_type:
+        raise BindingResolutionError(
+            f"webhook route {route_id!r} ingress metadata binding must "
+            "return a non-empty string event_type"
+        )
+    delivery_id = metadata.get("delivery_id")
+    if delivery_id is not None and (
+        not isinstance(delivery_id, str) or not delivery_id
+    ):
+        raise BindingResolutionError(
+            f"webhook route {route_id!r} ingress metadata delivery_id must "
+            "be a non-empty string when present"
+        )
+    return metadata
+
+
+def build_normalizer_ingress_headers(
+    *,
+    source_name: str,
+    ingress_kind: str,
+    channel: str,
+    ingress_metadata: Mapping[str, Any],
+) -> dict[str, str]:
+    """Project verified webhook metadata into handler-required headers.
+
+    The provider edge owns extraction into ``ingress_metadata``. This reverse
+    projection is declared on that same :class:`WebhookIngressDefinition`, so
+    the normalizer never switches on a provider ID or carries another route
+    registry. Missing, ambiguous, or malformed declared values fail closed.
+    """
+
+    if ingress_kind != "webhook":
+        return {}
+    try:
+        source_id = source_definition(source_name).source_id
+    except (KeyError, TypeError) as exc:
+        raise NormalizerIngressMetadataError(
+            f"unknown normalizer source {source_name!r}"
+        ) from exc
+    matches = tuple(
+        ingress
+        for ingress in WEBHOOK_INGRESS_CATALOG.values()
+        if ingress.source_id == source_id and ingress.channel == channel
+    )
+    if len(matches) != 1:
+        raise NormalizerIngressMetadataError(
+            f"source {source_id!r} channel {channel!r} must resolve to exactly "
+            f"one webhook ingress contract; found {len(matches)}"
+        )
+    if not isinstance(ingress_metadata, Mapping):
+        raise NormalizerIngressMetadataError(
+            f"webhook route {matches[0].route_id!r} ingress_metadata must be "
+            "a mapping"
+        )
+
+    headers: dict[str, str] = {}
+    for metadata_path, header_name in matches[0].normalizer_header_projection:
+        value: Any = ingress_metadata
+        for segment in metadata_path.split("."):
+            if not isinstance(value, Mapping) or segment not in value:
+                raise NormalizerIngressMetadataError(
+                    f"webhook route {matches[0].route_id!r} requires "
+                    f"ingress_metadata field {metadata_path!r}"
+                )
+            value = value[segment]
+        if not isinstance(value, str) or not value.strip():
+            raise NormalizerIngressMetadataError(
+                f"webhook route {matches[0].route_id!r} ingress_metadata "
+                f"field {metadata_path!r} must be a non-empty string"
+            )
+        headers[header_name] = value
+    return headers
+
+
 def resolve_dedicated_ingress_dispatcher(
     ingress_id: str,
 ) -> DedicatedIngressCallable:
@@ -280,6 +400,7 @@ def validate_runtime_bindings() -> None:
                 for reference in (
                     ingress.verifier_binding,
                     ingress.tenant_extractor_binding,
+                    ingress.ingress_metadata_binding,
                     ingress.verification_handshake_binding,
                     ingress.verification_handshake_handler_binding,
                     ingress.dedicated_handler_binding,
@@ -313,6 +434,7 @@ def validate_runtime_bindings() -> None:
                 reference
                 for reference in (
                     adapter.loader_binding,
+                    adapter.status_loader_binding,
                     adapter.planner_client_builder_binding,
                     adapter.onboarding_failure_binding,
                 )
@@ -374,6 +496,8 @@ def override_history_bindings(
 
 __all__ = [
     "BindingResolutionError",
+    "build_normalizer_ingress_headers",
+    "build_webhook_ingress_metadata",
     "DedicatedIngressCallable",
     "HistoryBindingRole",
     "HistoryCallable",
@@ -381,7 +505,9 @@ __all__ = [
     "IdempotencyBuilderCallable",
     "InstallationBindingNotFoundError",
     "InstallationLoaderCallable",
+    "InstallationStatusLoaderCallable",
     "NormalizationChannelNotFoundError",
+    "NormalizerIngressMetadataError",
     "NormalizerCallable",
     "OnboardingFailureCallable",
     "PlannerClientBuilderCallable",
@@ -394,11 +520,13 @@ __all__ = [
     "resolve_handler",
     "resolve_idempotency_builders",
     "resolve_installation_loader",
+    "resolve_installation_status_loader",
     "resolve_onboarding_failure_handler",
     "resolve_planner",
     "resolve_planner_client_builder",
     "resolve_reconciler",
     "resolve_webhook_tenant_extractor",
+    "resolve_webhook_ingress_metadata_builder",
     "resolve_webhook_verifier",
     "split_callable_reference",
     "validate_runtime_bindings",

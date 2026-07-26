@@ -53,6 +53,9 @@ def _inventory() -> dict[str, object]:
                 "spec_version": spec.spec_version,
                 "spec_hash": spec.declaration_hash(),
                 "provider_api_version": spec.provider_api_version,
+                "evidence_pack_id": spec.evidence_pack_id,
+                "evidence_pack_version": spec.evidence_pack_version,
+                "evidence_pack_sha256": spec.evidence_pack_sha256,
                 "required_scenarios": list(spec.required_scenarios),
                 "required_canary_operations": list(
                     spec.canary.required_operations

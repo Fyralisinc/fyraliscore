@@ -17,6 +17,7 @@ from __future__ import annotations
 import inspect
 import json
 from types import SimpleNamespace
+from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -91,6 +92,8 @@ async def test_harness_writes_install_and_trigger_per_tenant_gmail(
     assert trig["trigger_kind"] == "install"
     assert trig["gmail_installation_id"] == install["id"]
     assert trig["installation_row_id"] is None
+    assert outcomes[0].trigger_id is not None
+    assert outcomes[0].installation_row_id == install["id"]
 
 
 @pytest.mark.asyncio
@@ -134,6 +137,8 @@ async def test_harness_writes_install_and_trigger_per_tenant_slack(
     assert trig is not None
     assert trig["installation_row_id"] == install["id"]
     assert trig["gmail_installation_id"] is None
+    assert outcomes[0].trigger_id is not None
+    assert outcomes[0].installation_row_id == install["id"]
 
 
 @pytest.mark.asyncio
@@ -161,6 +166,8 @@ async def test_harness_install_idempotent_on_retry(
         outcomes[0].tenant_id,
     ))
     assert n == 1, f"expected 1 trigger after retry, got {n}"
+    assert outcomes[0].trigger_id is not None
+    assert outcomes[0].installation_row_id is not None
 
 
 @pytest.mark.asyncio
@@ -201,6 +208,110 @@ async def test_all_26_history_installation_bindings_write_triggers(
         "WHERE tenant_id = ANY($1::uuid[])",
         [outcome.tenant_id for outcome in outcomes],
     ) == 26
+    assert all(outcome.trigger_id is not None for outcome in outcomes)
+    assert all(outcome.installation_row_id is not None for outcome in outcomes)
+
+
+def test_harness_binds_only_the_new_sibling_trigger() -> None:
+    scenario = BackfillScenario(tenant_slug="siblings", source="slack")
+    outcome = _stub_outcome(scenario)
+    old_trigger = uuid4()
+    new_trigger = uuid4()
+    old_installation = uuid4()
+    new_installation = uuid4()
+
+    BackfillHarness._bind_exact_installation_trigger(
+        outcome,
+        before=[
+            {
+                "id": old_trigger,
+                "installation_row_id": old_installation,
+                "gmail_installation_id": None,
+            },
+        ],
+        after=[
+            {
+                "id": old_trigger,
+                "installation_row_id": old_installation,
+                "gmail_installation_id": None,
+            },
+            {
+                "id": new_trigger,
+                "installation_row_id": new_installation,
+                "gmail_installation_id": None,
+            },
+        ],
+    )
+
+    assert outcome.trigger_id == new_trigger
+    assert outcome.installation_row_id == new_installation
+
+
+def test_harness_rejects_ambiguous_preexisting_sibling_triggers() -> None:
+    scenario = BackfillScenario(tenant_slug="siblings", source="slack")
+    outcome = _stub_outcome(scenario)
+    rows = [
+        {
+            "id": uuid4(),
+            "installation_row_id": uuid4(),
+            "gmail_installation_id": None,
+        },
+        {
+            "id": uuid4(),
+            "installation_row_id": uuid4(),
+            "gmail_installation_id": None,
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="cannot attribute an exact"):
+        BackfillHarness._bind_exact_installation_trigger(
+            outcome,
+            before=rows,
+            after=rows,
+        )
+
+
+@pytest.mark.asyncio
+async def test_completion_lookup_uses_exact_trigger_workflow_id() -> None:
+    scenario = BackfillScenario(tenant_slug="exact-run", source="slack")
+    outcome = _stub_outcome(scenario)
+    outcome.trigger_id = uuid4()
+    run_id = uuid4()
+
+    class _Pool:
+        async def fetchrow(self, query, tenant_id, workflow_id):
+            assert tenant_id == outcome.tenant_id
+            assert workflow_id == f"onboarding:{outcome.trigger_id}"
+            assert "workflow_id = $2" in query
+            assert "ORDER BY" not in query
+            assert "LIMIT 1" not in query
+            return {"id": run_id, "status": "complete", "completed_at": object()}
+
+        async def fetchval(
+            self,
+            _query,
+            workflow_kind,
+            workflow_id,
+            signal_kind,
+            idempotency_key,
+        ):
+            assert workflow_kind == "bridge"
+            assert workflow_id == "bridge"
+            assert signal_kind == "tenant_onboarding_completed"
+            assert idempotency_key == str(run_id)
+            return 1
+
+    harness = BackfillHarness(
+        pool=_Pool(),  # type: ignore[arg-type]
+        scenarios=[scenario],
+        completion_deadline_s=0.5,
+    )
+
+    await harness._wait_for_completions([outcome])
+
+    assert outcome.onboarding_run_id == run_id
+    assert outcome.completion_observed is True
+    assert outcome.completion_signal_count == 1
 
 
 def test_harness_has_no_client_mode_switch_or_generated_helper() -> None:

@@ -6,6 +6,7 @@ handler, gateway, or worker implementations.  That keeps the catalog safe to
 import from tooling, tests, and future control-plane code without pulling the
 ingestion runtime into the import graph.
 """
+
 from __future__ import annotations
 
 import re
@@ -114,9 +115,7 @@ SourceSyncMode = Literal[
 
 
 _HISTORY_KINDS = frozenset({"api", "session"})
-_INGRESS_KINDS = frozenset(
-    {"webhook", "gateway", "pubsub", "backfill", "poll"}
-)
+_INGRESS_KINDS = frozenset({"webhook", "gateway", "pubsub", "backfill", "poll"})
 _LIVE_TRANSPORT_KINDS = frozenset(
     {
         "webhook",
@@ -242,6 +241,7 @@ _CALLABLE_REF_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
 )
 _FIELD_PATH_RE = re.compile(r"^[a-z][a-z0-9_.]*$")
+_HTTP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _NON_IDENTIFIER_RUN_RE = re.compile(r"[^a-z0-9]+")
 _ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -384,8 +384,7 @@ class Certification:
         if self.status == "verified" and self.missing_required_declarations():
             missing = ", ".join(self.missing_required_declarations())
             raise ValueError(
-                "verified certification is missing required declarations: "
-                f"{missing}"
+                "verified certification is missing required declarations: " f"{missing}"
             )
 
     def missing_required_declarations(self) -> tuple[str, ...]:
@@ -418,11 +417,11 @@ class WebhookIngressDefinition:
     channel: str
     verifier_binding: str
     tenant_extractor_binding: str
+    ingress_metadata_binding: str
+    normalizer_header_projection: tuple[tuple[str, str], ...] = ()
     tenant_binding: WebhookTenantBinding = "payload"
     handler_mode: WebhookHandlerMode = "generic"
-    acknowledgement_policy: WebhookAcknowledgementPolicy = (
-        "observation_response"
-    )
+    acknowledgement_policy: WebhookAcknowledgementPolicy = "observation_response"
     kafka_mode: WebhookKafkaMode = "inline_only"
     verification_handshake_binding: str | None = None
     verification_handshake_handler_binding: str | None = None
@@ -434,9 +433,8 @@ class WebhookIngressDefinition:
             _require_identifier(self.source_id, field_name="webhook source_id")
         _require_route_path(self.route_path, field_name="webhook route_path")
         route_prefix = f"/webhooks/{self.route_id}"
-        if (
-            self.route_path != route_prefix
-            and not self.route_path.startswith(f"{route_prefix}/")
+        if self.route_path != route_prefix and not self.route_path.startswith(
+            f"{route_prefix}/"
         ):
             raise ValueError(
                 f"webhook route_path {self.route_path!r} must be owned by "
@@ -451,16 +449,58 @@ class WebhookIngressDefinition:
             self.tenant_extractor_binding,
             field_name="webhook tenant extractor binding",
         )
+        _require_callable_ref(
+            self.ingress_metadata_binding,
+            field_name="webhook ingress metadata binding",
+        )
+        _require_tuple(
+            self.normalizer_header_projection,
+            field_name="webhook normalizer header projection",
+            allow_empty=True,
+        )
+        metadata_keys: set[str] = set()
+        header_names: set[str] = set()
+        for index, projection in enumerate(self.normalizer_header_projection):
+            if not isinstance(projection, tuple) or len(projection) != 2:
+                raise TypeError(
+                    "webhook normalizer header projection entries must be "
+                    "(metadata_key, header_name) tuples"
+                )
+            metadata_key, header_name = projection
+            if (
+                not isinstance(metadata_key, str)
+                or _FIELD_PATH_RE.fullmatch(metadata_key) is None
+            ):
+                raise ValueError(
+                    "webhook normalizer header projection metadata key "
+                    f"{index} is invalid: {metadata_key!r}"
+                )
+            if (
+                not isinstance(header_name, str)
+                or _HTTP_HEADER_NAME_RE.fullmatch(header_name) is None
+            ):
+                raise ValueError(
+                    "webhook normalizer header projection header name "
+                    f"{index} is invalid: {header_name!r}"
+                )
+            normalized_header = header_name.casefold()
+            if metadata_key in metadata_keys:
+                raise ValueError(
+                    "webhook normalizer header projection contains duplicate "
+                    f"metadata key {metadata_key!r}"
+                )
+            if normalized_header in header_names:
+                raise ValueError(
+                    "webhook normalizer header projection contains duplicate "
+                    f"header name {header_name!r}"
+                )
+            metadata_keys.add(metadata_key)
+            header_names.add(normalized_header)
         if self.tenant_binding not in _WEBHOOK_TENANT_BINDINGS:
-            raise ValueError(
-                f"unknown webhook tenant binding {self.tenant_binding!r}"
-            )
+            raise ValueError(f"unknown webhook tenant binding {self.tenant_binding!r}")
         if self.handler_mode not in _WEBHOOK_HANDLER_MODES:
             raise ValueError(f"unknown webhook handler mode {self.handler_mode!r}")
-        if (
-            self.acknowledgement_policy
-            not in _WEBHOOK_ACKNOWLEDGEMENT_POLICIES
-        ):
+        if self.acknowledgement_policy not in _WEBHOOK_ACKNOWLEDGEMENT_POLICIES:
             raise ValueError(
                 "unknown webhook acknowledgement policy "
                 f"{self.acknowledgement_policy!r}"
@@ -506,8 +546,7 @@ class WebhookIngressDefinition:
 
         if (
             self.acknowledgement_policy == "synchronous_provider_response"
-            and self.kafka_mode
-            == "flagged_kafka_first_with_inline_fallback"
+            and self.kafka_mode == "flagged_kafka_first_with_inline_fallback"
         ):
             raise ValueError(
                 "synchronous provider responses cannot use the asynchronous "
@@ -563,9 +602,7 @@ class OAuthIngressDefinition:
             field_name="OAuth callback handler binding",
         )
         if self.mount_mode not in _OAUTH_INGRESS_MOUNT_MODES:
-            raise ValueError(
-                f"unknown OAuth ingress mount mode {self.mount_mode!r}"
-            )
+            raise ValueError(f"unknown OAuth ingress mount mode {self.mount_mode!r}")
         _require_unique_strings(
             self.public_result_paths,
             field_name="OAuth public result paths",
@@ -619,9 +656,7 @@ class DedicatedIngressDefinition:
                 f"unknown dedicated ingress methods: {sorted(unknown_methods)}"
             )
         if self.ingress_kind not in _INGRESS_KINDS:
-            raise ValueError(
-                f"unknown dedicated ingress kind {self.ingress_kind!r}"
-            )
+            raise ValueError(f"unknown dedicated ingress kind {self.ingress_kind!r}")
         _require_binding(self.channel, field_name="dedicated ingress channel")
         _require_binding(
             self.verification_policy,
@@ -644,10 +679,7 @@ class DedicatedIngressDefinition:
             self.tenant_resolver_binding,
             field_name="dedicated tenant resolver binding",
         )
-        if (
-            self.acknowledgement_policy
-            not in _DEDICATED_ACKNOWLEDGEMENT_POLICIES
-        ):
+        if self.acknowledgement_policy not in _DEDICATED_ACKNOWLEDGEMENT_POLICIES:
             raise ValueError(
                 "unknown dedicated acknowledgement policy "
                 f"{self.acknowledgement_policy!r}"
@@ -665,9 +697,7 @@ class DedicatedIngressDefinition:
             field_name="dedicated router factory binding",
         )
         if not isinstance(self.router_factory_accepts_debug_endpoints, bool):
-            raise TypeError(
-                "router_factory_accepts_debug_endpoints must be a boolean"
-            )
+            raise TypeError("router_factory_accepts_debug_endpoints must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,9 +715,7 @@ class OperationPolicyDefinition:
         if not isinstance(self.request_policy, RequestPolicy):
             raise TypeError("request_policy must be a RequestPolicy")
         if self.request_policy.max_concurrency is None:
-            raise ValueError(
-                "operation request_policy must declare max_concurrency"
-            )
+            raise ValueError("operation request_policy must declare max_concurrency")
         if self.request_policy.retryable_status_codes is None:
             raise ValueError(
                 "operation request_policy must declare retryable_status_codes"
@@ -696,13 +724,10 @@ class OperationPolicyDefinition:
             raise ValueError(
                 "operation request_policy must declare retryable_error_codes"
             )
-        if (
-            self.request_policy.retry_safety is RetrySafety.UNSAFE
-            and (
-                self.request_policy.max_attempts != 1
-                or self.request_policy.retryable_status_codes
-                or self.request_policy.retryable_error_codes
-            )
+        if self.request_policy.retry_safety is RetrySafety.UNSAFE and (
+            self.request_policy.max_attempts != 1
+            or self.request_policy.retryable_status_codes
+            or self.request_policy.retryable_error_codes
         ):
             raise ValueError(
                 "unsafe operation policy must use max_attempts=1 and empty "
@@ -766,8 +791,7 @@ class ProviderDefinition:
                 )
             if ingress.source_id in oauth_sources:
                 raise ValueError(
-                    f"duplicate OAuth ingress for source "
-                    f"{ingress.source_id!r}"
+                    f"duplicate OAuth ingress for source " f"{ingress.source_id!r}"
                 )
             oauth_sources.add(ingress.source_id)
             if ingress.source_id not in self.source_ids:
@@ -830,8 +854,7 @@ class ProviderDefinition:
         for ingress in self.dedicated_ingresses:
             if not isinstance(ingress, DedicatedIngressDefinition):
                 raise TypeError(
-                    "dedicated_ingresses entries must be "
-                    "DedicatedIngressDefinition"
+                    "dedicated_ingresses entries must be " "DedicatedIngressDefinition"
                 )
             if ingress.ingress_id in ingress_ids:
                 raise ValueError(
@@ -867,8 +890,7 @@ class ProviderDefinition:
                 raise ValueError(f"provider alias {alias!r} normalizes to empty")
             if normalized in normalized_aliases:
                 raise ValueError(
-                    "provider aliases collide after normalization: "
-                    f"{alias!r}"
+                    "provider aliases collide after normalization: " f"{alias!r}"
                 )
             normalized_aliases.add(normalized)
 
@@ -895,6 +917,10 @@ class InstallationManagementDefinition:
     enabled_column: str | None = None
     updated_at_column: str | None = None
     native_google_watch_table: bool = False
+    status_detail_columns: tuple[str, ...] = ()
+    status_presence_columns: tuple[tuple[str, str], ...] = ()
+    status_credential_column_groups: tuple[tuple[str, ...], ...] = ()
+    entity_status_columns: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_identifier(self.source, field_name="installation management source")
@@ -927,11 +953,47 @@ class InstallationManagementDefinition:
         for field_name, values in (
             ("ref_columns", self.ref_columns),
             ("extra_output_columns", self.extra_output_columns),
+            ("status_detail_columns", self.status_detail_columns),
+            ("entity_status_columns", self.entity_status_columns),
         ):
+            _require_unique_strings(
+                values,
+                field_name=f"installation management {field_name}",
+                allow_empty=True,
+            )
             for value in values:
                 _require_identifier(
                     value,
                     field_name=f"installation management {field_name} entry",
+                )
+        presence_names: set[str] = set()
+        for output_name, column_name in self.status_presence_columns:
+            _require_identifier(
+                output_name,
+                field_name="installation management status presence name",
+            )
+            _require_identifier(
+                column_name,
+                field_name="installation management status presence column",
+            )
+            if output_name in presence_names:
+                raise ValueError(
+                    "installation management status presence names must be unique"
+                )
+            presence_names.add(output_name)
+        for group in self.status_credential_column_groups:
+            if not group:
+                raise ValueError(
+                    "installation management credential groups cannot be empty"
+                )
+            _require_unique_strings(
+                group,
+                field_name="installation management credential group",
+            )
+            for column_name in group:
+                _require_identifier(
+                    column_name,
+                    field_name=("installation management credential group column"),
                 )
         if (self.entity_table is None) != (self.entity_install_column is None):
             raise ValueError(
@@ -942,8 +1004,7 @@ class InstallationManagementDefinition:
             _require_binding(
                 self.webhook_installation_id_transform,
                 field_name=(
-                    "installation management "
-                    "webhook_installation_id_transform"
+                    "installation management " "webhook_installation_id_transform"
                 ),
             )
             if self.webhook_installation_id_column is None:
@@ -966,8 +1027,7 @@ class InstallationManagementDefinition:
             )
         if not isinstance(self.native_google_watch_table, bool):
             raise TypeError(
-                "installation management native_google_watch_table must be "
-                "a boolean"
+                "installation management native_google_watch_table must be " "a boolean"
             )
         if self.native_google_watch_table and self.entity_table is None:
             raise ValueError(
@@ -991,6 +1051,7 @@ class InstallationAdapter:
     """
 
     loader_binding: str | None
+    status_loader_binding: str | None = None
     planner_client_builder_binding: str | None = None
     onboarding_failure_binding: str | None = None
     management: InstallationManagementDefinition | None = None
@@ -999,6 +1060,10 @@ class InstallationAdapter:
         _require_callable_ref(
             self.loader_binding,
             field_name="installation loader binding",
+        )
+        _require_callable_ref(
+            self.status_loader_binding,
+            field_name="installation status loader binding",
         )
         _require_callable_ref(
             self.planner_client_builder_binding,
@@ -1013,11 +1078,11 @@ class InstallationAdapter:
             InstallationManagementDefinition,
         ):
             raise TypeError(
-                "installation management must be an "
-                "InstallationManagementDefinition"
+                "installation management must be an " "InstallationManagementDefinition"
             )
         if (
             self.loader_binding is None
+            and self.status_loader_binding is None
             and self.planner_client_builder_binding is None
             and self.onboarding_failure_binding is None
             and self.management is None
@@ -1080,13 +1145,9 @@ class NativeConnectDefinition:
                 "declared together"
             )
         if any(callback_paths) != all(callback_paths):
-            raise ValueError(
-                "native connect callback paths must be declared together"
-            )
+            raise ValueError("native connect callback paths must be declared together")
         if all(standard_paths) == all(callback_paths):
-            raise ValueError(
-                "native connect must declare exactly one route family"
-            )
+            raise ValueError("native connect must declare exactly one route family")
         for field_name in (
             "preflight_path",
             "finalize_path",
@@ -1135,9 +1196,7 @@ class NativeConnectDefinition:
             if value is not None:
                 payload[field_name] = value
         if self.preflight_payload_fields:
-            payload["preflight_payload_fields"] = list(
-                self.preflight_payload_fields
-            )
+            payload["preflight_payload_fields"] = list(self.preflight_payload_fields)
         payload["payload_fields"] = list(self.payload_fields)
         if self.scope_aliases:
             payload["scope_aliases"] = list(self.scope_aliases)
@@ -1182,13 +1241,10 @@ class BrowserAgentDefinition:
         """Return the stable browser-agent wire payload."""
 
         _require_identifier(source, field_name="browser agent source")
-        if (
-            not isinstance(provider_console_url, str)
-            or not provider_console_url.startswith("https://")
-        ):
-            raise ValueError(
-                "browser agent provider_console_url must use HTTPS"
-            )
+        if not isinstance(
+            provider_console_url, str
+        ) or not provider_console_url.startswith("https://"):
+            raise ValueError("browser agent provider_console_url must use HTTPS")
         return {
             "source": source,
             "provider_console_url": provider_console_url,
@@ -1300,9 +1356,7 @@ class LocalRehearsalDefinition:
                     f"local rehearsal {field_name} contains duplicate keys"
                 )
         if set(key for key, _ in self.default_env) - set(self.env):
-            raise ValueError(
-                "local rehearsal default_env keys must be declared in env"
-            )
+            raise ValueError("local rehearsal default_env keys must be declared in env")
 
     def as_payload(self) -> dict[str, object]:
         """Return a fresh legacy CLI payload in deterministic field order."""
@@ -1384,7 +1438,11 @@ class OnboardingDefinition:
                 self.required_refs,
             )
         )
-        if has_cli_profile and not self.ingress_paths and self.no_ingress_reason is None:
+        if (
+            has_cli_profile
+            and not self.ingress_paths
+            and self.no_ingress_reason is None
+        ):
             raise ValueError(
                 "onboarding without ingress_paths must declare no_ingress_reason"
             )
@@ -1415,9 +1473,7 @@ class OnboardingDefinition:
                         f"onboarding {field_name} entries must be lowercase "
                         f"field paths; got {value!r}"
                     )
-        overlap = set(self.required_inputs or ()) & set(
-            self.optional_inputs or ()
-        )
+        overlap = set(self.required_inputs or ()) & set(self.optional_inputs or ())
         if overlap:
             raise ValueError(
                 "onboarding required_inputs and optional_inputs overlap: "
@@ -1427,9 +1483,7 @@ class OnboardingDefinition:
             not isinstance(self.provider_console_url, str)
             or not self.provider_console_url.startswith("https://")
         ):
-            raise ValueError(
-                "onboarding provider_console_url must use HTTPS"
-            )
+            raise ValueError("onboarding provider_console_url must use HTTPS")
         if self.generic_authorization_mode is not None:
             _require_identifier(
                 self.generic_authorization_mode,
@@ -1441,13 +1495,9 @@ class OnboardingDefinition:
             field_name="onboarding discovery_target",
         )
         if not isinstance(self.native_connect, NativeConnectDefinition):
-            raise TypeError(
-                "onboarding native_connect must be NativeConnectDefinition"
-            )
+            raise TypeError("onboarding native_connect must be NativeConnectDefinition")
         if not isinstance(self.browser_agent, BrowserAgentDefinition):
-            raise TypeError(
-                "onboarding browser_agent must be BrowserAgentDefinition"
-            )
+            raise TypeError("onboarding browser_agent must be BrowserAgentDefinition")
         if self.provider_console_url is None:
             raise ValueError(
                 "onboarding with browser automation must declare "
@@ -1492,27 +1542,18 @@ class CredentialRefreshDefinition:
             self.operation_id,
             field_name="credential refresh operation_id",
         )
-        if (
-            not isinstance(self.default_token_url, str)
-            or not self.default_token_url.startswith("https://")
-        ):
-            raise ValueError(
-                "credential refresh default_token_url must use HTTPS"
-            )
+        if not isinstance(
+            self.default_token_url, str
+        ) or not self.default_token_url.startswith("https://"):
+            raise ValueError("credential refresh default_token_url must use HTTPS")
         for field_name in ("token_url_env", "scope_env"):
             value = getattr(self, field_name)
             if value is not None and not _ENV_KEY_RE.fullmatch(value):
-                raise ValueError(
-                    f"{field_name} must be an uppercase environment key"
-                )
+                raise ValueError(f"{field_name} must be an uppercase environment key")
         if self.grant_type not in _CREDENTIAL_GRANT_TYPES:
-            raise ValueError(
-                f"unknown credential grant type {self.grant_type!r}"
-            )
+            raise ValueError(f"unknown credential grant type {self.grant_type!r}")
         if self.auth_style not in _CREDENTIAL_AUTH_STYLES:
-            raise ValueError(
-                f"unknown credential auth style {self.auth_style!r}"
-            )
+            raise ValueError(f"unknown credential auth style {self.auth_style!r}")
         if not isinstance(self.rotates_refresh_token, bool):
             raise TypeError("rotates_refresh_token must be a boolean")
         _require_identifier(
@@ -1524,22 +1565,16 @@ class CredentialRefreshDefinition:
             or not isinstance(self.default_expires_in, int)
             or self.default_expires_in <= 0
         ):
-            raise ValueError(
-                "credential refresh default_expires_in must be positive"
-            )
+            raise ValueError("credential refresh default_expires_in must be positive")
         for field_name in (
             "client_secret_from_install",
             "client_credentials_from_install",
         ):
             if not isinstance(getattr(self, field_name), bool):
                 raise TypeError(f"{field_name} must be a boolean")
-        if (
-            self.client_secret_from_install
-            and self.client_credentials_from_install
-        ):
+        if self.client_secret_from_install and self.client_credentials_from_install:
             raise ValueError(
-                "credential refresh cannot declare both install credential "
-                "modes"
+                "credential refresh cannot declare both install credential " "modes"
             )
         if self.default_scope is not None:
             _require_nonempty_text(
@@ -1605,13 +1640,10 @@ class SourceDisplayDefinition:
             self.supported_sync_modes,
             field_name="source display supported_sync_modes",
         )
-        unknown_sync_modes = (
-            set(self.supported_sync_modes) - _SOURCE_SYNC_MODES
-        )
+        unknown_sync_modes = set(self.supported_sync_modes) - _SOURCE_SYNC_MODES
         if unknown_sync_modes:
             raise ValueError(
-                "unknown source display sync modes: "
-                f"{sorted(unknown_sync_modes)!r}"
+                "unknown source display sync modes: " f"{sorted(unknown_sync_modes)!r}"
             )
         for field_name in ("display_name_override", "notice"):
             value = getattr(self, field_name)
@@ -1730,8 +1762,7 @@ class SourceDefinition:
         )
         if len(self.normalization_inputs) != len(self.normalizer_bindings):
             raise ValueError(
-                "normalization_inputs and normalizer_bindings must have equal "
-                "length"
+                "normalization_inputs and normalizer_bindings must have equal " "length"
             )
         for channel in self.normalization_inputs:
             _require_binding(channel, field_name="normalization input")
@@ -1767,26 +1798,18 @@ class SourceDefinition:
         )
         unknown_transports = set(self.live_transports) - _LIVE_TRANSPORT_KINDS
         if unknown_transports:
-            raise ValueError(
-                f"unknown live transports: {sorted(unknown_transports)}"
-            )
+            raise ValueError(f"unknown live transports: {sorted(unknown_transports)}")
         _require_tuple(
             self.acknowledgement_policies,
             field_name="acknowledgement_policies",
         )
-        unknown_ack = (
-            set(self.acknowledgement_policies) - _ACKNOWLEDGEMENT_POLICIES
-        )
+        unknown_ack = set(self.acknowledgement_policies) - _ACKNOWLEDGEMENT_POLICIES
         if unknown_ack:
-            raise ValueError(
-                f"unknown acknowledgement policies: {sorted(unknown_ack)}"
-            )
+            raise ValueError(f"unknown acknowledgement policies: {sorted(unknown_ack)}")
         _require_tuple(self.delivery_policies, field_name="delivery_policies")
         unknown_delivery = set(self.delivery_policies) - _DELIVERY_POLICIES
         if unknown_delivery:
-            raise ValueError(
-                f"unknown delivery policies: {sorted(unknown_delivery)}"
-            )
+            raise ValueError(f"unknown delivery policies: {sorted(unknown_delivery)}")
         _require_unique_strings(self.live_bindings, field_name="live_bindings")
         for binding in self.live_bindings:
             _require_binding(binding, field_name="live binding")
@@ -1832,34 +1855,38 @@ class SourceDefinition:
         has_backfill_route = "backfill" in seen_ingress_kinds
         if self.history is None and has_backfill_route:
             raise ValueError(
-                "a source with history=None cannot declare a backfill "
-                "ingress route"
+                "a source with history=None cannot declare a backfill " "ingress route"
             )
         if self.history is not None and not has_backfill_route:
             raise ValueError(
-                "a source with history support must declare a backfill "
-                "ingress route"
+                "a source with history support must declare a backfill " "ingress route"
             )
         adapter = self.installation_adapter
         if adapter is not None and not isinstance(adapter, InstallationAdapter):
-            raise TypeError(
-                "installation_adapter must be an InstallationAdapter"
-            )
+            raise TypeError("installation_adapter must be an InstallationAdapter")
         if self.history is not None and adapter is None:
             raise TypeError(
-                "a source with history support must declare an "
-                "InstallationAdapter"
+                "a source with history support must declare an " "InstallationAdapter"
             )
         if self.history is not None and adapter.loader_binding is None:
             raise ValueError(
                 "a source with history support must declare an installation "
                 "loader binding"
             )
-        if self.history is None and adapter is not None and any(
-            (
-                adapter.loader_binding,
-                adapter.planner_client_builder_binding,
-                adapter.onboarding_failure_binding,
+        if adapter is not None and adapter.status_loader_binding is None:
+            raise ValueError(
+                "an installation adapter must declare a collection/exact-row "
+                "status loader binding"
+            )
+        if (
+            self.history is None
+            and adapter is not None
+            and any(
+                (
+                    adapter.loader_binding,
+                    adapter.planner_client_builder_binding,
+                    adapter.onboarding_failure_binding,
+                )
             )
         ):
             raise ValueError(
@@ -1877,20 +1904,14 @@ class SourceDefinition:
             )
         if not isinstance(self.certification, Certification):
             raise TypeError("certification must be a Certification")
-        if (
-            self.credential_refresh is not None
-            and not isinstance(
-                self.credential_refresh,
-                CredentialRefreshDefinition,
-            )
+        if self.credential_refresh is not None and not isinstance(
+            self.credential_refresh,
+            CredentialRefreshDefinition,
         ):
-            raise TypeError(
-                "credential_refresh must be CredentialRefreshDefinition"
-            )
+            raise TypeError("credential_refresh must be CredentialRefreshDefinition")
         if (
             self.credential_refresh is not None
-            and self.credential_refresh.operation_id
-            not in self.operation_policy_ids
+            and self.credential_refresh.operation_id not in self.operation_policy_ids
         ):
             raise ValueError(
                 "credential refresh operation must be declared in "
@@ -1903,9 +1924,7 @@ class SourceDefinition:
         )
         for capability in self.capability_flags:
             _require_binding(capability, field_name="capability flag")
-        no_outbound_requests = (
-            "no_outbound_provider_requests" in self.capability_flags
-        )
+        no_outbound_requests = "no_outbound_provider_requests" in self.capability_flags
         if no_outbound_requests and (
             self.history is not None
             or self.credential_refresh is not None
@@ -1918,17 +1937,13 @@ class SourceDefinition:
         _require_tuple(
             self.operation_policies,
             field_name="operation_policies",
-            allow_empty=(
-                not self.provider_transport_enforced
-                or no_outbound_requests
-            ),
+            allow_empty=(not self.provider_transport_enforced or no_outbound_requests),
         )
         operation_ids: list[str] = []
         for operation_policy in self.operation_policies:
             if not isinstance(operation_policy, OperationPolicyDefinition):
                 raise TypeError(
-                    "operation_policies entries must be "
-                    "OperationPolicyDefinition"
+                    "operation_policies entries must be " "OperationPolicyDefinition"
                 )
             operation_ids.append(operation_policy.operation_id)
         if len(operation_ids) != len(set(operation_ids)):
@@ -2002,9 +2017,7 @@ class SourceDefinition:
     def operation_policy_ids(self) -> tuple[str, ...]:
         """Return exact operation IDs in their declared policy order."""
 
-        return tuple(
-            definition.operation_id for definition in self.operation_policies
-        )
+        return tuple(definition.operation_id for definition in self.operation_policies)
 
     def request_policy_for_operation(self, operation_id: str) -> RequestPolicy:
         """Resolve one exact source-owned operation policy."""
@@ -2033,19 +2046,13 @@ class SourceDefinition:
             "canonicalId": self.source_id,
             "providerId": self.provider_id,
             "aliases": list(self.aliases),
-            "name": (
-                self.display.display_name_override or self.display_name
-            ),
+            "name": (self.display.display_name_override or self.display_name),
             "category": self.display.category,
             "description": self.display.description,
             "method": self.display.connection_method,
-            "requiredPermissions": list(
-                self.onboarding.provider_permissions
-            ),
+            "requiredPermissions": list(self.onboarding.provider_permissions),
             "setupRequirements": self.display.setup_requirements,
-            "supportedSyncModes": list(
-                self.display.supported_sync_modes
-            ),
+            "supportedSyncModes": list(self.display.supported_sync_modes),
             "providerIngressPaths": list(self.onboarding.ingress_paths),
         }
         notice = self.display.notice or self.onboarding.no_ingress_reason

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_id": "jira",
+  "pack_version": "1.0.0",
+  "provider_api_version": "Jira Cloud REST API v3",
+  "evidence": [
+    {
+      "behavior_id": "used_api_surface",
+      "kind": "documented",
+      "uri": "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",
+      "api_version": "Jira Cloud REST API v3",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Pending P0 schema lock and reviewer verification."
+    },
+    {
+      "behavior_id": "quota_policy",
+      "kind": "documented",
+      "uri": "https://developer.atlassian.com/cloud/jira/platform/rate-limiting/",
+      "api_version": null,
+      "schema_sha256": null,
+      "quota_uri": "https://developer.atlassian.com/cloud/jira/platform/rate-limiting/",
+      "verified_at": null,
+      "notes": "Local-only load policy and simultaneous quota evidence must be locked."
+    },
+    {
+      "behavior_id": "fyralis_runtime_contract",
+      "kind": "fyralis_specific",
+      "uri": "repo://services/ingest/source_contract/catalog.py#jira",
+      "api_version": "source-contract-v1",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Runtime linkage awaits final contract-only verification."
+    }
+  ]
+}

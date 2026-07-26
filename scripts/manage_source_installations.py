@@ -366,6 +366,7 @@ async def _select_installations(
             FROM source_onboarding_runs sor
             WHERE sor.tenant_id = pi.tenant_id
               AND sor.source = pi.provider
+              AND sor.installation_row_id = pi.id
             ORDER BY COALESCE(completed_at, started_at, created_at) DESC
             LIMIT 1
         ) latest ON TRUE
@@ -374,6 +375,7 @@ async def _select_installations(
             FROM source_onboarding_runs sor
             WHERE sor.tenant_id = pi.tenant_id
               AND sor.source = pi.provider
+              AND sor.installation_row_id = pi.id
               AND sor.status = 'completed'
               AND sor.completed_at IS NOT NULL
             ORDER BY completed_at DESC

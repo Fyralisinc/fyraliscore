@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_id": "linkedin",
+  "pack_version": "1.0.0",
+  "provider_api_version": "LinkedIn Rest.li",
+  "evidence": [
+    {
+      "behavior_id": "used_api_surface",
+      "kind": "documented",
+      "uri": "https://learn.microsoft.com/en-us/linkedin/shared/api-guide/concepts/protocol-version",
+      "api_version": "LinkedIn Rest.li",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Pending P0 version-header schema lock and partner-access verification."
+    },
+    {
+      "behavior_id": "quota_policy",
+      "kind": "documented",
+      "uri": "https://learn.microsoft.com/en-us/linkedin/shared/api-guide/concepts/rate-limits",
+      "api_version": null,
+      "schema_sha256": null,
+      "quota_uri": "https://learn.microsoft.com/en-us/linkedin/shared/api-guide/concepts/rate-limits",
+      "verified_at": null,
+      "notes": "Developer Portal quota evidence must be locked before certification."
+    },
+    {
+      "behavior_id": "fyralis_runtime_contract",
+      "kind": "fyralis_specific",
+      "uri": "repo://services/ingest/source_contract/catalog.py#linkedin",
+      "api_version": "source-contract-v1",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Runtime linkage awaits final contract-only verification."
+    }
+  ]
+}

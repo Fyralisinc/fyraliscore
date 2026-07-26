@@ -41,6 +41,7 @@ from lib.shared.provider_transport import (
     ProviderTransientError,
     parse_retry_after,
 )
+from services.ingest.integrations.provider_transport import ProviderRequestBinding
 
 
 log = structlog.get_logger("integrations.aws.credentials")
@@ -93,7 +94,7 @@ async def resolve_credentials(
     credential_kind: str | None,
     secret_ref: str | None,
     region: str | None = None,
-    request_binding: Any | None = None,
+    request_binding: ProviderRequestBinding | None = None,
     endpoint_override: str | None = None,
     botocore_config: Any | None = None,
 ) -> AwsCredentials:
@@ -141,6 +142,15 @@ async def resolve_credentials(
                 code="aws_api_unauthorized",
                 context={"credential_kind": kind},
             )
+        if request_binding is None:
+            raise AwsApiError(
+                "aws AssumeRole requires ProviderTransport binding",
+                code="aws_api_error",
+                context={
+                    "credential_kind": kind,
+                    "operation": "sts.assume_role",
+                },
+            )
         try:
             import aioboto3  # deferred — optional/heavy dependency.
         except ImportError as exc:  # pragma: no cover
@@ -181,11 +191,7 @@ async def resolve_credentials(
                 ) from exc
 
         try:
-            resp = (
-                await request_binding.execute("sts.assume_role", _once)
-                if request_binding is not None
-                else await _once()
-            )
+            resp = await request_binding.execute("sts.assume_role", _once)
         except ProviderPermanentError as exc:
             raise _provider_permanent_to_aws(
                 exc,

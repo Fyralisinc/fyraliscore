@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import asyncpg
@@ -73,6 +74,54 @@ async def _grant_operator_role(
     )
 
 
+async def _insert_source_onboarding_run(
+    conn: asyncpg.Connection,
+    *,
+    tenant,
+    source: str,
+    installation_row_id: UUID | None,
+    status: str,
+    age_minutes: int,
+) -> UUID:
+    run_id = uuid7()
+    event_at = datetime.now(timezone.utc) - timedelta(minutes=age_minutes)
+    completed_at = event_at if status in {"completed", "failed"} else None
+    failure_reason = "provider failure" if status == "failed" else None
+    await conn.execute(
+        """
+        INSERT INTO onboarding_runs (
+            id, tenant_id, trigger_kind, workflow_id, status,
+            sources_enabled, started_at, completed_at
+        )
+        VALUES ($1, $2, 'install', $3, 'complete', $4, $5, $6)
+        """,
+        run_id,
+        tenant,
+        f"install:{run_id}",
+        [source],
+        event_at,
+        completed_at,
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_onboarding_runs (
+            onboarding_run_id, source, tenant_id, installation_row_id,
+            status, started_at, completed_at, reconciled_at, failure_reason
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
+        """,
+        run_id,
+        source,
+        tenant,
+        installation_row_id,
+        status,
+        event_at,
+        completed_at,
+        failure_reason,
+    )
+    return run_id
+
+
 def test_manage_source_installations_requires_provider_for_native_id() -> None:
     args = _parse(
         [
@@ -106,38 +155,13 @@ async def test_manage_source_installations_status_pause_resume_cycle(
         operator_actor = await insert_actor(conn, tenant, "Source operator")
         await _grant_operator_role(conn, tenant=tenant, actor_id=operator_actor)
         installation_row_id = await _insert_provider_installation(conn, tenant=tenant)
-        onboarding_run_id = uuid7()
-        await conn.execute(
-            """
-            INSERT INTO onboarding_runs (
-                id, tenant_id, trigger_kind, workflow_id, status,
-                sources_enabled, started_at, completed_at
-            )
-            VALUES (
-                $1, $2, 'install', $3, 'complete',
-                ARRAY['slack'], now() - interval '10 minutes',
-                now() - interval '5 minutes'
-            )
-            """,
-            onboarding_run_id,
-            tenant,
-            f"install:{tenant.hex}",
-        )
-        await conn.execute(
-            """
-            INSERT INTO source_onboarding_runs (
-                onboarding_run_id, source, tenant_id, status, started_at,
-                completed_at, reconciled_at
-            )
-            VALUES (
-                $1, 'slack', $2, 'completed',
-                now() - interval '10 minutes',
-                now() - interval '5 minutes',
-                now() - interval '4 minutes'
-            )
-            """,
-            onboarding_run_id,
-            tenant,
+        await _insert_source_onboarding_run(
+            conn,
+            tenant=tenant,
+            source="slack",
+            installation_row_id=installation_row_id,
+            status="completed",
+            age_minutes=5,
         )
 
         status_result = await run_command(
@@ -254,6 +278,98 @@ async def test_manage_source_installations_status_pause_resume_cycle(
             _metadata(by_action["source_installation.resume"])["reason"]
             == "provider recovered"
         )
+
+
+@pytest.mark.asyncio
+async def test_status_attributes_runs_to_exact_sibling_installation(
+    fresh_db: asyncpg.Pool,
+    tenant,
+    tenant_cleanup,
+) -> None:
+    async with fresh_db.acquire() as conn:
+        operator_actor = await insert_actor(conn, tenant, "Source operator")
+        await _grant_operator_role(conn, tenant=tenant, actor_id=operator_actor)
+        completed_install = await _insert_provider_installation(
+            conn,
+            tenant=tenant,
+            installation_id="T-COMPLETED",
+        )
+        failed_install = await _insert_provider_installation(
+            conn,
+            tenant=tenant,
+            installation_id="T-FAILED",
+        )
+        no_run_install = await _insert_provider_installation(
+            conn,
+            tenant=tenant,
+            installation_id="T-NO-RUN",
+        )
+
+        await _insert_source_onboarding_run(
+            conn,
+            tenant=tenant,
+            source="slack",
+            installation_row_id=completed_install,
+            status="completed",
+            age_minutes=30,
+        )
+        await _insert_source_onboarding_run(
+            conn,
+            tenant=tenant,
+            source="slack",
+            installation_row_id=failed_install,
+            status="failed",
+            age_minutes=5,
+        )
+        # A newer pre-contract row has no authoritative installation identity.
+        # It must not be guessed onto any of the three sibling installations.
+        await _insert_source_onboarding_run(
+            conn,
+            tenant=tenant,
+            source="slack",
+            installation_row_id=None,
+            status="failed",
+            age_minutes=1,
+        )
+
+        result = await run_command(
+            _parse(
+                [
+                    "status",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--provider",
+                    "slack",
+                ]
+            ),
+            conn=conn,
+        )
+
+        by_native_id = {
+            installation["installation_id"]: installation
+            for installation in result["installations"]
+        }
+        assert set(by_native_id) == {"T-COMPLETED", "T-FAILED", "T-NO-RUN"}
+
+        completed = by_native_id["T-COMPLETED"]
+        assert completed["id"] == str(completed_install)
+        assert completed["latest_onboarding_status"] == "completed"
+        assert completed["last_successful_sync_at"] is not None
+        assert completed["source_health"] == "healthy"
+
+        failed = by_native_id["T-FAILED"]
+        assert failed["id"] == str(failed_install)
+        assert failed["latest_onboarding_status"] == "failed"
+        assert failed["last_successful_sync_at"] is None
+        assert failed["source_health"] == "degraded"
+
+        no_run = by_native_id["T-NO-RUN"]
+        assert no_run["id"] == str(no_run_install)
+        assert no_run["latest_onboarding_status"] is None
+        assert no_run["last_successful_sync_at"] is None
+        assert no_run["source_health"] == "installed_no_sync"
 
 
 @pytest.mark.asyncio

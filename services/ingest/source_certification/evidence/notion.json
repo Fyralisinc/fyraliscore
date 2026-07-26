@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_id": "notion",
+  "pack_version": "1.0.0",
+  "provider_api_version": "Notion API 2022-06-28",
+  "evidence": [
+    {
+      "behavior_id": "used_api_surface",
+      "kind": "documented",
+      "uri": "https://developers.notion.com/reference/intro",
+      "api_version": "Notion API 2022-06-28",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Pending P0 schema lock and reviewer verification."
+    },
+    {
+      "behavior_id": "quota_policy",
+      "kind": "documented",
+      "uri": "https://developers.notion.com/reference/request-limits",
+      "api_version": null,
+      "schema_sha256": null,
+      "quota_uri": "https://developers.notion.com/reference/request-limits",
+      "verified_at": null,
+      "notes": "Request-limit evidence must be locked before certification."
+    },
+    {
+      "behavior_id": "fyralis_runtime_contract",
+      "kind": "fyralis_specific",
+      "uri": "repo://services/ingest/source_contract/catalog.py#notion",
+      "api_version": "source-contract-v1",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Runtime linkage awaits final contract-only verification."
+    }
+  ]
+}

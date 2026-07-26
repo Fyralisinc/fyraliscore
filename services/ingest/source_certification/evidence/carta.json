@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_id": "carta",
+  "pack_version": "1.0.0",
+  "provider_api_version": "Carta API v1alpha",
+  "evidence": [
+    {
+      "behavior_id": "used_api_surface",
+      "kind": "documented",
+      "uri": "https://docs.carta.com/",
+      "api_version": "Carta API v1alpha",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Pending P0 playground schema lock and reviewer verification."
+    },
+    {
+      "behavior_id": "quota_policy",
+      "kind": "documented",
+      "uri": "https://docs.carta.com/",
+      "api_version": null,
+      "schema_sha256": null,
+      "quota_uri": "https://docs.carta.com/",
+      "verified_at": null,
+      "notes": "Playground or response-header quota evidence must be locked."
+    },
+    {
+      "behavior_id": "fyralis_runtime_contract",
+      "kind": "fyralis_specific",
+      "uri": "repo://services/ingest/source_contract/catalog.py#carta",
+      "api_version": "source-contract-v1",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Runtime linkage awaits final contract-only verification."
+    }
+  ]
+}

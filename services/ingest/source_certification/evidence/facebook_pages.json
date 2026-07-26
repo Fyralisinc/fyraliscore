@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_id": "facebook_pages",
+  "pack_version": "1.0.0",
+  "provider_api_version": "Meta Graph API v23.0",
+  "evidence": [
+    {
+      "behavior_id": "used_api_surface",
+      "kind": "documented",
+      "uri": "https://developers.facebook.com/docs/messenger-platform/",
+      "api_version": "Meta Graph API v23.0",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Pending P0 conversations/messages/webhook schema lock."
+    },
+    {
+      "behavior_id": "quota_policy",
+      "kind": "documented",
+      "uri": "https://developers.facebook.com/docs/graph-api/overview/rate-limiting/",
+      "api_version": null,
+      "schema_sha256": null,
+      "quota_uri": "https://developers.facebook.com/docs/graph-api/overview/rate-limiting/",
+      "verified_at": null,
+      "notes": "Page/app/business-use-case quota evidence must be locked."
+    },
+    {
+      "behavior_id": "fyralis_runtime_contract",
+      "kind": "fyralis_specific",
+      "uri": "repo://services/ingest/source_contract/catalog.py#facebook_pages",
+      "api_version": "source-contract-v1",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Historical/live-overlap linkage awaits final verification."
+    }
+  ]
+}

@@ -1,78 +1,107 @@
-"""Run definitions (A29).
+"""Deterministic validation-run scenario definitions.
 
-This spine ships **Run 1 (E2E)** — the clean-path backfill validation
-across all four sources. Runs 2 (fault injection) and 3 (50-tenant
-concurrency) are DEFERRED to the M-Validate-Live work-unit (ticket #47);
-their config builders will live here alongside Run 1.
+``certification_history_scenarios`` covers every canonical source whose source
+contract declares history. Its source membership comes from
+``SOURCE_DEFINITIONS`` and fixture ownership comes from the certification
+runtime; it intentionally owns neither a source registry nor source-specific
+fixture builders.
 
-Per-source expected observation counts (clean, single-channel/repo
-fixtures, no reshare):
-  - gmail   : `messages`                         observations.
-  - slack   : `messages_per_channel`             (channels=1).
-  - discord : `channels * messages_per_channel`.
-  - github  : `events_per_repo * 2`              (issues + pull_requests
-              event types, repos=1).
+Each history source owns both its deterministic fixture factory and its exact
+Observation-count oracle. This module only composes those source-owned
+callables; it never guesses a count or maintains a second source registry.
 """
+
 from __future__ import annotations
 
+from services.ingest.source_certification.runtime import (
+    resolve_fixture_count_oracle,
+    resolve_fixture_factory,
+)
+from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
 from services.ingest.synthetic.backfill_harness.scenarios import BackfillScenario
 
 
-# Balanced fixture sizes — small + deterministic so counts are exact.
-_GMAIL_MESSAGES = 5
-_SLACK_MESSAGES = 5
-_DISCORD_MESSAGES = 5
-_GITHUB_EVENTS_PER_REPO = 3  # × 2 event types = 6 observations
+_EXPLICIT_HISTORY_EXCLUSION = "whatsapp"
+_HISTORY_UNSUPPORTED_SOURCE_IDS = tuple(
+    source.source_id for source in SOURCE_DEFINITIONS if source.history is None
+)
+if _HISTORY_UNSUPPORTED_SOURCE_IDS != (_EXPLICIT_HISTORY_EXCLUSION,):
+    raise RuntimeError(
+        "validation run history exclusions drifted from the source contract: "
+        f"expected {(_EXPLICIT_HISTORY_EXCLUSION,)!r}, "
+        f"got {_HISTORY_UNSUPPORTED_SOURCE_IDS!r}",
+    )
+
+_HISTORY_SOURCE_IDS = tuple(
+    source.source_id for source in SOURCE_DEFINITIONS if source.history is not None
+)
+
+def _validate_tenant_count(tenants_per_source: int) -> None:
+    if not isinstance(tenants_per_source, int) or isinstance(
+        tenants_per_source,
+        bool,
+    ):
+        raise TypeError("tenants_per_source must be an int")
+    if tenants_per_source < 0:
+        raise ValueError("tenants_per_source must be non-negative")
 
 
-def _gmail(slug: str) -> BackfillScenario:
+def _certification_scenario(
+    source_id: str,
+    tenant_index: int,
+) -> BackfillScenario:
+    tenant_slug = f"val-{source_id}-{tenant_index}"
+    installation_id = f"x3-{tenant_slug}-{source_id}"
+    factory = resolve_fixture_factory(source_id)
+    count_observations = resolve_fixture_count_oracle(source_id)
+    fixture_params: dict[str, object] = {}
+    fixture = factory(
+        fixture_params=fixture_params,
+        installation_id=installation_id,
+    )
+    expected_observation_count = count_observations(fixture)
+    if (
+        isinstance(expected_observation_count, bool)
+        or not isinstance(expected_observation_count, int)
+        or expected_observation_count <= 0
+    ):
+        raise ValueError(
+            f"{source_id} certification expected_observation_count must be "
+            f"a positive exact integer, got {expected_observation_count!r}"
+        )
     return BackfillScenario(
-        tenant_slug=slug, source="gmail",
-        fixture_params={"email": f"{slug}@val.example", "messages": _GMAIL_MESSAGES},
-        expected_observation_count=_GMAIL_MESSAGES,
+        tenant_slug=tenant_slug,
+        source=source_id,
+        # The source-owned certification factory supplies its deterministic
+        # defaults and receives the harness's slug-derived installation_id.
+        fixture_params=fixture_params,
+        expected_observation_count=expected_observation_count,
     )
 
 
-def _slack(slug: str) -> BackfillScenario:
-    return BackfillScenario(
-        tenant_slug=slug, source="slack",
-        fixture_params={"team_id": f"T_{slug}", "channels": 1,
-                        "messages_per_channel": _SLACK_MESSAGES},
-        expected_observation_count=_SLACK_MESSAGES,
-    )
+def certification_history_scenarios(
+    tenants_per_source: int = 4,
+) -> list[BackfillScenario]:
+    """Build historical certification scenarios in canonical source order.
 
-
-def _discord(slug: str) -> BackfillScenario:
-    return BackfillScenario(
-        tenant_slug=slug, source="discord",
-        fixture_params={"guild_id": f"G_{slug}", "channels": 1,
-                        "messages_per_channel": _DISCORD_MESSAGES},
-        expected_observation_count=_DISCORD_MESSAGES,
-    )
-
-
-def _github(slug: str) -> BackfillScenario:
-    return BackfillScenario(
-        tenant_slug=slug, source="github",
-        fixture_params={"org_or_user": slug, "repos": 1,
-                        "events_per_repo": _GITHUB_EVENTS_PER_REPO},
-        expected_observation_count=_GITHUB_EVENTS_PER_REPO * 2,
-    )
-
-
-_BUILDERS = {"gmail": _gmail, "slack": _slack,
-             "discord": _discord, "github": _github}
-
-
-def run1_scenarios(tenants_per_source: int = 4) -> list[BackfillScenario]:
-    """Run 1 (E2E): `tenants_per_source` tenants per source.
-
-    Default 4 → 16 tenants total (Decision 3). Each tenant backfills one
-    source end-to-end; the suite proves observation production + parity
-    across all four sources concurrently.
+    The default produces 104 scenarios: four deterministic tenants for each of
+    the 26 history-capable canonical sources. WhatsApp is excluded explicitly
+    because its source contract declares ``history=None``.
     """
+    _validate_tenant_count(tenants_per_source)
+
     scenarios: list[BackfillScenario] = []
-    for source, builder in _BUILDERS.items():
-        for i in range(tenants_per_source):
-            scenarios.append(builder(f"val-{source}-{i}"))
+    for source_id in _HISTORY_SOURCE_IDS:
+        # Resolve both bindings before adding any scenarios for this source.
+        # Missing, mis-owned, malformed, zero, or non-exact count declarations
+        # therefore fail before the validation run begins.
+        resolve_fixture_factory(source_id)
+        resolve_fixture_count_oracle(source_id)
+        scenarios.extend(
+            _certification_scenario(source_id, tenant_index)
+            for tenant_index in range(tenants_per_source)
+        )
     return scenarios
+
+
+__all__ = ["certification_history_scenarios"]

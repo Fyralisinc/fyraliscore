@@ -3,10 +3,10 @@
 Standalone, operator-invokable (Decision 1). Brings up its own moto S3
 (Decision 9), resets Kafka + bucket state (Decision 10), runs the
 fixture-realism pre-flight (Decision 12), executes Run 1's backfill
-across all four sources via the proven `BackfillHarness` (which already
-does the consumer-drain wait, Decision 4), checks run-level assertions
-(Decision 5), and writes a markdown report (Decision 6) with the
-consumer-rc policy applied (Decision 11).
+across every history-capable source via the proven `BackfillHarness`
+(which already does the consumer-drain wait, Decision 4), checks
+run-level assertions (Decision 5), and writes a markdown report
+(Decision 6) with the consumer-rc policy applied (Decision 11).
 
     COMPANY_OS_ENV=test \
     DATABASE_URL=postgresql://... \
@@ -27,19 +27,27 @@ import os
 import pathlib
 import sys
 import time
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 
 import asyncpg
 
-from services.ingest.synthetic.backfill_harness.harness import BackfillHarness
+from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
+from services.ingest.synthetic.backfill_harness.harness import (
+    BackfillHarness,
+    TenantOutcome,
+)
+from services.ingest.synthetic.backfill_harness.scenarios import BackfillScenario
 from services.ingest.synthetic.validation_runs import assertions as A
 from services.ingest.synthetic.validation_runs import composition as C
 from services.ingest.synthetic.validation_runs.composition import (
     SigningSecrets,
-    build_live_drivers,
     capture_twin_identities,
     live_target_for,
+    prepare_live_drivers,
     run_live_phase,
     run_replay_probe,
+    seed_contract_live_only_targets,
     teardown_live_drivers,
     wait_for_live_consumer_drain,
 )
@@ -54,12 +62,265 @@ from services.ingest.synthetic.validation_runs.reports import (
     SourceResult,
     write_report,
 )
-from services.ingest.synthetic.validation_runs.runs import run1_scenarios
+from services.ingest.synthetic.validation_runs.runs import (
+    certification_history_scenarios,
+)
 
 
 log = logging.getLogger("validation_runs")
 
 _MIGRATIONS = pathlib.Path("db/migrations")
+
+
+def _contract_source_membership() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    historical = tuple(
+        definition.source_id
+        for definition in SOURCE_DEFINITIONS
+        if definition.history is not None
+    )
+    live_only = tuple(
+        definition.source_id
+        for definition in SOURCE_DEFINITIONS
+        if definition.history is None
+    )
+    return historical, live_only
+
+
+def _validate_run1_scenario_membership(
+    scenarios: Sequence[BackfillScenario],
+    *,
+    tenants_per_source: int,
+) -> tuple[str, ...]:
+    """Require the scenario matrix to match the source contract exactly."""
+
+    historical_source_ids, _ = _contract_source_membership()
+    counts = Counter(scenario.source for scenario in scenarios)
+    expected_counts = {
+        source_id: tenants_per_source
+        for source_id in historical_source_ids
+    }
+    if counts != expected_counts:
+        raise RuntimeError(
+            "Run 1 historical scenario membership drifted from the source "
+            f"contract: expected {expected_counts!r}, got {dict(counts)!r}",
+        )
+    return historical_source_ids
+
+
+def _require_exact_fixture_counts(
+    scenarios: Sequence[BackfillScenario],
+) -> None:
+    """Fail before E2E setup when a source-owned count oracle is unresolved."""
+
+    unresolved = [
+        f"{scenario.source}/{scenario.tenant_slug}"
+        for scenario in scenarios
+        if scenario.expected_observation_count <= 0
+    ]
+    if unresolved:
+        raise RuntimeError(
+            "Run 1 requires an exact source-owned fixture observation count "
+            "for every historical scenario; unresolved: "
+            f"{unresolved[:10]!r}"
+            + (
+                f" (+{len(unresolved) - 10} more)"
+                if len(unresolved) > 10
+                else ""
+            ),
+        )
+
+
+def _live_targets_from_outcomes(
+    outcomes: Sequence[TenantOutcome],
+) -> list[C.LiveTarget]:
+    """Build live addressing from the fixture the harness actually seeded."""
+
+    targets = []
+    for outcome in outcomes:
+        fixture = outcome.fixture
+        if not isinstance(fixture, Mapping):
+            raise RuntimeError(
+                "Run 1 cannot derive a live target without the resolved "
+                "certification fixture for "
+                f"{outcome.scenario.source}/{outcome.scenario.tenant_slug}",
+            )
+        targets.append(
+            live_target_for(
+                outcome.tenant_id,
+                outcome.scenario.source,
+                outcome.scenario.tenant_slug,
+                dict(fixture),
+            )
+        )
+    return targets
+
+
+def _outcomes_by_source(
+    outcomes: Sequence[TenantOutcome],
+    source_ids: Sequence[str],
+) -> dict[str, list[TenantOutcome]]:
+    grouped = {source_id: [] for source_id in source_ids}
+    for outcome in outcomes:
+        try:
+            grouped[outcome.scenario.source].append(outcome)
+        except KeyError as exc:
+            raise RuntimeError(
+                "Run 1 produced an outcome outside its contract-derived "
+                f"historical membership: {outcome.scenario.source!r}",
+            ) from exc
+    return grouped
+
+
+def _expected_source_observations(
+    source: str,
+    outcomes: Sequence[TenantOutcome],
+    *,
+    events_per_tenant: int,
+    replay: Mapping[str, Mapping[str, int]],
+) -> int:
+    """Combine source-owned backfill counts with declared live capabilities."""
+
+    expected_backfill = sum(
+        outcome.scenario.expected_observation_count
+        for outcome in outcomes
+    )
+    if outcomes and any(
+        outcome.scenario.expected_observation_count <= 0
+        for outcome in outcomes
+    ):
+        raise RuntimeError(
+            f"Run 1 cannot account for {source!r} with an unresolved "
+            "fixture observation count",
+        )
+
+    expected_replay = 0
+    if source in C.REPLAY_SOURCES and outcomes:
+        probe = replay.get(source)
+        if probe is None:
+            raise RuntimeError(
+                f"Run 1 replay accounting is missing declared source {source!r}",
+            )
+        expected_replay = int(probe["dispatched_unique"])
+    elif source in replay:
+        raise RuntimeError(
+            f"Run 1 received replay accounting for undeclared source {source!r}",
+        )
+
+    return (
+        expected_backfill
+        + events_per_tenant * len(outcomes)
+        + expected_replay
+    )
+
+
+def _capability_cell(
+    source: str,
+    *,
+    live_sources: set[str],
+    capability_sources: Sequence[str],
+    covered_sources: set[str],
+    capability_name: str,
+) -> str:
+    if source not in live_sources:
+        return "— (not run)"
+    if source not in capability_sources:
+        return f"— (not in {capability_name})"
+    if source in covered_sources:
+        return "✅"
+    return "❌ (declared, not observed)"
+
+
+def _run1_coverage_rows(
+    *,
+    historical_sources: Sequence[str],
+    live_sources: Sequence[str],
+    live_only_sources: Sequence[str],
+    twin_covered_sources: Iterable[str],
+    signature_covered_sources: Iterable[str],
+    replay_covered_sources: Iterable[str],
+) -> list[tuple[str, str, str, str, str, str]]:
+    """Render every canonical source without inventing universal probes."""
+
+    historical = set(historical_sources)
+    live = set(live_sources)
+    live_only = set(live_only_sources)
+    twin_covered = set(twin_covered_sources)
+    signature_covered = set(signature_covered_sources)
+    replay_covered = set(replay_covered_sources)
+    rows: list[tuple[str, str, str, str, str, str]] = []
+    for definition in SOURCE_DEFINITIONS:
+        source = definition.source_id
+        if source in live_only:
+            rows.append(
+                (
+                    source,
+                    "— (history=None)",
+                    "✅" if source in live else "❌",
+                    _capability_cell(
+                        source,
+                        live_sources=live,
+                        capability_sources=C.TWIN_SOURCES,
+                        covered_sources=twin_covered,
+                        capability_name="TWIN_SOURCES",
+                    ),
+                    _capability_cell(
+                        source,
+                        live_sources=live,
+                        capability_sources=C.HMAC_SOURCES,
+                        covered_sources=signature_covered,
+                        capability_name="HMAC_SOURCES",
+                    ),
+                    _capability_cell(
+                        source,
+                        live_sources=live,
+                        capability_sources=C.REPLAY_SOURCES,
+                        covered_sources=replay_covered,
+                        capability_name="REPLAY_SOURCES",
+                    ),
+                )
+            )
+            continue
+        if source not in historical:
+            raise RuntimeError(
+                f"Run 1 coverage has no classification for source {source!r}",
+            )
+        rows.append(
+            (
+                source,
+                "✅",
+                "✅" if source in live else "❌",
+                _capability_cell(
+                    source,
+                    live_sources=live,
+                    capability_sources=C.TWIN_SOURCES,
+                    covered_sources=twin_covered,
+                    capability_name="TWIN_SOURCES",
+                ),
+                _capability_cell(
+                    source,
+                    live_sources=live,
+                    capability_sources=C.HMAC_SOURCES,
+                    covered_sources=signature_covered,
+                    capability_name="HMAC_SOURCES",
+                ),
+                _capability_cell(
+                    source,
+                    live_sources=live,
+                    capability_sources=C.REPLAY_SOURCES,
+                    covered_sources=replay_covered,
+                    capability_name="REPLAY_SOURCES",
+                ),
+            )
+        )
+    return rows
+
+
+def _declared_sources(
+    ordered_sources: Sequence[str],
+    capability_sources: Sequence[str],
+) -> tuple[str, ...]:
+    declared = set(capability_sources)
+    return tuple(source for source in ordered_sources if source in declared)
 
 
 async def _migrate_and_truncate(pool: asyncpg.Pool) -> None:
@@ -101,16 +362,25 @@ async def run1(
     *, bootstrap_servers: str, tenants_per_source: int = 4,
     events_per_tenant: int = 5,
 ) -> RunReport:
-    """Execute Run 1 (E2E backfill + live, all sources) and return its
-    report."""
+    """Execute Run 1 for every historical source and expose live-only gaps."""
     started = dt.datetime.now(tz=dt.timezone.utc)
     t0 = time.monotonic()
     dsn = os.environ["DATABASE_URL"]
+    scenarios = certification_history_scenarios(tenants_per_source)
+    historical_source_ids = _validate_run1_scenario_membership(
+        scenarios,
+        tenants_per_source=tenants_per_source,
+    )
+    _require_exact_fixture_counts(scenarios)
+    _, live_only_source_ids = _contract_source_membership()
 
     report = RunReport(
-        run_name="E2E backfill + live (all sources)",
+        run_name="E2E backfill + live (all canonical sources)",
         run_number=1,
-        tenant_count=tenants_per_source * 4,
+        tenant_count=(
+            len(scenarios)
+            + len(live_only_source_ids) * tenants_per_source
+        ),
         started_at=started,
         wall_seconds=0.0,
     )
@@ -140,7 +410,6 @@ async def run1(
             ]
 
             # ---- Backfill phase (drain built into harness — D4) ----
-            scenarios = run1_scenarios(tenants_per_source)
             harness = BackfillHarness(
                 pool=pool,
                 scenarios=scenarios,
@@ -164,14 +433,22 @@ async def run1(
 
             # ---- Live phase (A30) ----
             targets = [
-                live_target_for(
-                    o.tenant_id, o.scenario.source,
-                    o.scenario.tenant_slug, o.scenario.fixture_params,
-                )
-                for o in result.outcomes
+                *_live_targets_from_outcomes(result.outcomes),
+                *await seed_contract_live_only_targets(
+                    pool,
+                    tenants_per_source=tenants_per_source,
+                ),
             ]
+            tenant_ids = {target.tenant_id for target in targets}
+            live_source_ids = tuple(
+                dict.fromkeys(target.source for target in targets)
+            )
             twins = await capture_twin_identities(pool, targets)
-            drivers = await build_live_drivers(pool, targets, SigningSecrets())
+            drivers = await prepare_live_drivers(
+                pool,
+                targets,
+                SigningSecrets(),
+            )
             try:
                 live = await run_live_phase(
                     pool, drivers, targets, twins,
@@ -184,30 +461,41 @@ async def run1(
             finally:
                 await teardown_live_drivers(drivers)
 
+            twin_sources = _declared_sources(
+                historical_source_ids,
+                C.TWIN_SOURCES,
+            )
+            signature_sources = _declared_sources(
+                historical_source_ids,
+                C.HMAC_SOURCES,
+            )
+            replay_sources = _declared_sources(
+                historical_source_ids,
+                C.REPLAY_SOURCES,
+            )
             report.live_lines = [
                 f"live events/tenant: {events_per_tenant}; "
                 f"per-source live deltas: {live.per_source_counts}",
-                f"cross-path twins dispatched (gmail/github/slack): "
+                f"cross-path twins (declared={list(twin_sources)}; "
+                "dispatched): "
                 f"{sorted(live.twin_external_ids.keys())}",
-                f"signature-gate probes (HMAC): "
+                f"signature-gate probes (declared={list(signature_sources)}): "
                 f"{[(r['source'], r['http_status']) for r in live.tamper_results]}",
-                f"replay probe (dispatched_unique→observed): "
+                f"replay probe (declared={list(replay_sources)}; "
+                "dispatched_unique→observed): "
                 f"{ {s: v['observed'] for s, v in replay.items()} }",
                 f"live drain stable: {drained}",
+                f"live-only sources: {list(live_only_source_ids)}",
             ]
 
             # ---- Per-source observation counts (backfill + live) ----
-            by_source: dict[str, list] = {}
-            for o in result.outcomes:
-                by_source.setdefault(o.scenario.source, []).append(o)
-            for source in ("gmail", "github", "slack", "discord"):
-                outs = by_source.get(source, [])
+            by_source = _outcomes_by_source(
+                result.outcomes,
+                historical_source_ids,
+            )
+            for source in historical_source_ids:
+                outs = by_source[source]
                 src_tids = [o.tenant_id for o in outs]
-                bf_expected = sum(
-                    o.scenario.expected_observation_count for o in outs
-                )
-                live_expected = events_per_tenant * len(outs)
-                replay_extra = 1 if source in C.REPLAY_SOURCES and outs else 0
                 actual = int(await pool.fetchval(
                     "SELECT count(*) FROM observations "
                     "WHERE tenant_id = ANY($1)", src_tids,
@@ -215,8 +503,35 @@ async def run1(
                 report.source_results.append(SourceResult(
                     source=source,
                     tenants=len(outs),
+                    expected_observations=_expected_source_observations(
+                        source,
+                        outs,
+                        events_per_tenant=events_per_tenant,
+                        replay=replay,
+                    ),
+                    actual_observations=actual,
+                ))
+            targets_by_source: dict[str, list[C.LiveTarget]] = {
+                source: [] for source in live_only_source_ids
+            }
+            for target in targets:
+                if target.source in targets_by_source:
+                    targets_by_source[target.source].append(target)
+            for source in live_only_source_ids:
+                source_targets = targets_by_source[source]
+                source_tenant_ids = [
+                    target.tenant_id for target in source_targets
+                ]
+                actual = int(await pool.fetchval(
+                    "SELECT count(*) FROM observations "
+                    "WHERE tenant_id = ANY($1)",
+                    source_tenant_ids,
+                ))
+                report.source_results.append(SourceResult(
+                    source=source,
+                    tenants=len(source_targets),
                     expected_observations=(
-                        bf_expected + live_expected + replay_extra
+                        events_per_tenant * len(source_targets)
                     ),
                     actual_observations=actual,
                 ))
@@ -247,6 +562,7 @@ async def run1(
                 "assert_signature_validation_gate_holds_for_hmac_sources",
                 A.assert_signature_validation_gate_holds_for_hmac_sources(
                     live.tamper_results,
+                    expected_sources=C.HMAC_SOURCES,
                 ),
             )
             await _run_assertion(
@@ -265,18 +581,41 @@ async def run1(
                 ),
             )
 
-            report.coverage_rows = [
-                ("gmail", "✅", "✅", "✅", "— (OIDC no-op)", "✅"),
-                ("github", "✅", "✅", "✅", "✅", "✅"),
-                ("slack", "✅", "✅", "✅", "✅", "✅"),
-                ("discord", "✅", "✅", "— (namespace, A30.3)",
-                 "— (direct dispatch)", "— (no replay, A24)"),
-            ]
+            report.assertions.append(
+                AssertionResult(
+                    name="assert_all_contract_sources_have_live_targets",
+                    passed=set(live_source_ids) == {
+                        definition.source_id
+                        for definition in SOURCE_DEFINITIONS
+                    },
+                    detail=(
+                        f"resolved live targets for {len(live_source_ids)}/"
+                        f"{len(SOURCE_DEFINITIONS)} canonical sources"
+                    ),
+                )
+            )
+            report.coverage_rows = _run1_coverage_rows(
+                historical_sources=historical_source_ids,
+                live_sources=live_source_ids,
+                live_only_sources=live_only_source_ids,
+                twin_covered_sources=live.twin_external_ids,
+                signature_covered_sources=tuple(
+                    result["source"]
+                    for result in live.tamper_results
+                ),
+                replay_covered_sources=replay,
+            )
             report.notes.append(
                 "Live ingestion is inline (no Kafka consumer needed); "
-                "cross-path twins exercised for gmail/github/slack; "
-                "Discord excluded by namespace topology (A30.3). "
+                f"cross-path twins={list(twin_sources)}, "
+                f"signature probes={list(signature_sources)}, "
+                f"replay probes={list(replay_sources)}. "
                 "Consumer rc=-9/-15 expected per ticket #45."
+            )
+            report.notes.append(
+                "Contract live-only bootstrap covered "
+                f"{list(live_only_source_ids)} without fabricating a "
+                "historical planner/fetcher result."
             )
         finally:
             await pool.close()
@@ -319,7 +658,7 @@ def _execute_run(n: int, *, bootstrap: str, tenants_per_source: int):
 
 def _run_ok(report) -> bool:
     if report.verdict is not None:
-        return report.verdict in ("READY", "PARTIAL")
+        return report.verdict == "READY"
     return report.passed
 
 

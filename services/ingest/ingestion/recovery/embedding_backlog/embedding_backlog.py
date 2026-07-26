@@ -47,6 +47,8 @@ import logging
 import os
 import signal
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Mapping
 from uuid import UUID
 
 import asyncpg
@@ -63,6 +65,8 @@ from services.ingest.ingestion.observability import (
 from services.ingest.ingestion.dlq.publish import publish_dlq
 from services.ingest.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingest.ingestion.rate_limit import RateLimiter
+from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
+from services.ingest.source_contract.models import SourceDefinition
 
 
 log = logging.getLogger(__name__)
@@ -242,14 +246,31 @@ async def _select_batch(
     )
 
 
-def _source_family(source_channel: str) -> str | None:
-    """Extract source family ('slack'|'github'|'discord'|'gmail')
-    from source_channel. Returns None for non-source-family channels
-    (internal:*, synthetic:*) — those skip DLQ publish."""
-    family = source_channel.split(":", 1)[0]
-    if family in ("slack", "github", "discord", "gmail", "notion", "google_calendar", "jira"):
-        return family
-    return None
+_DLQ_SOURCE_CONTRACT_BY_CHANNEL: Mapping[str, SourceDefinition] = MappingProxyType(
+    {
+        channel: source
+        for source in SOURCE_DEFINITIONS
+        for channel in source.normalization_inputs
+    }
+)
+
+
+def _source_contract_for_channel(
+    source_channel: object,
+) -> SourceDefinition | None:
+    """Resolve an Observation channel to its canonical source contract.
+
+    Observation ``source_channel`` is the exact normalizer input channel
+    declared by :class:`SourceDefinition`. Deriving this lookup from the
+    immutable catalog keeps terminal embedding failures covered whenever a
+    canonical source is added. Exact lookup is intentional: provider-only,
+    platform, synthetic, malformed, and undeclared channels must not be
+    mislabeled as canonical-source evidence.
+    """
+
+    if not isinstance(source_channel, str):
+        return None
+    return _DLQ_SOURCE_CONTRACT_BY_CHANNEL.get(source_channel)
 
 
 async def _process_row(
@@ -290,17 +311,19 @@ async def _process_row(
                 "error": str(exc)[:200],
             },
         )
-        family = _source_family(row["source_channel"])
-        if family is not None:
+        source_contract = _source_contract_for_channel(row["source_channel"])
+        if source_contract is not None:
             await publish_dlq(
                 producer=dlq_producer,
                 failure_kind="embedding.ollama_failure",
                 error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
                 tenant_id=tenant_id,
-                source=family,
+                source=source_contract.source_id,
                 error_context={
                     "observation_id": str(obs_id),
                     "via": "backlog",
+                    "source_channel": row["source_channel"],
+                    "provider_id": source_contract.provider_id,
                 },
                 on_success=lambda: _bump("backlog.dlq_publish.success"),
                 on_failure=lambda: _bump("backlog.dlq_publish.failure"),

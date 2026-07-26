@@ -67,7 +67,7 @@ class TelegramGatewayGenerator:
         self._s3 = s3_raw_client
         self._flags = tenant_flags
         self._seq = 0
-        self._install_cache: dict[UUID, str] = {}
+        self._install_cache: dict[tuple[UUID, int], str] = {}
         self._actor_repo: Any = None
         self._alias_repo: Any = None
 
@@ -81,21 +81,33 @@ class TelegramGatewayGenerator:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         return None
 
-    async def _installation_id(self, tenant_id: UUID) -> str:
-        """Resolve (and cache) the tenant's telegram_installations id, so the
-        live external_id is namespaced identically to backfill. Superuser test
-        connection bypasses the table's RLS (the harness convention)."""
-        cached = self._install_cache.get(tenant_id)
+    async def _installation_id(self, tenant_id: UUID, dialog_id: int) -> str:
+        """Resolve the one active install owning the target dialog."""
+        cache_key = (tenant_id, dialog_id)
+        cached = self._install_cache.get(cache_key)
         if cached is not None:
             return cached
-        row = await self._pool.fetchrow(
-            "SELECT id FROM telegram_installations "
-            "WHERE tenant_id = $1 AND disabled_at IS NULL "
-            "ORDER BY created_at LIMIT 1",
+        rows = await self._pool.fetch(
+            """
+            SELECT ti.id
+              FROM telegram_installations ti
+              JOIN telegram_dialogs td
+                ON td.telegram_installation_id = ti.id
+             WHERE ti.tenant_id = $1
+               AND ti.disabled_at IS NULL
+               AND td.tenant_id = $1
+               AND td.dialog_id = $2
+            """,
             tenant_id,
+            dialog_id,
         )
-        iid = str(row["id"]) if row is not None else str(tenant_id)
-        self._install_cache[tenant_id] = iid
+        if len(rows) != 1:
+            raise ValueError(
+                "telegram target must resolve to exactly one active installation: "
+                f"tenant_id={tenant_id}, dialog_id={dialog_id}, matches={len(rows)}",
+            )
+        iid = str(rows[0]["id"])
+        self._install_cache[cache_key] = iid
         return iid
 
     def _mint_message(self, content: str) -> dict[str, Any]:
@@ -120,9 +132,14 @@ class TelegramGatewayGenerator:
             handle_update,
         )
 
-        installation_id = await self._installation_id(target.tenant_id)
-        message = self._mint_message(content)
         dialog_id = target.telegram_dialog_id
+        if dialog_id is None:
+            raise ValueError("telegram target is missing telegram_dialog_id")
+        installation_id = await self._installation_id(
+            target.tenant_id,
+            dialog_id,
+        )
+        message = self._mint_message(content)
         update = {
             "event": "new_message",
             "message": message,

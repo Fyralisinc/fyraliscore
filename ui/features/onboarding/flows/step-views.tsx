@@ -2194,6 +2194,18 @@ function SourceCatalogStep(props: StepViewProps) {
     if (!source) {
       return;
     }
+    const installations = (
+      automationStates.aws?.installations ?? []
+    ).filter((installation) => installation.enabled);
+    if (installations.length !== 1) {
+      patchAutomationState("aws", {
+        status: "error",
+        label: "Select install",
+        message:
+          "Choose exactly one AWS installation before retrying its first sync.",
+      });
+      return;
+    }
     patchAutomationState("aws", {
       status: "connecting",
       label: "Retrying",
@@ -2202,6 +2214,7 @@ function SourceCatalogStep(props: StepViewProps) {
     try {
       const status = await retryAwsFirstSyncRehearsal({
         apiBase: workspace.providerIngressUrl,
+        installationId: installations[0].installationId,
       });
       applyCatalogSourceStatus({
         source,

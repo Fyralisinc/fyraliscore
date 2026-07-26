@@ -36,25 +36,39 @@ The shared `rate_limited_from_headers` helper identifies itself as
 
 ## Verified quota declarations
 
-Production quota rules in `FYRALIS_PROVIDER_QUOTAS_JSON` must include:
+`SourceDefinition.operation_policies` exclusively owns source and operation
+identity. `FYRALIS_PROVIDER_QUOTAS_JSON` links to that catalog through its exact
+digest and opaque operation references:
 
 ```json
 {
-  "scope": "workspace",
-  "identity": "workspace",
-  "capacity": "<verified integer>",
-  "refill_per_second": "<verified number>",
-  "cost": "<verified integer>",
-  "evidence_ref": "evidence://source/quota/version",
-  "verified_on": "2025-01-01"
+  "schema_version": "1",
+  "catalog_sha256": "<digest exported by the source contract>",
+  "limits": {
+    "qop_v1_<opaque operation digest>": [
+      {
+        "scope": "workspace",
+        "identity": "workspace",
+        "capacity": "<verified integer>",
+        "refill_per_second": "<verified number>",
+        "cost": "<verified integer>",
+        "evidence_ref": "evidence://source/quota/version",
+        "verified_on": "2025-01-01"
+      }
+    ]
+  }
 }
 ```
 
+The reference manifest and catalog digest are exported by
+`services.ingest.source_contract.quota_contract.PROVIDER_QUOTA_CONTRACT`.
+The deployment document contains no source or operation registry of its own.
 The placeholders above deliberately avoid suggesting provider limits.
 Deployments must use values supported by their evidence pack. Startup fails
-when a required runtime has missing, partial, invalid, or future-dated evidence.
-Optional local runtimes continue accepting the legacy shape for Provider Lab
-and migration compatibility.
+when the catalog digest or operation-reference membership drifts, or when a
+required runtime has missing, partial, invalid, or future-dated evidence.
+Optional local runtimes may omit evidence metadata, but they use the same
+contract-linked shape.
 
 ## Distributed circuit semantics
 

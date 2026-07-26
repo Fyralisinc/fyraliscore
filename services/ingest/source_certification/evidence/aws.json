@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_id": "aws",
+  "pack_version": "1.0.0",
+  "provider_api_version": "AWS CloudTrail / STS / SQS APIs",
+  "evidence": [
+    {
+      "behavior_id": "used_api_surface",
+      "kind": "documented",
+      "uri": "https://docs.aws.amazon.com/awscloudtrail/latest/APIReference/Welcome.html",
+      "api_version": "AWS CloudTrail / STS / SQS APIs",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Pending P0 SigV4 and used-operation schema lock."
+    },
+    {
+      "behavior_id": "quota_policy",
+      "kind": "documented",
+      "uri": "https://docs.aws.amazon.com/general/latest/gr/ct.html",
+      "api_version": null,
+      "schema_sha256": null,
+      "quota_uri": "https://docs.aws.amazon.com/general/latest/gr/ct.html",
+      "verified_at": null,
+      "notes": "Region/account/service quota evidence must be locked before certification."
+    },
+    {
+      "behavior_id": "fyralis_runtime_contract",
+      "kind": "fyralis_specific",
+      "uri": "repo://services/ingest/source_contract/catalog.py#aws",
+      "api_version": "source-contract-v1",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Runtime linkage awaits final contract-only verification."
+    }
+  ]
+}

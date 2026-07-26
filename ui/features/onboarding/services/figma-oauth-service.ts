@@ -19,6 +19,7 @@ export type FigmaConnectionState =
   | "reauthorization_required"
   | "error"
   | "disconnected"
+  | "multiple_installations"
   | "unknown";
 
 export type FigmaOAuthStartRequest = {
@@ -66,6 +67,8 @@ export type FigmaConnectionStatus = {
    */
   setupOwner: "deployment_admin" | null;
   installationId: string | null;
+  installationIds: string[];
+  installationSelectionRequired: boolean;
   fileCount: number;
   selectedFileCount: number;
   syncedFileCount: number;
@@ -154,9 +157,13 @@ export async function startFigmaOAuth(
 /** Returns only sanitized installation, sync, and observation proof. */
 export async function fetchFigmaConnectionStatus(
   options: FigmaOAuthClientOptions = {},
+  installationId?: string,
 ): Promise<FigmaConnectionStatus> {
   const payload = await requestJson<Record<string, unknown>>(
-    "/integrations/figma/connect/status",
+    figmaInstallationPath(
+      "/integrations/figma/connect/status",
+      installationId,
+    ),
     { method: "GET" },
     options,
   );
@@ -165,10 +172,14 @@ export async function fetchFigmaConnectionStatus(
 
 /** Queues a retry/reconciliation without asking the browser for credentials. */
 export async function retryFigmaConnection(
+  installationId: string,
   options: FigmaOAuthClientOptions = {},
 ): Promise<FigmaRetryResponse> {
   const payload = await requestJson<Record<string, unknown>>(
-    "/integrations/figma/connect/retry",
+    figmaInstallationPath(
+      "/integrations/figma/connect/retry",
+      installationId,
+    ),
     { method: "POST" },
     options,
   );
@@ -180,10 +191,11 @@ export async function retryFigmaConnection(
 
 /** Removes the tenant's Figma connection; no Figma access token crosses the UI. */
 export async function disconnectFigmaConnection(
+  installationId: string,
   options: FigmaOAuthClientOptions = {},
 ): Promise<FigmaDisconnectResponse> {
   const payload = await requestJson<Record<string, unknown>>(
-    "/integrations/figma/connect",
+    figmaInstallationPath("/integrations/figma/connect", installationId),
     { method: "DELETE" },
     options,
   );
@@ -275,6 +287,14 @@ function mapFigmaConnectionStatus(
     payload.latest_observation ?? payload.latestObservation,
   );
   const files = arrayValue(payload.files).map(mapFigmaConnectionFile);
+  const installationIds = arrayValue(payload.installations)
+    .map((value) =>
+      nullableString(
+        recordValue(value).installation_id ??
+          recordValue(value).installationId,
+      ),
+    )
+    .filter((value): value is string => Boolean(value));
   const fileCount = numberValue(
     payload.file_count ?? payload.fileCount,
     files.length,
@@ -299,6 +319,12 @@ function mapFigmaConnectionStatus(
     installationId: nullableString(
       payload.installation_id ?? payload.installationId,
     ),
+    installationIds,
+    installationSelectionRequired: booleanValue(
+      payload.installation_selection_required ??
+        payload.installationSelectionRequired,
+      installationIds.length > 1,
+    ),
     fileCount,
     selectedFileCount: numberValue(
       payload.selected_file_count ?? payload.selectedFileCount,
@@ -321,6 +347,14 @@ function mapFigmaConnectionStatus(
     lastError,
     nextAction: nullableString(payload.next_action ?? payload.nextAction),
   };
+}
+
+function figmaInstallationPath(path: string, installationId?: string): string {
+  const normalized = installationId?.trim();
+  if (!normalized) {
+    return path;
+  }
+  return `${path}?installation_id=${encodeURIComponent(normalized)}`;
 }
 
 function mapFigmaConnectionFile(value: unknown): FigmaConnectionFile {
@@ -420,6 +454,7 @@ function connectionState(value: unknown): FigmaConnectionState {
     case "reauthorization_required":
     case "error":
     case "disconnected":
+    case "multiple_installations":
       return normalized;
     default:
       return "unknown";

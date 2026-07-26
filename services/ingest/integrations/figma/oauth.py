@@ -1382,7 +1382,11 @@ async def oauth_callback(request: Request) -> Response:
     return RedirectResponse(url=location, status_code=302)
 
 
-async def _latest_observation(executor: Any, tenant_id: UUID) -> dict[str, Any] | None:
+async def _latest_observation(
+    executor: Any,
+    tenant_id: UUID,
+    installation_id: UUID,
+) -> dict[str, Any] | None:
     """Best-effort proof for the onboarding UI.  It intentionally reads only
     safe observation metadata and works before or after snapshot artifacts are
     enabled."""
@@ -1396,10 +1400,12 @@ async def _latest_observation(executor: Any, tenant_id: UUID) -> dict[str, Any] 
               FROM observations
              WHERE tenant_id = $1
                AND source_channel LIKE 'figma:%'
+               AND content #>> '{source_locator,installation_id}' = $2
              ORDER BY ingested_at DESC
              LIMIT 1
             """,
             tenant_id,
+            str(installation_id),
         )
     except Exception as exc:  # noqa: BLE001 - status must remain available
         log.warning("figma_status_observation_lookup_failed", error_type=type(exc).__name__)
@@ -1419,11 +1425,22 @@ async def _latest_observation(executor: Any, tenant_id: UUID) -> dict[str, Any] 
     }
 
 
-async def _figma_observation_count(executor: Any, tenant_id: UUID) -> int:
+async def _figma_observation_count(
+    executor: Any,
+    tenant_id: UUID,
+    installation_id: UUID,
+) -> int:
     try:
         value = await executor.fetchval(
-            "SELECT count(*) FROM observations WHERE tenant_id = $1 AND source_channel LIKE 'figma:%'",
+            """
+            SELECT count(*)
+              FROM observations
+             WHERE tenant_id = $1
+               AND source_channel LIKE 'figma:%'
+               AND content #>> '{source_locator,installation_id}' = $2
+            """,
             tenant_id,
+            str(installation_id),
         )
     except Exception as exc:  # noqa: BLE001 - status must remain available
         log.warning("figma_status_observation_count_failed", error_type=type(exc).__name__)
@@ -1431,7 +1448,11 @@ async def _figma_observation_count(executor: Any, tenant_id: UUID) -> int:
     return int(value or 0)
 
 
-async def _figma_synced_file_count(executor: Any, tenant_id: UUID) -> int:
+async def _figma_synced_file_count(
+    executor: Any,
+    tenant_id: UUID,
+    installation_id: UUID,
+) -> int:
     try:
         value = await executor.fetchval(
             """
@@ -1439,9 +1460,11 @@ async def _figma_synced_file_count(executor: Any, tenant_id: UUID) -> int:
               FROM observations
              WHERE tenant_id = $1
                AND source_channel LIKE 'figma:%'
+               AND content #>> '{source_locator,installation_id}' = $2
                AND content ->> 'file_key' IS NOT NULL
             """,
             tenant_id,
+            str(installation_id),
         )
     except Exception as exc:  # noqa: BLE001 - status must remain available
         log.warning("figma_status_synced_file_count_failed", error_type=type(exc).__name__)
@@ -1464,12 +1487,15 @@ async def deployment_oauth_readiness(request: Request) -> JSONResponse:
 
 
 @router.get("/connect/status")
-async def connect_status(request: Request) -> JSONResponse:
+async def connect_status(
+    request: Request,
+    installation_id: UUID | None = None,
+) -> JSONResponse:
     tenant_id = _tenant_from_request(request)
     pool = _pool_from_request(request)
     deployment_oauth_ready = _deployment_oauth_ready()
     async with tenant_transaction(tenant_id, pool=pool) as tctx:
-        row = await tctx.fetchrow(
+        rows = await tctx.fetch(
             """
             SELECT fi.id, fi.auth_kind, fi.connection_state, fi.last_error,
                    fi.token_expires_at, fi.connected_at, fi.disabled_at,
@@ -1478,35 +1504,41 @@ async def connect_status(request: Request) -> JSONResponse:
               FROM figma_installations fi
               LEFT JOIN figma_files ff ON ff.figma_installation_id = fi.id
              WHERE fi.tenant_id = $1
+               AND ($2::uuid IS NULL OR fi.id = $2)
              GROUP BY fi.id
              ORDER BY fi.connected_at DESC NULLS LAST, fi.created_at DESC
-             LIMIT 1
             """,
             tenant_id,
+            installation_id,
         )
-        file_rows = (
-            await tctx.fetch(
-                """
-                SELECT file_key, file_name, project_name, state, event_cursor,
-                       last_synced_at, last_error
-                  FROM figma_files
-                 WHERE tenant_id = $1
-                   AND figma_installation_id = $2
-                 ORDER BY file_key
-                """,
-                tenant_id, row["id"],
+        installations = [
+            await _figma_installation_status_payload(
+                tctx,
+                tenant_id=tenant_id,
+                row=row,
+                deployment_oauth_ready=deployment_oauth_ready,
             )
-            if row is not None else []
+            for row in rows
+        ]
+    if installation_id is not None and not installations:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "ok": False,
+                "state": "not_connected",
+                "installation_id": str(installation_id),
+                "message": "Figma installation was not found for this tenant.",
+            },
         )
-        latest_observation = await _latest_observation(tctx, tenant_id)
-        observation_count = await _figma_observation_count(tctx, tenant_id)
-        synced_file_count = await _figma_synced_file_count(tctx, tenant_id)
-    if row is None:
+    if not installations:
         if not deployment_oauth_ready:
             return JSONResponse(
                 content={
                     **_deployment_setup_required_payload(ok=True),
                     "installation_id": None,
+                    "installations": [],
+                    "installation_count": 0,
+                    "installation_selection_required": False,
                     "file_count": 0,
                     "selected_file_count": 0,
                     "synced_file_count": 0,
@@ -1520,9 +1552,78 @@ async def connect_status(request: Request) -> JSONResponse:
             "ok": True,
             "state": "not_connected",
             "installation_id": None,
+            "installations": [],
+            "installation_count": 0,
+            "installation_selection_required": False,
             "deployment_oauth_ready": True,
             "setup_owner": None,
         })
+    if len(installations) > 1:
+        return JSONResponse(
+            content={
+                "ok": True,
+                "state": "multiple_installations",
+                "installation_id": None,
+                "installations": installations,
+                "installation_count": len(installations),
+                "installation_selection_required": True,
+                "deployment_oauth_ready": deployment_oauth_ready,
+                "setup_owner": (
+                    None
+                    if deployment_oauth_ready
+                    else _DEPLOYMENT_SETUP_OWNER
+                ),
+                "message": (
+                    "Select an exact Figma installation before retrying or "
+                    "disconnecting."
+                ),
+            }
+        )
+    payload = installations[0]
+    return JSONResponse(
+        content={
+            **payload,
+            "installations": installations,
+            "installation_count": 1,
+            "installation_selection_required": False,
+        }
+    )
+
+
+async def _figma_installation_status_payload(
+    executor: Any,
+    *,
+    tenant_id: UUID,
+    row: Any,
+    deployment_oauth_ready: bool,
+) -> dict[str, Any]:
+    file_rows = await executor.fetch(
+        """
+        SELECT file_key, file_name, project_name, state, event_cursor,
+               last_synced_at, last_error
+          FROM figma_files
+         WHERE tenant_id = $1
+           AND figma_installation_id = $2
+         ORDER BY file_key
+        """,
+        tenant_id,
+        row["id"],
+    )
+    latest_observation = await _latest_observation(
+        executor,
+        tenant_id,
+        row["id"],
+    )
+    observation_count = await _figma_observation_count(
+        executor,
+        tenant_id,
+        row["id"],
+    )
+    synced_file_count = await _figma_synced_file_count(
+        executor,
+        tenant_id,
+        row["id"],
+    )
     files = [
         {
             "file_key": record["file_key"],
@@ -1546,12 +1647,11 @@ async def connect_status(request: Request) -> JSONResponse:
         state = "connected"
     next_action = (
         _DEPLOYMENT_SETUP_ACTION if not deployment_oauth_ready
-        else "connect" if state == "not_connected"
         else "reauthorize" if state == "reauthorization_required"
         else "view_observation" if latest_observation is not None
         else "wait_for_initial_sync"
     )
-    return JSONResponse(content={
+    return {
         "ok": True,
         "state": state,
         "installation_id": str(row["id"]),
@@ -1570,11 +1670,14 @@ async def connect_status(request: Request) -> JSONResponse:
         "latest_observation": latest_observation,
         "files": files,
         "next_action": next_action,
-    })
+    }
 
 
 @router.post("/connect/retry")
-async def connect_retry(request: Request) -> JSONResponse:
+async def connect_retry(
+    request: Request,
+    installation_id: UUID,
+) -> JSONResponse:
     """Re-arm the existing transactional onboarding trigger without requiring
     the user to reconnect or reveal a credential."""
     tenant_id = _tenant_from_request(request)
@@ -1591,18 +1694,19 @@ async def connect_retry(request: Request) -> JSONResponse:
         row = await tctx.fetchrow(
             """
             SELECT id FROM figma_installations
-             WHERE tenant_id = $1 AND disabled_at IS NULL
-             ORDER BY connected_at DESC NULLS LAST, created_at DESC
-             LIMIT 1
+             WHERE tenant_id = $1
+               AND id = $2
+               AND disabled_at IS NULL
             """,
             tenant_id,
+            installation_id,
         )
         if row is None:
             return JSONResponse(
                 status_code=404,
                 content={"ok": False, "state": "not_connected", "message": "Connect Figma first"},
             )
-        install_id = row["id"]
+        install_id = installation_id
         files = await tctx.fetch(
             """
             SELECT file_key FROM figma_files
@@ -1654,7 +1758,10 @@ async def connect_retry(request: Request) -> JSONResponse:
 
 
 @router.delete("/connect")
-async def connect_disconnect(request: Request) -> JSONResponse:
+async def connect_disconnect(
+    request: Request,
+    installation_id: UUID,
+) -> JSONResponse:
     """Disable Figma, pause all files, and remove local encrypted credentials.
     Figma does not expose a documented OAuth revocation endpoint, so local
     deletion is the deterministic disconnect boundary."""
@@ -1667,9 +1774,9 @@ async def connect_disconnect(request: Request) -> JSONResponse:
             WITH selected AS (
                 SELECT id, secret_ref, refresh_secret_ref, webhook_secret_ref
                   FROM figma_installations
-                 WHERE tenant_id = $1 AND disabled_at IS NULL
-                 ORDER BY connected_at DESC NULLS LAST, created_at DESC
-                 LIMIT 1
+                 WHERE tenant_id = $1
+                   AND id = $2
+                   AND disabled_at IS NULL
                  FOR UPDATE
             ), updated AS (
                 UPDATE figma_installations fi
@@ -1689,6 +1796,7 @@ async def connect_disconnect(request: Request) -> JSONResponse:
             SELECT * FROM updated
             """,
             tenant_id,
+            installation_id,
         )
         if row is None:
             return JSONResponse(content={"ok": True, "state": "disconnected", "already_disconnected": True})
@@ -1696,13 +1804,6 @@ async def connect_disconnect(request: Request) -> JSONResponse:
             "UPDATE figma_files SET state = 'paused' WHERE tenant_id = $1 AND figma_installation_id = $2",
             tenant_id, row["id"],
         )
-        try:
-            await tctx.execute(
-                "UPDATE provider_installations SET enabled = FALSE WHERE tenant_id = $1 AND provider = 'figma'",
-                tenant_id,
-            )
-        except Exception as exc:  # noqa: BLE001 - legacy provider row is optional
-            log.warning("figma_disconnect_webhook_disable_failed", error_type=type(exc).__name__)
     await _delete_refs(
         secret_store,
         tenant_id,

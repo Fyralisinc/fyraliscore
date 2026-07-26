@@ -219,21 +219,25 @@ async def assert_live_observations_attributed_correctly(
 
 async def assert_signature_validation_gate_holds_for_hmac_sources(
     tamper_results: list[dict],
+    *,
+    expected_sources: tuple[str, ...] = ("slack", "github"),
 ) -> int:
-    """Tampered signatures rejected with 401 for the HMAC sources
-    (Slack + GitHub). Gmail OIDC is no-op'd by Y1 (no real gate) and
-    Discord uses direct dispatch (no signature surface) — both excluded
-    by design (A30.4)."""
+    """Require one rejected tamper probe for every declared live auth gate."""
+
     sources = {r["source"] for r in tamper_results}
-    if sources != {"slack", "github"}:
+    expected = set(expected_sources)
+    if sources != expected:
         raise PropertyViolation(
             f"signature-gate probes covered {sorted(sources)}; expected "
-            f"exactly {{'github', 'slack'}} (HMAC sources, A30.4)"
+            f"exactly {sorted(expected)}"
         )
-    bad = [r for r in tamper_results if r["http_status"] != 401]
+    bad = [
+        r for r in tamper_results
+        if r["http_status"] not in {401, 403}
+    ]
     if bad:
         raise PropertyViolation(
-            f"tampered signature(s) NOT rejected with 401: {bad}"
+            f"tampered authentication request(s) not rejected: {bad}"
         )
     return len(tamper_results)
 

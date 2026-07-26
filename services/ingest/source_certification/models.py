@@ -5,6 +5,7 @@ each source.  This package declares what those artifacts must contain and
 evaluates whether they are strong enough for a release.  Local simulations are
 valuable evidence, but can never silently stand in for a real-provider canary.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -21,11 +22,10 @@ SuiteKind = Literal["historical", "live", "combined"]
 CertificationState = Literal["unverified", "passed", "failed", "blocked"]
 CertificationBindingRole = Literal[
     "fixture_factory",
+    "fixture_count_oracle",
     "installation_seeder",
 ]
-_CERTIFICATION_STATES = frozenset(
-    {"unverified", "passed", "failed", "blocked"}
-)
+_CERTIFICATION_STATES = frozenset({"unverified", "passed", "failed", "blocked"})
 _SUITE_KINDS = frozenset({"historical", "live", "combined"})
 _CALLABLE_REFERENCE_RE = re.compile(
     r"^[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*:"
@@ -148,9 +148,7 @@ class CanaryDefinition:
         _nonempty(self.account_type, "account_type")
         _strings(self.required_operations, "required_operations")
         if not self.required_operations:
-            raise CertificationInvariantError(
-                "required_operations must not be empty"
-            )
+            raise CertificationInvariantError("required_operations must not be empty")
         if len(self.required_operations) != len(set(self.required_operations)):
             raise CertificationInvariantError(
                 "required_operations must not contain duplicates"
@@ -184,7 +182,11 @@ class CertificationCallableBinding:
 
     def __post_init__(self) -> None:
         _nonempty(self.source_id, "binding source_id")
-        if self.role not in {"fixture_factory", "installation_seeder"}:
+        if self.role not in {
+            "fixture_factory",
+            "fixture_count_oracle",
+            "installation_seeder",
+        }:
             raise CertificationInvariantError(
                 f"invalid certification binding role {self.role!r}"
             )
@@ -204,12 +206,16 @@ class SourceCertificationSpec:
     spec_version: str
     provider_api_version: str
     test_kit_id: str
+    evidence_pack_id: str
+    evidence_pack_version: str
+    evidence_pack_sha256: str
     evidence: tuple[EvidenceReference, ...]
     required_scenarios: tuple[str, ...]
     simulator_capabilities: tuple[str, ...]
     load_suites: tuple[LoadSuite, ...]
     canary: CanaryDefinition
     fixture_factory_binding: CertificationCallableBinding | None = None
+    fixture_count_oracle_binding: CertificationCallableBinding | None = None
     installation_seeder_binding: CertificationCallableBinding | None = None
 
     def __post_init__(self) -> None:
@@ -217,6 +223,15 @@ class SourceCertificationSpec:
         _nonempty(self.spec_version, "spec_version")
         _nonempty(self.provider_api_version, "provider_api_version")
         _nonempty(self.test_kit_id, "test_kit_id")
+        _nonempty(self.evidence_pack_id, "evidence_pack_id")
+        _nonempty(self.evidence_pack_version, "evidence_pack_version")
+        digest = self.evidence_pack_sha256.lower()
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise CertificationInvariantError(
+                "evidence_pack_sha256 must be a lowercase SHA-256 digest"
+            )
         for field in ("evidence", "required_scenarios", "simulator_capabilities"):
             if not getattr(self, field):
                 raise CertificationInvariantError(f"{field} must not be empty")
@@ -238,6 +253,7 @@ class SourceCertificationSpec:
             )
         bindings = (
             ("fixture_factory", self.fixture_factory_binding),
+            ("fixture_count_oracle", self.fixture_count_oracle_binding),
             ("installation_seeder", self.installation_seeder_binding),
         )
         for expected_role, binding in bindings:
@@ -245,8 +261,7 @@ class SourceCertificationSpec:
                 continue
             if not isinstance(binding, CertificationCallableBinding):
                 raise CertificationInvariantError(
-                    f"{expected_role}_binding must be a "
-                    "CertificationCallableBinding"
+                    f"{expected_role}_binding must be a " "CertificationCallableBinding"
                 )
             if binding.source_id != self.source_id:
                 raise CertificationInvariantError(
@@ -255,15 +270,13 @@ class SourceCertificationSpec:
                 )
             if binding.role != expected_role:
                 raise CertificationInvariantError(
-                    f"{expected_role} binding declares role "
-                    f"{binding.role!r}"
+                    f"{expected_role} binding declares role " f"{binding.role!r}"
                 )
-        if (self.fixture_factory_binding is None) != (
-            self.installation_seeder_binding is None
-        ):
+        declared_bindings = tuple(binding is not None for _, binding in bindings)
+        if len(set(declared_bindings)) != 1:
             raise CertificationInvariantError(
-                "fixture_factory_binding and installation_seeder_binding "
-                "must be declared together"
+                "fixture_factory_binding, fixture_count_oracle_binding, and "
+                "installation_seeder_binding must be declared together"
             )
 
     def declaration_hash(self) -> str:
@@ -302,9 +315,7 @@ class SuiteResult:
             and self.completed_at is not None
             and self.completed_at < self.started_at
         ):
-            raise CertificationInvariantError(
-                "completed_at cannot precede started_at"
-            )
+            raise CertificationInvariantError("completed_at cannot precede started_at")
         if self.artifact_uri is not None:
             _nonempty(self.artifact_uri, "artifact_uri")
         if self.limiting_component is not None:
@@ -327,9 +338,7 @@ class SuiteResult:
                     f"metric {name!r} must be a finite number"
                 )
         if self.state == "passed" and (
-            self.failures
-            or not self.artifact_uri
-            or not self.limiting_component
+            self.failures or not self.artifact_uri or not self.limiting_component
         ):
             raise CertificationInvariantError(
                 "a passed suite requires an artifact, limiting component, "
@@ -396,9 +405,7 @@ class CanaryResult:
             raise CertificationInvariantError(
                 "operation_results must be a tuple of CanaryOperationResult values"
             )
-        operation_ids = [
-            result.operation_id for result in self.operation_results
-        ]
+        operation_ids = [result.operation_id for result in self.operation_results]
         if len(operation_ids) != len(set(operation_ids)):
             raise CertificationInvariantError(
                 "operation_results must not contain duplicate operation IDs"
@@ -441,9 +448,8 @@ class CertificationInput:
 
     def __post_init__(self) -> None:
         digest = self.spec_hash.lower()
-        if (
-            len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
         ):
             raise CertificationInvariantError(
                 "spec_hash must be a lowercase SHA-256 digest"
@@ -455,8 +461,7 @@ class CertificationInput:
                 "local_correctness_artifact",
             )
         if not isinstance(self.scenario_results, tuple) or not all(
-            isinstance(result, ScenarioResult)
-            for result in self.scenario_results
+            isinstance(result, ScenarioResult) for result in self.scenario_results
         ):
             raise CertificationInvariantError(
                 "scenario_results must be a tuple of ScenarioResult values"

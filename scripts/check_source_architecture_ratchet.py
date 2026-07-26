@@ -22,6 +22,12 @@ modules. It parses production Python and SQL and reports these rule IDs:
 ``SRCARCH007``
     A retired synthetic source harness or single-host spammer compatibility
     surface still exists after Provider Lab became the only simulator.
+``SRCARCH008``
+    An installation query selects an arbitrary first/latest row instead of an
+    exact installation UUID or an explicit collection.
+``SRCARCH009``
+    A provider integration performs a raw HTTP request outside the callback
+    governed by ``ProviderRequestBinding`` / ``ProviderTransport``.
 
 Normal CI mode subtracts the exact, reviewed entries in the baseline file and
 fails only for new findings. ``--no-baseline`` ignores that debt allowance and
@@ -37,7 +43,7 @@ import math
 import re
 import sys
 from collections import Counter
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -54,6 +60,8 @@ RULE_SQL_SOURCE_CHECK = "SRCARCH004"
 RULE_SOURCE_CLIENT_SWITCH = "SRCARCH005"
 RULE_PARALLEL_SOURCE_MAP = "SRCARCH006"
 RULE_LEGACY_PROVIDER_HARNESS = "SRCARCH007"
+RULE_ARBITRARY_INSTALLATION_SELECTION = "SRCARCH008"
+RULE_PROVIDER_TRANSPORT_BYPASS = "SRCARCH009"
 
 RULE_DESCRIPTIONS: dict[str, str] = {
     RULE_MUTABLE_DISPATCH: ("mutable planner/fetcher/reconciler dispatch registration"),
@@ -65,6 +73,12 @@ RULE_DESCRIPTIONS: dict[str, str] = {
     RULE_SOURCE_CLIENT_SWITCH: "source-based provider-client construction switch",
     RULE_PARALLEL_SOURCE_MAP: "parallel top-level source-keyed mapping",
     RULE_LEGACY_PROVIDER_HARNESS: "legacy provider simulator or spammer binding",
+    RULE_ARBITRARY_INSTALLATION_SELECTION: (
+        "arbitrary first/latest installation selection"
+    ),
+    RULE_PROVIDER_TRANSPORT_BYPASS: (
+        "provider HTTP request bypasses ProviderTransport"
+    ),
 }
 
 _DISPATCH_NAMES = frozenset(
@@ -155,6 +169,90 @@ _LEGACY_SPAMMER_ENDPOINT_MARKERS = (
     "_SPAMMER_SUBPATH",
     "SYNTHETIC_SOURCE_API_BASE",
 )
+_SYNTHETIC_ROOT = Path("services/ingest/synthetic")
+_PROVIDER_INTEGRATION_ROOT = Path("services/ingest/integrations")
+_PROVIDER_TRANSPORT_EXEMPT_PATHS = frozenset(
+    {
+        Path("services/ingest/integrations/provider_transport.py"),
+        Path("services/ingest/integrations/provider_transport_runtime.py"),
+    }
+)
+_RAW_HTTP_CLIENT_TYPES = frozenset(
+    {
+        "aiohttp.ClientSession",
+        "httpx.AsyncClient",
+        "httpx.Client",
+        "requests.Session",
+    }
+)
+_PROVIDER_TRANSPORT_TYPES = frozenset(
+    {
+        "ProviderExecutor",
+        "ProviderRequestBinding",
+        "ProviderTransport",
+        "lib.shared.provider_transport.ProviderTransport",
+        "services.ingest.integrations.provider_transport.ProviderExecutor",
+        "services.ingest.integrations.provider_transport.ProviderRequestBinding",
+    }
+)
+_RAW_HTTP_METHODS = frozenset(
+    {
+        "delete",
+        "get",
+        "head",
+        "options",
+        "patch",
+        "post",
+        "put",
+        "request",
+        "send",
+        "stream",
+        "ws_connect",
+    }
+)
+_RAW_HTTP_MODULE_CALLS = frozenset(
+    {
+        *(f"httpx.{method}" for method in _RAW_HTTP_METHODS),
+        *(f"requests.{method}" for method in _RAW_HTTP_METHODS),
+        "aiohttp.request",
+        "urllib.request.urlopen",
+    }
+)
+_PROVIDER_SDK_METHODS_BY_ROOT: tuple[tuple[Path, frozenset[str]], ...] = (
+    (
+        Path("services/ingest/integrations/aws"),
+        frozenset(
+            {
+                "assume_role",
+                "get_caller_identity",
+                "lookup_events",
+            }
+        ),
+    ),
+)
+_INSTALLATION_TABLE_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+(?P<table>[a-z_][a-z0-9_]*installations)\b",
+    re.IGNORECASE,
+)
+_LIMIT_ONE_RE = re.compile(r"\bLIMIT\s+1\b", re.IGNORECASE)
+_EXACT_INSTALLATION_ID_RE = re.compile(
+    r"""
+    \b(?:[a-z_][a-z0-9_]*\s*\.\s*)?id
+    (?:\s*::\s*(?:text|uuid))?
+    \s*=\s*
+    (?:\$\d+|:[a-z_][a-z0-9_]*|%s|\?|\()
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_INSTALLATION_EXISTENCE_PROBE_RE = re.compile(
+    r"""
+    ^\s*SELECT\s+1\s+
+    FROM\s+[a-z_][a-z0-9_]*installations
+    (?:\s+(?:AS\s+)?[a-z_][a-z0-9_]*)?
+    \s+LIMIT\s+1\s*;?\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
 
 class SourceArchitectureCheckError(RuntimeError):
@@ -230,6 +328,34 @@ def iter_production_files(repo_root: Path) -> Iterator[Path]:
             relative = path.relative_to(repo_root)
             if not _is_excluded(relative):
                 candidates.append(path)
+    yield from sorted(
+        candidates, key=lambda item: item.relative_to(repo_root).as_posix()
+    )
+
+
+def iter_synthetic_binding_files(repo_root: Path) -> Iterator[Path]:
+    """Yield executable synthetic Python that can bind real installation rows.
+
+    Provider Lab deliberately owns independent provider fixtures and source
+    metadata, so the general production rules do not apply under
+    ``services/ingest/synthetic``. Exact installation identity does apply:
+    certification code must not make a broken runtime look correct by quietly
+    selecting an arbitrary tenant installation.
+    """
+
+    root = repo_root / _SYNTHETIC_ROOT
+    if not root.exists():
+        return
+    candidates: list[Path] = []
+    for path in root.rglob("*.py"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(repo_root)
+        if any(part in _EXCLUDED_DIRECTORY_NAMES for part in relative.parts):
+            continue
+        if relative.name.startswith("test_") or relative.name.endswith("_test.py"):
+            continue
+        candidates.append(path)
     yield from sorted(
         candidates, key=lambda item: item.relative_to(repo_root).as_posix()
     )
@@ -435,6 +561,738 @@ def _handler_registration_call(node: ast.AST) -> ast.Call | None:
     return node
 
 
+def _arbitrary_installation_selection(
+    sql: str,
+) -> tuple[str, str] | None:
+    stripped = _strip_sql_comments(sql)
+    outer_query = _without_lateral_subqueries(stripped)
+    table_match = _INSTALLATION_TABLE_RE.search(outer_query)
+    if table_match is None or _LIMIT_ONE_RE.search(outer_query) is None:
+        return None
+    if _INSTALLATION_EXISTENCE_PROBE_RE.fullmatch(outer_query):
+        return None
+    if _EXACT_INSTALLATION_ID_RE.search(outer_query):
+        return None
+    normalized = re.sub(r"\s+", " ", outer_query).strip()
+    return table_match.group("table").casefold(), normalized[:180]
+
+
+def _without_lateral_subqueries(sql: str) -> str:
+    """Blank nested LATERAL bodies so their row limits are scoped correctly."""
+
+    marker = re.compile(r"\bJOIN\s+LATERAL\s*\(", re.IGNORECASE)
+    output = list(sql)
+    search_from = 0
+    while (match := marker.search(sql, search_from)) is not None:
+        open_index = match.end() - 1
+        depth = 1
+        index = open_index + 1
+        quote: str | None = None
+        while index < len(sql) and depth:
+            character = sql[index]
+            if quote is not None:
+                if character == quote:
+                    if index + 1 < len(sql) and sql[index + 1] == quote:
+                        index += 2
+                        continue
+                    quote = None
+            elif character in {"'", '"'}:
+                quote = character
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+            index += 1
+        if depth:
+            break
+        for offset in range(open_index + 1, index - 1):
+            if output[offset] != "\n":
+                output[offset] = " "
+        search_from = index
+    return "".join(output)
+
+
+def _path_is_under(path: Path, root: Path) -> bool:
+    return path == root or path.parts[: len(root.parts)] == root.parts
+
+
+class _OutboundScopeIndex(ast.NodeVisitor):
+    """Index lexical owners without importing provider integrations."""
+
+    def __init__(self) -> None:
+        self.parents: dict[ast.AST, ast.AST] = {}
+        self.function_parent: dict[
+            ast.AsyncFunctionDef | ast.FunctionDef,
+            ast.AsyncFunctionDef | ast.FunctionDef | None,
+        ] = {}
+        self.function_class: dict[
+            ast.AsyncFunctionDef | ast.FunctionDef,
+            ast.ClassDef | None,
+        ] = {}
+        self.node_function: dict[
+            ast.AST,
+            ast.AsyncFunctionDef | ast.FunctionDef | None,
+        ] = {}
+        self.node_class: dict[ast.AST, ast.ClassDef | None] = {}
+        self.functions_by_owner: dict[
+            tuple[
+                ast.ClassDef | None, ast.AsyncFunctionDef | ast.FunctionDef | None, str
+            ],
+            ast.AsyncFunctionDef | ast.FunctionDef,
+        ] = {}
+        self._functions: list[ast.AsyncFunctionDef | ast.FunctionDef] = []
+        self._classes: list[ast.ClassDef] = []
+
+    def generic_visit(self, node: ast.AST) -> None:
+        current_function = self._functions[-1] if self._functions else None
+        current_class = self._classes[-1] if self._classes else None
+        self.node_function[node] = current_function
+        self.node_class[node] = current_class
+        for child in ast.iter_child_nodes(node):
+            self.parents[child] = node
+            self.visit(child)
+
+    def _visit_function(
+        self,
+        node: ast.AsyncFunctionDef | ast.FunctionDef,
+    ) -> None:
+        parent_function = self._functions[-1] if self._functions else None
+        owner_class = self._classes[-1] if self._classes else None
+        self.node_function[node] = parent_function
+        self.node_class[node] = owner_class
+        self.function_parent[node] = parent_function
+        self.function_class[node] = owner_class
+        self.functions_by_owner[(owner_class, parent_function, node.name)] = node
+        self._functions.append(node)
+        for child in ast.iter_child_nodes(node):
+            self.parents[child] = node
+            self.visit(child)
+        self._functions.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(  # noqa: N802
+        self,
+        node: ast.AsyncFunctionDef,
+    ) -> None:
+        self._visit_function(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        current_function = self._functions[-1] if self._functions else None
+        current_class = self._classes[-1] if self._classes else None
+        self.node_function[node] = current_function
+        self.node_class[node] = current_class
+        self._classes.append(node)
+        for child in ast.iter_child_nodes(node):
+            self.parents[child] = node
+            self.visit(child)
+        self._classes.pop()
+
+
+def _module_import_aliases(tree: ast.Module) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for item in node.names:
+                if item.asname is not None:
+                    aliases[item.asname] = item.name
+                else:
+                    root = item.name.split(".", 1)[0]
+                    aliases[root] = root
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            for item in node.names:
+                if item.name == "*":
+                    continue
+                aliases[item.asname or item.name] = f"{node.module}.{item.name}"
+    return aliases
+
+
+def _resolved_dotted_name(
+    node: ast.AST,
+    aliases: Mapping[str, str],
+) -> str | None:
+    dotted = _dotted_name(node)
+    if dotted is None:
+        return None
+    root, separator, suffix = dotted.partition(".")
+    resolved_root = aliases.get(root, root)
+    return f"{resolved_root}.{suffix}" if separator else resolved_root
+
+
+def _annotation_mentions(
+    annotation: ast.AST | None,
+    *,
+    aliases: Mapping[str, str],
+    types: frozenset[str],
+) -> bool:
+    if annotation is None:
+        return False
+    for child in ast.walk(annotation):
+        dotted = _resolved_dotted_name(child, aliases)
+        if dotted in types:
+            return True
+    return False
+
+
+def _function_arguments(
+    node: ast.AsyncFunctionDef | ast.FunctionDef,
+) -> tuple[ast.arg, ...]:
+    positional = (*node.args.posonlyargs, *node.args.args)
+    optional = (*node.args.kwonlyargs,)
+    variadic = tuple(
+        item for item in (node.args.vararg, node.args.kwarg) if item is not None
+    )
+    return (*positional, *optional, *variadic)
+
+
+@dataclass
+class _OutboundFacts:
+    aliases: dict[str, str]
+    scopes: _OutboundScopeIndex
+    raw_names: dict[ast.AsyncFunctionDef | ast.FunctionDef | None, set[str]]
+    binding_names: dict[ast.AsyncFunctionDef | ast.FunctionDef | None, set[str]]
+    raw_attributes: dict[ast.ClassDef, set[str]]
+    binding_attributes: dict[ast.ClassDef, set[str]]
+    raw_returners: set[
+        tuple[ast.ClassDef | None, ast.AsyncFunctionDef | ast.FunctionDef | None, str]
+    ]
+    binding_returners: set[
+        tuple[ast.ClassDef | None, ast.AsyncFunctionDef | ast.FunctionDef | None, str]
+    ]
+
+    @classmethod
+    def build(cls, tree: ast.Module) -> _OutboundFacts:
+        aliases = _module_import_aliases(tree)
+        scopes = _OutboundScopeIndex()
+        scopes.visit(tree)
+        functions = tuple(scopes.function_parent)
+        facts = cls(
+            aliases=aliases,
+            scopes=scopes,
+            raw_names={None: set()},
+            binding_names={None: set()},
+            raw_attributes={},
+            binding_attributes={},
+            raw_returners=set(),
+            binding_returners=set(),
+        )
+        for function in functions:
+            facts.raw_names[function] = set()
+            facts.binding_names[function] = set()
+            owner = (
+                scopes.function_class[function],
+                scopes.function_parent[function],
+                function.name,
+            )
+            if _annotation_mentions(
+                function.returns,
+                aliases=aliases,
+                types=_RAW_HTTP_CLIENT_TYPES,
+            ):
+                facts.raw_returners.add(owner)
+            if _annotation_mentions(
+                function.returns,
+                aliases=aliases,
+                types=_PROVIDER_TRANSPORT_TYPES,
+            ):
+                facts.binding_returners.add(owner)
+            for argument in _function_arguments(function):
+                if _annotation_mentions(
+                    argument.annotation,
+                    aliases=aliases,
+                    types=_RAW_HTTP_CLIENT_TYPES,
+                ):
+                    facts.raw_names[function].add(argument.arg)
+                if _annotation_mentions(
+                    argument.annotation,
+                    aliases=aliases,
+                    types=_PROVIDER_TRANSPORT_TYPES,
+                ):
+                    facts.binding_names[function].add(argument.arg)
+
+        assignments = tuple(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+        )
+        changed = True
+        while changed:
+            changed = False
+            for assignment in assignments:
+                scope = scopes.node_function.get(assignment)
+                owner_class = (
+                    scopes.function_class.get(scope)
+                    if scope is not None
+                    else scopes.node_class.get(assignment)
+                )
+                if isinstance(assignment, ast.Assign):
+                    targets = assignment.targets
+                    value = assignment.value
+                    annotation = None
+                else:
+                    targets = (assignment.target,)
+                    value = assignment.value
+                    annotation = (
+                        assignment.annotation
+                        if isinstance(assignment, ast.AnnAssign)
+                        else None
+                    )
+                raw = _annotation_mentions(
+                    annotation,
+                    aliases=aliases,
+                    types=_RAW_HTTP_CLIENT_TYPES,
+                ) or facts.expression_is_raw(
+                    value,
+                    scope=scope,
+                    owner_class=owner_class,
+                )
+                binding = _annotation_mentions(
+                    annotation,
+                    aliases=aliases,
+                    types=_PROVIDER_TRANSPORT_TYPES,
+                ) or facts.expression_is_binding(
+                    value,
+                    scope=scope,
+                    owner_class=owner_class,
+                )
+                if raw:
+                    changed |= facts._mark_targets(
+                        targets,
+                        scope=scope,
+                        owner_class=owner_class,
+                        raw=True,
+                    )
+                if binding:
+                    changed |= facts._mark_targets(
+                        targets,
+                        scope=scope,
+                        owner_class=owner_class,
+                        raw=False,
+                    )
+        return facts
+
+    def _scope_has_name(
+        self,
+        name: str,
+        *,
+        scope: ast.AsyncFunctionDef | ast.FunctionDef | None,
+        raw: bool,
+    ) -> bool:
+        names = self.raw_names if raw else self.binding_names
+        current = scope
+        while True:
+            if name in names.get(current, set()):
+                return True
+            if current is None:
+                return False
+            current = self.scopes.function_parent[current]
+
+    def _returner_matches(
+        self,
+        call: ast.Call,
+        *,
+        scope: ast.AsyncFunctionDef | ast.FunctionDef | None,
+        owner_class: ast.ClassDef | None,
+        raw: bool,
+    ) -> bool:
+        returners = self.raw_returners if raw else self.binding_returners
+        if isinstance(call.func, ast.Name):
+            current = scope
+            while True:
+                if (owner_class, current, call.func.id) in returners:
+                    return True
+                if current is None:
+                    return (None, None, call.func.id) in returners
+                current = self.scopes.function_parent[current]
+        if (
+            isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in {"cls", "self"}
+            and owner_class is not None
+        ):
+            return (owner_class, None, call.func.attr) in returners
+        return False
+
+    def _expression_has_kind(
+        self,
+        node: ast.AST | None,
+        *,
+        scope: ast.AsyncFunctionDef | ast.FunctionDef | None,
+        owner_class: ast.ClassDef | None,
+        raw: bool,
+    ) -> bool:
+        if node is None:
+            return False
+        expected_types = _RAW_HTTP_CLIENT_TYPES if raw else _PROVIDER_TRANSPORT_TYPES
+        names = self.raw_attributes if raw else self.binding_attributes
+        if isinstance(node, ast.Name):
+            return self._scope_has_name(node.id, scope=scope, raw=raw)
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in {"cls", "self"}
+            and owner_class is not None
+        ):
+            return node.attr in names.get(owner_class, set())
+        if isinstance(node, ast.Call):
+            dotted = _resolved_dotted_name(node.func, self.aliases)
+            return dotted in expected_types or self._returner_matches(
+                node,
+                scope=scope,
+                owner_class=owner_class,
+                raw=raw,
+            )
+        if isinstance(node, ast.BoolOp):
+            return any(
+                self._expression_has_kind(
+                    child,
+                    scope=scope,
+                    owner_class=owner_class,
+                    raw=raw,
+                )
+                for child in node.values
+            )
+        if isinstance(node, ast.IfExp):
+            return any(
+                self._expression_has_kind(
+                    child,
+                    scope=scope,
+                    owner_class=owner_class,
+                    raw=raw,
+                )
+                for child in (node.body, node.orelse)
+            )
+        if isinstance(node, (ast.Await, ast.NamedExpr)):
+            return self._expression_has_kind(
+                node.value,
+                scope=scope,
+                owner_class=owner_class,
+                raw=raw,
+            )
+        return False
+
+    def expression_is_raw(
+        self,
+        node: ast.AST | None,
+        *,
+        scope: ast.AsyncFunctionDef | ast.FunctionDef | None,
+        owner_class: ast.ClassDef | None,
+    ) -> bool:
+        return self._expression_has_kind(
+            node,
+            scope=scope,
+            owner_class=owner_class,
+            raw=True,
+        )
+
+    def expression_is_binding(
+        self,
+        node: ast.AST | None,
+        *,
+        scope: ast.AsyncFunctionDef | ast.FunctionDef | None,
+        owner_class: ast.ClassDef | None,
+    ) -> bool:
+        return self._expression_has_kind(
+            node,
+            scope=scope,
+            owner_class=owner_class,
+            raw=False,
+        )
+
+    def _mark_targets(
+        self,
+        targets: Sequence[ast.AST],
+        *,
+        scope: ast.AsyncFunctionDef | ast.FunctionDef | None,
+        owner_class: ast.ClassDef | None,
+        raw: bool,
+    ) -> bool:
+        scoped_names = self.raw_names if raw else self.binding_names
+        attributes = self.raw_attributes if raw else self.binding_attributes
+        changed = False
+
+        def mark(target: ast.AST) -> None:
+            nonlocal changed
+            if isinstance(target, ast.Name):
+                before = len(scoped_names.setdefault(scope, set()))
+                scoped_names[scope].add(target.id)
+                changed |= len(scoped_names[scope]) != before
+            elif (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id in {"cls", "self"}
+                and owner_class is not None
+            ):
+                before = len(attributes.setdefault(owner_class, set()))
+                attributes[owner_class].add(target.attr)
+                changed |= len(attributes[owner_class]) != before
+            elif isinstance(target, (ast.List, ast.Tuple)):
+                for child in target.elts:
+                    mark(child)
+
+        for target in targets:
+            mark(target)
+        return changed
+
+    def resolve_callable(
+        self,
+        node: ast.AST,
+        *,
+        scope: ast.AsyncFunctionDef | ast.FunctionDef | None,
+        owner_class: ast.ClassDef | None,
+    ) -> ast.AsyncFunctionDef | ast.FunctionDef | ast.Lambda | None:
+        if isinstance(node, ast.Lambda):
+            return node
+        if isinstance(node, ast.Name):
+            current = scope
+            while True:
+                resolved = self.scopes.functions_by_owner.get(
+                    (owner_class, current, node.id)
+                )
+                if resolved is not None:
+                    return resolved
+                if current is None:
+                    return self.scopes.functions_by_owner.get((None, None, node.id))
+                current = self.scopes.function_parent[current]
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in {"cls", "self"}
+            and owner_class is not None
+        ):
+            return self.scopes.functions_by_owner.get((owner_class, None, node.attr))
+        return None
+
+
+class _ProviderOutboundScanner(ast.NodeVisitor):
+    """Find raw provider HTTP attempts not governed by the request contract."""
+
+    def __init__(self, *, path: Path, tree: ast.Module) -> None:
+        self.path = path
+        self.facts = _OutboundFacts.build(tree)
+        self.findings: list[Finding] = []
+        self._guarded_callables: set[
+            ast.AsyncFunctionDef | ast.FunctionDef | ast.Lambda
+        ] = set()
+        self._index_guarded_callbacks(tree)
+
+    def _index_guarded_callbacks(self, tree: ast.Module) -> None:
+        guarded_parameters: dict[
+            ast.AsyncFunctionDef | ast.FunctionDef,
+            set[str],
+        ] = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(
+                node.func,
+                ast.Attribute,
+            ):
+                continue
+            scope = self.facts.scopes.node_function.get(node)
+            owner_class = (
+                self.facts.scopes.function_class.get(scope)
+                if scope is not None
+                else self.facts.scopes.node_class.get(node)
+            )
+            if node.func.attr != "execute" or not self.facts.expression_is_binding(
+                node.func.value,
+                scope=scope,
+                owner_class=owner_class,
+            ):
+                continue
+            candidates = list(node.args)
+            candidates.extend(
+                keyword.value
+                for keyword in node.keywords
+                if keyword.arg in {"call", "request"}
+            )
+            for candidate in candidates:
+                resolved = self.facts.resolve_callable(
+                    candidate,
+                    scope=scope,
+                    owner_class=owner_class,
+                )
+                if resolved is not None:
+                    self._guarded_callables.add(resolved)
+                elif (
+                    isinstance(candidate, ast.Name)
+                    and scope is not None
+                    and candidate.id
+                    in {argument.arg for argument in _function_arguments(scope)}
+                ):
+                    guarded_parameters.setdefault(scope, set()).add(candidate.id)
+
+        # Carry the guarantee through small typed helpers such as
+        # ``AwsClient._execute(operation, call)``. The helper is trustworthy
+        # only because its callback parameter is itself passed to the exact
+        # ProviderRequestBinding owned by that class.
+        changed = True
+        while changed:
+            changed = False
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                scope = self.facts.scopes.node_function.get(node)
+                owner_class = (
+                    self.facts.scopes.function_class.get(scope)
+                    if scope is not None
+                    else self.facts.scopes.node_class.get(node)
+                )
+                helper = self.facts.resolve_callable(
+                    node.func,
+                    scope=scope,
+                    owner_class=owner_class,
+                )
+                parameter_names = guarded_parameters.get(helper) if helper else None
+                if helper is None or not parameter_names:
+                    continue
+                ordered = _function_arguments(helper)
+                if (
+                    isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in {"cls", "self"}
+                    and ordered
+                    and ordered[0].arg in {"cls", "self"}
+                ):
+                    ordered = ordered[1:]
+                supplied: dict[str, ast.AST] = {
+                    argument.arg: value
+                    for argument, value in zip(ordered, node.args, strict=False)
+                }
+                supplied.update(
+                    {
+                        keyword.arg: keyword.value
+                        for keyword in node.keywords
+                        if keyword.arg is not None
+                    }
+                )
+                caller_parameters = (
+                    {argument.arg for argument in _function_arguments(scope)}
+                    if scope is not None
+                    else set()
+                )
+                for parameter_name in parameter_names:
+                    candidate = supplied.get(parameter_name)
+                    if candidate is None:
+                        continue
+                    resolved = self.facts.resolve_callable(
+                        candidate,
+                        scope=scope,
+                        owner_class=owner_class,
+                    )
+                    if resolved is not None and resolved not in self._guarded_callables:
+                        self._guarded_callables.add(resolved)
+                        changed = True
+                    elif (
+                        isinstance(candidate, ast.Name)
+                        and scope is not None
+                        and candidate.id in caller_parameters
+                        and candidate.id
+                        not in guarded_parameters.setdefault(scope, set())
+                    ):
+                        guarded_parameters[scope].add(candidate.id)
+                        changed = True
+
+        # A retry callback is safe only when ProviderTransport is its sole
+        # entrypoint. An optional ``binding`` branch such as
+        # ``binding.execute(..., _once) if binding else await _once()`` still
+        # leaves a real unmetered request path and must not receive credit.
+        directly_invoked: set[ast.AsyncFunctionDef | ast.FunctionDef | ast.Lambda] = (
+            set()
+        )
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            scope = self.facts.scopes.node_function.get(node)
+            owner_class = (
+                self.facts.scopes.function_class.get(scope)
+                if scope is not None
+                else self.facts.scopes.node_class.get(node)
+            )
+            resolved = self.facts.resolve_callable(
+                node.func,
+                scope=scope,
+                owner_class=owner_class,
+            )
+            if resolved not in self._guarded_callables:
+                continue
+            current = self.facts.scopes.parents.get(node)
+            while current is not None and current not in self._guarded_callables:
+                current = self.facts.scopes.parents.get(current)
+            if current is None:
+                directly_invoked.add(resolved)
+        self._guarded_callables.difference_update(directly_invoked)
+
+    def _is_guarded(self, node: ast.AST) -> bool:
+        current: ast.AST | None = node
+        while current is not None:
+            if current in self._guarded_callables:
+                return True
+            current = self.facts.scopes.parents.get(current)
+        return False
+
+    def _raw_provider_call(self, node: ast.Call) -> str | None:
+        dotted = _resolved_dotted_name(node.func, self.facts.aliases)
+        if dotted in _RAW_HTTP_MODULE_CALLS:
+            return dotted
+        if not isinstance(node.func, ast.Attribute):
+            return None
+        for root, methods in _PROVIDER_SDK_METHODS_BY_ROOT:
+            if _path_is_under(self.path, root) and node.func.attr in methods:
+                return dotted or _display_node(node.func)
+        if node.func.attr not in _RAW_HTTP_METHODS:
+            return None
+        scope = self.facts.scopes.node_function.get(node)
+        owner_class = (
+            self.facts.scopes.function_class.get(scope)
+            if scope is not None
+            else self.facts.scopes.node_class.get(node)
+        )
+        if not self.facts.expression_is_raw(
+            node.func.value,
+            scope=scope,
+            owner_class=owner_class,
+        ):
+            return None
+        return dotted or _display_node(node.func)
+
+    def _owner(self, node: ast.AST) -> str:
+        scope = self.facts.scopes.node_function.get(node)
+        names: list[str] = []
+        current = scope
+        while current is not None:
+            names.append(current.name)
+            current = self.facts.scopes.function_parent[current]
+        names.reverse()
+        owner_class = (
+            self.facts.scopes.function_class.get(scope)
+            if scope is not None
+            else self.facts.scopes.node_class.get(node)
+        )
+        if owner_class is not None:
+            names.insert(0, owner_class.name)
+        return ".".join(names) or "<module>"
+
+    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+        outbound = self._raw_provider_call(node)
+        if outbound is not None and not self._is_guarded(node):
+            owner = self._owner(node)
+            rendered = _display_node(node)
+            self.findings.append(
+                Finding(
+                    rule_id=RULE_PROVIDER_TRANSPORT_BYPASS,
+                    path=self.path,
+                    line_number=node.lineno,
+                    signature=f"owner={owner}:call={rendered}",
+                    message=(
+                        f"{outbound} sends a provider request outside a "
+                        "ProviderRequestBinding.execute() callback"
+                    ),
+                )
+            )
+        self.generic_visit(node)
+
+
 class _PythonScanner(ast.NodeVisitor):
     def __init__(
         self,
@@ -584,8 +1442,7 @@ class _PythonScanner(ast.NodeVisitor):
         literal_keys = tuple(
             key
             for item in value.keys
-            if item is not None
-            and (key := _literal_string(item)) is not None
+            if item is not None and (key := _literal_string(item)) is not None
         )
         canonical_keys = frozenset(literal_keys) & self.canonical_source_ids
         if len(canonical_keys) < 4:
@@ -681,6 +1538,24 @@ class _PythonScanner(ast.NodeVisitor):
                     ),
                 )
         self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> None:  # noqa: N802
+        if not isinstance(node.value, str):
+            return
+        arbitrary = _arbitrary_installation_selection(node.value)
+        if arbitrary is None:
+            return
+        table, query_shape = arbitrary
+        owner = ".".join(self._qualname) or "<module>"
+        self._add(
+            rule_id=RULE_ARBITRARY_INSTALLATION_SELECTION,
+            node=node,
+            signature=f"owner={owner}:table={table}:query={query_shape}",
+            message=(
+                f"{table} is reduced to an arbitrary LIMIT 1 row; require the "
+                "tenant/source installation UUID or return the collection"
+            ),
+        )
 
     def visit_Expr(self, node: ast.Expr) -> None:  # noqa: N802
         in_handler_package = self.path.parts[:4] == (
@@ -983,8 +1858,7 @@ def scan_repository(
                     path=_LEGACY_SPAMMER_ENDPOINT_PATH,
                     line_number=1,
                     signature=(
-                        "single-host-spammer-markers="
-                        + ",".join(present_markers)
+                        "single-host-spammer-markers=" + ",".join(present_markers)
                     ),
                     message=(
                         "the single-host spammer endpoint fallback remains; "
@@ -1023,6 +1897,39 @@ def scan_repository(
         )
         scanner.visit(tree)
         findings.extend(scanner.findings)
+        if (
+            _path_is_under(relative, _PROVIDER_INTEGRATION_ROOT)
+            and relative not in _PROVIDER_TRANSPORT_EXEMPT_PATHS
+        ):
+            outbound_scanner = _ProviderOutboundScanner(
+                path=relative,
+                tree=tree,
+            )
+            outbound_scanner.visit(tree)
+            findings.extend(outbound_scanner.findings)
+
+    for path in iter_synthetic_binding_files(root):
+        relative = path.relative_to(root)
+        try:
+            tree = ast.parse(
+                path.read_text(encoding="utf-8"),
+                filename=str(relative),
+            )
+        except (OSError, SyntaxError) as exc:
+            raise SourceArchitectureCheckError(
+                f"cannot parse synthetic Python {relative}: {exc}"
+            ) from exc
+        scanner = _PythonScanner(
+            path=relative,
+            canonical_source_ids=canonical,
+            authoritative_catalog_path=authoritative_relative,
+        )
+        scanner.visit(tree)
+        findings.extend(
+            finding
+            for finding in scanner.findings
+            if finding.rule_id == RULE_ARBITRARY_INSTALLATION_SELECTION
+        )
 
     findings.sort(
         key=lambda finding: (

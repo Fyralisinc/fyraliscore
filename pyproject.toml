@@ -118,6 +118,12 @@ include = ["lib*", "services*"]
 exclude = ["tests*", "ui*"]
 namespaces = true
 
+[tool.setuptools.package-data]
+"services.ingest.source_certification" = [
+    "evidence/*.json",
+    "evidence/README.md",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]

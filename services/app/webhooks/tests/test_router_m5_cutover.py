@@ -630,6 +630,7 @@ async def test_double_ingestion_safe_during_cutover(
         alias_repo=EntityAliasRepo(fresh_db),
         embedder=None,
         embedding_producer=capture,
+        summarization_producer=capture,
     )
 
     # ---- FINAL ASSERTION: still exactly 1 observation row ----

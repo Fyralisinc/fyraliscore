@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_id": "signal",
+  "pack_version": "1.0.0",
+  "provider_api_version": "signal-cli JSON-RPC",
+  "evidence": [
+    {
+      "behavior_id": "used_api_surface",
+      "kind": "documented",
+      "uri": "https://github.com/AsamK/signal-cli/blob/master/man/signal-cli-jsonrpc.5.adoc",
+      "api_version": "signal-cli JSON-RPC",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Pending P0 JSON-RPC/SSE schema lock and pinned signal-cli version."
+    },
+    {
+      "behavior_id": "quota_policy",
+      "kind": "documented",
+      "uri": "https://github.com/AsamK/signal-cli",
+      "api_version": null,
+      "schema_sha256": null,
+      "quota_uri": "https://github.com/AsamK/signal-cli",
+      "verified_at": null,
+      "notes": "Reconnect and compatibility behavior must be observed and locked."
+    },
+    {
+      "behavior_id": "fyralis_runtime_contract",
+      "kind": "fyralis_specific",
+      "uri": "repo://services/ingest/source_contract/catalog.py#signal",
+      "api_version": "source-contract-v1",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Installation-scoped worker linkage awaits final verification."
+    }
+  ]
+}

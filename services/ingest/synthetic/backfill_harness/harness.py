@@ -91,6 +91,8 @@ class TenantOutcome:
 
     scenario: BackfillScenario
     tenant_id: UUID
+    trigger_id: UUID | None = None
+    installation_row_id: UUID | None = None
     onboarding_run_id: UUID | None = None
     completion_observed: bool = False
     completion_signal_count: int = 0
@@ -1823,15 +1825,25 @@ class BackfillHarness:
         `onboarding_triggers` onward.
         """
         sem = asyncio.Semaphore(self._concurrency)
+        tenant_locks = {
+            outcome.tenant_id: asyncio.Lock()
+            for outcome in outcomes
+        }
 
         async def _one(outcome: TenantOutcome) -> None:
             async with sem:
-                try:
-                    await self._write_install_and_trigger(outcome)
-                except Exception as exc:  # noqa: BLE001
-                    outcome.install_error = (
-                        f"{type(exc).__name__}: {exc}"
-                    )
+                # A future certification profile may deliberately create
+                # sibling installations for one tenant. Serializing only
+                # those siblings lets the exact "new trigger" attribution
+                # below remain deterministic while unrelated tenants still
+                # seed concurrently.
+                async with tenant_locks[outcome.tenant_id]:
+                    try:
+                        await self._write_install_and_trigger(outcome)
+                    except Exception as exc:  # noqa: BLE001
+                        outcome.install_error = (
+                            f"{type(exc).__name__}: {exc}"
+                        )
 
         await asyncio.gather(*(_one(o) for o in outcomes))
 
@@ -1847,9 +1859,112 @@ class BackfillHarness:
                         "SELECT set_config('app.current_tenant', $1::text, true)",
                         str(outcome.tenant_id),
                     )
+                    before = await self._installation_trigger_rows(
+                        conn,
+                        outcome=outcome,
+                    )
                     await seeder(conn, outcome)
+                    after = await self._installation_trigger_rows(
+                        conn,
+                        outcome=outcome,
+                    )
+                    self._bind_exact_installation_trigger(
+                        outcome,
+                        before=before,
+                        after=after,
+                    )
             finally:
                 await conn.execute("RESET app.current_tenant")
+
+    @staticmethod
+    async def _installation_trigger_rows(
+        conn: Any,
+        *,
+        outcome: TenantOutcome,
+    ) -> list[Any]:
+        """Read every candidate; exact attribution happens in Python.
+
+        Deliberately avoid ``ORDER BY ... LIMIT 1``. A sibling install must
+        never inherit whichever trigger happened to be newest.
+        """
+        return list(
+            await conn.fetch(
+                """
+                SELECT id, installation_row_id, gmail_installation_id
+                  FROM onboarding_triggers
+                 WHERE tenant_id = $1
+                   AND source = $2
+                   AND trigger_kind = 'install'
+                """,
+                outcome.tenant_id,
+                outcome.scenario.source,
+            )
+        )
+
+    @staticmethod
+    def _bind_exact_installation_trigger(
+        outcome: TenantOutcome,
+        *,
+        before: list[Any],
+        after: list[Any],
+    ) -> None:
+        """Bind the outcome to the one trigger its seeder created.
+
+        On a retry, an already-bound trigger must still exist unchanged.
+        On first execution, exactly one newly visible trigger is required.
+        A lone pre-existing idempotent trigger is accepted; multiple
+        pre-existing siblings without a prior binding are ambiguous and fail
+        closed.
+        """
+        rows_by_id = {UUID(str(row["id"])): row for row in after}
+        if len(rows_by_id) != len(after):
+            raise RuntimeError("duplicate onboarding trigger identities")
+
+        selected: Any | None = None
+        if outcome.trigger_id is not None:
+            selected = rows_by_id.get(outcome.trigger_id)
+            if selected is None:
+                raise RuntimeError(
+                    "previously bound onboarding trigger disappeared for "
+                    f"{outcome.scenario.source}/{outcome.scenario.tenant_slug}",
+                )
+        else:
+            before_ids = {UUID(str(row["id"])) for row in before}
+            new_ids = set(rows_by_id) - before_ids
+            if len(new_ids) == 1:
+                selected = rows_by_id[new_ids.pop()]
+            elif not new_ids and len(rows_by_id) == 1:
+                # Idempotent retry reconstructed from durable state.
+                selected = next(iter(rows_by_id.values()))
+            else:
+                raise RuntimeError(
+                    "cannot attribute an exact onboarding trigger for "
+                    f"{outcome.scenario.source}/{outcome.scenario.tenant_slug}: "
+                    f"before={len(before_ids)}, after={len(rows_by_id)}, "
+                    f"new={len(new_ids)}",
+                )
+
+        trigger_id = UUID(str(selected["id"]))
+        raw_installation_id = (
+            selected["installation_row_id"]
+            or selected["gmail_installation_id"]
+        )
+        if raw_installation_id is None:
+            raise RuntimeError(
+                "certification trigger has no exact installation row for "
+                f"{outcome.scenario.source}/{outcome.scenario.tenant_slug}",
+            )
+        installation_row_id = UUID(str(raw_installation_id))
+        if (
+            outcome.installation_row_id is not None
+            and outcome.installation_row_id != installation_row_id
+        ):
+            raise RuntimeError(
+                "certification trigger changed installation identity for "
+                f"{outcome.scenario.source}/{outcome.scenario.tenant_slug}",
+            )
+        outcome.trigger_id = trigger_id
+        outcome.installation_row_id = installation_row_id
 
     # ---- Phase B: Run ----
     def _base_env(self) -> dict[str, str]:
@@ -1978,29 +2093,28 @@ class BackfillHarness:
 
         async def _one(outcome: TenantOutcome) -> None:
             async with sem:
+                if outcome.trigger_id is None:
+                    outcome.install_error = (
+                        outcome.install_error
+                        or "certification outcome has no exact onboarding trigger"
+                    )
+                    return
                 deadline = time.monotonic() + self._deadline_s
+                workflow_id = f"onboarding:{outcome.trigger_id}"
                 while time.monotonic() < deadline:
-                    row = await self._pool.fetchrow(
-                        """
-                        SELECT onboarding_run_id
-                          FROM onboarding_runs
-                         WHERE tenant_id = $1
-                         ORDER BY started_at DESC NULLS LAST
-                         LIMIT 1
-                        """,
-                        outcome.tenant_id,
-                    ) if False else None  # placeholder for typing
-                    # Reads via run lookup → tenant_onboarding_completed
-                    # signal in Bridge inbox keyed by run_id.
+                    # oauth_poller derives workflow_id from the exact trigger
+                    # UUID. Looking up that immutable identity prevents a
+                    # sibling installation's newer run from being attributed
+                    # to this outcome.
                     row = await self._pool.fetchrow(
                         """
                         SELECT id, status, completed_at
                           FROM onboarding_runs
                          WHERE tenant_id = $1
-                         ORDER BY started_at DESC NULLS LAST
-                         LIMIT 1
+                           AND workflow_id = $2
                         """,
                         outcome.tenant_id,
+                        workflow_id,
                     )
                     if row is not None:
                         outcome.onboarding_run_id = row["id"]
@@ -2113,7 +2227,10 @@ class BackfillHarness:
         self, outcomes: list[TenantOutcome],
     ) -> None:
         for outcome in outcomes:
-            if outcome.onboarding_run_id is None:
+            if (
+                outcome.onboarding_run_id is None
+                or outcome.installation_row_id is None
+            ):
                 continue
             # observations
             rows = await self._pool.fetch(
@@ -2124,16 +2241,28 @@ class BackfillHarness:
             outcome.observations = [dict(r) for r in rows]
 
             # reconciliation pass count
-            pass_count = await self._pool.fetchval(
+            source_rows = await self._pool.fetch(
                 """
                 SELECT reconciliation_pass_count
                   FROM source_onboarding_runs
                  WHERE onboarding_run_id = $1
-                 LIMIT 1
+                   AND source = $2
+                   AND installation_row_id = $3
                 """,
                 outcome.onboarding_run_id,
+                outcome.scenario.source,
+                outcome.installation_row_id,
             )
-            outcome.reconciliation_pass_count = int(pass_count or 0)
+            if len(source_rows) != 1:
+                raise RuntimeError(
+                    "expected exactly one source onboarding row for "
+                    f"{outcome.scenario.source}/{outcome.scenario.tenant_slug} "
+                    f"and installation {outcome.installation_row_id}; "
+                    f"found {len(source_rows)}",
+                )
+            outcome.reconciliation_pass_count = int(
+                source_rows[0]["reconciliation_pass_count"] or 0
+            )
 
             # cursor history per shard
             shards = await self._pool.fetch(

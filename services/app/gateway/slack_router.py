@@ -435,7 +435,7 @@ async def status(user_id: str, req: Request) -> dict[str, Any]:
     pool = _pool(req)
     team_id = _team_id_for(tenant_id)
 
-    counts, dm_total, recent, install_row = await _load_slack_status_rows(
+    counts, dm_total, recent, install_rows = await _load_slack_status_rows(
         pool,
         tenant_id=tenant_id,
         user_id=user_id,
@@ -444,7 +444,17 @@ async def status(user_id: str, req: Request) -> dict[str, Any]:
         "user_id": user_id,
         "team_id": team_id,
         "channel": _CHANNEL,
-        "installed": install_row is not None,
+        "installed": bool(install_rows),
+        "installations": [
+            {
+                "installation_id": str(row["id"]),
+                "team_id": row["team_id"],
+                "user_id": row["user_id"],
+                "granted_user_scopes": row["granted_user_scopes"],
+                "created_at": row["created_at"].isoformat(),
+            }
+            for row in install_rows
+        ],
         "dm_observations": dm_total or 0,
         "counts_by_channel_type": {r["channel_type"]: r["n"] for r in counts},
         "recent": [_status_observation_payload(r) for r in recent],
@@ -620,7 +630,7 @@ async def _load_slack_status_rows(
     *,
     tenant_id: UUID,
     user_id: str,
-) -> tuple[list[Any], int | None, list[Any], Any]:
+) -> tuple[list[Any], int | None, list[Any], list[Any]]:
     counts = await pool.fetch(
         """
         SELECT COALESCE(content->>'channel_type', 'unknown') AS channel_type,
@@ -653,13 +663,14 @@ async def _load_slack_status_rows(
         """,
         tenant_id, _CHANNEL,
     )
-    install_row = await pool.fetchrow(
-        "SELECT user_id, team_id, granted_user_scopes, created_at "
+    install_rows = await pool.fetch(
+        "SELECT id, user_id, team_id, granted_user_scopes, created_at "
         "FROM slack_dm_installations "
-        "WHERE tenant_id = $1 AND user_id = $2 AND disabled_at IS NULL LIMIT 1",
+        "WHERE tenant_id = $1 AND user_id = $2 AND disabled_at IS NULL "
+        "ORDER BY team_id, id",
         tenant_id, user_id,
     )
-    return list(counts), dm_total, list(recent), install_row
+    return list(counts), dm_total, list(recent), list(install_rows)
 
 
 def _status_observation_payload(row: Any) -> dict[str, Any]:

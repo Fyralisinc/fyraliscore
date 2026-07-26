@@ -37,17 +37,26 @@ export type FigmaOAuthConnectionController = {
   fileUrlInput: string;
   setFileUrlInput: Dispatch<SetStateAction<string>>;
   status: FigmaConnectionStatus | null;
+  installationIds: string[];
+  selectedInstallationId: string | null;
   callbackOutcome: FigmaOAuthCallbackOutcome;
   loading: boolean;
+  selectingInstallation: boolean;
   starting: boolean;
   retrying: boolean;
   disconnecting: boolean;
   error: string | null;
   connect: () => Promise<void>;
+  selectInstallation: (installationId: string) => Promise<void>;
   refresh: () => Promise<void>;
   retry: () => Promise<void>;
   disconnect: () => Promise<void>;
   clearError: () => void;
+};
+
+type ApplyStatusOptions = {
+  preserveInstallationIds?: boolean;
+  preserveSelection?: boolean;
 };
 
 /**
@@ -69,9 +78,14 @@ export function useFigmaOAuthConnection(
   } = options;
   const [fileUrlInput, setFileUrlInput] = useState(initialFileUrlInput);
   const [status, setStatus] = useState<FigmaConnectionStatus | null>(null);
+  const [installationIds, setInstallationIds] = useState<string[]>([]);
+  const [selectedInstallationId, setSelectedInstallationId] = useState<
+    string | null
+  >(null);
   const [callbackOutcome, setCallbackOutcome] =
     useState<FigmaOAuthCallbackOutcome>(null);
   const [loading, setLoading] = useState(true);
+  const [selectingInstallation, setSelectingInstallation] = useState(false);
   const [starting, setStarting] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
@@ -89,15 +103,44 @@ export function useFigmaOAuthConnection(
     [apiBase, gatewayToken],
   );
 
-  const applyStatus = useCallback((next: FigmaConnectionStatus) => {
-    setStatus(next);
-    statusChangeRef.current?.(next);
-  }, []);
+  const applyStatus = useCallback(
+    (
+      next: FigmaConnectionStatus,
+      applyOptions: ApplyStatusOptions = {},
+    ) => {
+      const reportedInstallationIds = Array.from(
+        new Set([
+          ...next.installationIds,
+          ...(next.installationId ? [next.installationId] : []),
+        ]),
+      );
+      setInstallationIds((current) =>
+        applyOptions.preserveInstallationIds
+          ? Array.from(new Set([...current, ...reportedInstallationIds]))
+          : reportedInstallationIds,
+      );
+      if (next.installationId) {
+        setSelectedInstallationId(next.installationId);
+      } else if (!applyOptions.preserveSelection) {
+        setSelectedInstallationId(null);
+      }
+      setStatus(next);
+      statusChangeRef.current?.(next);
+    },
+    [],
+  );
 
   const refresh = useCallback(async () => {
-    const next = await fetchFigmaConnectionStatus(clientOptions());
-    applyStatus(next);
-  }, [applyStatus, clientOptions]);
+    const next = await fetchFigmaConnectionStatus(
+      clientOptions(),
+      selectedInstallationId ?? undefined,
+    );
+    assertSelectedInstallation(next, selectedInstallationId);
+    applyStatus(next, {
+      preserveInstallationIds: Boolean(selectedInstallationId),
+      preserveSelection: Boolean(selectedInstallationId),
+    });
+  }, [applyStatus, clientOptions, selectedInstallationId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -128,6 +171,36 @@ export function useFigmaOAuthConnection(
     };
   }, [applyStatus, clientOptions]);
 
+  const selectInstallation = useCallback(
+    async (installationId: string) => {
+      const selected = installationId.trim();
+      if (selected && !installationIds.includes(selected)) {
+        setError("Select a Figma installation returned for this tenant.");
+        return;
+      }
+
+      setError(null);
+      setSelectingInstallation(true);
+      setSelectedInstallationId(selected || null);
+      try {
+        const next = await fetchFigmaConnectionStatus(
+          clientOptions(),
+          selected || undefined,
+        );
+        assertSelectedInstallation(next, selected || null);
+        applyStatus(next, {
+          preserveInstallationIds: Boolean(selected),
+          preserveSelection: Boolean(selected),
+        });
+      } catch (caught) {
+        setError(errorMessage(caught));
+      } finally {
+        setSelectingInstallation(false);
+      }
+    },
+    [applyStatus, clientOptions, installationIds],
+  );
+
   useEffect(() => {
     if (!status || !shouldPoll(status)) {
       return;
@@ -154,6 +227,8 @@ export function useFigmaOAuthConnection(
         state: result.state,
         setupOwner: null,
         installationId: null,
+        installationIds: [],
+        installationSelectionRequired: false,
         fileCount: result.requestedFileCount,
         selectedFileCount: result.requestedFileCount,
         syncedFileCount: 0,
@@ -183,24 +258,45 @@ export function useFigmaOAuthConnection(
     setError(null);
     setRetrying(true);
     try {
-      applyStatus(await retryFigmaConnection(clientOptions()));
+      if (!status?.installationId) {
+        throw new Error("Select an exact Figma installation before retrying.");
+      }
+      const next = await retryFigmaConnection(
+        status.installationId,
+        clientOptions(),
+      );
+      assertSelectedInstallation(next, status.installationId);
+      applyStatus(next, {
+        preserveInstallationIds: true,
+        preserveSelection: true,
+      });
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
       setRetrying(false);
     }
-  }, [applyStatus, clientOptions]);
+  }, [applyStatus, clientOptions, status?.installationId]);
 
   const disconnect = useCallback(async () => {
     setError(null);
     setDisconnecting(true);
     try {
-      const result = await disconnectFigmaConnection(clientOptions());
+      if (!status?.installationId) {
+        throw new Error(
+          "Select an exact Figma installation before disconnecting.",
+        );
+      }
+      const result = await disconnectFigmaConnection(
+        status.installationId,
+        clientOptions(),
+      );
       applyStatus({
         ok: result.ok,
         state: result.state,
         setupOwner: null,
-        installationId: null,
+        installationId: status.installationId,
+        installationIds: [status.installationId],
+        installationSelectionRequired: false,
         fileCount: 0,
         selectedFileCount: 0,
         syncedFileCount: 0,
@@ -211,6 +307,9 @@ export function useFigmaOAuthConnection(
         files: [],
         lastError: null,
         nextAction: null,
+      }, {
+        preserveInstallationIds: true,
+        preserveSelection: true,
       });
       setFileUrlInput("");
     } catch (caught) {
@@ -218,19 +317,23 @@ export function useFigmaOAuthConnection(
     } finally {
       setDisconnecting(false);
     }
-  }, [applyStatus, clientOptions]);
+  }, [applyStatus, clientOptions, status?.installationId]);
 
   return {
     fileUrlInput,
     setFileUrlInput,
     status,
+    installationIds,
+    selectedInstallationId,
     callbackOutcome,
     loading,
+    selectingInstallation,
     starting,
     retrying,
     disconnecting,
     error,
     connect,
+    selectInstallation,
     refresh: async () => {
       setError(null);
       try {
@@ -243,6 +346,20 @@ export function useFigmaOAuthConnection(
     disconnect,
     clearError: () => setError(null),
   };
+}
+
+function assertSelectedInstallation(
+  status: FigmaConnectionStatus,
+  selectedInstallationId: string | null,
+): void {
+  if (
+    selectedInstallationId &&
+    status.installationId !== selectedInstallationId
+  ) {
+    throw new Error(
+      "Figma returned status for a different installation. Refresh the connection list.",
+    );
+  }
 }
 
 function shouldPoll(status: FigmaConnectionStatus): boolean {

@@ -39,6 +39,7 @@ pool which lands in M3 (per M2 work-order "What is NOT done" §M2.3).
 
 ============================================================
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -64,7 +65,10 @@ from services.ingest.ingestion.kafka.topics import (
     subscribe_topics,
     topic_for,
 )
-from services.ingest.ingestion.kafka.shutdown import install_shutdown_event, next_or_stop
+from services.ingest.ingestion.kafka.shutdown import (
+    install_shutdown_event,
+    next_or_stop,
+)
 from services.ingest.ingestion.observability import (
     Heartbeat,
     run_heartbeat_ticker,
@@ -81,7 +85,10 @@ from services.ingest.ingestion.payload_validation import (
 )
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 from services.ingest.ingestion.raw_tier.s3 import S3Client
-from services.ingest.source_contract.runtime import validate_runtime_bindings
+from services.ingest.source_contract.runtime import (
+    build_normalizer_ingress_headers,
+    validate_runtime_bindings,
+)
 
 
 log = logging.getLogger(__name__)
@@ -109,7 +116,7 @@ _metrics: dict[str, float] = {
     # to detect a broken DLQ path.
     "normalizer.dlq_publish.success": 0.0,
     "normalizer.dlq_publish.failure": 0.0,
-    "normalizer.dlq_publish.skipped":  0.0,
+    "normalizer.dlq_publish.skipped": 0.0,
 }
 
 
@@ -253,10 +260,7 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                 # Commit AFTER processing — at-least-once semantics.
                 await consumer.commit()
 
-                if (
-                    config.stop_after is not None
-                    and consumed >= config.stop_after
-                ):
+                if config.stop_after is not None and consumed >= config.stop_after:
                     break
         else:
             # ---- Concurrent path (max_concurrency > 1) ----
@@ -285,10 +289,7 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                 for partition_msgs in batches.values():
                     messages.extend(partition_msgs)
                 if not messages:
-                    if (
-                        config.stop_after is not None
-                        and consumed >= config.stop_after
-                    ):
+                    if config.stop_after is not None and consumed >= config.stop_after:
                         break
                     continue
 
@@ -314,10 +315,7 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
 
                 await consumer.commit()
 
-                if (
-                    config.stop_after is not None
-                    and consumed >= config.stop_after
-                ):
+                if config.stop_after is not None and consumed >= config.stop_after:
                     break
     finally:
         ticker.cancel()
@@ -358,7 +356,9 @@ async def _process_message(
         # _normalize_one_with_envelope parses the envelope FIRST so the
         # invariant-failure branch has it available for the DLQ publish.
         envelope_or_none, produced = await _normalize_one_with_envelope(
-            msg.value, s3, producer,
+            msg.value,
+            s3,
+            producer,
         )
         last_envelope = envelope_or_none
     except EnvelopeInvariantError as exc:
@@ -407,12 +407,8 @@ async def _process_message(
             producer=producer,
             failure_kind="normalizer.parse_failure",
             error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
-            tenant_id=(
-                last_envelope.tenant_id if last_envelope is not None else None
-            ),
-            source=(
-                last_envelope.source if last_envelope is not None else None
-            ),
+            tenant_id=(last_envelope.tenant_id if last_envelope is not None else None),
+            source=(last_envelope.source if last_envelope is not None else None),
             raw_s3_key=(
                 last_envelope.raw_s3_key if last_envelope is not None else None
             ),
@@ -439,7 +435,9 @@ async def _normalize_one(
     delegates to the two-tuple variant which the outer loop uses.
     """
     _envelope, produced = await _normalize_one_with_envelope(
-        envelope_bytes, s3, producer,
+        envelope_bytes,
+        s3,
+        producer,
     )
     return produced
 
@@ -504,33 +502,28 @@ async def _normalize_one_with_envelope(
 
     # M6.7 (A27.3) — the backfill producer (shard_fetch) wraps the
     # handler body in a blob `{record, shard_context, webhook_metadata}`
-    # so it can carry the webhook-equivalent headers a handler needs
-    # (e.g. X-GitHub-Event) without a webhook signature. Unwrap it here:
+    # so it can carry webhook-equivalent handler headers without replaying a
+    # webhook signature. Unwrap it here:
     # the handler then sees the SAME (body, headers) shape webhook
     # routing would provide, so it derives the SAME external_id (parity,
-    # HLD §02 L278). The live webhook/gateway/pubsub paths publish the
-    # bare body with no wrapper, so they keep headers={}.
+    # HLD §02 L278). Live paths publish the bare body. Any handler headers
+    # required by a webhook are projected from verified ingress_metadata by
+    # its existing contract; gateway/pubsub/poll paths resolve to headers={}.
     headers: dict[str, str] = {}
     if envelope.ingress_kind == "backfill" and isinstance(payload, dict):
         headers = payload.get("webhook_metadata") or {}
         payload = payload.get("record", payload)
-    elif envelope.source == "github":
-        # Live-via-Kafka github (ingress_kind="webhook"): the handler keys
-        # the event on the `X-GitHub-Event` header, NOT the body. The
-        # webhook-router cutover (and any live producer) records the event
-        # type in `ingress_metadata["event_type"]`; reconstruct the header
-        # here so the live cutover path derives the SAME draft the inline
-        # ingest() would (which received the real header). Backfill carries
-        # it via webhook_metadata above; other sources read the body and
-        # ignore headers.
-        event_type = envelope.ingress_metadata.get("event_type")
-        if event_type:
-            headers = {"X-GitHub-Event": event_type}
+    else:
+        headers = build_normalizer_ingress_headers(
+            source_name=envelope.source,
+            ingress_kind=envelope.ingress_kind,
+            channel=channel,
+            ingress_metadata=envelope.ingress_metadata,
+        )
 
     # Dispatch — the handler is a pure (payload, headers) → draft
-    # function. For live ingress, headers={} (the verified-at-ingress
-    # info is already in `envelope.ingress_metadata`); for backfill,
-    # headers carry the replayed webhook_metadata (A27.3).
+    # function. Contract-declared live headers are reconstructed only from
+    # verified ingress_metadata; backfill headers come from the replay wrapper.
     handler = get_handler(channel)
     validate_ingest_json_payload(payload, channel=channel)
     draft = await handler(payload, headers)
@@ -588,7 +581,8 @@ def main() -> None:
     )
     config = WorkerConfig(
         bootstrap_servers=os.environ.get(
-            "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
+            "KAFKA_BOOTSTRAP_SERVERS",
+            "localhost:9092",
         ),
         # NORMALIZER_CONSUMER_GROUP overrides the shared group id. A
         # validation/soak run on the same broker as a live stack MUST set a
@@ -597,7 +591,8 @@ def main() -> None:
         # a subset — so a tenant's observations silently land in whichever
         # process's DB won that partition. Defaults to the shared group.
         consumer_group=os.environ.get(
-            "NORMALIZER_CONSUMER_GROUP", _CONSUMER_GROUP,
+            "NORMALIZER_CONSUMER_GROUP",
+            _CONSUMER_GROUP,
         ),
         s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
         s3_bucket=os.environ.get("S3_RAW_BUCKET", "fyralis-raw"),

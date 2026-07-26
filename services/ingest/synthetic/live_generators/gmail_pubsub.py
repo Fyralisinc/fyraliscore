@@ -191,16 +191,12 @@ class GmailPubSubGenerator:
         gmail_pubsub_topics row exist. The handler reads from these
         to resolve subscription → tenant_id + email.
 
-        REUSE (A30.1): if a `gmail_mailbox_watches` row already exists
-        for the email — e.g. created by the X3 backfill harness — bind
-        to its tenant_id + gmail_installation_id instead of minting a
-        fresh install. This is what lets a live push share the SAME
-        install as backfill, so the cross-path dedup twin's external_id
-        (`gmail:{install}:{message_id}`) actually collides. If the
-        existing watch has no pubsub-topic row yet (backfill doesn't
-        create one), we add it so `handle_push` can resolve the
-        subscription. With no existing watch the original
-        create-fresh behaviour is preserved."""
+        REUSE (A30.1): if exactly one `gmail_mailbox_watches` row already
+        exists for the email — e.g. created by the X3 backfill harness — bind
+        to its tenant_id + gmail_installation_id instead of minting a fresh
+        install. Certification callers provide `tenant_ids_by_email`; those
+        explicit bindings fail closed when absent or ambiguous. Standalone
+        callers without a tenant hint retain the create-fresh behaviour."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 for email, client in self._mock_clients.items():
@@ -237,6 +233,12 @@ class GmailPubSubGenerator:
                             mock_client=client,
                         )
                         continue
+                    if tenant_hint is not None:
+                        raise ValueError(
+                            "gmail target must resolve to exactly one mailbox "
+                            "watch: "
+                            f"tenant_id={tenant_hint}, email={email!r}, matches=0",
+                        )
 
                     slug = self._tenant_slugs.get(email, f"y1-{email}")
                     tenant_id = tenant_hint or uuid4()
@@ -304,16 +306,29 @@ class GmailPubSubGenerator:
               FROM gmail_mailbox_watches w
          LEFT JOIN gmail_pubsub_topics t
                 ON t.gmail_installation_id = w.gmail_installation_id
+               AND t.teardown_at IS NULL
              WHERE lower(w.email_address) = $1
         """
         if tenant_id is None:
-            return await conn.fetchrow(f"{query} LIMIT 1", email)
-        async with bind_tenant(conn, tenant_id) as tctx:
-            return await tctx.fetchrow(
-                f"{query} AND w.tenant_id = $2 LIMIT 1",
-                email,
-                tenant_id,
+            rows = await conn.fetch(query, email)
+        else:
+            async with bind_tenant(conn, tenant_id) as tctx:
+                rows = await tctx.fetch(
+                    f"{query} AND w.tenant_id = $2",
+                    email,
+                    tenant_id,
+                )
+        if len(rows) > 1:
+            scope = (
+                f"tenant_id={tenant_id}, " if tenant_id is not None else ""
             )
+            raise ValueError(
+                "gmail target mailbox binding is ambiguous: "
+                f"{scope}email={email!r}, matches={len(rows)}",
+            )
+        if rows:
+            return rows[0]
+        return None
 
     def _install_patches(self) -> None:
         """Install module-level patches for OIDC validation, the

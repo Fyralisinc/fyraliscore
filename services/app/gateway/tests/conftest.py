@@ -146,7 +146,15 @@ async def _truncate_all(conn: asyncpg.Connection) -> None:
           AND c.relispartition = FALSE
         """
     )
-    tables = [r["relname"] for r in rows]
+    # Migration-owned source membership is reference data.  The foreign keys
+    # remain installed across test cleanup, so truncating these rows would make
+    # every valid onboarding trigger fail.  ``seed_test_baseline`` also repairs
+    # a long-lived local database previously emptied by the legacy fixture.
+    tables = [
+        r["relname"]
+        for r in rows
+        if r["relname"] != "ingestion_source_catalog"
+    ]
     if not tables:
         return
     table_list = ", ".join(f'"{t}"' for t in tables)

@@ -202,10 +202,13 @@ architecture/services updates. ✅ *(landing now)*
     Mercury pattern — avoids the global-`UNIQUE` collision). Register in
     `fixtures/__init__.py`.
 17. `synthetic/mock_clients/telegram.py` — `MockTelegramClient` (`get_history`
-    pagination + `_check_fault`; a live-delta injection surface). Register in
-    `mock_clients/__init__.py`.
-18. `synthetic/backfill_harness/{harness,scenarios}.py` — `_build_fixture`,
-    `_make_mock`, `_install_factories` seam patch, `_VALID_SOURCES`.
+    pagination + `_check_fault`; an isolated live-delta/preflight surface).
+    The backfill harness does not register or inject mock clients.
+18. `source_certification/catalog.py` +
+    `synthetic/fixtures/certification.py` +
+    `synthetic/backfill_harness/{harness,scenarios}.py` — source-owned fixture
+    and installation-seeder bindings, resolved lazily by the harness; history
+    runs through unmodified production clients against Provider Lab.
 19. `synthetic/validation_runs/{runs,preflight,composition}.py` — scenario
     builder, preflight records, `LiveTarget` fields + `live_target_for` +
     `build_live_drivers` + `seed_live_installs` + `dispatch_live_concurrent`.

@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from lib.shared.errors import AwsApiError
 from lib.shared.provider_transport import (
     ProviderTransport,
     QuotaRequirement,
@@ -17,7 +18,10 @@ from lib.shared.provider_transport import (
     RetryReason,
 )
 from services.ingest.integrations.aws.client import AwsClient
-from services.ingest.integrations.aws.credentials import AwsCredentials
+from services.ingest.integrations.aws.credentials import (
+    AwsCredentials,
+    resolve_credentials,
+)
 from services.ingest.integrations.aws.live_poll import PollDeps, _resolve_install
 from services.ingest.integrations.telegram.client import TelegramClient
 from services.ingest.integrations.telegram.gateway.worker import (
@@ -185,6 +189,22 @@ async def test_aws_assume_role_credential_acquisition_is_transport_bound(
     context = recorder.contexts[0]
     assert context.tenant_id == str(tenant_id)
     assert context.installation_id == str(installation_id)
+
+
+async def test_aws_assume_role_rejects_unmetered_direct_execution() -> None:
+    with pytest.raises(
+        AwsApiError,
+        match="requires ProviderTransport binding",
+    ):
+        await resolve_credentials(
+            secret_store=_SecretStore(
+                {"role_arn": "arn:aws:iam::123456789012:role/Fyralis"}
+            ),
+            tenant_id=uuid4(),
+            credential_kind="assume_role",
+            secret_ref="role-ref",
+            request_binding=None,
+        )
 
 
 class _ThrottleError(Exception):

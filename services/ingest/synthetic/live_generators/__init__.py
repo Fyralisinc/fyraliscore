@@ -71,6 +71,11 @@ from services.ingest.synthetic.live_generators.linkedin_poll import (
     LinkedinPollGenerator,
     LinkedinPollResult,
 )
+from services.ingest.synthetic.live_generators.meta_webhook import (
+    FacebookPagesWebhookGenerator,
+    MetaWebhookResult,
+    WhatsAppWebhookGenerator,
+)
 
 
 __all__ = [
@@ -79,6 +84,7 @@ __all__ = [
     "CartaPollGenerator",
     "CartaPollResult",
     "DiscordGatewayGenerator",
+    "FacebookPagesWebhookGenerator",
     "GithubScenarioResult",
     "GithubWebhookGenerator",
     "GithubWebhookResult",
@@ -91,6 +97,7 @@ __all__ = [
     "HmacWebhookResult",
     "LinkedinPollGenerator",
     "LinkedinPollResult",
+    "MetaWebhookResult",
     "NotionWebhookGenerator",
     "NotionWebhookResult",
     "SignalGatewayGenerator",
@@ -101,4 +108,5 @@ __all__ = [
     "SlackWebhookGenerator",
     "TelegramGatewayGenerator",
     "TelegramGatewayResult",
+    "WhatsAppWebhookGenerator",
 ]

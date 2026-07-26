@@ -49,7 +49,11 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from services.ingest.source_contract import SOURCE_DEFINITIONS
+from services.ingest.source_contract import (
+    SOURCE_DEFINITIONS,
+    resolve_installation_status_loader,
+    source_definition,
+)
 
 
 log = structlog.get_logger("gateway.finance")
@@ -973,75 +977,24 @@ async def status(source: str, req: Request) -> dict[str, Any]:
         """,
         tenant_id, channel,
     )
-    # Install state.
-    if source == "mercury":
-        install = await pool.fetchrow(
-            "SELECT id, base_url, organization_id, created_at FROM mercury_installations "
-            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-        )
-        subs = await pool.fetch(
-            "SELECT account_id, account_name, state FROM mercury_accounts ma "
-            "JOIN mercury_installations mi ON ma.mercury_installation_id = mi.id "
-            "WHERE mi.tenant_id = $1", tenant_id,
-        ) if install else []
-    elif source == "quickbooks":
-        install = await pool.fetchrow(
-            "SELECT id, base_url, realm_id, created_at FROM quickbooks_installations "
-            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-        )
-        subs = await pool.fetch(
-            "SELECT entity_type, state FROM quickbooks_entities qe "
-            "JOIN quickbooks_installations qi ON qe.quickbooks_installation_id = qi.id "
-            "WHERE qi.tenant_id = $1", tenant_id,
-        ) if install else []
-    elif source == "brex":
-        install = await pool.fetchrow(
-            "SELECT id, base_url, organization_id, created_at FROM brex_installations "
-            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-        )
-        subs = await pool.fetch(
-            "SELECT account_id, account_name, state FROM brex_accounts ba "
-            "JOIN brex_installations bi ON ba.brex_installation_id = bi.id "
-            "WHERE bi.tenant_id = $1", tenant_id,
-        ) if install else []
-    elif source == "ramp":
-        install = await pool.fetchrow(
-            "SELECT id, base_url, business_id, created_at FROM ramp_installations "
-            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-        )
-        subs = await pool.fetch(
-            "SELECT entity_type, state FROM ramp_entities re "
-            "JOIN ramp_installations ri ON re.ramp_installation_id = ri.id "
-            "WHERE ri.tenant_id = $1", tenant_id,
-        ) if install else []
-    elif source == "gusto":
-        install = await pool.fetchrow(
-            "SELECT id, base_url, company_uuid, created_at FROM gusto_installations "
-            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-        )
-        subs = await pool.fetch(
-            "SELECT entity_type, state FROM gusto_entities ge "
-            "JOIN gusto_installations gi ON ge.gusto_installation_id = gi.id "
-            "WHERE gi.tenant_id = $1", tenant_id,
-        ) if install else []
-    else:  # deel
-        install = await pool.fetchrow(
-            "SELECT id, base_url, organization_id, created_at FROM deel_installations "
-            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-        )
-        subs = await pool.fetch(
-            "SELECT contract_id, contract_name, state FROM deel_contracts dc "
-            "JOIN deel_installations di ON dc.deel_installation_id = di.id "
-            "WHERE di.tenant_id = $1", tenant_id,
-        ) if install else []
+    installations = await _finance_installation_status(
+        pool,
+        tenant_id=tenant_id,
+        source=source,
+    )
+    singular = installations[0] if len(installations) == 1 else None
 
     return {
         "source": source,
         "channel": channel,
-        "installed": install is not None,
-        "install": {k: (str(v) if isinstance(v, (UUID, datetime)) else v)
-                    for k, v in dict(install).items()} if install else None,
-        "sub_resources": [dict(s) for s in subs],
+        "installed": bool(installations),
+        "install": singular["install"] if singular is not None else None,
+        "sub_resources": (
+            singular["sub_resources"] if singular is not None else []
+        ),
+        "installations": installations,
+        "installation_count": len(installations),
+        "installation_selection_required": len(installations) > 1,
         "counts": {
             "total": counts["total"] if counts else 0,
             "signal": counts["signal"] if counts else 0,
@@ -1059,6 +1012,75 @@ async def status(source: str, req: Request) -> dict[str, Any]:
             for r in recent
         ],
     }
+
+
+async def _finance_installation_status(
+    pool: Any,
+    *,
+    tenant_id: UUID,
+    source: str,
+) -> list[dict[str, Any]]:
+    definition = source_definition(source)
+    adapter = definition.installation_adapter
+    management = adapter.management if adapter is not None else None
+    if (
+        management is None
+        or management.entity_table is None
+        or management.entity_install_column is None
+        or not management.entity_status_columns
+    ):
+        raise RuntimeError(
+            f"finance source {source!r} lacks installation/entity status metadata"
+        )
+
+    loader = resolve_installation_status_loader(source)
+    rows = await loader(
+        pool,
+        tenant_id=tenant_id,
+        source=source,
+        include_disabled=False,
+    )
+    output: list[dict[str, Any]] = []
+    entity_columns = ", ".join(management.entity_status_columns)
+    for row in rows:
+        sub_resources = await pool.fetch(
+            f"""
+            SELECT {entity_columns}
+              FROM {management.entity_table}
+             WHERE tenant_id = $1
+               AND {management.entity_install_column} = $2
+             ORDER BY {management.entity_status_columns[0]}
+            """,
+            tenant_id,
+            row["id"],
+        )
+        details = {
+            key: (
+                value.isoformat()
+                if isinstance(value, datetime)
+                else str(value)
+                if isinstance(value, UUID)
+                else value
+            )
+            for key, value in row["details"].items()
+        }
+        installation_id = str(row["id"])
+        output.append(
+            {
+                "installation_id": installation_id,
+                "enabled": bool(row["enabled"]),
+                "has_secret": bool(row["has_secret"]),
+                "installed_at": row["installed_at"].isoformat(),
+                "details": details,
+                "install": {
+                    "id": installation_id,
+                    "created_at": row["installed_at"].isoformat(),
+                    **details,
+                },
+                "sub_resources": [dict(resource) for resource in sub_resources],
+            }
+        )
+    return output
 
 
 __all__ = ["build_finance_router"]

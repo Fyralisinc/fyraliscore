@@ -40,12 +40,17 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 from fastapi import FastAPI
 
 from lib.shared.tenant_context import tenant_transaction
+from services.ingest.ingestion.feature_flags.client import KAFKA_PATH_ENABLED
+from services.ingest.source_contract.catalog import (
+    SOURCE_DEFINITIONS,
+    source_definition,
+)
 from services.ingest.synthetic.fixtures import (
     make_discord_guild,
     make_figma,
@@ -59,6 +64,7 @@ from services.ingest.synthetic.live_generators import (
     AwsPollGenerator,
     CartaPollGenerator,
     DiscordGatewayGenerator,
+    FacebookPagesWebhookGenerator,
     GithubWebhookGenerator,
     GmailPubSubGenerator,
     GooglePushGenerator,
@@ -70,6 +76,7 @@ from services.ingest.synthetic.live_generators import (
     SignalGatewayGenerator,
     SlackWebhookGenerator,
     TelegramGatewayGenerator,
+    WhatsAppWebhookGenerator,
 )
 from services.ingest.synthetic.mock_clients import (
     MockDiscordClient,
@@ -83,7 +90,17 @@ log = logging.getLogger("validation_runs.composition")
 
 # Cross-path twin sources (Discord excluded by namespace topology, A30.3).
 TWIN_SOURCES = ("gmail", "github", "slack")
-HMAC_SOURCES = ("slack", "github")  # signature-gate sources (A30.4)
+# Every composed live source whose production ingress verifies a signature,
+# passcode, or verification token. The historical name is retained for report
+# compatibility even though Figma uses a body passcode.
+HMAC_SOURCES = (
+    "slack",
+    "github",
+    *HMAC_PROVIDERS,
+    "notion",
+    "whatsapp",
+    "facebook_pages",
+)
 REPLAY_SOURCES = ("gmail", "slack", "github")  # Discord has no replay (A24)
 
 
@@ -117,6 +134,9 @@ class SigningSecrets:
     # poll-only (no webhook edge) → NO signing secret.
     hibob: str = "v-hibob-signing-secret"
     ashby: str = "v-ashby-signing-secret"
+    # Meta dedicated-ingress sources share X-Hub-Signature-256.
+    whatsapp: str = "v-whatsapp-app-secret"
+    facebook_pages: str = "v-facebook-pages-app-secret"
     # Notion's app-level verification token (NOT a per-tenant secret_ref); the
     # signatures/notion.py verifier keys HMAC on it.
     notion: str = "v-notion-verification-token"
@@ -141,6 +161,8 @@ class SigningSecrets:
         os.environ["WEBHOOK_SECRET_FIGMA"] = self.figma
         os.environ["WEBHOOK_SECRET_HIBOB"] = self.hibob
         os.environ["WEBHOOK_SECRET_ASHBY"] = self.ashby
+        os.environ["WHATSAPP_APP_SECRET"] = self.whatsapp
+        os.environ["FACEBOOK_APP_SECRET"] = self.facebook_pages
         os.environ["NOTION_WEBHOOK_VERIFICATION_TOKEN"] = self.notion
         os.environ["MASTER_KEK"] = self.master_kek
         # Gmail Pub/Sub router import-time reads (verification is no-op'd
@@ -232,6 +254,9 @@ class LiveTarget:
     # tenant_id; NO provider_installations row).
     linkedin_org: str | None = None          # linkedin: organization_urn (== install scope)
     linkedin_entity_type: str | None = None  # linkedin: poll change entity kind
+    # Meta dedicated webhook routers resolve their own exact install tables.
+    whatsapp_phone_number_id: str | None = None
+    facebook_page_id: str | None = None
 
 
 def live_target_for(tenant_id: UUID, source: str, slug: str,
@@ -295,7 +320,11 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
         # seed → same deterministic dialog_id the harness seeded), so the live
         # update is "in" a real dialog. installation_id is resolved by the
         # generator from telegram_installations at dispatch time.
-        fx = make_telegram(**fixture_params)
+        fx = (
+            fixture_params
+            if "dialog_order" in fixture_params and "dialogs" in fixture_params
+            else make_telegram(**fixture_params)
+        )
         did = fx["dialog_order"][0]
         d = fx["dialogs"][str(did)]
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
@@ -316,7 +345,11 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
         # R2: webhook_id is the install scope (keys provider_installations +
         # namespaces the live external_id); team_id is backfill context; file_key
         # gives the event a real backfill file (same seed → same file_key).
-        fx = make_figma(**fixture_params)
+        fx = (
+            fixture_params
+            if "file_order" in fixture_params and "files" in fixture_params
+            else make_figma(**fixture_params)
+        )
         file_key = fx["file_order"][0]
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           figma_webhook_id=f"figwh-{slug}",
@@ -326,7 +359,11 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
         # Gateway-style live; the message targets the tenant's FIRST backfill
         # thread (same seed → same deterministic thread_id the harness seeded).
         # installation_id is resolved from signal_installations by the generator.
-        fx = make_signal(**fixture_params)
+        fx = (
+            fixture_params
+            if "thread_order" in fixture_params and "threads" in fixture_params
+            else make_signal(**fixture_params)
+        )
         tid = fx["thread_order"][0]
         th = fx["threads"][str(tid)]
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
@@ -364,7 +401,111 @@ def live_target_for(tenant_id: UUID, source: str, slug: str,
         return LiveTarget(tenant_id=tenant_id, source=source, slug=slug,
                           linkedin_org=fixture_params["organization_urn"],
                           linkedin_entity_type="post")
+    if source == "whatsapp":
+        phone_number_id = fixture_params.get("phone_number_id")
+        if not isinstance(phone_number_id, str) or not phone_number_id:
+            raise ValueError(
+                "whatsapp live target requires an explicit phone_number_id",
+            )
+        return LiveTarget(
+            tenant_id=tenant_id,
+            source=source,
+            slug=slug,
+            whatsapp_phone_number_id=phone_number_id,
+        )
+    if source == "facebook_pages":
+        return LiveTarget(
+            tenant_id=tenant_id,
+            source=source,
+            slug=slug,
+            facebook_page_id=(
+                fixture_params.get("page_id")
+                or f"x3-{slug}-facebook_pages"
+            ),
+        )
     raise ValueError(f"unknown source {source!r}")
+
+
+async def seed_contract_live_only_targets(
+    pool: asyncpg.Pool,
+    *,
+    tenants_per_source: int,
+) -> list[LiveTarget]:
+    """Seed exact local bindings for contract sources with no history.
+
+    Historical targets come from ``BackfillHarness`` outcomes. A live-only
+    source has no planner/fetcher outcome by design, so the composed runner
+    needs a separate tenant and installation bootstrap. Membership is derived
+    from the source contract and each provider-specific bootstrap is explicit
+    and fail-closed. Today that set is exactly WhatsApp.
+    """
+
+    if (
+        not isinstance(tenants_per_source, int)
+        or isinstance(tenants_per_source, bool)
+        or tenants_per_source < 0
+    ):
+        raise ValueError("tenants_per_source must be a non-negative integer")
+
+    live_only_source_ids = tuple(
+        definition.source_id
+        for definition in SOURCE_DEFINITIONS
+        if definition.history is None
+    )
+    targets: list[LiveTarget] = []
+    for source in live_only_source_ids:
+        if source != "whatsapp":
+            raise RuntimeError(
+                "live-only certification bootstrap is not implemented for "
+                f"contract source {source!r}",
+            )
+        for tenant_index in range(tenants_per_source):
+            tenant_id = uuid4()
+            slug = f"val-{source}-live-{tenant_index}"
+            phone_number_id = f"x3-{slug}-whatsapp"
+            await pool.execute(
+                """
+                INSERT INTO tenants (id, name)
+                VALUES ($1, $2)
+                """,
+                tenant_id,
+                f"x3-{slug}-{tenant_id.hex[:8]}",
+            )
+            await pool.execute(
+                """
+                INSERT INTO tenant_flags
+                    (tenant_id, flag_name, flag_value, set_by)
+                VALUES ($1, $2, TRUE, 'contract-live-only-runner')
+                """,
+                tenant_id,
+                KAFKA_PATH_ENABLED,
+            )
+            await pool.execute(
+                """
+                INSERT INTO whatsapp_installations (
+                    tenant_id, phone_number_id, waba_id,
+                    display_phone_number, app_secret, verify_token,
+                    access_token, app_secret_ref, verify_token_ref,
+                    access_token_ref, enabled
+                )
+                VALUES (
+                    $1, $2, $3, '+15550000000',
+                    NULL, NULL, NULL, NULL, NULL, NULL, TRUE
+                )
+                """,
+                tenant_id,
+                phone_number_id,
+                f"waba-{phone_number_id}",
+            )
+            targets.append(
+                live_target_for(
+                    tenant_id,
+                    source,
+                    slug,
+                    {"phone_number_id": phone_number_id},
+                )
+            )
+    return targets
 
 
 # =====================================================================
@@ -390,6 +531,8 @@ class LiveDrivers:
     aws_poll: Any = None             # AwsPollGenerator (poll live edge)
     carta_poll: Any = None           # CartaPollGenerator (poll live edge)
     linkedin_poll: Any = None        # LinkedinPollGenerator (poll live edge)
+    whatsapp_webhook: Any = None
+    facebook_pages_webhook: Any = None
 
 
 @dataclass(frozen=True)
@@ -412,6 +555,8 @@ class _CoreLiveGenerators:
     discord_gateway: DiscordGatewayGenerator
     slack_webhook: SlackWebhookGenerator
     github_webhook: GithubWebhookGenerator
+    whatsapp_webhook: Any = None
+    facebook_pages_webhook: Any = None
 
 
 @dataclass(frozen=True)
@@ -491,6 +636,8 @@ async def build_live_drivers(
         telegram_gateway=optional.telegram_gateway,
         signal_gateway=optional.signal_gateway, aws_poll=optional.aws_poll,
         carta_poll=optional.carta_poll, linkedin_poll=optional.linkedin_poll,
+        whatsapp_webhook=core.whatsapp_webhook,
+        facebook_pages_webhook=core.facebook_pages_webhook,
     )
 
 
@@ -663,11 +810,37 @@ async def _enter_core_live_generators(
             signing_secret=secrets.github,
         ),
     )
+    whatsapp_gen = None
+    if "whatsapp" in target_groups.present:
+        whatsapp_gen = await stack.enter_async_context(
+            WhatsAppWebhookGenerator(
+                app=shared_app,
+                pool=pool,
+                app_secret=secrets.whatsapp,
+                kafka_producer=cutover.kafka_producer,
+                s3_raw_client=cutover.s3_raw_client,
+                tenant_flags=cutover.tenant_flags,
+            ),
+        )
+    facebook_pages_gen = None
+    if "facebook_pages" in target_groups.present:
+        facebook_pages_gen = await stack.enter_async_context(
+            FacebookPagesWebhookGenerator(
+                app=shared_app,
+                pool=pool,
+                app_secret=secrets.facebook_pages,
+                kafka_producer=cutover.kafka_producer,
+                s3_raw_client=cutover.s3_raw_client,
+                tenant_flags=cutover.tenant_flags,
+            ),
+        )
     return _CoreLiveGenerators(
         gmail_pubsub=gmail_gen,
         discord_gateway=discord_gen,
         slack_webhook=slack_gen,
         github_webhook=github_gen,
+        whatsapp_webhook=whatsapp_gen,
+        facebook_pages_webhook=facebook_pages_gen,
     )
 
 
@@ -809,7 +982,11 @@ async def teardown_live_drivers(drivers: LiveDrivers) -> None:
 # Live-only install/watch seeding (for the sources added after the 4).
 # =====================================================================
 async def seed_live_installs(
-    pool: asyncpg.Pool, targets: list[LiveTarget],
+    pool: asyncpg.Pool,
+    targets: list[LiveTarget],
+    secrets: SigningSecrets | None = None,
+    *,
+    secret_store: Any = None,
 ) -> None:
     """Seed the rows the NEW sources' live ingress resolves against, on top of
     the dedicated backfill install tables the X3 harness already wrote:
@@ -831,8 +1008,102 @@ async def seed_live_installs(
     """
     from lib.shared.ids import uuid7
 
+    signing_secrets = secrets or SigningSecrets()
+    has_meta_targets = any(
+        target.source in {"whatsapp", "facebook_pages"}
+        for target in targets
+    )
+    if has_meta_targets:
+        from lib.shared.secrets import build_secret_store
+
+        signing_secrets.apply_to_env()
+        secret_store = secret_store or build_secret_store(pool)
+
     async with pool.acquire() as conn:
         for t in targets:
+            if t.source == "whatsapp":
+                rows = await conn.fetch(
+                    """
+                    SELECT id, app_secret_ref
+                      FROM whatsapp_installations
+                     WHERE tenant_id = $1
+                       AND phone_number_id = $2
+                       AND enabled = true
+                    """,
+                    t.tenant_id,
+                    t.whatsapp_phone_number_id,
+                )
+                if len(rows) != 1:
+                    raise RuntimeError(
+                        "whatsapp live certification requires exactly one "
+                        "enabled installation for "
+                        f"tenant={t.tenant_id} "
+                        f"phone_number_id={t.whatsapp_phone_number_id}; "
+                        f"found {len(rows)}",
+                    )
+                app_secret_ref = await _ensure_synthetic_secret(
+                    secret_store,
+                    current_ref=rows[0]["app_secret_ref"],
+                    plaintext=signing_secrets.whatsapp,
+                    tenant_id=t.tenant_id,
+                    label=(
+                        "synthetic_whatsapp_app_secret:"
+                        f"{t.whatsapp_phone_number_id}"
+                    ),
+                )
+                await conn.execute(
+                    """
+                    UPDATE whatsapp_installations
+                       SET app_secret = NULL,
+                           app_secret_ref = $2,
+                           updated_at = now()
+                     WHERE id = $1
+                    """,
+                    rows[0]["id"],
+                    app_secret_ref,
+                )
+                continue
+            if t.source == "facebook_pages":
+                rows = await conn.fetch(
+                    """
+                    SELECT id, app_secret_ref
+                      FROM facebook_page_installations
+                     WHERE tenant_id = $1
+                       AND page_id = $2
+                       AND enabled = true
+                    """,
+                    t.tenant_id,
+                    t.facebook_page_id,
+                )
+                if len(rows) != 1:
+                    raise RuntimeError(
+                        "facebook_pages live certification requires exactly "
+                        "one enabled installation for "
+                        f"tenant={t.tenant_id} "
+                        f"page_id={t.facebook_page_id}; "
+                        f"found {len(rows)}",
+                    )
+                app_secret_ref = await _ensure_synthetic_secret(
+                    secret_store,
+                    current_ref=rows[0]["app_secret_ref"],
+                    plaintext=signing_secrets.facebook_pages,
+                    tenant_id=t.tenant_id,
+                    label=(
+                        "synthetic_facebook_pages_app_secret:"
+                        f"{t.facebook_page_id}"
+                    ),
+                )
+                await conn.execute(
+                    """
+                    UPDATE facebook_page_installations
+                       SET app_secret_ref = $2,
+                           updated_at = now()
+                     WHERE id = $1
+                    """,
+                    rows[0]["id"],
+                    app_secret_ref,
+                )
+                continue
             if t.source == "jira":
                 inst = t.jira_site
             elif t.source == "mercury":
@@ -864,30 +1135,77 @@ async def seed_live_installs(
                 inst = t.ashby_org
             else:
                 # signal/aws/carta/linkedin are direct-dispatch (gateway/poll):
-                # their live edge resolves the install from their OWN install
-                # table by tenant_id, so NO provider_installations row is needed.
+                # their live edge resolves the exact install from its provider
+                # scope in the source-owned table, so NO
+                # provider_installations row is needed.
                 inst = None
             if inst is not None:
-                await conn.execute(
+                existing = await conn.fetch(
                     """
-                    INSERT INTO provider_installations
-                      (id, tenant_id, provider, installation_id, secret_ref, enabled)
-                    VALUES ($1, $2, $3, $4, NULL, TRUE)
-                    ON CONFLICT (provider, installation_id)
-                        DO UPDATE SET tenant_id = EXCLUDED.tenant_id, enabled = TRUE
+                    SELECT id, tenant_id
+                      FROM provider_installations
+                     WHERE provider = $1
+                       AND installation_id = $2
                     """,
-                    uuid7(), t.tenant_id, t.source, inst,
+                    t.source,
+                    inst,
                 )
+                if len(existing) > 1:
+                    raise RuntimeError(
+                        "live certification found ambiguous provider binding "
+                        f"provider={t.source} installation_id={inst}; "
+                        f"found {len(existing)}",
+                    )
+                if existing and existing[0]["tenant_id"] != t.tenant_id:
+                    raise RuntimeError(
+                        "live certification refuses to rebind provider "
+                        "installation across tenants: "
+                        f"provider={t.source} installation_id={inst} "
+                        f"existing_tenant={existing[0]['tenant_id']} "
+                        f"requested_tenant={t.tenant_id}",
+                    )
+                if existing:
+                    await conn.execute(
+                        """
+                        UPDATE provider_installations
+                           SET enabled = TRUE
+                         WHERE id = $1
+                           AND tenant_id = $2
+                        """,
+                        existing[0]["id"],
+                        t.tenant_id,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        INSERT INTO provider_installations
+                          (id, tenant_id, provider, installation_id,
+                           secret_ref, enabled)
+                        VALUES ($1, $2, $3, $4, NULL, TRUE)
+                        """,
+                        uuid7(),
+                        t.tenant_id,
+                        t.source,
+                        inst,
+                    )
                 continue
 
             if t.source == "google_calendar":
-                install_id = await conn.fetchval(
+                installations = await conn.fetch(
                     "SELECT id FROM google_calendar_installations "
-                    "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1",
+                    "WHERE tenant_id = $1 AND workspace_domain = $2 "
+                    "AND disabled_at IS NULL",
                     t.tenant_id,
+                    f"x3-{t.slug}.example",
                 )
-                if install_id is None:
-                    continue
+                if len(installations) != 1:
+                    raise RuntimeError(
+                        "google_calendar live certification requires exactly "
+                        f"one active installation for tenant={t.tenant_id} "
+                        f"workspace_domain=x3-{t.slug}.example; "
+                        f"found {len(installations)}"
+                    )
+                install_id = installations[0]["id"]
                 await conn.execute(
                     """
                     INSERT INTO google_calendar_calendars (
@@ -907,13 +1225,21 @@ async def seed_live_installs(
                     t.gcal_channel_id, t.gcal_watch_token,
                 )
             elif t.source == "google_drive":
-                install_id = await conn.fetchval(
+                installations = await conn.fetch(
                     "SELECT id FROM google_drive_installations "
-                    "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1",
+                    "WHERE tenant_id = $1 AND workspace_domain = $2 "
+                    "AND disabled_at IS NULL",
                     t.tenant_id,
+                    f"x3-{t.slug}.example",
                 )
-                if install_id is None:
-                    continue
+                if len(installations) != 1:
+                    raise RuntimeError(
+                        "google_drive live certification requires exactly "
+                        f"one active installation for tenant={t.tenant_id} "
+                        f"workspace_domain=x3-{t.slug}.example; "
+                        f"found {len(installations)}"
+                    )
+                install_id = installations[0]["id"]
                 await conn.execute(
                     """
                     INSERT INTO google_drive_targets (
@@ -933,6 +1259,64 @@ async def seed_live_installs(
                     t.gdrive_kind, t.gdrive_drive_id, t.gdrive_drive_id,
                     t.gdrive_channel_id, t.gdrive_watch_token,
                 )
+
+
+async def _ensure_synthetic_secret(
+    secret_store: Any,
+    *,
+    current_ref: Any,
+    plaintext: str,
+    tenant_id: UUID,
+    label: str,
+) -> str:
+    """Rotate an exact-tenant ref or create an encrypted replacement."""
+
+    from lib.shared.errors import SecretNotFoundError
+
+    if current_ref:
+        try:
+            await secret_store.rotate(
+                str(current_ref),
+                plaintext,
+                tenant_id=tenant_id,
+            )
+            return str(current_ref)
+        except (SecretNotFoundError, ValueError):
+            # Provider Lab installation seeders may use non-secret URI
+            # placeholders. Replace those only inside the isolated test DB.
+            pass
+    return await secret_store.put(
+        plaintext,
+        label=label,
+        tenant_id=tenant_id,
+    )
+
+
+async def prepare_live_drivers(
+    pool: asyncpg.Pool,
+    targets: list[LiveTarget],
+    secrets: SigningSecrets,
+    *,
+    kafka_producer: Any = None,
+    s3_raw_client: Any = None,
+    tenant_flags: Any = None,
+) -> LiveDrivers:
+    """Seed exact live bindings, then construct every required generator.
+
+    Keeping these operations behind one entry point prevents a runner from
+    constructing a functional-looking driver bundle before the webhook tenant
+    bindings or Google watch rows exist. ``seed_live_installs`` is idempotent,
+    so retries and repeated preparation preserve the same exact installation.
+    """
+    await seed_live_installs(pool, targets, secrets=secrets)
+    return await build_live_drivers(
+        pool,
+        targets,
+        secrets,
+        kafka_producer=kafka_producer,
+        s3_raw_client=s3_raw_client,
+        tenant_flags=tenant_flags,
+    )
 
 
 # =====================================================================
@@ -1007,30 +1391,161 @@ async def _dispatch_regular(
     drivers: LiveDrivers, t: LiveTarget, n: int,
 ) -> None:
     """Dispatch `n` fresh (auto-mint) live events for one tenant."""
-    if t.source == "gmail":
-        for _ in range(n):
-            await drivers.gmail_pubsub.simulate_push(
-                mailbox_email=t.email, new_messages=1,
-            )
-    elif t.source == "slack":
-        for i in range(n):
-            await drivers.slack_webhook.simulate_message(
-                team_id=t.team_id, channel_id=t.channel_id,
-                content=f"live-{t.slug}-{i}",
-            )
-    elif t.source == "github":
-        for i in range(n):
-            await drivers.github_webhook.simulate_issue_event(
-                installation_id=t.installation_id,
-                repo_full_name=t.repo_full_name,
-                issue_title=f"live-{t.slug}-{i}",
-            )
-    elif t.source == "discord":
-        for i in range(n):
-            await drivers.discord_gateway.simulate_message_create(
-                guild_id=t.guild_id, channel_id=t.channel_id,
-                content=f"live-{t.slug}-{i}",
-            )
+    _ensure_live_source_supported(drivers, t.source)
+    for event_index in range(n):
+        await _dispatch_live_event(
+            drivers,
+            t,
+            event_index=event_index,
+        )
+
+
+def _require_live_generator(
+    generator: Any,
+    *,
+    source: str,
+) -> Any:
+    if generator is None:
+        raise RuntimeError(
+            f"live generator for configured source {source!r} was not built",
+        )
+    return generator
+
+
+def _ensure_live_source_supported(
+    drivers: LiveDrivers,
+    source: str,
+) -> None:
+    """Fail closed for unsupported targets and incomplete driver bundles."""
+    if source == "gmail":
+        _require_live_generator(drivers.gmail_pubsub, source=source)
+        return
+    if source == "slack":
+        _require_live_generator(drivers.slack_webhook, source=source)
+        return
+    if source == "github":
+        _require_live_generator(drivers.github_webhook, source=source)
+        return
+    if source == "discord":
+        _require_live_generator(drivers.discord_gateway, source=source)
+        return
+    if source in HMAC_PROVIDERS:
+        _require_live_generator(drivers.hmac.get(source), source=source)
+        return
+    if source in ("google_calendar", "google_drive"):
+        _require_live_generator(drivers.google_push, source=source)
+        return
+    optional_generator = {
+        "notion": drivers.notion_webhook,
+        "telegram": drivers.telegram_gateway,
+        "signal": drivers.signal_gateway,
+        "aws": drivers.aws_poll,
+        "carta": drivers.carta_poll,
+        "linkedin": drivers.linkedin_poll,
+    }.get(source)
+    if optional_generator is not None:
+        return
+    if source in {
+        "notion",
+        "telegram",
+        "signal",
+        "aws",
+        "carta",
+        "linkedin",
+    }:
+        _require_live_generator(optional_generator, source=source)
+        return
+    if source == "whatsapp":
+        _require_live_generator(drivers.whatsapp_webhook, source=source)
+        return
+    if source == "facebook_pages":
+        _require_live_generator(
+            drivers.facebook_pages_webhook,
+            source=source,
+        )
+        return
+    raise ValueError(f"unsupported live source {source!r}")
+
+
+async def _dispatch_live_event(
+    drivers: LiveDrivers,
+    target: LiveTarget,
+    *,
+    event_index: int,
+) -> Any:
+    """Dispatch one event through the generator owned by ``target.source``."""
+    source = target.source
+    _ensure_live_source_supported(drivers, source)
+    content = f"live-{target.slug}-{event_index}"
+
+    if source == "gmail":
+        return await drivers.gmail_pubsub.simulate_push(
+            mailbox_email=target.email,
+            new_messages=1,
+        )
+    if source == "slack":
+        return await drivers.slack_webhook.simulate_message(
+            team_id=target.team_id,
+            channel_id=target.channel_id,
+            content=content,
+        )
+    if source == "github":
+        return await drivers.github_webhook.simulate_issue_event(
+            installation_id=target.installation_id,
+            repo_full_name=target.repo_full_name,
+            issue_title=content,
+        )
+    if source == "discord":
+        return await drivers.discord_gateway.simulate_message_create(
+            guild_id=target.guild_id,
+            channel_id=target.channel_id,
+            content=content,
+        )
+    if source in HMAC_PROVIDERS:
+        return await drivers.hmac[source].simulate_event(
+            target=target,
+            content=content,
+        )
+    if source in ("google_calendar", "google_drive"):
+        return await drivers.google_push.simulate_push(target=target)
+    if source == "notion":
+        return await drivers.notion_webhook.simulate_event(target=target)
+    if source == "telegram":
+        return await drivers.telegram_gateway.simulate_message(
+            target=target,
+            content=content,
+        )
+    if source == "signal":
+        return await drivers.signal_gateway.simulate_message(
+            target=target,
+            content=content,
+        )
+    if source == "aws":
+        return await drivers.aws_poll.simulate_event(
+            target=target,
+            content=content,
+        )
+    if source == "carta":
+        return await drivers.carta_poll.simulate_event(
+            target=target,
+            content=content,
+        )
+    if source == "linkedin":
+        return await drivers.linkedin_poll.simulate_event(
+            target=target,
+            content=content,
+        )
+    if source == "whatsapp":
+        return await drivers.whatsapp_webhook.simulate_message(
+            target=target,
+            content=content,
+        )
+    if source == "facebook_pages":
+        return await drivers.facebook_pages_webhook.simulate_message(
+            target=target,
+            content=content,
+        )
+    raise ValueError(f"unsupported live source {source!r}")
 
 
 async def _dispatch_twin(
@@ -1068,6 +1583,58 @@ async def _dispatch_twin(
             message_id=message_id, internal_date=internal_date,
         )
     return twin.external_id
+
+
+async def _dispatch_signature_tamper(
+    drivers: LiveDrivers,
+    target: LiveTarget,
+) -> int:
+    """Send one invalidly authenticated request through the real live edge."""
+
+    source = target.source
+    _ensure_live_source_supported(drivers, source)
+    if source == "slack":
+        result = await drivers.slack_webhook.simulate_message(
+            team_id=target.team_id,
+            channel_id=target.channel_id,
+            content="tampered",
+            tamper_signature=True,
+        )
+    elif source == "github":
+        result = await drivers.github_webhook.simulate_issue_event(
+            installation_id=target.installation_id,
+            repo_full_name=target.repo_full_name,
+            issue_title="tampered",
+            tamper_signature=True,
+        )
+    elif source in HMAC_PROVIDERS:
+        result = await drivers.hmac[source].simulate_event(
+            target=target,
+            content="tampered",
+            tamper_signature=True,
+        )
+    elif source == "notion":
+        result = await drivers.notion_webhook.simulate_event(
+            target=target,
+            tamper_signature=True,
+        )
+    elif source == "whatsapp":
+        result = await drivers.whatsapp_webhook.simulate_message(
+            target=target,
+            content="tampered",
+            tamper_signature=True,
+        )
+    elif source == "facebook_pages":
+        result = await drivers.facebook_pages_webhook.simulate_message(
+            target=target,
+            content="tampered",
+            tamper_signature=True,
+        )
+    else:
+        raise ValueError(
+            f"source {source!r} has no declared signature tamper probe",
+        )
+    return int(result.http_status)
 
 
 async def run_live_phase(
@@ -1110,27 +1677,16 @@ async def run_live_phase(
         ext = await _dispatch_twin(drivers, t, twin)
         result.twin_external_ids[source] = ext
 
-    # ---- Tampered-signature probes (HMAC sources only) ----
+    # ---- Tampered-authentication probes (one per declared source) ----
+    probed_sources: set[str] = set()
     for t in targets:
-        if t.source == "slack" and "slack" not in [
-            r["source"] for r in result.tamper_results
-        ]:
-            r = await drivers.slack_webhook.simulate_message(
-                team_id=t.team_id, channel_id=t.channel_id,
-                content="tampered", tamper_signature=True,
-            )
-            result.tamper_results.append(
-                {"source": "slack", "http_status": r.http_status})
-        if t.source == "github" and "github" not in [
-            r["source"] for r in result.tamper_results
-        ]:
-            r = await drivers.github_webhook.simulate_issue_event(
-                installation_id=t.installation_id,
-                repo_full_name=t.repo_full_name,
-                issue_title="tampered", tamper_signature=True,
-            )
-            result.tamper_results.append(
-                {"source": "github", "http_status": r.http_status})
+        if t.source not in HMAC_SOURCES or t.source in probed_sources:
+            continue
+        result.tamper_results.append({
+            "source": t.source,
+            "http_status": await _dispatch_signature_tamper(drivers, t),
+        })
+        probed_sources.add(t.source)
 
     # ---- Collect live deltas ----
     for t in targets:
@@ -1185,43 +1741,14 @@ async def dispatch_live_concurrent(
             result.http_status_by_source.setdefault(source, set()).add(status)
 
     async def _one(t: LiveTarget) -> None:
+        _ensure_live_source_supported(drivers, t.source)
         for i in range(events_per_tenant):
-            status: int | None = None
-            if t.source == "gmail":
-                r = await drivers.gmail_pubsub.simulate_push(
-                    mailbox_email=t.email, new_messages=1,
-                )
-                status = getattr(r, "http_status", None)
-            elif t.source == "slack":
-                r = await drivers.slack_webhook.simulate_message(
-                    team_id=t.team_id, channel_id=t.channel_id,
-                    content=f"live-{t.slug}-{i}",
-                )
-                status = getattr(r, "http_status", None)
-            elif t.source == "github":
-                r = await drivers.github_webhook.simulate_issue_event(
-                    installation_id=t.installation_id,
-                    repo_full_name=t.repo_full_name,
-                    issue_title=f"live-{t.slug}-{i}",
-                )
-                status = getattr(r, "http_status", None)
-            elif t.source == "discord":
-                await drivers.discord_gateway.simulate_message_create(
-                    guild_id=t.guild_id, channel_id=t.channel_id,
-                    content=f"live-{t.slug}-{i}",
-                )
-            elif t.source in ("jira", "mercury", "quickbooks", "grafana",
-                              "brex", "ramp", "gusto", "deel"):
-                r = await drivers.hmac[t.source].simulate_event(
-                    target=t, content=f"live-{t.slug}-{i}",
-                )
-                status = getattr(r, "http_status", None)
-            elif t.source in ("google_calendar", "google_drive"):
-                r = await drivers.google_push.simulate_push(target=t)
-                status = getattr(r, "http_status", None)
-            elif t.source == "notion":
-                r = await drivers.notion_webhook.simulate_event(target=t)
-                status = getattr(r, "http_status", None)
+            dispatch_result = await _dispatch_live_event(
+                drivers,
+                t,
+                event_index=i,
+            )
+            status = getattr(dispatch_result, "http_status", None)
             await _record_status(t.source, status)
         async with lock:
             result.dispatched_by_tenant[t.tenant_id] = events_per_tenant
@@ -1289,14 +1816,6 @@ async def run_replay_probe(
     return out
 
 
-_SOURCE_CHANNELS = {
-    "gmail": ("gmail:", "backfill"),
-    "slack": ("slack:message", "webhook"),
-    "github": ("github:webhook", "webhook"),
-    "discord": ("discord:message", "gateway"),
-}
-
-
 class _ProbeEmbedder:
     """Deterministic embedder for the A28 probe (mirrors the writer test's
     embedder). The partition CheckViolationError fires at INSERT, AFTER
@@ -1325,6 +1844,28 @@ class _ProbeEmbedder:
                 raw = 0.0
             vec.append(max(-1.0, min(1.0, raw / 1e3)))
         return vec
+
+
+def _partition_probe_contract(
+    source: str,
+) -> tuple[str, str, str, str]:
+    """Return ingress, channel, trust, and kind from one source contract."""
+
+    definition = source_definition(source)
+    route = next(
+        (
+            candidate
+            for candidate in definition.ingress_routes
+            if candidate.ingress_kind != "backfill"
+        ),
+        definition.ingress_routes[0],
+    )
+    return (
+        route.ingress_kind,
+        route.channel,
+        definition.default_trust_tier,
+        definition.allowed_observation_kinds[0],
+    )
 
 
 async def partition_missing_probe(
@@ -1378,21 +1919,28 @@ async def partition_missing_probe(
             if t.source in seen:
                 continue
             seen.add(t.source)
-            channel, ingress = _SOURCE_CHANNELS[t.source]
+            ingress_kind, source_channel, trust_tier, observation_kind = (
+                _partition_probe_contract(t.source)
+            )
             await flags.set_bool(
                 t.tenant_id, KAFKA_PATH_ENABLED, True,
                 set_by="validation:run2", note="A28 partition-missing probe",
             )
             env = NormalizedEnvelope(
-                envelope_version=1, source=t.source, ingress_kind=ingress,
+                envelope_version=1,
+                source=t.source,
+                ingress_kind=ingress_kind,
                 tenant_id=t.tenant_id,
                 raw_s3_key=f"v/{t.source}/{t.tenant_id}/2023-01/oor.json",
                 content_hash=f"oor-{t.source}-{t.tenant_id.hex[:8]}",
-                raw_ingested_at=out_of_range, source_channel=channel,
+                raw_ingested_at=out_of_range,
+                source_channel=source_channel,
                 content_text="out-of-range partition probe",
                 content={"probe": "partition_missing"},
-                occurred_at=out_of_range, trust_tier="attested_agent",
-                kind="signal", source_actor_ref=None,
+                occurred_at=out_of_range,
+                trust_tier=trust_tier,
+                kind=observation_kind,
+                source_actor_ref=None,
                 external_id=f"oor:{t.source}:{t.tenant_id.hex[:8]}",
                 entities_hint=[], normalized_at=out_of_range,
                 ingress_metadata={}, idem_hints={},

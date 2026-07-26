@@ -39,13 +39,15 @@ from services.platform.runtime.source_browser_agent_workflow import (
 
 from lib.shared.errors import DiscordApiError
 from lib.shared.ids import uuid7
-from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.discord.client import DiscordClient
 from services.ingest.source_contract.catalog import (
     CANONICAL_SOURCE_IDS,
     OAUTH_INGRESS_CATALOG,
     SOURCE_DEFINITIONS,
     SOURCE_LIVE_INGRESS_CATALOG,
+)
+from services.ingest.source_contract.runtime import (
+    resolve_installation_status_loader,
 )
 
 _DISCORD_TEXT_CHANNEL_TYPE = 0
@@ -801,8 +803,18 @@ def build_byoc_onboarding_router(
         tenant_id, actor_id = _rehearsal_actor_ids()
         await _ensure_rehearsal_actor(pool, tenant_id=tenant_id, actor_id=actor_id)
 
+        body = await _json_body(request)
+        installation_row_id = _coerce_uuid(body.get("installation_id"))
+        if installation_row_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "installation_id_required"},
+            )
         install = await _source_installation_row(
-            pool, tenant_id=tenant_id, source="aws"
+            pool,
+            tenant_id=tenant_id,
+            source="aws",
+            installation_row_id=installation_row_id,
         )
         if not install or not install["enabled"] or not install["has_secret"]:
             raise HTTPException(
@@ -814,11 +826,12 @@ def build_byoc_onboarding_router(
             pool,
             tenant_id=tenant_id,
             source="aws",
+            installation_row_id=installation_row_id,
             payload={
                 "reason": "ui_retry_first_sync",
                 "account_id": details.get("account_id"),
                 "region": details.get("region"),
-                "installation_id": install.get("installation_id"),
+                "installation_id": str(installation_row_id),
             },
         )
         status_payload = await _source_rehearsal_status_payload(
@@ -2595,7 +2608,6 @@ async def _source_rehearsal_status_payload(
         tenant_id=tenant_id,
         source=source,
     )
-    install = installations[0] if installations else None
     triggers = await pool.fetchrow(
         """
         SELECT count(*)::int AS total,
@@ -2688,7 +2700,10 @@ async def _source_rehearsal_status_payload(
         source,
     )
     installed = any(bool(row["enabled"]) for row in installations)
-    has_secret = install is not None and bool(install["has_secret"])
+    has_secret = any(
+        bool(row["enabled"]) and bool(row["has_secret"])
+        for row in installations
+    )
     trigger_total = int(triggers["total"] if triggers else 0)
     observations = [
         {
@@ -2704,7 +2719,6 @@ async def _source_rehearsal_status_payload(
         pool,
         tenant_id=tenant_id,
         source=source,
-        install=install,
         installations=installations,
         installed=installed,
     )
@@ -2712,8 +2726,14 @@ async def _source_rehearsal_status_payload(
     return {
         "source": source,
         "installed": installed,
-        "installation": installation_payloads[0] if installation_payloads else None,
+        "installation": (
+            installation_payloads[0]
+            if len(installation_payloads) == 1
+            else None
+        ),
         "installations": installation_payloads,
+        "installation_count": len(installation_payloads),
+        "installation_selection_required": len(installation_payloads) > 1,
         "trigger_count": trigger_total,
         "consumed_trigger_count": int(triggers["consumed"] if triggers else 0),
         "run_status_counts": {row["status"]: int(row["count"]) for row in runs},
@@ -2752,6 +2772,7 @@ async def _enqueue_source_manual_replay(
     *,
     tenant_id: UUID,
     source: str,
+    installation_row_id: UUID,
     payload: dict[str, Any],
 ) -> UUID:
     trigger_id = uuid7()
@@ -2760,12 +2781,14 @@ async def _enqueue_source_manual_replay(
             await conn.execute(
                 """
                 INSERT INTO onboarding_triggers (
-                    id, tenant_id, source, trigger_kind, payload
-                ) VALUES ($1, $2, $3, 'manual_replay', $4::jsonb)
+                    id, tenant_id, source, trigger_kind,
+                    installation_row_id, payload
+                ) VALUES ($1, $2, $3, 'manual_replay', $4, $5::jsonb)
                 """,
                 trigger_id,
                 tenant_id,
                 source,
+                installation_row_id,
                 json.dumps(payload, sort_keys=True),
             )
     return trigger_id
@@ -2793,11 +2816,10 @@ async def _source_access_status_payload(
     *,
     tenant_id: UUID,
     source: str,
-    install: dict[str, Any] | None,
     installations: list[dict[str, Any]],
     installed: bool,
 ) -> dict[str, Any]:
-    if source != "discord" or not installed or install is None:
+    if source != "discord" or not installed:
         return _empty_source_access_status()
     return await _discord_source_access_payload_for_installations(
         pool,
@@ -2837,7 +2859,7 @@ async def _discord_source_access_payload(
     tenant_id: UUID,
     install: dict[str, Any],
 ) -> dict[str, Any]:
-    guild_id = str(install.get("installation_id") or "").strip()
+    guild_id = str(install.get("external_installation_id") or "").strip()
     installation_row_id = _coerce_uuid(install.get("id"))
     if not guild_id or installation_row_id is None:
         status = _empty_source_access_status()
@@ -2890,7 +2912,7 @@ async def _discord_source_access_payload_uncached(
     install: dict[str, Any],
 ) -> dict[str, Any]:
     status = _empty_source_access_status()
-    guild_id = str(install.get("installation_id") or "").strip()
+    guild_id = str(install.get("external_installation_id") or "").strip()
     installation_row_id = _coerce_uuid(install.get("id"))
     if not guild_id or installation_row_id is None:
         status["access_next_actions"] = [
@@ -3032,7 +3054,7 @@ async def _discord_source_access_payload_uncached(
             resources.append(
                 {
                     "source": "discord",
-                    "installation_id": guild_id,
+                    "installation_id": str(installation_row_id),
                     "installation_name": guild_name
                     or _discord_installation_fallback_name(guild_id),
                     "resource_kind": "channel",
@@ -3083,7 +3105,7 @@ async def _sync_discord_access_state_and_enqueue_replay(
     install: dict[str, Any],
     resources: list[dict[str, Any]],
 ) -> list[str]:
-    guild_id = str(install.get("installation_id") or "").strip()
+    guild_id = str(install.get("external_installation_id") or "").strip()
     installation_row_id = _coerce_uuid(install.get("id"))
     if not guild_id or installation_row_id is None:
         return []
@@ -3602,12 +3624,22 @@ def _safe_provider_error_code(error_code: Any) -> str:
 
 
 def _source_installation_payload(row: dict[str, Any]) -> dict[str, Any]:
+    details = {
+        key: (
+            value.isoformat()
+            if isinstance(value, datetime)
+            else str(value)
+            if isinstance(value, UUID)
+            else value
+        )
+        for key, value in row.get("details", {}).items()
+    }
     return {
-        "installation_id": row["installation_id"],
+        "installation_id": str(row["installation_id"]),
         "enabled": bool(row["enabled"]),
         "has_secret": bool(row["has_secret"]),
-        "installed_at": row["installed_at"].isoformat(),
-        "details": row.get("details", {}),
+        "installed_at": _iso_or_none(row["installed_at"]),
+        "details": details,
     }
 
 
@@ -3616,78 +3648,15 @@ async def _source_installation_rows(
     *,
     tenant_id: UUID,
     source: str,
+    installation_row_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
-    if source == "facebook_pages":
-        rows = await pool.fetch(
-            """
-            SELECT page_id AS installation_id,
-                   enabled,
-                   (page_access_token_ref IS NOT NULL
-                    AND app_secret_ref IS NOT NULL
-                    AND verify_token_ref IS NOT NULL) AS has_secret,
-                   created_at AS installed_at,
-                   page_name,
-                   oldest_message_at,
-                   backfill_exhausted_at,
-                   backfill_exhausted_reason,
-                   conversation_count,
-                   message_count
-              FROM facebook_page_installations
-             WHERE tenant_id = $1
-             ORDER BY enabled DESC, updated_at DESC
-            """,
-            tenant_id,
-        )
-        return [
-            {
-                "installation_id": row["installation_id"],
-                "enabled": row["enabled"],
-                "has_secret": row["has_secret"],
-                "installed_at": row["installed_at"],
-                "details": {
-                    "page_name": row["page_name"],
-                    "coverage": "All available history",
-                    "oldest_message_at": _iso_or_none(row["oldest_message_at"]),
-                    "backfill_exhausted_at": _iso_or_none(row["backfill_exhausted_at"]),
-                    "backfill_exhausted_reason": row["backfill_exhausted_reason"],
-                    "conversation_count": row["conversation_count"],
-                    "message_count": row["message_count"],
-                },
-            }
-            for row in rows
-        ]
-    if source in _OAUTH_REHEARSAL_SOURCES:
-        rows = await pool.fetch(
-            """
-            SELECT id, installation_id, enabled,
-                   (secret_ref IS NOT NULL) AS has_secret, installed_at
-             FROM provider_installations
-             WHERE tenant_id = $1 AND provider = $2
-             ORDER BY enabled DESC, installed_at DESC
-            """,
-            tenant_id,
-            source,
-        )
-        out = [dict(row, details={}) for row in rows]
-        if source == "github":
-            for item in out:
-                if item["enabled"]:
-                    item["has_secret"] = True
-                    item["details"] = {
-                        "credential_scope": "github_app_level_private_key_and_webhook_secret",
-                    }
-        if source == "discord":
-            has_bot_token = bool(load_app_secret_text_from_env("DISCORD_BOT_TOKEN"))
-            for item in out:
-                if item["enabled"]:
-                    item["has_secret"] = has_bot_token
-                    item["details"] = {
-                        "credential_scope": "discord_app_level_bot_token",
-                    }
-        return out
-
-    row = await _source_installation_row(pool, tenant_id=tenant_id, source=source)
-    return [row] if row else []
+    loader = resolve_installation_status_loader(source)
+    return await loader(
+        pool,
+        tenant_id=tenant_id,
+        source=source,
+        installation_row_id=installation_row_id,
+    )
 
 
 async def _source_installation_row(
@@ -3695,305 +3664,19 @@ async def _source_installation_row(
     *,
     tenant_id: UUID,
     source: str,
+    installation_row_id: UUID,
 ) -> dict[str, Any] | None:
-    if source == "facebook_pages":
-        rows = await _source_installation_rows(
-            pool,
-            tenant_id=tenant_id,
-            source=source,
+    rows = await _source_installation_rows(
+        pool,
+        tenant_id=tenant_id,
+        source=source,
+        installation_row_id=installation_row_id,
+    )
+    if len(rows) > 1:
+        raise RuntimeError(
+            "exact installation status loader returned more than one row"
         )
-        return rows[0] if rows else None
-
-    if source in _OAUTH_REHEARSAL_SOURCES:
-        row = await pool.fetchrow(
-            """
-            SELECT id, installation_id, enabled,
-                   (secret_ref IS NOT NULL) AS has_secret, installed_at
-             FROM provider_installations
-             WHERE tenant_id = $1 AND provider = $2
-             ORDER BY enabled DESC, installed_at DESC
-             LIMIT 1
-            """,
-            tenant_id,
-            source,
-        )
-        if row is None:
-            return None
-        data = dict(row, details={})
-        if source == "github" and data["enabled"]:
-            data["has_secret"] = True
-            data["details"] = {
-                "credential_scope": "github_app_level_private_key_and_webhook_secret",
-            }
-        return data
-
-    if source == "gmail":
-        row = await pool.fetchrow(
-            """
-            SELECT workspace_domain AS installation_id,
-                   (disabled_at IS NULL) AS enabled,
-                   (service_account_email IS NOT NULL) AS has_secret,
-                   created_at AS installed_at,
-                   service_account_email,
-                   scope,
-                   resolved_user_count,
-                   resolved_at
-              FROM gmail_installations
-             WHERE tenant_id = $1
-             ORDER BY created_at DESC
-             LIMIT 1
-            """,
-            tenant_id,
-        )
-        if row is None:
-            return None
-        data = dict(row)
-        return {
-            "installation_id": data["installation_id"],
-            "enabled": data["enabled"],
-            "has_secret": data["has_secret"],
-            "installed_at": data["installed_at"],
-            "details": {
-                "service_account_email": data.get("service_account_email"),
-                "scope": data.get("scope"),
-                "resolved_user_count": data.get("resolved_user_count"),
-                "resolved_at": data.get("resolved_at"),
-            },
-        }
-
-    if source == "google_calendar":
-        row = await pool.fetchrow(
-            """
-            SELECT workspace_domain AS installation_id,
-                   (disabled_at IS NULL) AS enabled,
-                   (service_account_email IS NOT NULL) AS has_secret,
-                   created_at AS installed_at,
-                   service_account_email,
-                   scope,
-                   resolved_calendar_count,
-                   resolved_at
-              FROM google_calendar_installations
-             WHERE tenant_id = $1
-             ORDER BY created_at DESC
-             LIMIT 1
-            """,
-            tenant_id,
-        )
-        if row is None:
-            return None
-        data = dict(row)
-        return {
-            "installation_id": data["installation_id"],
-            "enabled": data["enabled"],
-            "has_secret": data["has_secret"],
-            "installed_at": data["installed_at"],
-            "details": {
-                "service_account_email": data.get("service_account_email"),
-                "scope": data.get("scope"),
-                "resolved_calendar_count": data.get("resolved_calendar_count"),
-                "resolved_at": data.get("resolved_at"),
-            },
-        }
-
-    if source == "google_drive":
-        row = await pool.fetchrow(
-            """
-            SELECT workspace_domain AS installation_id,
-                   (disabled_at IS NULL) AS enabled,
-                   (service_account_email IS NOT NULL) AS has_secret,
-                   created_at AS installed_at,
-                   service_account_email,
-                   scope,
-                   include_shared_drives,
-                   resolved_target_count,
-                   resolved_at
-              FROM google_drive_installations
-             WHERE tenant_id = $1
-             ORDER BY created_at DESC
-             LIMIT 1
-            """,
-            tenant_id,
-        )
-        if row is None:
-            return None
-        data = dict(row)
-        return {
-            "installation_id": data["installation_id"],
-            "enabled": data["enabled"],
-            "has_secret": data["has_secret"],
-            "installed_at": data["installed_at"],
-            "details": {
-                "service_account_email": data.get("service_account_email"),
-                "scope": data.get("scope"),
-                "include_shared_drives": data.get("include_shared_drives"),
-                "resolved_target_count": data.get("resolved_target_count"),
-                "resolved_at": data.get("resolved_at"),
-            },
-        }
-
-    if source == "jira":
-        row = await pool.fetchrow(
-            """
-            SELECT base_url AS installation_id,
-                   (disabled_at IS NULL) AS enabled,
-                   (secret_ref IS NOT NULL) AS has_secret,
-                   created_at AS installed_at,
-                   account_email,
-                   cloud_id,
-                   (webhook_secret_ref IS NOT NULL) AS webhook_registered
-              FROM jira_installations
-             WHERE tenant_id = $1
-             ORDER BY created_at DESC
-             LIMIT 1
-            """,
-            tenant_id,
-        )
-        if row is None:
-            return None
-        data = dict(row)
-        return {
-            "installation_id": data["installation_id"],
-            "enabled": data["enabled"],
-            "has_secret": data["has_secret"],
-            "installed_at": data["installed_at"],
-            "details": {
-                "account_email": data.get("account_email"),
-                "cloud_id": data.get("cloud_id"),
-                "webhook_registered": data.get("webhook_registered"),
-            },
-        }
-
-    if source == "aws":
-        row = await pool.fetchrow(
-            """
-            SELECT account_id || ':' || region AS installation_id,
-                   (disabled_at IS NULL) AS enabled,
-                   (secret_ref IS NOT NULL) AS has_secret,
-                   created_at AS installed_at,
-                   account_id,
-                   region,
-                   credential_kind,
-                   backfill_window_days
-              FROM aws_installations
-             WHERE tenant_id = $1
-             ORDER BY created_at DESC
-             LIMIT 1
-            """,
-            tenant_id,
-        )
-        if row is None:
-            return None
-        data = dict(row)
-        return {
-            "installation_id": data["installation_id"],
-            "enabled": data["enabled"],
-            "has_secret": data["has_secret"],
-            "installed_at": data["installed_at"],
-            "details": {
-                "account_id": data.get("account_id"),
-                "region": data.get("region"),
-                "credential_kind": data.get("credential_kind"),
-                "backfill_window_days": data.get("backfill_window_days"),
-            },
-        }
-
-    if source == "telegram":
-        row = await pool.fetchrow(
-            """
-            SELECT account_label AS installation_id,
-                   (disabled_at IS NULL) AS enabled,
-                   (session_secret_ref IS NOT NULL) AS has_secret,
-                   created_at AS installed_at,
-                   api_id,
-                   (backfill_session_secret_ref IS NOT NULL) AS has_backfill_session
-              FROM telegram_installations
-             WHERE tenant_id = $1
-             ORDER BY created_at DESC
-             LIMIT 1
-            """,
-            tenant_id,
-        )
-        if row is None:
-            return None
-        data = dict(row)
-        return {
-            "installation_id": data["installation_id"],
-            "enabled": data["enabled"],
-            "has_secret": data["has_secret"],
-            "installed_at": data["installed_at"],
-            "details": {
-                "api_id": data.get("api_id"),
-                "has_backfill_session": data.get("has_backfill_session"),
-            },
-        }
-
-    if source == "whatsapp":
-        row = await pool.fetchrow(
-            """
-            SELECT phone_number_id AS installation_id,
-                   enabled,
-                   (app_secret_ref IS NOT NULL AND verify_token_ref IS NOT NULL)
-                       AS has_secret,
-                   updated_at AS installed_at,
-                   waba_id,
-                   display_phone_number,
-                   (access_token_ref IS NOT NULL) AS has_access_token
-              FROM whatsapp_installations
-             WHERE tenant_id = $1
-             ORDER BY updated_at DESC
-             LIMIT 1
-            """,
-            tenant_id,
-        )
-        if row is None:
-            return None
-        data = dict(row)
-        return {
-            "installation_id": data["installation_id"],
-            "enabled": data["enabled"],
-            "has_secret": data["has_secret"],
-            "installed_at": data["installed_at"],
-            "details": {
-                "business_account_id": data.get("waba_id"),
-                "display_phone_number": data.get("display_phone_number"),
-                "has_access_token": data.get("has_access_token"),
-            },
-        }
-
-    if source == "ramp":
-        row = await pool.fetchrow(
-            """
-            SELECT business_id AS installation_id,
-                   (disabled_at IS NULL) AS enabled,
-                   (secret_ref IS NOT NULL OR refresh_secret_ref IS NOT NULL)
-                       AS has_secret,
-                   created_at AS installed_at,
-                   base_url,
-                   token_expires_at,
-                   (webhook_secret_ref IS NOT NULL) AS webhook_registered
-              FROM ramp_installations
-             WHERE tenant_id = $1
-             ORDER BY created_at DESC
-             LIMIT 1
-            """,
-            tenant_id,
-        )
-        if row is None:
-            return None
-        data = dict(row)
-        return {
-            "installation_id": data["installation_id"],
-            "enabled": data["enabled"],
-            "has_secret": data["has_secret"],
-            "installed_at": data["installed_at"],
-            "details": {
-                "base_url": data.get("base_url"),
-                "token_expires_at": data.get("token_expires_at"),
-                "webhook_registered": data.get("webhook_registered"),
-            },
-        }
-
-    return None
+    return rows[0] if rows else None
 
 
 def _source_rehearsal_next_action(

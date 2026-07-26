@@ -5,9 +5,11 @@ The full consumer loop is covered in
 `test_worker_cooperative_sticky_rebalance.py` against a testcontainers
 broker.
 """
+
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -19,6 +21,9 @@ import pytest
 from services.ingest.ingestion.normalizer import worker as worker_module
 from services.ingest.ingestion.normalizer.models import NormalizedEnvelope
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
+from services.ingest.source_contract.runtime import (
+    NormalizerIngressMetadataError,
+)
 
 
 _NOW = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0)
@@ -45,6 +50,7 @@ def _envelope_for(
     tenant: UUID,
     source: str = "slack",
     ingress_kind: str = "webhook",
+    ingress_metadata: dict[str, Any] | None = None,
 ) -> tuple[bytes, bytes, str]:
     """Build a (raw_body_bytes, envelope_bytes, s3_key) triple.
 
@@ -62,7 +68,11 @@ def _envelope_for(
         content_hash=content_hash,
         ingested_at=_NOW,
         ingress_kind=ingress_kind,
-        ingress_metadata={"delivery_id": "deliv-1"},
+        ingress_metadata=(
+            ingress_metadata
+            if ingress_metadata is not None
+            else {"delivery_id": "deliv-1"}
+        ),
         idem_hints={"hint": "x"},
     )
     return raw_body, orjson.dumps(envelope.model_dump(mode="json")), s3_key
@@ -102,8 +112,10 @@ def _s3_stub():
 # 1. Happy path — Slack webhook envelope → normalized envelope.
 # ---------------------------------------------------------------------
 
+
 async def test_normalize_slack_webhook_produces_normalized_envelope(
-    _producer_stub, _s3_stub,
+    _producer_stub,
+    _s3_stub,
 ):
     tenant = uuid4()
     raw_body, envelope_bytes, s3_key = _envelope_for(
@@ -113,7 +125,9 @@ async def test_normalize_slack_webhook_produces_normalized_envelope(
     _s3_stub._storage[s3_key] = raw_body
 
     produced = await worker_module._normalize_one(
-        envelope_bytes, _s3_stub, _producer_stub,
+        envelope_bytes,
+        _s3_stub,
+        _producer_stub,
     )
 
     assert produced is True
@@ -138,7 +152,8 @@ async def test_normalize_slack_webhook_produces_normalized_envelope(
 
 
 async def test_normalize_uses_verified_raw_get_when_available(
-    _producer_stub, _s3_stub,
+    _producer_stub,
+    _s3_stub,
 ):
     tenant = uuid4()
     raw_body, envelope_bytes, s3_key = _envelope_for(
@@ -148,7 +163,9 @@ async def test_normalize_uses_verified_raw_get_when_available(
     _s3_stub.get_verified = AsyncMock(return_value=raw_body)
 
     produced = await worker_module._normalize_one(
-        envelope_bytes, _s3_stub, _producer_stub,
+        envelope_bytes,
+        _s3_stub,
+        _producer_stub,
     )
 
     assert produced is True
@@ -156,12 +173,91 @@ async def test_normalize_uses_verified_raw_get_when_available(
     _s3_stub.get.assert_not_awaited()
 
 
+async def test_normalize_github_webhook_uses_contract_metadata_projection(
+    _producer_stub,
+    _s3_stub,
+):
+    tenant = uuid4()
+    payload = {
+        "action": "opened",
+        "issue": {
+            "number": 7,
+            "node_id": "I_live_7",
+            "title": "Contract-owned headers",
+            "updated_at": "2026-05-17T12:00:00Z",
+        },
+        "repository": {"full_name": "fyralis/api"},
+        "sender": {"login": "octocat"},
+    }
+    raw_body, envelope_bytes, s3_key = _envelope_for(
+        payload,
+        tenant=tenant,
+        source="github",
+        ingress_metadata={
+            "event_type": "issues",
+            "delivery_id": "delivery-live-7",
+        },
+    )
+    _s3_stub._storage[s3_key] = raw_body
+
+    produced = await worker_module._normalize_one(
+        envelope_bytes,
+        _s3_stub,
+        _producer_stub,
+    )
+
+    assert produced is True
+    _, kwargs = _producer_stub.produce.await_args
+    normalized = NormalizedEnvelope.model_validate_json(kwargs["value"])
+    assert normalized.source_channel == "github:webhook"
+    assert normalized.external_id == "I_live_7:opened"
+    assert normalized.content["event_type"] == "issues"
+
+
+async def test_normalize_github_webhook_rejects_missing_projected_metadata(
+    _producer_stub,
+    _s3_stub,
+):
+    tenant = uuid4()
+    raw_body, envelope_bytes, s3_key = _envelope_for(
+        {
+            "action": "opened",
+            "issue": {"number": 7, "node_id": "I_live_7"},
+        },
+        tenant=tenant,
+        source="github",
+        ingress_metadata={"delivery_id": "delivery-live-7"},
+    )
+    _s3_stub._storage[s3_key] = raw_body
+
+    with pytest.raises(
+        NormalizerIngressMetadataError,
+        match="event_type",
+    ):
+        await worker_module._normalize_one(
+            envelope_bytes,
+            _s3_stub,
+            _producer_stub,
+        )
+    _producer_stub.produce.assert_not_awaited()
+
+
+def test_normalizer_worker_has_no_github_header_reconstruction_switch() -> None:
+    source = inspect.getsource(worker_module._normalize_one_with_envelope)
+
+    assert 'envelope.source == "github"' not in source
+    assert "X-GitHub-Event" not in source
+    assert "build_normalizer_ingress_headers" in source
+
+
 # ---------------------------------------------------------------------
 # 2. Gmail Pub/Sub envelope — out-of-scope for M2 (no handler).
 # ---------------------------------------------------------------------
 
+
 async def test_normalize_gmail_pubsub_is_skipped_with_metric(
-    _producer_stub, _s3_stub,
+    _producer_stub,
+    _s3_stub,
 ):
     tenant = uuid4()
     # The payload doesn't matter — channel_mapping returns None
@@ -174,7 +270,9 @@ async def test_normalize_gmail_pubsub_is_skipped_with_metric(
     )
 
     produced = await worker_module._normalize_one(
-        envelope_bytes, _s3_stub, _producer_stub,
+        envelope_bytes,
+        _s3_stub,
+        _producer_stub,
     )
 
     assert produced is False
@@ -191,8 +289,10 @@ async def test_normalize_gmail_pubsub_is_skipped_with_metric(
 # loop records parse_failure. Confirms the loop-vs-helper contract.
 # ---------------------------------------------------------------------
 
+
 async def test_normalize_handler_validation_error_bubbles(
-    _producer_stub, _s3_stub,
+    _producer_stub,
+    _s3_stub,
 ):
     tenant = uuid4()
     # Slack handler requires `event.text` to be a string; omit it.
@@ -205,13 +305,16 @@ async def test_normalize_handler_validation_error_bubbles(
         },
     }
     raw_body, envelope_bytes, s3_key = _envelope_for(
-        bad_payload, tenant=tenant,
+        bad_payload,
+        tenant=tenant,
     )
     _s3_stub._storage[s3_key] = raw_body
 
     with pytest.raises(Exception):
         await worker_module._normalize_one(
-            envelope_bytes, _s3_stub, _producer_stub,
+            envelope_bytes,
+            _s3_stub,
+            _producer_stub,
         )
     assert _producer_stub.produce.await_count == 0
 
@@ -222,8 +325,10 @@ async def test_normalize_handler_validation_error_bubbles(
 # "discord:interaction").
 # ---------------------------------------------------------------------
 
+
 async def test_normalize_discord_gateway_routes_to_message_handler(
-    _producer_stub, _s3_stub,
+    _producer_stub,
+    _s3_stub,
 ):
     tenant = uuid4()
     discord_payload = {
@@ -237,13 +342,17 @@ async def test_normalize_discord_gateway_routes_to_message_handler(
         "mentions": [],
     }
     raw_body, envelope_bytes, s3_key = _envelope_for(
-        discord_payload, tenant=tenant,
-        source="discord", ingress_kind="gateway",
+        discord_payload,
+        tenant=tenant,
+        source="discord",
+        ingress_kind="gateway",
     )
     _s3_stub._storage[s3_key] = raw_body
 
     produced = await worker_module._normalize_one(
-        envelope_bytes, _s3_stub, _producer_stub,
+        envelope_bytes,
+        _s3_stub,
+        _producer_stub,
     )
 
     assert produced is True
@@ -259,8 +368,10 @@ async def test_normalize_discord_gateway_routes_to_message_handler(
 # catch regression at the worker boundary.)
 # ---------------------------------------------------------------------
 
+
 async def test_normalize_envelope_byte_stable_for_equal_input(
-    _producer_stub, _s3_stub,
+    _producer_stub,
+    _s3_stub,
 ):
     """N2 (replay-from-raw) requires: two normalizations of a
     byte-equal raw envelope produce byte-equal normalized envelopes
@@ -279,15 +390,20 @@ async def test_normalize_envelope_byte_stable_for_equal_input(
     """
     tenant = uuid4()
     raw_body, envelope_bytes, s3_key = _envelope_for(
-        _slack_payload(text="stable"), tenant=tenant,
+        _slack_payload(text="stable"),
+        tenant=tenant,
     )
     _s3_stub._storage[s3_key] = raw_body
 
     await worker_module._normalize_one(
-        envelope_bytes, _s3_stub, _producer_stub,
+        envelope_bytes,
+        _s3_stub,
+        _producer_stub,
     )
     await worker_module._normalize_one(
-        envelope_bytes, _s3_stub, _producer_stub,
+        envelope_bytes,
+        _s3_stub,
+        _producer_stub,
     )
 
     assert _producer_stub.produce.await_count == 2

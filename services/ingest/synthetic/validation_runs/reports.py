@@ -54,8 +54,8 @@ class RunReport:
     live_lines: list[str] = field(default_factory=list)
     coverage_rows: list[tuple[str, str, str, str, str, str]] = field(
         default_factory=list)
-    # Explicit verdict overrides the binary pass/fail when set
-    # (READY / PARTIAL / NOT_READY) — Run 2 may be PARTIAL under FLAKY.
+    # Explicit verdict overrides the binary pass/fail when set. PARTIAL is
+    # renderable for old artifacts but is never a passing certification state.
     verdict: str | None = None
 
     def rc_violations(self) -> list[str]:

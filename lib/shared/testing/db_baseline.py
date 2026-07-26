@@ -7,6 +7,42 @@ from uuid import UUID
 import asyncpg
 
 
+async def seed_test_source_catalog(conn: asyncpg.Connection) -> None:
+    """Restore migration-owned source reference rows after legacy test cleanup.
+
+    Production treats catalog/database drift as a startup error; tests are
+    different because older cleanup fixtures may have truncated every public
+    table while leaving the catalog foreign keys installed.  Re-seeding here
+    makes a long-lived local test database recoverable without weakening the
+    production parity gate.
+    """
+
+    from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
+
+    await conn.executemany(
+        """
+        INSERT INTO ingestion_source_catalog (
+            id, ui_slug, aliases, historical_supported, data_plane
+        ) VALUES ($1, $2, $3::text[], $4, TRUE)
+        ON CONFLICT (id) DO UPDATE SET
+            ui_slug = EXCLUDED.ui_slug,
+            aliases = EXCLUDED.aliases,
+            historical_supported = EXCLUDED.historical_supported,
+            data_plane = EXCLUDED.data_plane,
+            updated_at = now()
+        """,
+        [
+            (
+                source.source_id,
+                source.ui_slug,
+                list(source.aliases),
+                source.history is not None,
+            )
+            for source in SOURCE_DEFINITIONS
+        ],
+    )
+
+
 async def install_test_tenant_auto_register(conn: asyncpg.Connection) -> None:
     await conn.execute(
         """
@@ -57,6 +93,7 @@ async def install_test_tenant_auto_register(conn: asyncpg.Connection) -> None:
 
 
 async def seed_test_baseline(conn: asyncpg.Connection) -> None:
+    await seed_test_source_catalog(conn)
     default_tenant = os.environ.get("DEFAULT_TENANT_ID")
     tenant_ids: set[UUID] = {
         UUID("11111111-1111-1111-1111-111111111111"),
@@ -77,4 +114,3 @@ async def seed_test_baseline(conn: asyncpg.Connection) -> None:
             tenant_id,
             f"test_baseline_{tenant_id}",
         )
-

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_id": "gmail",
+  "pack_version": "1.0.0",
+  "provider_api_version": "Gmail API v1",
+  "evidence": [
+    {
+      "behavior_id": "used_api_surface",
+      "kind": "documented",
+      "uri": "https://developers.google.com/workspace/gmail/api/reference/rest",
+      "api_version": "Gmail API v1",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Pending P0 schema lock and reviewer verification."
+    },
+    {
+      "behavior_id": "quota_policy",
+      "kind": "documented",
+      "uri": "https://developers.google.com/workspace/gmail/api/reference/quota",
+      "api_version": null,
+      "schema_sha256": null,
+      "quota_uri": "https://developers.google.com/workspace/gmail/api/reference/quota",
+      "verified_at": null,
+      "notes": "Per-project and per-user quota-unit evidence must be locked before certification."
+    },
+    {
+      "behavior_id": "fyralis_runtime_contract",
+      "kind": "fyralis_specific",
+      "uri": "repo://services/ingest/source_contract/catalog.py#gmail",
+      "api_version": "source-contract-v1",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Runtime linkage awaits final contract-only verification."
+    }
+  ]
+}

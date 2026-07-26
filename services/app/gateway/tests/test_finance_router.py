@@ -34,6 +34,7 @@ async def app_client():
     from services.domain.entity_aliases.repo import EntityAliasRepo
     from services.app.gateway.db_bootstrap import _register_codecs
     from services.domain.observations.partitions import ensure_partitions
+    from lib.shared.testing.db_baseline import seed_test_source_catalog
 
     pool = await asyncpg.create_pool(dsn=_DSN, min_size=1, max_size=4, init=_register_codecs)
     # Apply migrations only if the finance tables are missing. Re-running the
@@ -47,6 +48,9 @@ async def app_client():
             import pathlib
             root = pathlib.Path(__file__).resolve().parents[4]
             await apply_migrations_dir(conn, root / "db" / "migrations")
+        # Recover migration-owned reference rows if another legacy integration
+        # fixture truncated the long-lived local test database.
+        await seed_test_source_catalog(conn)
     await ensure_partitions(pool, months_ahead=3)
 
     class _Deps:

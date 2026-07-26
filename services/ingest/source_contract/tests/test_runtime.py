@@ -10,9 +10,11 @@ from services.ingest.source_contract.catalog import (
 )
 from services.ingest.source_contract.runtime import (
     BindingResolutionError,
+    build_normalizer_ingress_headers,
     HistoryCallable,
     HistoryNotSupportedError,
     NormalizationChannelNotFoundError,
+    NormalizerIngressMetadataError,
     override_history_bindings,
     resolve_callable_reference,
     resolve_fetcher,
@@ -45,10 +47,10 @@ def test_every_declared_normalizer_binding_resolves_to_a_callable() -> None:
 
 
 def test_every_source_idempotency_builder_resolves_to_a_callable() -> None:
-    assert sum(
-        len(source.idempotency_builder_bindings)
-        for source in SOURCE_DEFINITIONS
-    ) == 43
+    assert (
+        sum(len(source.idempotency_builder_bindings) for source in SOURCE_DEFINITIONS)
+        == 43
+    )
     for source in SOURCE_DEFINITIONS:
         builders = resolve_idempotency_builders(source.source_id)
         assert len(builders) == len(source.idempotency_builder_bindings)
@@ -65,6 +67,74 @@ def test_unknown_normalizer_channel_fails_explicitly() -> None:
         match="no declared normalizer",
     ):
         resolve_handler("mars:webhook")
+
+
+def test_webhook_handler_headers_are_projected_from_contract_metadata() -> None:
+    assert build_normalizer_ingress_headers(
+        source_name="github",
+        ingress_kind="webhook",
+        channel="github:webhook",
+        ingress_metadata={
+            "event_type": "pull_request",
+            "delivery_id": "delivery-1",
+        },
+    ) == {"X-GitHub-Event": "pull_request"}
+    assert (
+        build_normalizer_ingress_headers(
+            source_name="slack",
+            ingress_kind="webhook",
+            channel="slack:message",
+            ingress_metadata={"event_type": "message"},
+        )
+        == {}
+    )
+    assert (
+        build_normalizer_ingress_headers(
+            source_name="github",
+            ingress_kind="backfill",
+            channel="github:webhook",
+            ingress_metadata={},
+        )
+        == {}
+    )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        {},
+        {"event_type": None},
+        {"event_type": ""},
+        {"event_type": "   "},
+        {"event_type": 7},
+    ),
+)
+def test_webhook_handler_header_projection_fails_closed(
+    metadata: dict[str, object],
+) -> None:
+    with pytest.raises(
+        NormalizerIngressMetadataError,
+        match="event_type",
+    ):
+        build_normalizer_ingress_headers(
+            source_name="github",
+            ingress_kind="webhook",
+            channel="github:webhook",
+            ingress_metadata=metadata,
+        )
+
+
+def test_webhook_handler_header_projection_requires_exact_contract() -> None:
+    with pytest.raises(
+        NormalizerIngressMetadataError,
+        match="exactly one",
+    ):
+        build_normalizer_ingress_headers(
+            source_name="github",
+            ingress_kind="webhook",
+            channel="github:not-the-contract-channel",
+            ingress_metadata={"event_type": "issues"},
+        )
 
 
 @pytest.mark.parametrize("role", ["planner", "fetcher", "reconciler"])

@@ -134,6 +134,10 @@ async def test_signature_gate_scoped_to_hmac_sources() -> None:
           {"source": "github", "http_status": 401}]
     assert await A.assert_signature_validation_gate_holds_for_hmac_sources(
         ok) == 2
+    assert await A.assert_signature_validation_gate_holds_for_hmac_sources(
+        [{"source": "whatsapp", "http_status": 403}],
+        expected_sources=("whatsapp",),
+    ) == 1
     # Wrong status.
     with pytest.raises(A.PropertyViolation):
         await A.assert_signature_validation_gate_holds_for_hmac_sources(

@@ -1,4 +1,5 @@
 """Provider-edge contract parity and legacy-registry ratchets."""
+
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
@@ -19,6 +20,7 @@ from services.ingest.source_contract import (
     provider_for_webhook_route,
     provider_for_dedicated_ingress,
     resolve_callable_reference,
+    resolve_webhook_ingress_metadata_builder,
     validate_provider_ingress_catalog,
 )
 from services.ingest.source_contract.catalog import (
@@ -209,6 +211,7 @@ def test_every_webhook_binding_resolves_from_the_contract() -> None:
     for route_id in WEBHOOK_INGRESS_CATALOG:
         assert verifier_for_provider(route_id) is not None
         assert tenant_extractor_for_provider(route_id) is not None
+        assert callable(resolve_webhook_ingress_metadata_builder(route_id))
 
     assert verifier_for_provider("unknown") is None
     assert tenant_extractor_for_provider("unknown") is None
@@ -280,6 +283,38 @@ def test_discord_declares_synchronous_ack_and_forbids_202_cutover() -> None:
     assert discord.kafka_mode == "inline_then_shadow"
     assert discord.kafka_cutover_enabled is False
     assert discord.shadow_write_enabled is True
+
+
+def test_github_owns_the_only_webhook_handler_header_projection() -> None:
+    projected = {
+        route_id: ingress.normalizer_header_projection
+        for route_id, ingress in WEBHOOK_INGRESS_CATALOG.items()
+        if ingress.normalizer_header_projection
+    }
+
+    assert projected == {
+        "github": (("event_type", "X-GitHub-Event"),),
+    }
+
+
+@pytest.mark.parametrize(
+    "projection",
+    (
+        (("event_type", ""),),
+        (("Event Type", "X-GitHub-Event"),),
+        (("event_type", "bad header"),),
+        (("event_type", "X-GitHub-Event"), ("event_type", "X-Other")),
+        (("event_type", "X-GitHub-Event"), ("delivery_id", "x-github-event")),
+    ),
+)
+def test_webhook_handler_header_projection_rejects_malformed_contracts(
+    projection: tuple[tuple[str, str], ...],
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        replace(
+            WEBHOOK_INGRESS_CATALOG["github"],
+            normalizer_header_projection=projection,
+        )
 
 
 def test_dedicated_notion_and_ingress_only_provider_semantics() -> None:

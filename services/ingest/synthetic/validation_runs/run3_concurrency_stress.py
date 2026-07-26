@@ -1,9 +1,11 @@
-"""Run 3 — concurrency stress (A30.4).
+"""Run 3 — contract-wide concurrency stress (A30.4).
 
-50 tenants distributed across the four sources, driven through the SAME
-seven shared M6 subprocesses at concurrency=10 (not 50× processes).
-HAPPY_PATH; **backfill-only** (live phase skipped — the focus is backfill
-concurrency + per-tenant isolation).
+Two tenants for every history-capable canonical source (currently 52 tenants
+across 26 sources), driven through the SAME seven shared M6 subprocesses at
+concurrency=10 (not one process set per tenant).  Source membership, fixture
+construction, and exact Observation counts come from the source certification
+contract.  The run is HAPPY_PATH and **backfill-only** (live phase skipped —
+the focus is backfill concurrency + per-tenant isolation).
 
 A concurrent monitor samples, while the backfill runs:
   - peak simultaneous `source_onboarding_runs.status='in_progress'`
@@ -12,8 +14,8 @@ A concurrent monitor samples, while the backfill runs:
 
 Assertions (A22 properties under load):
   - per-tenant isolation: each tenant's observation count matches its
-    fixture independently (gmail/github/slack/discord exact),
-  - signal-table backlog bounded (< 10× concurrency = 100),
+    source-owned exact fixture oracle independently,
+  - signal-table backlog bounded (< 3× tenant count),
   - concurrency exercised (≥5 in_progress simultaneously),
   - #39 flake watch: `tenant_onboarding_completed` fires exactly once per
     tenant (no double-fire, no miss).
@@ -39,51 +41,52 @@ from services.ingest.synthetic.validation_runs.reports import (
     RunReport,
     SourceResult,
 )
+from services.ingest.synthetic.validation_runs.runs import (
+    certification_history_scenarios,
+)
 
 
 log = logging.getLogger("validation_runs.run3")
 _MIGRATIONS = pathlib.Path("db/migrations")
 
-# Distribution (Decision 3): 15 / 15 / 10 / 10 = 50.
-_GMAIL_N, _GITHUB_N, _SLACK_N, _DISCORD_N = 15, 15, 10, 10
+# Preserve the original roughly-50-tenant stress shape without owning another
+# source list: two tenants for each contract-declared historical source.
+_TENANTS_PER_HISTORY_SOURCE = 2
 
 
 def run3_scenarios() -> list[BackfillScenario]:
-    """50-tenant distribution (15/15/10/10). Per-tenant message volumes
-    are sized so the full run's observations drain through the Kafka
-    consumers within the harness's fixed 30s drain window
-    (`_wait_for_observations_to_drain`, hardcoded — NOT configurable from
-    here, and the X3 harness is out of scope to modify). The stress
-    dimension is **tenant concurrency** (50 tenants × concurrency=10
-    through 7 shared subprocesses), which is independent of per-tenant
-    volume — see A30.6 for the drain-window finding. A higher-volume soak
-    would need the harness to expose a drain timeout (follow-up)."""
-    out: list[BackfillScenario] = []
-    for i in range(_GMAIL_N):
-        out.append(BackfillScenario(
-            tenant_slug=f"r3-gmail-{i}", source="gmail",
-            fixture_params={"email": f"r3-gmail-{i}@val.example",
-                            "messages": 10},
-            expected_observation_count=10))
-    for i in range(_GITHUB_N):
-        out.append(BackfillScenario(
-            tenant_slug=f"r3-github-{i}", source="github",
-            fixture_params={"org_or_user": f"r3gh{i}", "repos": 2,
-                            "events_per_repo": 5},
-            expected_observation_count=5 * 2 * 2))  # events×types×repos
-    for i in range(_SLACK_N):
-        out.append(BackfillScenario(
-            tenant_slug=f"r3-slack-{i}", source="slack",
-            fixture_params={"team_id": f"T_r3s{i}", "channels": 3,
-                            "messages_per_channel": 8},
-            expected_observation_count=3 * 8))
-    for i in range(_DISCORD_N):
-        out.append(BackfillScenario(
-            tenant_slug=f"r3-discord-{i}", source="discord",
-            fixture_params={"guild_id": f"G_r3d{i}", "channels": 4,
-                            "messages_per_channel": 10},
-            expected_observation_count=4 * 10))
-    return out
+    """Build the deterministic contract-wide Run 3 matrix.
+
+    ``certification_history_scenarios`` resolves each source's fixture factory
+    and exact count oracle before returning.  The additional validation here
+    makes Run 3 itself fail closed if that composition ever yields an
+    unspecified, boolean, zero, or negative count.
+    """
+    scenarios = certification_history_scenarios(
+        tenants_per_source=_TENANTS_PER_HISTORY_SOURCE,
+    )
+    for scenario in scenarios:
+        expected = scenario.expected_observation_count
+        if (
+            isinstance(expected, bool)
+            or not isinstance(expected, int)
+            or expected <= 0
+        ):
+            raise ValueError(
+                f"{scenario.source} Run 3 expected_observation_count must be "
+                f"a positive exact integer, got {expected!r}",
+            )
+    return scenarios
+
+
+def _group_scenarios(
+    scenarios: list[BackfillScenario],
+) -> dict[str, list[BackfillScenario]]:
+    """Group in contract scenario order without maintaining a source list."""
+    grouped: dict[str, list[BackfillScenario]] = {}
+    for scenario in scenarios:
+        grouped.setdefault(scenario.source, []).append(scenario)
+    return grouped
 
 
 async def _migrate_and_truncate(pool: asyncpg.Pool) -> None:
@@ -148,8 +151,12 @@ async def run3(
     t0 = time.monotonic()
     dsn = os.environ["DATABASE_URL"]
     scenarios = run3_scenarios()
+    scenarios_by_source = _group_scenarios(scenarios)
     report = RunReport(
-        run_name="Concurrency stress (50 tenants, backfill-only)",
+        run_name=(
+            "Contract-wide concurrency stress "
+            f"({len(scenarios)} tenants, backfill-only)"
+        ),
         run_number=3, tenant_count=len(scenarios),
         started_at=started, wall_seconds=0.0,
     )
@@ -184,43 +191,86 @@ async def run3(
                 await mon
             report.subprocess_returncodes = dict(result.subprocess_returncodes)
 
-            # ---- Per-source counts ----
-            by_source: dict[str, list] = {}
+            # ---- Per-source counts (contract scenario order) ----
+            outcomes_by_source: dict[str, list] = {}
             for o in result.outcomes:
-                by_source.setdefault(o.scenario.source, []).append(o)
-            for source in ("gmail", "github", "slack", "discord"):
-                outs = by_source.get(source, [])
+                outcomes_by_source.setdefault(o.scenario.source, []).append(o)
+            for source, source_scenarios in scenarios_by_source.items():
+                outs = outcomes_by_source.get(source, [])
                 src_tids = [o.tenant_id for o in outs]
-                exp = sum(o.scenario.expected_observation_count for o in outs)
-                actual = int(await pool.fetchval(
-                    "SELECT count(*) FROM observations WHERE tenant_id = ANY($1)",
-                    src_tids))
+                exp = sum(
+                    scenario.expected_observation_count
+                    for scenario in source_scenarios
+                )
+                actual = 0
+                if src_tids:
+                    actual = int(await pool.fetchval(
+                        "SELECT count(*) FROM observations "
+                        "WHERE tenant_id = ANY($1)",
+                        src_tids,
+                    ))
                 report.source_results.append(SourceResult(
-                    source=source, tenants=len(outs),
+                    source=source, tenants=len(source_scenarios),
                     expected_observations=exp, actual_observations=actual))
+
+            # Every planned scenario must yield exactly one outcome.  Without
+            # this explicit check, a missing source could otherwise disappear
+            # from the subsequent per-tenant loop.
+            planned_keys = [
+                (scenario.source, scenario.tenant_slug)
+                for scenario in scenarios
+            ]
+            outcome_keys = [
+                (outcome.scenario.source, outcome.scenario.tenant_slug)
+                for outcome in result.outcomes
+            ]
+            missing_outcomes = sorted(set(planned_keys) - set(outcome_keys))
+            unexpected_outcomes = sorted(set(outcome_keys) - set(planned_keys))
+            outcome_coverage_ok = (
+                len(outcome_keys) == len(planned_keys)
+                and len(set(outcome_keys)) == len(outcome_keys)
+                and not missing_outcomes
+                and not unexpected_outcomes
+            )
+            report.assertions.append(AssertionResult(
+                name="assert_contract_scenario_outcome_coverage",
+                passed=outcome_coverage_ok,
+                detail=(
+                    f"planned={len(planned_keys)}, "
+                    f"outcomes={len(outcome_keys)}, "
+                    f"missing={missing_outcomes[:3]}, "
+                    f"unexpected={unexpected_outcomes[:3]}"
+                ),
+            ))
 
             # ---- Per-tenant isolation ----
             iso_detail = ""
             iso_ok = True
-            discord_counts: list[int] = []
-            for o in result.outcomes:
-                n = int(await pool.fetchval(
-                    "SELECT count(*) FROM observations WHERE tenant_id = $1",
-                    o.tenant_id))
-                if o.scenario.source == "discord":
-                    discord_counts.append(n)
-                    if n <= 0:
-                        iso_ok = False
-                        iso_detail = f"{o.scenario.tenant_slug} got 0 obs"
-                elif n != o.scenario.expected_observation_count:
+            outcome_by_key = {
+                (outcome.scenario.source, outcome.scenario.tenant_slug): outcome
+                for outcome in result.outcomes
+            }
+            for scenario in scenarios:
+                outcome = outcome_by_key.get(
+                    (scenario.source, scenario.tenant_slug),
+                )
+                if outcome is None:
                     iso_ok = False
                     iso_detail = (
-                        f"{o.scenario.tenant_slug}: got {n}, "
-                        f"expected {o.scenario.expected_observation_count}")
+                        f"{scenario.tenant_slug}: no harness outcome"
+                    )
                     break
-            if iso_ok and discord_counts and len(set(discord_counts)) != 1:
-                iso_ok = False
-                iso_detail = f"discord counts not uniform: {set(discord_counts)}"
+                n = int(await pool.fetchval(
+                    "SELECT count(*) FROM observations WHERE tenant_id = $1",
+                    outcome.tenant_id,
+                ))
+                if n != scenario.expected_observation_count:
+                    iso_ok = False
+                    iso_detail = (
+                        f"{scenario.tenant_slug}: got {n}, "
+                        f"expected {scenario.expected_observation_count}"
+                    )
+                    break
             report.assertions.append(AssertionResult(
                 name="assert_per_tenant_isolation", passed=iso_ok,
                 detail=iso_detail))
@@ -268,8 +318,11 @@ async def run3(
             report.assertions.append(AssertionResult(
                 name="assert_completion_fires_exactly_once_per_tenant(#39)",
                 passed=not bad_completion,
-                detail=("all 50 fired once" if not bad_completion
-                        else f"anomalies: {bad_completion[:5]}")))
+                detail=(
+                    f"all {len(scenarios)} fired once"
+                    if not bad_completion
+                    else f"anomalies: {bad_completion[:5]}"
+                )))
 
             report.live_lines = [
                 f"backfill-only; concurrency={concurrency}",
@@ -280,10 +333,12 @@ async def run3(
                 f"{_distribution([o.completion_signal_count for o in result.outcomes])}",
             ]
             report.notes.append(
-                "50 tenants through 7 shared subprocesses (not 50× "
-                "processes). Live phase skipped (Decision: Run 3 = backfill "
-                "concurrency focus). Consumer rc=-9/-15 expected per "
-                "ticket #45.")
+                f"{len(scenarios)} tenants across "
+                f"{len(scenarios_by_source)} contract-declared historical "
+                "sources through 7 shared subprocesses (not one process set "
+                "per tenant). Live phase skipped (Decision: Run 3 = backfill "
+                "concurrency focus). Consumer rc=-9/-15 expected per ticket "
+                "#45.")
         finally:
             await pool.close()
 

@@ -1,15 +1,19 @@
 """Production wiring for the universal provider transport.
 
-Quota numbers are never embedded here.  Deployments supply the verified
-operation matrix through ``FYRALIS_PROVIDER_QUOTAS_JSON`` and Redis supplies
-shared state across replicas.  Missing source/operation entries fail before an
-HTTP request rather than silently becoming an unmetered provider call.
+Quota numbers are never embedded here.  Deployments supply verified limits
+through ``FYRALIS_PROVIDER_QUOTAS_JSON`` and Redis supplies shared state across
+replicas. Source and operation membership remains owned exclusively by
+``SourceDefinition.operation_policies``: the deployment document uses opaque
+contract-derived operation references plus the exact operation-policy catalog
+digest.
 
 Configuration shape::
 
     {
-      "slack": {
-        "users.info": [
+      "schema_version": "1",
+      "catalog_sha256": "<source-contract supplied digest>",
+      "limits": {
+        "qop_v1_<source-contract supplied digest>": [
           {
             "scope": "workspace",
             "identity": "workspace",
@@ -22,6 +26,10 @@ Configuration shape::
         ]
       }
     }
+
+The source contract publishes the reference -> source/operation manifest. The
+deployment document must contain every reference exactly once and cannot name
+or own source/operation identifiers itself.
 
 ``identity`` is one of ``global``, ``tenant``, ``installation``,
 ``operation``, or a provider-native dimension supplied by the client (for
@@ -53,12 +61,28 @@ from services.ingest.ingestion.rate_limit.client import RateLimiter
 from services.ingest.ingestion.rate_limit.provider_transport import (
     RedisQuotaCoordinator,
 )
-from services.ingest.source_contract.catalog import (
-    PROVIDER_TRANSPORT_OPERATION_CATALOG,
+from services.ingest.source_contract.quota_contract import (
+    PROVIDER_QUOTA_CONFIG_SCHEMA_VERSION,
+    PROVIDER_QUOTA_CONTRACT,
 )
 
 
 _QUOTA_ENV = "FYRALIS_PROVIDER_QUOTAS_JSON"
+
+
+class _DuplicateJsonKeyError(ValueError):
+    def __init__(self, key: str) -> None:
+        super().__init__(key)
+        self.key = key
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise _DuplicateJsonKeyError(key)
+        payload[key] = value
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,74 +196,83 @@ def _parse_declarations(
     today: date | None = None,
 ) -> dict[str, dict[str, tuple[_QuotaRule, ...]]]:
     try:
-        payload = json.loads(raw)
+        payload = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{_QUOTA_ENV} is not valid JSON") from exc
-    if not isinstance(payload, dict) or not payload:
-        raise RuntimeError(f"{_QUOTA_ENV} must be a non-empty object")
+    except _DuplicateJsonKeyError as exc:
+        raise RuntimeError(f"{_QUOTA_ENV} contains duplicate key {exc.key!r}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{_QUOTA_ENV} must be an object")
+    required_root_keys = {"schema_version", "catalog_sha256", "limits"}
+    actual_root_keys = set(payload)
+    if actual_root_keys != required_root_keys:
+        missing = sorted(required_root_keys - actual_root_keys)
+        unknown = sorted(actual_root_keys - required_root_keys)
+        raise RuntimeError(
+            f"{_QUOTA_ENV} must use the contract-linked quota envelope; "
+            f"missing={missing!r}, unknown={unknown!r}. Legacy "
+            "source/operation maps are not supported."
+        )
+    schema_version = payload["schema_version"]
+    if schema_version != PROVIDER_QUOTA_CONFIG_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"{_QUOTA_ENV}.schema_version must be "
+            f"{PROVIDER_QUOTA_CONFIG_SCHEMA_VERSION!r}, got "
+            f"{schema_version!r}"
+        )
+    catalog_sha256 = payload["catalog_sha256"]
+    if catalog_sha256 != PROVIDER_QUOTA_CONTRACT.catalog_sha256:
+        raise RuntimeError(
+            f"{_QUOTA_ENV}.catalog_sha256 does not match the exact "
+            "SourceDefinition operation-policy catalog"
+        )
+    limits = payload["limits"]
+    if not isinstance(limits, dict) or not limits:
+        raise RuntimeError(f"{_QUOTA_ENV}.limits must be a non-empty object")
+    expected_references = set(PROVIDER_QUOTA_CONTRACT.operations_by_reference)
+    actual_references = set(limits)
+    unknown_references = actual_references - expected_references
+    missing_references = expected_references - actual_references
+    if unknown_references:
+        raise RuntimeError(
+            f"{_QUOTA_ENV}.limits has undeclared operation references: "
+            f"{sorted(unknown_references)!r}"
+        )
+    if missing_references:
+        missing_operations = sorted(
+            (
+                PROVIDER_QUOTA_CONTRACT.operations_by_reference[reference].source_id,
+                PROVIDER_QUOTA_CONTRACT.operations_by_reference[reference].operation_id,
+            )
+            for reference in missing_references
+        )
+        raise RuntimeError(
+            f"{_QUOTA_ENV}.limits is missing required contract operations: "
+            f"{missing_operations!r}"
+        )
+
     result: dict[str, dict[str, tuple[_QuotaRule, ...]]] = {}
-    for source, operations in payload.items():
-        if not isinstance(source, str) or not source.strip():
-            raise RuntimeError(f"{_QUOTA_ENV} contains an invalid source")
-        if not isinstance(operations, dict) or not operations:
+    for identity in PROVIDER_QUOTA_CONTRACT.operations:
+        entries = limits[identity.reference]
+        if not isinstance(entries, list) or not entries:
             raise RuntimeError(
-                f"{_QUOTA_ENV}.{source} must be a non-empty operation object",
+                f"{_QUOTA_ENV}.limits.{identity.reference} "
+                f"({identity.source_id}.{identity.operation_id}) "
+                "must be a non-empty list"
             )
-        parsed_operations: dict[str, tuple[_QuotaRule, ...]] = {}
-        for operation, entries in operations.items():
-            if not isinstance(operation, str) or not operation.strip():
-                raise RuntimeError(
-                    f"{_QUOTA_ENV}.{source} contains an invalid operation",
-                )
-            if not isinstance(entries, list) or not entries:
-                raise RuntimeError(
-                    f"{_QUOTA_ENV}.{source}.{operation} must be a non-empty list",
-                )
-            parsed_operations[operation] = tuple(
-                _parse_rule(
-                    source,
-                    operation,
-                    index,
-                    entry,
-                    require_evidence=require_evidence,
-                    today=today,
-                )
-                for index, entry in enumerate(entries)
+        result.setdefault(identity.source_id, {})[identity.operation_id] = tuple(
+            _parse_rule(
+                identity.source_id,
+                identity.operation_id,
+                index,
+                entry,
+                require_evidence=require_evidence,
+                today=today,
+                operation_reference=identity.reference,
             )
-        result[source] = parsed_operations
-    _validate_operation_membership(result)
+            for index, entry in enumerate(entries)
+        )
     return result
-
-
-def _validate_operation_membership(
-    declarations: Mapping[str, Mapping[str, tuple[_QuotaRule, ...]]],
-) -> None:
-    required_catalog = PROVIDER_TRANSPORT_OPERATION_CATALOG
-    unknown_sources = set(declarations) - set(required_catalog)
-    if unknown_sources:
-        raise RuntimeError(
-            f"{_QUOTA_ENV} has undeclared sources: {sorted(unknown_sources)}",
-        )
-    missing_sources = set(required_catalog) - set(declarations)
-    if missing_sources:
-        raise RuntimeError(
-            f"{_QUOTA_ENV} is missing transport-enforced sources: "
-            f"{sorted(missing_sources)}",
-        )
-    for source, required in required_catalog.items():
-        configured = set(declarations[source])
-        unknown = configured - required
-        missing = required - configured
-        if unknown:
-            raise RuntimeError(
-                f"{_QUOTA_ENV}.{source} has undeclared operations: "
-                f"{sorted(unknown)}",
-            )
-        if missing:
-            raise RuntimeError(
-                f"{_QUOTA_ENV}.{source} is missing required operations: "
-                f"{sorted(missing)}",
-            )
 
 
 def _parse_rule(
@@ -250,8 +283,13 @@ def _parse_rule(
     *,
     require_evidence: bool,
     today: date | None,
+    operation_reference: str | None = None,
 ) -> _QuotaRule:
-    path = f"{_QUOTA_ENV}.{source}.{operation}[{index}]"
+    path = (
+        f"{_QUOTA_ENV}.limits.{operation_reference}[{index}] " f"({source}.{operation})"
+        if operation_reference is not None
+        else f"{_QUOTA_ENV}.{source}.{operation}[{index}]"
+    )
     if not isinstance(entry, dict):
         raise RuntimeError(f"{path} must be an object")
     allowed = {

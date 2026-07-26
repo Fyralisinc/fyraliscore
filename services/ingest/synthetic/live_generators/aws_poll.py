@@ -79,7 +79,7 @@ class AwsPollGenerator:
         self._s3 = s3_raw_client
         self._flags = tenant_flags
         self._seq = 0
-        self._install_cache: dict[UUID, _ResolvedInstall] = {}
+        self._install_cache: dict[tuple[UUID, str, str], _ResolvedInstall] = {}
         self._actor_repo: Any = None
         self._alias_repo: Any = None
 
@@ -93,34 +93,38 @@ class AwsPollGenerator:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         return None
 
-    async def _resolve_install(self, tenant_id: UUID) -> _ResolvedInstall:
-        """Resolve (and cache) the tenant's aws_installations row so the live
-        event is namespaced (account_id, region) identically to backfill.
-        Superuser test connection bypasses the table's RLS (harness convention)."""
-        cached = self._install_cache.get(tenant_id)
+    async def _resolve_install(
+        self,
+        tenant_id: UUID,
+        account_id: str,
+        region: str,
+    ) -> _ResolvedInstall:
+        """Resolve exactly one active install for the target AWS scope."""
+        cache_key = (tenant_id, account_id, region)
+        cached = self._install_cache.get(cache_key)
         if cached is not None:
             return cached
-        row = await self._pool.fetchrow(
+        rows = await self._pool.fetch(
             "SELECT id, account_id, region FROM aws_installations "
-            "WHERE tenant_id = $1 AND disabled_at IS NULL "
-            "ORDER BY created_at LIMIT 1",
+            "WHERE tenant_id = $1 AND account_id = $2 AND region = $3 "
+            "AND disabled_at IS NULL",
             tenant_id,
+            account_id,
+            region,
         )
-        if row is not None:
-            resolved = _ResolvedInstall(
-                installation_id=str(row["id"]),
-                account_id=str(row["account_id"]),
-                region=str(row["region"]),
+        if len(rows) != 1:
+            raise ValueError(
+                "aws target must resolve to exactly one active installation: "
+                f"tenant_id={tenant_id}, account_id={account_id!r}, "
+                f"region={region!r}, matches={len(rows)}",
             )
-        else:
-            # No install — fall back to deterministic placeholders keyed on the
-            # tenant so the dispatch still resolves nothing and is a no-op.
-            resolved = _ResolvedInstall(
-                installation_id=str(tenant_id),
-                account_id="000000000000",
-                region="us-east-1",
-            )
-        self._install_cache[tenant_id] = resolved
+        row = rows[0]
+        resolved = _ResolvedInstall(
+            installation_id=str(row["id"]),
+            account_id=str(row["account_id"]),
+            region=str(row["region"]),
+        )
+        self._install_cache[cache_key] = resolved
         return resolved
 
     def _mint_event(
@@ -161,7 +165,17 @@ class AwsPollGenerator:
             handle_polled_event,
         )
 
-        resolved = await self._resolve_install(target.tenant_id)
+        account_id = target.aws_account_id
+        region = target.aws_region
+        if account_id is None or region is None:
+            raise ValueError(
+                "aws target is missing aws_account_id or aws_region",
+            )
+        resolved = await self._resolve_install(
+            target.tenant_id,
+            account_id,
+            region,
+        )
         event = self._mint_event(resolved, content)
         deps = PollDeps(
             pool=self._pool,

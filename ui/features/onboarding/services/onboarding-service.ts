@@ -623,8 +623,10 @@ export async function finalizeAwsSourceRehearsal({
 
 export async function retryAwsFirstSyncRehearsal({
   apiBase,
+  installationId,
 }: {
   apiBase?: string;
+  installationId: string;
 }): Promise<SourceRehearsalStatus> {
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
   const response = await fetch(
@@ -633,7 +635,9 @@ export async function retryAwsFirstSyncRehearsal({
       method: "POST",
       headers: {
         Accept: "application/json",
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify({ installation_id: installationId }),
     },
   );
   if (!response.ok) {
@@ -957,7 +961,7 @@ function mapSourceRehearsalStatus(
     .filter(Boolean) as SourceInstallation[];
   const primaryInstallation = payload.installation
     ? mapSourceInstallation(payload.installation)
-    : (installations[0] ?? null);
+    : null;
   return {
     sourceId,
     installed: payload.installed,

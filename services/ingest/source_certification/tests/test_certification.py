@@ -136,6 +136,9 @@ def test_exactly_one_certification_spec_exists_for_every_source() -> None:
         declared = source_definition(spec.source_id).certification
         assert declared.test_kit_id == f"ingest.test_kit.{spec.source_id}"
         assert declared.evidence_id == f"ingest.evidence.{spec.source_id}"
+        assert spec.evidence_pack_id == declared.evidence_id
+        assert spec.evidence_pack_version == "1.0.0"
+        assert len(spec.evidence_pack_sha256) == 64
         assert declared.canary_id == spec.canary.canary_id
 
 

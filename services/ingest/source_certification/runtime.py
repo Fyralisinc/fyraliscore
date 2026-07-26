@@ -1,7 +1,8 @@
 """Lazy resolution for source-owned certification-kit callables."""
+
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, TypeVar, cast
 
 from services.ingest.source_certification.catalog import (
@@ -44,7 +45,11 @@ def certification_callable(
 
     if not isinstance(source_id, str) or not source_id.strip():
         raise ValueError("certification callable source_id must be non-empty")
-    if role not in {"fixture_factory", "installation_seeder"}:
+    if role not in {
+        "fixture_factory",
+        "fixture_count_oracle",
+        "installation_seeder",
+    }:
         raise ValueError(f"unknown certification callable role {role!r}")
 
     def _decorate(value: _CallableT) -> _CallableT:
@@ -71,11 +76,12 @@ def _binding_for(
         raise CertificationHistoryUnsupportedError(
             f"source {source.source_id!r} explicitly does not support history"
         )
-    binding = (
-        spec.fixture_factory_binding
-        if role == "fixture_factory"
-        else spec.installation_seeder_binding
-    )
+    if role == "fixture_factory":
+        binding = spec.fixture_factory_binding
+    elif role == "fixture_count_oracle":
+        binding = spec.fixture_count_oracle_binding
+    else:
+        binding = spec.installation_seeder_binding
     if binding is None:
         raise CertificationBindingResolutionError(
             f"source {source.source_id!r} supports history but has no "
@@ -113,6 +119,17 @@ def resolve_fixture_factory(source_name: str) -> Callable[..., dict[str, Any]]:
     return cast(Callable[..., dict[str, Any]], _resolve(source_name, "fixture_factory"))
 
 
+def resolve_fixture_count_oracle(
+    source_name: str,
+) -> Callable[[Mapping[str, Any]], int]:
+    """Resolve the source-owned exact Observation-count oracle."""
+
+    return cast(
+        Callable[[Mapping[str, Any]], int],
+        _resolve(source_name, "fixture_count_oracle"),
+    )
+
+
 def resolve_installation_seeder(source_name: str) -> Callable[..., Any]:
     """Resolve one history source's tenant/install/onboarding row seeder."""
 
@@ -128,6 +145,7 @@ def validate_certification_bindings() -> tuple[str, ...]:
         if source.history is None:
             if (
                 spec.fixture_factory_binding is not None
+                or spec.fixture_count_oracle_binding is not None
                 or spec.installation_seeder_binding is not None
             ):
                 raise CertificationBindingResolutionError(
@@ -136,6 +154,7 @@ def validate_certification_bindings() -> tuple[str, ...]:
                 )
             continue
         resolve_fixture_factory(source.source_id)
+        resolve_fixture_count_oracle(source.source_id)
         resolve_installation_seeder(source.source_id)
         resolved.append(source.source_id)
     return tuple(resolved)
@@ -145,6 +164,7 @@ __all__ = [
     "CertificationBindingResolutionError",
     "CertificationHistoryUnsupportedError",
     "certification_callable",
+    "resolve_fixture_count_oracle",
     "resolve_fixture_factory",
     "resolve_installation_seeder",
     "validate_certification_bindings",

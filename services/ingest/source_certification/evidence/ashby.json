@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source_id": "ashby",
+  "pack_version": "1.0.0",
+  "provider_api_version": "Ashby API",
+  "evidence": [
+    {
+      "behavior_id": "used_api_surface",
+      "kind": "documented",
+      "uri": "https://developers.ashbyhq.com/reference/introduction",
+      "api_version": "Ashby API",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Pending P0 RPC schema lock and reviewer verification."
+    },
+    {
+      "behavior_id": "quota_policy",
+      "kind": "documented",
+      "uri": "https://developers.ashbyhq.com/reference/rate-limit",
+      "api_version": null,
+      "schema_sha256": null,
+      "quota_uri": "https://developers.ashbyhq.com/reference/rate-limit",
+      "verified_at": null,
+      "notes": "RPC rate-limit evidence must be locked before certification."
+    },
+    {
+      "behavior_id": "fyralis_runtime_contract",
+      "kind": "fyralis_specific",
+      "uri": "repo://services/ingest/source_contract/catalog.py#ashby",
+      "api_version": "source-contract-v1",
+      "schema_sha256": null,
+      "quota_uri": null,
+      "verified_at": null,
+      "notes": "Runtime linkage awaits final contract-only verification."
+    }
+  ]
+}
