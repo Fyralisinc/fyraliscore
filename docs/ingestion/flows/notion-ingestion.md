@@ -421,17 +421,22 @@ verification so a tenant‑id prober sees signature failures first
    The producer is **flushed (≤10 s)** before the `200` so a gateway restart can't
    lose the event in librdkafka's local queue
    ([webhook.py:255‑269](../../../services/ingest/integrations/notion/webhook.py#L255-L269)).
+4. **Inline fallback before acknowledgement.** The provider contract declares
+   `dedicated_kafka_first_with_inline_fallback`. If the Notion data plane is
+   unwired, the shadow write raises, or the bounded Kafka flush cannot confirm
+   delivery, the already-hydrated page is passed to
+   `ingest("notion:object", ...)`. Only a successful shadow write or successful
+   inline ingest returns `200`; an inline failure propagates so Notion can retry.
 
-The observation lands only once the tenant's `ingestion.kafka_path_enabled` flag
-is on (the observation_writer full‑mode gate) — the same gate backfill lives
-behind ([webhook.py:33‑39](../../../services/ingest/integrations/notion/webhook.py#L33-L39)).
-The data plane is wired by `_wire_ingestion_data_plane` in the gateway; when
-`KAFKA_BOOTSTRAP_SERVERS` is unset it is a no‑op and the handler reports
-`shadow_write=false` ([main.py:529‑597](../../../services/app/gateway/main.py#L529-L597)).
+The Kafka-first observation is written by `observation_writer`; the inline
+fallback writes through the same normalizer/Observation contract synchronously.
+The data plane is wired by `wire_ingestion_data_plane` in the gateway. When it
+is unavailable the handler reports `shadow_write=false` and
+`inline_fallback=true` after the inline write succeeds.
 
-> **`handle_notion_event` always returns `200`.** Every branch — unsupported
-> entity, fetch failure, data‑plane unwired, flush incomplete — acks 200, because
-> Notion retries non‑2xx and backfill/reconcile is the correctness backstop.
+> Unsupported entities and terminal hydration misses still return `200` and
+> rely on backfill/reconciliation. A required page that fails both persistence
+> paths is not acknowledged.
 
 ---
 

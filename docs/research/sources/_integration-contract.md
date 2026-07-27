@@ -188,7 +188,7 @@ Four live paths; a new source picks one:
 
 - **(a) HMAC webhook → Kafka cutover → 202.** Default for token/HMAC sources.
   `router.py::receive`: raw body → 1MB precheck → resolve `VERIFIERS[provider]` →
-  tenant-resolve → `load_secrets` → **verify signature first** (401 before tenant
+  tenant-resolve → contract secret loader → **verify signature first** (401 before tenant
   enforcement, so attackers can't probe tenant existence) → enforce tenant → if
   `_CUTOVER_ENABLED_PROVIDERS[provider]` and tenant `ingestion.kafka_path_enabled` →
   `_attempt_kafka_path` (S3 PutIfAbsent → publish `RawEnvelope(ingress_kind="webhook")`

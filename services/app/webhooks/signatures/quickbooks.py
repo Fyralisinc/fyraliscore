@@ -6,7 +6,7 @@ the app's **verifier token** as the key, and presents the digest in the
 difference from the GitHub/Jira hex-with-`sha256=` scheme).
 
 The per-tenant verifier token is resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='quickbooks') the seed/onboarding step registers.
 
 Like GitHub/Jira, the digest is over the body alone (no timestamp envelope);

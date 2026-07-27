@@ -122,20 +122,22 @@
       ],
       "name": "Google Calendar",
       "category": "Productivity",
-      "description": "Calendar events and shared calendars.",
+      "description": "Calendar events, shared calendars, and watch notifications.",
       "method": "Workspace DWD",
       "requiredPermissions": [
         "Domain-Wide Delegation",
         "calendar.readonly",
         "directory users/groups read"
       ],
-      "setupRequirements": "Google Workspace admin approval, domain-wide delegation setup, calendar scope, allowlist, and local polling access.",
+      "setupRequirements": "Google Workspace admin approval, domain-wide delegation setup, calendar scope, allowlist, events.watch setup, and local polling access.",
       "supportedSyncModes": [
         "Dry run",
-        "Limited backfill"
+        "Limited backfill",
+        "Live events"
       ],
-      "providerIngressPaths": [],
-      "noIngressReason": "Google Calendar DWD install is poll-only; no webhook or push watch is configured."
+      "providerIngressPaths": [
+        "/webhooks/google_calendar/push"
+      ]
     },
     {
       "id": "google-drive",

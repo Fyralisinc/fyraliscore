@@ -7,6 +7,8 @@ import pytest
 from services.ingest.source_contract import (
     Certification,
     CredentialRefreshDefinition,
+    LiveRuntimeDefinition,
+    LiveWorkerDefinition,
     OperationPolicyDefinition,
     RequestPolicy,
     source_definition,
@@ -45,6 +47,32 @@ def test_onboarding_contract_rejects_overlapping_input_fields() -> None:
             required_inputs=("workspace_id",),
             optional_inputs=("workspace_id",),
         )
+
+
+def test_onboarding_contract_requires_valid_runtime_handoff_and_finalize_mode() -> None:
+    onboarding = source_definition("slack").onboarding
+    with pytest.raises(ValueError, match="module:callable"):
+        replace(onboarding, provider_handoff_binding="slack.provider_handoff")
+    with pytest.raises(ValueError, match="module:callable"):
+        replace(onboarding, access_status_binding="discord.access")
+    with pytest.raises(ValueError, match="module:callable"):
+        replace(onboarding, provider_setup_builder_binding="slack.setup")
+    with pytest.raises(ValueError, match="module:callable"):
+        replace(onboarding, rehearsal_artifact_builder_binding="slack.artifacts")
+    with pytest.raises(ValueError, match="rehearsal_finalize_mode"):
+        replace(
+            onboarding,
+            rehearsal_finalize_mode="fallback",  # type: ignore[arg-type]
+        )
+
+
+def test_google_dwd_onboarding_requires_exact_https_consent_scopes() -> None:
+    onboarding = source_definition("gmail").onboarding
+
+    with pytest.raises(ValueError, match="exact consent_scopes"):
+        replace(onboarding, consent_scopes=())
+    with pytest.raises(ValueError, match="must use HTTPS"):
+        replace(onboarding, consent_scopes=("gmail.metadata",))
 
 
 def test_native_connect_contract_rejects_duplicate_fields_and_partial_routes() -> None:
@@ -130,6 +158,67 @@ def test_live_policy_vectors_must_have_equal_length() -> None:
         )
 
 
+def test_live_runtime_must_cover_each_declared_transport_exactly_once() -> None:
+    slack = source_definition("slack")
+    with pytest.raises(ValueError, match="exactly once"):
+        replace(
+            slack,
+            live_runtime=LiveRuntimeDefinition(
+                workers=(
+                    LiveWorkerDefinition(
+                        component_id="orphan_poller",
+                        role="incremental_poll",
+                        transport="api_poll",
+                        deployment_owner="fyralis_worker",
+                        lease_scope="resource",
+                        launcher_binding=(
+                            "services.ingest.ingestion.workflows."
+                            "periodic_reconciler:run_forever"
+                        ),
+                        cadence_seconds=60,
+                        deployment_unit="periodic_reconciler",
+                    ),
+                ),
+            ),
+        )
+
+
+def test_customer_managed_live_runtime_cannot_claim_a_launcher() -> None:
+    with pytest.raises(ValueError, match="cannot claim a Fyralis launcher"):
+        LiveWorkerDefinition(
+            component_id="external_queue",
+            role="managed_dispatch",
+            transport="queue_poll",
+            deployment_owner="customer_deployment",
+            lease_scope="installation",
+            launcher_binding=(
+                "services.ingest.integrations.aws.live_poll:"
+                "handle_polled_event"
+            ),
+            dispatch_binding=(
+                "services.ingest.integrations.aws.live_poll:"
+                "handle_polled_event"
+            ),
+            managed_reason="Customer deploys the queue consumer.",
+        )
+
+
+def test_poll_and_watch_workers_require_explicit_cadence() -> None:
+    with pytest.raises(ValueError, match="requires cadence_seconds"):
+        LiveWorkerDefinition(
+            component_id="poller",
+            role="incremental_poll",
+            transport="api_poll",
+            deployment_owner="fyralis_worker",
+            lease_scope="resource",
+            launcher_binding=(
+                "services.ingest.ingestion.workflows.periodic_reconciler:"
+                "run_forever"
+            ),
+            deployment_unit="periodic_reconciler",
+        )
+
+
 def test_normalizer_bindings_require_real_callable_references() -> None:
     slack = source_definition("slack")
     with pytest.raises(ValueError, match="module:callable"):
@@ -161,6 +250,23 @@ def test_source_contract_owns_external_id_builders() -> None:
         )
     with pytest.raises(ValueError, match="must not be empty"):
         replace(drive, idempotency_builder_bindings=())
+
+
+def test_metrics_export_bindings_require_real_callable_references() -> None:
+    slack = source_definition("slack")
+    assert slack.metrics_export_bindings == (
+        "services.ingest.integrations.slack.metrics:export_metrics",
+    )
+    with pytest.raises(ValueError, match="module:callable"):
+        replace(slack, metrics_export_bindings=("slack.metrics.export",))
+    with pytest.raises(ValueError, match="duplicate"):
+        replace(
+            slack,
+            metrics_export_bindings=(
+                "services.ingest.integrations.slack.metrics:export_metrics",
+                "services.ingest.integrations.slack.metrics:export_metrics",
+            ),
+        )
 
 
 def test_request_policy_is_the_shared_provider_transport_contract() -> None:

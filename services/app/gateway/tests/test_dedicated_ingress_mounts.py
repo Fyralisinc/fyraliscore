@@ -9,7 +9,10 @@ import services.app.gateway.ceo_view_wiring as ceo_view_wiring
 import services.app.gateway.route_mounts as route_mounts
 from services.app.gateway.settings import GatewaySettings
 from services.app.webhooks.router import build_webhooks_router
-from services.ingest.source_contract import DEDICATED_INGRESS_CATALOG
+from services.ingest.source_contract import (
+    DEDICATED_INGRESS_CATALOG,
+    WEBHOOK_INGRESS_CATALOG,
+)
 
 
 def _mount(*, debug: bool = False) -> FastAPI:
@@ -33,7 +36,7 @@ def test_every_contract_route_and_method_is_mounted_once() -> None:
             assert mounted.count((ingress.route_path, method)) == 1
 
 
-def test_gateway_mount_orders_specific_push_routes_before_catchall() -> None:
+def test_gateway_mounts_only_declared_webhook_routes_without_catchall() -> None:
     app = FastAPI()
     settings = GatewaySettings(
         debug_endpoints_enabled=False,
@@ -46,7 +49,8 @@ def test_gateway_mount_orders_specific_push_routes_before_catchall() -> None:
         emit_mount_logs=False,
     )
     paths = [str(route.path) for route in app.routes]
-    catchall_index = paths.index("/webhooks/{provider}/{subpath:path}")
+    assert "/webhooks/{provider}" not in paths
+    assert "/webhooks/{provider}/{subpath:path}" not in paths
 
     for ingress_id in (
         "gmail_pubsub",
@@ -54,7 +58,10 @@ def test_gateway_mount_orders_specific_push_routes_before_catchall() -> None:
         "google_drive_push",
     ):
         path = DEDICATED_INGRESS_CATALOG[ingress_id].route_path
-        assert paths.index(path) < catchall_index
+        assert paths.count(path) == 1
+
+    for ingress in WEBHOOK_INGRESS_CATALOG.values():
+        assert paths.count(ingress.route_path) == 1
 
 
 def test_whatsapp_debug_routes_follow_gateway_setting() -> None:
@@ -105,5 +112,7 @@ def test_mount_fails_when_factory_does_not_serve_declared_route(
         _mount()
 
 
-def test_legacy_ceo_view_push_mount_registry_is_absent() -> None:
+def test_legacy_ceo_view_ingress_mounts_are_absent() -> None:
     assert not hasattr(ceo_view_wiring, "_include_push_ingress_routers")
+    assert not hasattr(ceo_view_wiring, "_include_google_admin_routers")
+    assert not hasattr(ceo_view_wiring, "_route_path_mounted")

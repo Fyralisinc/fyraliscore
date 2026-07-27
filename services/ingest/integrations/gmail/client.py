@@ -17,6 +17,7 @@ Scope strings:
   GMAIL_READONLY_SCOPE  — gmail.readonly (headers + body)
   DIRECTORY_READ_SCOPE  — admin.directory.user.readonly + group.readonly + orgunit.readonly
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -47,7 +48,9 @@ GMAIL_METADATA_SCOPE = "https://www.googleapis.com/auth/gmail.metadata"
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 DIRECTORY_USER_SCOPE = "https://www.googleapis.com/auth/admin.directory.user.readonly"
 DIRECTORY_GROUP_SCOPE = "https://www.googleapis.com/auth/admin.directory.group.readonly"
-DIRECTORY_ORGUNIT_SCOPE = "https://www.googleapis.com/auth/admin.directory.orgunit.readonly"
+DIRECTORY_ORGUNIT_SCOPE = (
+    "https://www.googleapis.com/auth/admin.directory.orgunit.readonly"
+)
 
 DIRECTORY_READ_SCOPES = (
     DIRECTORY_USER_SCOPE,
@@ -65,6 +68,20 @@ class GoogleApiError(CompanyOSError):
 
 class GoogleRateLimited(GoogleApiError):
     default_code = "google_rate_limited"
+
+
+class GmailHistoryExpired(GoogleApiError):
+    """The history cursor is outside Gmail's retained history window."""
+
+    default_code = "gmail_history_expired"
+    _recoverable = True
+
+
+class GmailHistoryRecoveryIncomplete(GoogleApiError):
+    """A full history recovery did not complete, so its cursor is unchanged."""
+
+    default_code = "gmail_history_recovery_incomplete"
+    _recoverable = True
 
 
 @dataclass
@@ -314,9 +331,7 @@ class GoogleHttpClient:
             except ValueError:
                 payload = {}
             reason = (
-                (payload.get("error") or {})
-                .get("errors", [{}])[0]
-                .get("reason", "")
+                (payload.get("error") or {}).get("errors", [{}])[0].get("reason", "")
                 if isinstance(payload, dict)
                 else ""
             )
@@ -383,19 +398,23 @@ class GoogleHttpClient:
             except ValueError:
                 payload = {}
             reason = (
-                (payload.get("error") or {})
-                .get("errors", [{}])[0]
-                .get("reason", "")
+                (payload.get("error") or {}).get("errors", [{}])[0].get("reason", "")
             )
-            if reason in ("quotaExceeded", "userRateLimitExceeded", "rateLimitExceeded"):
+            if reason in (
+                "quotaExceeded",
+                "userRateLimitExceeded",
+                "rateLimitExceeded",
+            ):
                 raise GoogleRateLimited(
-                    f"google quota: {reason}", status=403, retry_after_s=60,
+                    f"google quota: {reason}",
+                    status=403,
+                    retry_after_s=60,
                 )
         # NEVER log resp.request body / headers — they contain bearer tokens.
         raise GoogleApiError(
             f"google api error: status={resp.status_code} body={resp.text[:200]!r}",
             status=resp.status_code,
-            )
+        )
 
 
 def build_google_http_client(
@@ -419,12 +438,8 @@ def build_google_http_client(
         source=source,
         tenant_id=tenant_id,
         installation_id=installation_id,
-        provider_transport=(
-            runtime.transport if runtime is not None else None
-        ),
-        quota_resolver=(
-            runtime.quota_resolver if runtime is not None else None
-        ),
+        provider_transport=(runtime.transport if runtime is not None else None),
+        quota_resolver=(runtime.quota_resolver if runtime is not None else None),
         allow_unlimited_local=runtime is None,
     )
 
@@ -457,12 +472,8 @@ def build_google_onboarding_http_client(
         source=source,
         tenant_id=tenant_id,
         installation_id=None,
-        provider_transport=(
-            runtime.transport if runtime is not None else None
-        ),
-        quota_resolver=(
-            runtime.quota_resolver if runtime is not None else None
-        ),
+        provider_transport=(runtime.transport if runtime is not None else None),
+        quota_resolver=(runtime.quota_resolver if runtime is not None else None),
         allow_unlimited_local=runtime is None,
         quota_dimensions=quota_dimensions,
         require_tenant_installation=False,
@@ -480,6 +491,7 @@ class GmailClient:
 
     def __init__(self, http: GoogleHttpClient, *, base_url: str | None = None) -> None:
         from lib.integrations.endpoints import endpoint
+
         self._http = http
         self._base = (base_url or endpoint("gmail_api")).rstrip("/")
 
@@ -564,14 +576,24 @@ class GmailClient:
         }
         if page_token:
             params["pageToken"] = page_token
-        return await self._http.request(
-            "GET",
-            f"{self._base}/users/me/history",
-            user_email=user_email,
-            scopes=(scope,),
-            params=params,
-            operation_id="history.list",
-        )
+        try:
+            return await self._http.request(
+                "GET",
+                f"{self._base}/users/me/history",
+                user_email=user_email,
+                scopes=(scope,),
+                params=params,
+                operation_id="history.list",
+            )
+        except GoogleApiError as exc:
+            if exc.context.get("status") == 404:
+                raise GmailHistoryExpired(
+                    "Gmail startHistoryId is invalid or expired",
+                    status=404,
+                    start_history_id=start_history_id,
+                    user_email=user_email,
+                ) from exc
+            raise
 
     async def get_message(
         self,
@@ -610,16 +632,24 @@ class DirectoryClient:
     """Operations against admin.googleapis.com/admin/directory."""
 
     def __init__(
-        self, http: GoogleHttpClient, admin_email: str,
-        *, base_url: str | None = None,
+        self,
+        http: GoogleHttpClient,
+        admin_email: str,
+        *,
+        base_url: str | None = None,
     ) -> None:
         from lib.integrations.endpoints import endpoint
+
         self._http = http
         self._admin = admin_email
         self._base = (base_url or endpoint("google_directory")).rstrip("/")
 
     async def list_users(
-        self, *, domain: str, page_token: str | None = None, page_size: int = 200,
+        self,
+        *,
+        domain: str,
+        page_token: str | None = None,
+        page_size: int = 200,
     ) -> PagedResult:
         params: dict[str, Any] = {"domain": domain, "maxResults": page_size}
         if page_token:
@@ -638,7 +668,11 @@ class DirectoryClient:
         )
 
     async def list_groups(
-        self, *, domain: str, page_token: str | None = None, page_size: int = 200,
+        self,
+        *,
+        domain: str,
+        page_token: str | None = None,
+        page_size: int = 200,
     ) -> PagedResult:
         params: dict[str, Any] = {"domain": domain, "maxResults": page_size}
         if page_token:
@@ -657,7 +691,10 @@ class DirectoryClient:
         )
 
     async def list_group_members(
-        self, *, group_key: str, page_token: str | None = None,
+        self,
+        *,
+        group_key: str,
+        page_token: str | None = None,
     ) -> PagedResult:
         params: dict[str, Any] = {"maxResults": 200}
         if page_token:
@@ -675,7 +712,9 @@ class DirectoryClient:
             next_page_token=body.get("nextPageToken"),
         )
 
-    async def list_org_units(self, *, customer_id: str = "my_customer") -> list[dict[str, Any]]:
+    async def list_org_units(
+        self, *, customer_id: str = "my_customer"
+    ) -> list[dict[str, Any]]:
         body = await self._http.request(
             "GET",
             f"{self._base}/customer/{customer_id}/orgunits",
@@ -724,6 +763,8 @@ __all__ = [
     "GMAIL_METADATA_SCOPE",
     "GMAIL_READONLY_SCOPE",
     "GmailClient",
+    "GmailHistoryExpired",
+    "GmailHistoryRecoveryIncomplete",
     "GoogleApiError",
     "GoogleHttpClient",
     "GoogleRateLimited",

@@ -70,7 +70,14 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
     assert by_path["/observations"].policy.access is RouteAccess.BEARER
     assert by_path["/ingest/{channel:path}"].policy.access is RouteAccess.BEARER
     assert by_path["/ingest/{channel:path}"].policy.gateway_bearer_required is True
-    assert by_path["/webhooks/{provider}"].policy.access is RouteAccess.PROVIDER_SIGNED
+    assert (
+        by_path["/webhooks/slack/events"].policy.access
+        is RouteAccess.PROVIDER_SIGNED
+    )
+    assert (
+        by_path["/webhooks/ashby/{installation_id}"].policy.access
+        is RouteAccess.PROVIDER_SIGNED
+    )
     assert (
         by_path["/integrations/whatsapp/webhook"].policy.access
         is RouteAccess.PROVIDER_SIGNED

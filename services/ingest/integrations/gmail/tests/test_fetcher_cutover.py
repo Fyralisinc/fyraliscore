@@ -11,6 +11,7 @@ collapse a backfilled message and its live "poll" twin.
 
 Pure unit tests — no DB, no Kafka (mocks at the s3/kafka boundary).
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -18,16 +19,24 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import orjson
+import pytest
 
 from services.ingest.ingestion.fetchers.gmail import _build_record
 from services.ingest.ingestion.handlers.gmail import handle_gmail
 from services.ingest.integrations.gmail import fetcher
-from services.ingest.integrations.gmail.client import GoogleApiError
+from services.ingest.integrations.gmail.client import (
+    GMAIL_METADATA_SCOPE,
+    GmailClient,
+    GmailHistoryExpired,
+    GmailHistoryRecoveryIncomplete,
+    GoogleApiError,
+)
 from services.ingest.integrations.gmail.fetcher import (
     _GmailDrainContext,
     _collect_history_message_ids,
     _drain_message_ids,
     _publish_gmail_message_raw,
+    _recover_expired_history,
 )
 
 
@@ -66,11 +75,15 @@ class _FakeDrainGmail:
     def __init__(
         self,
         *,
-        history_pages: list[dict[str, Any]] | None = None,
+        history_pages: list[dict[str, Any] | Exception] | None = None,
+        messages_pages: list[dict[str, Any]] | None = None,
+        profile: dict[str, Any] | None = None,
         messages: dict[str, dict[str, Any]] | None = None,
         failing_message_ids: set[str] | None = None,
     ) -> None:
         self.history_pages = list(history_pages or [])
+        self.messages_pages = list(messages_pages or [])
+        self.profile = dict(profile or {"historyId": "100"})
         self.messages = dict(messages or {})
         self.failing_message_ids = set(failing_message_ids or set())
         self.history_calls: list[dict[str, Any]] = []
@@ -78,9 +91,20 @@ class _FakeDrainGmail:
 
     async def history_list(self, **kwargs: Any) -> dict[str, Any]:
         self.history_calls.append(kwargs)
-        return self.history_pages.pop(0)
+        result = self.history_pages.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
-    async def get_message(self, *, user_email: str, scope: str, message_id: str) -> dict[str, Any]:
+    async def messages_list(self, **_kwargs: Any) -> dict[str, Any]:
+        return self.messages_pages.pop(0)
+
+    async def get_profile(self, **_kwargs: Any) -> dict[str, Any]:
+        return self.profile
+
+    async def get_message(
+        self, *, user_email: str, scope: str, message_id: str
+    ) -> dict[str, Any]:
         self.get_calls.append(
             {"user_email": user_email, "scope": scope, "message_id": message_id}
         )
@@ -89,7 +113,9 @@ class _FakeDrainGmail:
         return self.messages[message_id]
 
 
-def _drain_context(fake_gmail: _FakeDrainGmail, *, cutover_enabled: bool) -> _GmailDrainContext:
+def _drain_context(
+    fake_gmail: _FakeDrainGmail, *, cutover_enabled: bool
+) -> _GmailDrainContext:
     return _GmailDrainContext(
         pool=object(),
         gmail=fake_gmail,  # type: ignore[arg-type]
@@ -239,6 +265,136 @@ async def test_collect_history_message_ids_pages_until_bookmark():
     ]
 
 
+async def test_gmail_client_classifies_history_404_as_expired():
+    class _History404Http:
+        async def request(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise GoogleApiError("not found", status=404)
+
+    gmail = GmailClient(  # type: ignore[arg-type]
+        _History404Http(),
+        base_url="https://gmail.test/gmail/v1",
+    )
+
+    with pytest.raises(GmailHistoryExpired) as raised:
+        await gmail.history_list(
+            user_email="alice@x.com",
+            scope=GMAIL_METADATA_SCOPE,
+            start_history_id="expired-100",
+        )
+
+    assert raised.value.context == {
+        "status": 404,
+        "start_history_id": "expired-100",
+        "user_email": "alice@x.com",
+    }
+    assert raised.value.recoverable is True
+
+
+async def test_expired_history_full_sync_then_catches_up_without_duplicates(
+    monkeypatch,
+):
+    fake = _FakeDrainGmail(
+        profile={"historyId": "500"},
+        messages_pages=[
+            {
+                "messages": [{"id": "m1"}, {"id": "m2"}],
+                "nextPageToken": "snapshot-2",
+            },
+            {"messages": [{"id": "m3"}]},
+        ],
+        history_pages=[
+            {
+                "history": [
+                    {
+                        "messagesAdded": [
+                            {"message": {"id": "m2"}},
+                            {"message": {"id": "m4"}},
+                        ]
+                    }
+                ],
+                "historyId": "700",
+            }
+        ],
+        messages={
+            message_id: {"id": message_id} for message_id in ("m1", "m2", "m3", "m4")
+        },
+    )
+    dispatched: list[str] = []
+
+    async def _inline(
+        _ctx: _GmailDrainContext,
+        resource: dict[str, Any],
+    ) -> dict[str, Any]:
+        dispatched.append(resource["id"])
+        return {"deduped": False}
+
+    async def _audit(**_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(fetcher, "_dispatch_gmail_resource_inline", _inline)
+    monkeypatch.setattr(fetcher, "_write_gmail_read_audit", _audit)
+
+    counters, messages_seen, history_id = await _recover_expired_history(
+        _drain_context(fake, cutover_enabled=False)
+    )
+
+    assert (counters.ingested, counters.deduped) == (4, 0)
+    assert messages_seen == 4
+    assert history_id == "700"
+    assert dispatched == ["m1", "m2", "m3", "m4"]
+    assert fake.history_calls[0]["start_history_id"] == "500"
+
+
+async def test_expired_history_required_hydration_failure_aborts_reseed(
+    monkeypatch,
+):
+    fake = _FakeDrainGmail(
+        profile={"historyId": "500"},
+        messages_pages=[{"messages": [{"id": "missing"}]}],
+        failing_message_ids={"missing"},
+    )
+
+    with pytest.raises(GmailHistoryRecoveryIncomplete) as raised:
+        await _recover_expired_history(_drain_context(fake, cutover_enabled=False))
+
+    assert raised.value.context["phase"] == "messages.get"
+    assert raised.value.context["message_id"] == "missing"
+
+
+async def test_expired_history_full_sync_has_a_hard_page_bound(monkeypatch):
+    monkeypatch.setattr(fetcher, "_HISTORY_RECOVERY_MAX_LIST_PAGES", 1)
+    fake = _FakeDrainGmail(
+        profile={"historyId": "500"},
+        messages_pages=[
+            {
+                "messages": [{"id": "m1"}],
+                "nextPageToken": "snapshot-2",
+            }
+        ],
+        messages={"m1": {"id": "m1"}},
+    )
+
+    async def _inline(
+        _ctx: _GmailDrainContext,
+        _resource: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {"deduped": False}
+
+    async def _audit(**_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(fetcher, "_dispatch_gmail_resource_inline", _inline)
+    monkeypatch.setattr(fetcher, "_write_gmail_read_audit", _audit)
+
+    with pytest.raises(GmailHistoryRecoveryIncomplete) as raised:
+        await _recover_expired_history(_drain_context(fake, cutover_enabled=False))
+
+    assert raised.value.context == {
+        "phase": "messages.list",
+        "max_pages": 1,
+    }
+
+
 async def test_drain_message_ids_cutover_success_audits_without_inline(monkeypatch):
     fake = _FakeDrainGmail(messages={"m1": {"id": "m1"}})
     published: list[dict[str, Any]] = []
@@ -258,7 +414,9 @@ async def test_drain_message_ids_cutover_success_audits_without_inline(monkeypat
     monkeypatch.setattr(fetcher, "_write_gmail_read_audit", _audit)
     monkeypatch.setattr(fetcher, "_dispatch_gmail_resource_inline", _inline)
 
-    counters = await _drain_message_ids(_drain_context(fake, cutover_enabled=True), ["m1"])
+    counters = await _drain_message_ids(
+        _drain_context(fake, cutover_enabled=True), ["m1"]
+    )
 
     assert counters.ingested == 1
     assert counters.deduped == 0
@@ -277,7 +435,9 @@ async def test_drain_message_ids_cutover_failure_falls_back_to_inline(monkeypatc
     async def _audit(**kwargs: Any) -> None:
         audits.append(kwargs)
 
-    async def _inline(_ctx: _GmailDrainContext, resource: dict[str, Any]) -> dict[str, Any]:
+    async def _inline(
+        _ctx: _GmailDrainContext, resource: dict[str, Any]
+    ) -> dict[str, Any]:
         inline_resources.append(resource)
         return {"deduped": True}
 
@@ -285,7 +445,9 @@ async def test_drain_message_ids_cutover_failure_falls_back_to_inline(monkeypatc
     monkeypatch.setattr(fetcher, "_write_gmail_read_audit", _audit)
     monkeypatch.setattr(fetcher, "_dispatch_gmail_resource_inline", _inline)
 
-    counters = await _drain_message_ids(_drain_context(fake, cutover_enabled=True), ["m1"])
+    counters = await _drain_message_ids(
+        _drain_context(fake, cutover_enabled=True), ["m1"]
+    )
 
     assert counters.ingested == 0
     assert counters.deduped == 1
@@ -303,7 +465,9 @@ async def test_drain_message_ids_get_failure_skips_message(monkeypatch):
     async def _audit(**kwargs: Any) -> None:
         audits.append(kwargs)
 
-    async def _inline(_ctx: _GmailDrainContext, resource: dict[str, Any]) -> dict[str, Any]:
+    async def _inline(
+        _ctx: _GmailDrainContext, resource: dict[str, Any]
+    ) -> dict[str, Any]:
         return {"deduped": False, "id": resource["id"]}
 
     monkeypatch.setattr(fetcher, "_write_gmail_read_audit", _audit)

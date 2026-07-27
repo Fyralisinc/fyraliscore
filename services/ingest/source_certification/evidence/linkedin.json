@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://learn.microsoft.com/en-us/linkedin/shared/api-guide/concepts/protocol-version",
       "api_version": "LinkedIn Rest.li",
-      "schema_sha256": null,
+      "schema_sha256": "eb4aeff883fc5d77e25a2529700b701ac1b93dde1c90c35a6bbef71167454da3",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 version-header schema lock and partner-access verification."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

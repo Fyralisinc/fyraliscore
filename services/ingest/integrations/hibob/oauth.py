@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import HibobApiError
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.hibob.client import HibobClient, DEFAULT_ENTITIES
 from services.ingest.integrations.hibob.onboarding import (
     finalize_install,
@@ -20,7 +21,6 @@ from services.ingest.integrations.provider_transport import (
 
 
 router = APIRouter(prefix="/integrations/hibob", tags=["hibob"])
-_DEFAULT_BASE_URL = "https://api.hibob.com"
 
 
 def _tenant_from_request(request: Request) -> UUID:
@@ -49,15 +49,16 @@ def _inputs(body: dict[str, Any]) -> tuple[str, str, str, str]:
     company_id = str(body.get("company_id") or "").strip()
     service_user_id = str(body.get("service_user_id") or "").strip()
     token = str(body.get("service_user_token") or body.get("token") or "").strip()
-    base_url = str(body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     if not company_id:
         raise HTTPException(status_code=400, detail="company_id is required")
     if not service_user_id:
         raise HTTPException(status_code=400, detail="service_user_id is required")
     if not token:
         raise HTTPException(status_code=400, detail="service_user_token is required")
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="hibob_api",
+    )
     return company_id, service_user_id, token, base_url
 
 

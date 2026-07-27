@@ -7,7 +7,12 @@ from datetime import datetime, timezone
 import pytest
 
 from services.ingest.source_certification.cli import main
-from services.ingest.source_certification.io import parse_certification_input
+from services.ingest.source_certification.io import (
+    certification_input_dict,
+    load_certification_input,
+    parse_certification_input,
+    write_certification_input,
+)
 from services.ingest.source_certification.models import (
     CanaryOperationResult,
     CanaryResult,
@@ -28,6 +33,7 @@ METRICS = (
     ("cursor_consistency_errors", 0.0),
     ("dlq_entries", 0.0),
     ("hot_loops", 0.0),
+    ("installations_per_tenant", 2.0),
     ("kafka_lag", 0.0),
     ("lab_capacity_ratio", 2.0),
     ("lab_p99_timeout_ratio", 0.1),
@@ -41,11 +47,13 @@ METRICS = (
     ("quota_units_per_second", 10.0),
     ("rate_limited_responses", 0.0),
     ("records_per_second", 10.0),
+    ("replicas", 2.0),
     ("requests_per_second", 10.0),
     ("retries", 0.0),
     ("search_tolerance_ratio", 0.04),
     ("soak_seconds", 3_600.0),
     ("stable_rate", 9.5),
+    ("tenants", 2.0),
     ("unexpected_duplicates", 0.0),
     ("validation_seconds", 900.0),
     ("warmup_seconds", 120.0),
@@ -92,6 +100,8 @@ def _input() -> CertificationInput:
             account_type="dedicated disposable account",
             api_version="v1",
             artifact_uri="artifact://canary",
+            request_count=1,
+            account_identity_sha256="b" * 64,
         ),
         legacy_reference_count=0,
     )
@@ -119,6 +129,16 @@ def _json_shape() -> dict[str, object]:
 
 def test_strict_json_parser_round_trips_certification_input() -> None:
     assert parse_certification_input(_json_shape()) == _input()
+
+
+def test_canonical_writer_round_trips_certification_input(tmp_path) -> None:
+    path = tmp_path / "slack.json"
+    value = _input()
+
+    assert parse_certification_input(certification_input_dict(value)) == value
+    write_certification_input(path, value)
+    assert load_certification_input(path) == value
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_json_parser_rejects_unknown_fields() -> None:
@@ -173,3 +193,22 @@ def test_manifest_with_no_artifacts_reports_all_sources_missing(
     assert rendered["state"] == "blocked"
     assert len(rendered["missing_sources"]) == 27
     assert "_architecture" in rendered["failures"]
+
+
+def test_manifest_rejects_unexpected_or_symlinked_inputs(
+    tmp_path,
+    capsys,
+) -> None:  # noqa: ANN001
+    (tmp_path / "waiver.json").write_text("{}\n", encoding="utf-8")
+    assert main(["manifest", "--input-dir", str(tmp_path)]) == 2
+    assert "unexpected files" in capsys.readouterr().err
+
+    (tmp_path / "waiver.json").unlink()
+    target = tmp_path.parent / f".{tmp_path.name}.actual.json"
+    target.write_text("{}\n", encoding="utf-8")
+    (tmp_path / "slack.json").symlink_to(target)
+    try:
+        assert main(["manifest", "--input-dir", str(tmp_path)]) == 2
+        assert "must not be a symlink" in capsys.readouterr().err
+    finally:
+        target.unlink()

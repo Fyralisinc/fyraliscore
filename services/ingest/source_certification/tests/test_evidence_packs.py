@@ -7,6 +7,7 @@ import pytest
 
 from services.ingest.source_certification.evidence import (
     EVIDENCE_PACK_DIRECTORY,
+    SURFACE_ARTIFACT_DIRECTORY,
     EvidencePackError,
     load_evidence_catalog,
     load_evidence_pack,
@@ -44,7 +45,8 @@ def test_checked_in_evidence_packs_remain_fail_closed_until_locked() -> None:
             for reference in pack.evidence
             if reference.behavior_id == "used_api_surface"
         )
-        assert surface.schema_sha256 is None
+        assert surface.schema_sha256 is not None
+        assert len(surface.schema_sha256) == 64
         assert all(reference.verified_at is None for reference in pack.evidence)
 
 
@@ -89,6 +91,30 @@ def test_evidence_pack_rejects_filename_source_mismatch(tmp_path) -> None:  # no
 
     with pytest.raises(EvidencePackError, match="declares source 'github'"):
         load_evidence_pack("slack", directory=tmp_path)
+
+
+def test_evidence_pack_rejects_surface_checksum_drift(tmp_path) -> None:  # noqa: ANN001
+    evidence_dir = tmp_path / "evidence"
+    surface_dir = tmp_path / "surfaces"
+    evidence_dir.mkdir()
+    surface_dir.mkdir()
+    shutil.copyfile(
+        EVIDENCE_PACK_DIRECTORY / "slack.json",
+        evidence_dir / "slack.json",
+    )
+    shutil.copyfile(
+        SURFACE_ARTIFACT_DIRECTORY / "slack.json",
+        surface_dir / "slack.json",
+    )
+    with (surface_dir / "slack.json").open("a", encoding="utf-8") as handle:
+        handle.write(" ")
+
+    with pytest.raises(EvidencePackError, match="checksum differs"):
+        load_evidence_pack(
+            "slack",
+            directory=evidence_dir,
+            surface_directory=surface_dir,
+        )
 
 
 def test_evidence_pack_rejects_unpinned_behavior_shape(tmp_path) -> None:  # noqa: ANN001

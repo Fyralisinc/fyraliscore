@@ -1,55 +1,24 @@
 from __future__ import annotations
 
+import datetime as dt
 from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
 
 from services.ingest.synthetic.validation_runs.composition import (
-    HMAC_PROVIDERS,
-    LiveTarget,
-    SigningSecrets,
+    HMAC_SOURCES,
     _LiveCutoverDeps,
     _attach_cutover_state,
-    _build_discord_guild_bindings,
-    _gmail_tenant_ids_by_email,
-    _hmac_secret_map,
     _partition_probe_contract,
-    _split_live_targets,
+    _partition_recovery_candidates,
+    _select_missing_recovery_month,
     live_target_for,
     seed_contract_live_only_targets,
 )
 
 
 _TENANT = UUID("aaaaaaaa-1111-7777-8888-bbbbbbbbbbbb")
-
-
-def test_split_live_targets_groups_core_sources() -> None:
-    gmail = LiveTarget(
-        tenant_id=_TENANT,
-        source="gmail",
-        slug="acme",
-        email="alice@example.com",
-    )
-    discord = LiveTarget(
-        tenant_id=_TENANT,
-        source="discord",
-        slug="acme",
-        guild_id="guild-1",
-        channel_id="channel-1",
-    )
-    slack = LiveTarget(
-        tenant_id=_TENANT,
-        source="slack",
-        slug="acme",
-        team_id="team-1",
-    )
-
-    groups = _split_live_targets([gmail, discord, slack])
-
-    assert groups.gmail == [gmail]
-    assert groups.discord == [discord]
-    assert groups.present == {"gmail", "discord", "slack"}
 
 
 def test_attach_cutover_state_threads_shared_dependencies() -> None:
@@ -67,47 +36,13 @@ def test_attach_cutover_state_threads_shared_dependencies() -> None:
     assert app.state.tenant_flags is cutover.tenant_flags
 
 
-def test_gmail_tenant_ids_by_email_uses_lowercase_mailbox_keys() -> None:
-    target = LiveTarget(
-        tenant_id=_TENANT,
-        source="gmail",
-        slug="acme",
-        email="Alice@Example.com",
-    )
+def test_signature_probe_membership_is_contract_derived() -> None:
+    from services.ingest.source_contract.catalog import source_definition
 
-    assert _gmail_tenant_ids_by_email([target]) == {
-        "alice@example.com": _TENANT,
-    }
-
-
-def test_hmac_secret_map_covers_all_hmac_providers() -> None:
-    secrets = SigningSecrets()
-
-    secret_by_provider = _hmac_secret_map(secrets)
-
-    assert set(HMAC_PROVIDERS) <= set(secret_by_provider)
-    assert secret_by_provider["jira"] == secrets.jira
-    assert secret_by_provider["quickbooks"] == secrets.quickbooks
-    assert secret_by_provider["ashby"] == secrets.ashby
-
-
-@pytest.mark.asyncio
-async def test_discord_guild_bindings_preserve_target_channel() -> None:
-    bindings = _build_discord_guild_bindings([
-        LiveTarget(
-            tenant_id=_TENANT,
-            source="discord",
-            slug="acme",
-            guild_id="guild-1",
-            channel_id="channel-1",
-        ),
-    ])
-
-    binding = bindings["guild-1"]
-
-    assert binding.guild_id == "guild-1"
-    channels = await binding.mock_client.list_guild_channels(guild_id="guild-1")
-    assert channels[0]["id"] == "channel-1"
+    for source in HMAC_SOURCES:
+        runtime = source_definition(source).certification.validation_runtime
+        assert runtime is not None
+        assert runtime.signature_probe_binding is not None
 
 
 def test_meta_live_targets_use_exact_provider_scope() -> None:
@@ -186,3 +121,82 @@ def test_partition_probe_metadata_comes_from_every_source_contract() -> None:
         }
         assert trust == definition.default_trust_tier
         assert kind in definition.allowed_observation_kinds
+
+
+def test_partition_recovery_candidates_are_distinct_and_in_guardrail() -> None:
+    as_of = dt.datetime(2026, 7, 27, 8, 30, tzinfo=dt.timezone.utc)
+
+    candidates = _partition_recovery_candidates(as_of=as_of)
+
+    assert len(candidates) == 77
+    assert len({(candidate.year, candidate.month) for candidate in candidates}) == 77
+    assert candidates[0] == dt.datetime(
+        2018,
+        7,
+        1,
+        tzinfo=dt.timezone.utc,
+    )
+    assert candidates[-1] == dt.datetime(
+        2024,
+        11,
+        1,
+        tzinfo=dt.timezone.utc,
+    )
+    assert all(
+        dt.timedelta(days=365)
+        < as_of - candidate
+        < dt.timedelta(days=3660)
+        for candidate in candidates
+    )
+
+
+@pytest.mark.asyncio
+async def test_partition_recovery_month_selection_never_drops_populated_data() -> None:
+    candidates = (
+        dt.datetime(2020, 1, 1, tzinfo=dt.timezone.utc),
+        dt.datetime(2020, 2, 1, tzinfo=dt.timezone.utc),
+        dt.datetime(2020, 3, 1, tzinfo=dt.timezone.utc),
+    )
+
+    class _PartitionPool:
+        def __init__(self) -> None:
+            self.partitions: dict[str, int] = {
+                "observations_2020_01": 3,
+                "observations_2020_02": 0,
+            }
+            self.dropped: list[str] = []
+
+        async def fetchval(self, query: str, *args: object) -> object:
+            if "to_regclass" in query:
+                name = str(args[0])
+                return name if name in self.partitions else None
+            name = query.split('"')[1]
+            return self.partitions[name]
+
+        async def execute(self, query: str) -> None:
+            name = query.split('"')[1]
+            self.dropped.append(name)
+            del self.partitions[name]
+
+    pool = _PartitionPool()
+    reserved: set[str] = set()
+
+    occurred_at, partition = await _select_missing_recovery_month(
+        pool,  # type: ignore[arg-type]
+        candidates=candidates,
+        reserved=reserved,
+    )
+
+    assert partition == "observations_2020_02"
+    assert occurred_at == dt.datetime(2020, 2, 15, tzinfo=dt.timezone.utc)
+    assert pool.partitions["observations_2020_01"] == 3
+    assert pool.dropped == ["observations_2020_02"]
+    assert reserved == {"observations_2020_02"}
+
+    _, second_partition = await _select_missing_recovery_month(
+        pool,  # type: ignore[arg-type]
+        candidates=candidates,
+        reserved=reserved,
+    )
+    assert second_partition == "observations_2020_03"
+    assert pool.partitions["observations_2020_01"] == 3

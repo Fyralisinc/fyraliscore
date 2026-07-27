@@ -21,6 +21,14 @@ builds the complete subprocess environment when a multi-source run needs it.
 The production endpoint resolver never treats the lab origin as a fallback.
 Requests outside the registered finite surface receive a strict error.
 
+Provider Lab startup also validates operation ownership against the production
+source catalog. Every `SourceDefinition.operation_policy_id` must have exactly
+one declared route or non-HTTP protocol surface, and an adapter may not name an
+operation absent from that source contract. Multi-operation provider
+boundaries (GraphQL, JSON-RPC, AWS SigV4) declare their complete operation set;
+Discord Gateway and Telegram's finite injected transport appear separately in
+the adapter inventory.
+
 The control plane provides:
 
 - `POST /_lab/reset`
@@ -30,6 +38,9 @@ The control plane provides:
 - `GET|POST|DELETE /_lab/faults...`
 - `GET|DELETE /_lab/ledger`
 - `GET /_lab/adapters`
+
+`GET /_lab/adapters` includes the expected and owned operation IDs, route
+transport kinds, and non-HTTP protocol surfaces for all 27 sources.
 
 The process and URL helper refuse a production environment and reject
 non-loopback addresses. Before a throughput certification, run the calibration

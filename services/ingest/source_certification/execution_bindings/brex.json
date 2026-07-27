@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "brex",
+  "spec_hash": "c1911157d1c71a254f3ca27599b310b4ba20bda889706ba3869fcd9a1010c4a7",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "brex",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "4f7ffedbc0702c98de4b83649bccf42f165151331eec726a0ee515c99e32d202"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_BREX"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_BREX"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "brex",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "4f7ffedbc0702c98de4b83649bccf42f165151331eec726a0ee515c99e32d202"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "brex",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "4f7ffedbc0702c98de4b83649bccf42f165151331eec726a0ee515c99e32d202"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "brex",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "4f7ffedbc0702c98de4b83649bccf42f165151331eec726a0ee515c99e32d202"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

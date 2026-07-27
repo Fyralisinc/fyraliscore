@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "google_drive",
+  "spec_hash": "9d7b961b3edf32b68fbbd5b262fc0e1d3f085a3b8bb742807f1e4fe2e854516c",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "google_drive",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "2e01945bd9c77d2cc82337138ad7d9572d9eccc57cfb041eb685a8184dd28a7e"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_GOOGLE_DRIVE"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_GOOGLE_DRIVE"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "google_drive",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "2e01945bd9c77d2cc82337138ad7d9572d9eccc57cfb041eb685a8184dd28a7e"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "google_drive",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "2e01945bd9c77d2cc82337138ad7d9572d9eccc57cfb041eb685a8184dd28a7e"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "google_drive",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "2e01945bd9c77d2cc82337138ad7d9572d9eccc57cfb041eb685a8184dd28a7e"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

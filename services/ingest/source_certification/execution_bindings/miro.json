@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "miro",
+  "spec_hash": "acc19fdf1927e76fbb3fdc4133bdba6e7119a7cb044a105e993a4ecdc3115af0",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "miro",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "e70b83cca22870c14f61ecc147b4f6ad6474eeb2439a93173ca9b0304983ecbd"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_MIRO"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_MIRO"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "miro",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "e70b83cca22870c14f61ecc147b4f6ad6474eeb2439a93173ca9b0304983ecbd"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "miro",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "e70b83cca22870c14f61ecc147b4f6ad6474eeb2439a93173ca9b0304983ecbd"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "miro",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "e70b83cca22870c14f61ecc147b4f6ad6474eeb2439a93173ca9b0304983ecbd"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

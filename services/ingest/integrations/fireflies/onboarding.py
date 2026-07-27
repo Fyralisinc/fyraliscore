@@ -54,9 +54,13 @@ async def finalize_install(
     `workspace_id` is the Fireflies workspace the token is scoped to — it
     namespaces every transcript's external_id (`fireflies:{workspace_id}:…`) so
     two tenants' transcripts never collide on the global observations UNIQUE.
-    Returns the fireflies_installations id. Idempotent on (tenant_id, base_url).
+    Returns the fireflies_installations id. Idempotent on the exact
+    ``(tenant_id, workspace_id)`` provider scope.
     """
     base_url = base_url.rstrip("/")
+    workspace_id = workspace_id.strip()
+    if not workspace_id:
+        raise ValueError("workspace_id must be non-empty")
 
     async with tenant_transaction(tenant_id, pool=pool) as tctx:
         install_id = await tctx.fetchval(
@@ -65,8 +69,13 @@ async def finalize_install(
                 id, tenant_id, base_url, workspace_id, workspace_name,
                 secret_ref, webhook_secret_ref
             ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (tenant_id, base_url) DO UPDATE
-                SET secret_ref = COALESCE(EXCLUDED.secret_ref, fireflies_installations.secret_ref),
+            ON CONFLICT (
+                tenant_id,
+                (workspace_id IS NULL),
+                (COALESCE(workspace_id, base_url))
+            ) DO UPDATE
+                SET base_url = EXCLUDED.base_url,
+                    secret_ref = COALESCE(EXCLUDED.secret_ref, fireflies_installations.secret_ref),
                     workspace_id = COALESCE(EXCLUDED.workspace_id, fireflies_installations.workspace_id),
                     workspace_name = COALESCE(EXCLUDED.workspace_name, fireflies_installations.workspace_name),
                     webhook_secret_ref = COALESCE(

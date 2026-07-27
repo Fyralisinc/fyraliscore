@@ -13,6 +13,7 @@ currently uses:
 * WhatsApp exposes the Meta webhook handshake/delivery contract only; Fyralis
   has no WhatsApp history or outbound Graph client today.
 """
+
 from __future__ import annotations
 
 import base64
@@ -25,7 +26,13 @@ import threading
 from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote
 
-from .protocol import ProviderRequest, ProviderResponse, ProviderRoute
+from .protocol import (
+    ProviderOperationBinding,
+    ProviderProtocolSurface,
+    ProviderRequest,
+    ProviderResponse,
+    ProviderRoute,
+)
 
 
 def _params(request: ProviderRequest) -> dict[str, str]:
@@ -66,9 +73,7 @@ def _basic(request: ProviderRequest) -> tuple[str, str] | None:
     if authorization is None or authorization[0] != "basic":
         return None
     try:
-        decoded = base64.b64decode(
-            authorization[1], validate=True
-        ).decode("utf-8")
+        decoded = base64.b64decode(authorization[1], validate=True).decode("utf-8")
     except (ValueError, UnicodeDecodeError):
         return None
     username, separator, password = decoded.partition(":")
@@ -124,7 +129,7 @@ def _page(
         minimum=1,
         maximum=maximum,
     )
-    page = rows[start:start + page_size]
+    page = rows[start : start + page_size]
     next_offset = start + len(page)
     has_more = bool(page) and next_offset < len(rows)
     return page, (f"off:{next_offset}" if has_more else None), has_more
@@ -153,9 +158,20 @@ def _only_value(values: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 class _WaveCDAdapter:
     routes: tuple[ProviderRoute, ...]
+    protocol_surfaces: tuple[ProviderProtocolSurface, ...] = ()
 
     def resolve_scope(self, request: ProviderRequest) -> str:
-        return _explicit_scope(request) or "global"
+        explicit = _explicit_scope(request)
+        if explicit:
+            return explicit
+        authorization = request.headers.get("authorization") or ""
+        match = re.search(
+            r"\bCredential=AKIDLAB([^/,\s]+)/\d{8}/([^/,\s]+)/",
+            authorization,
+        )
+        if match:
+            return f"{match.group(1)}::{match.group(2)}"
+        return "global"
 
 
 # ---------------------------------------------------------------------------
@@ -169,39 +185,46 @@ class NotionAdapter(_WaveCDAdapter):
         ProviderRoute(
             "notion.oauth_token",
             "/v1/oauth/token",
+            operation_ids=("oauth.token.exchange",),
             methods=("POST",),
             quota_bucket="oauth",
         ),
         ProviderRoute(
             "notion.search",
             "/v1/search",
+            operation_ids=("search",),
             methods=("POST",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "notion.query_database",
             "/v1/databases/{database_id}/query",
+            operation_ids=("databases.query",),
             methods=("POST",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "notion.block_children",
             "/v1/blocks/{block_id}/children",
+            operation_ids=("blocks.children.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "notion.comments",
             "/v1/comments",
+            operation_ids=("comments.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "notion.retrieve_page",
             "/v1/pages/{page_id}",
+            operation_ids=("pages.retrieve",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "notion.bot_user",
             "/v1/users/me",
+            operation_ids=("users.me",),
             quota_bucket="rest",
         ),
     )
@@ -216,7 +239,7 @@ class NotionAdapter(_WaveCDAdapter):
         token = _bearer(request) or ""
         for prefix in ("lab-notion::", "spam-notion::"):
             if token.startswith(prefix):
-                return token[len(prefix):] or "global"
+                return token[len(prefix) :] or "global"
         return "global"
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
@@ -230,10 +253,7 @@ class NotionAdapter(_WaveCDAdapter):
             body = _json_object(request)
             if body is None:
                 return _bad_request("invalid_json", "Expected a JSON object")
-            if (
-                body.get("grant_type") != "authorization_code"
-                or not body.get("code")
-            ):
+            if body.get("grant_type") != "authorization_code" or not body.get("code"):
                 return _bad_request(
                     "invalid_grant",
                     "authorization_code grant and code are required",
@@ -396,9 +416,11 @@ class NotionAdapter(_WaveCDAdapter):
         workspaces: Mapping[str, Any],
         object_filter: Any,
     ) -> list[dict[str, Any]]:
-        selected = [workspace] if workspace else [
-            item for item in workspaces.values() if isinstance(item, Mapping)
-        ]
+        selected = (
+            [workspace]
+            if workspace
+            else [item for item in workspaces.values() if isinstance(item, Mapping)]
+        )
         rows: list[dict[str, Any]] = []
         for item in selected:
             if object_filter in (None, "database"):
@@ -420,9 +442,11 @@ class NotionAdapter(_WaveCDAdapter):
         workspaces: Mapping[str, Any],
         database_id: str,
     ) -> list[dict[str, Any]]:
-        selected = [workspace] if workspace else [
-            item for item in workspaces.values() if isinstance(item, Mapping)
-        ]
+        selected = (
+            [workspace]
+            if workspace
+            else [item for item in workspaces.values() if isinstance(item, Mapping)]
+        )
         for item in selected:
             for database in item.get("databases") or []:
                 if str(database.get("database_id")) == database_id:
@@ -440,9 +464,11 @@ class NotionAdapter(_WaveCDAdapter):
         collection: str,
         object_id: str,
     ) -> list[dict[str, Any]]:
-        selected = [workspace] if workspace else [
-            item for item in workspaces.values() if isinstance(item, Mapping)
-        ]
+        selected = (
+            [workspace]
+            if workspace
+            else [item for item in workspaces.values() if isinstance(item, Mapping)]
+        )
         for item in selected:
             values = item.get(collection)
             if isinstance(values, Mapping) and object_id in values:
@@ -459,9 +485,11 @@ class NotionAdapter(_WaveCDAdapter):
         workspaces: Mapping[str, Any],
         page_id: str,
     ) -> dict[str, Any] | None:
-        selected = [workspace] if workspace else [
-            item for item in workspaces.values() if isinstance(item, Mapping)
-        ]
+        selected = (
+            [workspace]
+            if workspace
+            else [item for item in workspaces.values() if isinstance(item, Mapping)]
+        )
         for item in selected:
             pages = list(item.get("loose_pages") or [])
             for database in item.get("databases") or []:
@@ -509,22 +537,26 @@ class HibobAdapter(_WaveCDAdapter):
         ProviderRoute(
             "hibob.people_search",
             "/v1/people/search",
+            operation_ids=("people.search",),
             methods=("POST",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "hibob.timeoff_changes",
             "/v1/timeoff/requests/changes",
+            operation_ids=("timeoff.changes.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "hibob.salaries",
             "/v1/bulk/people/salaries",
+            operation_ids=("people.salaries.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "hibob.work",
             "/v1/bulk/people/work",
+            operation_ids=("people.work.list",),
             quota_bucket="rest",
         ),
     )
@@ -537,7 +569,15 @@ class HibobAdapter(_WaveCDAdapter):
         if explicit:
             return explicit
         credentials = _basic(request)
-        return credentials[0][:256] if credentials and credentials[0] else "global"
+        if credentials:
+            _service_user_id, token = credentials
+            for prefix in ("lab-hibob::", "spam-hibob::"):
+                if token.startswith(prefix):
+                    company_id = token[len(prefix) :]
+                    return company_id[:256] if company_id else "global"
+            if _service_user_id:
+                return _service_user_id[:256]
+        return "global"
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
         credentials = _basic(request)
@@ -555,11 +595,7 @@ class HibobAdapter(_WaveCDAdapter):
             if _json_object(request) is None:
                 return _bad_request("invalid_json", "Expected a JSON object")
             return ProviderResponse.json(
-                {
-                    "employees": copy.deepcopy(
-                        list(entities.get("employee") or [])
-                    )
-                }
+                {"employees": copy.deepcopy(list(entities.get("employee") or []))}
             )
         if route_id == "hibob.timeoff_changes":
             params = _params(request)
@@ -640,12 +676,14 @@ class AshbyAdapter(_WaveCDAdapter):
         ProviderRoute(
             "ashby.list",
             "/{method_name}.list",
+            operation_ids=("entities.list",),
             methods=("POST",),
             quota_bucket="rpc",
         ),
         ProviderRoute(
             "ashby.info",
             "/{method_name}.info",
+            operation_ids=("entities.info",),
             methods=("POST",),
             quota_bucket="rpc",
         ),
@@ -670,7 +708,7 @@ class AshbyAdapter(_WaveCDAdapter):
             "spam-ashby::",
         ):
             if token.startswith(prefix):
-                return token[len(prefix):] or "global"
+                return token[len(prefix) :] or "global"
         return "global"
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
@@ -712,9 +750,7 @@ class AshbyAdapter(_WaveCDAdapter):
             entity_id = str(body.get("id") or "")
             for row in rows:
                 if str(row.get("id") or row.get("Id") or "") == entity_id:
-                    return ProviderResponse.json(
-                        {"success": True, "results": row}
-                    )
+                    return ProviderResponse.json({"success": True, "results": row})
             return ProviderResponse.json(
                 {
                     "success": False,
@@ -753,11 +789,15 @@ class AshbyAdapter(_WaveCDAdapter):
             "results": page,
             "moreDataAvailable": has_more,
             "nextCursor": (
-                next_cursor[4:] if next_cursor and next_cursor.startswith("off:")
+                next_cursor[4:]
+                if next_cursor and next_cursor.startswith("off:")
                 else next_cursor
             ),
         }
-        if refreshed:
+        # The production client declares these single-shot metadata surfaces
+        # as non-incremental. Returning a token that the client can never send
+        # back makes reconciliation interpret every full response as a gap.
+        if refreshed and category not in _ASHBY_NONPAGINATED:
             response["syncToken"] = refreshed
         return ProviderResponse.json(response)
 
@@ -786,21 +826,36 @@ def _ashby_updated(row: Mapping[str, Any]) -> str:
 class LinkedinAdapter(_WaveCDAdapter):
     source = "linkedin"
     routes = (
-        ProviderRoute("linkedin.posts", "/posts", quota_bucket="rest"),
+        ProviderRoute(
+            "linkedin.posts",
+            "/posts",
+            operation_ids=("posts.list",),
+            quota_bucket="rest",
+        ),
         ProviderRoute(
             "linkedin.share_statistics",
             "/organizationalEntityShareStatistics",
+            operation_ids=("share_statistics.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "linkedin.follower_statistics",
             "/organizationalEntityFollowerStatistics",
+            operation_ids=("follower_statistics.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "linkedin.organization",
             "/organizations/{organization_id}",
+            operation_ids=("organizations.get",),
             quota_bucket="rest",
+        ),
+        ProviderRoute(
+            "linkedin.oauth_token",
+            "/oauth/v2/accessToken",
+            operation_ids=("oauth.token.refresh",),
+            methods=("POST",),
+            quota_bucket="oauth",
         ),
     )
 
@@ -821,6 +876,15 @@ class LinkedinAdapter(_WaveCDAdapter):
         return "global"
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
+        if request.route.route_id == "linkedin.oauth_token":
+            return ProviderResponse.json(
+                {
+                    "access_token": "lab-linkedin-access-token",
+                    "refresh_token": "lab-linkedin-refresh-token",
+                    "expires_in": 3600,
+                    "refresh_token_expires_in": 31_536_000,
+                }
+            )
         if not _bearer(request):
             return _unauthorized("LinkedIn requires a Bearer access token")
         version = request.headers.get("linkedin-version")
@@ -875,7 +939,7 @@ class LinkedinAdapter(_WaveCDAdapter):
                 minimum=1,
                 maximum=maximum,
             )
-            page = rows[start:start + count]
+            page = rows[start : start + count]
             links: list[dict[str, Any]] = []
             if page and start + len(page) < len(rows):
                 next_start = start + len(page)
@@ -915,11 +979,7 @@ class LinkedinAdapter(_WaveCDAdapter):
                 if isinstance(row, dict)
             ]
             start_ms, end_ms = _linkedin_interval(params.get("timeIntervals"))
-            rows = [
-                row
-                for row in rows
-                if _in_linkedin_window(row, start_ms, end_ms)
-            ]
+            rows = [row for row in rows if _in_linkedin_window(row, start_ms, end_ms)]
             return ProviderResponse.json({"elements": rows})
 
         organization_id = str(request.path_params["organization_id"])
@@ -947,9 +1007,7 @@ def _linkedin_organization(
     elif scope != "global":
         candidates.append(f"urn:li:organization:{scope}")
     if path_id is not None:
-        candidates.extend(
-            [str(path_id), f"urn:li:organization:{path_id}"]
-        )
+        candidates.extend([str(path_id), f"urn:li:organization:{path_id}"])
     for candidate in candidates:
         value = organizations.get(candidate)
         if isinstance(value, Mapping):
@@ -976,15 +1034,9 @@ def _in_linkedin_window(
 ) -> bool:
     time_range = row.get("timeRange")
     bucket = time_range.get("start") if isinstance(time_range, Mapping) else None
-    if start_ms is not None and (
-        not isinstance(bucket, int) or bucket < start_ms
-    ):
+    if start_ms is not None and (not isinstance(bucket, int) or bucket < start_ms):
         return False
-    return not (
-        end_ms is not None
-        and isinstance(bucket, int)
-        and bucket >= end_ms
-    )
+    return not (end_ms is not None and isinstance(bucket, int) and bucket >= end_ms)
 
 
 # ---------------------------------------------------------------------------
@@ -998,8 +1050,77 @@ class AwsAdapter(_WaveCDAdapter):
         ProviderRoute(
             "aws.service_operation",
             "/",
+            operation_ids=(
+                "sts.get_caller_identity",
+                "cloudtrail.lookup_events",
+                "sts.assume_role",
+            ),
+            operation_bindings=(
+                ProviderOperationBinding(
+                    operation_id="sts.get_caller_identity",
+                    method="POST",
+                    headers=(
+                        (
+                            "Authorization",
+                            "AWS4-HMAC-SHA256 Credential=AKIDLABprovider/"
+                            "20250101/us-east-1/sts/aws4_request, "
+                            "SignedHeaders=host;x-amz-date, "
+                            "Signature=provider-lab",
+                        ),
+                        (
+                            "Content-Type",
+                            "application/x-www-form-urlencoded",
+                        ),
+                    ),
+                    body=b"Action=GetCallerIdentity&Version=2011-06-15",
+                ),
+                ProviderOperationBinding(
+                    operation_id="cloudtrail.lookup_events",
+                    method="POST",
+                    headers=(
+                        (
+                            "Authorization",
+                            "AWS4-HMAC-SHA256 Credential=AKIDLABprovider/"
+                            "20250101/us-east-1/cloudtrail/aws4_request, "
+                            "SignedHeaders=host;x-amz-date;x-amz-target, "
+                            "Signature=provider-lab",
+                        ),
+                        ("Content-Type", "application/x-amz-json-1.1"),
+                        (
+                            "X-Amz-Target",
+                            "com.amazonaws.cloudtrail.v20131101."
+                            "CloudTrail_20131101.LookupEvents",
+                        ),
+                    ),
+                    body=b'{"MaxResults":50}',
+                ),
+                ProviderOperationBinding(
+                    operation_id="sts.assume_role",
+                    method="POST",
+                    headers=(
+                        (
+                            "Authorization",
+                            "AWS4-HMAC-SHA256 Credential=AKIDLABprovider/"
+                            "20250101/us-east-1/sts/aws4_request, "
+                            "SignedHeaders=host;x-amz-date, "
+                            "Signature=provider-lab",
+                        ),
+                        (
+                            "Content-Type",
+                            "application/x-www-form-urlencoded",
+                        ),
+                    ),
+                    body=(
+                        b"Action=AssumeRole&Version=2011-06-15"
+                        b"&RoleArn=arn%3Aaws%3Aiam%3A%3A000000000000"
+                        b"%3Arole%2Fprovider-lab"
+                        b"&RoleSessionName=fyralis-ingest"
+                    ),
+                ),
+            ),
             methods=("POST",),
             quota_bucket="service-api",
+            transport="aws_sigv4",
         ),
     )
 
@@ -1007,7 +1128,10 @@ class AwsAdapter(_WaveCDAdapter):
         return {"accounts": {}}
 
     def resolve_scope(self, request: ProviderRequest) -> str:
-        return _explicit_scope(request) or "global"
+        # Real CloudTrail requests carry their account/region identity in the
+        # SigV4 Credential scope. Reuse the base parser so multiple seeded AWS
+        # accounts cannot collapse to the Lab's global fallback.
+        return super().resolve_scope(request)
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
         authorization = request.headers.get("authorization") or ""
@@ -1036,11 +1160,7 @@ class AwsAdapter(_WaveCDAdapter):
             ]
             start_ms = _aws_time_ms(body.get("StartTime"))
             end_ms = _aws_time_ms(body.get("EndTime"))
-            rows = [
-                row
-                for row in rows
-                if _aws_in_window(row, start_ms, end_ms)
-            ]
+            rows = [row for row in rows if _aws_in_window(row, start_ms, end_ms)]
             rows.sort(key=_aws_event_ms, reverse=True)
             maximum = _integer(
                 account.get("per_page"),
@@ -1072,7 +1192,7 @@ class AwsAdapter(_WaveCDAdapter):
             role_name = role_arn.rpartition("/")[2] or "provider-lab"
             xml = (
                 '<?xml version="1.0" encoding="UTF-8"?>'
-                '<AssumeRoleResponse '
+                "<AssumeRoleResponse "
                 'xmlns="https://sts.amazonaws.com/doc/2011-06-15/">'
                 "<AssumeRoleResult><Credentials>"
                 "<AccessKeyId>ASIALABPROVIDER0001</AccessKeyId>"
@@ -1099,7 +1219,7 @@ class AwsAdapter(_WaveCDAdapter):
             )
             xml = (
                 '<?xml version="1.0" encoding="UTF-8"?>'
-                '<GetCallerIdentityResponse '
+                "<GetCallerIdentityResponse "
                 'xmlns="https://sts.amazonaws.com/doc/2011-06-15/">'
                 "<GetCallerIdentityResult>"
                 f"<Arn>{arn}</Arn>"
@@ -1174,28 +1294,52 @@ def _aws_wire_event(event: Mapping[str, Any]) -> dict[str, Any]:
 
 class TelegramAdapter(_WaveCDAdapter):
     source = "telegram"
+    protocol_surfaces = (
+        ProviderProtocolSurface(
+            "telegram.session_transport",
+            transport="injected_transport",
+            operation_ids=(
+                "session.connect",
+                "session.is_user_authorized",
+            ),
+        ),
+        ProviderProtocolSurface(
+            "telegram.gateway_transport",
+            transport="injected_transport",
+            operation_ids=(
+                "gateway.connect",
+                "gateway.is_user_authorized",
+                "updates.catch_up",
+                "updates.get_state",
+            ),
+        ),
+    )
     routes = (
         ProviderRoute(
             "telegram.get_history",
             "/transport/get_history",
+            operation_ids=("get_history",),
             methods=("POST",),
             quota_bucket="transport",
         ),
         ProviderRoute(
             "telegram.iter_dialogs",
             "/transport/iter_dialogs",
+            operation_ids=("iter_dialogs",),
             methods=("POST",),
             quota_bucket="transport",
         ),
         ProviderRoute(
             "telegram.has_history_since",
             "/transport/has_history_since",
+            operation_ids=("has_history_since",),
             methods=("POST",),
             quota_bucket="transport",
         ),
         ProviderRoute(
             "telegram.me",
             "/transport/me",
+            operation_ids=("me",),
             methods=("POST",),
             quota_bucket="transport",
         ),
@@ -1220,7 +1364,7 @@ class TelegramAdapter(_WaveCDAdapter):
         session = _session(request) or ""
         for prefix in ("lab-telegram::", "spam-telegram::"):
             if session.startswith(prefix):
-                return session[len(prefix):] or "global"
+                return session[len(prefix) :] or "global"
         digest = hashlib.sha256(session.encode("utf-8")).hexdigest()
         return f"session:{digest[:16]}" if session else "global"
 
@@ -1268,8 +1412,7 @@ class TelegramAdapter(_WaveCDAdapter):
             return ProviderResponse.json(
                 {
                     "has_history": any(
-                        _integer(message.get("id"), 0) > min_id
-                        for message in messages
+                        _integer(message.get("id"), 0) > min_id for message in messages
                     )
                 }
             )
@@ -1299,9 +1442,7 @@ class TelegramAdapter(_WaveCDAdapter):
         )
         page = candidates[:limit]
         next_offset_id = (
-            min(_integer(message.get("id"), 0) for message in page)
-            if page
-            else None
+            min(_integer(message.get("id"), 0) for message in page) if page else None
         )
         return ProviderResponse.json(
             {
@@ -1323,13 +1464,81 @@ class SignalAdapter(_WaveCDAdapter):
         ProviderRoute(
             "signal.json_rpc",
             "/jsonrpc",
+            operation_ids=(
+                "list_groups",
+                "receive_poll",
+                "subscribe_receive",
+                "unsubscribe_receive",
+            ),
+            operation_bindings=(
+                ProviderOperationBinding(
+                    operation_id="list_groups",
+                    method="POST",
+                    headers=(
+                        ("Authorization", "Session provider-lab"),
+                        ("Content-Type", "application/json"),
+                    ),
+                    body=(
+                        b'{"jsonrpc":"2.0","id":"list-groups",'
+                        b'"method":"listGroups","params":{}}'
+                    ),
+                ),
+                ProviderOperationBinding(
+                    operation_id="receive_poll",
+                    method="POST",
+                    headers=(
+                        ("Authorization", "Session provider-lab"),
+                        ("Content-Type", "application/json"),
+                    ),
+                    body=(
+                        b'{"jsonrpc":"2.0","id":"receive",'
+                        b'"method":"receive","params":{}}'
+                    ),
+                ),
+                ProviderOperationBinding(
+                    operation_id="subscribe_receive",
+                    method="POST",
+                    headers=(
+                        ("Authorization", "Session provider-lab"),
+                        ("Content-Type", "application/json"),
+                    ),
+                    body=(
+                        b'{"jsonrpc":"2.0","id":"subscribe",'
+                        b'"method":"subscribeReceive","params":{}}'
+                    ),
+                ),
+                ProviderOperationBinding(
+                    operation_id="unsubscribe_receive",
+                    method="POST",
+                    headers=(
+                        ("Authorization", "Session provider-lab"),
+                        ("Content-Type", "application/json"),
+                    ),
+                    body=(
+                        b'{"jsonrpc":"2.0","id":"unsubscribe",'
+                        b'"method":"unsubscribeReceive","params":'
+                        b'{"subscription":"nonexistent"}}'
+                    ),
+                ),
+            ),
             methods=("POST",),
             quota_bucket="json-rpc",
+            transport="json_rpc",
         ),
         ProviderRoute(
             "signal.subscription_events",
             "/events/{subscription_id}",
+            operation_ids=("events_stream",),
+            operation_bindings=(
+                ProviderOperationBinding(
+                    operation_id="events_stream",
+                    method="GET",
+                    path_values=(("subscription_id", "sub-1"),),
+                    headers=(("Authorization", "Session provider-lab"),),
+                ),
+            ),
             quota_bucket="json-rpc",
+            transport="sse",
         ),
     )
 
@@ -1357,7 +1566,7 @@ class SignalAdapter(_WaveCDAdapter):
         session = _session(request) or ""
         for prefix in ("lab-signal::", "spam-signal::"):
             if session.startswith(prefix):
-                return session[len(prefix):] or "global"
+                return session[len(prefix) :] or "global"
         digest = hashlib.sha256(session.encode("utf-8")).hexdigest()
         return f"session:{digest[:16]}" if session else "global"
 
@@ -1421,14 +1630,10 @@ class SignalAdapter(_WaveCDAdapter):
             )
         if method == "unsubscribeReceive":
             subscription_id = str(
-                params.get("subscription")
-                or params.get("subscriptionId")
-                or ""
+                params.get("subscription") or params.get("subscriptionId") or ""
             )
             with self._lock:
-                removed = (
-                    self._subscriptions.get(subscription_id) == request.scope
-                )
+                removed = self._subscriptions.get(subscription_id) == request.scope
                 if removed:
                     self._subscriptions.pop(subscription_id, None)
             return _signal_rpc_result(request_id, removed)
@@ -1446,9 +1651,7 @@ class SignalAdapter(_WaveCDAdapter):
 
 
 def _signal_rpc_result(request_id: Any, result: Any) -> ProviderResponse:
-    return ProviderResponse.json(
-        {"jsonrpc": "2.0", "id": request_id, "result": result}
-    )
+    return ProviderResponse.json({"jsonrpc": "2.0", "id": request_id, "result": result})
 
 
 def _signal_rpc_error(
@@ -1468,11 +1671,7 @@ def _signal_rpc_error(
 def _signal_events(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     configured = state.get("events")
     if isinstance(configured, list) and configured:
-        return [
-            copy.deepcopy(item)
-            for item in configured
-            if isinstance(item, dict)
-        ]
+        return [copy.deepcopy(item) for item in configured if isinstance(item, dict)]
     events: list[dict[str, Any]] = []
     threads = state.get("threads") or {}
     for thread_id in state.get("thread_order") or []:
@@ -1491,11 +1690,23 @@ def _signal_events(state: Mapping[str, Any]) -> list[dict[str, Any]]:
                 data_message["groupInfo"] = {"groupId": str(thread_id)}
             sender = message.get("from_id")
             source = sender.get("user_id") if isinstance(sender, Mapping) else None
+            if thread.get("thread_kind") != "group":
+                # For a direct conversation signal-cli identifies the thread
+                # by the remote peer. Keep that identity equal to the seeded
+                # planner thread id; otherwise the production client correctly
+                # caches the message under a different conversation and the
+                # requested shard observes an empty page.
+                source = thread_id
             events.append(
                 {
                     "envelope": {
                         "timestamp": stamp_ms,
                         "sourceUuid": str(source or ""),
+                        **(
+                            {"sourceName": str(message["sender_username"])}
+                            if message.get("sender_username")
+                            else {}
+                        ),
                         "dataMessage": data_message,
                     }
                 }
@@ -1602,12 +1813,10 @@ class WhatsappAdapter(_WaveCDAdapter):
                 if not isinstance(value, Mapping):
                     continue
                 messages += sum(
-                    isinstance(item, Mapping)
-                    for item in value.get("messages") or []
+                    isinstance(item, Mapping) for item in value.get("messages") or []
                 )
                 statuses += sum(
-                    isinstance(item, Mapping)
-                    for item in value.get("statuses") or []
+                    isinstance(item, Mapping) for item in value.get("statuses") or []
                 )
         return ProviderResponse.json(
             {
@@ -1625,27 +1834,62 @@ class FacebookPagesAdapter(_WaveCDAdapter):
         ProviderRoute(
             "facebook_pages.oauth_token",
             "/{version}/oauth/access_token",
+            operation_ids=(
+                "oauth.token.exchange",
+                "oauth.user_token.extend",
+            ),
+            operation_bindings=(
+                ProviderOperationBinding(
+                    operation_id="oauth.token.exchange",
+                    method="GET",
+                    path_values=(("version", "v23.0"),),
+                    query_items=(
+                        ("client_id", "provider-lab"),
+                        ("client_secret", "provider-lab"),
+                        (
+                            "redirect_uri",
+                            "https://provider-lab.test/facebook/callback",
+                        ),
+                        ("code", "provider-lab-code"),
+                    ),
+                ),
+                ProviderOperationBinding(
+                    operation_id="oauth.user_token.extend",
+                    method="GET",
+                    path_values=(("version", "v23.0"),),
+                    query_items=(
+                        ("grant_type", "fb_exchange_token"),
+                        ("client_id", "provider-lab"),
+                        ("client_secret", "provider-lab"),
+                        ("fb_exchange_token", "provider-lab-short-user-token"),
+                    ),
+                ),
+            ),
             quota_bucket=None,
         ),
         ProviderRoute(
             "facebook_pages.accounts",
             "/{version}/me/accounts",
+            operation_ids=("pages.list",),
             quota_bucket="graph",
         ),
         ProviderRoute(
             "facebook_pages.subscribe",
             "/{version}/{page_id}/subscribed_apps",
+            operation_ids=("pages.subscribe",),
             methods=("POST",),
             quota_bucket="graph",
         ),
         ProviderRoute(
             "facebook_pages.conversations",
             "/{version}/{page_id}/conversations",
+            operation_ids=("conversations.list",),
             quota_bucket="graph",
         ),
         ProviderRoute(
             "facebook_pages.messages",
             "/{version}/{conversation_id}/messages",
+            operation_ids=("messages.list",),
             quota_bucket="graph",
         ),
         ProviderRoute(
@@ -1676,16 +1920,14 @@ class FacebookPagesAdapter(_WaveCDAdapter):
         explicit = _explicit_scope(request)
         if explicit:
             return explicit
+        token_scope = _facebook_page_scope_from_token(
+            _params(request).get("access_token"),
+        )
+        if token_scope:
+            return token_scope
         page_id = request.path_params.get("page_id")
         if page_id:
             return str(page_id)[:256]
-        token = _params(request).get("access_token") or ""
-        for prefix in (
-            "lab-facebook-pages::",
-            "spam-facebook-pages::",
-        ):
-            if token.startswith(prefix):
-                return token[len(prefix):] or "global"
         return "global"
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
@@ -1704,36 +1946,55 @@ class FacebookPagesAdapter(_WaveCDAdapter):
             )
         params = _params(request)
         if route_id == "facebook_pages.oauth_token":
-            required = ("client_id", "client_secret", "redirect_uri", "code")
+            is_extension = params.get("grant_type") == "fb_exchange_token"
+            required = (
+                ("client_id", "client_secret", "fb_exchange_token")
+                if is_extension
+                else ("client_id", "client_secret", "redirect_uri", "code")
+            )
             if any(not params.get(key) for key in required):
                 return _bad_request(
                     "invalid_oauth_request",
-                    "client_id, client_secret, redirect_uri, and code are required",
+                    "Required Facebook Login token parameters are missing",
                 )
             return ProviderResponse.json(
                 {
-                    "access_token": f"lab-facebook-user::{params['client_id']}",
+                    "access_token": (
+                        f"lab-facebook-long-user::{params['client_id']}"
+                        if is_extension
+                        else f"lab-facebook-short-user::{params['client_id']}"
+                    ),
                     "token_type": "bearer",
                     "expires_in": 5_184_000,
                 }
             )
         if not params.get("access_token"):
             return _unauthorized("Meta Graph requires access_token")
+        token_page_id = _facebook_page_scope_from_token(
+            params["access_token"],
+        )
 
         if route_id == "facebook_pages.accounts":
             configured = state.get("user_pages") or {}
             rows = configured.get(params["access_token"])
             if not isinstance(rows, list):
-                rows = [
-                    copy.deepcopy(page)
-                    for page in (state.get("pages") or {}).values()
-                    if isinstance(page, dict)
-                ]
-            return ProviderResponse.json(
-                _graph_page(rows, params, default_limit=100)
-            )
+                if token_page_id:
+                    page = (state.get("pages") or {}).get(token_page_id)
+                    rows = [copy.deepcopy(page)] if isinstance(page, dict) else []
+                else:
+                    rows = [
+                        copy.deepcopy(page)
+                        for page in (state.get("pages") or {}).values()
+                        if isinstance(page, dict)
+                    ]
+            return ProviderResponse.json(_graph_page(rows, params, default_limit=100))
         if route_id == "facebook_pages.subscribe":
             page_id = str(request.path_params["page_id"])
+            if token_page_id and token_page_id != page_id:
+                return ProviderResponse.json(
+                    {"error": {"code": 10, "message": "Page token scope mismatch"}},
+                    status_code=403,
+                )
             if page_id not in (state.get("pages") or {}):
                 return ProviderResponse.json(
                     {
@@ -1747,15 +2008,26 @@ class FacebookPagesAdapter(_WaveCDAdapter):
             return ProviderResponse.json({"success": True})
         if route_id == "facebook_pages.conversations":
             page_id = str(request.path_params["page_id"])
+            if token_page_id and token_page_id != page_id:
+                return ProviderResponse.json(
+                    {"error": {"code": 10, "message": "Page token scope mismatch"}},
+                    status_code=403,
+                )
             rows = (state.get("conversations") or {}).get(page_id, [])
-            return ProviderResponse.json(
-                _graph_page(rows, params, default_limit=100)
-            )
+            return ProviderResponse.json(_graph_page(rows, params, default_limit=100))
         conversation_id = str(request.path_params["conversation_id"])
+        owner_page_id = _facebook_conversation_page(state, conversation_id)
+        if (
+            token_page_id
+            and owner_page_id is not None
+            and token_page_id != owner_page_id
+        ):
+            return ProviderResponse.json(
+                {"error": {"code": 10, "message": "Page token scope mismatch"}},
+                status_code=403,
+            )
         rows = (state.get("messages") or {}).get(conversation_id, [])
-        return ProviderResponse.json(
-            _graph_page(rows, params, default_limit=100)
-        )
+        return ProviderResponse.json(_graph_page(rows, params, default_limit=100))
 
     @staticmethod
     def _webhook_delivery(
@@ -1823,11 +2095,7 @@ def _graph_page(
     *,
     default_limit: int,
 ) -> dict[str, Any]:
-    items = [
-        copy.deepcopy(row)
-        for row in rows or []
-        if isinstance(row, dict)
-    ]
+    items = [copy.deepcopy(row) for row in rows or [] if isinstance(row, dict)]
     page, cursor, _has_more = _page(
         items,
         cursor=params.get("after"),
@@ -1851,9 +2119,7 @@ def _meta_verify(
     params = _params(request)
     presented = params.get("hub.verify_token")
     configured = {
-        str(value)
-        for value in state.get("verify_tokens") or []
-        if value is not None
+        str(value) for value in state.get("verify_tokens") or [] if value is not None
     }
     challenge = params.get("hub.challenge")
     if (
@@ -1885,11 +2151,14 @@ def _valid_meta_signature(
     secret: str,
 ) -> bool:
     presented = request.headers.get("x-hub-signature-256") or ""
-    expected = "sha256=" + hmac.new(
-        secret.encode("utf-8"),
-        request.body,
-        hashlib.sha256,
-    ).hexdigest()
+    expected = (
+        "sha256="
+        + hmac.new(
+            secret.encode("utf-8"),
+            request.body,
+            hashlib.sha256,
+        ).hexdigest()
+    )
     return hmac.compare_digest(presented, expected)
 
 
@@ -1920,6 +2189,37 @@ def _facebook_page_id(body: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _facebook_page_scope_from_token(token: str | None) -> str | None:
+    if not token:
+        return None
+    for prefix in (
+        "lab-facebook-pages::",
+        "spam-facebook-pages::",
+    ):
+        if token.startswith(prefix):
+            page_id = token[len(prefix) :]
+            return page_id[:256] if page_id else None
+    return None
+
+
+def _facebook_conversation_page(
+    state: Mapping[str, Any],
+    conversation_id: str,
+) -> str | None:
+    conversations = state.get("conversations") or {}
+    if not isinstance(conversations, Mapping):
+        return None
+    for page_id, rows in conversations.items():
+        if not isinstance(rows, list):
+            continue
+        if any(
+            isinstance(row, Mapping) and str(row.get("id") or "") == conversation_id
+            for row in rows
+        ):
+            return str(page_id)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Registry + fixture translation
 # ---------------------------------------------------------------------------
@@ -1946,32 +2246,36 @@ def seed_wave_cd_fixtures(
     if fixtures.get("notion"):
         seeded["notion"] = {
             "workspaces": {
-                str(entry.get("workspace_id") or f"workspace-{index}"):
-                    copy.deepcopy(dict(entry))
+                str(entry.get("workspace_id") or f"workspace-{index}"): copy.deepcopy(
+                    dict(entry)
+                )
                 for index, entry in enumerate(fixtures["notion"])
             }
         }
     if fixtures.get("hibob"):
         seeded["hibob"] = {
             "companies": {
-                str(entry.get("company_id") or f"company-{index}"):
-                    copy.deepcopy(dict(entry))
+                str(entry.get("company_id") or f"company-{index}"): copy.deepcopy(
+                    dict(entry)
+                )
                 for index, entry in enumerate(fixtures["hibob"])
             }
         }
     if fixtures.get("ashby"):
         seeded["ashby"] = {
             "organizations": {
-                str(entry.get("org_id") or f"organization-{index}"):
-                    copy.deepcopy(dict(entry))
+                str(entry.get("org_id") or f"organization-{index}"): copy.deepcopy(
+                    dict(entry)
+                )
                 for index, entry in enumerate(fixtures["ashby"])
             }
         }
     if fixtures.get("linkedin"):
         seeded["linkedin"] = {
             "organizations": {
-                str(entry.get("organization_urn") or f"organization-{index}"):
-                    copy.deepcopy(dict(entry))
+                str(
+                    entry.get("organization_urn") or f"organization-{index}"
+                ): copy.deepcopy(dict(entry))
                 for index, entry in enumerate(fixtures["linkedin"])
             }
         }
@@ -2006,10 +2310,101 @@ def seed_wave_cd_fixtures(
             default_page_size=100,
         )
         seeded["signal"]["events"] = []
-    for source in ("whatsapp", "facebook_pages"):
-        if fixtures.get(source):
-            seeded[source] = copy.deepcopy(dict(fixtures[source][0]))
+    if fixtures.get("whatsapp"):
+        seeded["whatsapp"] = copy.deepcopy(dict(fixtures["whatsapp"][0]))
+    if fixtures.get("facebook_pages"):
+        seeded["facebook_pages"] = _merge_facebook_pages_fixtures(
+            fixtures["facebook_pages"],
+        )
     return seeded
+
+
+def _merge_facebook_pages_fixtures(
+    entries: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Merge independently scoped Page fixtures without sibling overwrite."""
+
+    merged: dict[str, Any] = {
+        "pages": {},
+        "user_pages": {},
+        "conversations": {},
+        "messages": {},
+        "verify_tokens": [],
+        "app_secrets": {},
+        "installations": {},
+        "page_size": 100,
+    }
+    for index, entry in enumerate(entries):
+        for field in ("pages", "conversations", "messages", "installations"):
+            values = entry.get(field) or {}
+            if not isinstance(values, Mapping):
+                raise ValueError(
+                    f"facebook_pages fixture {index} field {field!r} "
+                    "must be a mapping"
+                )
+            target = merged[field]
+            duplicates = set(target).intersection(str(key) for key in values)
+            if duplicates:
+                raise ValueError(
+                    "facebook_pages fixtures contain duplicate "
+                    f"{field} ids: {sorted(duplicates)!r}"
+                )
+            target.update(
+                {str(key): copy.deepcopy(value) for key, value in values.items()}
+            )
+
+        user_pages = entry.get("user_pages") or {}
+        if not isinstance(user_pages, Mapping):
+            raise ValueError(
+                f"facebook_pages fixture {index} field 'user_pages' "
+                "must be a mapping"
+            )
+        for token, raw_pages in user_pages.items():
+            if not isinstance(raw_pages, list):
+                raise ValueError("facebook_pages user_pages entries must be lists")
+            target_pages = merged["user_pages"].setdefault(str(token), [])
+            existing_ids = {
+                str(page.get("id"))
+                for page in target_pages
+                if isinstance(page, Mapping) and page.get("id") is not None
+            }
+            for page in raw_pages:
+                if not isinstance(page, Mapping):
+                    raise ValueError("facebook_pages user_pages must contain mappings")
+                page_id = str(page.get("id") or "")
+                if page_id and page_id in existing_ids:
+                    raise ValueError(
+                        "facebook_pages fixtures contain duplicate user-page "
+                        f"id {page_id!r} for token {token!r}"
+                    )
+                target_pages.append(copy.deepcopy(dict(page)))
+                if page_id:
+                    existing_ids.add(page_id)
+
+        for token in entry.get("verify_tokens") or []:
+            if token not in merged["verify_tokens"]:
+                merged["verify_tokens"].append(copy.deepcopy(token))
+
+        secrets = entry.get("app_secrets") or {}
+        if not isinstance(secrets, Mapping):
+            raise ValueError(
+                f"facebook_pages fixture {index} field 'app_secrets' "
+                "must be a mapping"
+            )
+        for identity, secret in secrets.items():
+            key = str(identity)
+            if key in merged["app_secrets"] and merged["app_secrets"][key] != secret:
+                raise ValueError(
+                    "facebook_pages fixtures contain conflicting app secret "
+                    f"for {key!r}"
+                )
+            merged["app_secrets"][key] = copy.deepcopy(secret)
+
+        merged["page_size"] = min(
+            merged["page_size"],
+            _integer(entry.get("page_size"), 100, minimum=1),
+        )
+    return merged
 
 
 def _merge_gateway_fixtures(

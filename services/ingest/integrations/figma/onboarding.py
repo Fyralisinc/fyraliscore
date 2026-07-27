@@ -67,12 +67,15 @@ async def finalize_install(
     `files` is the resolved set of files to backfill (enumerate via
     FigmaClient.list_files at seed time); each dict carries at least
     ``file_key`` and optionally ``file_name`` / ``project_name``. Returns the
-    figma_installations id. Idempotent on (tenant_id, base_url) and per
-    (install, file_key).  A subsequent finalize is an exact file selection:
-    files no longer selected are paused rather than silently continuing to
-    ingest under the refreshed authorization grant.
+    figma_installations id. Idempotent on the exact ``(tenant_id, team_id)``
+    provider scope when it is known, with ``(tenant_id, base_url)`` retained
+    only for unresolved legacy installs, and per ``(install, file_key)``. A
+    subsequent finalize is an exact file selection: files no longer selected
+    are paused rather than silently continuing to ingest under the refreshed
+    authorization grant.
     """
     base_url = base_url.rstrip("/")
+    team_id = team_id.strip() if team_id and team_id.strip() else None
     # Dedup files defensively on the natural key.
     seen: set[str] = set()
     deduped: list[dict] = []
@@ -91,8 +94,13 @@ async def finalize_install(
                 refresh_secret_ref, token_expires_at, oauth_user_id,
                 granted_scopes, connection_state, last_error, connected_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULL, now())
-            ON CONFLICT (tenant_id, base_url) DO UPDATE
-                SET secret_ref = COALESCE(EXCLUDED.secret_ref, figma_installations.secret_ref),
+            ON CONFLICT (
+                tenant_id,
+                (team_id IS NULL),
+                (COALESCE(team_id, base_url))
+            ) DO UPDATE
+                SET base_url = EXCLUDED.base_url,
+                    secret_ref = COALESCE(EXCLUDED.secret_ref, figma_installations.secret_ref),
                     team_id = EXCLUDED.team_id,
                     webhook_secret_ref = COALESCE(
                         EXCLUDED.webhook_secret_ref, figma_installations.webhook_secret_ref),

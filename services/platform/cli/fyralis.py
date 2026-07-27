@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -22,8 +23,11 @@ from urllib import request as urlrequest
 from services.ingest.source_contract import (
     SOURCE_CONNECTION_CATALOG,
     SOURCE_CONNECTION_SLUGS,
+    source_definition,
     source_connection_profile,
     source_local_rehearsal_profile,
+    resolve_provider_setup_notes,
+    resolve_rehearsal_artifact_builder,
 )
 from services.platform.runtime.byoc_aws_live_preflight import (
     ByocAwsLivePreflightInputs,
@@ -81,22 +85,6 @@ FIGMA_RUNTIME_COMPONENTS = (
 )
 FIGMA_REQUIRED_RUNTIME_COMPONENTS = frozenset({"gateway", "shard-fetch"})
 REHEARSABLE_SOURCES = SOURCE_CONNECTION_SLUGS
-SLACK_BOT_SCOPES = (
-    "channels:read",
-    "channels:history",
-    "groups:read",
-    "groups:history",
-    "users:read",
-    "team:read",
-)
-SLACK_USER_SCOPES = (
-    "im:read",
-    "im:history",
-    "mpim:read",
-    "mpim:history",
-)
-SLACK_BOT_EVENTS = ("message.channels", "message.groups")
-
 CAPABILITY_MODULES = {
     "kubernetes": "aws.eks",
     "network": "aws.vpc",
@@ -1544,9 +1532,9 @@ def _cmd_source_rehearse(args: argparse.Namespace) -> int:
         else:
             try:
                 env_report |= _apply_provider_env(args, source_id, profile, env_path)
-                # Do not present a Figma deployment as ready when its managed
-                # client-secret or callback contract was not actually applied.
-                if source_id == "figma" and not env_report.get("applied"):
+                # A contract that declares dedicated runtime components must
+                # not appear ready unless its scoped environment was applied.
+                if profile.get("runtime_components") and not env_report.get("applied"):
                     failed = True
             except Exception as exc:  # noqa: BLE001
                 failed = True
@@ -1595,7 +1583,7 @@ def _cmd_source_rehearse(args: argparse.Namespace) -> int:
             source_id,
             profile.get("source_profile", _source_profile(source_id)),
         ),
-        "automated": _source_rehearsal_automated_steps(source_id, profile),
+        "automated": _source_rehearsal_automated_steps(profile),
         "manual_gates": _source_manual_gates(source_id, profile, public_url=public_url),
         "raw_secret_values_exported": False,
         "stored_scope": "local_source_rehearsal_metadata_only",
@@ -1851,17 +1839,26 @@ def _write_source_rehearsal_files(
         "env_example": setup_dir / f"{source_id}.env.example",
         "readme": setup_dir / "README.md",
     }
-    if source_id == "slack":
-        files["manifest"] = setup_dir / "fyralis-slack-app-manifest.yaml"
-        files["events_manifest"] = setup_dir / "fyralis-slack-app-events-manifest.yaml"
-    elif source_id == "github":
+    artifact_builder = resolve_rehearsal_artifact_builder(source_id)
+    bound_artifacts = (
+        artifact_builder(
+            source_id=source_id,
+            profile=profile,
+            public_url=public_url,
+        )
+        if artifact_builder is not None
+        else ()
+    )
+    for artifact in bound_artifacts:
+        name, filename = _validate_rehearsal_artifact_descriptor(artifact)
+        files[name] = setup_dir / filename
+
+    if bound_artifacts:
+        pass
+    elif profile["kind"] == "github_app":
         files["manifest"] = setup_dir / "fyralis-github-app-manifest.json"
-    elif source_id in {"discord", "facebook_pages", "notion"}:
+    elif profile["kind"] == "oauth_app" and not profile.get("runtime_components"):
         files["manifest"] = setup_dir / f"fyralis-{source_id}-app-setup.json"
-    elif source_id == "jira":
-        files["connect_payload"] = setup_dir / "jira-connect-payload.example.json"
-    elif source_id == "telegram":
-        files["session_plan"] = setup_dir / "telegram-session-plan.json"
     else:
         files["connection_checklist"] = (
             setup_dir / f"{source_id}-connection-checklist.json"
@@ -1875,21 +1872,22 @@ def _write_source_rehearsal_files(
     )
     _write_json(files["provider_setup"], setup_payload)
 
-    if source_id == "slack":
-        base_manifest, events_manifest = _slack_manifest_text(public_url)
-        files["manifest"].write_text(base_manifest, encoding="utf-8")
-        files["events_manifest"].write_text(events_manifest, encoding="utf-8")
-    elif source_id == "github":
+    for artifact in bound_artifacts:
+        name, _filename = _validate_rehearsal_artifact_descriptor(artifact)
+        if "text" in artifact:
+            files[name].write_text(str(artifact["text"]), encoding="utf-8")
+        elif "json" in artifact:
+            _write_json(files[name], artifact["json"])
+
+    if bound_artifacts:
+        pass
+    elif profile["kind"] == "github_app":
         _write_json(files["manifest"], _github_app_manifest(public_url))
-    elif source_id in {"discord", "facebook_pages", "notion"}:
+    elif profile["kind"] == "oauth_app" and not profile.get("runtime_components"):
         _write_json(
             files["manifest"],
             _generic_app_setup_manifest(source_id, profile, public_url=public_url),
         )
-    elif source_id == "jira":
-        _write_json(files["connect_payload"], _jira_connect_payload(public_url))
-    elif source_id == "telegram":
-        _write_json(files["session_plan"], _telegram_session_plan())
     elif "connection_checklist" in files:
         _write_json(
             files["connection_checklist"],
@@ -1904,13 +1902,16 @@ def _write_source_rehearsal_files(
         _source_env_example(source_id, profile, public_url=public_url),
         encoding="utf-8",
     )
-    if source_id == "slack":
-        legacy_env_example = setup_dir / "slack-app.env.example"
-        legacy_env_example.write_text(
-            files["env_example"].read_text(encoding="utf-8"),
+    for artifact in bound_artifacts:
+        name, _filename = _validate_rehearsal_artifact_descriptor(artifact)
+        copy_from = artifact.get("copy_from")
+        if copy_from is None:
+            continue
+        source_path = files[str(copy_from)]
+        files[name].write_text(
+            source_path.read_text(encoding="utf-8"),
             encoding="utf-8",
         )
-        files["legacy_env_example"] = legacy_env_example
     files["readme"].write_text(
         _source_rehearsal_readme(
             source_id,
@@ -1923,41 +1924,37 @@ def _write_source_rehearsal_files(
     return {name: str(path) for name, path in files.items()}
 
 
-def _slack_manifest_text(public_url: str) -> tuple[str, str]:
-    bot_scopes = "\n".join(f"      - {scope}" for scope in SLACK_BOT_SCOPES)
-    user_scopes = "\n".join(f"      - {scope}" for scope in SLACK_USER_SCOPES)
-    bot_events = "\n".join(f"      - {event}" for event in SLACK_BOT_EVENTS)
-    base_manifest = f"""display_information:
-  name: Fyralis Local Rehearsal
-  description: Slack ingestion test app for the local Fyralis BYOC rehearsal.
-  background_color: "#0b1020"
-features:
-  bot_user:
-    display_name: Fyralis
-    always_online: false
-oauth_config:
-  redirect_urls:
-    - {public_url}/integrations/slack/callback
-  scopes:
-    bot:
-{bot_scopes}
-    user:
-{user_scopes}
-settings:
-  org_deploy_enabled: false
-  socket_mode_enabled: false
-  token_rotation_enabled: false
-"""
-    events_manifest = (
-        base_manifest.rstrip()
-        + f"""
-  event_subscriptions:
-    request_url: {public_url}/webhooks/slack/events
-    bot_events:
-{bot_events}
-"""
+def _validate_rehearsal_artifact_descriptor(
+    artifact: object,
+) -> tuple[str, str]:
+    if not isinstance(artifact, Mapping):
+        raise TypeError("rehearsal artifact builder entries must be mappings")
+    name = artifact.get("name")
+    filename = artifact.get("filename")
+    if not isinstance(name, str) or not name:
+        raise ValueError("rehearsal artifact name must be non-empty")
+    if (
+        not isinstance(filename, str)
+        or not filename
+        or Path(filename).name != filename
+    ):
+        raise ValueError(
+            "rehearsal artifact filename must be one safe basename"
+        )
+    content_fields = tuple(
+        field for field in ("text", "json", "copy_from") if field in artifact
     )
-    return base_manifest, events_manifest
+    if len(content_fields) != 1:
+        raise ValueError(
+            "rehearsal artifact must declare exactly one of text, json, "
+            "or copy_from"
+        )
+    copy_from = artifact.get("copy_from")
+    if copy_from is not None and (
+        not isinstance(copy_from, str) or not copy_from
+    ):
+        raise ValueError("rehearsal artifact copy_from must be non-empty")
+    return name, filename
 
 
 def _source_rehearsal_setup_payload(
@@ -2025,6 +2022,7 @@ def _generic_app_setup_manifest(
     *,
     public_url: str,
 ) -> dict[str, Any]:
+    notes_builder = resolve_provider_setup_notes(source_id)
     return {
         "source": source_id,
         "provider_kind": profile["kind"],
@@ -2039,7 +2037,7 @@ def _generic_app_setup_manifest(
             else None
         ),
         "required_env": list(profile.get("required_env", profile.get("env", ()))),
-        "notes": _provider_setup_notes(source_id),
+        "notes": notes_builder(source_id),
     }
 
 
@@ -2118,35 +2116,6 @@ def _source_rehearsal_browser_agent_run(
         finalize_mode=_source_native_finalize_mode(source_profile),
         native_connect=source_profile.get("native_connect"),
     )
-
-
-def _jira_connect_payload(public_url: str) -> dict[str, Any]:
-    return {
-        "base_url": "${JIRA_BASE_URL}",
-        "account_email": "${JIRA_ACCOUNT_EMAIL}",
-        "api_token_ref": "${JIRA_API_TOKEN_REF}",
-        "project_keys": "${JIRA_PROJECT_KEYS comma-separated or blank for all}",
-        "webhook_secret_ref": "${JIRA_WEBHOOK_SECRET_REF optional}",
-        "webhook_url": f"{public_url}/webhooks/jira/events",
-        "note": "Resolve refs inside customer cloud before submitting finalize; do not export raw token values.",
-    }
-
-
-def _telegram_session_plan() -> dict[str, Any]:
-    return {
-        "source": "telegram",
-        "provider_kind": "local_gateway_session",
-        "steps": [
-            "Create a Telegram API ID and API hash at my.telegram.org.",
-            "Run customer-cloud MTProto login to produce a StringSession.",
-            "Store live and optional backfill sessions in the customer secret manager.",
-            "Select approved dialogs/chats and finalize the installation locally.",
-        ],
-        "required_env": list(
-            _source_rehearsal_profile("telegram")["required_env"]
-        ),
-        "raw_secret_values_included": False,
-    }
 
 
 def _source_env_example(
@@ -2251,11 +2220,10 @@ def _apply_provider_env(
             env_values.setdefault(target, env_values[source])
 
     deployment_env_values = _provider_env_values_for_apply(
-        source_id,
         profile,
         env_values,
     )
-    deployment_targets = _provider_runtime_deployments(args, source_id, profile)
+    deployment_targets = _provider_runtime_deployments(args, profile)
 
     if profile["kind"] in {"api_token_connect", "local_gateway_session"}:
         return {
@@ -2329,11 +2297,13 @@ def _apply_provider_env(
         "mode": "gateway_env_applied",
         "kubernetes_secret": f"fyralis-{source_id}-integration",
         "gateway_deployment": (
-            deployment_targets[0] if source_id == "figma" else "fyralis-gateway"
+            deployment_targets[0]
+            if profile.get("runtime_components")
+            else "fyralis-gateway"
         ),
         "raw_secret_values_exported": False,
     }
-    if source_id == "figma":
+    if profile.get("runtime_components"):
         result["mode"] = "figma_runtime_env_applied"
         result["runtime_deployments"] = list(deployment_targets)
         result["runtime_components"] = list(
@@ -2344,11 +2314,10 @@ def _apply_provider_env(
 
 def _provider_runtime_deployments(
     args: argparse.Namespace,
-    source_id: str,
     profile: dict[str, Any],
 ) -> tuple[str, ...]:
-    """Return live rollout targets without changing non-Figma rollout scope."""
-    if source_id != "figma":
+    """Return rollout targets selected by the local-rehearsal contract."""
+    if not profile.get("runtime_components"):
         return ("fyralis-gateway",)
     components = _provider_runtime_components(profile)
     selector = "app.kubernetes.io/component in (" + ",".join(components) + ")"
@@ -2418,7 +2387,6 @@ def _provider_runtime_components(profile: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _provider_env_values_for_apply(
-    source_id: str,
     profile: dict[str, Any],
     env_values: dict[str, str],
 ) -> dict[str, str]:
@@ -2429,7 +2397,7 @@ def _provider_env_values_for_apply(
     local env file (including a development-only plaintext fallback) into the
     Kubernetes integration secret.
     """
-    if source_id != "figma":
+    if not profile.get("runtime_components"):
         return env_values
     allowed = {str(key) for key in profile.get("env", ())}
     return {key: value for key, value in env_values.items() if key in allowed}
@@ -2713,30 +2681,13 @@ def _manual_gate_reason(source_id: str, gate_name: str) -> str:
 
 
 def _source_display_name(source_id: str) -> str:
-    names = {
-        "aws": "AWS",
-        "brex": "Brex",
-        "facebook_pages": "Facebook Page Messages",
-        "figma": "Figma",
-        "gmail": "Gmail",
-        "github": "GitHub",
-        "grafana": "Grafana",
-        "hibob": "HiBob",
-        "jira": "Jira",
-        "miro": "Miro",
-        "notion": "Notion",
-        "quickbooks": "QuickBooks",
-        "slack": "Slack",
-        "whatsapp": "WhatsApp",
-    }
-    return names.get(
-        source_id,
-        " ".join(part.capitalize() for part in source_id.split("-")),
-    )
+    """Return the source contract's display name without a second UI map."""
+
+    definition = source_definition(source_id)
+    return definition.display.display_name_override or definition.display_name
 
 
 def _source_rehearsal_automated_steps(
-    source_id: str,
     profile: dict[str, Any],
 ) -> list[str]:
     steps = ["provider_setup_artifact_generation", "env_template_generation"]
@@ -2754,60 +2705,16 @@ def _source_rehearsal_automated_steps(
     elif profile["kind"] in {"api_token_connect", "oauth_client_credentials_connect"}:
         steps.extend(["connect_payload_generation", "local_env_validation"])
     elif profile["kind"] == "local_gateway_session":
-        steps.extend(["session_plan_generation", "local_env_validation"])
+        steps.extend(
+            [
+                "session_plan_generation",
+                "local_env_validation",
+                "public_tunnel_not_required",
+            ]
+        )
     elif profile["kind"] in {"iam_role_ref", "polling_ref", "webhook_endpoint"}:
         steps.extend(["connection_checklist_generation", "local_env_validation"])
-    if source_id == "telegram":
-        steps.append("public_tunnel_not_required")
     return steps
-
-
-def _provider_setup_notes(source_id: str) -> list[str]:
-    notes = {
-        "discord": [
-            "Use the Discord Developer Portal to create an application and bot.",
-            "Set the OAuth redirect URL to the callback URL.",
-            "Set the interactions endpoint to the webhook URL.",
-            "Copy client ID, client secret, application ID, app public key, and bot token into the local env file.",
-        ],
-        "facebook_pages": [
-            "Use Meta for Developers to create or update the Facebook app.",
-            "Set the OAuth redirect URL to the callback URL.",
-            "Set the Messenger webhook callback URL and verify token.",
-            "Copy app ID, app secret, redirect URI, and webhook verify token into the local env file.",
-        ],
-        "notion": [
-            "Use Notion integrations settings to create an OAuth integration.",
-            "Set redirect URI to the callback URL.",
-            "Configure webhook subscription after gateway env is applied.",
-            "Copy the webhook verification token into NOTION_WEBHOOK_VERIFICATION_TOKEN when Notion provides it.",
-        ],
-        "figma": [
-            "Create one private Figma OAuth app owned by this customer BYOC deployment.",
-            "Register the exact callback URL under Figma OAuth credentials.",
-            "Store the Client Secret through FIGMA_CLIENT_SECRET_SECRET_REF; never enter it in Fyralis onboarding.",
-            "After the deployment readiness check passes, users connect explicitly selected design file URLs from the Figma card.",
-        ],
-    }
-    if source_id in notes:
-        return notes[source_id]
-    source_profile = (
-        _source_profile(source_id)
-        if source_id in SOURCE_CONNECTION_CATALOG
-        else {}
-    )
-    generic_notes = [
-        f"Use the customer-owned {source_id} admin console to approve the connection.",
-        "Store credentials in the customer-cloud secret manager or local env file only.",
-        "Run the generated Fyralis rehearsal command after the env file is filled.",
-    ]
-    if source_profile.get("ingress_paths"):
-        generic_notes.append(
-            "Register the generated webhook URL with the provider when required."
-        )
-    if source_profile.get("no_ingress_reason"):
-        generic_notes.append(str(source_profile["no_ingress_reason"]))
-    return generic_notes
 
 
 def _source_ids_from_args(args: argparse.Namespace) -> tuple[list[str] | None, int]:

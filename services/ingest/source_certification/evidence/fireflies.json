@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://docs.fireflies.ai/graphql-api/query/",
       "api_version": "Fireflies GraphQL API",
-      "schema_sha256": null,
+      "schema_sha256": "0e2235490f9dffb4542e0603b6ff4c779b5ae55a2e4bc5b94f699e17831968df",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 GraphQL schema lock and reviewer verification."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

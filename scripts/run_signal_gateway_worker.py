@@ -205,6 +205,11 @@ async def persist_signal_sync_cursor(
 
 
 async def _main() -> int:
+    from services.ingest.source_contract.runtime import (
+        validate_live_worker_startup,
+    )
+
+    validate_live_worker_startup("signal", "signal_gateway_worker")
     # Importing this script as a module must remain side-effect free for the
     # exact-binding tests. Executing it from scripts/ still needs this helper to
     # bootstrap the repository root before importing Fyralis packages.

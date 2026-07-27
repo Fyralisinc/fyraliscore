@@ -157,10 +157,21 @@ async def calibrate_provider_lab(
     deadline = time.monotonic() + config.probe_seconds
     latencies: list[float] = []
     failures = 0
+    attempts_started = 0
 
     async def worker() -> None:
-        nonlocal failures
-        while time.monotonic() < deadline:
+        nonlocal attempts_started, failures
+        # ``probe_seconds`` is the minimum observation window, while
+        # ``minimum_samples`` is an independent evidence requirement.  A busy
+        # CI host can exhaust a short diagnostic window before scheduling
+        # enough calls to cover the declared operation mix.  Continue only
+        # until both requirements have been met; the request timeout still
+        # bounds every individual call.
+        while (
+            time.monotonic() < deadline
+            or attempts_started < config.minimum_samples
+        ):
+            attempts_started += 1
             started = time.perf_counter()
             try:
                 accepted = await asyncio.wait_for(

@@ -11,20 +11,30 @@ import):
     enforces it; this asserts no duplicates slipped in (and, once the
     M-Validate-Live phase lands, that cross-path events collapse).
 
-  - `assert_zero_partition_missing` — A28's missing-partition DLQ
-    routing must NOT fire in a healthy run (fixtures are in-range). Reads
-    `ingestion.dlq` and asserts no `partition_missing` failures for the
-    run's tenants. (Run 2 / fault injection — deferred to M-Validate-
-    Live — flips this to assert routing WAS observed when injected.)
+  - `assert_zero_partition_missing` — the writer's residual
+    missing-partition DLQ fallback must NOT fire in a healthy run. Reads
+    every contract-derived `ingestion.dlq.<source>` lane and asserts no
+    `partition_missing` failures for the run's tenants.
+
+  - `assert_partition_boundary_contract` — Run 2's positive partition
+    certification: exactly one in-guardrail recovery row persists per source,
+    every far-out timestamp is rejected, every rejection is DLQ'd as
+    `out_of_bounds_occurred_at`, and no residual `partition_missing` occurs.
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from typing import Protocol
 from uuid import UUID
 
 import asyncpg
 import orjson
 from aiokafka import AIOKafkaConsumer
+
+from services.ingest.ingestion.kafka.topics import topic_for
+from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
 
 # Re-export the per-tenant backfill assertions so callers import from one
 # place.
@@ -41,7 +51,19 @@ from services.ingest.synthetic.backfill_harness.assertions import (  # noqa: F40
 
 log = logging.getLogger(__name__)
 
-_DLQ_TOPIC = "ingestion.dlq"
+
+class _ExpectedProbeObservation(Protocol):
+    tenant_id: UUID
+    external_id: str
+    occurred_at: object
+
+
+def _dlq_topics() -> tuple[str, ...]:
+    """Return every canonical per-source DLQ lane from the source contract."""
+
+    return tuple(
+        topic_for("dlq", definition.source_id) for definition in SOURCE_DEFINITIONS
+    )
 
 
 async def assert_external_id_unique_across_paths(pool: asyncpg.Pool) -> int:
@@ -64,8 +86,7 @@ async def assert_external_id_unique_across_paths(pool: asyncpg.Pool) -> int:
     )
     if dupes:
         sample = [
-            f"{d['source_channel']}/{d['external_id']}×{d['n']}"
-            for d in dupes[:5]
+            f"{d['source_channel']}/{d['external_id']}×{d['n']}" for d in dupes[:5]
         ]
         raise PropertyViolation(
             f"{len(dupes)} duplicate (source_channel, external_id, "
@@ -73,6 +94,75 @@ async def assert_external_id_unique_across_paths(pool: asyncpg.Pool) -> int:
             f"broken: {sample}"
         )
     total = int(await pool.fetchval("SELECT count(*) FROM observations"))
+    return total
+
+
+async def assert_observations_have_exactly_one_t1_trigger(
+    pool: asyncpg.Pool,
+    tenant_ids: set[UUID],
+) -> int:
+    """Prove Observation persistence reached the Think T1 boundary.
+
+    Every Observation produced for the selected validation tenants must own
+    exactly one same-tenant ``T1/event_arrival`` trigger. Counting both
+    same-tenant and total T1 rows catches a missing trigger, duplicate enqueue,
+    and cross-tenant attribution.
+    """
+
+    if not tenant_ids:
+        raise PropertyViolation("T1 assertion cannot run with no tenants")
+    rows = await pool.fetch(
+        """
+        SELECT o.tenant_id,
+               o.id AS observation_id,
+               o.source_channel,
+               count(q.id) FILTER (
+                   WHERE q.trigger_kind = 'T1'
+                     AND q.trigger_subkind = 'event_arrival'
+               ) AS all_t1,
+               count(q.id) FILTER (
+                   WHERE q.trigger_kind = 'T1'
+                     AND q.trigger_subkind = 'event_arrival'
+                     AND q.tenant_id = o.tenant_id
+               ) AS same_tenant_t1
+          FROM observations o
+          LEFT JOIN think_trigger_queue q
+            ON q.observation_id = o.id
+         WHERE o.tenant_id = ANY($1::uuid[])
+         GROUP BY o.tenant_id, o.id, o.source_channel
+        HAVING count(q.id) FILTER (
+                   WHERE q.trigger_kind = 'T1'
+                     AND q.trigger_subkind = 'event_arrival'
+               ) <> 1
+            OR count(q.id) FILTER (
+                   WHERE q.trigger_kind = 'T1'
+                     AND q.trigger_subkind = 'event_arrival'
+                     AND q.tenant_id = o.tenant_id
+               ) <> 1
+        """,
+        list(tenant_ids),
+    )
+    if rows:
+        sample = [
+            (
+                f"{row['source_channel']}/{row['observation_id']}:"
+                f"all={row['all_t1']},same_tenant={row['same_tenant_t1']}"
+            )
+            for row in rows[:5]
+        ]
+        raise PropertyViolation(
+            f"{len(rows)} observation(s) do not have exactly one "
+            f"same-tenant T1/event_arrival trigger: {sample}",
+        )
+    total = int(
+        await pool.fetchval(
+            "SELECT count(*) FROM observations "
+            "WHERE tenant_id = ANY($1::uuid[])",
+            list(tenant_ids),
+        ),
+    )
+    if total == 0:
+        raise PropertyViolation("T1 assertion would be vacuous: no observations")
     return total
 
 
@@ -84,44 +174,18 @@ async def assert_zero_partition_missing(
 ) -> int:
     """Assert no `partition_missing` DLQ failures were produced this run.
 
-    Reads `ingestion.dlq` from the beginning with a fresh consumer group
-    (single bounded `getmany`, never an unbounded `async for` — the
-    latter blocks when idle), counts envelopes whose error_context marks
-    a partition-missing failure (optionally filtered to `tenant_ids`).
-    Returns the count; raises if > 0.
+    Reads every contract-derived per-source DLQ topic from the beginning with
+    a fresh consumer group (single bounded `getmany`, never an unbounded
+    `async for` — the latter blocks when idle), counts envelopes whose
+    error_context marks a partition-missing failure (optionally filtered to
+    `tenant_ids`). Returns the count; raises if > 0.
     """
-    consumer = AIOKafkaConsumer(
-        _DLQ_TOPIC,
+    failures = await _read_partition_failures(
         bootstrap_servers=bootstrap_servers,
-        group_id=f"validation-dlq-probe-{UUID(int=0)}",
-        auto_offset_reset="earliest",
-        enable_auto_commit=False,
+        tenant_ids=tenant_ids,
+        poll_timeout_ms=poll_timeout_ms,
     )
-    await consumer.start()
-    offending: list[str] = []
-    try:
-        batches = await consumer.getmany(timeout_ms=poll_timeout_ms)
-        for _tp, messages in batches.items():
-            for msg in messages:
-                try:
-                    env = orjson.loads(msg.value)
-                except Exception:  # noqa: BLE001
-                    continue
-                ctx = env.get("error_context") or {}
-                summary = env.get("error_summary") or ""
-                is_partition = (
-                    ctx.get("reason") == "partition_missing"
-                    or "partition_missing" in summary
-                )
-                if not is_partition:
-                    continue
-                if tenant_ids is not None:
-                    tid = env.get("tenant_id")
-                    if tid is None or UUID(str(tid)) not in tenant_ids:
-                        continue
-                offending.append(summary[:120])
-    finally:
-        await consumer.stop()
+    offending = failures["partition_missing"]
 
     if offending:
         raise PropertyViolation(
@@ -135,21 +199,26 @@ async def assert_zero_partition_missing(
 # =====================================================================
 # M-Validate-Live (A30) — live + cross-path assertions, per-source scoped.
 # =====================================================================
-async def _count_partition_missing(
-    *, bootstrap_servers: str, tenant_ids: set[UUID] | None,
+async def _read_partition_failures(
+    *,
+    bootstrap_servers: str,
+    tenant_ids: set[UUID] | None,
     poll_timeout_ms: int,
-) -> int:
-    """Shared reader: count `partition_missing` DLQ envelopes (optionally
-    filtered to `tenant_ids`) via one bounded `getmany`."""
+) -> dict[str, list[str]]:
+    """Read writer partition DLQ outcomes across contract-derived lanes."""
+
     consumer = AIOKafkaConsumer(
-        _DLQ_TOPIC,
+        *_dlq_topics(),
         bootstrap_servers=bootstrap_servers,
         group_id=f"validation-dlq-probe-{UUID(int=0)}",
         auto_offset_reset="earliest",
         enable_auto_commit=False,
     )
     await consumer.start()
-    n = 0
+    failures: dict[str, list[str]] = {
+        "partition_missing": [],
+        "out_of_bounds_occurred_at": [],
+    }
     try:
         batches = await consumer.getmany(timeout_ms=poll_timeout_ms)
         for _tp, messages in batches.items():
@@ -160,40 +229,114 @@ async def _count_partition_missing(
                     continue
                 ctx = env.get("error_context") or {}
                 summary = env.get("error_summary") or ""
-                if not (ctx.get("reason") == "partition_missing"
-                        or "partition_missing" in summary):
+                reason = str(ctx.get("reason") or "")
+                if not reason:
+                    reason = next(
+                        (
+                            candidate
+                            for candidate in failures
+                            if candidate in summary
+                        ),
+                        "",
+                    )
+                if reason not in failures:
                     continue
                 if tenant_ids is not None:
                     tid = env.get("tenant_id")
                     if tid is None or UUID(str(tid)) not in tenant_ids:
                         continue
-                n += 1
+                failures[reason].append(summary[:120])
     finally:
         await consumer.stop()
-    return n
+    return failures
 
 
-async def assert_partition_missing_routes_to_dlq(
+async def assert_partition_boundary_contract(
     *,
+    pool: asyncpg.Pool,
     bootstrap_servers: str,
-    expected_count: int,
+    recovered: Mapping[str, _ExpectedProbeObservation],
+    rejected_out_of_bounds: Mapping[str, _ExpectedProbeObservation],
     tenant_ids: set[UUID] | None = None,
     poll_timeout_ms: int = 5000,
 ) -> int:
-    """A28's positive assertion (Run 2): deliberately out-of-range
-    `occurred_at` events must route to `ingestion.dlq` as
-    `partition_missing` (NOT crash-loop the writer). Asserts the observed
-    count equals `expected_count`."""
-    n = await _count_partition_missing(
-        bootstrap_servers=bootstrap_servers, tenant_ids=tenant_ids,
+    """Assert Run 2's writer recovery and out-of-bounds behavior end to end."""
+
+    canonical_sources = {
+        definition.source_id for definition in SOURCE_DEFINITIONS
+    }
+    if set(recovered) != canonical_sources:
+        raise PropertyViolation(
+            "partition recovery probe source coverage mismatch: "
+            f"expected={sorted(canonical_sources)!r}, "
+            f"observed={sorted(recovered)!r}",
+        )
+    if set(rejected_out_of_bounds) != canonical_sources:
+        raise PropertyViolation(
+            "out-of-bounds probe source coverage mismatch: "
+            f"expected={sorted(canonical_sources)!r}, "
+            f"observed={sorted(rejected_out_of_bounds)!r}",
+        )
+
+    persistence_errors: list[str] = []
+    for source, expected in recovered.items():
+        count = int(
+            await pool.fetchval(
+                """
+                SELECT count(*)
+                  FROM observations
+                 WHERE tenant_id = $1
+                   AND external_id = $2
+                   AND occurred_at = $3
+                """,
+                expected.tenant_id,
+                expected.external_id,
+                expected.occurred_at,
+            ),
+        )
+        if count != 1:
+            persistence_errors.append(f"{source}:recovery={count}")
+    for source, expected in rejected_out_of_bounds.items():
+        count = int(
+            await pool.fetchval(
+                """
+                SELECT count(*)
+                  FROM observations
+                 WHERE tenant_id = $1
+                   AND external_id = $2
+                """,
+                expected.tenant_id,
+                expected.external_id,
+            ),
+        )
+        if count:
+            persistence_errors.append(f"{source}:out_of_bounds={count}")
+    if persistence_errors:
+        raise PropertyViolation(
+            "partition-boundary persistence contract failed: "
+            f"{persistence_errors[:10]!r}",
+        )
+
+    failures = await _read_partition_failures(
+        bootstrap_servers=bootstrap_servers,
+        tenant_ids=tenant_ids,
         poll_timeout_ms=poll_timeout_ms,
     )
-    if n != expected_count:
+    observed_out_of_bounds = len(failures["out_of_bounds_occurred_at"])
+    if observed_out_of_bounds != len(rejected_out_of_bounds):
         raise PropertyViolation(
-            f"expected {expected_count} partition_missing DLQ entries "
-            f"(A28 positive assertion), observed {n}"
+            f"expected {len(rejected_out_of_bounds)} "
+            "out_of_bounds_occurred_at DLQ entries, "
+            f"observed {observed_out_of_bounds}",
         )
-    return n
+    residual_missing = failures["partition_missing"]
+    if residual_missing:
+        raise PropertyViolation(
+            f"expected zero residual partition_missing DLQ entries after "
+            f"self-heal, observed {len(residual_missing)}: "
+            f"{residual_missing[:3]!r}",
+        )
+    return len(recovered)
 
 
 async def assert_live_observations_attributed_correctly(
@@ -231,10 +374,7 @@ async def assert_signature_validation_gate_holds_for_hmac_sources(
             f"signature-gate probes covered {sorted(sources)}; expected "
             f"exactly {sorted(expected)}"
         )
-    bad = [
-        r for r in tamper_results
-        if r["http_status"] not in {401, 403}
-    ]
+    bad = [r for r in tamper_results if r["http_status"] not in {401, 403}]
     if bad:
         raise PropertyViolation(
             f"tampered authentication request(s) not rejected: {bad}"
@@ -252,11 +392,11 @@ async def assert_live_replay_idempotency_holds(
     A24), so it is excluded (A30.4)."""
     if "discord" in probe_results:
         raise PropertyViolation(
-            "discord must not appear in replay probe (no replay surface, "
-            "A24/A30.4)"
+            "discord must not appear in replay probe (no replay surface, " "A24/A30.4)"
         )
     bad = {
-        s: v for s, v in probe_results.items()
+        s: v
+        for s, v in probe_results.items()
         if v["observed"] != v["dispatched_unique"]
     }
     if bad:
@@ -318,9 +458,12 @@ async def assert_cross_path_twins_dedup(
             "assertion would pass vacuously"
         )
     for source, ext in twin_external_ids.items():
-        n = int(await pool.fetchval(
-            "SELECT count(*) FROM observations WHERE external_id = $1", ext,
-        ))
+        n = int(
+            await pool.fetchval(
+                "SELECT count(*) FROM observations WHERE external_id = $1",
+                ext,
+            )
+        )
         if n != 1:
             raise PropertyViolation(
                 f"cross-path twin for {source} (external_id={ext!r}) has "

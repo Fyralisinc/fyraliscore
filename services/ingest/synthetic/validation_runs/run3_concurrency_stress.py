@@ -1,11 +1,12 @@
-"""Run 3 — contract-wide concurrency stress (A30.4).
+"""Run 3 — contract-wide multi-install, multi-replica stress (A30.4).
 
-Two tenants for every history-capable canonical source (currently 52 tenants
-across 26 sources), driven through the SAME seven shared M6 subprocesses at
-concurrency=10 (not one process set per tenant).  Source membership, fixture
-construction, and exact Observation counts come from the source certification
-contract.  The run is HAPPY_PATH and **backfill-only** (live phase skipped —
-the focus is backfill concurrency + per-tenant isolation).
+Two tenants with two sibling installations each for every history-capable
+canonical source (52 tenants / 104 installations across 26 sources), driven
+through two complete Fyralis service replicas at concurrency=10. Source
+membership, fixture construction, and exact Observation counts come from the
+source certification contract. The run is HAPPY_PATH and **backfill-only**
+(live phase skipped — the focus is backfill concurrency, exact installation
+binding, replica sharing, and per-tenant isolation).
 
 A concurrent monitor samples, while the backfill runs:
   - peak simultaneous `source_onboarding_runs.status='in_progress'`
@@ -13,9 +14,11 @@ A concurrent monitor samples, while the backfill runs:
   - peak unconsumed `workflow_signals` backlog (bounded signal table).
 
 Assertions (A22 properties under load):
-  - per-tenant isolation: each tenant's observation count matches its
-    source-owned exact fixture oracle independently,
-  - signal-table backlog bounded (< 3× tenant count),
+  - per-tenant isolation: each tenant's observation count matches the sum of
+    both source-owned fixture oracles,
+  - sibling installs retain distinct trigger/install/onboarding identities,
+  - both OAuth poller replicas durably claim work,
+  - signal-table backlog remains within the exact planned-shard working set,
   - concurrency exercised (≥5 in_progress simultaneously),
   - #39 flake watch: `tenant_onboarding_completed` fires exactly once per
     tenant (no double-fire, no miss).
@@ -33,6 +36,10 @@ import asyncpg
 
 from services.ingest.synthetic.backfill_harness.harness import BackfillHarness
 from services.ingest.synthetic.backfill_harness.scenarios import BackfillScenario
+from services.ingest.synthetic.backfill_harness.assertions import (
+    PropertyViolation,
+    assert_sibling_installation_identity,
+)
 from services.ingest.synthetic.validation_runs.cleanup import reset_state
 from services.ingest.synthetic.validation_runs.moto_lifecycle import moto_s3
 from services.ingest.synthetic.validation_runs.preflight import run_preflight
@@ -52,6 +59,25 @@ _MIGRATIONS = pathlib.Path("db/migrations")
 # Preserve the original roughly-50-tenant stress shape without owning another
 # source list: two tenants for each contract-declared historical source.
 _TENANTS_PER_HISTORY_SOURCE = 2
+_INSTALLATIONS_PER_TENANT = 2
+_REPLICAS = 2
+
+
+def _working_signal_bound(*, planned_shards: int, installations: int) -> int:
+    """Maximum valid working set for the happy-path onboarding pipeline.
+
+    Each durable shard has at most one outstanding request/completion signal:
+    claiming a request consumes it before its completion successor becomes
+    visible.  Source onboarding may additionally leave one control signal
+    outstanding per installation while its shard fan-out drains.  Basing the
+    bound on the durable plan matters because catalog sources fan out very
+    differently (one AWS shard versus 25 GitHub shards in the default kit);
+    a fixed multiplier of tenant count is therefore not a valid invariant.
+    """
+
+    if planned_shards < 0 or installations < 0:
+        raise ValueError("signal-bound inputs must be non-negative")
+    return planned_shards + installations
 
 
 def run3_scenarios() -> list[BackfillScenario]:
@@ -64,6 +90,7 @@ def run3_scenarios() -> list[BackfillScenario]:
     """
     scenarios = certification_history_scenarios(
         tenants_per_source=_TENANTS_PER_HISTORY_SOURCE,
+        installations_per_tenant=_INSTALLATIONS_PER_TENANT,
     )
     for scenario in scenarios:
         expected = scenario.expected_observation_count
@@ -154,10 +181,12 @@ async def run3(
     scenarios_by_source = _group_scenarios(scenarios)
     report = RunReport(
         run_name=(
-            "Contract-wide concurrency stress "
-            f"({len(scenarios)} tenants, backfill-only)"
+            "Contract-wide multi-install/multi-replica stress "
+            f"({_TENANTS_PER_HISTORY_SOURCE * len(scenarios_by_source)} "
+            f"tenants, {len(scenarios)} installations, backfill-only)"
         ),
-        run_number=3, tenant_count=len(scenarios),
+        run_number=3,
+        tenant_count=_TENANTS_PER_HISTORY_SOURCE * len(scenarios_by_source),
         started_at=started, wall_seconds=0.0,
     )
 
@@ -180,7 +209,15 @@ async def run3(
             harness = BackfillHarness(
                 pool=pool, scenarios=scenarios, concurrency=concurrency,
                 completion_deadline_s=600.0,
-                kafka_bootstrap_servers=bootstrap_servers)
+                kafka_bootstrap_servers=bootstrap_servers,
+                # Run 3 materializes the largest exact-count payload in the
+                # validation matrix through two competing consumer replicas.
+                # Keep the drain bounded, but give the asynchronous
+                # raw->normalized->Observation chain enough time to reach the
+                # exact oracle on slower shared brokers.
+                drain_timeout_s=90.0,
+                replicas=_REPLICAS,
+            )
 
             stop = asyncio.Event()
             mon = asyncio.create_task(_monitor(pool, stop, peak))
@@ -197,7 +234,7 @@ async def run3(
                 outcomes_by_source.setdefault(o.scenario.source, []).append(o)
             for source, source_scenarios in scenarios_by_source.items():
                 outs = outcomes_by_source.get(source, [])
-                src_tids = [o.tenant_id for o in outs]
+                src_tids = list({o.tenant_id for o in outs})
                 exp = sum(
                     scenario.expected_observation_count
                     for scenario in source_scenarios
@@ -210,18 +247,18 @@ async def run3(
                         src_tids,
                     ))
                 report.source_results.append(SourceResult(
-                    source=source, tenants=len(source_scenarios),
+                    source=source, tenants=len(src_tids),
                     expected_observations=exp, actual_observations=actual))
 
             # Every planned scenario must yield exactly one outcome.  Without
             # this explicit check, a missing source could otherwise disappear
             # from the subsequent per-tenant loop.
             planned_keys = [
-                (scenario.source, scenario.tenant_slug)
+                scenario.identity
                 for scenario in scenarios
             ]
             outcome_keys = [
-                (outcome.scenario.source, outcome.scenario.tenant_slug)
+                outcome.scenario.identity
                 for outcome in result.outcomes
             ]
             missing_outcomes = sorted(set(planned_keys) - set(outcome_keys))
@@ -246,34 +283,78 @@ async def run3(
             # ---- Per-tenant isolation ----
             iso_detail = ""
             iso_ok = True
-            outcome_by_key = {
-                (outcome.scenario.source, outcome.scenario.tenant_slug): outcome
-                for outcome in result.outcomes
-            }
-            for scenario in scenarios:
-                outcome = outcome_by_key.get(
-                    (scenario.source, scenario.tenant_slug),
+            outcomes_by_tenant: dict[object, list] = {}
+            for outcome in result.outcomes:
+                outcomes_by_tenant.setdefault(
+                    outcome.tenant_id,
+                    [],
+                ).append(outcome)
+            for tenant_outcomes in outcomes_by_tenant.values():
+                expected = sum(
+                    outcome.scenario.expected_observation_count
+                    for outcome in tenant_outcomes
                 )
-                if outcome is None:
-                    iso_ok = False
-                    iso_detail = (
-                        f"{scenario.tenant_slug}: no harness outcome"
-                    )
-                    break
                 n = int(await pool.fetchval(
                     "SELECT count(*) FROM observations WHERE tenant_id = $1",
-                    outcome.tenant_id,
+                    tenant_outcomes[0].tenant_id,
                 ))
-                if n != scenario.expected_observation_count:
+                if n != expected:
                     iso_ok = False
                     iso_detail = (
-                        f"{scenario.tenant_slug}: got {n}, "
-                        f"expected {scenario.expected_observation_count}"
+                        f"{tenant_outcomes[0].scenario.tenant_slug}: got {n}, "
+                        f"expected {expected} across "
+                        f"{len(tenant_outcomes)} installations"
                     )
                     break
             report.assertions.append(AssertionResult(
                 name="assert_per_tenant_isolation", passed=iso_ok,
                 detail=iso_detail))
+
+            # ---- Exact same-tenant sibling installation identity ----
+            try:
+                assert_sibling_installation_identity(
+                    result,
+                    installations_per_tenant=_INSTALLATIONS_PER_TENANT,
+                )
+            except PropertyViolation as exc:
+                sibling_ok = False
+                sibling_detail = str(exc)
+            else:
+                sibling_ok = True
+                sibling_detail = (
+                    f"{len(outcomes_by_tenant)} tenants each retained "
+                    f"{_INSTALLATIONS_PER_TENANT} exact install identities"
+                )
+            report.assertions.append(AssertionResult(
+                name="assert_same_tenant_sibling_installation_identity",
+                passed=sibling_ok,
+                detail=sibling_detail,
+            ))
+
+            # ---- Two durable replicas both observed and participating ----
+            replica_activity = result.replica_workflow_activity.get(
+                "oauth_poller",
+                {},
+            )
+            expected_replica_ids = set(
+                harness.replica_workflow_ids("oauth_poller"),
+            )
+            replica_ok = (
+                result.configured_replicas == _REPLICAS
+                and result.observed_replica_count == _REPLICAS
+                and result.participating_replica_count == _REPLICAS
+                and set(replica_activity) == expected_replica_ids
+            )
+            report.assertions.append(AssertionResult(
+                name="assert_two_replicas_share_onboarding_claims",
+                passed=replica_ok,
+                detail=(
+                    f"configured={result.configured_replicas}, "
+                    f"observed={result.observed_replica_count}, "
+                    f"participating={result.participating_replica_count}, "
+                    f"oauth_claims={replica_activity!r}"
+                ),
+            ))
 
             # ---- Concurrency exercised ----
             conc_ok = peak["in_progress"] >= 5
@@ -283,21 +364,31 @@ async def run3(
                 detail=f"peak in_progress={peak['in_progress']}"))
 
             # ---- Signal backlog bounded (working signals) ----
-            # The working backlog scales with PRODUCER fan-out (tenants ×
-            # per-source shard count), NOT consumer concurrency: it stayed
-            # ~106-115 even when per-tenant observation volume was cut 4×.
-            # The prompt's original `10× concurrency` heuristic mis-modeled
-            # the bound (it's O(tenants), bounded by total enqueued shards).
-            # The genuine invariant is: backlog is bounded at a few signals
-            # per in-flight tenant and never grows unbounded — < 3× tenant
-            # count — AND fully drains (the no-leak assertion below).
-            backlog_bound = 3 * len(scenarios)
-            backlog_ok = peak["backlog"] < backlog_bound
+            # The durable shard plan is the correct denominator: sources range
+            # from one shard/installation to 25 in the default certification
+            # kit.  At most one request/completion signal is outstanding per
+            # shard plus one source-control signal per installation.
+            planned_shards = int(
+                await pool.fetchval("SELECT count(*) FROM onboarding_shards")
+                or 0
+            )
+            backlog_bound = _working_signal_bound(
+                planned_shards=planned_shards,
+                installations=len(scenarios),
+            )
+            backlog_ok = peak["backlog"] <= backlog_bound
             report.assertions.append(AssertionResult(
-                name=f"assert_signal_backlog_bounded(<3×tenants={backlog_bound})",
+                name=(
+                    "assert_signal_backlog_bounded("
+                    f"<=planned_shards+installations={backlog_bound})"
+                ),
                 passed=backlog_ok,
-                detail=f"peak working backlog={peak['backlog']} "
-                       f"(O(tenants), not O(concurrency) — see A30.6)"))
+                detail=(
+                    f"peak working backlog={peak['backlog']}; "
+                    f"planned_shards={planned_shards}, "
+                    f"installations={len(scenarios)}"
+                ),
+            ))
 
             # ---- No signal leak: working signals fully drained ----
             residual = int(await pool.fetchval(
@@ -310,13 +401,13 @@ async def run3(
                 detail=f"residual working signals={residual} "
                        f"(terminal {_TERMINAL_SIGNAL} excluded)"))
 
-            # ---- #39 flake watch: completion fires exactly once/tenant ----
+            # ---- #39: completion fires exactly once/installation run ----
             bad_completion = [
                 o.scenario.tenant_slug for o in result.outcomes
                 if o.completion_signal_count != 1
             ]
             report.assertions.append(AssertionResult(
-                name="assert_completion_fires_exactly_once_per_tenant(#39)",
+                name="assert_completion_fires_exactly_once_per_installation(#39)",
                 passed=not bad_completion,
                 detail=(
                     f"all {len(scenarios)} fired once"
@@ -325,7 +416,8 @@ async def run3(
                 )))
 
             report.live_lines = [
-                f"backfill-only; concurrency={concurrency}",
+                f"backfill-only; concurrency={concurrency}; replicas={_REPLICAS}",
+                f"replica OAuth claims: {replica_activity!r}",
                 f"peak simultaneous in_progress: {peak['in_progress']}",
                 f"peak working signal backlog (terminal excluded): "
                 f"{peak['backlog']}",
@@ -333,12 +425,13 @@ async def run3(
                 f"{_distribution([o.completion_signal_count for o in result.outcomes])}",
             ]
             report.notes.append(
-                f"{len(scenarios)} tenants across "
+                f"{len(outcomes_by_tenant)} tenants / {len(scenarios)} "
+                "installations across "
                 f"{len(scenarios_by_source)} contract-declared historical "
-                "sources through 7 shared subprocesses (not one process set "
-                "per tenant). Live phase skipped (Decision: Run 3 = backfill "
-                "concurrency focus). Consumer rc=-9/-15 expected per ticket "
-                "#45.")
+                f"sources through {_REPLICAS} shared seven-service replicas "
+                "(not one process set per tenant). Live phase skipped "
+                "(Decision: Run 3 = backfill concurrency focus). Consumer "
+                "rc=-9/-15 expected per ticket #45.")
         finally:
             await pool.close()
 

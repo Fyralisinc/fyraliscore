@@ -16,6 +16,7 @@ params → identical fixture (no randomness).
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -32,6 +33,18 @@ def _iso(dt: datetime) -> str:
     # so `has_updates_since` is spuriously True and the reconciler reshare loops
     # forever — the tenant never reaches completion.
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _stable_hour_offset(calendar_id: str) -> int:
+    """Return a process-independent fixture offset.
+
+    Python deliberately salts ``hash(str)`` per process. Using it here made
+    the supposedly deterministic certification fixture—and therefore its
+    pinned surface checksum—change across subprocesses.
+    """
+
+    digest = hashlib.sha256(calendar_id.encode("utf-8")).digest()
+    return int.from_bytes(digest[:2], "big") % 5
 
 
 def _event(
@@ -75,7 +88,13 @@ def make_google_calendar(
         events[cal] = [
             _event(
                 calendar_id=cal, idx=i,
-                start=_BASE + timedelta(days=i + 1, hours=hash(cal) % 5),
+                start=(
+                    _BASE
+                    + timedelta(
+                        days=i + 1,
+                        hours=_stable_hour_offset(cal),
+                    )
+                ),
             )
             for i in range(1, events_per_calendar + 1)
         ]

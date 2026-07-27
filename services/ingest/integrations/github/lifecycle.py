@@ -1,11 +1,11 @@
 """services/ingest/integrations/github/lifecycle.py — handle `installation`
 and `installation_repositories` webhook events.
 
-Routed from `services/app/webhooks/router.py` (T058) AFTER signature
-verification, replay-cache pass-through, and tenant resolution. The
-existing ingestion handler at `services/ingest/ingestion/handlers/github.py`
-is NOT invoked for these event types — they are pure installation-
-lifecycle state changes, not Observations.
+Routed by the GitHub webhook policy declared in the source contract AFTER
+signature verification, replay-cache pass-through, and tenant resolution.
+The existing ingestion handler at
+`services/ingest/ingestion/handlers/github.py` is NOT invoked for these event
+types — they are pure installation-lifecycle state changes, not Observations.
 
 Dispatch table (FR-009, FR-010):
 

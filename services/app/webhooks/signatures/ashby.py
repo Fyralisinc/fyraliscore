@@ -13,7 +13,7 @@ so verification must run before any JSON parse — the router passes the raw bod
 through unchanged.
 
 The per-tenant signing secret(s) are resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='ashby') the seed/onboarding step registers. The verifier loops
 over ALL active secrets so a rotation (two valid secrets in flight) verifies.
 

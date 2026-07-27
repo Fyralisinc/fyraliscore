@@ -46,6 +46,21 @@ def test_subprocess_overrides_are_explicit_per_endpoint(
     assert overrides["GMAIL_API_BASE_URL"] == (
         "http://localhost:9191/gmail/gmail/v1"
     )
+    assert overrides["GMAIL_PUBSUB_API_BASE_URL"] == (
+        "http://localhost:9191/gmail/v1"
+    )
+    assert overrides["SLACK_OAUTH_TOKEN_URL"] == (
+        "http://localhost:9191/slack/api/oauth.v2.access"
+    )
+    assert overrides["DISCORD_OAUTH_TOKEN_URL"] == (
+        "http://localhost:9191/discord/api/v10/oauth2/token"
+    )
+    assert overrides["FIGMA_OAUTH_TOKEN_URL"] == (
+        "http://localhost:9191/figma/v1/oauth/token"
+    )
+    assert overrides["QUICKBOOKS_TOKEN_URL"] == (
+        "http://localhost:9191/quickbooks/oauth2/v1/tokens/bearer"
+    )
     assert overrides["FACEBOOK_GRAPH_API_BASE_URL"] == (
         "http://localhost:9191/facebook"
     )

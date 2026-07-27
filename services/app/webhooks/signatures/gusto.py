@@ -16,7 +16,7 @@ case-insensitively for robustness. The verifier loops over ALL active secrets to
 support per-subscription secret rotation.
 
 The per-tenant signing secret is resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='gusto') the seed/onboarding step registers.
 
 Like GitHub/Jira, the digest is over the body alone (no timestamp envelope);

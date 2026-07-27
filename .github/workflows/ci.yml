@@ -73,6 +73,13 @@ jobs:
       - name: Check generated source catalog artifact
         run: python scripts/generate_source_catalog_artifacts.py --check
 
+      # Pins the exact contract, Provider Lab routes, and sanitized golden
+      # fixture used by every source certification evidence pack.
+      - name: Check generated source certification surfaces
+        env:
+          COMPANY_OS_ENV: test
+        run: python scripts/generate_source_certification_surfaces.py --check
+
       # Keeps the checked-in main-branch required status-check policy aligned
       # with the workflow job names GitHub exposes for branch protection.
       - name: Check required merge checks policy
@@ -382,10 +389,20 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
 
     env:
       DATABASE_URL: postgresql://company_os:company_os@localhost:5432/company_os
       COMPANY_OS_ENV: test
+      FYRALIS_TEST_REDIS_URL: redis://localhost:6379/15
 
     steps:
       - uses: actions/checkout@v4

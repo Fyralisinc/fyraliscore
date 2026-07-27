@@ -465,13 +465,9 @@ path; the poll (§7) is the guaranteed liveness net even with no push at all.
 > point of view there are only two ingress kinds (`backfill`, `poll`); push reuses
 > the `poll` machinery without its own ingress label.
 >
-> **TODO(human):** the short source doc
-> [docs/ingestion/sources/google-calendar.md](../sources/google-calendar.md) still
-> states *"Live ingress: none — poll-only (no push/webhook in v1)"*. The push edge
-> above is wired in code (mounted, with tests + a synthetic generator), gated on
-> `GOOGLE_PUSH_WEBHOOK_BASE`. Confirm whether push is "shipped but disabled by
-> default in v1" vs "post-v1" so the two docs agree — the code does not state the
-> product decision. *(inferred from code: push is implemented but opt-in.)*
+The source catalog and short source guide now advertise this opt-in
+`events.watch` path explicitly. `GOOGLE_PUSH_WEBHOOK_BASE` still controls
+whether a deployment enables it; polling remains the liveness backstop.
 
 ---
 

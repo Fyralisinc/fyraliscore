@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://developers.facebook.com/docs/whatsapp/cloud-api/",
       "api_version": "WhatsApp Cloud API",
-      "schema_sha256": null,
+      "schema_sha256": "287e36f376fc21164da0c16779705bcc17d79fcc9cfaf16632c70c48778e7492",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 live-only webhook schema lock and reviewer verification."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

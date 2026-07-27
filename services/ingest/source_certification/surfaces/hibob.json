@@ -1,0 +1,617 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.hibob": "bf9b78510d27a2701979f4e8ce2565a17607e7a62f72b20630ff30060e7c84e7",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.hibob": "46a5f20224ebe5513ee24b839552aafd56d9f8220c75bc39c3fc0e64aea25426",
+    "services.ingest.ingestion.handlers.hibob": "c4ef10867e98de91230d14f8c7d756536c019de5e1e245f7c1a98a7cad9a3bd7",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.hibob": "e607421095d84f94785ce13b8d429c3ead4da2cb10c7c088917d67a1547cc6bb",
+    "services.ingest.ingestion.reconcilers.hibob": "3ace9c572ade1725d0119bb23c3be968d8429e84a36ab59aed12e6dbd23b8bbd",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.hibob": "0680a4456d0b14c0ae3431f5583e88ac8aa4298c218afcdb6ecdef5ec25a51d0",
+    "services.ingest.integrations.hibob.client": "64665802e88a498d672ef759cf77d8e825145d746dc969b79dd020875d5c3e54",
+    "services.ingest.integrations.hibob.metrics": "db76baceb7264ddeeababddde83e1b1272e5051785b23ef0f33f9e2e3774d897",
+    "services.ingest.integrations.hibob.oauth": "cc59f8d8e131a650363da80bbd417e4b28d4727a0458d6e0d3c827cc600e0cda",
+    "services.ingest.integrations.hibob.onboarding": "301859c17fda53e68d0cfdd9415d13cf54b94690e4c728f2945273d2dca62570",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_cd": "41c4c2a2e3d41386cae397e018f3cd519f08baae2bdf5e148c00e36c3df41929",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "HiBob API",
+  "provider_contract": {
+    "aliases": [
+      "bob"
+    ],
+    "auth_strategies": [
+      "service_user_basic"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "HiBob",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "people.search",
+      "timeoff.changes.list",
+      "people.salaries.list",
+      "people.work.list"
+    ],
+    "outbound_endpoint_names": [
+      "hibob_api"
+    ],
+    "provider_id": "hibob",
+    "source_ids": [
+      "hibob"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "hibob:object",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "hibob",
+        "route_path": "/webhooks/hibob",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "hibob",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_hibob",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.hibob:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "company_id": "certification-surface-hibob",
+      "entities": {
+        "employee": [
+          {
+            "department": "Engineering",
+            "displayName": "Person af1881",
+            "email": "af18811d@example.com",
+            "id": "1000",
+            "modified": "2026-07-26T12:00:00+00:00",
+            "startDate": "2026-07-26",
+            "status": "active",
+            "title": "Software Engineer"
+          }
+        ],
+        "lifecycle": [
+          {
+            "displayName": "Person 1621fc",
+            "effectiveDate": "2026-07-26",
+            "id": "1000",
+            "lifecycleStatus": "hired",
+            "modified": "2026-07-26T12:00:00+00:00",
+            "status": "hired"
+          }
+        ],
+        "payroll": [
+          {
+            "displayName": "Person 3f4ef9",
+            "effectiveDate": "2026-07-26",
+            "grossPay": 6489.85,
+            "id": "1000",
+            "modified": "2026-07-26T12:00:00+00:00",
+            "payrollId": "1000",
+            "status": "processed"
+          }
+        ],
+        "timeoff": [
+          {
+            "approvalStatus": "approved",
+            "displayName": "Person 38ced8",
+            "id": "1000",
+            "modified": "2026-07-26T12:00:00+00:00",
+            "requestId": "1000",
+            "startDate": "2026-07-26",
+            "status": "approved"
+          }
+        ]
+      },
+      "page_size": 100
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "people.search",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "people.search"
+        ],
+        "path_template": "/v1/people/search",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "hibob.people_search",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "timeoff.changes.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "timeoff.changes.list"
+        ],
+        "path_template": "/v1/timeoff/requests/changes",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "hibob.timeoff_changes",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "people.salaries.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "people.salaries.list"
+        ],
+        "path_template": "/v1/bulk/people/salaries",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "hibob.salaries",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "people.work.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "people.work.list"
+        ],
+        "path_template": "/v1/bulk/people/work",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "hibob.work",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [
+      "bob"
+    ],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.hibob",
+      "evidence_id": "ingest.evidence.hibob",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.hibob",
+      "validation_runtime": {
+        "generator_group": "hibob",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_hibob_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_hibob_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_hibob_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_hibob_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_hibob",
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_hibob_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.hibob.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "employee",
+      "lifecycle",
+      "time_off",
+      "payroll"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "People",
+      "connection_method": "API token",
+      "description": "People directory and HRIS signals.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 23,
+      "setup_requirements": "HiBob company ID, service user/API credentials, people-field scope, employee directory approval.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "HiBob",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.hibob:fetch_page_hibob",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:hibob_entity",
+      "services.ingest.ingestion.idempotency:hibob_change"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "hibob:object",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "hibob:object",
+        "ingress_kind": "poll"
+      },
+      {
+        "channel": "hibob:object",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_hibob_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": "hibob_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "hibob_entities",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref",
+          "webhook_secret_ref"
+        ],
+        "scope_column": "company_id",
+        "source": "hibob",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "hibob_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": "company_id",
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "company_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "hibob",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.hibob.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "hibob:object"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.hibob:handle_hibob_object"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "company id",
+          "service user id",
+          "people fields",
+          "report ids",
+          "directory scope"
+        ],
+        "agent_generates": [
+          "service user token ref",
+          "people field scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin creates or approves a least-privilege service credential"
+        ],
+        "settings_targets": [
+          "service user settings",
+          "reports",
+          "people fields"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "people",
+        "fields",
+        "reports"
+      ],
+      "discovery_target": "people fields, reports, and company metadata",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/hibob"
+      ],
+      "local_rehearsal": null,
+      "method": "api_token",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/hibob/connect/finalize",
+        "kind": "api_token_native_connect",
+        "payload_fields": [
+          "company_id",
+          "service_user_id",
+          "service_user_token",
+          "base_url",
+          "entities",
+          "webhook_secret"
+        ],
+        "preflight_path": "/integrations/hibob/connect/preflight",
+        "preflight_payload_fields": [
+          "company_id",
+          "service_user_id",
+          "service_user_token",
+          "base_url"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "company_id",
+        "base_url",
+        "webhook_secret"
+      ],
+      "provider_console_url": "https://app.hibob.com/",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "people read",
+        "fields read",
+        "reports read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "service_user_id",
+        "service_user_token"
+      ],
+      "required_refs": [
+        "service_user_id",
+        "service_user_token"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "people.search",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "timeoff.changes.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "people.salaries.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "people.work.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "hibob_api",
+        "operation_ids": [
+          "people.search",
+          "timeoff.changes.list",
+          "people.salaries.list",
+          "people.work.list"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.hibob:plan_shards_hibob",
+    "provider_id": "hibob",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.hibob:reconcile_hibob",
+    "runtime_identifiers": [
+      "company_id"
+    ],
+    "source_id": "hibob",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "hibob"
+  },
+  "source_id": "hibob"
+}

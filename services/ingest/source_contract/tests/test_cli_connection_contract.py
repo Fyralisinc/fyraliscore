@@ -19,8 +19,8 @@ from services.ingest.source_contract import (
 )
 
 
-_LEGACY_SOURCE_PROFILE_SHA256 = (
-    "cb9d79a1ecf4476a9bd8e0e26e7f37ac023f554752650854a1570d96711b9760"
+_REVIEWED_SOURCE_PROFILE_SHA256 = (
+    "4ee0ffb1f39c66fa4cc6f125aa56fc7ee95ac56b39de1c7b8c66f4173a68b036"
 )
 _LEGACY_REHEARSAL_PROFILE_SHA256 = (
     "0251500def0f45cdc46654842bacc1c259a4b8bf5bf4c4afc21088191c28a204"
@@ -37,7 +37,7 @@ def _wire_hash(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def test_cli_source_profiles_preserve_legacy_payloads_and_order_exactly() -> None:
+def test_cli_source_profiles_match_reviewed_payloads_and_order_exactly() -> None:
     assert SOURCE_CONNECTION_SLUGS == (
         "ashby",
         "aws",
@@ -71,7 +71,7 @@ def test_cli_source_profiles_preserve_legacy_payloads_and_order_exactly() -> Non
         slug: source_connection_profile(slug)
         for slug in SOURCE_CONNECTION_SLUGS
     }
-    assert _wire_hash(payload) == _LEGACY_SOURCE_PROFILE_SHA256
+    assert _wire_hash(payload) == _REVIEWED_SOURCE_PROFILE_SHA256
 
 
 def test_explicit_rehearsal_profiles_preserve_legacy_payloads_exactly() -> None:

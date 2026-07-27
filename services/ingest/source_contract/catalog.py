@@ -11,8 +11,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from types import MappingProxyType
-from typing import cast
+from typing import Any, cast
 
+from lib.integrations.endpoint_contract import (
+    PROVIDER_ENDPOINT_CATALOG as BASE_PROVIDER_ENDPOINT_CATALOG,
+    ProviderEndpointDefinition,
+)
 from lib.shared.provider_transport import RetrySafety
 from services.ingest.source_contract.models import (
     AcknowledgementPolicy,
@@ -33,21 +37,29 @@ from services.ingest.source_contract.models import (
     IngressRoute,
     InstallationAdapter,
     InstallationManagementDefinition,
+    LiveIngressBoundaryDefinition,
+    LiveRuntimeDefinition,
     LiveTransportKind,
+    LiveWorkerDefinition,
     LocalRehearsalDefinition,
     NativeConnectDefinition,
     NonSourceChannelDefinition,
+    NonResolverEndpointKind,
+    NonResolverOperationBinding,
     OnboardingDefinition,
     OAuthIngressDefinition,
     OAuthIngressMountMode,
     OperationPolicyDefinition,
+    OutboundEndpointBinding,
     ProviderDefinition,
+    RehearsalFinalizeMode,
     RequestPolicy,
     SourceCategory,
     SourceConnectionMethod,
     SourceDefinition,
     SourceDisplayDefinition,
     SourceSyncMode,
+    ValidationRuntimeDefinition,
     WebhookAcknowledgementPolicy,
     WebhookHandlerMode,
     WebhookIngressDefinition,
@@ -154,10 +166,15 @@ def _webhook_ingress(
     ingress_metadata_binding: str = (
         "services.app.webhooks.ingress_metadata:build_generic_metadata"
     ),
+    secret_loader_binding: str = (
+        "services.app.webhooks.secrets:load_installation_secrets"
+    ),
     normalizer_header_projection: tuple[tuple[str, str], ...] = (),
     verification_handshake_binding: str | None = None,
     verification_handshake_handler_binding: str | None = None,
     dedicated_handler_binding: str | None = None,
+    verified_pre_tenant_handler_binding: str | None = None,
+    verified_tenant_handler_binding: str | None = None,
 ) -> WebhookIngressDefinition:
     """Build one dependency-light provider-edge webhook declaration."""
 
@@ -173,6 +190,7 @@ def _webhook_ingress(
             f"services.app.webhooks.tenant_resolver:_extract_{route_id}"
         ),
         ingress_metadata_binding=ingress_metadata_binding,
+        secret_loader_binding=secret_loader_binding,
         normalizer_header_projection=normalizer_header_projection,
         tenant_binding=tenant_binding,
         handler_mode=handler_mode,
@@ -181,6 +199,8 @@ def _webhook_ingress(
         verification_handshake_binding=verification_handshake_binding,
         verification_handshake_handler_binding=(verification_handshake_handler_binding),
         dedicated_handler_binding=dedicated_handler_binding,
+        verified_pre_tenant_handler_binding=(verified_pre_tenant_handler_binding),
+        verified_tenant_handler_binding=verified_tenant_handler_binding,
     )
 
 
@@ -304,6 +324,14 @@ _PROVIDER_BASE_DEFINITIONS: tuple[ProviderDefinition, ...] = (
                 ingress_metadata_binding=(
                     "services.app.webhooks.ingress_metadata:" "build_slack_metadata"
                 ),
+                verified_pre_tenant_handler_binding=(
+                    "services.ingest.integrations.slack.webhook_ingress:"
+                    "handle_verified_pre_tenant"
+                ),
+                verified_tenant_handler_binding=(
+                    "services.ingest.integrations.slack.webhook_ingress:"
+                    "handle_verified_tenant"
+                ),
             ),
         ),
     ),
@@ -322,7 +350,19 @@ _PROVIDER_BASE_DEFINITIONS: tuple[ProviderDefinition, ...] = (
                 ingress_metadata_binding=(
                     "services.app.webhooks.ingress_metadata:" "build_github_metadata"
                 ),
+                secret_loader_binding=(
+                    "services.ingest.integrations.github.webhook_secrets:"
+                    "load_app_webhook_secrets"
+                ),
                 normalizer_header_projection=(("event_type", "X-GitHub-Event"),),
+                verified_pre_tenant_handler_binding=(
+                    "services.ingest.integrations.github.webhook_ingress:"
+                    "handle_verified_pre_tenant"
+                ),
+                verified_tenant_handler_binding=(
+                    "services.ingest.integrations.github.webhook_ingress:"
+                    "handle_verified_tenant"
+                ),
             ),
         ),
     ),
@@ -443,7 +483,11 @@ _PROVIDER_BASE_DEFINITIONS: tuple[ProviderDefinition, ...] = (
                 route_path="/webhooks/notion/events",
                 handler_mode="dedicated",
                 acknowledgement_policy="dedicated_handler",
-                kafka_mode="dedicated_shadow_then_ack",
+                kafka_mode="dedicated_kafka_first_with_inline_fallback",
+                secret_loader_binding=(
+                    "services.ingest.integrations.notion.webhook_secrets:"
+                    "load_app_webhook_secrets"
+                ),
                 verification_handshake_binding=(
                     "services.ingest.integrations.notion.webhook:"
                     "is_verification_handshake"
@@ -498,6 +542,10 @@ _PROVIDER_BASE_DEFINITIONS: tuple[ProviderDefinition, ...] = (
                 "quickbooks",
                 "quickbooks",
                 "quickbooks:object",
+                verified_tenant_handler_binding=(
+                    "services.ingest.integrations.quickbooks.webhook_ingress:"
+                    "handle_verified_tenant"
+                ),
             ),
         ),
     ),
@@ -589,7 +637,6 @@ _PROVIDER_BASE_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         (),
         ("miro",),
         ("api_token",),
-        webhook_ingresses=(_webhook_ingress("miro", "miro", "miro:item"),),
     ),
     ProviderDefinition(
         "figma",
@@ -772,11 +819,107 @@ _DELIVERY_BY_TRANSPORT: Mapping[LiveTransportKind, DeliveryPolicy] = {
 }
 
 
+_PERIODIC_RECONCILER_BINDING = (
+    "services.ingest.ingestion.workflows.periodic_reconciler:run_forever"
+)
+
+
+def _live_boundary(
+    transport: LiveTransportKind,
+    boundary_kind: str,
+    boundary_id: str,
+) -> LiveIngressBoundaryDefinition:
+    return LiveIngressBoundaryDefinition(
+        transport=transport,
+        boundary_kind=cast(Any, boundary_kind),
+        boundary_id=boundary_id,
+    )
+
+
+def _live_worker(
+    component_id: str,
+    role: str,
+    *,
+    transport: LiveTransportKind | None,
+    launcher_binding: str,
+    cadence_seconds: float | None,
+    lease_scope: str,
+    deployment_unit: str,
+) -> LiveWorkerDefinition:
+    return LiveWorkerDefinition(
+        component_id=component_id,
+        role=cast(Any, role),
+        transport=transport,
+        deployment_owner="fyralis_worker",
+        lease_scope=cast(Any, lease_scope),
+        launcher_binding=launcher_binding,
+        cadence_seconds=cadence_seconds,
+        deployment_unit=deployment_unit,
+    )
+
+
+def _periodic_reconciliation(
+    *,
+    transport: LiveTransportKind | None,
+) -> LiveWorkerDefinition:
+    return _live_worker(
+        "periodic_reconciler",
+        "periodic_reconciliation",
+        transport=transport,
+        launcher_binding=_PERIODIC_RECONCILER_BINDING,
+        cadence_seconds=6 * 60 * 60,
+        lease_scope="resource",
+        deployment_unit="periodic_reconciler",
+    )
+
+
+def _managed_live_dispatch(
+    component_id: str,
+    *,
+    transport: LiveTransportKind,
+    dispatch_binding: str,
+    lease_scope: str,
+    reason: str,
+) -> LiveWorkerDefinition:
+    return LiveWorkerDefinition(
+        component_id=component_id,
+        role="managed_dispatch",
+        transport=transport,
+        deployment_owner="customer_deployment",
+        lease_scope=cast(Any, lease_scope),
+        dispatch_binding=dispatch_binding,
+        managed_reason=reason,
+    )
+
+
+def _live_runtime(
+    *,
+    boundaries: tuple[LiveIngressBoundaryDefinition, ...] = (),
+    workers: tuple[LiveWorkerDefinition, ...] = (),
+) -> LiveRuntimeDefinition:
+    return LiveRuntimeDefinition(
+        ingress_boundaries=boundaries,
+        workers=workers,
+    )
+
+
 def _certification(
     source_id: str,
     *,
     notes: tuple[str, ...] = (),
+    preflight: bool = False,
+    live_only_bootstrap: bool = False,
+    twin_probe: bool = False,
+    signature_probe: bool = False,
+    replay_probe: bool = False,
+    generator_group: str | None = None,
 ) -> Certification:
+    binding_package = (
+        "services.ingest.synthetic.validation_runs.source_bindings"
+    )
+    preflight_package = (
+        "services.ingest.synthetic.validation_runs.preflight"
+    )
     return Certification(
         status="unverified",
         require_test_kit=True,
@@ -786,6 +929,46 @@ def _certification(
         evidence_id=f"ingest.evidence.{source_id}",
         canary_id=f"ingest.canary.{source_id}",
         notes=notes,
+        validation_runtime=ValidationRuntimeDefinition(
+            live_target_binding=(
+                f"{binding_package}:build_{source_id}_live_target"
+            ),
+            live_generator_binding=(
+                f"{binding_package}:build_{source_id}_live_generator"
+            ),
+            live_install_binding=(
+                f"{binding_package}:seed_{source_id}_live_install"
+            ),
+            live_event_binding=(
+                f"{binding_package}:dispatch_{source_id}_live_event"
+            ),
+            generator_group=generator_group or source_id,
+            preflight_binding=(
+                f"{preflight_package}:preflight_records_{source_id}"
+                if preflight
+                else None
+            ),
+            live_only_bootstrap_binding=(
+                f"{binding_package}:bootstrap_{source_id}_live_only"
+                if live_only_bootstrap
+                else None
+            ),
+            twin_probe_binding=(
+                f"{binding_package}:dispatch_{source_id}_twin"
+                if twin_probe
+                else None
+            ),
+            signature_probe_binding=(
+                f"{binding_package}:probe_{source_id}_signature"
+                if signature_probe
+                else None
+            ),
+            replay_probe_binding=(
+                f"{binding_package}:probe_{source_id}_replay"
+                if replay_probe
+                else None
+            ),
+        ),
     )
 
 
@@ -909,6 +1092,19 @@ def _onboarding(
     optional_inputs: tuple[str, ...] | None = None,
     provider_console_url: str | None = None,
     generic_authorization_mode: str | None = None,
+    provider_handoff_binding: str = (
+        "services.ingest.source_contract.onboarding_handoffs:"
+        "generic_provider_handoff"
+    ),
+    provider_setup_notes_binding: str = (
+        "services.platform.runtime.source_rehearsal_contract:"
+        "generic_provider_setup_notes"
+    ),
+    rehearsal_finalize_mode: RehearsalFinalizeMode = ("native_finalizer_required"),
+    access_status_binding: str | None = None,
+    provider_setup_builder_binding: str | None = None,
+    rehearsal_artifact_builder_binding: str | None = None,
+    consent_scopes: tuple[str, ...] = (),
 ) -> OnboardingDefinition:
     """Build one immutable source-owned BYOC onboarding declaration."""
 
@@ -921,6 +1117,13 @@ def _onboarding(
         discovery_target=discovery_target,
         native_connect=native_connect,
         browser_agent=browser_agent,
+        provider_handoff_binding=provider_handoff_binding,
+        provider_setup_notes_binding=provider_setup_notes_binding,
+        rehearsal_finalize_mode=rehearsal_finalize_mode,
+        access_status_binding=access_status_binding,
+        provider_setup_builder_binding=provider_setup_builder_binding,
+        rehearsal_artifact_builder_binding=rehearsal_artifact_builder_binding,
+        consent_scopes=consent_scopes,
         default_scopes=default_scopes,
         provider_permissions=provider_permissions,
         ingress_paths=ingress_paths,
@@ -953,7 +1156,9 @@ def _source(
     allowed_observation_kinds: tuple[AllowedObservationKind, ...],
     trust_tiers: tuple[AllowedTrustTier, ...],
     live_transports: tuple[LiveTransportKind, ...],
+    live_runtime: LiveRuntimeDefinition,
     onboarding: OnboardingDefinition,
+    metrics_export_bindings: tuple[str, ...] = (),
     planner_client_builder_binding: str | None = None,
     onboarding_failure_binding: str | None = None,
     installation_management: InstallationManagementDefinition | None = None,
@@ -966,10 +1171,23 @@ def _source(
     unsafe_operation_ids: tuple[str, ...] = (),
     retryable_status_codes: tuple[int, ...] = (_STANDARD_RETRYABLE_HTTP_STATUSES),
     rate_limit_header_parser_id: str | None = None,
+    outbound_endpoint_name: str | None = None,
+    outbound_endpoint_operations: tuple[
+        tuple[str, tuple[str, ...]],
+        ...,
+    ] = (),
+    non_resolver_endpoint_kind: NonResolverEndpointKind | None = None,
     provider_transport_enforced: bool = False,
     operator_live_ingress: str | None = None,
+    finance_testing_binding: str | None = None,
     no_ingress_reason: str | None = None,
     local_rehearsal: LocalRehearsalDefinition | None = None,
+    validation_preflight: bool = False,
+    validation_live_only_bootstrap: bool = False,
+    validation_twin_probe: bool = False,
+    validation_signature_probe: bool = False,
+    validation_replay_probe: bool = False,
+    validation_generator_group: str | None = None,
 ) -> SourceDefinition:
     acknowledgement_policies = tuple(
         _ACK_BY_TRANSPORT[transport] for transport in live_transports
@@ -977,8 +1195,62 @@ def _source(
     delivery_policies = tuple(
         _DELIVERY_BY_TRANSPORT[transport] for transport in live_transports
     )
-    live_bindings = tuple(
-        f"ingest.live.{source_id}.{transport}" for transport in live_transports
+    operation_policies = _operation_policies(
+        idempotent=idempotent_operation_ids,
+        idempotency_key=idempotency_key_operation_ids,
+        unsafe=unsafe_operation_ids,
+        retryable_status_codes=retryable_status_codes,
+        rate_limit_header_parser_id=rate_limit_header_parser_id,
+    )
+    operation_ids = tuple(definition.operation_id for definition in operation_policies)
+    refresh_operation_ids = (
+        frozenset({credential_refresh.operation_id})
+        if credential_refresh is not None
+        else frozenset()
+    )
+    resolver_operation_ids = tuple(
+        operation_id
+        for operation_id in operation_ids
+        if operation_id not in refresh_operation_ids
+    )
+    if outbound_endpoint_name is not None and outbound_endpoint_operations:
+        raise ValueError(
+            f"source {source_id!r} cannot declare both a default outbound "
+            "endpoint and explicit endpoint operation groups"
+        )
+    if non_resolver_endpoint_kind is not None and (
+        outbound_endpoint_name is not None or outbound_endpoint_operations
+    ):
+        raise ValueError(
+            f"source {source_id!r} cannot combine resolver and non-resolver "
+            "endpoint ownership"
+        )
+    endpoint_bindings = (
+        tuple(
+            OutboundEndpointBinding(endpoint_name, owned_operation_ids)
+            for endpoint_name, owned_operation_ids in outbound_endpoint_operations
+        )
+        if outbound_endpoint_operations
+        else (
+            (
+                OutboundEndpointBinding(
+                    outbound_endpoint_name,
+                    resolver_operation_ids,
+                ),
+            )
+            if outbound_endpoint_name is not None
+            else ()
+        )
+    )
+    non_resolver_bindings = (
+        (
+            NonResolverOperationBinding(
+                non_resolver_endpoint_kind,
+                resolver_operation_ids,
+            ),
+        )
+        if non_resolver_endpoint_kind is not None
+        else ()
     )
     history_package = "services.ingest.ingestion"
     installation_package = "services.ingest.ingestion.installations"
@@ -1000,6 +1272,7 @@ def _source(
         normalization_inputs=normalization_inputs,
         normalizer_bindings=normalizer_bindings,
         idempotency_builder_bindings=idempotency_builder_bindings,
+        metrics_export_bindings=metrics_export_bindings,
         allowed_observation_kinds=allowed_observation_kinds,
         trust_tiers=trust_tiers,
         live_transports=live_transports,
@@ -1011,7 +1284,7 @@ def _source(
             tuple[DeliveryPolicy, ...],
             delivery_policies,
         ),
-        live_bindings=live_bindings,
+        live_runtime=live_runtime,
         planner_binding=(
             f"{history_package}.planners.{source_id}:plan_shards_{source_id}"
             if history is not None
@@ -1068,18 +1341,21 @@ def _source(
         certification=_certification(
             source_id,
             notes=certification_notes,
+            preflight=validation_preflight,
+            live_only_bootstrap=validation_live_only_bootstrap,
+            twin_probe=validation_twin_probe,
+            signature_probe=validation_signature_probe,
+            replay_probe=validation_replay_probe,
+            generator_group=validation_generator_group,
         ),
         credential_refresh=credential_refresh,
         capability_flags=capability_flags,
-        operation_policies=_operation_policies(
-            idempotent=idempotent_operation_ids,
-            idempotency_key=idempotency_key_operation_ids,
-            unsafe=unsafe_operation_ids,
-            retryable_status_codes=retryable_status_codes,
-            rate_limit_header_parser_id=rate_limit_header_parser_id,
-        ),
+        operation_policies=operation_policies,
+        outbound_endpoint_bindings=endpoint_bindings,
+        non_resolver_operation_bindings=non_resolver_bindings,
         provider_transport_enforced=provider_transport_enforced,
         operator_live_ingress=operator_live_ingress,
+        finance_testing_binding=finance_testing_binding,
     )
 
 
@@ -1113,6 +1389,13 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         "slack",
         "slack",
         "Slack",
+        validation_preflight=True,
+        validation_twin_probe=True,
+        validation_signature_probe=True,
+        validation_replay_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.slack.metrics:export_metrics",
+        ),
         display=_display(
             0,
             "Communication",
@@ -1185,6 +1468,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal",),
         trust_tiers=("attested_agent",),
         live_transports=("webhook",),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "slack"),
+            ),
+            workers=(_periodic_reconciliation(transport=None),),
+        ),
         onboarding=_onboarding(
             "oauth",
             (
@@ -1209,6 +1498,19 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                 _OAUTH_BROWSER_GATES,
             ),
             provider_console_url="https://api.slack.com/apps",
+            provider_handoff_binding=(
+                "services.ingest.source_contract.onboarding_handoffs:"
+                "slack_provider_handoff"
+            ),
+            provider_setup_builder_binding=(
+                "services.platform.runtime.source_browser_agent_setup:"
+                "build_slack_provider_setup_bundle"
+            ),
+            rehearsal_artifact_builder_binding=(
+                "services.platform.runtime.source_rehearsal_contract:"
+                "build_slack_rehearsal_artifacts"
+            ),
+            rehearsal_finalize_mode="provider_callback",
         ),
         idempotent_operation_ids=(
             "users.info",
@@ -1221,6 +1523,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "oauth.v2.access",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="slack_api",
         provider_transport_enforced=True,
         planner_client_builder_binding=(
             "services.ingest.ingestion.installations:" "build_slack_planner_client"
@@ -1230,6 +1533,13 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         "github",
         "github",
         "GitHub",
+        validation_preflight=True,
+        validation_twin_probe=True,
+        validation_signature_probe=True,
+        validation_replay_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.github.metrics:export_metrics",
+        ),
         installation_status_loader_binding=(
             "services.ingest.ingestion.installation_status:"
             "load_github_installation_status_rows"
@@ -1314,6 +1624,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative", "inferential"),
         live_transports=("webhook",),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "github"),
+            ),
+            workers=(_periodic_reconciliation(transport=None),),
+        ),
         onboarding=_onboarding(
             "oauth",
             ("installations, repositories, pull requests, issues, and " "webhooks"),
@@ -1349,6 +1665,11 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                 ),
             ),
             provider_console_url="https://github.com/settings/apps",
+            provider_handoff_binding=(
+                "services.ingest.source_contract.onboarding_handoffs:"
+                "github_provider_handoff"
+            ),
+            rehearsal_finalize_mode="provider_callback",
         ),
         idempotent_operation_ids=(
             "installation_repositories.list",
@@ -1369,6 +1690,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             *_STANDARD_RETRYABLE_HTTP_STATUSES,
         ),
         rate_limit_header_parser_id="github.rate_limit_headers",
+        outbound_endpoint_name="github_api",
         provider_transport_enforced=True,
         planner_client_builder_binding=(
             "services.ingest.ingestion.installations:" "build_github_planner_client"
@@ -1378,6 +1700,11 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         "discord",
         "discord",
         "Discord",
+        validation_preflight=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.discord.metrics:export_metrics",
+            "services.ingest.integrations.discord.gateway.metrics:export_metrics",
+        ),
         installation_status_loader_binding=(
             "services.ingest.ingestion.installation_status:"
             "load_discord_installation_status_rows"
@@ -1453,6 +1780,25 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal",),
         trust_tiers=("attested_agent",),
         live_transports=("websocket", "webhook"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "discord"),
+            ),
+            workers=(
+                _live_worker(
+                    "discord_gateway_worker",
+                    "persistent_gateway",
+                    transport="websocket",
+                    launcher_binding=(
+                        "scripts.run_discord_gateway_worker:_main"
+                    ),
+                    cadence_seconds=None,
+                    lease_scope="deployment",
+                    deployment_unit="discord_gateway_worker",
+                ),
+                _periodic_reconciliation(transport=None),
+            ),
+        ),
         onboarding=_onboarding(
             "oauth_plus_gateway",
             (
@@ -1489,6 +1835,19 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                 ),
             ),
             provider_console_url=("https://discord.com/developers/applications"),
+            provider_setup_notes_binding=(
+                "services.platform.runtime.source_rehearsal_contract:"
+                "discord_provider_setup_notes"
+            ),
+            provider_handoff_binding=(
+                "services.ingest.source_contract.onboarding_handoffs:"
+                "discord_provider_handoff"
+            ),
+            rehearsal_finalize_mode="provider_callback",
+            access_status_binding=(
+                "services.app.gateway.byoc_onboarding_router:"
+                "build_discord_source_access_status"
+            ),
         ),
         idempotent_operation_ids=(
             "/guilds/{guild_id}/members/{user_id}",
@@ -1507,6 +1866,25 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "/oauth2/token",
         ),
         rate_limit_header_parser_id="discord.rate_limit_headers",
+        outbound_endpoint_operations=(
+            (
+                "discord_api",
+                (
+                    "/guilds/{guild_id}/members/{user_id}",
+                    "/channels/{channel_id}",
+                    "/applications/{application_id}/commands",
+                    "/users/@me/guilds",
+                    "/guilds/{guild_id}/channels",
+                    "/guilds/{guild_id}/threads/active",
+                    "/channels/{channel_id}/threads/archived/public",
+                    "/channels/{channel_id}/threads/archived/private",
+                    "/channels/{channel_id}/messages",
+                    "/webhooks/{application_id}/{interaction_token}",
+                    "/oauth2/token",
+                ),
+            ),
+            ("discord_gateway_bot", ("/gateway/bot",)),
+        ),
         provider_transport_enforced=True,
         planner_client_builder_binding=(
             "services.ingest.ingestion.installations:" "build_discord_planner_client"
@@ -1516,6 +1894,9 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         "gmail",
         "google",
         "Gmail",
+        validation_preflight=True,
+        validation_twin_probe=True,
+        validation_replay_probe=True,
         display=_display(
             1,
             "Productivity",
@@ -1574,6 +1955,42 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal",),
         trust_tiers=("attested_agent",),
         live_transports=("pubsub", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary(
+                    "pubsub",
+                    "dedicated_ingress",
+                    "gmail_pubsub",
+                ),
+            ),
+            workers=(
+                _live_worker(
+                    "gmail_history_poller",
+                    "incremental_poll",
+                    transport="api_poll",
+                    launcher_binding=(
+                        "services.ingest.integrations.gmail.history_poller:"
+                        "run_forever"
+                    ),
+                    cadence_seconds=10 * 60,
+                    lease_scope="resource",
+                    deployment_unit="gmail_history_poller",
+                ),
+                _live_worker(
+                    "gmail_watch_scheduler",
+                    "watch_renewal",
+                    transport=None,
+                    launcher_binding=(
+                        "services.ingest.integrations.gmail.watch_scheduler:"
+                        "run_forever"
+                    ),
+                    cadence_seconds=15 * 60,
+                    lease_scope="resource",
+                    deployment_unit="gmail_watch_scheduler",
+                ),
+                _periodic_reconciliation(transport=None),
+            ),
+        ),
         onboarding=_onboarding(
             "dwd",
             ("mailboxes, labels, watch channels, and Pub/Sub topic " "readiness"),
@@ -1626,6 +2043,11 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             provider_console_url=(
                 "https://admin.google.com/ac/owl/domainwidedelegation"
             ),
+            consent_scopes=(
+                "https://www.googleapis.com/auth/gmail.metadata",
+                "https://www.googleapis.com/auth/admin.directory.user.readonly",
+                "https://www.googleapis.com/auth/admin.directory.group.readonly",
+            ),
         ),
         idempotent_operation_ids=(
             "watch.stop",
@@ -1654,12 +2076,51 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             *_STANDARD_RETRYABLE_HTTP_STATUSES,
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_operations=(
+            (
+                "gmail_api",
+                (
+                    "watch.stop",
+                    "messages.list",
+                    "history.list",
+                    "messages.get",
+                    "profile.get",
+                    "watch.create",
+                ),
+            ),
+            (
+                "google_directory",
+                (
+                    "directory.users.list",
+                    "directory.groups.list",
+                    "directory.group_members.list",
+                    "directory.org_units.list",
+                    "directory.users_by_org_unit.list",
+                ),
+            ),
+            (
+                "gmail_pubsub_api",
+                (
+                    "pubsub.topic.create",
+                    "pubsub.topic.delete",
+                    "pubsub.subscription.create",
+                    "pubsub.subscription.delete",
+                    "pubsub.iam.get",
+                    "pubsub.iam.set",
+                ),
+            ),
+            ("google_token", ("dwd.token.exchange",)),
+        ),
         provider_transport_enforced=True,
     ),
     _source(
         "notion",
         "notion",
         "Notion",
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.notion.metrics:export_metrics",
+        ),
         display=_display(
             6,
             "Knowledge",
@@ -1726,6 +2187,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("attested_agent",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "notion"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "oauth",
             "shared pages, databases, users, and webhook eligibility",
@@ -1755,6 +2222,19 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                 _OAUTH_BROWSER_GATES,
             ),
             provider_console_url="https://www.notion.so/my-integrations",
+            provider_handoff_binding=(
+                "services.ingest.source_contract.onboarding_handoffs:"
+                "notion_provider_handoff"
+            ),
+            provider_setup_builder_binding=(
+                "services.platform.runtime.source_browser_agent_setup:"
+                "build_notion_provider_setup_bundle"
+            ),
+            provider_setup_notes_binding=(
+                "services.platform.runtime.source_rehearsal_contract:"
+                "notion_provider_setup_notes"
+            ),
+            rehearsal_finalize_mode="provider_callback",
         ),
         planner_client_builder_binding=(
             "services.ingest.ingestion.installations:" "build_notion_planner_client"
@@ -1769,22 +2249,28 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         ),
         unsafe_operation_ids=("oauth.token.exchange",),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="notion_api",
         provider_transport_enforced=True,
     ),
     _source(
         "google_calendar",
         "google",
         "Google Calendar",
+        validation_generator_group="google_push",
+        metrics_export_bindings=(
+            "services.ingest.integrations.google_calendar.metrics:export_metrics",
+        ),
         display=_display(
             2,
             "Productivity",
-            "Calendar events and shared calendars.",
+            "Calendar events, shared calendars, and watch notifications.",
             "Workspace DWD",
             (
                 "Google Workspace admin approval, domain-wide delegation "
-                "setup, calendar scope, allowlist, and local polling access."
+                "setup, calendar scope, allowlist, events.watch setup, and "
+                "local polling access."
             ),
-            ("Dry run", "Limited backfill"),
+            ("Dry run", "Limited backfill", "Live events"),
         ),
         ui_slug="google-calendar",
         default_scopes=("calendar.readonly", "pilot-calendars"),
@@ -1793,15 +2279,11 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "calendar.readonly",
             "directory users/groups read",
         ),
-        cli_ingress_paths=(),
+        cli_ingress_paths=("/webhooks/google_calendar/push",),
         required_refs=(
             "workspace_domain",
             "admin_email",
             "dwd_grant_receipt",
-        ),
-        no_ingress_reason=(
-            "Google Calendar DWD install is poll-only; no webhook or push "
-            "watch is configured."
         ),
         aliases=("gcal", "calendar"),
         data_objects=("calendar_event",),
@@ -1844,6 +2326,42 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary(
+                    "webhook",
+                    "dedicated_ingress",
+                    "google_calendar_push",
+                ),
+            ),
+            workers=(
+                _live_worker(
+                    "google_calendar_live_poller",
+                    "incremental_poll",
+                    transport="api_poll",
+                    launcher_binding=(
+                        "services.ingest.integrations.google_calendar."
+                        "live_poller:run_forever"
+                    ),
+                    cadence_seconds=2 * 60,
+                    lease_scope="resource",
+                    deployment_unit="google_calendar_live_poller",
+                ),
+                _live_worker(
+                    "google_calendar_watch_scheduler",
+                    "watch_renewal",
+                    transport=None,
+                    launcher_binding=(
+                        "services.ingest.integrations.google_calendar.watch:"
+                        "run_forever"
+                    ),
+                    cadence_seconds=15 * 60,
+                    lease_scope="resource",
+                    deployment_unit="google_calendar_watch_scheduler",
+                ),
+                _periodic_reconciliation(transport=None),
+            ),
+        ),
         onboarding=_onboarding(
             "dwd",
             "calendars and shared calendar inclusion scope",
@@ -1886,6 +2404,11 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             provider_console_url=(
                 "https://admin.google.com/ac/owl/domainwidedelegation"
             ),
+            consent_scopes=(
+                "https://www.googleapis.com/auth/calendar.readonly",
+                "https://www.googleapis.com/auth/admin.directory.user.readonly",
+                "https://www.googleapis.com/auth/admin.directory.group.readonly",
+            ),
         ),
         idempotent_operation_ids=(
             "directory.users.list",
@@ -1906,12 +2429,38 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             *_STANDARD_RETRYABLE_HTTP_STATUSES,
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_operations=(
+            (
+                "google_directory",
+                (
+                    "directory.users.list",
+                    "directory.groups.list",
+                    "directory.group_members.list",
+                    "directory.org_units.list",
+                    "directory.users_by_org_unit.list",
+                ),
+            ),
+            (
+                "google_calendar_api",
+                (
+                    "calendarList.list",
+                    "events.list",
+                    "channels.stop",
+                    "events.watch",
+                ),
+            ),
+            ("google_token", ("dwd.token.exchange",)),
+        ),
         provider_transport_enforced=True,
     ),
     _source(
         "google_drive",
         "google",
         "Google Drive",
+        validation_generator_group="google_push",
+        metrics_export_bindings=(
+            "services.ingest.integrations.google_drive.metrics:export_metrics",
+        ),
         display=_display(
             3,
             "Knowledge",
@@ -1992,6 +2541,42 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary(
+                    "webhook",
+                    "dedicated_ingress",
+                    "google_drive_push",
+                ),
+            ),
+            workers=(
+                _live_worker(
+                    "google_drive_live_poller",
+                    "incremental_poll",
+                    transport="api_poll",
+                    launcher_binding=(
+                        "services.ingest.integrations.google_drive."
+                        "live_poller:run_forever"
+                    ),
+                    cadence_seconds=2 * 60,
+                    lease_scope="resource",
+                    deployment_unit="google_drive_live_poller",
+                ),
+                _live_worker(
+                    "google_drive_watch_scheduler",
+                    "watch_renewal",
+                    transport=None,
+                    launcher_binding=(
+                        "services.ingest.integrations.google_drive.watch:"
+                        "run_forever"
+                    ),
+                    cadence_seconds=15 * 60,
+                    lease_scope="resource",
+                    deployment_unit="google_drive_watch_scheduler",
+                ),
+                _periodic_reconciliation(transport=None),
+            ),
+        ),
         onboarding=_onboarding(
             "dwd",
             "shared drives, folders, files, and change tokens",
@@ -2044,6 +2629,11 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             provider_console_url=(
                 "https://admin.google.com/ac/owl/domainwidedelegation"
             ),
+            consent_scopes=(
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/admin.directory.user.readonly",
+                "https://www.googleapis.com/auth/admin.directory.group.readonly",
+            ),
         ),
         idempotent_operation_ids=(
             "directory.users.list",
@@ -2070,12 +2660,41 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             *_STANDARD_RETRYABLE_HTTP_STATUSES,
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_operations=(
+            (
+                "google_directory",
+                (
+                    "directory.users.list",
+                    "directory.groups.list",
+                    "directory.group_members.list",
+                    "directory.org_units.list",
+                    "directory.users_by_org_unit.list",
+                ),
+            ),
+            (
+                "google_drive_api",
+                (
+                    "drives.list",
+                    "changes.getStartPageToken",
+                    "files.list",
+                    "changes.list",
+                    "files.export",
+                    "files.get",
+                    "comments.list",
+                    "revisions.list",
+                    "channels.stop",
+                    "changes.watch",
+                ),
+            ),
+            ("google_token", ("dwd.token.exchange",)),
+        ),
         provider_transport_enforced=True,
     ),
     _source(
         "jira",
         "atlassian",
         "Jira",
+        validation_signature_probe=True,
         display=_display(
             5,
             "Engineering",
@@ -2126,7 +2745,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             source="jira",
             table="jira_installations",
             scope_column="base_url",
-            ref_columns=("secret_ref", "webhook_secret_ref"),
+            ref_columns=("secret_ref",),
             entity_table="jira_projects",
             entity_install_column="jira_installation_id",
             webhook_installation_id_column="base_url",
@@ -2153,6 +2772,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "jira"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "api_token",
             "projects, issue types, comments, and webhook registration",
@@ -2184,7 +2809,15 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             ),
             required_inputs=("base_url", "account_email", "api_token"),
             optional_inputs=("project_keys", "webhook_secret"),
-            provider_console_url="https://admin.atlassian.com/",
+            provider_console_url=(
+                "https://id.atlassian.com/manage-profile/security/api-tokens"
+            ),
+            generic_authorization_mode="customer_api_token",
+            rehearsal_artifact_builder_binding=(
+                "services.platform.runtime.source_rehearsal_contract:"
+                "build_jira_rehearsal_artifacts"
+            ),
+            rehearsal_finalize_mode="source_specific",
         ),
         idempotent_operation_ids=(
             "issues.search",
@@ -2193,12 +2826,17 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "users.myself.get",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="jira_api",
         provider_transport_enforced=True,
     ),
     _source(
         "mercury",
         "mercury",
         "Mercury",
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.mercury.metrics:export_metrics",
+        ),
         display=_display(
             17,
             "Finance",
@@ -2244,6 +2882,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "mercury"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "api_token",
             "organization, accounts, and transaction scopes",
@@ -2279,18 +2923,27 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             provider_console_url=("https://app.mercury.com/settings/tokens"),
         ),
         capability_flags=("finance_testing",),
+        finance_testing_binding=(
+            "services.app.gateway.finance_router:"
+            "build_mercury_finance_testing"
+        ),
         idempotent_operation_ids=(
             "accounts.list",
             "accounts.get",
             "transactions.list",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="mercury_api",
         provider_transport_enforced=True,
     ),
     _source(
         "quickbooks",
         "intuit",
         "QuickBooks Online",
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.quickbooks.metrics:export_metrics",
+        ),
         display=_display(
             18,
             "Finance",
@@ -2346,6 +2999,16 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary(
+                    "webhook",
+                    "webhook_route",
+                    "quickbooks",
+                ),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "oauth",
             "company realm, accounting entities, and webhook verifier",
@@ -2390,6 +3053,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             provider_console_url=("https://developer.intuit.com/app/developer/myapps"),
         ),
         capability_flags=("finance_testing",),
+        finance_testing_binding=(
+            "services.app.gateway.finance_router:"
+            "build_quickbooks_finance_testing"
+        ),
         credential_refresh=_credential_refresh(
             "quickbooks",
             "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
@@ -2405,12 +3072,14 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         ),
         unsafe_operation_ids=("oauth.token.refresh",),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="quickbooks_api",
         provider_transport_enforced=True,
     ),
     _source(
         "grafana",
         "grafana",
         "Grafana",
+        validation_signature_probe=True,
         display=_display(
             15,
             "Operations",
@@ -2466,6 +3135,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "grafana"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "api_token",
             "folders, dashboards, alert rules, and org metadata",
@@ -2512,6 +3187,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "org.get",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="grafana_api",
         provider_transport_enforced=True,
     ),
     _source(
@@ -2600,6 +3276,22 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal",),
         trust_tiers=("attested_agent",),
         live_transports=("mtproto",),
+        live_runtime=_live_runtime(
+            workers=(
+                _live_worker(
+                    "telegram_gateway_worker",
+                    "persistent_gateway",
+                    transport="mtproto",
+                    launcher_binding=(
+                        "scripts.run_telegram_gateway_worker:_main"
+                    ),
+                    cadence_seconds=None,
+                    lease_scope="installation",
+                    deployment_unit="telegram_gateway_worker",
+                ),
+                _periodic_reconciliation(transport=None),
+            ),
+        ),
         onboarding=_onboarding(
             "gateway",
             "account, dialogs, channels, groups, and live update cursor",
@@ -2643,6 +3335,11 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             optional_inputs=("backfill_session", "dialogs"),
             provider_console_url="https://my.telegram.org/apps",
             generic_authorization_mode="customer_mtproto_session",
+            rehearsal_artifact_builder_binding=(
+                "services.platform.runtime.source_rehearsal_contract:"
+                "build_telegram_rehearsal_artifacts"
+            ),
+            rehearsal_finalize_mode="source_specific",
         ),
         idempotent_operation_ids=(
             "session.connect",
@@ -2657,6 +3354,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "updates.get_state",
         ),
         rate_limit_header_parser_id="telegram.flood_wait",
+        non_resolver_endpoint_kind="protocol",
         provider_transport_enforced=True,
         operator_live_ingress="customer-cloud MTProto gateway worker",
     ),
@@ -2664,6 +3362,11 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         "brex",
         "brex",
         "Brex",
+        validation_preflight=True,
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.brex.metrics:export_metrics",
+        ),
         display=_display(
             19,
             "Finance",
@@ -2713,6 +3416,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "brex"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "api_token",
             "cash accounts, cards, and transaction scopes",
@@ -2752,6 +3461,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             provider_console_url="https://developer.brex.com/",
         ),
         capability_flags=("finance_testing",),
+        finance_testing_binding=(
+            "services.app.gateway.finance_router:"
+            "build_brex_finance_testing"
+        ),
         idempotent_operation_ids=(
             "accounts.cash.list",
             "accounts.card.list",
@@ -2759,12 +3472,18 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "transactions.card.list",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="brex_api",
         provider_transport_enforced=True,
     ),
     _source(
         "ramp",
         "ramp",
         "Ramp",
+        validation_preflight=True,
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.ramp.metrics:export_metrics",
+        ),
         display=_display(
             20,
             "Finance",
@@ -2834,6 +3553,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "ramp"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "oauth_client_credentials",
             ("business scope, transactions, reimbursements, cards, and " "users"),
@@ -2885,6 +3610,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             provider_console_url="https://developers.ramp.com/",
         ),
         capability_flags=("finance_testing",),
+        finance_testing_binding=(
+            "services.app.gateway.finance_router:"
+            "build_ramp_finance_testing"
+        ),
         credential_refresh=_credential_refresh(
             "ramp",
             "https://api.ramp.com/developer/v1/token",
@@ -2909,12 +3638,18 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         ),
         unsafe_operation_ids=("oauth.token.mint",),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="ramp_api",
         provider_transport_enforced=True,
     ),
     _source(
         "gusto",
         "gusto",
         "Gusto",
+        validation_preflight=True,
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.gusto.metrics:export_metrics",
+        ),
         display=_display(
             22,
             "People",
@@ -2968,6 +3703,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "gusto"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "oauth",
             "company, employees, and payroll scopes",
@@ -3008,6 +3749,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             provider_console_url="https://dev.gusto.com/",
         ),
         capability_flags=("finance_testing",),
+        finance_testing_binding=(
+            "services.app.gateway.finance_router:"
+            "build_gusto_finance_testing"
+        ),
         credential_refresh=_credential_refresh(
             "gusto",
             "https://api.gusto.com/oauth/token",
@@ -3025,12 +3770,18 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         ),
         unsafe_operation_ids=("oauth.token.refresh",),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="gusto_api",
         provider_transport_enforced=True,
     ),
     _source(
         "deel",
         "deel",
         "Deel",
+        validation_preflight=True,
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.deel.metrics:export_metrics",
+        ),
         display=_display(
             25,
             "People",
@@ -3080,6 +3831,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "deel"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "api_token",
             "contracts, workers, and payment scopes",
@@ -3119,18 +3876,28 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             provider_console_url="https://app.deel.com/",
         ),
         capability_flags=("finance_testing",),
+        finance_testing_binding=(
+            "services.app.gateway.finance_router:"
+            "build_deel_finance_testing"
+        ),
         idempotent_operation_ids=(
             "contracts.list",
             "contracts.get",
             "invoices.list",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="deel_api",
         provider_transport_enforced=True,
     ),
     _source(
         "fireflies",
         "fireflies",
         "Fireflies.ai",
+        validation_preflight=True,
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.fireflies.metrics:export_metrics",
+        ),
         display=_display(
             12,
             "Meetings",
@@ -3177,6 +3944,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal",),
         trust_tiers=("attested_agent",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "fireflies"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "api_token",
             "workspace, meetings, and transcripts",
@@ -3218,12 +3991,14 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "transcripts.list",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="fireflies_api",
         provider_transport_enforced=True,
     ),
     _source(
         "signal",
         "signal",
         "Signal",
+        validation_preflight=True,
         display=_display(
             10,
             "Communication",
@@ -3277,6 +4052,22 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal",),
         trust_tiers=("attested_agent",),
         live_transports=("json_rpc",),
+        live_runtime=_live_runtime(
+            workers=(
+                _live_worker(
+                    "signal_gateway_worker",
+                    "persistent_gateway",
+                    transport="json_rpc",
+                    launcher_binding=(
+                        "scripts.run_signal_gateway_worker:_main"
+                    ),
+                    cadence_seconds=None,
+                    lease_scope="installation",
+                    deployment_unit="signal_gateway_worker",
+                ),
+                _periodic_reconciliation(transport=None),
+            ),
+        ),
         onboarding=_onboarding(
             "gateway",
             "linked account, approved contacts, groups, and threads",
@@ -3325,6 +4116,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "events_stream",
         ),
         rate_limit_header_parser_id="signal.retry_after",
+        non_resolver_endpoint_kind="installation",
         provider_transport_enforced=True,
         operator_live_ingress=(
             "customer-cloud signal-cli HTTP JSON-RPC/SSE gateway worker"
@@ -3338,6 +4130,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         "aws",
         "aws",
         "AWS",
+        validation_preflight=True,
         display=_display(
             16,
             "Cloud",
@@ -3392,6 +4185,25 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("queue_poll", "api_poll"),
+        live_runtime=_live_runtime(
+            workers=(
+                _managed_live_dispatch(
+                    "aws_queue_consumer",
+                    transport="queue_poll",
+                    dispatch_binding=(
+                        "services.ingest.integrations.aws.live_poll:"
+                        "handle_polled_event"
+                    ),
+                    lease_scope="installation",
+                    reason=(
+                        "Fyralis exposes the exact CloudTrail event dispatch "
+                        "boundary, but the customer deployment must provision "
+                        "and operate its SQS/EventBridge consumer."
+                    ),
+                ),
+                _periodic_reconciliation(transport="api_poll"),
+            ),
+        ),
         onboarding=_onboarding(
             "iam_role",
             "account, region, CloudTrail, and inventory scope",
@@ -3437,6 +4249,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                 "#/stacks/create/template"
             ),
             generic_authorization_mode="customer_iam_role_ref",
+            provider_handoff_binding=(
+                "services.ingest.source_contract.onboarding_handoffs:"
+                "aws_provider_handoff"
+            ),
         ),
         idempotent_operation_ids=(
             "sts.get_caller_identity",
@@ -3448,6 +4264,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             *_STANDARD_RETRYABLE_HTTP_STATUSES,
         ),
         rate_limit_header_parser_id="aws.sdk_throttle_headers",
+        non_resolver_endpoint_kind="regional",
         provider_transport_enforced=True,
         operator_live_ingress=(
             "customer-cloud SQS/EventBridge and API polling workers"
@@ -3458,6 +4275,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         "miro",
         "miro",
         "Miro",
+        validation_preflight=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.miro.metrics:export_metrics",
+        ),
         display=_display(
             14,
             "Design",
@@ -3483,17 +4304,15 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             source="miro",
             table="miro_installations",
             scope_column="org_id",
-            ref_columns=("secret_ref", "webhook_secret_ref"),
+            ref_columns=("secret_ref",),
             entity_table="miro_boards",
             entity_install_column="miro_installation_id",
-            webhook_installation_id_column="org_id",
         ),
-        installation_identifiers=("organization_id", "board_id"),
-        runtime_identifiers=("organization_id", "board_id"),
+        installation_identifiers=("org_id", "board_id"),
+        runtime_identifiers=("org_id", "board_id"),
         ingress_routes=(
             ("backfill", "miro:item"),
             ("poll", "miro:item"),
-            ("webhook", "miro:item"),
         ),
         normalization_inputs=("miro:item",),
         idempotency_builder_bindings=(
@@ -3502,9 +4321,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         normalizer_bindings=(
             "services.ingest.ingestion.handlers.miro:handle_miro_item",
         ),
-        allowed_observation_kinds=("signal", "state_change"),
+        allowed_observation_kinds=("signal",),
         trust_tiers=("authoritative",),
         live_transports=("api_poll",),
+        live_runtime=_live_runtime(
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "api_token",
             "teams, boards, and board items",
@@ -3512,7 +4334,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                 "miro",
                 "api_token_native_connect",
                 preflight_payload_fields=("api_token", "base_url"),
-                payload_fields=("api_token", "base_url", "board_ids"),
+                payload_fields=("api_token", "base_url", "board_ids", "org_id"),
             ),
             browser_agent=_browser_agent(
                 (
@@ -3525,7 +4347,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                 _TOKEN_BROWSER_GATES,
             ),
             required_inputs=("api_token",),
-            optional_inputs=("base_url", "board_ids"),
+            optional_inputs=("base_url", "board_ids", "org_id"),
             provider_console_url="https://developers.miro.com/",
         ),
         certification_notes=(
@@ -3538,12 +4360,18 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "board_items.list",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="miro_api",
         provider_transport_enforced=True,
     ),
     _source(
         "figma",
         "figma",
         "Figma",
+        validation_preflight=True,
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.figma.metrics:export_metrics",
+        ),
         display=_display(
             13,
             "Design",
@@ -3651,6 +4479,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "figma"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "oauth",
             (
@@ -3700,6 +4534,15 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             required_inputs=("file_urls",),
             optional_inputs=(),
             provider_console_url=("https://www.figma.com/developers/apps"),
+            provider_setup_notes_binding=(
+                "services.platform.runtime.source_rehearsal_contract:"
+                "figma_provider_setup_notes"
+            ),
+            provider_handoff_binding=(
+                "services.ingest.source_contract.onboarding_handoffs:"
+                "figma_provider_handoff"
+            ),
+            rehearsal_finalize_mode="provider_callback",
         ),
         onboarding_failure_binding=(
             "services.ingest.ingestion.installations:" "record_figma_onboarding_failure"
@@ -3717,12 +4560,17 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "oauth.token.refresh",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="figma_api",
         provider_transport_enforced=True,
     ),
     _source(
         "carta",
         "carta",
         "Carta",
+        validation_preflight=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.carta.metrics:export_metrics",
+        ),
         display=_display(
             21,
             "Finance",
@@ -3775,6 +4623,9 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("api_poll",),
+        live_runtime=_live_runtime(
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "oauth",
             "issuer, securities, and stakeholder scopes",
@@ -3842,12 +4693,18 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                 "read_issuer_shareclasses read_issuer_securities"
             ),
         ),
+        outbound_endpoint_name="carta_api",
         provider_transport_enforced=True,
     ),
     _source(
         "hibob",
         "hibob",
         "HiBob",
+        validation_preflight=True,
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.hibob.metrics:export_metrics",
+        ),
         display=_display(
             23,
             "People",
@@ -3893,6 +4750,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "hibob"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "api_token",
             "people fields, reports, and company metadata",
@@ -3944,12 +4807,17 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "people.work.list",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="hibob_api",
         provider_transport_enforced=True,
     ),
     _source(
         "ashby",
         "ashby",
         "Ashby",
+        validation_signature_probe=True,
+        metrics_export_bindings=(
+            "services.ingest.integrations.ashby.metrics:export_metrics",
+        ),
         display=_display(
             24,
             "People",
@@ -4004,6 +4872,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary("webhook", "webhook_route", "ashby"),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "api_token",
             ("jobs, candidates, interviews, and organization metadata"),
@@ -4049,12 +4923,16 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "entities.info",
         ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="ashby_api",
         provider_transport_enforced=True,
     ),
     _source(
         "linkedin",
         "linkedin",
         "LinkedIn",
+        metrics_export_bindings=(
+            "services.ingest.integrations.linkedin.metrics:export_metrics",
+        ),
         display=_display(
             26,
             "CRM",
@@ -4107,6 +4985,9 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("authoritative",),
         live_transports=("api_poll",),
+        live_runtime=_live_runtime(
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "poll",
             "organization/page scope and polling windows",
@@ -4163,12 +5044,15 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         ),
         unsafe_operation_ids=("oauth.token.refresh",),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="linkedin_api",
         provider_transport_enforced=True,
     ),
     _source(
         "whatsapp",
         "meta",
         "WhatsApp Business",
+        validation_live_only_bootstrap=True,
+        validation_signature_probe=True,
         display=_display(
             11,
             "Communication",
@@ -4225,6 +5109,15 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal", "state_change"),
         trust_tiers=("attested_agent", "authoritative"),
         live_transports=("webhook",),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary(
+                    "webhook",
+                    "dedicated_ingress",
+                    "whatsapp_webhook",
+                ),
+            ),
+        ),
         onboarding=_onboarding(
             "webhook",
             (
@@ -4281,6 +5174,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             ),
             provider_console_url=("https://developers.facebook.com/apps/"),
             generic_authorization_mode="customer_webhook_app",
+            rehearsal_finalize_mode="source_specific",
         ),
         capability_flags=("no_outbound_provider_requests",),
         provider_transport_enforced=True,
@@ -4292,6 +5186,7 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         "facebook_pages",
         "meta",
         "Facebook Pages / Messenger",
+        validation_signature_probe=True,
         installation_status_loader_binding=(
             "services.ingest.ingestion.installation_status:"
             "load_facebook_pages_installation_status_rows"
@@ -4387,6 +5282,16 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         allowed_observation_kinds=("signal",),
         trust_tiers=("attested_agent",),
         live_transports=("webhook", "api_poll"),
+        live_runtime=_live_runtime(
+            boundaries=(
+                _live_boundary(
+                    "webhook",
+                    "dedicated_ingress",
+                    "facebook_pages_webhook",
+                ),
+            ),
+            workers=(_periodic_reconciliation(transport="api_poll"),),
+        ),
         onboarding=_onboarding(
             "oauth",
             (
@@ -4436,6 +5341,11 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             required_inputs=("page_id",),
             optional_inputs=("oauth_redirect_url", "events_request_url"),
             provider_console_url=("https://developers.facebook.com/apps/"),
+            provider_setup_notes_binding=(
+                "services.platform.runtime.source_rehearsal_contract:"
+                "facebook_pages_provider_setup_notes"
+            ),
+            rehearsal_finalize_mode="provider_callback",
         ),
         idempotent_operation_ids=(
             "pages.list",
@@ -4443,8 +5353,12 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "conversations.list",
             "messages.list",
         ),
-        unsafe_operation_ids=("oauth.token.exchange",),
+        unsafe_operation_ids=(
+            "oauth.token.exchange",
+            "oauth.user_token.extend",
+        ),
         rate_limit_header_parser_id="http.retry_after",
+        outbound_endpoint_name="facebook_graph_api",
         provider_transport_enforced=True,
     ),
 )
@@ -4462,10 +5376,23 @@ def _provider_operation_ids(provider_id: str) -> tuple[str, ...]:
     return tuple(ordered)
 
 
+def _provider_endpoint_names(provider_id: str) -> tuple[str, ...]:
+    """Derive a provider's named endpoint union from its owned sources."""
+
+    ordered: dict[str, None] = {}
+    for source in SOURCE_DEFINITIONS:
+        if source.provider_id != provider_id:
+            continue
+        for binding in source.outbound_endpoint_bindings:
+            ordered.setdefault(binding.endpoint_name, None)
+    return tuple(ordered)
+
+
 PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = tuple(
     replace(
         provider,
         operation_policy_ids=_provider_operation_ids(provider.provider_id),
+        outbound_endpoint_names=_provider_endpoint_names(provider.provider_id),
     )
     for provider in _PROVIDER_BASE_DEFINITIONS
 )
@@ -4693,6 +5620,17 @@ def validate_catalog(
         )
 
     provider_set = set(provider_ids)
+    webhook_boundary_owners = {
+        ingress.route_id: ingress.source_id
+        for provider in providers
+        for ingress in provider.webhook_ingresses
+        if ingress.source_id is not None
+    }
+    dedicated_boundary_owners = {
+        ingress.ingress_id: ingress.source_id
+        for provider in providers
+        for ingress in provider.dedicated_ingresses
+    }
     for source in sources:
         if source.provider_id not in provider_set:
             raise CatalogValidationError(
@@ -4715,7 +5653,24 @@ def validate_catalog(
                 f"source {source.source_id!r} is missing required certification "
                 f"declarations: {', '.join(missing)}"
             )
+        if (
+            source.certification.require_test_kit
+            and source.certification.validation_runtime is None
+        ):
+            raise CatalogValidationError(
+                f"source {source.source_id!r} requires a test kit but has no "
+                "certification validation runtime"
+            )
+        if source.history is None and any(
+            worker.role == "periodic_reconciliation"
+            for worker in source.live_runtime.workers
+        ):
+            raise CatalogValidationError(
+                f"source {source.source_id!r} has no history contract but "
+                "declares periodic reconciliation"
+            )
 
+    endpoint_provider_owners: dict[str, str] = {}
     for provider in providers:
         derived_source_ids = tuple(
             source.source_id
@@ -4742,6 +5697,29 @@ def validate_catalog(
                 f"{provider.operation_policy_ids!r} differ from the source "
                 f"contract union {derived_operation_ids!r}"
             )
+        derived_endpoint_names = tuple(
+            dict.fromkeys(
+                binding.endpoint_name
+                for source in sources
+                if source.provider_id == provider.provider_id
+                for binding in source.outbound_endpoint_bindings
+            )
+        )
+        if provider.outbound_endpoint_names != derived_endpoint_names:
+            raise CatalogValidationError(
+                f"provider {provider.provider_id!r} outbound endpoints "
+                f"{provider.outbound_endpoint_names!r} differ from the source "
+                f"contract union {derived_endpoint_names!r}"
+            )
+        for endpoint_name in provider.outbound_endpoint_names:
+            existing_owner = endpoint_provider_owners.get(endpoint_name)
+            if existing_owner is not None and existing_owner != provider.provider_id:
+                raise CatalogValidationError(
+                    f"outbound endpoint {endpoint_name!r} is owned by both "
+                    f"providers {existing_owner!r} and "
+                    f"{provider.provider_id!r}"
+                )
+            endpoint_provider_owners[endpoint_name] = provider.provider_id
         provider_policies: dict[str, RequestPolicy] = {}
         for source in sources:
             if source.provider_id != provider.provider_id:
@@ -4755,6 +5733,30 @@ def validate_catalog(
                         f"{definition.operation_id!r}"
                     )
                 provider_policies[definition.operation_id] = definition.request_policy
+
+    missing_endpoint_owners = set(BASE_PROVIDER_ENDPOINT_CATALOG) - set(
+        endpoint_provider_owners
+    )
+    if missing_endpoint_owners:
+        raise CatalogValidationError(
+            "provider endpoint definitions are missing source operation "
+            f"ownership: {sorted(missing_endpoint_owners)!r}"
+        )
+
+    for source in sources:
+        for boundary in source.live_runtime.ingress_boundaries:
+            owners = (
+                webhook_boundary_owners
+                if boundary.boundary_kind == "webhook_route"
+                else dedicated_boundary_owners
+            )
+            owner = owners.get(boundary.boundary_id)
+            if owner != source.source_id:
+                raise CatalogValidationError(
+                    f"source {source.source_id!r} live boundary "
+                    f"{boundary.boundary_kind}:{boundary.boundary_id} resolves "
+                    f"to owner {owner!r}"
+                )
 
     _build_name_index(providers, id_attribute="provider_id")
     _build_name_index(sources, id_attribute="source_id")
@@ -4816,7 +5818,7 @@ def validate_catalog(
             installation_management_tables[management.table] = source.source_id
         source_bindings = (
             *source.normalizer_bindings,
-            *source.live_bindings,
+            *source.metrics_export_bindings,
             source.connect_router_binding,
             *(
                 binding
@@ -5210,6 +6212,60 @@ PROVIDER_TRANSPORT_OPERATION_CATALOG: Mapping[str, frozenset[str]] = MappingProx
         if source.operation_policy_ids
     }
 )
+PROVIDER_ENDPOINT_CATALOG: Mapping[str, ProviderEndpointDefinition] = (
+    BASE_PROVIDER_ENDPOINT_CATALOG
+)
+
+
+def _source_operation_endpoint_owners(
+    source: SourceDefinition,
+) -> Mapping[str, str]:
+    owner_lookup: dict[str, str] = {
+        operation_id: binding.endpoint_name
+        for binding in source.outbound_endpoint_bindings
+        for operation_id in binding.operation_ids
+    }
+    if source.credential_refresh is not None:
+        owner_lookup[source.credential_refresh.operation_id] = "credential_refresh"
+    owner_lookup.update(
+        {
+            operation_id: f"non_resolver:{binding.resolution_kind}"
+            for binding in source.non_resolver_operation_bindings
+            for operation_id in binding.operation_ids
+        }
+    )
+    return MappingProxyType(
+        {
+            operation_id: owner_lookup[operation_id]
+            for operation_id in source.operation_policy_ids
+        }
+    )
+
+
+SOURCE_OPERATION_ENDPOINT_CATALOG: Mapping[
+    str,
+    Mapping[str, str],
+] = MappingProxyType(
+    {
+        source.source_id: _source_operation_endpoint_owners(source)
+        for source in SOURCE_DEFINITIONS
+    }
+)
+PROVIDER_ENDPOINT_OPERATION_CATALOG: Mapping[
+    str,
+    tuple[tuple[str, str], ...],
+] = MappingProxyType(
+    {
+        endpoint_name: tuple(
+            (source.source_id, operation_id)
+            for source in SOURCE_DEFINITIONS
+            for binding in source.outbound_endpoint_bindings
+            if binding.endpoint_name == endpoint_name
+            for operation_id in binding.operation_ids
+        )
+        for endpoint_name in PROVIDER_ENDPOINT_CATALOG
+    }
+)
 DEDICATED_INGRESS_CATALOG: Mapping[str, DedicatedIngressDefinition] = (
     _DEDICATED_INGRESS_BY_ID
 )
@@ -5435,6 +6491,19 @@ def effective_request_policy(
     return source.request_policy_for_operation(operation_id)
 
 
+def operation_endpoint_owner(source_name: str, operation_id: str) -> str:
+    """Return the named or explicit non-resolver owner of one operation."""
+
+    source_id = resolve_source_id(source_name)
+    try:
+        return SOURCE_OPERATION_ENDPOINT_CATALOG[source_id][operation_id]
+    except KeyError as exc:
+        raise KeyError(
+            f"source {source_id!r} has no endpoint ownership for "
+            f"operation {operation_id!r}"
+        ) from exc
+
+
 def normalizer_binding_for_channel(channel: str) -> str:
     """Return the immutable normalizer binding declared for ``channel``."""
 
@@ -5473,11 +6542,14 @@ __all__ = [
     "OAUTH_INGRESS_CATALOG",
     "PROVIDER_CATALOG",
     "PROVIDER_DEFINITIONS",
+    "PROVIDER_ENDPOINT_CATALOG",
+    "PROVIDER_ENDPOINT_OPERATION_CATALOG",
     "PROVIDER_TRANSPORT_OPERATION_CATALOG",
     "SOURCE_CATALOG",
     "SOURCE_CONNECTION_CATALOG",
     "SOURCE_CONNECTION_SLUGS",
     "SOURCE_DEFINITIONS",
+    "SOURCE_OPERATION_ENDPOINT_CATALOG",
     "SOURCE_OPERATION_POLICY_CATALOG",
     "SOURCE_LIVE_INGRESS_CATALOG",
     "WEBHOOK_INGRESS_CATALOG",
@@ -5487,6 +6559,7 @@ __all__ = [
     "effective_request_policy",
     "normalizer_binding_for_channel",
     "normalizer_channels",
+    "operation_endpoint_owner",
     "oauth_ingress_definition",
     "live_ingress_endpoint",
     "provider_definition",

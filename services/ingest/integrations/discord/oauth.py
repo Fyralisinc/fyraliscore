@@ -12,7 +12,7 @@ following Discord-specific differences (see spec.md Clarifications):
   Clarifications Q2 (POST upsert verb via `commands.py`).
 - The `discord_public_key:<gid>` row mirrors the application's
   Ed25519 public key per-installation — research R8 (lets the IN-08
-  load_secrets DB-backed path resolve uniformly without per-provider
+  load_installation_secrets DB-backed path resolve uniformly without per-provider
   special-casing).
 
 Reuses `lib/shared/secrets`, `oauth_install_states`, `installation_audit_log`,
@@ -110,11 +110,19 @@ _DISCORD_ACCESS_MODE_STANDARD = "standard"
 _DISCORD_ACCESS_MODE_FULL_SERVER_SYNC = "full_server_sync"
 
 _DISCORD_AUTHORIZE_URL = "https://discord.com/oauth2/authorize"
-_DISCORD_TOKEN_URL = "https://discord.com/api/v10/oauth2/token"
 
 # Redirect target URLs (path-relative; UI shell owns these routes).
 _SUCCESS_REDIRECT = "/integrations/discord/installed"
 _ERROR_REDIRECT = "/integrations/discord/install-error"
+
+
+def _token_url() -> str:
+    configured = os.environ.get("DISCORD_OAUTH_TOKEN_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    from lib.integrations.endpoints import endpoint
+
+    return f"{endpoint('discord_api')}/oauth2/token"
 
 
 # ---------------------------------------------------------------------
@@ -352,7 +360,7 @@ async def _exchange_code_for_tokens(
     async def _once() -> httpx.Response:
         try:
             response = await client.post(
-                _DISCORD_TOKEN_URL,
+                _token_url(),
                 data={
                     "grant_type": "authorization_code",
                     "code": code,
@@ -468,7 +476,7 @@ async def _persist_secrets(
     Ed25519 public key. Returns `(bot_ref, public_key_ref)`.
 
     The application public key is identical across installations
-    (research R8) — mirroring per `<guild_id>` lets `load_secrets`'s
+    (research R8) — mirroring per `<guild_id>` lets `load_installation_secrets`'s
     DB-backed path resolve uniformly via `provider_installations.secret_ref`.
     """
     if not bot_token:
@@ -504,7 +512,8 @@ async def _upsert_installation(
 ) -> tuple[UUID, bool]:
     """UPSERT `provider_installations` keyed by `(provider='discord',
     installation_id=guild_id)`. `secret_ref` points at the *public key*
-    row (not the bot token) so the signature verifier's `load_secrets`
+    row (not the bot token) so the signature verifier's
+    `load_installation_secrets`
     DB path returns the verifier-relevant secret.
 
     Per A12: accepts pool OR connection so the callback can wrap the

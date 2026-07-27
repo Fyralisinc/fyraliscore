@@ -1,0 +1,812 @@
+{
+  "implementation_sha256": {
+    "services.ingest.ingestion.fetchers.carta": "cf89b746dec0d8813df00349e73a671a63f90b987cc8fd47f9d66c71fbcd99a5",
+    "services.ingest.ingestion.handlers.carta": "a286beae767786a3e0106c83f29070f03ad6f011f246af0bcdc1937acad14a3d",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.carta": "f1d86331549a024e194356c8c513246b2fbfdb08725b9c60a6a3f9e4791128e3",
+    "services.ingest.ingestion.reconcilers.carta": "9ca59defe9a7b87e81ac0230130d93668fc4ad34cc9c97698e399fe55543f8ef",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.carta": "aee9745f555f8c48ab56c63c6e908cc44fdc81695a995015d958c76ebe06dea7",
+    "services.ingest.integrations.carta.client": "92b693a64856eafb14eb53718423d8e27cf2059c0ffa5d8471644507f4294a17",
+    "services.ingest.integrations.carta.metrics": "e8050ff5a6f78830af5c84c6b25f105710bb70e9fdff6a57283af373c71d6c3d",
+    "services.ingest.integrations.carta.oauth": "50664644a71adc0f48a2ebf06eacc745ec1e9dbc4b504dc3260465b9f367a099",
+    "services.ingest.integrations.carta.onboarding": "2b9ca9d6a3cf0a9bfe3bef0c91f77439edca80335434dd2b28ca416b916858ee",
+    "services.ingest.integrations.carta.poll": "19499664bcedc32fbf5865e5e210dfa008335bdbb2bb0c051d0ee644433280f3",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Carta API v1alpha",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "oauth2_client_credentials"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Carta",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "issuers.list",
+      "issuers.get",
+      "stakeholders.list",
+      "share_classes.list",
+      "option_grants.list",
+      "convertible_notes.list",
+      "oauth.token.mint"
+    ],
+    "outbound_endpoint_names": [
+      "carta_api"
+    ],
+    "provider_id": "carta",
+    "source_ids": [
+      "carta"
+    ],
+    "webhook_ingresses": []
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "entities": {
+        "convertibleNote": [
+          {
+            "cashPaid": {
+              "amount": {
+                "value": "5835.08"
+              },
+              "currencyCode": {
+                "value": "USD"
+              }
+            },
+            "discountPercentage": {
+              "value": "20"
+            },
+            "id": "1000",
+            "interestRate": {
+              "value": "5"
+            },
+            "issueDatetime": {
+              "value": "2026-01-04T00:00:00Z"
+            },
+            "issuerId": "6bbc86ae-5aa6-5e23-9a3f-035ee3150d68",
+            "maturityDatetime": {
+              "value": "2028-01-05T00:00:00Z"
+            },
+            "priceCap": {
+              "amount": {
+                "value": "583508.00"
+              },
+              "currencyCode": {
+                "value": "USD"
+              }
+            },
+            "securityId": "e8dea31ba869df17",
+            "securityLabel": "CN-1000",
+            "stakeholderId": "1"
+          }
+        ],
+        "optionGrant": [
+          {
+            "exercisePrice": {
+              "amount": {
+                "value": "5.4477"
+              },
+              "currencyCode": {
+                "value": "USD"
+              }
+            },
+            "exercisedQuantity": {
+              "value": "0"
+            },
+            "grantExpirationDate": {
+              "value": "2036-01-03"
+            },
+            "id": "1000",
+            "issueDate": {
+              "value": "2026-01-05"
+            },
+            "issuerId": "6bbc86ae-5aa6-5e23-9a3f-035ee3150d68",
+            "lastModifiedDatetime": {
+              "value": "2026-01-05T00:00:00Z"
+            },
+            "outstandingQuantity": {
+              "value": "500"
+            },
+            "quantity": {
+              "value": "500"
+            },
+            "securityId": "8a01fd1f1978d616",
+            "securityLabel": "OG-1000",
+            "shareClassId": "1",
+            "stakeholderId": "1",
+            "stockOptionType": "ISO",
+            "vestedQuantity": {
+              "value": "0"
+            }
+          }
+        ],
+        "shareClass": [
+          {
+            "authorizedShareCount": {
+              "value": "10000000"
+            },
+            "id": "1000",
+            "issuerId": "6bbc86ae-5aa6-5e23-9a3f-035ee3150d68",
+            "name": "Common 8FC4",
+            "parValue": {
+              "amount": {
+                "value": "0.0001"
+              },
+              "currencyCode": {
+                "value": "USD"
+              }
+            },
+            "pariPassu": false,
+            "prefix": "CS",
+            "seniority": 1,
+            "type": "COMMON"
+          }
+        ],
+        "stakeholder": [
+          {
+            "email": "holder-abf7da@synthetic.example",
+            "employeeId": "EMP-1000",
+            "entityType": "INDIVIDUAL",
+            "fullName": "Holder abf7da",
+            "id": "1000",
+            "issuerId": "6bbc86ae-5aa6-5e23-9a3f-035ee3150d68",
+            "relationship": "EMPLOYEE"
+          }
+        ]
+      },
+      "firm_id": "6bbc86ae-5aa6-5e23-9a3f-035ee3150d68",
+      "issuer": {
+        "id": "6bbc86ae-5aa6-5e23-9a3f-035ee3150d68",
+        "legalName": "Synthetic Issuer 6bbc86ae"
+      },
+      "page_size": 50
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "oauth.token.mint",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "oauth.token.mint"
+        ],
+        "path_template": "/o/access_token/",
+        "quota_bucket": null,
+        "quota_cost": 1.0,
+        "route_id": "carta.oauth_token",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [],
+        "operation_ids": [],
+        "path_template": "/o/access_token",
+        "quota_bucket": null,
+        "quota_cost": 1.0,
+        "route_id": "carta.oauth_token_no_slash",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "issuers.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "issuers.list"
+        ],
+        "path_template": "/v1alpha1/issuers",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "carta.issuers",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "issuers.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "issuers.get"
+        ],
+        "path_template": "/v1alpha1/issuers/{issuer_id}",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "carta.issuer",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "stakeholders.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "stakeholders.list"
+        ],
+        "path_template": "/v1alpha1/issuers/{issuer_id}/stakeholders",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "carta.stakeholders",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "share_classes.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "share_classes.list"
+        ],
+        "path_template": "/v1alpha1/issuers/{issuer_id}/shareClasses",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "carta.shareClasses",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "option_grants.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "option_grants.list"
+        ],
+        "path_template": "/v1alpha1/issuers/{issuer_id}/optionGrants",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "carta.optionGrants",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "convertible_notes.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "convertible_notes.list"
+        ],
+        "path_template": "/v1alpha1/issuers/{issuer_id}/convertibleNotes",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "carta.convertibleNotes",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "cursor_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.carta",
+      "evidence_id": "ingest.evidence.carta",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.carta",
+      "validation_runtime": {
+        "generator_group": "carta",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_carta_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_carta_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_carta_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_carta_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_carta",
+        "replay_probe_binding": null,
+        "signature_probe_binding": null,
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.carta.oauth:router",
+    "credential_refresh": {
+      "auth_style": "basic",
+      "client_credentials_from_install": false,
+      "client_secret_from_install": true,
+      "default_expires_in": 3600,
+      "default_scope": "read_issuer_info read_issuer_stakeholders read_issuer_shareclasses read_issuer_securities",
+      "default_token_url": "https://login.app.carta.com/o/access_token/",
+      "grant_type": "client_credentials",
+      "install_table": "carta_installations",
+      "operation_id": "oauth.token.mint",
+      "rotates_refresh_token": false,
+      "scope_env": "CARTA_OAUTH_SCOPES",
+      "token_url_env": "CARTA_TOKEN_URL"
+    },
+    "data_objects": [
+      "stakeholder",
+      "share_class",
+      "option_grant",
+      "convertible_note"
+    ],
+    "delivery_policies": [
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Finance",
+      "connection_method": "OAuth",
+      "description": "Cap table, grants, and equity-management signals.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 21,
+      "setup_requirements": "Carta firm or issuer ID, OAuth access token or client-credentials path, entity scope, token re-mint process.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill"
+      ]
+    },
+    "display_name": "Carta",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.carta:fetch_page_carta",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:carta_entity"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "carta:object",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "carta:object",
+        "ingress_kind": "poll"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_carta_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": "carta_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "carta_entities",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref",
+          "refresh_secret_ref"
+        ],
+        "scope_column": "firm_id",
+        "source": "carta",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "carta_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": null,
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "firm_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.carta.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "carta:object"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.carta:handle_carta_object"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "issuer id",
+          "firm id",
+          "OAuth/client-credentials availability"
+        ],
+        "agent_generates": [
+          "equity entity scope contract",
+          "token refresh ref contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin approves provider app scopes"
+        ],
+        "settings_targets": [
+          "developer app settings",
+          "issuer or firm settings",
+          "token settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "issuer",
+        "securities",
+        "stakeholders"
+      ],
+      "discovery_target": "issuer, securities, and stakeholder scopes",
+      "generic_authorization_mode": null,
+      "ingress_paths": [],
+      "local_rehearsal": null,
+      "method": "oauth",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/carta/connect/finalize",
+        "kind": "access_token_native_connect",
+        "payload_fields": [
+          "access_token",
+          "base_url",
+          "issuer_id",
+          "firm_id",
+          "client_secret",
+          "refresh_token",
+          "entities"
+        ],
+        "preflight_path": "/integrations/carta/connect/preflight",
+        "preflight_payload_fields": [],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": "Carta is poll-only from the customer data plane.",
+      "optional_inputs": [
+        "firm_id",
+        "oauth_client",
+        "base_url",
+        "refresh_token_ref"
+      ],
+      "provider_console_url": "https://developers.app.carta.com/",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "issuer read",
+        "securities read",
+        "stakeholders read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "token_ref"
+      ],
+      "required_refs": [
+        "oauth_client",
+        "token_ref"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "issuers.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "issuers.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "stakeholders.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "share_classes.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "option_grants.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "convertible_notes.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "oauth.token.mint",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "carta_api",
+        "operation_ids": [
+          "issuers.list",
+          "issuers.get",
+          "stakeholders.list",
+          "share_classes.list",
+          "option_grants.list",
+          "convertible_notes.list"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.carta:plan_shards_carta",
+    "provider_id": "carta",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.carta:reconcile_carta",
+    "runtime_identifiers": [
+      "firm_id"
+    ],
+    "source_id": "carta",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "carta"
+  },
+  "source_id": "carta"
+}

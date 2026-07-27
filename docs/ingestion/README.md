@@ -31,8 +31,8 @@ regardless of route.
 | [Discord](sources/discord.md) | webhook + WSS | gateway `MESSAGE_CREATE` → pipeline | channel-window sampling | `discord:message`, `discord:interaction` | `attested_agent` |
 | [Gmail](sources/gmail.md) | Pub/Sub push | Pub/Sub → pipeline (`poll` ingress) | History API | `gmail:` | `attested_agent` |
 | [Notion](sources/notion.md) | webhook (special) | poll via periodic reconciler | databases/pages → blocks → comments | `notion:object` | `attested_agent` |
-| [Google Calendar](sources/google-calendar.md) | none | poll (`syncToken`) | windowed per calendar | `google_calendar:event` | `authoritative` |
-| [Google Drive](sources/google-drive.md) | none | poll (Changes API) | My Drive + Shared Drives | `google_drive:file` | `authoritative` |
+| [Google Calendar](sources/google-calendar.md) | `events.watch` push | push-triggered delta + fallback poll (`syncToken`) | windowed per calendar | `google_calendar:event` | `authoritative` |
+| [Google Drive](sources/google-drive.md) | Changes watch push | push-triggered delta + fallback poll (Changes API) | My Drive + Shared Drives | `google_drive:file` | `authoritative` |
 | [Jira](sources/jira.md) | webhook | HMAC webhook → pipeline (cutover) | `POST /rest/api/3/search/jql` | `jira:issue` | `authoritative` |
 
 `ingress_kind` is one of `webhook`, `gateway`, `pubsub`, `backfill`, `poll`

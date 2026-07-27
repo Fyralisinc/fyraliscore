@@ -47,6 +47,7 @@ def certification_callable(
         raise ValueError("certification callable source_id must be non-empty")
     if role not in {
         "fixture_factory",
+        "live_fixture_factory",
         "fixture_count_oracle",
         "installation_seeder",
     }:
@@ -72,6 +73,23 @@ def _binding_for(
     role: CertificationBindingRole,
 ) -> CertificationCallableBinding:
     source = source_definition(spec.source_id)
+    if role == "live_fixture_factory":
+        if source.history is not None:
+            raise CertificationBindingResolutionError(
+                f"source {source.source_id!r} supports history and cannot use "
+                "a live-only fixture"
+            )
+        binding = spec.live_fixture_factory_binding
+        if binding is None:
+            raise CertificationBindingResolutionError(
+                f"source {source.source_id!r} has no live fixture binding"
+            )
+        if binding.source_id != source.source_id or binding.role != role:
+            raise CertificationBindingResolutionError(
+                f"source {source.source_id!r} has mismatched {role} binding "
+                f"{binding.source_id!r}/{binding.role!r}"
+            )
+        return binding
     if source.history is None:
         raise CertificationHistoryUnsupportedError(
             f"source {source.source_id!r} explicitly does not support history"
@@ -119,6 +137,17 @@ def resolve_fixture_factory(source_name: str) -> Callable[..., dict[str, Any]]:
     return cast(Callable[..., dict[str, Any]], _resolve(source_name, "fixture_factory"))
 
 
+def resolve_live_fixture_factory(
+    source_name: str,
+) -> Callable[..., dict[str, Any]]:
+    """Resolve a history-free source's deterministic live ingress fixture."""
+
+    return cast(
+        Callable[..., dict[str, Any]],
+        _resolve(source_name, "live_fixture_factory"),
+    )
+
+
 def resolve_fixture_count_oracle(
     source_name: str,
 ) -> Callable[[Mapping[str, Any]], int]:
@@ -152,7 +181,13 @@ def validate_certification_bindings() -> tuple[str, ...]:
                     f"history-unsupported source {source.source_id!r} "
                     "declares certification bindings"
                 )
+            resolve_live_fixture_factory(source.source_id)
             continue
+        if spec.live_fixture_factory_binding is not None:
+            raise CertificationBindingResolutionError(
+                f"history source {source.source_id!r} declares a live-only "
+                "fixture binding"
+            )
         resolve_fixture_factory(source.source_id)
         resolve_fixture_count_oracle(source.source_id)
         resolve_installation_seeder(source.source_id)
@@ -166,6 +201,7 @@ __all__ = [
     "certification_callable",
     "resolve_fixture_count_oracle",
     "resolve_fixture_factory",
+    "resolve_live_fixture_factory",
     "resolve_installation_seeder",
     "validate_certification_bindings",
 ]

@@ -56,6 +56,7 @@ from aiokafka import AIOKafkaConsumer, ConsumerRebalanceListener
 from aiokafka.coordinator.assignors.sticky.sticky_assignor import (
     StickyPartitionAssignor,
 )
+from aiokafka.errors import CommitFailedError
 
 from services.ingest.ingestion.dlq.publish import publish_dlq
 from services.ingest.ingestion.handlers import get_handler
@@ -117,6 +118,7 @@ _metrics: dict[str, float] = {
     "normalizer.dlq_publish.success": 0.0,
     "normalizer.dlq_publish.failure": 0.0,
     "normalizer.dlq_publish.skipped": 0.0,
+    "normalizer.commit_rebalanced": 0.0,
 }
 
 
@@ -257,8 +259,13 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                     produced += 1
                     _bump("normalizer.messages_produced")
 
-                # Commit AFTER processing — at-least-once semantics.
-                await consumer.commit()
+                # `IdempotentProducer.produce()` only enqueues into
+                # librdkafka's local buffer. Advancing the raw offset before
+                # that buffer reaches the broker creates a data-loss window:
+                # a crash can discard the normalized record even though Kafka
+                # considers the raw record consumed. Flush is therefore part
+                # of the required raw -> normalized commit boundary.
+                await _commit_normalized_boundary(consumer, producer)
 
                 if config.stop_after is not None and consumed >= config.stop_after:
                     break
@@ -313,7 +320,7 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                 if total_produced:
                     _bump("normalizer.messages_produced", float(total_produced))
 
-                await consumer.commit()
+                await _commit_normalized_boundary(consumer, producer)
 
                 if config.stop_after is not None and consumed >= config.stop_after:
                     break
@@ -333,6 +340,45 @@ def _record_lag(msg: Any) -> None:
     if msg.timestamp:
         lag_s = max(0.0, (time.time() * 1000 - msg.timestamp) / 1000.0)
         _metrics["normalizer.consumer_lag_seconds_last"] = lag_s
+
+
+async def _flush_normalized_before_commit(
+    producer: IdempotentProducer,
+    *,
+    timeout_seconds: float = 10.0,
+) -> None:
+    """Require broker acknowledgement before committing raw input offsets."""
+
+    remaining = await producer.flush(timeout_seconds)
+    if remaining:
+        raise RuntimeError(
+            "normalized Kafka publish did not reach the broker before the "
+            f"raw offset commit boundary; undelivered={remaining}",
+        )
+
+
+async def _commit_normalized_boundary(
+    consumer: AIOKafkaConsumer,
+    producer: IdempotentProducer,
+) -> bool:
+    """Flush required output, then commit unless Kafka changed generation.
+
+    A cooperative rebalance can begin after the normalized record reaches the
+    broker but before this member commits its raw offset. The new owner will
+    replay that uncommitted input, which is the intended at-least-once
+    behavior. Crashing the old member adds no safety and creates a restart
+    loop during scale-down, so generation-change failures are recorded and
+    treated as a clean handoff.
+    """
+
+    await _flush_normalized_before_commit(producer)
+    try:
+        await consumer.commit()
+    except CommitFailedError:
+        _bump("normalizer.commit_rebalanced")
+        log.warning("normalizer.commit_rebalanced_after_output_ack")
+        return False
+    return True
 
 
 async def _process_message(

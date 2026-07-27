@@ -6,6 +6,8 @@ at this layer (the workers expose their own /metrics).
 """
 from __future__ import annotations
 
+from services.ingest.integrations.metrics_contract import make_snapshot_exporter
+
 
 _counters: dict[str, int] = {}
 
@@ -30,7 +32,11 @@ def _reset_for_tests() -> None:
     _counters.clear()
 
 
+export_metrics = make_snapshot_exporter(snapshot)
+
+
 __all__ = [
+    "export_metrics",
     "record_request",
     "record_provision_outcome",
     "snapshot",

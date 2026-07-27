@@ -39,7 +39,10 @@ import hashlib
 import hmac
 import json
 import os
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -52,6 +55,7 @@ from fastapi.responses import JSONResponse
 from services.ingest.source_contract import (
     SOURCE_DEFINITIONS,
     resolve_installation_status_loader,
+    resolve_callable_reference,
     source_definition,
 )
 
@@ -630,6 +634,388 @@ async def _ingest_record(req: Request, tenant_id: UUID, channel: str, record: di
     }
 
 
+@dataclass(frozen=True, slots=True)
+class FinanceInstallResult:
+    installation_id: UUID
+    sub_resource_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class FinanceLiveEvent:
+    payload: dict[str, Any]
+    header_name: str
+    signature_prefix: str
+    digest_encoding: str = "hex"
+
+
+@dataclass(frozen=True, slots=True)
+class FinanceTestingOperations:
+    install: Callable[
+        [asyncpg.Pool, UUID, str | None],
+        Awaitable[FinanceInstallResult],
+    ]
+    backfill_records: Callable[[UUID, int, int], list[dict[str, Any]]]
+    live_event: Callable[[UUID, int], FinanceLiveEvent]
+
+
+async def _install_mercury(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    secret_ref: str | None,
+) -> FinanceInstallResult:
+    from services.ingest.integrations.mercury.onboarding import (
+        finalize_install,
+        register_webhook_installation,
+    )
+
+    install_id = await finalize_install(
+        pool,
+        tenant_id=tenant_id,
+        base_url=_MERCURY_BASE,
+        accounts=list(_MERCURY_ACCOUNTS),
+        organization_id=_org_id_for(""),
+        webhook_secret_ref=secret_ref,
+    )
+    await register_webhook_installation(
+        pool,
+        tenant_id=tenant_id,
+        organization_id=_org_id_for(""),
+        webhook_secret_ref=secret_ref,
+    )
+    return FinanceInstallResult(install_id, len(_MERCURY_ACCOUNTS))
+
+
+async def _install_quickbooks(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    secret_ref: str | None,
+) -> FinanceInstallResult:
+    from services.ingest.integrations.quickbooks.onboarding import (
+        finalize_install,
+        register_webhook_installation,
+    )
+
+    realm_id = f"realm-{tenant_id.hex[:12]}"
+    install_id = await finalize_install(
+        pool,
+        tenant_id=tenant_id,
+        realm_id=realm_id,
+        base_url=_QBO_BASE,
+        entities=list(_QBO_ENTITIES),
+        webhook_secret_ref=secret_ref,
+    )
+    await register_webhook_installation(
+        pool,
+        tenant_id=tenant_id,
+        realm_id=realm_id,
+        webhook_secret_ref=secret_ref,
+    )
+    return FinanceInstallResult(install_id, len(_QBO_ENTITIES))
+
+
+async def _install_brex(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    secret_ref: str | None,
+) -> FinanceInstallResult:
+    from services.ingest.integrations.brex.onboarding import (
+        finalize_install,
+        register_webhook_installation,
+    )
+
+    install_id = await finalize_install(
+        pool,
+        tenant_id=tenant_id,
+        base_url=_BREX_BASE,
+        accounts=list(_BREX_ACCOUNTS),
+        organization_id=_brex_org_id(),
+        webhook_secret_ref=secret_ref,
+    )
+    await register_webhook_installation(
+        pool,
+        tenant_id=tenant_id,
+        organization_id=_brex_org_id(),
+        webhook_secret_ref=secret_ref,
+    )
+    return FinanceInstallResult(install_id, len(_BREX_ACCOUNTS))
+
+
+async def _install_ramp(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    secret_ref: str | None,
+) -> FinanceInstallResult:
+    from services.ingest.integrations.ramp.onboarding import (
+        finalize_install,
+        register_webhook_installation,
+    )
+
+    business_id = f"biz-{tenant_id.hex[:12]}"
+    install_id = await finalize_install(
+        pool,
+        tenant_id=tenant_id,
+        business_id=business_id,
+        base_url=_RAMP_BASE,
+        entities=list(_RAMP_ENTITIES),
+        webhook_secret_ref=secret_ref,
+    )
+    await register_webhook_installation(
+        pool,
+        tenant_id=tenant_id,
+        business_id=business_id,
+        webhook_secret_ref=secret_ref,
+    )
+    return FinanceInstallResult(install_id, len(_RAMP_ENTITIES))
+
+
+async def _install_gusto(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    secret_ref: str | None,
+) -> FinanceInstallResult:
+    from services.ingest.integrations.gusto.onboarding import (
+        finalize_install,
+        register_webhook_installation,
+    )
+
+    company_uuid = f"co-{tenant_id.hex[:12]}"
+    install_id = await finalize_install(
+        pool,
+        tenant_id=tenant_id,
+        company_uuid=company_uuid,
+        base_url=_GUSTO_BASE,
+        entities=list(_GUSTO_ENTITIES),
+        webhook_secret_ref=secret_ref,
+    )
+    await register_webhook_installation(
+        pool,
+        tenant_id=tenant_id,
+        company_uuid=company_uuid,
+        webhook_secret_ref=secret_ref,
+    )
+    return FinanceInstallResult(install_id, len(_GUSTO_ENTITIES))
+
+
+async def _install_deel(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    secret_ref: str | None,
+) -> FinanceInstallResult:
+    from services.ingest.integrations.deel.onboarding import (
+        finalize_install,
+        register_webhook_installation,
+    )
+
+    install_id = await finalize_install(
+        pool,
+        tenant_id=tenant_id,
+        base_url=_DEEL_BASE,
+        contracts=list(_DEEL_CONTRACTS),
+        organization_id=_deel_org_id(),
+        webhook_secret_ref=secret_ref,
+    )
+    await register_webhook_installation(
+        pool,
+        tenant_id=tenant_id,
+        organization_id=_deel_org_id(),
+        webhook_secret_ref=secret_ref,
+    )
+    return FinanceInstallResult(install_id, len(_DEEL_CONTRACTS))
+
+
+def _backfill_mercury(
+    _tenant_id: UUID,
+    count: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    return [
+        record
+        for account in _MERCURY_ACCOUNTS
+        for record in _mercury_backfill_records(
+            account["account_id"],
+            count,
+            seed,
+        )
+    ]
+
+
+def _backfill_quickbooks(
+    tenant_id: UUID,
+    count: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    realm_id = f"realm-{tenant_id.hex[:12]}"
+    return [
+        record
+        for entity in _QBO_ENTITIES
+        for record in _qbo_backfill_records(entity, realm_id, count, seed)
+    ]
+
+
+def _backfill_brex(
+    _tenant_id: UUID,
+    count: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    return [
+        record
+        for account in _BREX_ACCOUNTS
+        for record in _brex_backfill_records(
+            account["account_id"],
+            count,
+            seed,
+        )
+    ]
+
+
+def _backfill_ramp(
+    tenant_id: UUID,
+    count: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    business_id = f"biz-{tenant_id.hex[:12]}"
+    return [
+        record
+        for entity in _RAMP_ENTITIES
+        for record in _ramp_backfill_records(
+            entity,
+            business_id,
+            count,
+            seed,
+        )
+    ]
+
+
+def _backfill_gusto(
+    tenant_id: UUID,
+    count: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    company_uuid = f"co-{tenant_id.hex[:12]}"
+    return [
+        record
+        for entity in _GUSTO_ENTITIES
+        for record in _gusto_backfill_records(
+            entity,
+            company_uuid,
+            count,
+            seed,
+        )
+    ]
+
+
+def _backfill_deel(
+    _tenant_id: UUID,
+    count: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    return [
+        record
+        for contract in _DEEL_CONTRACTS
+        for record in _deel_backfill_records(
+            contract["contract_id"],
+            count,
+            seed,
+        )
+    ]
+
+
+def _live_mercury(_tenant_id: UUID, sequence: int) -> FinanceLiveEvent:
+    payload, _organization_id = _mercury_live_event("acc-checking", sequence)
+    return FinanceLiveEvent(payload, "Mercury-Signature", "sha256=")
+
+
+def _live_quickbooks(tenant_id: UUID, sequence: int) -> FinanceLiveEvent:
+    payload = _qbo_live_event(f"realm-{tenant_id.hex[:12]}", sequence)
+    return FinanceLiveEvent(payload, "intuit-signature", "", "base64")
+
+
+def _live_brex(_tenant_id: UUID, sequence: int) -> FinanceLiveEvent:
+    payload, _organization_id = _brex_live_event("brex-cash", sequence)
+    return FinanceLiveEvent(payload, "Brex-Signature", "sha256=")
+
+
+def _live_ramp(tenant_id: UUID, sequence: int) -> FinanceLiveEvent:
+    payload = _ramp_live_event(f"biz-{tenant_id.hex[:12]}", sequence)
+    return FinanceLiveEvent(payload, "x-ramp-signature", "", "base64")
+
+
+def _live_gusto(tenant_id: UUID, sequence: int) -> FinanceLiveEvent:
+    payload = _gusto_live_event(f"co-{tenant_id.hex[:12]}", sequence)
+    return FinanceLiveEvent(payload, "intuit-signature", "", "base64")
+
+
+def _live_deel(_tenant_id: UUID, sequence: int) -> FinanceLiveEvent:
+    payload, _organization_id = _deel_live_event("deel-ctr-eng", sequence)
+    return FinanceLiveEvent(payload, "Deel-Signature", "sha256=")
+
+
+def build_mercury_finance_testing() -> FinanceTestingOperations:
+    return FinanceTestingOperations(
+        install=_install_mercury,
+        backfill_records=_backfill_mercury,
+        live_event=_live_mercury,
+    )
+
+
+def build_quickbooks_finance_testing() -> FinanceTestingOperations:
+    return FinanceTestingOperations(
+        install=_install_quickbooks,
+        backfill_records=_backfill_quickbooks,
+        live_event=_live_quickbooks,
+    )
+
+
+def build_brex_finance_testing() -> FinanceTestingOperations:
+    return FinanceTestingOperations(
+        install=_install_brex,
+        backfill_records=_backfill_brex,
+        live_event=_live_brex,
+    )
+
+
+def build_ramp_finance_testing() -> FinanceTestingOperations:
+    return FinanceTestingOperations(
+        install=_install_ramp,
+        backfill_records=_backfill_ramp,
+        live_event=_live_ramp,
+    )
+
+
+def build_gusto_finance_testing() -> FinanceTestingOperations:
+    return FinanceTestingOperations(
+        install=_install_gusto,
+        backfill_records=_backfill_gusto,
+        live_event=_live_gusto,
+    )
+
+
+def build_deel_finance_testing() -> FinanceTestingOperations:
+    return FinanceTestingOperations(
+        install=_install_deel,
+        backfill_records=_backfill_deel,
+        live_event=_live_deel,
+    )
+
+
+@lru_cache(maxsize=None)
+def _finance_operations(source: str) -> FinanceTestingOperations:
+    definition = source_definition(source)
+    binding = definition.finance_testing_binding
+    if binding is None:
+        raise RuntimeError(
+            f"source {definition.source_id!r} has no finance testing binding"
+        )
+    builder = resolve_callable_reference(binding)
+    operations = builder()
+    if not isinstance(operations, FinanceTestingOperations):
+        raise TypeError(
+            f"source {definition.source_id!r} finance testing binding returned "
+            f"{type(operations).__name__}"
+        )
+    return operations
+
+
 # ---------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------
@@ -647,18 +1033,12 @@ def build_finance_router() -> APIRouter:
 async def list_sources() -> dict[str, Any]:
     return {
         "sources": [
-            {"source": "mercury", "channel": "mercury:transaction",
-             "label": "Mercury (banking / cash)"},
-            {"source": "quickbooks", "channel": "quickbooks:object",
-             "label": "QuickBooks (accounting / AR-AP)"},
-            {"source": "brex", "channel": "brex:transaction",
-             "label": "Brex (corporate cards / cash)"},
-            {"source": "ramp", "channel": "ramp:transaction",
-             "label": "Ramp (corporate cards / spend)"},
-            {"source": "gusto", "channel": "gusto:object",
-             "label": "Gusto (payroll / HR)"},
-            {"source": "deel", "channel": "deel:payment",
-             "label": "Deel (contractor payments)"},
+                {
+                    "source": definition.source_id,
+                    "channel": definition.channel_for_ingress("webhook"),
+                    "label": definition.display_name,
+                }
+            for definition in _FINANCE_SOURCE_DEFINITIONS
         ],
     }
 
@@ -690,95 +1070,13 @@ async def install(source: str, req: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         log.warning("finance_secret_put_failed", source=source, error=str(exc))
 
-    if source == "mercury":
-        from services.ingest.integrations.mercury.onboarding import (
-            finalize_install, register_webhook_installation,
-        )
-        install_id = await finalize_install(
-            pool, tenant_id=tenant_id, base_url=_MERCURY_BASE,
-            accounts=list(_MERCURY_ACCOUNTS),
-            organization_id=_org_id_for(""),
-            webhook_secret_ref=secret_ref,
-        )
-        await register_webhook_installation(
-            pool, tenant_id=tenant_id, organization_id=_org_id_for(""),
-            webhook_secret_ref=secret_ref,
-        )
-        sub_count = len(_MERCURY_ACCOUNTS)
-    elif source == "quickbooks":
-        realm_id = f"realm-{tenant_id.hex[:12]}"
-        from services.ingest.integrations.quickbooks.onboarding import (
-            finalize_install, register_webhook_installation,
-        )
-        install_id = await finalize_install(
-            pool, tenant_id=tenant_id, realm_id=realm_id, base_url=_QBO_BASE,
-            entities=list(_QBO_ENTITIES), webhook_secret_ref=secret_ref,
-        )
-        await register_webhook_installation(
-            pool, tenant_id=tenant_id, realm_id=realm_id,
-            webhook_secret_ref=secret_ref,
-        )
-        sub_count = len(_QBO_ENTITIES)
-    elif source == "brex":
-        from services.ingest.integrations.brex.onboarding import (
-            finalize_install, register_webhook_installation,
-        )
-        install_id = await finalize_install(
-            pool, tenant_id=tenant_id, base_url=_BREX_BASE,
-            accounts=list(_BREX_ACCOUNTS),
-            organization_id=_brex_org_id(),
-            webhook_secret_ref=secret_ref,
-        )
-        await register_webhook_installation(
-            pool, tenant_id=tenant_id, organization_id=_brex_org_id(),
-            webhook_secret_ref=secret_ref,
-        )
-        sub_count = len(_BREX_ACCOUNTS)
-    elif source == "ramp":
-        business_id = f"biz-{tenant_id.hex[:12]}"
-        from services.ingest.integrations.ramp.onboarding import (
-            finalize_install, register_webhook_installation,
-        )
-        install_id = await finalize_install(
-            pool, tenant_id=tenant_id, business_id=business_id,
-            base_url=_RAMP_BASE, entities=list(_RAMP_ENTITIES),
-            webhook_secret_ref=secret_ref,
-        )
-        await register_webhook_installation(
-            pool, tenant_id=tenant_id, business_id=business_id,
-            webhook_secret_ref=secret_ref,
-        )
-        sub_count = len(_RAMP_ENTITIES)
-    elif source == "gusto":
-        company_uuid = f"co-{tenant_id.hex[:12]}"
-        from services.ingest.integrations.gusto.onboarding import (
-            finalize_install, register_webhook_installation,
-        )
-        install_id = await finalize_install(
-            pool, tenant_id=tenant_id, company_uuid=company_uuid,
-            base_url=_GUSTO_BASE, entities=list(_GUSTO_ENTITIES),
-            webhook_secret_ref=secret_ref,
-        )
-        await register_webhook_installation(
-            pool, tenant_id=tenant_id, company_uuid=company_uuid,
-            webhook_secret_ref=secret_ref,
-        )
-        sub_count = len(_GUSTO_ENTITIES)
-    else:  # deel
-        from services.ingest.integrations.deel.onboarding import (
-            finalize_install, register_webhook_installation,
-        )
-        install_id = await finalize_install(
-            pool, tenant_id=tenant_id, base_url=_DEEL_BASE,
-            contracts=list(_DEEL_CONTRACTS),
-            organization_id=_deel_org_id(),
-            webhook_secret_ref=secret_ref,
-        )
-        await register_webhook_installation(
-            pool, tenant_id=tenant_id, organization_id=_deel_org_id(),
-            webhook_secret_ref=secret_ref,
-        )
-        sub_count = len(_DEEL_CONTRACTS)
+    install_result = await _finance_operations(source).install(
+        pool,
+        tenant_id,
+        secret_ref,
+    )
+    install_id = install_result.installation_id
+    sub_count = install_result.sub_resource_count
 
     # Stash the plaintext secret on app.state so live/emit can sign without a
     # second decrypt round-trip (per-process, dev-only).
@@ -809,34 +1107,11 @@ async def backfill(source: str, req: Request) -> JSONResponse:
     seed = int(body.get("seed", 0)) if isinstance(body, dict) else 0
     channel = _CHANNEL[source]
 
-    results: list[dict] = []
-    if source == "mercury":
-        for acct in _MERCURY_ACCOUNTS:
-            for rec in _mercury_backfill_records(acct["account_id"], per, seed):
-                results.append(await _ingest_record(req, tenant_id, channel, rec))
-    elif source == "quickbooks":
-        realm_id = f"realm-{tenant_id.hex[:12]}"
-        for entity in _QBO_ENTITIES:
-            for rec in _qbo_backfill_records(entity, realm_id, per, seed):
-                results.append(await _ingest_record(req, tenant_id, channel, rec))
-    elif source == "brex":
-        for acct in _BREX_ACCOUNTS:
-            for rec in _brex_backfill_records(acct["account_id"], per, seed):
-                results.append(await _ingest_record(req, tenant_id, channel, rec))
-    elif source == "ramp":
-        business_id = f"biz-{tenant_id.hex[:12]}"
-        for entity in _RAMP_ENTITIES:
-            for rec in _ramp_backfill_records(entity, business_id, per, seed):
-                results.append(await _ingest_record(req, tenant_id, channel, rec))
-    elif source == "gusto":
-        company_uuid = f"co-{tenant_id.hex[:12]}"
-        for entity in _GUSTO_ENTITIES:
-            for rec in _gusto_backfill_records(entity, company_uuid, per, seed):
-                results.append(await _ingest_record(req, tenant_id, channel, rec))
-    else:  # deel
-        for ctr in _DEEL_CONTRACTS:
-            for rec in _deel_backfill_records(ctr["contract_id"], per, seed):
-                results.append(await _ingest_record(req, tenant_id, channel, rec))
+    records = _finance_operations(source).backfill_records(tenant_id, per, seed)
+    results = [
+        await _ingest_record(req, tenant_id, channel, record)
+        for record in records
+    ]
 
     new = sum(1 for r in results if not r["deduped"])
     deduped = sum(1 for r in results if r["deduped"])
@@ -867,37 +1142,11 @@ async def live_emit(source: str, req: Request) -> JSONResponse:
     #   mercury/brex/deel = hex with `sha256=`; quickbooks/ramp/gusto = base64.
     # TODO(human): confirm brex/ramp/gusto/deel webhook signature schemes
     #   (header name, prefix, hex-vs-base64) against each provider's docs.
-    digest_encoding = "hex"
-    if source == "mercury":
-        payload, _org = _mercury_live_event("acc-checking", seq)
-        header_name = "Mercury-Signature"
-        sig_prefix = "sha256="
-    elif source == "quickbooks":
-        realm_id = f"realm-{tenant_id.hex[:12]}"
-        payload = _qbo_live_event(realm_id, seq)
-        header_name = "intuit-signature"
-        sig_prefix = ""  # QBO is base64, no prefix
-        digest_encoding = "base64"
-    elif source == "brex":
-        payload, _org = _brex_live_event("brex-cash", seq)
-        header_name = "Brex-Signature"
-        sig_prefix = "sha256="
-    elif source == "ramp":
-        business_id = f"biz-{tenant_id.hex[:12]}"
-        payload = _ramp_live_event(business_id, seq)
-        header_name = "x-ramp-signature"
-        sig_prefix = ""  # ramp default is base64, no prefix
-        digest_encoding = "base64"
-    elif source == "gusto":
-        company_uuid = f"co-{tenant_id.hex[:12]}"
-        payload = _gusto_live_event(company_uuid, seq)
-        header_name = "intuit-signature"
-        sig_prefix = ""  # gusto default mirrors QBO base64
-        digest_encoding = "base64"
-    else:  # deel
-        payload, _org = _deel_live_event("deel-ctr-eng", seq)
-        header_name = "Deel-Signature"
-        sig_prefix = "sha256="
+    live_event = _finance_operations(source).live_event(tenant_id, seq)
+    payload = live_event.payload
+    header_name = live_event.header_name
+    sig_prefix = live_event.signature_prefix
+    digest_encoding = live_event.digest_encoding
 
     raw = json.dumps(payload).encode("utf-8")
     cache = getattr(req.app.state, "_finance_secrets", {}) or {}

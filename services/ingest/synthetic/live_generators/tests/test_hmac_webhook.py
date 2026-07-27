@@ -48,8 +48,6 @@ class _T:
         self.deel_org = "deel-org-demo0"
         # IN-FIN3 HMAC sources.
         self.fireflies_workspace = "ffw-demo0"
-        self.miro_org = "miro-org-demo0"
-        self.miro_board = "miro-board-demo0"
         self.figma_webhook_id = "figwh-demo0"
         self.figma_team = "figteam-demo0"
         self.figma_file = "figfile-demo0"
@@ -97,8 +95,15 @@ async def test_tampered_signature_rejected(provider: str) -> None:
         # wrong base64 value is the tamper probe — NOT an "sha256=fff…" string.
         import base64
         bad = base64.b64encode(b"wrong-hibob-signature-tamper").decode("ascii")
-    elif provider in ("jira", "mercury", "brex", "deel",
-                      "fireflies", "miro", "figma", "ashby"):
+    elif provider in (
+        "jira",
+        "mercury",
+        "brex",
+        "deel",
+        "fireflies",
+        "figma",
+        "ashby",
+    ):
         # `sha256=`+hex schemes (incl. ashby, brex-shaped): keep the prefix so the
         # verifier reaches the HMAC compare and rejects on the wrong digest.
         bad = "sha256=" + ("f" * 64)

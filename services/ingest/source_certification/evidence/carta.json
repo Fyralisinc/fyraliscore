@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://docs.carta.com/",
       "api_version": "Carta API v1alpha",
-      "schema_sha256": null,
+      "schema_sha256": "6715d062faf754eff2dcf24ae33ec74889ee011e70d58f4ebd2e5edc23f1a8f2",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 playground schema lock and reviewer verification."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

@@ -47,6 +47,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import QuickBooksApiError
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.provider_transport import (
     tenant_preinstall_transport_kwargs,
 )
@@ -61,11 +62,6 @@ from services.ingest.integrations.quickbooks.onboarding import (
 
 
 log = structlog.get_logger("integrations.quickbooks.oauth")
-
-
-# Intuit production host. The operator may pass the sandbox host
-# (https://sandbox-quickbooks.api.intuit.com) via base_url when testing.
-_DEFAULT_BASE_URL = "https://quickbooks.api.intuit.com"
 
 
 router = APIRouter(prefix="/integrations/quickbooks", tags=["quickbooks"])
@@ -96,13 +92,14 @@ def _secret_store_from_request(request: Request) -> Any:
 def _require_creds(body: dict[str, Any]) -> tuple[str, str, str]:
     realm_id = (body.get("realm_id") or "").strip()
     access_token = (body.get("access_token") or "").strip()
-    base_url = (body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     if not realm_id:
         raise HTTPException(status_code=400, detail="realm_id is required")
     if not access_token:
         raise HTTPException(status_code=400, detail="access_token is required")
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="quickbooks_api",
+    )
     return realm_id, access_token, base_url
 
 

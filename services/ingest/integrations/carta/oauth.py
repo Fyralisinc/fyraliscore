@@ -70,17 +70,13 @@ from services.ingest.integrations.carta.client import (
     CartaClient,
 )
 from services.ingest.integrations.carta.onboarding import finalize_install
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.provider_transport import (
     tenant_preinstall_transport_kwargs,
 )
 
 
 log = structlog.get_logger("integrations.carta.oauth")
-
-
-# Production host CONFIRMED from the Issuer v1alpha1 OpenAPI `servers` list
-# (mock: https://mock-api.carta.com; playground: https://api.playground.carta.team).
-_DEFAULT_BASE_URL = "https://api.carta.com"
 
 
 router = APIRouter(prefix="/integrations/carta", tags=["carta"])
@@ -112,12 +108,13 @@ def _require_creds(body: dict[str, Any]) -> tuple[str, str, str | None]:
     """(access_token, base_url, issuer_id?) — issuer_id is optional; it can be
     enumerated. Accepts legacy `firm_id` as an alias for `issuer_id`."""
     access_token = (body.get("access_token") or "").strip()
-    base_url = (body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     issuer_id = (body.get("issuer_id") or body.get("firm_id") or "").strip() or None
     if not access_token:
         raise HTTPException(status_code=400, detail="access_token is required")
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="carta_api",
+    )
     return access_token, base_url, issuer_id
 
 

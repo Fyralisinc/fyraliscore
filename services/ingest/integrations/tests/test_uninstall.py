@@ -70,7 +70,7 @@ async def _seed_install(
     )
     row_id = uuid7()
     # `secret_ref` on provider_installations points at the *signing*
-    # secret ref so load_secrets returns it for HMAC verification.
+    # secret ref so load_installation_secrets returns it for HMAC verification.
     # (Bot token is addressable via its label.)
     await fresh_db.execute(
         "INSERT INTO provider_installations "

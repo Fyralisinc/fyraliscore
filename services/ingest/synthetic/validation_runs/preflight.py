@@ -52,7 +52,11 @@ from services.ingest.ingestion.fetchers import ramp as _ramp_fetcher
 from services.ingest.ingestion.fetchers import signal as _signal_fetcher
 from services.ingest.ingestion.fetchers import slack as _slack_fetcher
 from services.ingest.ingestion.handlers import get_handler
-from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
+from services.ingest.source_contract.catalog import (
+    SOURCE_DEFINITIONS,
+    source_definition,
+)
+from services.ingest.source_contract.runtime import resolve_callable_reference
 from services.ingest.synthetic.fixtures import (
     make_aws,
     make_brex,
@@ -384,45 +388,119 @@ async def _carta_records(fixture: dict[str, Any]) -> list[dict[str, Any]]:
     return list(result.records)
 
 
-_SOURCE_SPECS: dict[str, Any] = {
-    "gmail": (lambda: make_gmail_mailbox(email="preflight@example.com",
-                                         messages=3), _gmail_records),
-    "github": (lambda: make_github_repos(org_or_user="preflight", repos=1,
-                                          events_per_repo=2), _github_records),
-    "slack": (lambda: make_slack_workspace(team_id="T_PRE", channels=1,
-                                           messages_per_channel=3),
-              _slack_records),
-    "discord": (lambda: make_discord_guild(guild_id="G_PRE", channels=1,
-                                           messages_per_channel=3),
-                _discord_records),
-    # IN-FIN2 finance sources (additive — finance was not previously covered).
-    "brex": (lambda: make_brex(accounts=1, transactions_per_account=3,
-                               seed="pre"), _brex_records),
-    "ramp": (lambda: make_ramp(business_id="r-pre", entities=["transaction"],
-                               rows_per_entity=2), _ramp_records),
-    "gusto": (lambda: make_gusto(company_uuid="c-pre", entities=["employee"],
-                                 rows_per_entity=2), _gusto_records),
-    "deel": (lambda: make_deel(contracts=1, payments_per_contract=3,
-                               seed="pre"), _deel_records),
-    # Vertical-2 sources (additive — these verticals were not previously covered).
-    "fireflies": (lambda: make_fireflies(workspace_id="ws-pre", transcripts=3,
-                                         seed="pre"), _fireflies_records),
-    "signal": (lambda: make_signal(threads=1, messages_per_thread=3,
-                                   seed="pre"), _signal_records),
-    "aws": (lambda: make_aws(account_id="900000000001", region="us-east-1",
-                             events=3, base_ms=_AWS_PREFLIGHT_BASE_MS,
-                             seed="pre"), _aws_records),
-    "miro": (lambda: make_miro(org_id="org-pre", boards=1, items_per_board=3,
-                               seed="pre"), _miro_records),
-    "figma": (lambda: make_figma(team_id="team-pre", events=3,
-                                 seed="pre"), _figma_records),
-    "hibob": (lambda: make_hibob(company_id="hibob-co-pre",
-                                 entities=["employee", "lifecycle", "timeoff", "payroll"],
-                                 rows_per_entity=1, seed="pre"),
-              _hibob_records),
-    "carta": (lambda: make_carta(firm_id="firm-pre", rows_per_entity=1,
-                                 seed="pre"), _carta_records),
-}
+async def preflight_records_gmail() -> list[dict[str, Any]]:
+    return await _gmail_records(
+        make_gmail_mailbox(email="preflight@example.com", messages=3),
+    )
+
+
+async def preflight_records_github() -> list[dict[str, Any]]:
+    return await _github_records(
+        make_github_repos(
+            org_or_user="preflight", repos=1, events_per_repo=2,
+        ),
+    )
+
+
+async def preflight_records_slack() -> list[dict[str, Any]]:
+    return await _slack_records(
+        make_slack_workspace(
+            team_id="T_PRE", channels=1, messages_per_channel=3,
+        ),
+    )
+
+
+async def preflight_records_discord() -> list[dict[str, Any]]:
+    return await _discord_records(
+        make_discord_guild(
+            guild_id="G_PRE", channels=1, messages_per_channel=3,
+        ),
+    )
+
+
+async def preflight_records_brex() -> list[dict[str, Any]]:
+    return await _brex_records(
+        make_brex(accounts=1, transactions_per_account=3, seed="pre"),
+    )
+
+
+async def preflight_records_ramp() -> list[dict[str, Any]]:
+    return await _ramp_records(
+        make_ramp(
+            business_id="r-pre",
+            entities=["transaction"],
+            rows_per_entity=2,
+        ),
+    )
+
+
+async def preflight_records_gusto() -> list[dict[str, Any]]:
+    return await _gusto_records(
+        make_gusto(
+            company_uuid="c-pre",
+            entities=["employee"],
+            rows_per_entity=2,
+        ),
+    )
+
+
+async def preflight_records_deel() -> list[dict[str, Any]]:
+    return await _deel_records(
+        make_deel(contracts=1, payments_per_contract=3, seed="pre"),
+    )
+
+
+async def preflight_records_fireflies() -> list[dict[str, Any]]:
+    return await _fireflies_records(
+        make_fireflies(workspace_id="ws-pre", transcripts=3, seed="pre"),
+    )
+
+
+async def preflight_records_signal() -> list[dict[str, Any]]:
+    return await _signal_records(
+        make_signal(threads=1, messages_per_thread=3, seed="pre"),
+    )
+
+
+async def preflight_records_aws() -> list[dict[str, Any]]:
+    return await _aws_records(
+        make_aws(
+            account_id="900000000001",
+            region="us-east-1",
+            events=3,
+            base_ms=_AWS_PREFLIGHT_BASE_MS,
+            seed="pre",
+        ),
+    )
+
+
+async def preflight_records_miro() -> list[dict[str, Any]]:
+    return await _miro_records(
+        make_miro(org_id="org-pre", boards=1, items_per_board=3, seed="pre"),
+    )
+
+
+async def preflight_records_figma() -> list[dict[str, Any]]:
+    return await _figma_records(
+        make_figma(team_id="team-pre", events=3, seed="pre"),
+    )
+
+
+async def preflight_records_hibob() -> list[dict[str, Any]]:
+    return await _hibob_records(
+        make_hibob(
+            company_id="hibob-co-pre",
+            entities=["employee", "lifecycle", "timeoff", "payroll"],
+            rows_per_entity=1,
+            seed="pre",
+        ),
+    )
+
+
+async def preflight_records_carta() -> list[dict[str, Any]]:
+    return await _carta_records(
+        make_carta(firm_id="firm-pre", rows_per_entity=1, seed="pre"),
+    )
 
 
 _BOUND_RE = re.compile(
@@ -467,9 +545,13 @@ async def preflight_source(
     source: str, pool: asyncpg.Pool,
 ) -> SourcePreflightResult:
     """Run the realism gate for one source. Raises PreflightFailure."""
-    make_fixture, get_records = _SOURCE_SPECS[source]
-    fixture = make_fixture()
-    channel = resolve_channel(source, "backfill")
+    definition = source_definition(source)
+    runtime = definition.certification.validation_runtime
+    if runtime is None or runtime.preflight_binding is None:
+        raise PreflightFailure(
+            f"{source}: source contract declares no preflight binding"
+        )
+    channel = definition.channel_for_ingress("backfill")
     if channel is None:
         raise PreflightFailure(
             f"{source}: no channel mapping for (source, 'backfill') — "
@@ -477,7 +559,7 @@ async def preflight_source(
         )
     handler = get_handler(channel)
 
-    records = await get_records(fixture)
+    records = await resolve_callable_reference(runtime.preflight_binding)()
     if not records:
         raise PreflightFailure(
             f"{source}: fetcher produced zero records from a non-empty "
@@ -533,5 +615,13 @@ async def run_preflight(
     """Run the realism gate for every source. Raises on the first
     failure (fail-fast — a 90-minute run should not start on a known-bad
     fixture)."""
-    sources = sources or list(_SOURCE_SPECS.keys())
+    sources = sources or [
+        definition.source_id
+        for definition in SOURCE_DEFINITIONS
+        if (
+            definition.certification.validation_runtime is not None
+            and definition.certification.validation_runtime.preflight_binding
+            is not None
+        )
+    ]
     return [await preflight_source(s, pool) for s in sources]

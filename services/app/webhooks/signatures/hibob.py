@@ -13,7 +13,7 @@ The three scheme knobs are exposed as module constants (`_HEADER_NAME`,
 matches the Brex template this was cloned from.
 
 The per-tenant signing secret(s) are resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='hibob') the seed/onboarding step registers. The verifier loops
 over ALL active secrets so a rotation (two valid secrets in flight) verifies.
 

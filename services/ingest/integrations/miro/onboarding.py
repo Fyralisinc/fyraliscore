@@ -1,21 +1,13 @@
-"""services/ingest/integrations/miro/onboarding.py — install + provision.
+"""Install and provision the poll-only Miro source.
 
 Miro authenticates with a long-lived org-app Bearer token against the canonical
-Miro API host. Onboarding mirrors the Brex dedicated-table shape (NOT the OAuth
-bot-token path):
+Miro API host:
 
   finalize_install() — UPSERT a miro_installations row, INSERT one miro_boards
   row per board to shard, and emit an onboarding_triggers row (source='miro') so
   the existing M6 backfill chain (oauth_poller -> tenant_onboarding ->
   source_onboarding -> shard_fetch -> reconciler) fires. All in one
   tenant-scoped transaction.
-
-  register_webhook_installation() — register the LIVE-path row in
-  provider_installations (provider='miro', installation_id=org_id,
-  secret_ref=webhook HMAC secret) so the webhook edge resolves the tenant +
-  loads the signing secret via the existing machinery. Backfill uses
-  miro_installations; live uses provider_installations — the two are seeded
-  together but stay independent.
 """
 from __future__ import annotations
 
@@ -27,9 +19,6 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from lib.shared.provider_installations import (
-    upsert_provider_installation_for_tenant,
-)
 from services.ingest.integrations.miro import metrics
 
 
@@ -44,17 +33,19 @@ async def finalize_install(
     boards: list[dict],
     secret_ref: str | None = None,
     org_id: str | None = None,
-    webhook_secret_ref: str | None = None,
 ) -> UUID:
     """UPSERT the install + its boards + an onboarding trigger atomically.
 
     `boards` is the resolved set of boards to backfill (enumerate via
     MiroClient.list_boards at seed time); each dict carries at least
     ``board_id`` and optionally ``board_name`` / ``board_kind``. Returns the
-    miro_installations id. Idempotent on (tenant_id, base_url) and per
-    (install, board_id).
+    miro_installations id. Idempotent on the exact
+    ``(tenant_id, org_id)`` provider scope when it is known, with
+    ``(tenant_id, base_url)`` retained only for unresolved legacy installs, and
+    per ``(install, board_id)``.
     """
     base_url = base_url.rstrip("/")
+    org_id = org_id.strip() if org_id and org_id.strip() else None
     # Dedup boards defensively on the natural key.
     seen: set[str] = set()
     deduped: list[dict] = []
@@ -68,19 +59,21 @@ async def finalize_install(
         install_id = await tctx.fetchval(
             """
             INSERT INTO miro_installations (
-                id, tenant_id, base_url, secret_ref,
-                org_id, webhook_secret_ref
-            ) VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (tenant_id, base_url) DO UPDATE
-                SET secret_ref = COALESCE(EXCLUDED.secret_ref, miro_installations.secret_ref),
+                id, tenant_id, base_url, secret_ref, org_id
+            ) VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (
+                tenant_id,
+                (org_id IS NULL),
+                (COALESCE(org_id, base_url))
+            ) DO UPDATE
+                SET base_url = EXCLUDED.base_url,
+                    secret_ref = COALESCE(EXCLUDED.secret_ref, miro_installations.secret_ref),
                     org_id = COALESCE(EXCLUDED.org_id, miro_installations.org_id),
-                    webhook_secret_ref = COALESCE(
-                        EXCLUDED.webhook_secret_ref, miro_installations.webhook_secret_ref),
                     disabled_at = NULL
             RETURNING id
             """,
             uuid7(), tenant_id, base_url, secret_ref,
-            org_id, webhook_secret_ref,
+            org_id,
         )
 
         for b in deduped:
@@ -128,24 +121,4 @@ async def finalize_install(
     return install_id
 
 
-async def register_webhook_installation(
-    pool: asyncpg.Pool,
-    *,
-    tenant_id: UUID,
-    org_id: str,
-    webhook_secret_ref: str | None,
-) -> None:
-    """Register / refresh the provider_installations row the webhook edge uses
-    to resolve the tenant + load the HMAC signing secret. installation_id is the
-    Miro org id (matches tenant_resolver._extract_miro)."""
-    await upsert_provider_installation_for_tenant(
-        pool,
-        provider="miro",
-        tenant_id=tenant_id,
-        installation_id=org_id,
-        secret_ref=webhook_secret_ref,
-    )
-    log.info("miro_webhook_installation_registered", org_id=org_id)
-
-
-__all__ = ["finalize_install", "register_webhook_installation"]
+__all__ = ["finalize_install"]

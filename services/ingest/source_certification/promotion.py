@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -18,6 +19,7 @@ from services.ingest.source_certification.catalog import (
     SOURCE_CERTIFICATION_CATALOG,
 )
 from services.ingest.source_certification.evaluator import canonical_json
+from services.ingest.source_certification.models import SourceCertificationSpec
 from services.ingest.source_contract.catalog import CANONICAL_SOURCE_IDS
 
 
@@ -45,6 +47,19 @@ _SCENARIO_RESULT_FIELDS = frozenset(
 _CANARY_OPERATION_RESULT_FIELDS = frozenset(
     {"operation_id", "state", "artifact_uri", "failures"}
 )
+_SUITE_RESULT_FIELDS = frozenset(
+    {
+        "kind",
+        "state",
+        "artifact_uri",
+        "started_at",
+        "completed_at",
+        "metrics",
+        "limiting_component",
+        "failures",
+    }
+)
+_REQUIRED_SUITE_KINDS = frozenset({"historical", "live", "combined"})
 
 
 class PromotionManifestError(ValueError):
@@ -91,6 +106,16 @@ def _integer(value: object, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise PromotionManifestError(f"{field} must be an integer")
     return value
+
+
+def _number(value: object, field: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
+        raise PromotionManifestError(f"{field} must be a finite number")
+    return float(value)
 
 
 def _verify_signature(
@@ -167,6 +192,139 @@ def _validate_result_coverage(
         )
 
 
+def _suite_metrics(value: object, *, field: str) -> dict[str, float]:
+    if isinstance(value, Mapping):
+        raw_items = list(value.items())
+    elif isinstance(value, (list, tuple)):
+        raw_items = []
+        for index, raw_pair in enumerate(value):
+            if not isinstance(raw_pair, (list, tuple)) or len(raw_pair) != 2:
+                raise PromotionManifestError(
+                    f"{field}[{index}] must be a metric name/value pair"
+                )
+            raw_items.append((raw_pair[0], raw_pair[1]))
+    else:
+        raise PromotionManifestError(
+            f"{field} must be an object or an array of name/value pairs"
+        )
+
+    metrics: dict[str, float] = {}
+    for index, (raw_name, raw_value) in enumerate(raw_items):
+        if not isinstance(raw_name, str) or not raw_name:
+            raise PromotionManifestError(
+                f"{field}[{index}] metric name must be a non-empty string"
+            )
+        if raw_name in metrics:
+            raise PromotionManifestError(
+                f"{field} contains duplicate metric {raw_name!r}"
+            )
+        metrics[raw_name] = _number(raw_value, f"{field}.{raw_name}")
+    return metrics
+
+
+def _validate_suite_coverage(
+    value: object,
+    *,
+    spec: SourceCertificationSpec,
+    field: str,
+) -> dict[str, dict[str, float]]:
+    if not isinstance(value, list):
+        raise PromotionManifestError(f"{field} must be an array")
+    declared_suites = {suite.kind: suite for suite in spec.load_suites}
+    results: dict[str, dict[str, float]] = {}
+    for index, raw_suite in enumerate(value):
+        result_field = f"{field}[{index}]"
+        suite = _mapping(raw_suite, result_field)
+        _exact_fields(suite, _SUITE_RESULT_FIELDS, result_field)
+        kind = suite.get("kind")
+        if not isinstance(kind, str) or kind not in _REQUIRED_SUITE_KINDS:
+            raise PromotionManifestError(
+                f"{result_field}.kind must be historical, live, or combined"
+            )
+        if kind in results:
+            raise PromotionManifestError(f"{field} contains duplicate kind {kind!r}")
+        if suite.get("state") != "passed":
+            raise PromotionManifestError(f"{result_field}.state must equal passed")
+        artifact_uri = suite.get("artifact_uri")
+        if not isinstance(artifact_uri, str) or not artifact_uri.strip():
+            raise PromotionManifestError(
+                f"{result_field}.artifact_uri must be non-empty"
+            )
+        limiting_component = suite.get("limiting_component")
+        if (
+            not isinstance(limiting_component, str)
+            or not limiting_component.strip()
+        ):
+            raise PromotionManifestError(
+                f"{result_field}.limiting_component must be non-empty"
+            )
+        if suite.get("failures") != []:
+            raise PromotionManifestError(f"{result_field}.failures must be empty")
+        metrics = _suite_metrics(
+            suite.get("metrics"),
+            field=f"{result_field}.metrics",
+        )
+        declaration = declared_suites[kind]
+        for metric_name in (
+            "tenants",
+            "installations_per_tenant",
+            "replicas",
+        ):
+            measured = metrics.get(metric_name)
+            expected = getattr(declaration, metric_name)
+            if measured != expected:
+                raise PromotionManifestError(
+                    f"{result_field}.metrics.{metric_name} must equal declared "
+                    f"topology value {expected}"
+                )
+        results[kind] = metrics
+    if set(results) != _REQUIRED_SUITE_KINDS or len(results) != 3:
+        raise PromotionManifestError(
+            f"{field} must cover exactly historical, live, and combined"
+        )
+    return results
+
+
+def _validate_envelope_consistency(
+    *,
+    provider_safe: Mapping[str, Mapping[str, float]],
+    fyralis_ceiling: Mapping[str, Mapping[str, float]],
+    field: str,
+) -> None:
+    for kind in sorted(_REQUIRED_SUITE_KINDS):
+        provider_rate = provider_safe[kind].get("stable_rate")
+        ceiling_rate = fyralis_ceiling[kind].get("stable_rate")
+        headroom = fyralis_ceiling[kind].get("headroom_ratio")
+        if provider_rate is None or provider_rate <= 0:
+            raise PromotionManifestError(
+                f"{field}.provider_safe_suites.{kind}.stable_rate must be > 0"
+            )
+        if ceiling_rate is None or ceiling_rate <= 0:
+            raise PromotionManifestError(
+                f"{field}.fyralis_ceiling_suites.{kind}.stable_rate must be > 0"
+            )
+        if headroom is None:
+            raise PromotionManifestError(
+                f"{field}.fyralis_ceiling_suites.{kind}.headroom_ratio is required"
+            )
+        if ceiling_rate < provider_rate:
+            raise PromotionManifestError(
+                f"{field}.fyralis_ceiling_suites.{kind}.stable_rate must be >= "
+                "the provider-safe stable_rate"
+            )
+        expected_headroom = ceiling_rate / provider_rate
+        if not math.isclose(
+            headroom,
+            expected_headroom,
+            rel_tol=1e-6,
+            abs_tol=1e-9,
+        ):
+            raise PromotionManifestError(
+                f"{field}.fyralis_ceiling_suites.{kind}.headroom_ratio must "
+                "equal ceiling stable_rate / provider-safe stable_rate"
+            )
+
+
 def _validate_source_artifact(value: object, *, index: int) -> str:
     field = f"sources[{index}]"
     artifact = _mapping(value, field)
@@ -205,6 +363,26 @@ def _validate_source_artifact(value: object, *, index: int) -> str:
         identity_field="scenario_id",
         expected_fields=_SCENARIO_RESULT_FIELDS,
         field=f"{field}.input.scenario_results",
+    )
+    provider_safe = _validate_suite_coverage(
+        supplied.get("provider_safe_suites"),
+        spec=spec,
+        field=f"{field}.input.provider_safe_suites",
+    )
+    fyralis_ceiling = _validate_suite_coverage(
+        supplied.get("fyralis_ceiling_suites"),
+        spec=spec,
+        field=f"{field}.input.fyralis_ceiling_suites",
+    )
+    _validate_suite_coverage(
+        supplied.get("fault_recovery_suites"),
+        spec=spec,
+        field=f"{field}.input.fault_recovery_suites",
+    )
+    _validate_envelope_consistency(
+        provider_safe=provider_safe,
+        fyralis_ceiling=fyralis_ceiling,
+        field=f"{field}.input",
     )
     canary = _mapping(supplied.get("canary"), f"{field}.input.canary")
     if canary.get("state") != "passed":

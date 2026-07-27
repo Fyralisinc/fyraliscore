@@ -1,10 +1,71 @@
 """Shared integration-test database baseline helpers."""
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from uuid import UUID
 
 import asyncpg
+
+
+_SOURCE_CATALOG_ARTIFACT = Path(__file__).with_name(
+    "source_catalog.generated.json"
+)
+_SOURCE_CATALOG_SCHEMA = "fyralis.test-source-catalog.v1"
+
+
+def _test_source_catalog_rows() -> list[tuple[object, ...]]:
+    """Load the checked-in catalog derivative without importing services."""
+
+    payload = json.loads(_SOURCE_CATALOG_ARTIFACT.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("schemaVersion") != (
+        _SOURCE_CATALOG_SCHEMA
+    ):
+        raise RuntimeError("test source catalog artifact has an invalid schema")
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list) or not raw_rows:
+        raise RuntimeError("test source catalog artifact must contain rows")
+
+    rows: list[tuple[object, ...]] = []
+    source_ids: set[str] = set()
+    for raw in raw_rows:
+        if not isinstance(raw, dict) or set(raw) != {
+            "aliases",
+            "dataPlane",
+            "historicalSupported",
+            "id",
+            "uiSlug",
+        }:
+            raise RuntimeError("test source catalog artifact row is malformed")
+        source_id = raw["id"]
+        ui_slug = raw["uiSlug"]
+        aliases = raw["aliases"]
+        historical_supported = raw["historicalSupported"]
+        data_plane = raw["dataPlane"]
+        if (
+            not isinstance(source_id, str)
+            or not source_id
+            or source_id in source_ids
+            or not isinstance(ui_slug, str)
+            or not ui_slug
+            or not isinstance(aliases, list)
+            or not all(isinstance(alias, str) and alias for alias in aliases)
+            or not isinstance(historical_supported, bool)
+            or not isinstance(data_plane, bool)
+        ):
+            raise RuntimeError("test source catalog artifact row is invalid")
+        source_ids.add(source_id)
+        rows.append(
+            (
+                source_id,
+                ui_slug,
+                aliases,
+                historical_supported,
+                data_plane,
+            )
+        )
+    return rows
 
 
 async def seed_test_source_catalog(conn: asyncpg.Connection) -> None:
@@ -17,13 +78,11 @@ async def seed_test_source_catalog(conn: asyncpg.Connection) -> None:
     production parity gate.
     """
 
-    from services.ingest.source_contract.catalog import SOURCE_DEFINITIONS
-
     await conn.executemany(
         """
         INSERT INTO ingestion_source_catalog (
             id, ui_slug, aliases, historical_supported, data_plane
-        ) VALUES ($1, $2, $3::text[], $4, TRUE)
+        ) VALUES ($1, $2, $3::text[], $4, $5)
         ON CONFLICT (id) DO UPDATE SET
             ui_slug = EXCLUDED.ui_slug,
             aliases = EXCLUDED.aliases,
@@ -31,15 +90,7 @@ async def seed_test_source_catalog(conn: asyncpg.Connection) -> None:
             data_plane = EXCLUDED.data_plane,
             updated_at = now()
         """,
-        [
-            (
-                source.source_id,
-                source.ui_slug,
-                list(source.aliases),
-                source.history is not None,
-            )
-            for source in SOURCE_DEFINITIONS
-        ],
+        _test_source_catalog_rows(),
     )
 
 

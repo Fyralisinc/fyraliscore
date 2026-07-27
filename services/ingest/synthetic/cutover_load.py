@@ -224,7 +224,7 @@ async def run(config: LoadConfig) -> dict[str, Any]:
                     body = json.dumps(payload).encode("utf-8")
                     sig = _github_sign(config.github_webhook_secret, body)
                     r = await client.post(
-                        f"{config.target_url}/webhooks/github/events",
+                        f"{config.target_url}/webhooks/github",
                         content=body,
                         headers={
                             "Content-Type": "application/json",

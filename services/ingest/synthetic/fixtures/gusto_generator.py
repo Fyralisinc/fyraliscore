@@ -28,6 +28,7 @@ anchored at `base_iso`; ids/amounts are derived from a stable SHA-256 digest of
 (company_uuid, entity_type, idx). Re-running with the same args yields
 byte-identical output.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -39,11 +40,9 @@ from typing import Any
 DEFAULT_ENTITIES: tuple[str, ...] = ("employee", "payroll")
 
 _FIRST_NAMES = ("Ava", "Noah", "Mia", "Liam", "Zoe", "Eli", "Ivy", "Max")
-_LAST_NAMES = ("Reyes", "Chen", "Okafor", "Silva", "Novak", "Hart", "Kim",
-               "Patel")
+_LAST_NAMES = ("Reyes", "Chen", "Okafor", "Silva", "Novak", "Hart", "Kim", "Patel")
 _DEPARTMENTS = ("Engineering", "Sales", "Operations", "Finance")
-_TITLES = ("Software Engineer", "Account Executive", "Ops Manager",
-           "Financial Analyst")
+_TITLES = ("Software Engineer", "Account Executive", "Ops Manager", "Financial Analyst")
 
 
 def make_gusto(
@@ -83,11 +82,11 @@ def make_gusto(
     entities_out: dict[str, list[dict[str, Any]]] = {}
     for entity_type in ents:
         if entity_type == "payroll":
-            rows = [_payroll(company_uuid, idx, base)
-                    for idx in range(rows_per_entity)]
+            rows = [_payroll(company_uuid, idx, base) for idx in range(rows_per_entity)]
         else:  # employee (and any future people-shaped kind)
-            rows = [_employee(company_uuid, idx, base)
-                    for idx in range(rows_per_entity)]
+            rows = [
+                _employee(company_uuid, idx, base) for idx in range(rows_per_entity)
+            ]
         entities_out[entity_type] = rows
 
     return {
@@ -101,6 +100,7 @@ def make_gusto(
 # Per-entity builders
 # ---------------------------------------------------------------------
 
+
 def _employee(company_uuid: str, idx: int, base: datetime) -> dict[str, Any]:
     seed = _digest(company_uuid, "employee", idx)
     uuid = _uuid_from(seed)
@@ -108,7 +108,13 @@ def _employee(company_uuid: str, idx: int, base: datetime) -> dict[str, Any]:
     last = _LAST_NAMES[(idx + int(seed[:2], 16)) % len(_LAST_NAMES)]
     # Annual salary as a decimal STRING in dollars (real wire shape).
     rate = f"{60000 + (int(seed[:6], 16) % 90000)}.00"
-    hire_date = (base - timedelta(days=200 + idx * 30)).date().isoformat()
+    # Keep the default certification corpus inside the Observation partition
+    # window.  The old 200-day offset put the first employee at 2025-06-19
+    # while the checked-in partitions begin at 2025-07-01, so the full Run 4
+    # preflight correctly failed before starting the ingestion services.
+    # Employees remain established hires, and using a one-day step preserves
+    # stable ordering without pushing ordinary multi-row fixtures years back.
+    hire_date = (base - timedelta(days=30 + idx)).date().isoformat()
 
     return {
         "uuid": uuid,
@@ -130,14 +136,16 @@ def _employee(company_uuid: str, idx: int, base: datetime) -> dict[str, Any]:
         "has_ssn": True,
         "phone": None,
         "preferred_first_name": None,
-        "jobs": [{
-            "uuid": _uuid_from(_digest(uuid, "job", 0)),
-            "primary": True,
-            "title": _TITLES[idx % len(_TITLES)],
-            "hire_date": hire_date,
-            "rate": rate,
-            "payment_unit": "Year",
-        }],
+        "jobs": [
+            {
+                "uuid": _uuid_from(_digest(uuid, "job", 0)),
+                "primary": True,
+                "title": _TITLES[idx % len(_TITLES)],
+                "hire_date": hire_date,
+                "rate": rate,
+                "payment_unit": "Year",
+            }
+        ],
         "eligible_paid_time_off": [],
         "terminations": [],
         "garnishments": [],
@@ -196,6 +204,7 @@ def _payroll(company_uuid: str, idx: int, base: datetime) -> dict[str, Any]:
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+
 
 def _parse_iso(value: str) -> datetime:
     s = value

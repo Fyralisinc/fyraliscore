@@ -60,9 +60,7 @@ def _fixtures() -> dict[str, list[dict]]:
         "carta": [make_carta(rows_per_entity=3)],
         "deel": [make_deel(contracts=2, payments_per_contract=3)],
         "figma": [make_figma(team_id="team-wave-b", files=1, events=4)],
-        "fireflies": [
-            make_fireflies(workspace_id="workspace-wave-b", transcripts=4)
-        ],
+        "fireflies": [make_fireflies(workspace_id="workspace-wave-b", transcripts=4)],
         "google_calendar": [
             make_google_calendar(
                 calendars=["calendar@example.test"], events_per_calendar=3
@@ -102,9 +100,7 @@ async def test_wave_b_generator_fixtures_reach_all_provider_shaped_routes() -> N
                 headers={"Authorization": "Bearer carta-test"},
             ),
             "deel": await client.get("/deel/contracts"),
-            "figma": await client.get(
-                "/figma/v1/teams/team-wave-b/projects"
-            ),
+            "figma": await client.get("/figma/v1/teams/team-wave-b/projects"),
             "fireflies": await client.post(
                 "/fireflies/graphql", json={"query": "query { user { id } }"}
             ),
@@ -115,18 +111,14 @@ async def test_wave_b_generator_fixtures_reach_all_provider_shaped_routes() -> N
             ),
             "google_drive": await client.get("/gdrive/drive/v3/files"),
             "grafana": await client.get("/grafana/api/annotations"),
-            "gusto": await client.get(
-                f"/gusto/v1/companies/{gusto_id}/employees"
-            ),
+            "gusto": await client.get(f"/gusto/v1/companies/{gusto_id}/employees"),
             "jira": await client.get("/jira/rest/api/3/project/search"),
             "mercury": await client.get("/mercury/accounts"),
             "miro": await client.get("/miro/boards"),
             "quickbooks": await client.get(
                 "/quickbooks/v3/company/realm/query",
                 params={
-                    "query": (
-                        "SELECT * FROM Invoice STARTPOSITION 1 MAXRESULTS 1"
-                    )
+                    "query": ("SELECT * FROM Invoice STARTPOSITION 1 MAXRESULTS 1")
                 },
             ),
             "ramp": await client.get("/ramp/business"),
@@ -139,10 +131,7 @@ async def test_wave_b_generator_fixtures_reach_all_provider_shaped_routes() -> N
     assert responses["carta"].json()["issuers"][0]["id"] == carta_id
     assert responses["deel"].json()["data"]
     assert responses["figma"].json()["projects"][0]["id"] == "mock-project"
-    assert (
-        responses["fireflies"].json()["data"]["user"]["id"]
-        == "workspace-wave-b"
-    )
+    assert responses["fireflies"].json()["data"]["user"]["id"] == "workspace-wave-b"
     assert len(responses["google_calendar"].json()["items"]) == 3
     assert len(responses["google_drive"].json()["files"]) == 3
     assert len(responses["grafana"].json()) == 4
@@ -150,13 +139,63 @@ async def test_wave_b_generator_fixtures_reach_all_provider_shaped_routes() -> N
     assert responses["jira"].json()["values"]
     assert responses["mercury"].json()["accounts"]
     assert responses["miro"].json()["data"]
-    assert (
-        len(
-            responses["quickbooks"].json()["QueryResponse"]["Invoice"]
-        )
-        == 1
-    )
+    assert len(responses["quickbooks"].json()["QueryResponse"]["Invoice"]) == 1
     assert responses["ramp"].json()["id"] == fixtures["ramp"][0]["business_id"]
+
+
+async def test_google_drive_multi_install_fixtures_are_drive_scoped() -> None:
+    fixtures = [
+        make_google_drive(
+            targets=[
+                {
+                    "owner_email": f"owner-{drive_id}@example.test",
+                    "drive_id": drive_id,
+                    "drive_kind": "shared_drive",
+                }
+            ],
+            files_per_target=file_count,
+        )
+        for drive_id, file_count in (("drive-a", 2), ("drive-b", 3))
+    ]
+    app = build_provider_lab_app(fixtures={"google_drive": fixtures})
+
+    async with httpx.AsyncClient(
+        transport=_transport(app),
+        base_url="http://provider-lab",
+    ) as client:
+        drive_a = await client.get(
+            "/gdrive/drive/v3/files",
+            params={"driveId": "drive-a"},
+        )
+        drive_b = await client.get(
+            "/gdrive/drive/v3/files",
+            params={"driveId": "drive-b"},
+        )
+        unscoped = await client.get("/gdrive/drive/v3/files")
+
+    assert [len(drive_a.json()["files"]), len(drive_b.json()["files"])] == [2, 3]
+    assert {file["id"] for file in drive_a.json()["files"]}.isdisjoint(
+        file["id"] for file in drive_b.json()["files"]
+    )
+    assert unscoped.json()["files"] == []
+
+
+def test_google_drive_duplicate_target_identity_is_rejected() -> None:
+    duplicate = [
+        make_google_drive(
+            targets=[
+                {
+                    "owner_email": f"owner-{index}@example.test",
+                    "drive_id": "duplicate-drive",
+                    "drive_kind": "shared_drive",
+                }
+            ],
+        )
+        for index in range(2)
+    ]
+
+    with pytest.raises(ValueError, match="duplicate shared-drive identity"):
+        build_provider_lab_app(fixtures={"google_drive": duplicate})
 
 
 async def test_wave_b_secondary_declared_surfaces_are_provider_shaped() -> None:
@@ -177,9 +216,7 @@ async def test_wave_b_secondary_declared_surfaces_are_provider_shaped() -> None:
     ) as client:
         carta_headers = {"Authorization": "Bearer carta-test"}
         calls = {
-            "brex_card_accounts": await client.get(
-                "/brex/v2/accounts/card"
-            ),
+            "brex_card_accounts": await client.get("/brex/v2/accounts/card"),
             "brex_card_transactions": await client.get(
                 "/brex/v2/transactions/card/primary"
             ),
@@ -199,24 +236,14 @@ async def test_wave_b_secondary_declared_surfaces_are_provider_shaped() -> None:
                 f"/carta/v1alpha1/issuers/{carta_id}/convertibleNotes",
                 headers=carta_headers,
             ),
-            "deel_contract": await client.get(
-                f"/deel/contracts/{deel_contract}"
-            ),
-            "figma_files": await client.get(
-                "/figma/v1/projects/mock-project/files"
-            ),
+            "deel_contract": await client.get(f"/deel/contracts/{deel_contract}"),
+            "figma_files": await client.get("/figma/v1/projects/mock-project/files"),
             "figma_file": await client.get(f"/figma/v1/files/{figma_key}"),
-            "figma_versions": await client.get(
-                f"/figma/v1/files/{figma_key}/versions"
-            ),
-            "figma_comments": await client.get(
-                f"/figma/v1/files/{figma_key}/comments"
-            ),
+            "figma_versions": await client.get(f"/figma/v1/files/{figma_key}/versions"),
+            "figma_comments": await client.get(f"/figma/v1/files/{figma_key}/comments"),
             "gcal_token": await client.post("/gcal/token"),
             "gdrive_token": await client.post("/gdrive/token"),
-            "gdrive_start": await client.get(
-                "/gdrive/drive/v3/changes/startPageToken"
-            ),
+            "gdrive_start": await client.get("/gdrive/drive/v3/changes/startPageToken"),
             "gdrive_drives": await client.get("/gdrive/drive/v3/drives"),
             "gdrive_export": await client.get(
                 f"/gdrive/drive/v3/files/{drive_file}/export"
@@ -231,17 +258,13 @@ async def test_wave_b_secondary_declared_surfaces_are_provider_shaped() -> None:
                 f"/gdrive/drive/v3/files/{drive_file}/revisions"
             ),
             "grafana_org": await client.get("/grafana/api/org"),
-            "gusto_company": await client.get(
-                f"/gusto/v1/companies/{gusto_id}"
-            ),
+            "gusto_company": await client.get(f"/gusto/v1/companies/{gusto_id}"),
             "jira_count": await client.post(
                 "/jira/rest/api/3/search/approximate-count",
                 json={"jql": f'project = "{jira_key}"'},
             ),
             "jira_myself": await client.get("/jira/rest/api/3/myself"),
-            "mercury_account": await client.get(
-                f"/mercury/account/{mercury_account}"
-            ),
+            "mercury_account": await client.get(f"/mercury/account/{mercury_account}"),
             "miro_board": await client.get(f"/miro/boards/{miro_board}"),
             "qbo_company": await client.get(
                 "/quickbooks/v3/company/realm/companyinfo/realm"
@@ -363,15 +386,9 @@ async def test_cursor_token_and_header_pagination_matches_legacy_mocks() -> None
         )
         quickbooks_page = await client.get(
             "/quickbooks/v3/company/realm/query",
-            params={
-                "query": (
-                    "SELECT * FROM Invoice STARTPOSITION 2 MAXRESULTS 1"
-                )
-            },
+            params={"query": ("SELECT * FROM Invoice STARTPOSITION 2 MAXRESULTS 1")},
         )
-        ramp_page = await client.get(
-            "/ramp/transactions", params={"page_size": 2}
-        )
+        ramp_page = await client.get("/ramp/transactions", params={"page_size": 2})
         ramp_next = await client.get(ramp_page.json()["page"]["next"])
 
     assert brex_page.json()["items"] != brex_next.json()["items"]
@@ -396,12 +413,12 @@ async def test_cursor_token_and_header_pagination_matches_legacy_mocks() -> None
 
 async def test_provider_filters_delta_modes_and_expired_google_tokens() -> None:
     fixtures = _fixtures()
-    calendar_event = fixtures["google_calendar"][0]["events"][
-        "calendar@example.test"
-    ][0]
-    fixtures["google_calendar"][0]["delta"][
-        "calendar@example.test"
-    ] = [{**calendar_event, "id": "delta-calendar-event"}]
+    calendar_event = fixtures["google_calendar"][0]["events"]["calendar@example.test"][
+        0
+    ]
+    fixtures["google_calendar"][0]["delta"]["calendar@example.test"] = [
+        {**calendar_event, "id": "delta-calendar-event"}
+    ]
     drive_target = fixtures["google_drive"][0]["targets"][0]
     drive_target["changes"] = [
         {"fileId": "file-1", "removed": False},

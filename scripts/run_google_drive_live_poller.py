@@ -22,6 +22,11 @@ from services.ingest.integrations.google_drive.live_poller import run_forever
 
 
 async def _main() -> None:
+    from services.ingest.source_contract.runtime import (
+        validate_live_worker_startup,
+    )
+
+    validate_live_worker_startup("google_drive", "google_drive_live_poller")
     log = structlog.get_logger("dogfood.google_drive_live_poller")
     dsn = os.environ["DATABASE_URL"]
     pool_max = positive_int_env("SOURCE_SCHEDULER_POSTGRES_POOL_SIZE", default=8)

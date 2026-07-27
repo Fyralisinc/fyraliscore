@@ -1,0 +1,1883 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.slack": "c3d2c23a118081a5b920545e5197357790e6af9e9f9c28503d02da635a19d19a",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.slack": "736c9617ecaad78ad2d8233256739821ef3a8e2d2f50310092466bf16a0aec7c",
+    "services.ingest.ingestion.handlers.slack": "07bbe0d567cf8e1863a25ddd85c3d4c0ee61427480a757f90c6dab57b1a2b106",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.slack": "448cbf44c719dc1f4a54113efef2b2fa4d3aba049ad4a70353c1e73435c71687",
+    "services.ingest.ingestion.reconcilers.slack": "b9d0bf7c1e36f8335616eca1b85d229f08ad467b33eacc8b911ed35ee1b181bf",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.slack": "db1dc914017c58d71549f9db4e2c07791e16da84e6163db2e2bf0df5c6661785",
+    "services.ingest.integrations.slack.client": "22af97d77856eedb2bd80437a61e391449727741e35be49484eb9eec0a131894",
+    "services.ingest.integrations.slack.metrics": "b9d36dc4b00aa6af1fd7eda0b6ef63bc9a02a326cc9e87271048d8bd4eae7a3c",
+    "services.ingest.integrations.slack.oauth": "f999c0a7800184fb6985e4887c3bbba6db1ccd150e7e4a6fd02f7e381fa1a3e1",
+    "services.ingest.integrations.slack.uninstall": "18e0fe2a7146d194ef22ec3ab8ebdf59283b9a3d6f7ab5ffd0711eb81a1d3f27",
+    "services.ingest.integrations.slack.webhook_ingress": "315810560505002e803e356e06fe4b6c609d5f086df43a52162bf91a6556bea8",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.adapters": "f036c41246c136c64769e9bb5eca1b30345dd5fe926351b75226cc12bcce6843",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_browser_agent_setup": "94573ed4fe4021187c94d861adc39dbf7955fa29bc6791c63accc05571a8def2",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Web API / Events API",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "oauth2"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Slack",
+    "oauth_ingresses": [
+      {
+        "callback_handler_binding": "services.ingest.integrations.slack.oauth:callback_handler",
+        "callback_path": "/integrations/slack/callback",
+        "install_handler_binding": "services.ingest.integrations.slack.oauth:install_handler",
+        "install_path": "/integrations/slack/install",
+        "mount_mode": "shared_router",
+        "public_result_paths": [
+          "/integrations/slack/installed",
+          "/integrations/slack/install-error"
+        ],
+        "source_id": "slack"
+      }
+    ],
+    "operation_policy_ids": [
+      "users.info",
+      "conversations.info",
+      "conversations.list",
+      "conversations.history",
+      "chat.postMessage",
+      "oauth.v2.access"
+    ],
+    "outbound_endpoint_names": [
+      "slack_api"
+    ],
+    "provider_id": "slack",
+    "source_ids": [
+      "slack"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "slack:message",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_slack_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "slack",
+        "route_path": "/webhooks/slack/events",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "slack",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_slack",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": "services.ingest.integrations.slack.webhook_ingress:handle_verified_pre_tenant",
+        "verified_tenant_handler_binding": "services.ingest.integrations.slack.webhook_ingress:handle_verified_tenant",
+        "verifier_binding": "services.app.webhooks.signatures.slack:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "channels": [
+        {
+          "id": "C_6B1C0D1157",
+          "messages": [
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #0",
+              "ts": "1767225600.000000",
+              "type": "message",
+              "user": "U_EF3BC250"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #1",
+              "ts": "1767225660.000000",
+              "type": "message",
+              "user": "U_6E809DD9"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #2",
+              "ts": "1767225720.000000",
+              "type": "message",
+              "user": "U_3121B95A"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #3",
+              "ts": "1767225780.000000",
+              "type": "message",
+              "user": "U_D6BB8460"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #4",
+              "ts": "1767225840.000000",
+              "type": "message",
+              "user": "U_59A4C23A"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #5",
+              "ts": "1767225900.000000",
+              "type": "message",
+              "user": "U_9B174A72"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #6",
+              "ts": "1767225960.000000",
+              "type": "message",
+              "user": "U_A642388D"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #7",
+              "ts": "1767226020.000000",
+              "type": "message",
+              "user": "U_B7CFCB16"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #8",
+              "ts": "1767226080.000000",
+              "type": "message",
+              "user": "U_47DFD214"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #9",
+              "ts": "1767226140.000000",
+              "type": "message",
+              "user": "U_BF970ACA"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #10",
+              "ts": "1767226200.000000",
+              "type": "message",
+              "user": "U_36441564"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #11",
+              "ts": "1767226260.000000",
+              "type": "message",
+              "user": "U_A440FCA8"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #12",
+              "ts": "1767226320.000000",
+              "type": "message",
+              "user": "U_BA8A40FB"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #13",
+              "ts": "1767226380.000000",
+              "type": "message",
+              "user": "U_407C1EB6"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #14",
+              "ts": "1767226440.000000",
+              "type": "message",
+              "user": "U_57250D65"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #15",
+              "ts": "1767226500.000000",
+              "type": "message",
+              "user": "U_184C56A4"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #16",
+              "ts": "1767226560.000000",
+              "type": "message",
+              "user": "U_8BF5CF5D"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #17",
+              "ts": "1767226620.000000",
+              "type": "message",
+              "user": "U_43C478E2"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #18",
+              "ts": "1767226680.000000",
+              "type": "message",
+              "user": "U_1048BD23"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #19",
+              "ts": "1767226740.000000",
+              "type": "message",
+              "user": "U_82BD563A"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #20",
+              "ts": "1767226800.000000",
+              "type": "message",
+              "user": "U_F8002C70"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #21",
+              "ts": "1767226860.000000",
+              "type": "message",
+              "user": "U_25D476D4"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #22",
+              "ts": "1767226920.000000",
+              "type": "message",
+              "user": "U_C5AE56A0"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #23",
+              "ts": "1767226980.000000",
+              "type": "message",
+              "user": "U_F9F7ECD2"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #24",
+              "ts": "1767227040.000000",
+              "type": "message",
+              "user": "U_3A07B42B"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #25",
+              "ts": "1767227100.000000",
+              "type": "message",
+              "user": "U_EF1E2913"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #26",
+              "ts": "1767227160.000000",
+              "type": "message",
+              "user": "U_A4417635"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #27",
+              "ts": "1767227220.000000",
+              "type": "message",
+              "user": "U_6CEC7852"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #28",
+              "ts": "1767227280.000000",
+              "type": "message",
+              "user": "U_FED43010"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #29",
+              "ts": "1767227340.000000",
+              "type": "message",
+              "user": "U_F7D64C55"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #30",
+              "ts": "1767227400.000000",
+              "type": "message",
+              "user": "U_3821A4E8"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #31",
+              "ts": "1767227460.000000",
+              "type": "message",
+              "user": "U_7081A806"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #32",
+              "ts": "1767227520.000000",
+              "type": "message",
+              "user": "U_EBF5D088"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #33",
+              "ts": "1767227580.000000",
+              "type": "message",
+              "user": "U_32318877"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #34",
+              "ts": "1767227640.000000",
+              "type": "message",
+              "user": "U_C0587FA0"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #35",
+              "ts": "1767227700.000000",
+              "type": "message",
+              "user": "U_2DCDFC8B"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #36",
+              "ts": "1767227760.000000",
+              "type": "message",
+              "user": "U_680E2C88"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #37",
+              "ts": "1767227820.000000",
+              "type": "message",
+              "user": "U_049DB9B2"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #38",
+              "ts": "1767227880.000000",
+              "type": "message",
+              "user": "U_DA8C6B62"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #39",
+              "ts": "1767227940.000000",
+              "type": "message",
+              "user": "U_CA60FBD3"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #40",
+              "ts": "1767228000.000000",
+              "type": "message",
+              "user": "U_CCF3B6A4"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #41",
+              "ts": "1767228060.000000",
+              "type": "message",
+              "user": "U_309CCB0C"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #42",
+              "ts": "1767228120.000000",
+              "type": "message",
+              "user": "U_A5CFF085"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #43",
+              "ts": "1767228180.000000",
+              "type": "message",
+              "user": "U_0A948764"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #44",
+              "ts": "1767228240.000000",
+              "type": "message",
+              "user": "U_558B61E5"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #45",
+              "ts": "1767228300.000000",
+              "type": "message",
+              "user": "U_13E207E7"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #46",
+              "ts": "1767228360.000000",
+              "type": "message",
+              "user": "U_DD244258"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #47",
+              "ts": "1767228420.000000",
+              "type": "message",
+              "user": "U_F729D49A"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #48",
+              "ts": "1767228480.000000",
+              "type": "message",
+              "user": "U_16C84377"
+            },
+            {
+              "channel": "C_6B1C0D1157",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #49",
+              "ts": "1767228540.000000",
+              "type": "message",
+              "user": "U_C09A2A57"
+            }
+          ],
+          "name": "channel-0",
+          "team_id": "certification-surface-slack"
+        },
+        {
+          "id": "C_A6B0072E5E",
+          "messages": [
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #0",
+              "ts": "1767225600.000000",
+              "type": "message",
+              "user": "U_EF3BC250"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #1",
+              "ts": "1767225660.000000",
+              "type": "message",
+              "user": "U_6E809DD9"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #2",
+              "ts": "1767225720.000000",
+              "type": "message",
+              "user": "U_3121B95A"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #3",
+              "ts": "1767225780.000000",
+              "type": "message",
+              "user": "U_D6BB8460"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #4",
+              "ts": "1767225840.000000",
+              "type": "message",
+              "user": "U_59A4C23A"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #5",
+              "ts": "1767225900.000000",
+              "type": "message",
+              "user": "U_9B174A72"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #6",
+              "ts": "1767225960.000000",
+              "type": "message",
+              "user": "U_A642388D"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #7",
+              "ts": "1767226020.000000",
+              "type": "message",
+              "user": "U_B7CFCB16"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #8",
+              "ts": "1767226080.000000",
+              "type": "message",
+              "user": "U_47DFD214"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #9",
+              "ts": "1767226140.000000",
+              "type": "message",
+              "user": "U_BF970ACA"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #10",
+              "ts": "1767226200.000000",
+              "type": "message",
+              "user": "U_36441564"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #11",
+              "ts": "1767226260.000000",
+              "type": "message",
+              "user": "U_A440FCA8"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #12",
+              "ts": "1767226320.000000",
+              "type": "message",
+              "user": "U_BA8A40FB"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #13",
+              "ts": "1767226380.000000",
+              "type": "message",
+              "user": "U_407C1EB6"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #14",
+              "ts": "1767226440.000000",
+              "type": "message",
+              "user": "U_57250D65"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #15",
+              "ts": "1767226500.000000",
+              "type": "message",
+              "user": "U_184C56A4"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #16",
+              "ts": "1767226560.000000",
+              "type": "message",
+              "user": "U_8BF5CF5D"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #17",
+              "ts": "1767226620.000000",
+              "type": "message",
+              "user": "U_43C478E2"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #18",
+              "ts": "1767226680.000000",
+              "type": "message",
+              "user": "U_1048BD23"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #19",
+              "ts": "1767226740.000000",
+              "type": "message",
+              "user": "U_82BD563A"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #20",
+              "ts": "1767226800.000000",
+              "type": "message",
+              "user": "U_F8002C70"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #21",
+              "ts": "1767226860.000000",
+              "type": "message",
+              "user": "U_25D476D4"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #22",
+              "ts": "1767226920.000000",
+              "type": "message",
+              "user": "U_C5AE56A0"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #23",
+              "ts": "1767226980.000000",
+              "type": "message",
+              "user": "U_F9F7ECD2"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #24",
+              "ts": "1767227040.000000",
+              "type": "message",
+              "user": "U_3A07B42B"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #25",
+              "ts": "1767227100.000000",
+              "type": "message",
+              "user": "U_EF1E2913"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #26",
+              "ts": "1767227160.000000",
+              "type": "message",
+              "user": "U_A4417635"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #27",
+              "ts": "1767227220.000000",
+              "type": "message",
+              "user": "U_6CEC7852"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #28",
+              "ts": "1767227280.000000",
+              "type": "message",
+              "user": "U_FED43010"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #29",
+              "ts": "1767227340.000000",
+              "type": "message",
+              "user": "U_F7D64C55"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #30",
+              "ts": "1767227400.000000",
+              "type": "message",
+              "user": "U_3821A4E8"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #31",
+              "ts": "1767227460.000000",
+              "type": "message",
+              "user": "U_7081A806"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #32",
+              "ts": "1767227520.000000",
+              "type": "message",
+              "user": "U_EBF5D088"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #33",
+              "ts": "1767227580.000000",
+              "type": "message",
+              "user": "U_32318877"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #34",
+              "ts": "1767227640.000000",
+              "type": "message",
+              "user": "U_C0587FA0"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #35",
+              "ts": "1767227700.000000",
+              "type": "message",
+              "user": "U_2DCDFC8B"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #36",
+              "ts": "1767227760.000000",
+              "type": "message",
+              "user": "U_680E2C88"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #37",
+              "ts": "1767227820.000000",
+              "type": "message",
+              "user": "U_049DB9B2"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #38",
+              "ts": "1767227880.000000",
+              "type": "message",
+              "user": "U_DA8C6B62"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #39",
+              "ts": "1767227940.000000",
+              "type": "message",
+              "user": "U_CA60FBD3"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #40",
+              "ts": "1767228000.000000",
+              "type": "message",
+              "user": "U_CCF3B6A4"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #41",
+              "ts": "1767228060.000000",
+              "type": "message",
+              "user": "U_309CCB0C"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #42",
+              "ts": "1767228120.000000",
+              "type": "message",
+              "user": "U_A5CFF085"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #43",
+              "ts": "1767228180.000000",
+              "type": "message",
+              "user": "U_0A948764"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #44",
+              "ts": "1767228240.000000",
+              "type": "message",
+              "user": "U_558B61E5"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #45",
+              "ts": "1767228300.000000",
+              "type": "message",
+              "user": "U_13E207E7"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #46",
+              "ts": "1767228360.000000",
+              "type": "message",
+              "user": "U_DD244258"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #47",
+              "ts": "1767228420.000000",
+              "type": "message",
+              "user": "U_F729D49A"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #48",
+              "ts": "1767228480.000000",
+              "type": "message",
+              "user": "U_16C84377"
+            },
+            {
+              "channel": "C_A6B0072E5E",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #49",
+              "ts": "1767228540.000000",
+              "type": "message",
+              "user": "U_C09A2A57"
+            }
+          ],
+          "name": "channel-1",
+          "team_id": "certification-surface-slack"
+        },
+        {
+          "id": "C_524AA55819",
+          "messages": [
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #0",
+              "ts": "1767225600.000000",
+              "type": "message",
+              "user": "U_EF3BC250"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #1",
+              "ts": "1767225660.000000",
+              "type": "message",
+              "user": "U_6E809DD9"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #2",
+              "ts": "1767225720.000000",
+              "type": "message",
+              "user": "U_3121B95A"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #3",
+              "ts": "1767225780.000000",
+              "type": "message",
+              "user": "U_D6BB8460"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #4",
+              "ts": "1767225840.000000",
+              "type": "message",
+              "user": "U_59A4C23A"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #5",
+              "ts": "1767225900.000000",
+              "type": "message",
+              "user": "U_9B174A72"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #6",
+              "ts": "1767225960.000000",
+              "type": "message",
+              "user": "U_A642388D"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #7",
+              "ts": "1767226020.000000",
+              "type": "message",
+              "user": "U_B7CFCB16"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #8",
+              "ts": "1767226080.000000",
+              "type": "message",
+              "user": "U_47DFD214"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #9",
+              "ts": "1767226140.000000",
+              "type": "message",
+              "user": "U_BF970ACA"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #10",
+              "ts": "1767226200.000000",
+              "type": "message",
+              "user": "U_36441564"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #11",
+              "ts": "1767226260.000000",
+              "type": "message",
+              "user": "U_A440FCA8"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #12",
+              "ts": "1767226320.000000",
+              "type": "message",
+              "user": "U_BA8A40FB"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #13",
+              "ts": "1767226380.000000",
+              "type": "message",
+              "user": "U_407C1EB6"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #14",
+              "ts": "1767226440.000000",
+              "type": "message",
+              "user": "U_57250D65"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #15",
+              "ts": "1767226500.000000",
+              "type": "message",
+              "user": "U_184C56A4"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #16",
+              "ts": "1767226560.000000",
+              "type": "message",
+              "user": "U_8BF5CF5D"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #17",
+              "ts": "1767226620.000000",
+              "type": "message",
+              "user": "U_43C478E2"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #18",
+              "ts": "1767226680.000000",
+              "type": "message",
+              "user": "U_1048BD23"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #19",
+              "ts": "1767226740.000000",
+              "type": "message",
+              "user": "U_82BD563A"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #20",
+              "ts": "1767226800.000000",
+              "type": "message",
+              "user": "U_F8002C70"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #21",
+              "ts": "1767226860.000000",
+              "type": "message",
+              "user": "U_25D476D4"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #22",
+              "ts": "1767226920.000000",
+              "type": "message",
+              "user": "U_C5AE56A0"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #23",
+              "ts": "1767226980.000000",
+              "type": "message",
+              "user": "U_F9F7ECD2"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #24",
+              "ts": "1767227040.000000",
+              "type": "message",
+              "user": "U_3A07B42B"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #25",
+              "ts": "1767227100.000000",
+              "type": "message",
+              "user": "U_EF1E2913"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #26",
+              "ts": "1767227160.000000",
+              "type": "message",
+              "user": "U_A4417635"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #27",
+              "ts": "1767227220.000000",
+              "type": "message",
+              "user": "U_6CEC7852"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #28",
+              "ts": "1767227280.000000",
+              "type": "message",
+              "user": "U_FED43010"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #29",
+              "ts": "1767227340.000000",
+              "type": "message",
+              "user": "U_F7D64C55"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #30",
+              "ts": "1767227400.000000",
+              "type": "message",
+              "user": "U_3821A4E8"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #31",
+              "ts": "1767227460.000000",
+              "type": "message",
+              "user": "U_7081A806"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #32",
+              "ts": "1767227520.000000",
+              "type": "message",
+              "user": "U_EBF5D088"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #33",
+              "ts": "1767227580.000000",
+              "type": "message",
+              "user": "U_32318877"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #34",
+              "ts": "1767227640.000000",
+              "type": "message",
+              "user": "U_C0587FA0"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #35",
+              "ts": "1767227700.000000",
+              "type": "message",
+              "user": "U_2DCDFC8B"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #36",
+              "ts": "1767227760.000000",
+              "type": "message",
+              "user": "U_680E2C88"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #37",
+              "ts": "1767227820.000000",
+              "type": "message",
+              "user": "U_049DB9B2"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #38",
+              "ts": "1767227880.000000",
+              "type": "message",
+              "user": "U_DA8C6B62"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #39",
+              "ts": "1767227940.000000",
+              "type": "message",
+              "user": "U_CA60FBD3"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #40",
+              "ts": "1767228000.000000",
+              "type": "message",
+              "user": "U_CCF3B6A4"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #41",
+              "ts": "1767228060.000000",
+              "type": "message",
+              "user": "U_309CCB0C"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #42",
+              "ts": "1767228120.000000",
+              "type": "message",
+              "user": "U_A5CFF085"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #43",
+              "ts": "1767228180.000000",
+              "type": "message",
+              "user": "U_0A948764"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #44",
+              "ts": "1767228240.000000",
+              "type": "message",
+              "user": "U_558B61E5"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #45",
+              "ts": "1767228300.000000",
+              "type": "message",
+              "user": "U_13E207E7"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #46",
+              "ts": "1767228360.000000",
+              "type": "message",
+              "user": "U_DD244258"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #47",
+              "ts": "1767228420.000000",
+              "type": "message",
+              "user": "U_F729D49A"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #48",
+              "ts": "1767228480.000000",
+              "type": "message",
+              "user": "U_16C84377"
+            },
+            {
+              "channel": "C_524AA55819",
+              "team": "certification-surface-slack",
+              "text": "synthetic slack message #49",
+              "ts": "1767228540.000000",
+              "type": "message",
+              "user": "U_C09A2A57"
+            }
+          ],
+          "name": "channel-2",
+          "team_id": "certification-surface-slack"
+        }
+      ],
+      "page_size": 10,
+      "team_id": "certification-surface-slack"
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "conversations.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "conversations.list"
+        ],
+        "path_template": "/api/conversations.list",
+        "quota_bucket": "web-api",
+        "quota_cost": 1.0,
+        "route_id": "slack.conversations_list",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "conversations.history",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "conversations.history"
+        ],
+        "path_template": "/api/conversations.history",
+        "quota_bucket": "web-api",
+        "quota_cost": 1.0,
+        "route_id": "slack.conversations_history",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "conversations.info",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "conversations.info"
+        ],
+        "path_template": "/api/conversations.info",
+        "quota_bucket": "web-api",
+        "quota_cost": 1.0,
+        "route_id": "slack.conversations_info",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "users.info",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "users.info"
+        ],
+        "path_template": "/api/users.info",
+        "quota_bucket": "web-api",
+        "quota_cost": 1.0,
+        "route_id": "slack.users_info",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "chat.postMessage",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "chat.postMessage"
+        ],
+        "path_template": "/api/chat.postMessage",
+        "quota_bucket": "web-api",
+        "quota_cost": 1.0,
+        "route_id": "slack.chat_post_message",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "oauth.v2.access",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "oauth.v2.access"
+        ],
+        "path_template": "/api/oauth.v2.access",
+        "quota_bucket": null,
+        "quota_cost": 1.0,
+        "route_id": "slack.oauth_access",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.slack",
+      "evidence_id": "ingest.evidence.slack",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.slack",
+      "validation_runtime": {
+        "generator_group": "slack",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_slack_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_slack_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_slack_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_slack_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_slack",
+        "replay_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_slack_replay",
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_slack_signature",
+        "twin_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_slack_twin"
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.slack.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "channel_message",
+      "message_edit",
+      "direct_message"
+    ],
+    "delivery_policies": [
+      "at_least_once"
+    ],
+    "display": {
+      "category": "Communication",
+      "connection_method": "OAuth",
+      "description": "Channels, events, and consented DMs.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 0,
+      "setup_requirements": "Slack workspace admin approval, app/OAuth install, signing secret, channel allowlist, optional DM consent.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events",
+        "Backfill plus live"
+      ]
+    },
+    "display_name": "Slack",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.slack:fetch_page_slack",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:slack_message"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "slack:message",
+        "ingress_kind": "webhook"
+      },
+      {
+        "channel": "slack:message",
+        "ingress_kind": "backfill"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_slack_installation",
+      "management": null,
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": "services.ingest.ingestion.installations:build_slack_planner_client",
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_provider_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "team_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "slack",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": null
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.slack.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "slack:message"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.slack:handle_slack_message"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "workspace id",
+          "channel scope",
+          "event callback URL"
+        ],
+        "agent_generates": [
+          "signing secret ref",
+          "Slack event scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin approves provider app scopes"
+        ],
+        "settings_targets": [
+          "Slack app settings",
+          "OAuth scopes",
+          "event subscriptions"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "#leadership",
+        "#finance-ops",
+        "#customer-success"
+      ],
+      "discovery_target": "workspace, public/private channels the app can access, users, and events",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/integrations/slack/callback",
+        "/webhooks/slack/events"
+      ],
+      "local_rehearsal": {
+        "callback_path": "/integrations/slack/callback",
+        "default_env": [],
+        "derived_env": [
+          [
+            "WEBHOOK_SECRET_SLACK",
+            "SLACK_SIGNING_SECRET"
+          ]
+        ],
+        "env": [
+          "SLACK_CLIENT_ID",
+          "SLACK_CLIENT_SECRET",
+          "SLACK_SIGNING_SECRET",
+          "SLACK_REDIRECT_URI",
+          "OAUTH_STATE_HMAC_KEY"
+        ],
+        "finalize_endpoint": null,
+        "install_endpoint": "/integrations/slack/install",
+        "kind": "oauth_app",
+        "manual_gate_names": [
+          "slack_app_creation_or_admin_approval",
+          "slack_oauth_consent"
+        ],
+        "needs_public_url": true,
+        "preflight_endpoint": null,
+        "required_env": [
+          "SLACK_CLIENT_ID",
+          "SLACK_CLIENT_SECRET",
+          "SLACK_SIGNING_SECRET",
+          "SLACK_REDIRECT_URI",
+          "OAUTH_STATE_HMAC_KEY"
+        ],
+        "runtime_components": [],
+        "webhook_path": "/webhooks/slack/events"
+      },
+      "method": "oauth",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/slack/connect/finalize",
+        "kind": "oauth_callback_native_connect",
+        "payload_fields": [
+          "workspace_id",
+          "approved_channel_ids",
+          "oauth_redirect_url",
+          "events_request_url",
+          "installation_id"
+        ],
+        "preflight_path": "/integrations/slack/connect/preflight",
+        "preflight_payload_fields": [],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": null,
+      "provider_console_url": "https://api.slack.com/apps",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:slack_provider_handoff",
+      "provider_permissions": [
+        "channels:history",
+        "groups:history",
+        "users:read",
+        "team:read"
+      ],
+      "provider_setup_builder_binding": "services.platform.runtime.source_browser_agent_setup:build_slack_provider_setup_bundle",
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": "services.platform.runtime.source_rehearsal_contract:build_slack_rehearsal_artifacts",
+      "rehearsal_finalize_mode": "provider_callback",
+      "required_inputs": null,
+      "required_refs": [
+        "oauth_client",
+        "bot_token",
+        "signing_secret"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "users.info",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "conversations.info",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "conversations.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "conversations.history",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "chat.postMessage",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "oauth.v2.access",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "slack_api",
+        "operation_ids": [
+          "users.info",
+          "conversations.info",
+          "conversations.list",
+          "conversations.history",
+          "chat.postMessage",
+          "oauth.v2.access"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.slack:plan_shards_slack",
+    "provider_id": "slack",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.slack:reconcile_slack",
+    "runtime_identifiers": [
+      "team_id"
+    ],
+    "source_id": "slack",
+    "trust_tiers": [
+      "attested_agent"
+    ],
+    "ui_slug": "slack"
+  },
+  "source_id": "slack"
+}

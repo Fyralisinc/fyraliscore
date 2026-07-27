@@ -97,7 +97,6 @@ _SLACK_BOT_SCOPES = (
 _SLACK_USER_SCOPES = "im:read,im:history,mpim:read,mpim:history"
 
 _SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
-_SLACK_OAUTH_ACCESS_URL = "https://slack.com/api/oauth.v2.access"
 
 _DEFAULT_STATE_TTL_S = 600  # 10 min
 
@@ -105,6 +104,15 @@ _DEFAULT_STATE_TTL_S = 600  # 10 min
 # Fyralis origin that served the callback, per research R6).
 _SUCCESS_REDIRECT = "/integrations/slack/installed"
 _ERROR_REDIRECT = "/integrations/slack/install-error"
+
+
+def _oauth_access_url() -> str:
+    configured = os.environ.get("SLACK_OAUTH_TOKEN_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    from lib.integrations.endpoints import endpoint
+
+    return f"{endpoint('slack_api')}/oauth.v2.access"
 
 
 # ---------------------------------------------------------------------
@@ -457,7 +465,7 @@ async def _exchange_code_for_tokens(
     async def _once() -> httpx.Response:
         try:
             response = await client.post(
-                _SLACK_OAUTH_ACCESS_URL,
+                _oauth_access_url(),
                 data={
                     "code": code,
                     "client_id": client_id,

@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "gmail",
+  "spec_hash": "640ce22a5c344b8ebda09ea5400a1037ac5c569a7e99b8cb22e6fb23759d12af",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "gmail",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "a39019ee438e88afeba2601edfe3fcc4fe007dd0e0225a2aeb35036b58fd1a43"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_GMAIL"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_GMAIL"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "gmail",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "a39019ee438e88afeba2601edfe3fcc4fe007dd0e0225a2aeb35036b58fd1a43"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "gmail",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "a39019ee438e88afeba2601edfe3fcc4fe007dd0e0225a2aeb35036b58fd1a43"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "gmail",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "a39019ee438e88afeba2601edfe3fcc4fe007dd0e0225a2aeb35036b58fd1a43"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

@@ -10,6 +10,11 @@ import json
 from typing import Any
 from urllib.parse import urlparse
 
+from services.ingest.source_contract import (
+    resolve_provider_setup_builder,
+    source_definition,
+)
+
 
 SLACK_BOT_SCOPES = (
     "channels:read",
@@ -27,20 +32,6 @@ SLACK_USER_SCOPES = (
 )
 SLACK_BOT_EVENTS = ("message.channels", "message.groups")
 
-GOOGLE_DWD_SOURCES = {"gmail", "google_calendar", "google_drive"}
-API_TOKEN_SOURCES = {
-    "ashby",
-    "brex",
-    "deel",
-    "fireflies",
-    "grafana",
-    "hibob",
-    "mercury",
-    "miro",
-    "ramp",
-}
-OAUTH_SOURCES = {"carta", "facebook_pages", "gusto", "linkedin", "quickbooks"}
-LOCAL_SESSION_SOURCES = {"signal", "telegram"}
 AWS_SOURCE_APPROVAL_URL = (
     "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
 )
@@ -57,25 +48,6 @@ FIGMA_OAUTH_SCOPES = (
     "file_versions:read",
 )
 
-GOOGLE_DWD_SCOPES = {
-    "gmail": [
-        "https://www.googleapis.com/auth/gmail.metadata",
-        "https://www.googleapis.com/auth/admin.directory.user.readonly",
-        "https://www.googleapis.com/auth/admin.directory.group.readonly",
-    ],
-    "google_calendar": [
-        "https://www.googleapis.com/auth/calendar.readonly",
-        "https://www.googleapis.com/auth/admin.directory.user.readonly",
-        "https://www.googleapis.com/auth/admin.directory.group.readonly",
-    ],
-    "google_drive": [
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/admin.directory.user.readonly",
-        "https://www.googleapis.com/auth/admin.directory.group.readonly",
-    ],
-}
-
-
 def build_source_provider_setup_bundle(
     *,
     source: str,
@@ -89,14 +61,24 @@ def build_source_provider_setup_bundle(
 ) -> dict[str, Any]:
     """Build a provider-specific setup bundle for a browser-agent run."""
     normalized = _normalize_source(source)
-    if normalized == "slack":
-        return _slack_setup_bundle(
-            provider_console_url=provider_console_url or "https://api.slack.com/apps",
+    # The native-connect kind is catalog-owned.  It replaces the four parallel
+    # source membership sets that previously classified DWD, token, OAuth, and
+    # local-session sources in this shared runtime.
+    definition = source_definition(normalized)
+    native_connect_kind = definition.onboarding.native_connect.kind
+    setup_builder = resolve_provider_setup_builder(normalized)
+    if setup_builder is not None:
+        return setup_builder(
+            source=normalized,
+            recipe=recipe,
+            provider_console_url=provider_console_url,
             oauth_redirect_url=oauth_redirect_url,
             events_request_url=events_request_url,
+            install_url=install_url,
             native_connect=native_connect,
+            deployment_context=deployment_context,
         )
-    if normalized == "github":
+    if native_connect_kind == "github_app_native_connect":
         return _github_setup_bundle(
             recipe=recipe,
             provider_console_url=provider_console_url,
@@ -104,7 +86,7 @@ def build_source_provider_setup_bundle(
             events_request_url=events_request_url,
             native_connect=native_connect,
         )
-    if normalized == "discord":
+    if native_connect_kind == "oauth_gateway_native_connect":
         return _discord_setup_bundle(
             recipe=recipe,
             provider_console_url=provider_console_url,
@@ -112,58 +94,54 @@ def build_source_provider_setup_bundle(
             events_request_url=events_request_url,
             native_connect=native_connect,
         )
-    if normalized == "notion":
-        return _notion_setup_bundle(
-            recipe=recipe,
-            provider_console_url=provider_console_url,
-            oauth_redirect_url=oauth_redirect_url,
-            events_request_url=events_request_url,
-            native_connect=native_connect,
-        )
-    if normalized == "jira":
+    if native_connect_kind == "jira_api_token_native_connect":
         return _jira_setup_bundle(
             recipe=recipe,
             provider_console_url=provider_console_url,
             events_request_url=events_request_url,
             native_connect=native_connect,
         )
-    if normalized in GOOGLE_DWD_SOURCES:
+    if native_connect_kind == "google_workspace_dwd":
         return _google_dwd_setup_bundle(
             source=normalized,
             recipe=recipe,
             provider_console_url=provider_console_url,
             events_request_url=events_request_url,
             native_connect=native_connect,
+            consent_scopes=definition.onboarding.consent_scopes,
         )
-    if normalized == "aws":
+    if native_connect_kind == "aws_iam_native_connect":
         return _aws_setup_bundle(
             recipe=recipe,
             provider_console_url=provider_console_url,
             native_connect=native_connect,
             deployment_context=deployment_context,
         )
-    if normalized in LOCAL_SESSION_SOURCES:
+    if native_connect_kind == "local_session_native_connect":
         return _local_session_setup_bundle(
             source=normalized,
             recipe=recipe,
             provider_console_url=provider_console_url,
             native_connect=native_connect,
         )
-    if normalized == "whatsapp":
+    if native_connect_kind == "whatsapp_native_connect":
         return _whatsapp_setup_bundle(
             recipe=recipe,
             provider_console_url=provider_console_url,
             events_request_url=events_request_url,
             native_connect=native_connect,
         )
-    if normalized == "figma":
+    if native_connect_kind == "figma_oauth_file_scoped_connect":
         return _figma_oauth_setup_bundle(
             recipe=recipe,
             provider_console_url=provider_console_url,
             oauth_redirect_url=oauth_redirect_url,
             native_connect=native_connect,
         )
-    if normalized in API_TOKEN_SOURCES:
+    if native_connect_kind in {
+        "api_token_native_connect",
+        "ramp_native_connect",
+    }:
         return _api_token_setup_bundle(
             source=normalized,
             recipe=recipe,
@@ -171,7 +149,10 @@ def build_source_provider_setup_bundle(
             events_request_url=events_request_url,
             native_connect=native_connect,
         )
-    if normalized in OAUTH_SOURCES:
+    if native_connect_kind in {
+        "access_token_native_connect",
+        "oauth_native_connect",
+    }:
         return _oauth_setup_bundle(
             source=normalized,
             recipe=recipe,
@@ -217,6 +198,51 @@ def provider_setup_bundle_actions(
             }
         )
     return normalized
+
+
+def build_slack_provider_setup_bundle(
+    *,
+    source: str,
+    recipe: dict[str, Any],
+    provider_console_url: str | None,
+    oauth_redirect_url: str | None,
+    events_request_url: str | None,
+    install_url: str | None,
+    native_connect: dict[str, Any] | None,
+    deployment_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the Slack bundle selected by its source contract binding."""
+
+    del source, recipe, install_url, deployment_context
+    return _slack_setup_bundle(
+        provider_console_url=provider_console_url or "https://api.slack.com/apps",
+        oauth_redirect_url=oauth_redirect_url,
+        events_request_url=events_request_url,
+        native_connect=native_connect,
+    )
+
+
+def build_notion_provider_setup_bundle(
+    *,
+    source: str,
+    recipe: dict[str, Any],
+    provider_console_url: str | None,
+    oauth_redirect_url: str | None,
+    events_request_url: str | None,
+    install_url: str | None,
+    native_connect: dict[str, Any] | None,
+    deployment_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the Notion bundle selected by its source contract binding."""
+
+    del source, install_url, deployment_context
+    return _notion_setup_bundle(
+        recipe=recipe,
+        provider_console_url=provider_console_url,
+        oauth_redirect_url=oauth_redirect_url,
+        events_request_url=events_request_url,
+        native_connect=native_connect,
+    )
 
 
 def _slack_setup_bundle(
@@ -559,8 +585,9 @@ def _google_dwd_setup_bundle(
     provider_console_url: str | None,
     events_request_url: str | None,
     native_connect: dict[str, Any] | None,
+    consent_scopes: tuple[str, ...],
 ) -> dict[str, Any]:
-    scopes = GOOGLE_DWD_SCOPES[source]
+    scopes = list(consent_scopes)
     setup = {
         "workspace_admin_url": provider_console_url
         or "https://admin.google.com/ac/owl/domainwidedelegation",
@@ -868,7 +895,10 @@ def _local_session_setup_bundle(
     provider_console_url: str | None,
     native_connect: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    if source == "telegram":
+    authorization_mode = source_definition(
+        source,
+    ).onboarding.generic_authorization_mode
+    if authorization_mode == "customer_mtproto_session":
         setup = {
             "provider_app_url": provider_console_url or "https://my.telegram.org/apps",
             "session_type": "MTProto StringSession",
@@ -1774,8 +1804,14 @@ def _figma_oauth_app_dom_steps(
     ]
 
 
-def _local_session_dom_steps(source: str, primary_artifacts: list[str]) -> list[dict[str, Any]]:
-    if source == "signal":
+def _local_session_dom_steps(
+    source: str,
+    primary_artifacts: list[str],
+) -> list[dict[str, Any]]:
+    authorization_mode = source_definition(
+        source,
+    ).onboarding.generic_authorization_mode
+    if authorization_mode == "customer_linked_device_session":
         auth_targets = _text_targets(
             "Link device",
             "QR code",
@@ -1930,6 +1966,8 @@ __all__ = [
     "SLACK_BOT_EVENTS",
     "SLACK_BOT_SCOPES",
     "SLACK_USER_SCOPES",
+    "build_notion_provider_setup_bundle",
+    "build_slack_provider_setup_bundle",
     "build_source_provider_setup_bundle",
     "provider_setup_bundle_actions",
     "slack_manifest_text",

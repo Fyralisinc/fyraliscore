@@ -12,6 +12,7 @@ Mirrors `services/ingest/ingestion/workflows/tests/conftest.py::moto_s3_server`
 (same `_pick_port` ephemeral-fallback discipline so reruns don't collide
 on a port a prior session didn't release).
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -28,9 +29,14 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 5600
 _BUCKET = "fyralis-raw"
+_BLOB_BUCKET = "fyralis-blobs"
 _ENV_KEYS = (
-    "S3_ENDPOINT_URL", "S3_RAW_BUCKET",
-    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION",
+    "S3_ENDPOINT_URL",
+    "S3_RAW_BUCKET",
+    "S3_BLOB_BUCKET",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_DEFAULT_REGION",
 )
 
 
@@ -51,7 +57,11 @@ def _pick_port(preferred: int) -> int:
 
 
 @contextlib.contextmanager
-def moto_s3(bucket: str = _BUCKET) -> Iterator[str]:
+def moto_s3(
+    bucket: str = _BUCKET,
+    *,
+    blob_bucket: str = _BLOB_BUCKET,
+) -> Iterator[str]:
     """Spawn a moto S3 server for the run's duration.
 
     Yields the endpoint URL. Sets the S3 env vars (inherited by the
@@ -69,16 +79,21 @@ def moto_s3(bucket: str = _BUCKET) -> Iterator[str]:
     try:
         os.environ["S3_ENDPOINT_URL"] = endpoint
         os.environ["S3_RAW_BUCKET"] = bucket
+        os.environ["S3_BLOB_BUCKET"] = blob_bucket
         os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
         os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
         os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
         s3 = boto3.client(
-            "s3", endpoint_url=endpoint, region_name="us-east-1",
-            aws_access_key_id="testing", aws_secret_access_key="testing",
+            "s3",
+            endpoint_url=endpoint,
+            region_name="us-east-1",
+            aws_access_key_id="testing",
+            aws_secret_access_key="testing",
         )
-        with contextlib.suppress(Exception):
-            s3.create_bucket(Bucket=bucket)
+        for required_bucket in dict.fromkeys((bucket, blob_bucket)):
+            with contextlib.suppress(Exception):
+                s3.create_bucket(Bucket=required_bucket)
 
         yield endpoint
     finally:

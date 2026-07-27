@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "grafana",
+  "spec_hash": "bdce75a12d91d5fa141de125bb3ab8925d8750dc00804fdd23781215a80c039a",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "grafana",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "6e9a9d864cf112eca3bde2c3db7450307fed6975202026c20c16cd6485126f01"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_GRAFANA"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_GRAFANA"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "grafana",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "6e9a9d864cf112eca3bde2c3db7450307fed6975202026c20c16cd6485126f01"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "grafana",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "6e9a9d864cf112eca3bde2c3db7450307fed6975202026c20c16cd6485126f01"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "grafana",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "6e9a9d864cf112eca3bde2c3db7450307fed6975202026c20c16cd6485126f01"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

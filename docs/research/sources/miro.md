@@ -1,14 +1,25 @@
 # Miro — ingestion source research
 
-> **Status:** Pre-implementation research/scoping — NOT built. Grounded in the [Source Integration Contract](_integration-contract.md). Web-researched + adversarially verified (7/8 claims survived 3-vote verification). Date: 2026-06-08.
+> **Status:** Historical pre-implementation research, superseded by the
+> [implemented ingestion flow](../../ingestion/flows/miro-ingestion.md).
+> Miro's experimental webhooks were discontinued on 2025-12-05. Every HMAC
+> webhook recommendation retained below is obsolete design history, not a
+> production or certification claim. The production contract is API
+> backfill plus reconciler-driven polling and exposes no webhook route.
 
-**Verdict: clones the Jira/Grafana archetype (service-credential org Bearer + HMAC-signed webhooks + cursor-poll fallback) · can-we-gather: yes (conditional on Enterprise plan for full coverage) · effort: M.**
+**Current verdict: service-credential org Bearer + cursor-paginated backfill and
+polling · no production webhook · can-we-gather: yes (conditional on plan and
+board access) · effort: M.**
 
 ---
 
 ## TL;DR
 
-Miro is a collaborative whiteboard platform whose v2 REST API exposes Boards, ~10–15 standardized Item types (Card, Sticky Note, Text, Shape, App Card, Document, Embed, Frame, Image), Connectors (the diagram graph), Board Members, and (Enterprise-only) Audit Logs — all behind a verified opaque-cursor pagination model. We install an org-scoped OAuth app once per tenant, resolve a single long-lived Bearer token, and drive a two-level backfill: enumerate boards into `miro_boards`, then fan out one shard per board to page items, connectors, and members. Live ingestion uses HMAC-signed webhooks routing to Kafka, with a Grafana-style periodic cursor-poll reconciler as the guaranteed correctness floor because webhook scope and event coverage are not confirmed in the verified claim set. The main constraint is plan-gating: org-wide board enumeration and Audit Logs require an Enterprise plan, and on lower plans the app must be explicitly added to each board to read its content.
+Miro is a collaborative whiteboard platform whose REST API exposes boards and
+items behind cursor pagination. Fyralis stores an org-scoped credential, fans
+out board-item backfill shards, and uses a high-water reconciler to discover
+changes. No Miro webhook is mounted or certified. Exact plan-dependent API
+coverage remains subject to provider evidence and live-canary verification.
 
 ---
 

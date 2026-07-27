@@ -9,6 +9,11 @@ from __future__ import annotations
 from threading import Lock
 from typing import Final
 
+from services.ingest.integrations.metrics_contract import (
+    MetricSample,
+    export_labeled_metrics,
+)
+
 
 # Test helpers: in-memory counters mirroring what we'd ship to the
 # Prometheus registry. The actual Prometheus wiring is handled by the
@@ -117,6 +122,18 @@ def get_counter(name: str, **labels: str) -> int:
         return _COUNTERS.get(_key(name, **labels), 0)
 
 
+def export_metrics(_source_id: str) -> tuple[MetricSample, ...]:
+    """Copy the richer GitHub metric families under their source lock."""
+
+    with _LOCK:
+        counters = dict(_COUNTERS)
+        histograms = {name: list(values) for name, values in _HIST.items()}
+    return export_labeled_metrics(
+        counters=counters,
+        histograms=histograms,
+    )
+
+
 def reset() -> None:
     """Test-only: clear all counters between tests."""
     with _LOCK:
@@ -125,6 +142,7 @@ def reset() -> None:
 
 
 __all__ = [
+    "export_metrics",
     "record_webhook_received",
     "record_webhook_verified",
     "record_signature_failure",

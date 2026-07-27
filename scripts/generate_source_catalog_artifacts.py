@@ -23,7 +23,11 @@ from services.ingest.source_contract import (  # noqa: E402
 
 
 SCHEMA_VERSION = "fyralis.source-catalog.ui.v1"
+TEST_SEED_SCHEMA_VERSION = "fyralis.test-source-catalog.v1"
 DEFAULT_OUTPUT_PATH = Path("ui/features/onboarding/data/source-catalog.generated.json")
+DEFAULT_TEST_SEED_OUTPUT_PATH = Path(
+    "lib/shared/testing/source_catalog.generated.json"
+)
 
 
 def build_source_catalog_artifact(
@@ -91,6 +95,41 @@ def render_source_catalog_artifact(
     )
 
 
+def build_test_source_catalog_artifact(
+    *,
+    sources: Sequence[SourceDefinition] = SOURCE_DEFINITIONS,
+) -> dict[str, object]:
+    """Build the minimal test-DB seed derivative used below ``lib``."""
+
+    return {
+        "schemaVersion": TEST_SEED_SCHEMA_VERSION,
+        "rows": [
+            {
+                "id": source.source_id,
+                "uiSlug": source.ui_slug,
+                "aliases": list(source.aliases),
+                "historicalSupported": source.history is not None,
+                "dataPlane": True,
+            }
+            for source in sources
+        ],
+    }
+
+
+def render_test_source_catalog_artifact(
+    *,
+    sources: Sequence[SourceDefinition] = SOURCE_DEFINITIONS,
+) -> str:
+    return (
+        json.dumps(
+            build_test_source_catalog_artifact(sources=sources),
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
+
+
 def check_artifact(path: Path, expected: str) -> bool:
     """Return whether ``path`` exactly matches the generated content."""
 
@@ -110,6 +149,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="repository-relative or absolute generated artifact path",
     )
     parser.add_argument(
+        "--test-seed-output",
+        type=Path,
+        default=DEFAULT_TEST_SEED_OUTPUT_PATH,
+        help="generated test-database seed artifact",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="fail instead of writing when the checked-in artifact is stale",
@@ -120,14 +165,26 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     output_path = args.output if args.output.is_absolute() else REPO_ROOT / args.output
+    test_seed_output_path = (
+        args.test_seed_output
+        if args.test_seed_output.is_absolute()
+        else REPO_ROOT / args.test_seed_output
+    )
     expected = render_source_catalog_artifact()
+    expected_test_seed = render_test_source_catalog_artifact()
 
     if args.check:
-        if check_artifact(output_path, expected):
-            print(f"Source catalog artifact is current: {output_path}")
+        if check_artifact(output_path, expected) and check_artifact(
+            test_seed_output_path,
+            expected_test_seed,
+        ):
+            print(
+                "Source catalog artifacts are current: "
+                f"{output_path}, {test_seed_output_path}"
+            )
             return 0
         print(
-            "Source catalog artifact is missing or stale. Regenerate with: "
+            "Source catalog artifacts are missing or stale. Regenerate with: "
             "python scripts/generate_source_catalog_artifacts.py",
             file=sys.stderr,
         )
@@ -135,7 +192,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(expected, encoding="utf-8")
-    print(f"Wrote source catalog artifact: {output_path}")
+    test_seed_output_path.parent.mkdir(parents=True, exist_ok=True)
+    test_seed_output_path.write_text(expected_test_seed, encoding="utf-8")
+    print(
+        "Wrote source catalog artifacts: "
+        f"{output_path}, {test_seed_output_path}"
+    )
     return 0
 
 

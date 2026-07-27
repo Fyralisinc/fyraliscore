@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://github.com/AsamK/signal-cli/blob/master/man/signal-cli-jsonrpc.5.adoc",
       "api_version": "signal-cli JSON-RPC",
-      "schema_sha256": null,
+      "schema_sha256": "da5b2cbc1f9465dc25ff5e3d5437b6a785bd3f0b18ca760fdc00626bae0e1c50",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 JSON-RPC/SSE schema lock and pinned signal-cli version."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

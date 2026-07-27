@@ -3,7 +3,7 @@
 Mercury signs webhook deliveries with HMAC-SHA256 over the raw request body and
 presents the digest in the `Mercury-Signature` header formatted as
 `sha256=<hex>` (GitHub-style). The per-tenant signing secret is resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='mercury') the seed/onboarding step registers.
 
 Like GitHub/Jira, the digest is over the body alone (no timestamp envelope), so

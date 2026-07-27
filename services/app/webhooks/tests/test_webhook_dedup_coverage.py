@@ -23,7 +23,6 @@ _DEDUP_EVIDENCE: dict[str, Path] = {
     "gusto": Path("services/ingest/ingestion/handlers/tests/test_gusto.py"),
     "deel": Path("services/ingest/ingestion/handlers/tests/test_deel.py"),
     "fireflies": Path("services/ingest/ingestion/handlers/tests/test_fireflies.py"),
-    "miro": Path("services/ingest/ingestion/handlers/tests/test_miro.py"),
     "figma": Path("services/ingest/ingestion/handlers/tests/test_figma.py"),
     "hibob": Path("services/ingest/ingestion/handlers/tests/test_hibob.py"),
     "ashby": Path("services/ingest/ingestion/handlers/tests/test_ashby.py"),

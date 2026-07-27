@@ -24,6 +24,32 @@ OTHER_SHA = "b" * 40
 SIGNING_KEY = b"unit-test-source-certification-key"
 
 
+def _suite_result(
+    kind: str,
+    *,
+    stable_rate: float,
+    headroom_ratio: float | None = None,
+) -> dict[str, object]:
+    metrics: dict[str, float] = {
+        "stable_rate": stable_rate,
+        "tenants": 2.0,
+        "installations_per_tenant": 2.0,
+        "replicas": 2.0,
+    }
+    if headroom_ratio is not None:
+        metrics["headroom_ratio"] = headroom_ratio
+    return {
+        "kind": kind,
+        "state": "passed",
+        "artifact_uri": f"artifact://suite/{kind}",
+        "started_at": "2026-07-25T12:00:00+00:00",
+        "completed_at": "2026-07-25T13:00:00+00:00",
+        "metrics": metrics,
+        "limiting_component": "provider_quota",
+        "failures": [],
+    }
+
+
 def _source_artifact(source_id: str) -> dict[str, object]:
     spec = SOURCE_CERTIFICATION_CATALOG[source_id]
     return {
@@ -40,6 +66,22 @@ def _source_artifact(source_id: str) -> dict[str, object]:
                     "failures": [],
                 }
                 for scenario_id in spec.required_scenarios
+            ],
+            "provider_safe_suites": [
+                _suite_result(kind, stable_rate=100.0)
+                for kind in ("historical", "live", "combined")
+            ],
+            "fyralis_ceiling_suites": [
+                _suite_result(
+                    kind,
+                    stable_rate=120.0,
+                    headroom_ratio=1.2,
+                )
+                for kind in ("historical", "live", "combined")
+            ],
+            "fault_recovery_suites": [
+                _suite_result(kind, stable_rate=100.0)
+                for kind in ("historical", "live", "combined")
             ],
             "legacy_reference_count": 0,
             "skipped_tests": [],
@@ -98,6 +140,27 @@ def test_valid_signed_27_source_manifest_is_accepted() -> None:
     assert result["commit_sha"] == TARGET_SHA
     assert result["verified_sources"] == 27
     assert result["legacy_ratchet_clean"] is True
+
+
+def test_downloaded_evaluator_metric_pair_shape_is_accepted() -> None:
+    manifest = _signed_manifest()
+    first_input = manifest["sources"][0]["input"]  # type: ignore[index]
+    for field in (
+        "provider_safe_suites",
+        "fyralis_ceiling_suites",
+        "fault_recovery_suites",
+    ):
+        for suite in first_input[field]:
+            suite["metrics"] = list(suite["metrics"].items())
+    _resign(manifest)
+
+    result = validate_promotion_manifest(
+        manifest,
+        target_sha=TARGET_SHA,
+        signing_key=SIGNING_KEY,
+    )
+
+    assert result["state"] == "passed"
 
 
 def test_tampered_manifest_fails_signature_verification() -> None:
@@ -190,6 +253,42 @@ def test_manifest_and_target_commit_must_match() -> None:
                 "scenario_results"
             ][0].__setitem__("state", "failed"),
             "scenario_results\\[0\\].state must equal passed",
+        ),
+        (
+            lambda manifest: manifest["sources"][0]["input"][  # type: ignore[index]
+                "provider_safe_suites"
+            ].pop(),
+            "provider_safe_suites must cover exactly",
+        ),
+        (
+            lambda manifest: manifest["sources"][0]["input"].pop(  # type: ignore[index]
+                "fyralis_ceiling_suites"
+            ),
+            "fyralis_ceiling_suites must be an array",
+        ),
+        (
+            lambda manifest: manifest["sources"][0]["input"].pop(  # type: ignore[index]
+                "fault_recovery_suites"
+            ),
+            "fault_recovery_suites must be an array",
+        ),
+        (
+            lambda manifest: manifest["sources"][0]["input"][  # type: ignore[index]
+                "fyralis_ceiling_suites"
+            ][0]["metrics"].__setitem__("headroom_ratio", 1.1),
+            "headroom_ratio must equal ceiling stable_rate",
+        ),
+        (
+            lambda manifest: manifest["sources"][0]["input"][  # type: ignore[index]
+                "fyralis_ceiling_suites"
+            ][0]["metrics"].__setitem__("stable_rate", 90.0),
+            "stable_rate must be >= the provider-safe stable_rate",
+        ),
+        (
+            lambda manifest: manifest["sources"][0]["input"][  # type: ignore[index]
+                "provider_safe_suites"
+            ][0]["metrics"].__setitem__("tenants", 1.0),
+            "tenants must equal declared topology value 2",
         ),
     ],
 )

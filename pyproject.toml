@@ -119,9 +119,14 @@ exclude = ["tests*", "ui*"]
 namespaces = true
 
 [tool.setuptools.package-data]
+"lib.shared.testing" = ["source_catalog.generated.json"]
 "services.ingest.source_certification" = [
+    "EXECUTION_BINDINGS.md",
     "evidence/*.json",
     "evidence/README.md",
+    "execution_bindings/*.json",
+    "surfaces/*.json",
+    "surfaces/README.md",
 ]
 
 [tool.pytest.ini_options]
@@ -295,26 +300,23 @@ ignore_imports = [
     "services.ingest.integrations.tests.test_uninstall_discord -> services.app.gateway.main",
     "services.ingest.integrations.tests.test_uninstall_discord -> services.app.gateway.rate_limit",
     "services.ingest.integrations.tests.test_uninstall_discord -> services.app.webhooks.tests.conftest",
+    "services.ingest.integrations.github.tests.test_webhook_ingress_contract -> services.app.webhooks.router",
+    "services.ingest.source_contract.tests.test_oauth_ingress -> services.app.gateway.route_access",
+    "services.ingest.source_contract.tests.test_provider_ingress -> services.app.webhooks.router",
+    "services.ingest.source_contract.tests.test_provider_ingress -> services.app.webhooks.signatures",
+    "services.ingest.source_contract.tests.test_provider_ingress -> services.app.webhooks.tenant_resolver",
     "services.ingest.synthetic.live_generators.tests.test_discord_gateway -> services.app.webhooks.tenant_resolver",
     "services.ingest.synthetic.live_generators.tests.test_github_webhook -> services.app.gateway.main",
     "services.ingest.synthetic.live_generators.tests.test_github_webhook -> services.app.gateway.rate_limit",
     "services.ingest.synthetic.live_generators.gmail_pubsub -> services.app.webhooks.gmail_pubsub",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.ashby",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.brex",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.deel",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.figma",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.fireflies",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.grafana",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.gusto",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.hibob",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.jira",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.mercury",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.miro",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.quickbooks",
-    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures.ramp",
+    "services.ingest.synthetic.live_generators.meta_webhook -> services.app.gateway.facebook_pages_router",
+    "services.ingest.synthetic.live_generators.meta_webhook -> services.app.gateway.whatsapp_router",
     "services.ingest.synthetic.live_generators.tests.test_gmail_pubsub -> services.app.webhooks.gmail_pubsub",
+    "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.signatures",
     "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.tenant_resolver",
     "services.ingest.synthetic.live_generators.tests.test_hmac_webhook -> services.app.webhooks.verifier",
+    "services.ingest.synthetic.live_generators.tests.test_meta_webhook -> services.app.gateway.facebook_pages_router",
+    "services.ingest.synthetic.live_generators.tests.test_meta_webhook -> services.app.gateway.whatsapp_router",
     "services.ingest.synthetic.live_generators.tests.test_slack_webhook -> services.app.gateway.main",
     "services.ingest.synthetic.live_generators.tests.test_slack_webhook -> services.app.gateway.rate_limit",
     "services.ingest.synthetic.validation_runs.composition -> services.app.gateway.main",

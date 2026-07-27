@@ -1,12 +1,12 @@
-"""Integration tests for the IN-08 DB-backed `load_secrets` path.
+"""Integration tests for the DB-backed ``load_installation_secrets`` path.
 
 Covers:
   - FR-001..FR-005 (secret store resolution)
   - SC-002 (no plaintext in env in prod)
   - SC-008 (env-var fallback still reachable in dev)
 
-`load_secrets` becomes async in IN-08; we test the new contract:
-  load_secrets(
+The canonical installation loader is async:
+  load_installation_secrets(
       provider,
       tenant_id,
       *,
@@ -38,7 +38,7 @@ from lib.shared.ids import uuid7
 from lib.shared.secrets import FernetSecretStore
 from services.app.webhooks.secrets import (
     assert_prod_safety_invariants,
-    load_secrets,
+    load_installation_secrets,
 )
 from cryptography.fernet import Fernet
 
@@ -87,10 +87,10 @@ def _make_app_state(pool: asyncpg.Pool) -> SimpleNamespace:
     )
 
 
-async def test_load_secrets_resolves_via_secret_store(
+async def test_installation_loader_resolves_via_secret_store(
     fresh_db: asyncpg.Pool,
 ) -> None:
-    """FR-001/FR-004: load_secrets reads provider_installations.secret_ref
+    """FR-001/FR-004: the loader reads provider_installations.secret_ref
     and returns the plaintext via the secret store."""
     app_state = _make_app_state(fresh_db)
     tenant = await _seed_tenant(fresh_db)
@@ -105,7 +105,7 @@ async def test_load_secrets_resolves_via_secret_store(
         secret_ref=ref,
     )
 
-    secrets = await load_secrets(
+    secrets = await load_installation_secrets(
         "slack",
         tenant,
         installation_row_id=installation_id,
@@ -119,7 +119,7 @@ async def test_load_secrets_resolves_via_secret_store(
     assert s.tenant_id == str(tenant)
 
 
-async def test_load_secrets_env_fallback_off_returns_empty(
+async def test_installation_loader_env_fallback_off_returns_empty(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FR-005: with fallback flag OFF and no DB ref, returns []
@@ -136,7 +136,7 @@ async def test_load_secrets_env_fallback_off_returns_empty(
         secret_ref=None,
     )
 
-    secrets = await load_secrets(
+    secrets = await load_installation_secrets(
         "slack",
         tenant,
         installation_row_id=installation_id,
@@ -146,7 +146,7 @@ async def test_load_secrets_env_fallback_off_returns_empty(
     assert secrets == []
 
 
-async def test_load_secrets_env_fallback_on_uses_env(
+async def test_installation_loader_env_fallback_on_uses_env(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FR-005: with fallback flag ON and no DB ref, falls through to
@@ -157,7 +157,7 @@ async def test_load_secrets_env_fallback_on_uses_env(
     tenant = await _seed_tenant(fresh_db)
     # No installation row → only env-var path can supply a secret.
 
-    secrets = await load_secrets(
+    secrets = await load_installation_secrets(
         "slack",
         tenant,
         installation_row_id=uuid7(),
@@ -168,7 +168,7 @@ async def test_load_secrets_env_fallback_on_uses_env(
     assert secrets[0].value == "fallback-value"
 
 
-async def test_load_secrets_db_ref_wins_over_env(
+async def test_installation_loader_db_ref_wins_over_env(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When both paths are configured, the DB ref takes precedence
@@ -187,7 +187,7 @@ async def test_load_secrets_db_ref_wins_over_env(
         secret_ref=ref,
     )
 
-    secrets = await load_secrets(
+    secrets = await load_installation_secrets(
         "slack",
         tenant,
         installation_row_id=installation_id,
@@ -198,7 +198,7 @@ async def test_load_secrets_db_ref_wins_over_env(
     assert secrets[0].value == "db-wins"
 
 
-async def test_load_secrets_no_app_state_uses_env(
+async def test_installation_loader_no_app_state_uses_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Legacy callers that don't pass app_state still get the env-var
@@ -206,13 +206,13 @@ async def test_load_secrets_no_app_state_uses_env(
     monkeypatch.setenv("WEBHOOK_SECRET_SLACK", "legacy-env")
     tenant = uuid7()
 
-    secrets = await load_secrets("slack", tenant)
+    secrets = await load_installation_secrets("slack", tenant)
 
     assert len(secrets) == 1
     assert secrets[0].value == "legacy-env"
 
 
-async def test_load_secrets_never_mixes_sibling_installation_secrets(
+async def test_installation_loader_never_mixes_sibling_installation_secrets(
     fresh_db: asyncpg.Pool,
 ) -> None:
     """A delivery may verify only with its resolver-selected installation."""
@@ -237,13 +237,13 @@ async def test_load_secrets_never_mixes_sibling_installation_secrets(
         secret_ref=new_ref,
     )
 
-    old_secrets = await load_secrets(
+    old_secrets = await load_installation_secrets(
         "slack",
         tenant,
         installation_row_id=old_installation,
         app_state=app_state,
     )
-    new_secrets = await load_secrets(
+    new_secrets = await load_installation_secrets(
         "slack",
         tenant,
         installation_row_id=new_installation,
@@ -254,7 +254,7 @@ async def test_load_secrets_never_mixes_sibling_installation_secrets(
     assert [secret.value for secret in new_secrets] == ["new-rotation-secret"]
 
 
-async def test_load_secrets_disabled_installation_returns_empty(
+async def test_installation_loader_disabled_installation_returns_empty(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A disabled provider_installations row must NOT yield secrets,
@@ -270,7 +270,7 @@ async def test_load_secrets_disabled_installation_returns_empty(
         fresh_db, tenant, "slack", secret_ref=ref, enabled=False,
     )
 
-    secrets = await load_secrets(
+    secrets = await load_installation_secrets(
         "slack",
         tenant,
         installation_row_id=installation_id,

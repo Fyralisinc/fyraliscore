@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time as _t
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -34,6 +35,7 @@ from services.app.webhooks.tenant_resolver import (
 )
 from services.app.webhooks.tests.conftest import slack_sign
 from services.ingest.ingestion.handlers import HandlerNotFound
+from services.ingest.source_contract import WEBHOOK_INGRESS_CATALOG
 
 
 _TENANT = UUID("11111111-1111-1111-1111-111111111111")
@@ -96,7 +98,7 @@ def _router_app(_patch_secrets_and_tenant: None):
     app.state.deps = deps
     app.state.tenant_resolver = _StubResolver()
     # Tests fall back to env-var secrets (autouse fixture in conftest);
-    # no secret_store is wired so load_secrets bypasses the DB path
+    # no secret_store is wired so load_installation_secrets bypasses the DB path
     # gracefully and reads `WEBHOOK_SECRET_SLACK`.
     return app
 
@@ -107,9 +109,86 @@ async def test_unknown_provider_returns_404(_router_app) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         r = await c.post("/webhooks/twilio/inbound", content=b"{}")
     assert r.status_code == 404
-    body = r.json()
-    assert body["code"] == "unknown_provider"
-    assert body["context"]["provider"] == "twilio"
+
+
+def _materialize_declared_route(route_path: str) -> str:
+    return re.sub(r"{[^{}]+}", "route-cert-installation", route_path)
+
+
+def test_router_mounts_only_catalog_declared_webhook_routes(
+    _router_app,
+) -> None:
+    from fastapi.routing import APIRoute
+
+    mounted = [
+        (route.path, method)
+        for route in _router_app.routes
+        if isinstance(route, APIRoute)
+        for method in route.methods
+    ]
+    declared = [
+        (ingress.route_path, "POST")
+        for ingress in WEBHOOK_INGRESS_CATALOG.values()
+    ]
+
+    assert sorted(mounted) == sorted(declared)
+    assert len(mounted) == len(set(mounted))
+    assert "/webhooks/{provider}" not in {path for path, _method in mounted}
+    assert "/webhooks/{provider}/{subpath:path}" not in {
+        path for path, _method in mounted
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route_id", "route_path"),
+    [
+        (route_id, ingress.route_path)
+        for route_id, ingress in WEBHOOK_INGRESS_CATALOG.items()
+    ],
+)
+async def test_every_declared_webhook_route_dispatches_to_its_owner(
+    _router_app,
+    route_id: str,
+    route_path: str,
+) -> None:
+    from services.ingest.ingestion.core import MAX_PAYLOAD_BYTES
+
+    transport = httpx.ASGITransport(app=_router_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        response = await c.post(
+            _materialize_declared_route(route_path),
+            content=b"x" * (MAX_PAYLOAD_BYTES + 1),
+        )
+
+    assert response.status_code == 413
+    assert response.json()["context"]["provider"] == route_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route_path",
+    [
+        ingress.route_path
+        for ingress in WEBHOOK_INGRESS_CATALOG.values()
+    ],
+)
+async def test_undeclared_webhook_subpath_is_rejected(
+    _router_app,
+    route_path: str,
+) -> None:
+    transport = httpx.ASGITransport(app=_router_app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://t",
+        follow_redirects=False,
+    ) as c:
+        response = await c.post(
+            f"{_materialize_declared_route(route_path)}/undeclared",
+            content=b"{}",
+        )
+
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -133,6 +212,63 @@ async def test_missing_signature_returns_401(_router_app) -> None:
     body = r.json()
     assert body["context"]["reason"] == "missing_signature_header"
     assert body["context"]["provider"] == "slack"
+
+
+@pytest.mark.asyncio
+async def test_contract_secret_loader_failure_fails_closed(
+    _router_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _failing_loader(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("secret backend carried sensitive diagnostics")
+
+    monkeypatch.setattr(
+        "services.app.webhooks.router.resolve_webhook_secret_loader",
+        lambda route_id: _failing_loader,
+    )
+
+    transport = httpx.ASGITransport(app=_router_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        response = await c.post(
+            "/webhooks/slack/events",
+            content=b'{"team_id":"T0001"}',
+        )
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "30"
+    assert response.json() == {
+        "code": "webhook_processing_unavailable",
+        "message": "webhook processing temporarily unavailable",
+        "context": {"provider": "slack"},
+    }
+    assert "sensitive" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_contract_secret_loader_malformed_result_fails_closed(
+    _router_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _malformed_loader(*args, **kwargs):
+        del args, kwargs
+        return {"value": "must-not-be-treated-as-a-secret"}
+
+    monkeypatch.setattr(
+        "services.app.webhooks.router.resolve_webhook_secret_loader",
+        lambda route_id: _malformed_loader,
+    )
+
+    transport = httpx.ASGITransport(app=_router_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        response = await c.post(
+            "/webhooks/slack/events",
+            content=b'{"team_id":"T0001"}',
+        )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "webhook_processing_unavailable"
+    assert "must-not" not in response.text
 
 
 @pytest.mark.asyncio
@@ -222,6 +358,33 @@ async def test_slack_url_verification_handshake(_router_app) -> None:
         )
     assert r.status_code == 200
     assert r.json() == {"challenge": "chal-12345"}
+
+
+@pytest.mark.asyncio
+async def test_slack_url_verification_requires_valid_signature(_router_app) -> None:
+    """The contract hook must never turn the challenge into an auth bypass."""
+
+    body = json.dumps(
+        {
+            "type": "url_verification",
+            "token": "abc",
+            "challenge": "must-not-be-echoed",
+        }
+    ).encode("utf-8")
+    transport = httpx.ASGITransport(app=_router_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        response = await c.post(
+            "/webhooks/slack/events",
+            content=body,
+            headers={
+                "X-Slack-Request-Timestamp": str(int(_t.time())),
+                "X-Slack-Signature": "v0=" + ("00" * 32),
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.json()["context"]["reason"] == "signature_mismatch"
+    assert "must-not-be-echoed" not in response.text
 
 
 @pytest.mark.asyncio

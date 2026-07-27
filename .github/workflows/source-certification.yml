@@ -35,6 +35,19 @@ jobs:
       - name: Check out the exact main commit
         uses: actions/checkout@v4
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the exact project
+        run: |
+          set -euo pipefail
+          python -m venv "${RUNNER_TEMP}/source-certification-venv"
+          "${RUNNER_TEMP}/source-certification-venv/bin/pip" install --upgrade pip
+          "${RUNNER_TEMP}/source-certification-venv/bin/pip" install -e ".[dev]"
+          echo "${RUNNER_TEMP}/source-certification-venv/bin" >> "${GITHUB_PATH}"
+
       - name: Require a main-branch commit
         env:
           TARGET_SHA: ${{ github.sha }}
@@ -102,6 +115,15 @@ jobs:
             echo "evidence run must contain exactly one non-expired ${EVIDENCE_ARTIFACT_NAME} artifact" >&2
             exit 1
           fi
+          provenance_count="$(
+            jq \
+              '[.artifacts[] | select(.name == "source-certification-provenance" and .expired == false)] | length' \
+              <<< "${artifacts_json}"
+          )"
+          if [ "${provenance_count}" != "1" ]; then
+            echo "evidence run must contain exactly one non-expired source-certification-provenance artifact" >&2
+            exit 1
+          fi
 
       - name: Download certification inputs
         uses: actions/download-artifact@v4
@@ -110,6 +132,24 @@ jobs:
           path: ${{ runner.temp }}/source-certification-inputs
           run-id: ${{ inputs.certification_evidence_run_id }}
           github-token: ${{ github.token }}
+
+      - name: Download certification provenance
+        uses: actions/download-artifact@v4
+        with:
+          name: source-certification-provenance
+          path: ${{ runner.temp }}/source-certification-provenance
+          run-id: ${{ inputs.certification_evidence_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify producer receipts for the exact commit
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python scripts/verify_source_certification_evidence.py \
+            --input-dir "${RUNNER_TEMP}/source-certification-inputs" \
+            --provenance-dir "${RUNNER_TEMP}/source-certification-provenance" \
+            --target-sha "${TARGET_SHA}"
 
       - name: Require locked provider evidence and contract-only architecture
         run: |

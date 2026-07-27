@@ -18,6 +18,28 @@ def test_native_connect_routers_are_mounted() -> None:
         assert f"/integrations/{source}/connect/finalize" in paths
 
 
+@pytest.mark.parametrize("service_account_configured", [False, True])
+def test_google_native_connect_routers_mount_once_independent_of_dwd_env(
+    monkeypatch: pytest.MonkeyPatch,
+    service_account_configured: bool,
+) -> None:
+    for name in (
+        "GMAIL_SERVICE_ACCOUNT_JSON_FILE",
+        "GMAIL_SERVICE_ACCOUNT_JSON",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    if service_account_configured:
+        monkeypatch.setenv("GMAIL_SERVICE_ACCOUNT_JSON", "{}")
+
+    app = FastAPI()
+    route_mounts._mount_native_connect_routers(app, emit_mount_logs=False)
+
+    paths = [route.path for route in app.routes]
+    for source in ("gmail", "google_calendar", "google_drive"):
+        assert paths.count(f"/integrations/{source}/connect/preflight") == 1
+        assert paths.count(f"/integrations/{source}/connect/finalize") == 1
+
+
 def test_native_connect_router_mount_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

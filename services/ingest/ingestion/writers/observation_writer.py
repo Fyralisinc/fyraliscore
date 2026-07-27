@@ -87,6 +87,7 @@ from typing import Any
 
 import asyncpg
 from aiokafka import AIOKafkaConsumer
+from aiokafka.errors import CommitFailedError
 
 from lib.shared.backoff import exponential_backoff_seconds
 from lib.shared.db import configure_connection_timeouts
@@ -214,6 +215,9 @@ _metrics: dict[str, float] = {
     # and was routed to the DLQ so the partition could advance. Any nonzero
     # value warrants a look (a real poison message, or a > cap outage).
     "writer.poison_dlq": 0.0,
+    # A generation change after the Observation transaction committed is a
+    # safe at-least-once handoff; the new owner may replay and deduplicate.
+    "writer.commit_rebalanced": 0.0,
 }
 
 
@@ -891,7 +895,7 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
                     msg, config=config, dlq_producer=dlq_producer,
                     embedding_producer=embedding_producer, stop_event=stop_event,
                 )
-                await consumer.commit()
+                await _commit_persisted_boundary(consumer)
                 if (
                     config.stop_after is not None
                     and consumed >= config.stop_after
@@ -959,7 +963,7 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
                 # Commit only after the entire batch has reached a definitive
                 # outcome. A crash before this point replays the batch, and
                 # observation-level dedup handles already-inserted rows.
-                await consumer.commit()
+                await _commit_persisted_boundary(consumer)
 
                 if (
                     config.stop_after is not None
@@ -974,6 +978,21 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
         await dlq_producer.stop()
 
     return {"consumed": consumed}
+
+
+async def _commit_persisted_boundary(consumer: AIOKafkaConsumer) -> bool:
+    """Treat a generation change after persistence as a replayable handoff."""
+
+    try:
+        await consumer.commit()
+    except CommitFailedError:
+        # The Observation transaction already committed. The new Kafka group
+        # owner may replay this normalized envelope, and the Observation
+        # identity constraint makes that replay idempotent.
+        _bump("writer.commit_rebalanced")
+        log.warning("writer.commit_rebalanced_after_observation_commit")
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------

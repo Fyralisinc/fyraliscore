@@ -1,0 +1,702 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.ashby": "34c775e94cbe63d96d9511cba1f281e0b09d42157731e286596a3712050e31a7",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.ashby": "46358c83cb1a36341e051260bb99ac9b7f621fd5d9e7c3fde83c7e1714eae0be",
+    "services.ingest.ingestion.handlers.ashby": "bad113349fea357a5c031031ac209466bf910d213cbefb4a57a25b7ed4d0b0c1",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.ashby": "25c0d98fb072283158b79bfe36e113cb8d148db65fe7225d3e1828fd9115a32e",
+    "services.ingest.ingestion.reconcilers.ashby": "0eaa4899ee86fef54f3913d119edca3373f17ab5c84ed9fb45bac4e2dcd9ec91",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.ashby": "27c3bbc3c9ae116bc30ce375eec002e182f60a9ce5661c90ceed209d7185a861",
+    "services.ingest.integrations.ashby.client": "4446d0f89bb803158bc49030d3825462603a95f9e4d7750215f62718fa691273",
+    "services.ingest.integrations.ashby.metrics": "4c23012334c858bc1246b4e18f055837862a1ef4effd828c8fd541014775e75c",
+    "services.ingest.integrations.ashby.oauth": "2fa6fa48fdbd426f9a3129ed590e1f17e9a172509d1e46fc10f076bbe212ca2c",
+    "services.ingest.integrations.ashby.onboarding": "821662bf5e703a1ba9be0bc4b54c45b73dda9cbf7366c68783b2737926f97936",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_cd": "41c4c2a2e3d41386cae397e018f3cd519f08baae2bdf5e148c00e36c3df41929",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Ashby API",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "api_key_basic"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Ashby",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "entities.list",
+      "entities.info"
+    ],
+    "outbound_endpoint_names": [
+      "ashby_api"
+    ],
+    "provider_id": "ashby",
+    "source_ids": [
+      "ashby"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "ashby:object",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "ashby",
+        "route_path": "/webhooks/ashby/{installation_id}",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "ashby",
+        "tenant_binding": "path_then_payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_ashby",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.ashby:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "entities": {
+        "application": [
+          {
+            "candidate": {
+              "id": "can_adbb6b2bad22",
+              "name": "Candidate adbb6b"
+            },
+            "candidateName": "Candidate adbb6b",
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "app_adbb6b2bad22",
+            "stage": "Phone Screen",
+            "status": "active",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "application_feedback": [
+          {
+            "applicationId": "app_62a5c65c221e",
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "app_62a5c65c221e",
+            "interviewId": "int_62a5c65c221e",
+            "submittedAt": "2026-01-05T00:00:00+00:00",
+            "submittedByUser": {
+              "email": "interviewer-62a5c6@example.com",
+              "firstName": "Grace",
+              "id": "usr_62a5c65c221e",
+              "lastName": "Hopper"
+            },
+            "submittedValues": {
+              "overall_recommendation": "hire"
+            },
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "approval": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "app_aa8f1dc795bf",
+            "status": "approved",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "candidate": [
+          {
+            "candidateId": "can_f6c1cbb3f658",
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "email": "f6c1cbb3@example.com",
+            "id": "can_f6c1cbb3f658",
+            "name": "Candidate f6c1cb",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "candidate_tag": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "can_f12a9863d1f9",
+            "title": "Candidate Tag",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "department": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "dep_198e1082d2b7",
+            "isArchived": false,
+            "name": "Engineering",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "feedback_form_definition": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "fee_4fc1f4200670",
+            "title": "Feedback Form Definition",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "interview": [
+          {
+            "candidate": {
+              "id": "can_d539ff29b71a",
+              "name": "Candidate d539ff"
+            },
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "int_d539ff29b71a",
+            "interviewStage": {
+              "title": "Technical Screen"
+            },
+            "status": "scheduled",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "interview_plan": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "int_ff0d5b453be1",
+            "title": "Interview Plan",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "interview_schedule": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "int_ca91b5da3f8c",
+            "title": "Interview Schedule",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "interview_stage_group": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "int_613895eb36e7",
+            "title": "Interview Stage Group",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "job": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "job_b793ad30010b",
+            "locationName": "Remote",
+            "status": "open",
+            "title": "Senior Software Engineer",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "job_posting": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "departmentName": "Engineering",
+            "employmentType": "FullTime",
+            "id": "job_7e1df0459c4c",
+            "isListed": true,
+            "jobId": "job_7e1df0459c4c",
+            "locationName": "Remote",
+            "publishedDate": "2026-01-05",
+            "title": "Senior Software Engineer",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "location": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "loc_4a5ef295487f",
+            "name": "Remote",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "offer": [
+          {
+            "candidate": {
+              "id": "can_46742dbf4854",
+              "name": "Candidate 46742d"
+            },
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "off_46742dbf4854",
+            "offerStatus": "accepted",
+            "status": "accepted",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "opening": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "ope_7c50b0566984",
+            "latestVersion": {
+              "identifier": "OP-7c50b0"
+            },
+            "openingState": "Approved",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "project": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "pro_6b43ccb36eb6",
+            "title": "Project",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "source": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "sou_49065faed824",
+            "title": "Source",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "source_tracking_link": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "sou_73be9c994c9c",
+            "title": "Source Tracking Link",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "survey_form_definition": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "sur_f6e428119f14",
+            "title": "Survey Form Definition",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "survey_request": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "sur_c39405fefc94",
+            "title": "Survey Request",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "survey_submission_candidate_experience": [
+          {
+            "candidateId": "can_8d87e0dccfb0",
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "sur_8d87e0dccfb0",
+            "submittedAt": "2026-01-05T00:00:00+00:00",
+            "submittedValues": {
+              "rating": "positive"
+            },
+            "surveyType": "CandidateExperience",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "survey_submission_questionnaire": [
+          {
+            "candidateId": "can_14ba6c8ed64e",
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "id": "sur_14ba6c8ed64e",
+            "submittedAt": "2026-01-05T00:00:00+00:00",
+            "submittedValues": {
+              "rating": "positive"
+            },
+            "surveyType": "Questionnaire",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "user": [
+          {
+            "createdAt": "2026-01-04T00:00:00+00:00",
+            "email": "user-71b17e@example.com",
+            "firstName": "Grace",
+            "id": "use_71b17ec7f6f7",
+            "isEnabled": true,
+            "lastName": "Hopper",
+            "updatedAt": "2026-01-05T00:00:00+00:00"
+          }
+        ]
+      },
+      "org_id": "certification-surface-ashby",
+      "page_size": 100
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "entities.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "entities.list"
+        ],
+        "path_template": "/{method_name}.list",
+        "quota_bucket": "rpc",
+        "quota_cost": 1.0,
+        "route_id": "ashby.list",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "entities.info",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "entities.info"
+        ],
+        "path_template": "/{method_name}.info",
+        "quota_bucket": "rpc",
+        "quota_cost": 1.0,
+        "route_id": "ashby.info",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.ashby",
+      "evidence_id": "ingest.evidence.ashby",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.ashby",
+      "validation_runtime": {
+        "generator_group": "ashby",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_ashby_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_ashby_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_ashby_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_ashby_live_target",
+        "preflight_binding": null,
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_ashby_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.ashby.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "candidate",
+      "application",
+      "job",
+      "interview",
+      "offer",
+      "feedback"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "People",
+      "connection_method": "API token",
+      "description": "Recruiting pipeline and hiring signals.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 24,
+      "setup_requirements": "Ashby organization access, API token, jobs/candidates scope, recruiting data approval.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Ashby",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.ashby:fetch_page_ashby",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:ashby_entity"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "ashby:object",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "ashby:object",
+        "ingress_kind": "poll"
+      },
+      {
+        "channel": "ashby:object",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_ashby_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": "ashby_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "ashby_entities",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref",
+          "webhook_secret_ref"
+        ],
+        "scope_column": "org_id",
+        "source": "ashby",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "ashby_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": "org_id",
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "organization_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "ashby",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.ashby.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "ashby:object"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.ashby:handle_ashby_object"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "organization id",
+          "API base URL",
+          "available recruiting scopes"
+        ],
+        "agent_generates": [
+          "webhook signing secret ref",
+          "jobs/candidates/interviews scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin creates or approves a least-privilege service credential"
+        ],
+        "settings_targets": [
+          "API settings",
+          "webhook settings",
+          "organization settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "jobs",
+        "candidates",
+        "interviews"
+      ],
+      "discovery_target": "jobs, candidates, interviews, and organization metadata",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/ashby/{install-id}"
+      ],
+      "local_rehearsal": null,
+      "method": "api_token",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/ashby/connect/finalize",
+        "kind": "api_token_native_connect",
+        "payload_fields": [
+          "api_token",
+          "base_url",
+          "org_id",
+          "entities",
+          "webhook_secret"
+        ],
+        "preflight_path": "/integrations/ashby/connect/preflight",
+        "preflight_payload_fields": [
+          "api_token",
+          "base_url",
+          "org_id"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "org_id",
+        "base_url",
+        "webhook_secret"
+      ],
+      "provider_console_url": "https://app.ashbyhq.com/admin/api",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "jobs read",
+        "candidates read",
+        "interviews read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "api_token"
+      ],
+      "required_refs": [
+        "api_token"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "entities.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "entities.info",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "ashby_api",
+        "operation_ids": [
+          "entities.list",
+          "entities.info"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.ashby:plan_shards_ashby",
+    "provider_id": "ashby",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.ashby:reconcile_ashby",
+    "runtime_identifiers": [
+      "installation_id",
+      "organization_id"
+    ],
+    "source_id": "ashby",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "ashby"
+  },
+  "source_id": "ashby"
+}

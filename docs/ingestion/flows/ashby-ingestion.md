@@ -422,7 +422,8 @@ The verifier loops over **all** active secrets so a rotation (two valid secrets
 in flight) verifies, and returns `signed_timestamp=None`
 ([signatures/ashby.py:75‑96](../../../services/app/webhooks/signatures/ashby.py#L75-L96)).
 The per-tenant signing secret(s) are loaded by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the
+`provider_installations`
 row (`provider='ashby'`) ([signatures/ashby.py:15‑18](../../../services/app/webhooks/signatures/ashby.py#L15-L18),
 [router.py:829‑831](../../../services/app/webhooks/router.py#L829-L831)).
 

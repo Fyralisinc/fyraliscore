@@ -56,7 +56,7 @@ async def test_signed_slack_verifies_via_db_secret_ref(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """End-to-end: a Slack webhook signed with a secret stored in
-    `encrypted_secrets` verifies via the DB-backed `load_secrets`
+    `encrypted_secrets` verifies via the DB-backed `load_installation_secrets`
     path, with the env-var fallback explicitly OFF."""
     # SC-002 prerequisite: env-var fallback OFF. The webhooks conftest
     # turns it on by autouse; explicitly disable here.

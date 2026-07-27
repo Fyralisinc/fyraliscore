@@ -442,6 +442,31 @@ active mailbox every ~10 min, [history_poller.py:1‑11](../../../services/inges
 4. Advances the mailbox `history_id` + stamps `last_push_at`/`last_poll_at`
    ([fetcher.py:283‑310](../../../services/ingest/integrations/gmail/fetcher.py#L283-L310)).
 
+If Gmail returns `404` for an invalid or expired `startHistoryId`, the drain
+does not retry the dead cursor. Gmail explicitly requires a
+[full synchronization](https://developers.google.com/workspace/gmail/api/guides/sync)
+in that case. Fyralis performs one bounded recovery attempt:
+
+1. Capture the mailbox's current `historyId` with `users.getProfile`.
+2. Page the current mailbox with `users.messages.list(maxResults=500)` and
+   strictly hydrate and persist every listed message.
+3. Run `users.history.list` from the captured ID and strictly persist any
+   messages that arrived while the snapshot was running.
+4. Commit the catch-up `historyId` only after every required page, hydration,
+   raw publish/inline fallback, and dispatch has succeeded.
+
+Partial work is safe because Gmail observation IDs are idempotent, but the old
+durable cursor remains unchanged if any required operation fails. Snapshot and
+catch-up pagination are capped by
+`GMAIL_HISTORY_RECOVERY_MAX_LIST_PAGES` and
+`GMAIL_HISTORY_RECOVERY_MAX_HISTORY_PAGES` (both default to 2,000 pages), so a
+malformed/repeating provider cursor cannot spin forever. The recovery claim is
+stored on the exact `gmail_mailbox_watches` row using `last_poll_at` plus a
+`history_recovery:` error marker. Concurrent/repeated pushes return
+`retry_later` until the ten-minute mailbox interval elapses; the poller uses the
+same interval and records recovery failures in its existing per-mailbox circuit
+breaker.
+
 ### 8.3 The cutover — why the live message is published under `ingress_kind="poll"`
 
 When the shadow deps are wired and `ingestion.kafka_path_enabled` is **not**

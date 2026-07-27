@@ -3,27 +3,28 @@
 It operates in three phases:
 
   Phase A — Setup:
-    1. Seed tenants (one row in `tenants` per scenario).
+    1. Seed tenants (one row per distinct scenario `tenant_slug`).
     2. Resolve each source certification kit's immutable fixture and
        installation-seeder callables.
     3. Start Provider Lab with those fixtures.
     4. Write install + onboarding_triggers rows.
 
   Phase B — Run:
-    5. Spawn seven unmodified production service subprocesses (oauth_poller,
+    5. Spawn one or more seven-service production replicas (oauth_poller,
        source_onboarding, shard_fetch, reconciler, normalizer,
        observation_writer).
-    6. Concurrently (bounded by `concurrency`) poll for each tenant's
+    6. Concurrently (bounded by `concurrency`) poll for each installation's
        `tenant_onboarding_completed` signal in the Bridge inbox.
 
   Phase C — Teardown:
-    7. SIGTERM all 7 subprocesses; assert rc == 0 (15s grace).
+    7. SIGTERM every subprocess; assert accepted shutdown status.
     8. Collect observations, signals, state-table snapshots into
        `TenantOutcome` records.
     9. Return `HarnessResult` for assertion checks.
 
-Concurrency model: per the X3 audit, the services are tenant-agnostic
-at the claim layer — one shared subprocess set serves all tenants.
+Concurrency model: per the X3 audit, the services are tenant-agnostic at the
+claim layer.  Every configured replica shares Postgres leases and Kafka
+consumer groups while retaining a distinct diagnostic instance identity.
 
 M6.7 (A27.4): the backfill chain only PRODUCES observations when the
 normalizer + observation_writer run AND the tenant has
@@ -105,20 +106,82 @@ class TenantOutcome:
     install_error: str | None = None
     fixture: dict[str, Any] | None = None
 
+    @property
+    def identity_label(self) -> str:
+        return (
+            f"{self.scenario.source}/{self.scenario.tenant_slug}/"
+            f"{self.scenario.resolved_installation_key}"
+        )
+
 
 @dataclass
 class HarnessResult:
     """Aggregate result returned by `BackfillHarness.run()`."""
 
     outcomes: list[TenantOutcome]
+    configured_replicas: int = 1
+    replica_workflow_activity: dict[str, dict[str, int]] = field(
+        default_factory=dict,
+    )
     subprocess_returncodes: dict[str, int] = field(default_factory=dict)
     subprocess_stderr_tails: dict[str, str] = field(default_factory=dict)
     wall_time_seconds: float = 0.0
 
+    @property
+    def installation_identity_evidence(
+        self,
+    ) -> tuple[dict[str, str | None], ...]:
+        """Serializable exact attribution emitted by the harness."""
+
+        return tuple(
+            {
+                "source": outcome.scenario.source,
+                "tenant_slug": outcome.scenario.tenant_slug,
+                "installation_key": (
+                    outcome.scenario.resolved_installation_key
+                ),
+                "tenant_id": str(outcome.tenant_id),
+                "installation_row_id": (
+                    str(outcome.installation_row_id)
+                    if outcome.installation_row_id is not None
+                    else None
+                ),
+                "trigger_id": (
+                    str(outcome.trigger_id)
+                    if outcome.trigger_id is not None
+                    else None
+                ),
+                "onboarding_run_id": (
+                    str(outcome.onboarding_run_id)
+                    if outcome.onboarding_run_id is not None
+                    else None
+                ),
+            }
+            for outcome in self.outcomes
+        )
+
+    @property
+    def observed_replica_count(self) -> int:
+        """Number of durable OAuth-poller replica heartbeats observed."""
+
+        return len(self.replica_workflow_activity.get("oauth_poller", {}))
+
+    @property
+    def participating_replica_count(self) -> int:
+        """Number of OAuth replicas that claimed at least one trigger."""
+
+        return sum(
+            int(processed > 0)
+            for processed in self.replica_workflow_activity.get(
+                "oauth_poller",
+                {},
+            ).values()
+        )
+
 
 def _fixture_installation_id(outcome: TenantOutcome) -> str:
     return (
-        f"x3-{outcome.scenario.tenant_slug}-"
+        f"x3-{outcome.scenario.resolved_installation_key}-"
         f"{outcome.scenario.source}"
     )
 
@@ -154,7 +217,7 @@ async def _write_gmail_install_and_trigger(
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
-        f"x3-{outcome.scenario.tenant_slug}.example",
+        f"x3-{outcome.scenario.resolved_installation_key}.example",
         "sa@x3-test.iam.gserviceaccount.com",
         "gmail.metadata",
     )
@@ -219,7 +282,7 @@ async def _write_google_calendar_install_and_trigger(
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
-        f"x3-{outcome.scenario.tenant_slug}.example",
+        f"x3-{outcome.scenario.resolved_installation_key}.example",
         "sa@x3-test.iam.gserviceaccount.com",
     )
     fixture = _certification_fixture(outcome)
@@ -274,7 +337,7 @@ async def _write_google_drive_install_and_trigger(
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
-        f"x3-{outcome.scenario.tenant_slug}.example",
+        f"x3-{outcome.scenario.resolved_installation_key}.example",
         "sa@x3-test.iam.gserviceaccount.com",
     )
     for tgt in fixture.get("targets", []):
@@ -375,13 +438,18 @@ async def _write_mercury_install_and_trigger(
         INSERT INTO mercury_installations (
           id, tenant_id, base_url, organization_id
         ) VALUES ($1, $2, $3, $4)
-        ON CONFLICT (tenant_id, base_url)
-            DO UPDATE SET disabled_at = NULL
+        ON CONFLICT (
+            tenant_id,
+            (organization_id IS NULL),
+            (COALESCE(organization_id, base_url))
+        )
+            DO UPDATE SET base_url = EXCLUDED.base_url,
+                          disabled_at = NULL
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
         "https://api.mercury.com/api/v1",
-        f"x3-{outcome.scenario.tenant_slug}-org",
+        f"x3-{outcome.scenario.resolved_installation_key}-org",
     )
     accounts = fixture.get("accounts", {})
     for acct_id in fixture.get("account_order", []):
@@ -524,7 +592,7 @@ async def _write_telegram_install_and_trigger(
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
-        f"x3-{outcome.scenario.tenant_slug}-telegram",
+        f"x3-{outcome.scenario.resolved_installation_key}-telegram",
     )
     dialogs = fixture.get("dialogs", {})
     for did in fixture.get("dialog_order", []):
@@ -581,13 +649,18 @@ async def _write_brex_install_and_trigger(
         INSERT INTO brex_installations (
           id, tenant_id, base_url, organization_id
         ) VALUES ($1, $2, $3, $4)
-        ON CONFLICT (tenant_id, base_url)
-            DO UPDATE SET disabled_at = NULL
+        ON CONFLICT (
+            tenant_id,
+            (organization_id IS NULL),
+            (COALESCE(organization_id, base_url))
+        )
+            DO UPDATE SET base_url = EXCLUDED.base_url,
+                          disabled_at = NULL
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
         "https://platform.brexapis.com",
-        f"x3-{outcome.scenario.tenant_slug}-org",
+        f"x3-{outcome.scenario.resolved_installation_key}-org",
     )
     accounts = fixture.get("accounts", {})
     for acct_id in fixture.get("account_order", []):
@@ -633,13 +706,18 @@ async def _write_deel_install_and_trigger(
         INSERT INTO deel_installations (
           id, tenant_id, base_url, organization_id
         ) VALUES ($1, $2, $3, $4)
-        ON CONFLICT (tenant_id, base_url)
-            DO UPDATE SET disabled_at = NULL
+        ON CONFLICT (
+            tenant_id,
+            (organization_id IS NULL),
+            (COALESCE(organization_id, base_url))
+        )
+            DO UPDATE SET base_url = EXCLUDED.base_url,
+                          disabled_at = NULL
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
         "https://api.letsdeel.com",
-        f"x3-{outcome.scenario.tenant_slug}-org",
+        f"x3-{outcome.scenario.resolved_installation_key}-org",
     )
     for contract_id in fixture.get("contract_order", []):
         await conn.execute(
@@ -784,15 +862,20 @@ async def _write_fireflies_install_and_trigger(
     fixture = _certification_fixture(outcome)
     workspace_id = fixture.get(
         "workspace_id",
-        f"x3-{outcome.scenario.tenant_slug}-ws",
+        f"x3-{outcome.scenario.resolved_installation_key}-ws",
     )
     install_id = await conn.fetchval(
         """
         INSERT INTO fireflies_installations (
           id, tenant_id, base_url, workspace_id
         ) VALUES ($1, $2, $3, $4)
-        ON CONFLICT (tenant_id, base_url)
-            DO UPDATE SET disabled_at = NULL
+        ON CONFLICT (
+            tenant_id,
+            (workspace_id IS NULL),
+            (COALESCE(workspace_id, base_url))
+        )
+            DO UPDATE SET base_url = EXCLUDED.base_url,
+                          disabled_at = NULL
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
@@ -832,21 +915,24 @@ async def _write_miro_install_and_trigger(
     conn: Any,
     outcome: TenantOutcome,
 ) -> None:
-    # HMAC webhook source (Brex-shaped). org_id lives ON the
-    # install row; one miro_boards row per fixture board → one
-    # shard each. provider_installations.installation_id=org_id
-    # for tenant_resolver._extract_miro.
+    # Poll-only source. org_id lives on the exact install row; one
+    # miro_boards row per fixture board produces one shard each.
     fixture = _certification_fixture(outcome)
     org_id = fixture.get(
-        "org_id", f"x3-{outcome.scenario.tenant_slug}-org",
+        "org_id", f"x3-{outcome.scenario.resolved_installation_key}-org",
     )
     install_id = await conn.fetchval(
         """
         INSERT INTO miro_installations (
           id, tenant_id, base_url, org_id
         ) VALUES ($1, $2, $3, $4)
-        ON CONFLICT (tenant_id, base_url)
-            DO UPDATE SET disabled_at = NULL
+        ON CONFLICT (
+            tenant_id,
+            (org_id IS NULL),
+            (COALESCE(org_id, base_url))
+        )
+            DO UPDATE SET base_url = EXCLUDED.base_url,
+                          disabled_at = NULL
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
@@ -868,17 +954,6 @@ async def _write_miro_install_and_trigger(
             uuid7(), outcome.tenant_id, install_id,
             board_id, board.get("name"), board.get("type"),
         )
-    await conn.execute(
-        """
-        INSERT INTO provider_installations
-            (id, tenant_id, provider, installation_id,
-             secret_ref, enabled)
-        VALUES ($1, $2, 'miro', $3, NULL, TRUE)
-        ON CONFLICT (provider, installation_id) DO UPDATE
-            SET enabled = TRUE
-        """,
-        uuid7(), outcome.tenant_id, org_id,
-    )
     await conn.execute(
         """
         INSERT INTO onboarding_triggers (
@@ -906,15 +981,20 @@ async def _write_figma_install_and_trigger(
     # for tenant_resolver._extract_figma.
     fixture = _certification_fixture(outcome)
     team_id = fixture.get(
-        "team_id", f"x3-{outcome.scenario.tenant_slug}-team",
+        "team_id", f"x3-{outcome.scenario.resolved_installation_key}-team",
     )
     install_id = await conn.fetchval(
         """
         INSERT INTO figma_installations (
           id, tenant_id, base_url, team_id
         ) VALUES ($1, $2, $3, $4)
-        ON CONFLICT (tenant_id, base_url)
-            DO UPDATE SET disabled_at = NULL
+        ON CONFLICT (
+            tenant_id,
+            (team_id IS NULL),
+            (COALESCE(team_id, base_url))
+        )
+            DO UPDATE SET base_url = EXCLUDED.base_url,
+                          disabled_at = NULL
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
@@ -986,7 +1066,7 @@ async def _write_signal_install_and_trigger(
         RETURNING id
         """,
         uuid7(), outcome.tenant_id,
-        f"x3-{outcome.scenario.tenant_slug}-signal",
+        f"x3-{outcome.scenario.resolved_installation_key}-signal",
     )
     threads = fixture.get("threads", {})
     for tid in fixture.get("thread_order", []):
@@ -1134,7 +1214,7 @@ async def _write_hibob_install_and_trigger(
     fixture = _certification_fixture(outcome)
     company_id = fixture.get(
         "company_id",
-        f"x3-{outcome.scenario.tenant_slug}-co",
+        f"x3-{outcome.scenario.resolved_installation_key}-co",
     )
     install_id = await conn.fetchval(
         """
@@ -1146,7 +1226,7 @@ async def _write_hibob_install_and_trigger(
         RETURNING id
         """,
         uuid7(), outcome.tenant_id, company_id,
-        f"svc-{outcome.scenario.tenant_slug}",
+        f"svc-{outcome.scenario.resolved_installation_key}",
         "https://api.hibob.com",
     )
     for entity_type in fixture.get("entities", {}):
@@ -1200,7 +1280,7 @@ async def _write_ashby_install_and_trigger(
     # tenant_resolver._extract_ashby (payload "organizationId").
     fixture = _certification_fixture(outcome)
     org_id = fixture.get(
-        "org_id", f"x3-{outcome.scenario.tenant_slug}-org",
+        "org_id", f"x3-{outcome.scenario.resolved_installation_key}-org",
     )
     install_id = await conn.fetchval(
         """
@@ -1266,7 +1346,7 @@ async def _write_linkedin_install_and_trigger(
     fixture = _certification_fixture(outcome)
     organization_urn = fixture.get(
         "organization_urn",
-        f"x3-{outcome.scenario.tenant_slug}-org",
+        f"x3-{outcome.scenario.resolved_installation_key}-org",
     )
     install_id = await conn.fetchval(
         """
@@ -1382,7 +1462,7 @@ async def _write_generic_install_and_trigger(
         RETURNING id
         """,
         uuid7(), outcome.tenant_id, source,
-        f"x3-{outcome.scenario.tenant_slug}-{source}",
+        f"x3-{outcome.scenario.resolved_installation_key}-{source}",
     )
     await conn.execute(
         """
@@ -1459,7 +1539,10 @@ class BackfillHarness:
       completion_deadline_s: Per-tenant deadline for waiting on
         tenant_onboarding_completed. Default 60s.
       kafka_bootstrap_servers: KAFKA_BOOTSTRAP_SERVERS env for the
-        subprocesses. Default "localhost:9092".
+        subprocesses. When omitted, inherit ``KAFKA_BOOTSTRAP_SERVERS``
+        from the harness process, falling back to "localhost:9092".
+      replicas: Complete seven-service Fyralis replicas to run against the
+        same Postgres and Kafka consumer groups. Default 1.
     """
 
     def __init__(
@@ -1469,16 +1552,39 @@ class BackfillHarness:
         scenarios: list[BackfillScenario],
         concurrency: int = 4,
         completion_deadline_s: float = 60.0,
-        kafka_bootstrap_servers: str = "localhost:9092",
+        kafka_bootstrap_servers: str | None = None,
         drain_timeout_s: float = 30.0,
         drain_poll_interval_s: float = 2.0,
         provider_lab_rate_limit_every: int = 0,
+        replicas: int = 1,
     ) -> None:
         self._pool = pool
-        self._scenarios = scenarios
+        self._scenarios = list(scenarios)
+        scenario_identities = [
+            scenario.identity for scenario in self._scenarios
+        ]
+        if len(scenario_identities) != len(set(scenario_identities)):
+            raise ValueError(
+                "BackfillHarness scenarios must have unique "
+                "(source, tenant_slug, installation_key) identities"
+            )
+        if (
+            not isinstance(replicas, int)
+            or isinstance(replicas, bool)
+            or replicas < 1
+        ):
+            raise ValueError("BackfillHarness.replicas must be a positive integer")
+        self._replicas = replicas
         self._concurrency = max(1, concurrency)
         self._deadline_s = completion_deadline_s
-        self._kafka_bootstrap = kafka_bootstrap_servers
+        self._kafka_bootstrap = (
+            kafka_bootstrap_servers
+            if kafka_bootstrap_servers is not None
+            else os.environ.get(
+                "KAFKA_BOOTSTRAP_SERVERS",
+                "localhost:9092",
+            )
+        )
         # Production source clients always hit Provider Lab over loopback
         # HTTP, including their normal auth, pagination, and retry paths.
         self._provider_lab_rate_limit_every = provider_lab_rate_limit_every
@@ -1491,8 +1597,8 @@ class BackfillHarness:
         # fully drain. `run()` uses these; `drain()` accepts overrides.
         self._drain_timeout_s = drain_timeout_s
         self._drain_poll_interval_s = drain_poll_interval_s
-        # Populated by `setup()`; the concurrent orchestrator reads
-        # these tenant_ids/slugs to address the same installs live.
+        # Populated by `setup()`; sibling installation scenarios with the same
+        # tenant_slug deliberately share a tenant UUID.
         self._outcomes: list[TenantOutcome] | None = None
         self._start: float = 0.0
         # Raw-tier (S3) wiring for the M6.7 backfill producer + normalizer.
@@ -1506,6 +1612,7 @@ class BackfillHarness:
         # per-source partitions and steal observations into the other DB).
         self._cg_suffix = uuid4().hex[:8]
         self._procs: dict[str, subprocess.Popen | None] = {}
+        self._replica_workflow_activity: dict[str, dict[str, int]] = {}
 
     async def run(self) -> HarnessResult:
         """Backward-compatible sequential composition (Runs 1-3):
@@ -1531,21 +1638,31 @@ class BackfillHarness:
         start Provider Lab, and write install/onboarding rows. Returns the
         outcomes so a caller can read tenant IDs before producer/live phases."""
         self._start = time.monotonic()
-        self._outcomes = [
-            TenantOutcome(
-                scenario=s,
-                tenant_id=uuid4(),
-                expected_reshare=_scenario_expects_reshare(s),
-            )
-            for s in self._scenarios
-        ]
+        self._outcomes = self._build_outcomes()
         self._workdir = tempfile.mkdtemp(prefix="x3-harness-")
         await self._setup_tenants_and_fixtures(self._outcomes)
         await self._ensure_s3_bucket()
         self._prepare_provider_lab_fixtures(self._outcomes)
         self._start_provider_lab()
         await self._invoke_oauth_callbacks(self._outcomes)
+        await self._fence_consumer_groups_at_current_end()
         return self._outcomes
+
+    def _build_outcomes(self) -> list[TenantOutcome]:
+        """Create one outcome per install and one UUID per tenant slug."""
+
+        tenant_ids: dict[str, UUID] = {}
+        outcomes: list[TenantOutcome] = []
+        for scenario in self._scenarios:
+            tenant_id = tenant_ids.setdefault(scenario.tenant_slug, uuid4())
+            outcomes.append(
+                TenantOutcome(
+                    scenario=scenario,
+                    tenant_id=tenant_id,
+                    expected_reshare=_scenario_expects_reshare(scenario),
+                )
+            )
+        return outcomes
 
     def _start_provider_lab(self) -> None:
         """Start Provider Lab and write its Gmail DWD service-account JSON."""
@@ -1692,11 +1809,190 @@ class BackfillHarness:
             raise RuntimeError("BackfillHarness.setup() not called yet")
         return self._outcomes
 
+    @property
+    def consumer_group_ids(self) -> dict[str, str]:
+        """Exact consumer groups owned by this isolated harness run.
+
+        Certification probes use these identities to wait until replayed raw
+        envelopes have crossed the normalizer and observation-writer commit
+        boundaries.  Exposing the generated suffix here avoids reconstructing
+        a private naming convention outside the harness.
+        """
+
+        return {
+            "raw": f"x3-normalizer-{self._cg_suffix}",
+            "normalized": (
+                f"x3-observation-writer-{self._cg_suffix}"
+            ),
+        }
+
     def start_services(self) -> None:
-        """Phase B(i): spawn the 7 shared subprocesses (producer chain +
-        normalizer + observation_writer consumers). The consumers drain
-        BOTH backfill and live-via-Kafka envelopes from `ingestion.raw`."""
+        """Spawn every configured seven-service replica.
+
+        Replicas share the producer substrate, Postgres leases, and Kafka
+        consumer groups. The consumers drain both backfill and live-via-Kafka
+        envelopes from ``ingestion.raw``.
+        """
         self._spawn_services()
+
+    async def start_services_with_replica_barrier(
+        self,
+        *,
+        timeout_s: float = 30.0,
+    ) -> None:
+        """Start replicated workers before making seeded triggers claimable.
+
+        ``setup()`` must create the installation and trigger atomically, so the
+        triggers already exist when subprocesses start. Without a barrier, the
+        first OAuth poller can drain a small certification batch before its
+        sibling has connected. Hold exact trigger-row locks while both unique
+        poller instances publish their first durable heartbeat; ``SKIP LOCKED``
+        makes those initial ticks observe no work. Releasing the transaction
+        then gives both ready replicas a fair chance to claim the four rows.
+
+        This is a harness-only synchronization boundary. Production workers
+        retain their ordinary lock/lease behavior.
+        """
+
+        if self._replicas < 2:
+            self.start_services()
+            return
+        trigger_ids = [
+            outcome.trigger_id
+            for outcome in self.outcomes
+            if outcome.trigger_id is not None
+        ]
+        if len(trigger_ids) != len(self.outcomes) or not trigger_ids:
+            raise RuntimeError(
+                "replica startup barrier requires every exact trigger ID",
+            )
+
+        async with self._pool.acquire() as conn:
+            transaction = conn.transaction()
+            await transaction.start()
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT id
+                      FROM onboarding_triggers
+                     WHERE id = ANY($1::uuid[])
+                       AND consumed_at IS NULL
+                     FOR UPDATE
+                    """,
+                    trigger_ids,
+                )
+                locked = {row["id"] for row in rows}
+                if locked != set(trigger_ids):
+                    raise RuntimeError(
+                        "replica startup barrier could not lock every "
+                        "unconsumed trigger",
+                    )
+                self.start_services()
+                await self._wait_for_all_replica_heartbeats(
+                    timeout_s=timeout_s,
+                )
+            finally:
+                # Commit performs no data mutation; it only releases the exact
+                # trigger locks after every replica is demonstrably ready.
+                await transaction.commit()
+
+    async def _wait_for_replica_heartbeats(
+        self,
+        logical_service: str,
+        *,
+        timeout_s: float,
+    ) -> None:
+        expected = set(self.replica_workflow_ids(logical_service))
+        deadline = time.monotonic() + timeout_s
+        observed: set[str] = set()
+        while time.monotonic() < deadline:
+            rows = await self._pool.fetch(
+                """
+                SELECT workflow_id
+                  FROM workflow_states
+                 WHERE workflow_kind = $1
+                   AND workflow_id = ANY($2::text[])
+                """,
+                logical_service,
+                sorted(expected),
+            )
+            observed = {str(row["workflow_id"]) for row in rows}
+            if observed == expected:
+                return
+            await asyncio.sleep(0.05)
+        raise RuntimeError(
+            f"{logical_service} replica startup barrier timed out; "
+            f"missing={sorted(expected - observed)!r}",
+        )
+
+    async def _wait_for_all_replica_heartbeats(
+        self,
+        *,
+        timeout_s: float,
+    ) -> None:
+        """Prove every required workflow replica is alive before release."""
+
+        logical_services = (
+            "oauth_poller",
+            "tenant_onboarding",
+            "source_onboarding",
+            "shard_fetch",
+            "reconciler",
+        )
+        expected = {
+            logical_service: set(self.replica_workflow_ids(logical_service))
+            for logical_service in logical_services
+        }
+        observed = {logical_service: set() for logical_service in logical_services}
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            dead: dict[str, dict[str, object]] = {}
+            for name, proc in self._procs.items():
+                if proc is None or proc.poll() is None:
+                    continue
+                stderr = ""
+                if proc.stderr is not None:
+                    stderr = proc.stderr.read().decode(
+                        "utf-8",
+                        errors="replace",
+                    )[-2000:]
+                dead[name] = {
+                    "returncode": proc.returncode,
+                    "stderr_tail": stderr,
+                }
+            if dead:
+                raise RuntimeError(
+                    "replica startup barrier observed exited services: "
+                    f"{dead!r}",
+                )
+
+            for logical_service, workflow_ids in expected.items():
+                rows = await self._pool.fetch(
+                    """
+                    SELECT workflow_id
+                      FROM workflow_states
+                     WHERE workflow_kind = $1
+                       AND workflow_id = ANY($2::text[])
+                    """,
+                    logical_service,
+                    sorted(workflow_ids),
+                )
+                observed[logical_service] = {
+                    str(row["workflow_id"]) for row in rows
+                }
+            if all(observed[name] == expected[name] for name in logical_services):
+                return
+            await asyncio.sleep(0.05)
+
+        missing = {
+            name: sorted(expected[name] - observed[name])
+            for name in logical_services
+            if observed[name] != expected[name]
+        }
+        raise RuntimeError(
+            "replica startup barrier timed out; "
+            f"missing_workflow_heartbeats={missing!r}",
+        )
 
     async def wait_for_backfill(self) -> None:
         """Phase B(ii): wait for every tenant's `tenant_onboarding_completed`
@@ -1724,6 +2020,7 @@ class BackfillHarness:
     async def collect(self) -> None:
         """Phase C(i): collect per-tenant observations + state snapshots."""
         await self._collect_state(self.outcomes)
+        await self._collect_replica_workflow_activity()
 
     def teardown(self) -> dict[str, str]:
         """Phase C(ii): SIGTERM the subprocesses; return stderr tails."""
@@ -1734,6 +2031,11 @@ class BackfillHarness:
     def build_result(self, stderrs: dict[str, str]) -> HarnessResult:
         return HarnessResult(
             outcomes=self.outcomes,
+            configured_replicas=self._replicas,
+            replica_workflow_activity={
+                service: dict(activity)
+                for service, activity in self._replica_workflow_activity.items()
+            },
             subprocess_returncodes={
                 k: (v.returncode if v else -999)
                 for k, v in self._procs.items()
@@ -1766,14 +2068,23 @@ class BackfillHarness:
             )
 
     async def _ensure_s3_bucket(self) -> None:
-        """Create the moto raw bucket if it doesn't exist (A27.4).
+        """Create every moto bucket used by the production ingest path.
 
         No-op when S3_ENDPOINT_URL is unset (the producer then targets
-        real AWS, which owns its own bucket lifecycle). Idempotent —
-        BucketAlreadyOwnedByYou / BucketAlreadyExists are swallowed."""
+        real AWS, which owns its own bucket lifecycle). Most sources need only
+        the raw-evidence bucket. Figma also writes its full design document to
+        the distinct durable-blob bucket before emitting a raw envelope, so
+        certification must provision both rather than special-casing its
+        production client.
+
+        Idempotent — BucketAlreadyOwnedByYou / BucketAlreadyExists are
+        swallowed.
+        """
         if not self._s3_endpoint:
             return
         import aioboto3
+
+        from services.ingest.ingestion.artifacts import durable_blob_bucket
 
         session = aioboto3.Session()
         async with session.client(
@@ -1783,16 +2094,23 @@ class BackfillHarness:
             aws_secret_access_key="test",
             region_name="us-east-1",
         ) as s3:
-            try:
-                await s3.create_bucket(Bucket=self._s3_bucket)
-            except Exception as exc:  # noqa: BLE001
-                # Already-exists is success; anything else is logged but
-                # not fatal — the producer's put_if_absent will surface a
-                # genuine misconfiguration loudly per-shard.
-                if "BucketAlreadyOwnedByYou" not in repr(exc) and (
-                    "BucketAlreadyExists" not in repr(exc)
-                ):
-                    log.warning("x3.s3_bucket_create_failed: %r", exc)
+            for bucket in sorted(
+                {self._s3_bucket, durable_blob_bucket()},
+            ):
+                try:
+                    await s3.create_bucket(Bucket=bucket)
+                except Exception as exc:  # noqa: BLE001
+                    # Already-exists is success; anything else is logged but
+                    # not fatal — the producer/artifact write surfaces a
+                    # genuine misconfiguration loudly per shard.
+                    if "BucketAlreadyOwnedByYou" not in repr(exc) and (
+                        "BucketAlreadyExists" not in repr(exc)
+                    ):
+                        log.warning(
+                            "x3.s3_bucket_create_failed bucket=%s: %r",
+                            bucket,
+                            exc,
+                        )
 
     def _prepare_provider_lab_fixtures(
         self,
@@ -1926,7 +2244,7 @@ class BackfillHarness:
             if selected is None:
                 raise RuntimeError(
                     "previously bound onboarding trigger disappeared for "
-                    f"{outcome.scenario.source}/{outcome.scenario.tenant_slug}",
+                    f"{outcome.identity_label}",
                 )
         else:
             before_ids = {UUID(str(row["id"])) for row in before}
@@ -1939,7 +2257,7 @@ class BackfillHarness:
             else:
                 raise RuntimeError(
                     "cannot attribute an exact onboarding trigger for "
-                    f"{outcome.scenario.source}/{outcome.scenario.tenant_slug}: "
+                    f"{outcome.identity_label}: "
                     f"before={len(before_ids)}, after={len(rows_by_id)}, "
                     f"new={len(new_ids)}",
                 )
@@ -1952,7 +2270,7 @@ class BackfillHarness:
         if raw_installation_id is None:
             raise RuntimeError(
                 "certification trigger has no exact installation row for "
-                f"{outcome.scenario.source}/{outcome.scenario.tenant_slug}",
+                f"{outcome.identity_label}",
             )
         installation_row_id = UUID(str(raw_installation_id))
         if (
@@ -1961,7 +2279,7 @@ class BackfillHarness:
         ):
             raise RuntimeError(
                 "certification trigger changed installation identity for "
-                f"{outcome.scenario.source}/{outcome.scenario.tenant_slug}",
+                f"{outcome.identity_label}",
             )
         outcome.trigger_id = trigger_id
         outcome.installation_row_id = installation_row_id
@@ -2006,31 +2324,113 @@ class BackfillHarness:
             env.setdefault("AWS_DEFAULT_REGION", "us-east-1")
         return env
 
+    async def _fence_consumer_groups_at_current_end(self) -> None:
+        """Prevent a run-specific consumer group from replaying old traffic.
+
+        The harness deliberately gives its normalizer and writer unique Kafka
+        groups so a concurrently running Fyralis stack cannot steal this run's
+        records. A brand-new group with ``auto_offset_reset=earliest`` would,
+        however, replay every retained record on a shared broker. Besides
+        polluting the throwaway database, one unrelated poison record can stop
+        the consumer before it reaches this run's envelopes.
+
+        Setup calls this after all database/provider fixtures are ready but
+        before any harness producer starts. Committing the two new groups at
+        the current end of their subscribed lanes therefore excludes only
+        pre-existing traffic; every record produced by this harness remains
+        visible. Missing topics are safe to skip: when provisioned later they
+        begin empty and ``earliest`` is equivalent to offset zero.
+        """
+        from aiokafka import AIOKafkaConsumer, TopicPartition
+        from aiokafka.admin import AIOKafkaAdminClient
+
+        from services.ingest.ingestion.kafka.topics import topics_for_stage
+
+        stage_groups = (
+            ("raw", f"x3-normalizer-{self._cg_suffix}"),
+            ("normalized", f"x3-observation-writer-{self._cg_suffix}"),
+        )
+        admin = AIOKafkaAdminClient(
+            bootstrap_servers=self._kafka_bootstrap,
+        )
+        await admin.start()
+        try:
+            descriptions_by_stage = {
+                stage: await admin.describe_topics(topics_for_stage(stage))
+                for stage, _group in stage_groups
+            }
+        finally:
+            await admin.close()
+
+        for stage, group_id in stage_groups:
+            partitions = [
+                TopicPartition(description["topic"], partition["partition"])
+                for description in descriptions_by_stage[stage]
+                if description.get("error_code") == 0
+                for partition in description.get("partitions", ())
+                if partition.get("error_code") == 0
+            ]
+            if not partitions:
+                log.warning(
+                    "x3.consumer_offset_fence.no_topics stage=%s",
+                    stage,
+                )
+                continue
+            consumer = AIOKafkaConsumer(
+                bootstrap_servers=self._kafka_bootstrap,
+                group_id=group_id,
+                enable_auto_commit=False,
+            )
+            await consumer.start()
+            try:
+                consumer.assign(partitions)
+                await consumer.commit(
+                    await consumer.end_offsets(partitions),
+                )
+            finally:
+                await consumer.stop()
+
     def _service_specs(self) -> dict[str, tuple[str, dict[str, str]]]:
         """The (name → (module, extra_env)) spec for every subprocess.
 
-        7 entries (A27.4): the 5 M6 framework services + the normalizer
-        + the observation_writer. Extracted so tests can assert the
-        roster without spawning real processes."""
-        return {
+        Each replica contains the five M6 framework services plus the
+        normalizer and observation writer.  Workflow instance names differ per
+        replica, while the consumer-group names remain shared in ``_base_env``
+        so replicas cooperate instead of double-consuming.
+        """
+        logical_specs: dict[
+            str,
+            tuple[str, dict[str, str], tuple[str, str] | None],
+        ] = {
             "oauth_poller": (
                 "services.ingest.ingestion.workflows.oauth_poller",
-                {"OAUTH_POLLER_TICK_SEC": "0.1",
-                 "OAUTH_POLLER_BATCH": "10",
-                 "OAUTH_POLLER_INSTANCE": f"x3-poll-{uuid4().hex[:6]}"},
+                {
+                    "OAUTH_POLLER_TICK_SEC": "0.1",
+                    # A one-item claim wave in replicated certification runs
+                    # makes it possible to prove that both SKIP-LOCKED workers
+                    # actually participated, not merely that two processes
+                    # were started.
+                    "OAUTH_POLLER_BATCH": (
+                        "1" if self._replicas > 1 else "10"
+                    ),
+                },
+                ("OAUTH_POLLER_INSTANCE", "poll"),
             ),
             "tenant_onboarding": (
                 "services.ingest.ingestion.workflows.tenant_onboarding",
-                {"ORCHESTRATOR_TICK_SEC": "0.1",
-                 "ORCHESTRATOR_BATCH": "20",
-                 "ORCHESTRATOR_INSTANCE": f"x3-orch-{uuid4().hex[:6]}"},
+                {
+                    "ORCHESTRATOR_TICK_SEC": "0.1",
+                    "ORCHESTRATOR_BATCH": "20",
+                },
+                ("ORCHESTRATOR_INSTANCE", "orch"),
             ),
             "source_onboarding": (
                 "services.ingest.ingestion.workflows.source_onboarding",
-                {"SOURCE_ONBOARDING_TICK_SEC": "0.1",
-                 "SOURCE_ONBOARDING_BATCH": "20",
-                 "SOURCE_ONBOARDING_INSTANCE":
-                     f"x3-src-{uuid4().hex[:6]}"},
+                {
+                    "SOURCE_ONBOARDING_TICK_SEC": "0.1",
+                    "SOURCE_ONBOARDING_BATCH": "20",
+                },
+                ("SOURCE_ONBOARDING_INSTANCE", "src"),
             ),
             "shard_fetch": (
                 "services.ingest.ingestion.workflows.shard_fetch",
@@ -2048,16 +2448,16 @@ class BackfillHarness:
                  # tenant_onboarding never completes (no completion signal).
                  # Use a generous window (prod default is 5.0; the soak runs
                  # many tenants on one box) so completion fires deterministically.
-                 "SHARD_FETCH_FLUSH_SEC": "15.0",
-                 "SHARD_FETCH_INSTANCE":
-                     f"x3-shf-{uuid4().hex[:6]}"},
+                 "SHARD_FETCH_FLUSH_SEC": "15.0"},
+                ("SHARD_FETCH_INSTANCE", "shf"),
             ),
             "reconciler": (
                 "services.ingest.ingestion.workflows.reconciler",
-                {"RECONCILER_TICK_SEC": "0.1",
-                 "RECONCILER_BATCH": "20",
-                 "RECONCILER_INSTANCE":
-                     f"x3-rec-{uuid4().hex[:6]}"},
+                {
+                    "RECONCILER_TICK_SEC": "0.1",
+                    "RECONCILER_BATCH": "20",
+                },
+                ("RECONCILER_INSTANCE", "rec"),
             ),
             # A27.4 — the consumer half of the chain: normalizer turns
             # RawEnvelope pointers into NormalizedEnvelopes; the writer
@@ -2066,12 +2466,66 @@ class BackfillHarness:
             "normalizer": (
                 "services.ingest.ingestion.normalizer.worker",
                 {"NORMALIZER_LOG_LEVEL": "WARNING"},
+                None,
             ),
             "observation_writer": (
                 "services.ingest.ingestion.writers.observation_writer",
                 {"WRITER_LOG_LEVEL": "WARNING"},
+                None,
             ),
         }
+        expanded: dict[str, tuple[str, dict[str, str]]] = {}
+        for replica_index in range(1, self._replicas + 1):
+            for logical_name, (
+                module,
+                base_extra_env,
+                diagnostic,
+            ) in logical_specs.items():
+                process_name = (
+                    logical_name
+                    if self._replicas == 1
+                    else f"{logical_name}@{replica_index}"
+                )
+                extra_env = dict(base_extra_env)
+                if diagnostic is not None:
+                    env_name, abbreviation = diagnostic
+                    extra_env[env_name] = self._replica_instance_name(
+                        abbreviation,
+                        replica_index,
+                    )
+                expanded[process_name] = (module, extra_env)
+        return expanded
+
+    def _replica_instance_name(
+        self,
+        service_abbreviation: str,
+        replica_index: int,
+    ) -> str:
+        return (
+            f"x3-{service_abbreviation}-{self._cg_suffix}-"
+            f"replica-{replica_index}"
+        )
+
+    def replica_workflow_ids(self, logical_service: str) -> tuple[str, ...]:
+        """Expected durable workflow-state IDs for one replicated worker."""
+
+        abbreviations = {
+            "oauth_poller": "poll",
+            "tenant_onboarding": "orch",
+            "source_onboarding": "src",
+            "shard_fetch": "shf",
+            "reconciler": "rec",
+        }
+        try:
+            abbreviation = abbreviations[logical_service]
+        except KeyError as exc:
+            raise ValueError(
+                f"{logical_service!r} has no durable workflow instance state"
+            ) from exc
+        return tuple(
+            self._replica_instance_name(abbreviation, replica_index)
+            for replica_index in range(1, self._replicas + 1)
+        )
 
     def _spawn_services(self) -> None:
         env = self._base_env()
@@ -2157,8 +2611,9 @@ class BackfillHarness:
         harness reads `observations` before the writer has caught up
         and sees zero, even when the chain is healthy.
 
-        Per-tenant drain target = `expected_observation_count` when the
-        scenario specifies one (> 0), else 1. The fallback-to-1 matters
+        Per-tenant drain target = the sum of every sibling installation's
+        ``expected_observation_count`` when specified (> 0). Unspecified
+        scenarios contribute a one-record floor. The fallback-to-1 matters
         because several E2E tests leave the count unspecified (0) yet
         assert `len(observations) >= 1` per source; waiting only on
         positive expected counts would let those tenants be collected
@@ -2169,10 +2624,12 @@ class BackfillHarness:
         too-short wait — the default budget drains in seconds when the
         chain is healthy).
         """
-        expected = {
-            o.tenant_id: max(o.scenario.expected_observation_count, 1)
-            for o in outcomes
-        }
+        expected: dict[UUID, int] = {}
+        for outcome in outcomes:
+            expected[outcome.tenant_id] = (
+                expected.get(outcome.tenant_id, 0)
+                + max(outcome.scenario.expected_observation_count, 1)
+            )
         if not expected:
             return
         tenant_ids = list(expected.keys())
@@ -2194,14 +2651,66 @@ class BackfillHarness:
                 return
             await asyncio.sleep(poll_interval_s)
 
+    async def _collect_replica_workflow_activity(self) -> None:
+        """Capture durable, machine-readable replica participation evidence."""
+
+        activity_fields = {
+            "oauth_poller": "lifetime_triggers_claimed",
+            "tenant_onboarding": "lifetime_signals_processed",
+            "source_onboarding": "lifetime_signals_processed",
+            "shard_fetch": "lifetime_signals_processed",
+            "reconciler": "lifetime_signals_processed",
+        }
+        collected: dict[str, dict[str, int]] = {}
+        for service, activity_field in activity_fields.items():
+            workflow_ids = self.replica_workflow_ids(service)
+            rows = await self._pool.fetch(
+                """
+                SELECT workflow_id, state_data
+                  FROM workflow_states
+                 WHERE workflow_kind = $1
+                   AND workflow_id = ANY($2::text[])
+                """,
+                service,
+                list(workflow_ids),
+            )
+            service_activity: dict[str, int] = {}
+            for row in rows:
+                state_data = row["state_data"]
+                if isinstance(state_data, str):
+                    state_data = json.loads(state_data)
+                service_activity[str(row["workflow_id"])] = int(
+                    (state_data or {}).get(activity_field, 0)
+                )
+            collected[service] = service_activity
+        self._replica_workflow_activity = collected
+
     # ---- Phase C: Teardown ----
     def _teardown_services(self) -> dict[str, str]:
         stderrs: dict[str, str] = {}
-        for name, proc in self._procs.items():
-            if proc is None:
-                continue
+        active = [
+            (name, proc)
+            for name, proc in self._procs.items()
+            if proc is not None
+        ]
+
+        # Signal the complete process set before waiting for any one child.
+        # Replicated Kafka consumers share groups; stopping replica 1 and
+        # waiting up to fifteen seconds before signalling replica 2 forces an
+        # avoidable rebalance while replica 2 is still committing.  That race
+        # intermittently made the surviving normalizer exit with rc=1 even
+        # though the exact-count and backlog assertions had completed.  A
+        # coordinated signal wave matches an orchestrator rolling down the
+        # validation deployment and lets every consumer enter its cooperative
+        # shutdown path before group membership changes.
+        for name, proc in active:
             try:
                 proc.send_signal(sig_module.SIGTERM)
+            except Exception as exc:  # noqa: BLE001
+                stderrs[name] = f"signal error: {exc!r}"
+
+        for name, proc in active:
+            try:
                 try:
                     proc.wait(timeout=15)
                 except subprocess.TimeoutExpired:
@@ -2212,7 +2721,8 @@ class BackfillHarness:
                         errors="replace",
                     )[-2000:]
             except Exception as exc:  # noqa: BLE001
-                stderrs[name] = f"teardown error: {exc!r}"
+                prefix = f"{stderrs[name]}; " if name in stderrs else ""
+                stderrs[name] = f"{prefix}teardown error: {exc!r}"
         if self._provider_lab is not None:
             try:
                 self._provider_lab.shutdown()
@@ -2256,7 +2766,7 @@ class BackfillHarness:
             if len(source_rows) != 1:
                 raise RuntimeError(
                     "expected exactly one source onboarding row for "
-                    f"{outcome.scenario.source}/{outcome.scenario.tenant_slug} "
+                    f"{outcome.identity_label} "
                     f"and installation {outcome.installation_row_id}; "
                     f"found {len(source_rows)}",
                 )

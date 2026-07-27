@@ -1,0 +1,851 @@
+{
+  "implementation_sha256": {
+    "scripts.run_telegram_gateway_worker": "d73561561f84796fbac4159c361fcef021785b9e10d720a7e7951e6f72005c5b",
+    "services.ingest.ingestion.fetchers.telegram": "3c828640005e64aad44c8438e7b3f6849b0f644ae2adc90a3e1da4dc1e9ca349",
+    "services.ingest.ingestion.handlers.telegram": "0d79b9971237cddbd99dcf459cf4b8b7d1f5c260cb2e3a35a64a0fde543c8a1d",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.telegram": "6d7729205ed46b1c06e24186f067e201ce1070badb64072bb1dff9582344f512",
+    "services.ingest.ingestion.reconcilers.telegram": "48e4bc55b343e7ddc77b3d789667d94f738de104485bdbeb0463dfa98f9e445e",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.telegram": "ae00dae47f3f28d489ed3cd7096b15c5f02c0296059106eba3f51d93ca4605a2",
+    "services.ingest.integrations.telegram.client": "98a175aa504243fb844b92c43e390b78334eb7223e8fc28a55b651dc2c842abf",
+    "services.ingest.integrations.telegram.gateway": "3446b2e1dcb36f9ac9d3b92d16c7369378c105efa9500a509bd100af37934e45",
+    "services.ingest.integrations.telegram.gateway.dispatch": "e99b08a765614fb06bec4a8e1fcaf673be4d6238b6a4223f92eac7ce3cd1f5b2",
+    "services.ingest.integrations.telegram.gateway.worker": "d90ed47b2cfae1407b809062d8374a4115b7893ef209f7f5149dc07c1578948d",
+    "services.ingest.integrations.telegram.oauth": "bdf73fbf4711e4944b197007ca46cb64512c00d83ccb35f7bbfff323c92e704c",
+    "services.ingest.integrations.telegram.onboarding": "c00dbe2f3cc6a0c417f1435c9c7ab7b6225525694137bc1b81335398b3199bed",
+    "services.ingest.integrations.telegram.records": "24f3229b198f765f9dc747ba0a139ac3c69a7248cb0eb70021b5810b1b65f60f",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_cd": "41c4c2a2e3d41386cae397e018f3cd519f08baae2bdf5e148c00e36c3df41929",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Telegram MTProto layer (Telethon boundary)",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "mtproto_session"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Telegram",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "session.connect",
+      "session.is_user_authorized",
+      "get_history",
+      "iter_dialogs",
+      "has_history_since",
+      "me",
+      "gateway.connect",
+      "gateway.is_user_authorized",
+      "updates.catch_up",
+      "updates.get_state"
+    ],
+    "outbound_endpoint_names": [],
+    "provider_id": "telegram",
+    "source_ids": [
+      "telegram"
+    ],
+    "webhook_ingresses": []
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "dialog_order": [
+        2341071308969
+      ],
+      "dialogs": {
+        "2341071308969": {
+          "access_hash": 540989234890625165,
+          "dialog_id": 2341071308969,
+          "dialog_kind": "channel",
+          "messages": [
+            {
+              "date": 1767571200,
+              "edit_date": null,
+              "from_id": {
+                "user_id": 1088800992751
+              },
+              "id": 1,
+              "message": "message 1 in dialog 2341071308969",
+              "out": false,
+              "sender_username": "user0_7eb02"
+            },
+            {
+              "date": 1767574800,
+              "edit_date": null,
+              "from_id": {
+                "user_id": 1060742069234
+              },
+              "id": 2,
+              "message": "message 2 in dialog 2341071308969",
+              "out": false,
+              "sender_username": "user1_7eb02"
+            },
+            {
+              "date": 1767578400,
+              "edit_date": null,
+              "from_id": {
+                "user_id": 673368995084
+              },
+              "id": 3,
+              "message": "message 3 in dialog 2341071308969",
+              "out": false,
+              "sender_username": "user2_7eb02"
+            },
+            {
+              "date": 1767582000,
+              "edit_date": null,
+              "from_id": {
+                "user_id": 1088800992751
+              },
+              "id": 4,
+              "message": "message 4 in dialog 2341071308969",
+              "out": false,
+              "sender_username": "user0_7eb02"
+            },
+            {
+              "date": 1767585600,
+              "edit_date": null,
+              "from_id": {
+                "user_id": 1060742069234
+              },
+              "id": 5,
+              "message": "message 5 in dialog 2341071308969",
+              "out": false,
+              "sender_username": "user1_7eb02"
+            }
+          ],
+          "title": "Dialog 1 (certification-surface-telegram)"
+        }
+      },
+      "page_size": 100
+    },
+    "protocol_surfaces": [
+      {
+        "operation_ids": [
+          "session.connect",
+          "session.is_user_authorized"
+        ],
+        "surface_id": "telegram.session_transport",
+        "transport": "injected_transport"
+      },
+      {
+        "operation_ids": [
+          "gateway.connect",
+          "gateway.is_user_authorized",
+          "updates.catch_up",
+          "updates.get_state"
+        ],
+        "surface_id": "telegram.gateway_transport",
+        "transport": "injected_transport"
+      }
+    ],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "get_history",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "get_history"
+        ],
+        "path_template": "/transport/get_history",
+        "quota_bucket": "transport",
+        "quota_cost": 1.0,
+        "route_id": "telegram.get_history",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "iter_dialogs",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "iter_dialogs"
+        ],
+        "path_template": "/transport/iter_dialogs",
+        "quota_bucket": "transport",
+        "quota_cost": 1.0,
+        "route_id": "telegram.iter_dialogs",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "has_history_since",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "has_history_since"
+        ],
+        "path_template": "/transport/has_history_since",
+        "quota_bucket": "transport",
+        "quota_cost": 1.0,
+        "route_id": "telegram.has_history_since",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "me",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "me"
+        ],
+        "path_template": "/transport/me",
+        "quota_bucket": "transport",
+        "quota_cost": 1.0,
+        "route_id": "telegram.me",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "checkpoint_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.telegram",
+      "evidence_id": "ingest.evidence.telegram",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.telegram",
+      "validation_runtime": {
+        "generator_group": "telegram",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_telegram_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_telegram_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_telegram_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_telegram_live_target",
+        "preflight_binding": null,
+        "replay_probe_binding": null,
+        "signature_probe_binding": null,
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.telegram.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "dialog_message",
+      "message_edit"
+    ],
+    "delivery_policies": [
+      "replayable_stream"
+    ],
+    "display": {
+      "category": "Communication",
+      "connection_method": "Gateway",
+      "description": "MTProto user-account backfill and live updates.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 9,
+      "setup_requirements": "Telegram API ID/hash, authorized user session, chats allowlist, backfill approval, gateway worker readiness.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Telegram",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.telegram:fetch_page_telegram",
+    "finance_testing_binding": null,
+    "history": "session",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:telegram_message"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "telegram:message",
+        "ingress_kind": "gateway"
+      },
+      {
+        "channel": "telegram:message",
+        "ingress_kind": "backfill"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_telegram_installation",
+      "management": {
+        "base_url_column": null,
+        "enabled_column": null,
+        "entity_install_column": "telegram_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "telegram_dialogs",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "api_hash_secret_ref",
+          "session_secret_ref",
+          "backfill_session_secret_ref"
+        ],
+        "scope_column": "account_label",
+        "source": "telegram",
+        "status_credential_column_groups": [
+          [
+            "api_hash_secret_ref",
+            "session_secret_ref"
+          ]
+        ],
+        "status_detail_columns": [
+          "api_id"
+        ],
+        "status_presence_columns": [
+          [
+            "backfill_session_configured",
+            "backfill_session_secret_ref"
+          ]
+        ],
+        "table": "telegram_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": null,
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "account_id",
+      "session_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [],
+      "workers": [
+        {
+          "cadence_seconds": null,
+          "component_id": "telegram_gateway_worker",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "telegram_gateway_worker",
+          "dispatch_binding": null,
+          "launcher_binding": "scripts.run_telegram_gateway_worker:_main",
+          "lease_scope": "installation",
+          "managed_reason": null,
+          "role": "persistent_gateway",
+          "transport": "mtproto"
+        },
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": null
+        }
+      ]
+    },
+    "live_transports": [
+      "mtproto"
+    ],
+    "metrics_export_bindings": [],
+    "non_resolver_operation_bindings": [
+      {
+        "operation_ids": [
+          "session.connect",
+          "session.is_user_authorized",
+          "get_history",
+          "iter_dialogs",
+          "has_history_since",
+          "me",
+          "gateway.connect",
+          "gateway.is_user_authorized",
+          "updates.catch_up",
+          "updates.get_state"
+        ],
+        "resolution_kind": "protocol"
+      }
+    ],
+    "normalization_inputs": [
+      "telegram:message"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.telegram:handle_telegram"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "api id",
+          "account label",
+          "dialogs",
+          "channel/group scope"
+        ],
+        "agent_generates": [
+          "api hash ref",
+          "MTProto session refs",
+          "Telegram gateway runner contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin authorizes the local customer-cloud session or device link"
+        ],
+        "settings_targets": [
+          "Telegram API app",
+          "local MTProto session",
+          "dialog discovery"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "approved-chats"
+      ],
+      "discovery_target": "account, dialogs, channels, groups, and live update cursor",
+      "generic_authorization_mode": "customer_mtproto_session",
+      "ingress_paths": [],
+      "local_rehearsal": {
+        "callback_path": null,
+        "default_env": [],
+        "derived_env": [],
+        "env": [
+          "TELEGRAM_ACCOUNT_LABEL",
+          "TELEGRAM_API_ID",
+          "TELEGRAM_API_HASH",
+          "TELEGRAM_SESSION",
+          "TELEGRAM_BACKFILL_SESSION",
+          "TELEGRAM_DIALOGS_JSON"
+        ],
+        "finalize_endpoint": null,
+        "install_endpoint": null,
+        "kind": "local_gateway_session",
+        "manual_gate_names": [
+          "telegram_api_id_creation",
+          "telegram_mtproto_login_code",
+          "telegram_dialog_scope_selection"
+        ],
+        "needs_public_url": false,
+        "preflight_endpoint": null,
+        "required_env": [
+          "TELEGRAM_ACCOUNT_LABEL",
+          "TELEGRAM_API_ID",
+          "TELEGRAM_API_HASH",
+          "TELEGRAM_SESSION"
+        ],
+        "runtime_components": [],
+        "webhook_path": null
+      },
+      "method": "gateway",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/telegram/connect/finalize",
+        "kind": "local_session_native_connect",
+        "payload_fields": [
+          "account_label",
+          "api_id",
+          "api_hash",
+          "live_session",
+          "backfill_session",
+          "dialogs"
+        ],
+        "preflight_path": "/integrations/telegram/connect/preflight",
+        "preflight_payload_fields": [],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": "Local MTProto gateway session runs from the customer cloud.",
+      "optional_inputs": [
+        "backfill_session",
+        "dialogs"
+      ],
+      "provider_console_url": "https://my.telegram.org/apps",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "api id",
+        "api hash",
+        "approved chats"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": "services.platform.runtime.source_rehearsal_contract:build_telegram_rehearsal_artifacts",
+      "rehearsal_finalize_mode": "source_specific",
+      "required_inputs": [
+        "account_label",
+        "api_id",
+        "api_hash",
+        "live_session"
+      ],
+      "required_refs": [
+        "api_id",
+        "api_hash",
+        "live_session"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "session.connect",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "telegram.flood_wait",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "session.is_user_authorized",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "telegram.flood_wait",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "get_history",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "telegram.flood_wait",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "iter_dialogs",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "telegram.flood_wait",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "has_history_since",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "telegram.flood_wait",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "me",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "telegram.flood_wait",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "gateway.connect",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "telegram.flood_wait",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "gateway.is_user_authorized",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "telegram.flood_wait",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "updates.catch_up",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "telegram.flood_wait",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "updates.get_state",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "telegram.flood_wait",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": "customer-cloud MTProto gateway worker",
+    "outbound_endpoint_bindings": [],
+    "planner_binding": "services.ingest.ingestion.planners.telegram:plan_shards_telegram",
+    "provider_id": "telegram",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.telegram:reconcile_telegram",
+    "runtime_identifiers": [
+      "installation_id",
+      "dialog_id"
+    ],
+    "source_id": "telegram",
+    "trust_tiers": [
+      "attested_agent"
+    ],
+    "ui_slug": "telegram"
+  },
+  "source_id": "telegram"
+}

@@ -1,24 +1,134 @@
-"""Deterministic maximum-stable-throughput search.
+"""Artifact-producing maximum-stable-throughput search.
 
-The controller owns the prescribed workload shape; a source-specific driver
-owns traffic generation and measurement.  This separation lets CI use a
-virtual clock while weekly jobs run the exact two-minute warmup, fifteen-minute
-validation, and sixty-minute soak durations.
+The controller owns the prescribed workload shape while an injected driver
+owns traffic generation and measurement. Tests may use a virtual clock and
+short durations, but the resulting artifact records that provenance and is not
+promotion eligible. Release promotion requires the exact declared topology,
+operation mix, wall-clock durations, verified quota evidence, Provider Lab
+calibration, and an end-to-end pipeline proof.
 """
 from __future__ import annotations
 
+import dataclasses
+import json
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
+from services.ingest.source_certification.models import LoadSuite, SuiteKind
 from services.ingest.synthetic.provider_lab.calibration import (
     LabCalibration,
     require_lab_calibration,
 )
 
 
+LOAD_ARTIFACT_SCHEMA_VERSION = "fyralis.source-load-envelope.v2"
 LoadMode = Literal["provider_safe", "fyralis_ceiling"]
 Phase = Literal["warmup", "step", "binary_search", "validation", "soak"]
+ClockMode = Literal["wall", "virtual"]
+_QUOTA_SCOPE_COMPONENTS = frozenset(
+    {
+        "app",
+        "application",
+        "global",
+        "installation",
+        "method",
+        "realm",
+        "region",
+        "route",
+        "tenant",
+        "user",
+        "workspace",
+    }
+)
+
+
+class LoadPromotionError(RuntimeError):
+    """A measured load artifact does not satisfy release-promotion rules."""
+
+
+@dataclass(frozen=True, slots=True)
+class LoadTopology:
+    tenants: int
+    installations_per_tenant: int
+    replicas: int
+
+    def __post_init__(self) -> None:
+        for name in ("tenants", "installations_per_tenant", "replicas"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+
+    @classmethod
+    def from_suite(cls, suite: LoadSuite) -> "LoadTopology":
+        return cls(
+            tenants=suite.tenants,
+            installations_per_tenant=suite.installations_per_tenant,
+            replicas=suite.replicas,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedQuotaEvidence:
+    """Evidence label attached to an exact Provider Lab quota budget."""
+
+    bucket: str
+    scope: str
+    capacity: float
+    refill_per_second: float
+    evidence_uri: str
+    verified_at: datetime
+    limit_id: str = "default"
+    cost: float = 1.0
+
+    def __post_init__(self) -> None:
+        for name in ("bucket", "scope", "evidence_uri", "limit_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if not self.evidence_uri.startswith("https://"):
+            raise ValueError("evidence_uri must be an HTTPS URI")
+        scope_components = self.scope.casefold().split("/")
+        if (
+            any(not component for component in scope_components)
+            or len(scope_components) != len(set(scope_components))
+            or not set(scope_components).issubset(_QUOTA_SCOPE_COMPONENTS)
+        ):
+            raise ValueError(
+                "scope must be a slash-separated combination of supported "
+                "quota dimensions: "
+                + ", ".join(sorted(_QUOTA_SCOPE_COMPONENTS)),
+            )
+        if self.verified_at.tzinfo is None or self.verified_at.utcoffset() is None:
+            raise ValueError("verified_at must be timezone-aware")
+        for name in ("capacity", "refill_per_second", "cost"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            ):
+                raise ValueError(f"{name} must be a finite non-negative number")
+        if self.capacity <= 0:
+            raise ValueError("capacity must be greater than zero")
+        if self.cost <= 0:
+            raise ValueError("cost must be greater than zero")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "bucket": self.bucket,
+            "scope": self.scope,
+            "limit_id": self.limit_id,
+            "cost": float(self.cost),
+            "capacity": float(self.capacity),
+            "refill_per_second": float(self.refill_per_second),
+            "evidence_uri": self.evidence_uri,
+            "verified_at": self.verified_at.astimezone(timezone.utc).isoformat(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +159,23 @@ class LoadSearchConfig:
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be > 0")
 
+    @classmethod
+    def from_suite(
+        cls,
+        suite: LoadSuite,
+        *,
+        initial_rate: float,
+    ) -> "LoadSearchConfig":
+        return cls(
+            initial_rate=initial_rate,
+            step_fraction=suite.step_percent / 100,
+            tolerance_fraction=suite.search_tolerance_percent / 100,
+            warmup_seconds=suite.warmup_seconds,
+            step_seconds=suite.warmup_seconds,
+            validation_seconds=suite.stable_seconds,
+            soak_seconds=suite.weekly_soak_seconds,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class LoadMeasurement:
@@ -74,6 +201,46 @@ class LoadMeasurement:
     cpu_percent: float
     memory_bytes: int
     limiting_component: str
+    retries: int = 0
+    rate_limited_responses: int = 0
+    hot_loops: int = 0
+    wall_elapsed_seconds: float = 0.0
+    request_count: int = 0
+    response_bytes: int = 0
+    operation_counts: tuple[tuple[str, int], ...] = ()
+    status_counts: tuple[tuple[str, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.offered_rate <= 0:
+            raise ValueError("offered_rate must be > 0")
+        if self.duration_seconds <= 0:
+            raise ValueError("duration_seconds must be > 0")
+        if not self.limiting_component:
+            raise ValueError("limiting_component must be non-empty")
+        for field in dataclasses.fields(self):
+            value = getattr(self, field.name)
+            if field.name in {
+                "stable",
+                "limiting_component",
+                "operation_counts",
+                "status_counts",
+            }:
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ValueError(f"{field.name} must be a finite number")
+        for name, values in (
+            ("operation_counts", self.operation_counts),
+            ("status_counts", self.status_counts),
+        ):
+            labels = [label for label, _count in values]
+            if len(labels) != len(set(labels)):
+                raise ValueError(f"{name} labels must be unique")
+            if any(not label or count < 0 for label, count in values):
+                raise ValueError(f"{name} entries must be non-empty/non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +259,82 @@ class LoadEnvelope:
     trials: tuple[LoadTrial, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class LoadArtifact:
+    source_id: str
+    suite_kind: SuiteKind
+    mode: LoadMode
+    operation_mix: tuple[str, ...]
+    required_operation_labels: tuple[str, ...]
+    topology: LoadTopology
+    config: LoadSearchConfig
+    clock_mode: ClockMode
+    calibration: LabCalibration
+    envelope: LoadEnvelope
+    quota_evidence: tuple[VerifiedQuotaEvidence, ...]
+    operation_coverage_ratio: float
+    pipeline_e2e_proven: bool
+    started_at: datetime
+    completed_at: datetime
+    promotion_failures: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.source_id:
+            raise ValueError("source_id must be non-empty")
+        if self.suite_kind not in {"historical", "live", "combined"}:
+            raise ValueError(f"invalid suite_kind {self.suite_kind!r}")
+        if self.clock_mode not in {"wall", "virtual"}:
+            raise ValueError(f"invalid clock_mode {self.clock_mode!r}")
+        if not self.operation_mix:
+            raise ValueError("operation_mix must not be empty")
+        if len(self.required_operation_labels) != len(
+            set(self.required_operation_labels),
+        ):
+            raise ValueError("required_operation_labels must be unique")
+        if self.completed_at < self.started_at:
+            raise ValueError("completed_at cannot precede started_at")
+        if not 0 <= self.operation_coverage_ratio <= 1:
+            raise ValueError("operation_coverage_ratio must be between 0 and 1")
+
+    @property
+    def promotion_eligible(self) -> bool:
+        return not self.promotion_failures
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": LOAD_ARTIFACT_SCHEMA_VERSION,
+            "source_id": self.source_id,
+            "suite_kind": self.suite_kind,
+            "mode": self.mode,
+            "operation_mix": list(self.operation_mix),
+            "required_operation_labels": list(
+                self.required_operation_labels,
+            ),
+            "topology": dataclasses.asdict(self.topology),
+            "config": dataclasses.asdict(self.config),
+            "clock_mode": self.clock_mode,
+            "calibration": dataclasses.asdict(self.calibration),
+            "envelope": _envelope_dict(self.envelope),
+            "quota_evidence": [
+                evidence.as_dict() for evidence in self.quota_evidence
+            ],
+            "operation_coverage_ratio": self.operation_coverage_ratio,
+            "pipeline_e2e_proven": self.pipeline_e2e_proven,
+            "started_at": self.started_at.astimezone(timezone.utc).isoformat(),
+            "completed_at": self.completed_at.astimezone(timezone.utc).isoformat(),
+            "promotion_eligible": self.promotion_eligible,
+            "promotion_failures": list(self.promotion_failures),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class LoadEnvelopeComparison:
+    suite_kind: SuiteKind
+    provider_safe_rate: float
+    fyralis_ceiling_rate: float
+    headroom_ratio: float
+
+
 LoadRunner = Callable[
     [float, int, Phase, LoadMode],
     Awaitable[LoadMeasurement],
@@ -99,7 +342,7 @@ LoadRunner = Callable[
 
 
 def certification_stable(measurement: LoadMeasurement) -> bool:
-    """Apply non-negotiable correctness/stability conditions."""
+    """Apply non-negotiable correctness and stability conditions."""
 
     return (
         measurement.stable
@@ -110,6 +353,7 @@ def certification_stable(measurement: LoadMeasurement) -> bool:
         and measurement.cooldown_violations == 0
         and measurement.cursor_consistency_errors == 0
         and measurement.dlq_entries == 0
+        and measurement.hot_loops == 0
     )
 
 
@@ -121,17 +365,19 @@ async def find_maximum_stable_rate(
     lab_calibration: LabCalibration,
     include_soak: bool,
 ) -> LoadEnvelope:
-    """Step to instability, binary search within 5%, then validate."""
+    """Warm up, step by 25%, bracket, binary search, and validate."""
 
-    # Certification is invalid when the fake provider is the limiting
-    # component. Keep this as a mandatory input rather than a caller
-    # convention that a new source pack can accidentally omit.
     require_lab_calibration(lab_calibration)
     trials: list[LoadTrial] = []
 
     async def measure(rate: float, seconds: int, phase: Phase) -> LoadMeasurement:
         result = await run(rate, seconds, phase, mode)
-        if result.offered_rate != rate or result.duration_seconds != seconds:
+        if not math.isclose(
+            result.offered_rate,
+            rate,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ) or result.duration_seconds != seconds:
             raise ValueError(
                 "load runner returned measurement for a different rate/duration"
             )
@@ -158,7 +404,8 @@ async def find_maximum_stable_rate(
         break
     if high is None:
         raise RuntimeError(
-            "load search never found an unstable upper bound; increase lab offer limit"
+            "load search never found an unstable upper bound; "
+            "increase the offered-load limit"
         )
 
     for _ in range(config.maximum_steps):
@@ -175,7 +422,7 @@ async def find_maximum_stable_rate(
 
     validation = await measure(low, config.validation_seconds, "validation")
     if not certification_stable(validation):
-        raise RuntimeError("maximum candidate failed fifteen-minute validation")
+        raise RuntimeError("maximum candidate failed stable validation")
 
     soak: LoadMeasurement | None = None
     if include_soak:
@@ -193,11 +440,296 @@ async def find_maximum_stable_rate(
     )
 
 
+def compare_load_envelopes(
+    provider_safe: LoadArtifact,
+    fyralis_ceiling: LoadArtifact,
+) -> LoadEnvelopeComparison:
+    """Require a ceiling at or above the provider-safe stable envelope."""
+
+    if provider_safe.mode != "provider_safe":
+        raise ValueError("provider_safe artifact has the wrong mode")
+    if fyralis_ceiling.mode != "fyralis_ceiling":
+        raise ValueError("fyralis_ceiling artifact has the wrong mode")
+    if (
+        provider_safe.source_id != fyralis_ceiling.source_id
+        or provider_safe.suite_kind != fyralis_ceiling.suite_kind
+        or provider_safe.operation_mix != fyralis_ceiling.operation_mix
+        or (
+            provider_safe.required_operation_labels
+            != fyralis_ceiling.required_operation_labels
+        )
+        or provider_safe.topology != fyralis_ceiling.topology
+    ):
+        raise ValueError("load artifacts do not describe the same workload")
+    provider_rate = provider_safe.envelope.maximum_stable_rate
+    ceiling_rate = fyralis_ceiling.envelope.maximum_stable_rate
+    if ceiling_rate < provider_rate:
+        raise LoadPromotionError(
+            "Fyralis ceiling is below the provider-safe stable rate"
+        )
+    return LoadEnvelopeComparison(
+        suite_kind=provider_safe.suite_kind,
+        provider_safe_rate=provider_rate,
+        fyralis_ceiling_rate=ceiling_rate,
+        headroom_ratio=ceiling_rate / provider_rate,
+    )
+
+
+def promotion_failures(
+    *,
+    suite: LoadSuite,
+    mode: LoadMode,
+    operation_mix: tuple[str, ...],
+    topology: LoadTopology,
+    config: LoadSearchConfig,
+    clock_mode: ClockMode,
+    calibration: LabCalibration,
+    envelope: LoadEnvelope,
+    quota_evidence: tuple[VerifiedQuotaEvidence, ...],
+    operation_coverage_ratio: float,
+    pipeline_e2e_proven: bool,
+) -> tuple[str, ...]:
+    """Return every reason this measurement cannot be release evidence."""
+
+    failures: list[str] = []
+    declared_topology = LoadTopology.from_suite(suite)
+    if operation_mix != suite.operation_mix:
+        failures.append("operation mix differs from the source declaration")
+    if topology != declared_topology:
+        failures.append("topology differs from the source declaration")
+    if not math.isclose(
+        config.step_fraction,
+        suite.step_percent / 100,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        failures.append("step fraction differs from the declared 25% search")
+    if config.tolerance_fraction > suite.search_tolerance_percent / 100:
+        failures.append("configured search tolerance exceeds the declaration")
+    if envelope.tolerance_fraction > suite.search_tolerance_percent / 100:
+        failures.append("measured search tolerance exceeds the declaration")
+    if config.warmup_seconds < suite.warmup_seconds:
+        failures.append("warmup duration is below the declaration")
+    if config.step_seconds < suite.warmup_seconds:
+        failures.append("offered-load step duration is below the declaration")
+    if config.validation_seconds < suite.stable_seconds:
+        failures.append("stable validation duration is below the declaration")
+    if envelope.soak is None:
+        failures.append("weekly soak was not executed")
+    elif config.soak_seconds < suite.weekly_soak_seconds:
+        failures.append("weekly soak duration is below the declaration")
+    if clock_mode != "wall":
+        failures.append("virtual-clock load cannot be used for promotion")
+    if not calibration.passed:
+        failures.append("Provider Lab calibration did not pass")
+    if calibration.elapsed_seconds < 29.7:
+        failures.append(
+            "Provider Lab calibration did not run for the required wall-clock "
+            "duration",
+        )
+    if operation_coverage_ratio < 1:
+        failures.append("declared operation mix was not fully exercised")
+    if not pipeline_e2e_proven:
+        failures.append("raw-to-Observation-to-T1 pipeline proof is missing")
+    if mode == "provider_safe" and not quota_evidence:
+        failures.append("verified provider quota evidence is missing")
+
+    validation_ratio = (
+        envelope.validation.wall_elapsed_seconds
+        / envelope.validation.duration_seconds
+    )
+    if validation_ratio < 0.99:
+        failures.append("stable validation did not run for wall-clock duration")
+    if envelope.soak is not None:
+        soak_ratio = (
+            envelope.soak.wall_elapsed_seconds
+            / envelope.soak.duration_seconds
+        )
+        if soak_ratio < 0.99:
+            failures.append("weekly soak did not run for wall-clock duration")
+    warmup = next(
+        (
+            trial.measurement
+            for trial in envelope.trials
+            if trial.phase == "warmup"
+        ),
+        None,
+    )
+    if (
+        warmup is None
+        or warmup.wall_elapsed_seconds / warmup.duration_seconds < 0.99
+    ):
+        failures.append("warmup did not run for wall-clock duration")
+    if any(
+        trial.measurement.wall_elapsed_seconds
+        / trial.measurement.duration_seconds
+        < 0.99
+        for trial in envelope.trials
+    ):
+        failures.append(
+            "one or more offered-load search trials did not run for wall-clock "
+            "duration",
+        )
+    return tuple(failures)
+
+
+async def run_artifact_load_search(
+    run: LoadRunner,
+    *,
+    source_id: str,
+    suite: LoadSuite,
+    mode: LoadMode,
+    topology: LoadTopology,
+    config: LoadSearchConfig,
+    clock_mode: ClockMode,
+    lab_calibration: LabCalibration,
+    include_soak: bool,
+    quota_evidence: tuple[VerifiedQuotaEvidence, ...] = (),
+    operation_coverage_ratio: float = 0.0,
+    required_operation_labels: tuple[str, ...] = (),
+    pipeline_e2e_proven: bool = False,
+    artifact_path: Path | None = None,
+    require_promotion: bool = False,
+    now: Callable[[], datetime] | None = None,
+) -> LoadArtifact:
+    """Run one envelope, assess promotion, and optionally write canonical JSON."""
+
+    clock = now or (lambda: datetime.now(timezone.utc))
+    started_at = clock().astimezone(timezone.utc)
+    envelope = await find_maximum_stable_rate(
+        run,
+        mode=mode,
+        config=config,
+        lab_calibration=lab_calibration,
+        include_soak=include_soak,
+    )
+    completed_at = clock().astimezone(timezone.utc)
+    observed_mix_labels = {
+        label.removeprefix("executed_mix:")
+        for trial in envelope.trials
+        for label, count in trial.measurement.operation_counts
+        if label.startswith("executed_mix:") and count > 0
+    }
+    observed_mix_coverage = (
+        len(observed_mix_labels & set(suite.operation_mix))
+        / len(suite.operation_mix)
+    )
+    observed_operation_labels = {
+        label
+        for trial in envelope.trials
+        for label, count in trial.measurement.operation_counts
+        if count > 0
+    }
+    observed_required_coverage = (
+        len(observed_operation_labels & set(required_operation_labels))
+        / len(required_operation_labels)
+        if required_operation_labels
+        else 1.0
+    )
+    effective_operation_coverage = min(
+        operation_coverage_ratio,
+        observed_mix_coverage,
+        observed_required_coverage,
+    )
+    failures = promotion_failures(
+        suite=suite,
+        mode=mode,
+        operation_mix=suite.operation_mix,
+        topology=topology,
+        config=config,
+        clock_mode=clock_mode,
+        calibration=lab_calibration,
+        envelope=envelope,
+        quota_evidence=quota_evidence,
+        operation_coverage_ratio=effective_operation_coverage,
+        pipeline_e2e_proven=pipeline_e2e_proven,
+    )
+    artifact = LoadArtifact(
+        source_id=source_id,
+        suite_kind=suite.kind,
+        mode=mode,
+        operation_mix=suite.operation_mix,
+        required_operation_labels=required_operation_labels,
+        topology=topology,
+        config=config,
+        clock_mode=clock_mode,
+        calibration=lab_calibration,
+        envelope=envelope,
+        quota_evidence=quota_evidence,
+        operation_coverage_ratio=effective_operation_coverage,
+        pipeline_e2e_proven=pipeline_e2e_proven,
+        started_at=started_at,
+        completed_at=completed_at,
+        promotion_failures=failures,
+    )
+    if artifact_path is not None:
+        write_load_artifact(artifact_path, artifact)
+    if require_promotion and failures:
+        raise LoadPromotionError("; ".join(failures))
+    return artifact
+
+
+def write_load_artifact(path: Path, artifact: LoadArtifact) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            artifact.as_dict(),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _measurement_dict(measurement: LoadMeasurement) -> dict[str, object]:
+    payload = dataclasses.asdict(measurement)
+    payload["operation_counts"] = dict(measurement.operation_counts)
+    payload["status_counts"] = dict(measurement.status_counts)
+    return payload
+
+
+def _envelope_dict(envelope: LoadEnvelope) -> dict[str, object]:
+    return {
+        "mode": envelope.mode,
+        "maximum_stable_rate": envelope.maximum_stable_rate,
+        "tolerance_fraction": envelope.tolerance_fraction,
+        "validation": _measurement_dict(envelope.validation),
+        "soak": (
+            _measurement_dict(envelope.soak)
+            if envelope.soak is not None
+            else None
+        ),
+        "trials": [
+            {
+                "phase": trial.phase,
+                "measurement": _measurement_dict(trial.measurement),
+            }
+            for trial in envelope.trials
+        ],
+    }
+
+
 __all__ = [
+    "LOAD_ARTIFACT_SCHEMA_VERSION",
+    "ClockMode",
+    "LoadArtifact",
     "LoadEnvelope",
+    "LoadEnvelopeComparison",
     "LoadMeasurement",
+    "LoadMode",
+    "LoadPromotionError",
+    "LoadRunner",
     "LoadSearchConfig",
+    "LoadTopology",
     "LoadTrial",
+    "Phase",
+    "VerifiedQuotaEvidence",
     "certification_stable",
+    "compare_load_envelopes",
     "find_maximum_stable_rate",
+    "promotion_failures",
+    "run_artifact_load_search",
+    "write_load_artifact",
 ]

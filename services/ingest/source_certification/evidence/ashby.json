@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://developers.ashbyhq.com/reference/introduction",
       "api_version": "Ashby API",
-      "schema_sha256": null,
+      "schema_sha256": "1751ba69061cd16ea2489a36280af5913337ad666fdb6edc2bcc2ad4876ba91d",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 RPC schema lock and reviewer verification."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

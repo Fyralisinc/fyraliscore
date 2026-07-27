@@ -6,9 +6,12 @@ from pathlib import Path
 
 from scripts.generate_source_catalog_artifacts import (
     SCHEMA_VERSION,
+    TEST_SEED_SCHEMA_VERSION,
     build_source_catalog_artifact,
+    build_test_source_catalog_artifact,
     main,
     render_source_catalog_artifact,
+    render_test_source_catalog_artifact,
 )
 from services.ingest.source_contract import (
     CANONICAL_PROVIDER_IDS,
@@ -20,6 +23,9 @@ from services.ingest.source_contract import (
 REPO_ROOT = Path(__file__).resolve().parents[4]
 GENERATED_ARTIFACT = (
     REPO_ROOT / "ui/features/onboarding/data/source-catalog.generated.json"
+)
+GENERATED_TEST_SEED_ARTIFACT = (
+    REPO_ROOT / "lib/shared/testing/source_catalog.generated.json"
 )
 ONBOARDING_MOCK_DATA = REPO_ROOT / "ui/features/onboarding/data/mock-data.ts"
 CATALOG_MODULE = REPO_ROOT / "services/ingest/source_contract/catalog.py"
@@ -56,6 +62,16 @@ def test_checked_in_ui_artifact_exactly_matches_source_contract() -> None:
     expected = render_source_catalog_artifact()
 
     assert GENERATED_ARTIFACT.read_text(encoding="utf-8") == expected
+
+
+def test_checked_in_test_seed_artifact_exactly_matches_source_contract() -> None:
+    expected = render_test_source_catalog_artifact()
+    payload = json.loads(expected)
+
+    assert GENERATED_TEST_SEED_ARTIFACT.read_text(encoding="utf-8") == expected
+    assert payload == build_test_source_catalog_artifact()
+    assert payload["schemaVersion"] == TEST_SEED_SCHEMA_VERSION
+    assert len(payload["rows"]) == 27
 
 
 def test_canonical_id_tuples_are_derived_from_definition_catalogs() -> None:
@@ -110,9 +126,16 @@ def test_generator_check_mode_rejects_missing_and_stale_artifacts(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "source-catalog.generated.json"
+    test_seed_output = tmp_path / "source-catalog-test-seed.generated.json"
+    arguments = [
+        "--output",
+        str(output),
+        "--test-seed-output",
+        str(test_seed_output),
+    ]
 
-    assert main(["--output", str(output), "--check"]) == 1
-    assert main(["--output", str(output)]) == 0
-    assert main(["--output", str(output), "--check"]) == 0
+    assert main([*arguments, "--check"]) == 1
+    assert main(arguments) == 0
+    assert main([*arguments, "--check"]) == 0
     output.write_text("{}\n", encoding="utf-8")
-    assert main(["--output", str(output), "--check"]) == 1
+    assert main([*arguments, "--check"]) == 1

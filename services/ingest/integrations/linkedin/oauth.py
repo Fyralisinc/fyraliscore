@@ -53,6 +53,7 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.provider_transport import (
     tenant_preinstall_transport_kwargs,
 )
@@ -65,11 +66,6 @@ from services.ingest.integrations.linkedin.onboarding import finalize_install
 
 
 log = structlog.get_logger("integrations.linkedin.oauth")
-
-
-# The versioned Community-Management REST base. The operator may pass a
-# sandbox/demo host via base_url when testing.
-_DEFAULT_BASE_URL = "https://api.linkedin.com/rest"
 
 
 router = APIRouter(prefix="/integrations/linkedin", tags=["linkedin"])
@@ -100,13 +96,14 @@ def _secret_store_from_request(request: Request) -> Any:
 def _require_creds(body: dict[str, Any]) -> tuple[str, str, str]:
     organization_urn = (body.get("organization_urn") or "").strip()
     access_token = (body.get("access_token") or "").strip()
-    base_url = (body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     if not organization_urn:
         raise HTTPException(status_code=400, detail="organization_urn is required")
     if not access_token:
         raise HTTPException(status_code=400, detail="access_token is required")
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="linkedin_api",
+    )
     return organization_urn, access_token, base_url
 
 

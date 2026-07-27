@@ -1,0 +1,792 @@
+{
+  "implementation_sha256": {
+    "services.app.gateway.finance_router": "6537167042aadcacf629ffb2947d3585825e26021635949e3adbc78b3843c4ef",
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.ramp": "50d6b2daa8743346fa25af0101d4d473cf1ef940c977cdde83ea23f9562f14ea",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.ramp": "309f3cf7d910d958fd60c8ee1311539decb1e1abe4b52f5be83ddcfde2daa8e6",
+    "services.ingest.ingestion.handlers.ramp": "62ddac8c21b3d3e438eb07d5902a153e6f96499e1de1952a896a62559eb0c644",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.ramp": "945ca9f71a4b2dd6766eeb2d330f456d4c48447b4a386f558636afbc71cc61a7",
+    "services.ingest.ingestion.reconcilers.ramp": "705117706376c44c0c6d6c433ed039345fa9a7aa72233228b68cf3432fcfffed",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.ramp": "b57fa8bccf148f0dfb8373f626433647155aff49d5886e670c90b946bec2c8c7",
+    "services.ingest.integrations.ramp.client": "0515c8d75c4513553bad2285a434dad7d8877d843cce1c62ba4405e8ada3bfdc",
+    "services.ingest.integrations.ramp.metrics": "d1bc55f3a81d63f67d93d99a9db6dc04ca50c278efa57096217a27ffe303acd9",
+    "services.ingest.integrations.ramp.oauth": "be01fb3ed20de727c30144e110381d87b7b7fc9e3d13e4553f97673bc803c1a9",
+    "services.ingest.integrations.ramp.onboarding": "d8ee46656e3436df0d1b1b87fbf34b4998922f03fc2a262575121cee6c164427",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Ramp Developer API",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "oauth2_client_credentials"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Ramp",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "transactions.list",
+      "reimbursements.list",
+      "cards.list",
+      "users.list",
+      "business.get",
+      "oauth.token.mint"
+    ],
+    "outbound_endpoint_names": [
+      "ramp_api"
+    ],
+    "provider_id": "ramp",
+    "source_ids": [
+      "ramp"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "ramp:transaction",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "ramp",
+        "route_path": "/webhooks/ramp",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "ramp",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_ramp",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.ramp:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "business_id": "bus-94bd9fac556467c5",
+      "entities": {
+        "card": [
+          {
+            "cardholder_id": "2a1dca3b-d490-185a-2c36-17a920ceae9b",
+            "cardholder_name": "Card Holder-86ce37",
+            "created_at": "2026-01-05T00:00:00+00:00",
+            "display_name": "Card-86ce37",
+            "expiration": "2030-01",
+            "id": "e9e70609-6471-4743-726a-47524765d277",
+            "is_physical": true,
+            "last_four": "1493",
+            "state": "ACTIVE"
+          }
+        ],
+        "reimbursement": [
+          {
+            "amount": 1513.99,
+            "created_at": "2026-01-04T00:00:00+00:00",
+            "currency": "USD",
+            "direction": "BUSINESS_TO_USER",
+            "id": "6ea5b0f7-6373-3a22-31e8-cb2396084133",
+            "memo": null,
+            "merchant": "Vendor-c7cb69",
+            "payee_amount": {
+              "amount": 151399,
+              "currency_code": "USD",
+              "minor_unit_conversion_rate": 100
+            },
+            "state": "REIMBURSED",
+            "sync_status": "SYNC_READY",
+            "transaction_date": "2026-01-05",
+            "type": "OUT_OF_POCKET",
+            "updated_at": "2026-01-05T00:00:00+00:00",
+            "user_full_name": "Emp Loyee-c7cb69",
+            "user_id": "db24667d-9425-a168-fffc-5cf3dd53a218"
+          }
+        ],
+        "transaction": [
+          {
+            "amount": 3503.26,
+            "card_holder": {
+              "department_name": "Engineering",
+              "first_name": "Card",
+              "last_name": "Holder-c50152",
+              "user_id": "c91e18b5-89dc-a56b-b1e1-bb40f1ae0e90"
+            },
+            "card_id": "15abe69c-2ed8-62e7-3c5a-56bac60837c8",
+            "currency_code": "USD",
+            "disputes": [],
+            "id": "5dfb0bf3-c109-c0ed-ffae-523fd1c542e9",
+            "line_items": [
+              {
+                "amount": {
+                  "amount": 350326,
+                  "currency_code": "USD",
+                  "minor_unit_conversion_rate": 100
+                }
+              }
+            ],
+            "memo": null,
+            "merchant_id": "e9e7fa67-b86e-aae7-593b-13a19656d385",
+            "merchant_name": "Merchant-c50152",
+            "original_transaction_amount": {
+              "amount": 350326,
+              "currency_code": "USD",
+              "minor_unit_conversion_rate": 100
+            },
+            "settlement_date": "2026-01-05T00:00:00+00:00",
+            "sk_category_id": 1,
+            "sk_category_name": "Cloud Computing",
+            "state": "CLEARED",
+            "sync_status": "SYNC_READY",
+            "synced_at": null,
+            "user_transaction_time": "2026-01-05T00:00:00+00:00"
+          }
+        ],
+        "user": [
+          {
+            "department_id": "22867f99-2f04-cbb9-8578-371f1af79ecd",
+            "email": "emp.008cf6@example.com",
+            "first_name": "Emp",
+            "id": "9c9a0242-f814-fa20-e8d1-443be99f9731",
+            "is_manager": true,
+            "last_name": "Loyee-008cf6",
+            "role": "BUSINESS_ADMIN",
+            "status": "USER_ACTIVE"
+          }
+        ]
+      },
+      "page_size": 100
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "oauth.token.mint",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "oauth.token.mint"
+        ],
+        "path_template": "/token",
+        "quota_bucket": null,
+        "quota_cost": 1.0,
+        "route_id": "ramp.token",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "business.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "business.get"
+        ],
+        "path_template": "/business",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "ramp.business",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "transactions.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "transactions.list"
+        ],
+        "path_template": "/transactions",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "ramp.transactions",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "reimbursements.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "reimbursements.list"
+        ],
+        "path_template": "/reimbursements",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "ramp.reimbursements",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "cards.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "cards.list"
+        ],
+        "path_template": "/cards",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "ramp.cards",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "users.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "users.list"
+        ],
+        "path_template": "/users",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "ramp.users",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [
+      "finance_testing"
+    ],
+    "certification": {
+      "canary_id": "ingest.canary.ramp",
+      "evidence_id": "ingest.evidence.ramp",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.ramp",
+      "validation_runtime": {
+        "generator_group": "ramp",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_ramp_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_ramp_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_ramp_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_ramp_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_ramp",
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_ramp_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.ramp.oauth:router",
+    "credential_refresh": {
+      "auth_style": "basic",
+      "client_credentials_from_install": true,
+      "client_secret_from_install": false,
+      "default_expires_in": 3600,
+      "default_scope": "transactions:read reimbursements:read cards:read users:read business:read",
+      "default_token_url": "https://api.ramp.com/developer/v1/token",
+      "grant_type": "client_credentials",
+      "install_table": "ramp_installations",
+      "operation_id": "oauth.token.mint",
+      "rotates_refresh_token": false,
+      "scope_env": "RAMP_OAUTH_SCOPES",
+      "token_url_env": "RAMP_TOKEN_URL"
+    },
+    "data_objects": [
+      "transaction",
+      "reimbursement",
+      "card",
+      "user"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Finance",
+      "connection_method": "OAuth",
+      "description": "Spend management and finance events.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 20,
+      "setup_requirements": "Ramp business scope, access token or OAuth client credentials, entity allowlist, webhook verifier, and poll schedule approval.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Ramp",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.ramp:fetch_page_ramp",
+    "finance_testing_binding": "services.app.gateway.finance_router:build_ramp_finance_testing",
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:ramp_transaction",
+      "services.ingest.ingestion.idempotency:ramp_entity",
+      "services.ingest.ingestion.idempotency:ramp_change"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "ramp:transaction",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "ramp:transaction",
+        "ingress_kind": "poll"
+      },
+      {
+        "channel": "ramp:transaction",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_ramp_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": "ramp_installation_id",
+        "entity_status_columns": [
+          "entity_type",
+          "state"
+        ],
+        "entity_table": "ramp_entities",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref",
+          "refresh_secret_ref",
+          "webhook_secret_ref"
+        ],
+        "scope_column": "business_id",
+        "source": "ramp",
+        "status_credential_column_groups": [
+          [
+            "secret_ref"
+          ],
+          [
+            "refresh_secret_ref"
+          ]
+        ],
+        "status_detail_columns": [
+          "token_expires_at"
+        ],
+        "status_presence_columns": [
+          [
+            "webhook_registered",
+            "webhook_secret_ref"
+          ]
+        ],
+        "table": "ramp_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": "business_id",
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "business_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "ramp",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.ramp.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "ramp:transaction"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.ramp:handle_ramp_transaction"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "business id",
+          "transaction/reimbursement/card/user streams",
+          "API base URL",
+          "webhook target"
+        ],
+        "agent_generates": [
+          "webhook verifier token ref",
+          "Ramp spend scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin creates or approves a least-privilege service credential"
+        ],
+        "settings_targets": [
+          "OAuth app settings",
+          "business settings",
+          "webhook settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "transactions",
+        "reimbursements",
+        "cards",
+        "users",
+        "business"
+      ],
+      "discovery_target": "business scope, transactions, reimbursements, cards, and users",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/ramp"
+      ],
+      "local_rehearsal": null,
+      "method": "oauth_client_credentials",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/ramp/connect/finalize",
+        "kind": "ramp_native_connect",
+        "payload_fields": [
+          "access_token",
+          "client_id",
+          "client_secret",
+          "base_url",
+          "business_id",
+          "entities",
+          "webhook_verifier_token"
+        ],
+        "preflight_path": "/integrations/ramp/connect/preflight",
+        "preflight_payload_fields": [
+          "access_token",
+          "client_id",
+          "client_secret",
+          "scopes",
+          "base_url"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "business_id",
+        "base_url",
+        "entity_scope",
+        "webhook_verifier_token"
+      ],
+      "provider_console_url": "https://developers.ramp.com/",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "transactions read",
+        "reimbursements read",
+        "cards read",
+        "users read",
+        "business read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "access_token_or_client_credentials"
+      ],
+      "required_refs": [
+        "access_token_or_client_credentials"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "transactions.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "reimbursements.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "cards.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "users.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "business.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "oauth.token.mint",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "ramp_api",
+        "operation_ids": [
+          "transactions.list",
+          "reimbursements.list",
+          "cards.list",
+          "users.list",
+          "business.get"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.ramp:plan_shards_ramp",
+    "provider_id": "ramp",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.ramp:reconcile_ramp",
+    "runtime_identifiers": [
+      "business_id"
+    ],
+    "source_id": "ramp",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "ramp"
+  },
+  "source_id": "ramp"
+}

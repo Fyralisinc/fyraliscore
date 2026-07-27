@@ -507,6 +507,30 @@ async def _append_external_assertions(
             )
         )
 
+    try:
+        triggered = await A.assert_observations_have_exactly_one_t1_trigger(
+            pool,
+            tenant_ids,
+        )
+        report.assertions.append(
+            AssertionResult(
+                name="assert_observation_persistence_and_t1_trigger",
+                passed=True,
+                detail=(
+                    f"{triggered} observations each own exactly one "
+                    "same-tenant T1/event_arrival trigger"
+                ),
+            )
+        )
+    except A.PropertyViolation as exc:
+        report.assertions.append(
+            AssertionResult(
+                name="assert_observation_persistence_and_t1_trigger",
+                passed=False,
+                detail=str(exc)[:200],
+            )
+        )
+
     residual = int(
         await pool.fetchval(
             "SELECT count(*) FROM workflow_signals "

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import GrafanaApiError
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.grafana.client import GrafanaClient
 from services.ingest.integrations.grafana.onboarding import (
     finalize_install,
@@ -45,13 +46,15 @@ def _secret_store_from_request(request: Request) -> Any:
 
 
 def _inputs(body: dict[str, Any]) -> tuple[str, str, str]:
-    base_url = str(body.get("base_url") or body.get("instance_url") or "").strip().rstrip("/")
     token = str(body.get("service_account_token") or body.get("api_token") or "").strip()
     org_id = str(body.get("org_id") or "1").strip()
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
     if not token:
         raise HTTPException(status_code=400, detail="service_account_token is required")
+    base_url = native_connect_base_url(
+        body.get("base_url") or body.get("instance_url"),
+        endpoint_name="grafana_api",
+        installation_owned=True,
+    )
     return base_url, token, org_id
 
 

@@ -32,6 +32,30 @@ _DEFAULT_GRAPH_VERSION = "v23.0"
 FACEBOOK_PAGES_WEBHOOK_FIELDS = ("messages", "message_echoes")
 
 
+class FacebookGraphAuthError(ProviderPermanentError):
+    """Meta Graph OAuth code 190 without retaining the provider payload."""
+
+    default_code = "facebook_graph_access_token_invalid"
+
+    def __init__(
+        self,
+        *,
+        operation: str,
+        http_status: int,
+        graph_error_subcode: int | None,
+    ) -> None:
+        super().__init__(
+            "Facebook Pages Graph access token is invalid",
+            source="facebook_pages",
+            operation=operation,
+            http_status=http_status,
+            graph_error_code=190,
+            graph_error_subcode=graph_error_subcode,
+        )
+        self.graph_error_code = 190
+        self.graph_error_subcode = graph_error_subcode
+
+
 def graph_api_version() -> str:
     raw = os.environ.get("FACEBOOK_GRAPH_API_VERSION", _DEFAULT_GRAPH_VERSION).strip()
     return raw if raw.startswith("v") else f"v{raw}"
@@ -71,6 +95,11 @@ class FacebookPagesClient:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
+        self._installation_row_id = (
+            UUID(str(installation_row_id))
+            if installation_row_id is not None
+            else None
+        )
         self._http = http_client or httpx.AsyncClient(timeout=30.0)
         self._owns_http = http_client is None
         local_unlimited = explicit_local_transport(
@@ -100,14 +129,42 @@ class FacebookPagesClient:
             await self._http.aclose()
 
     async def _token(self, override: str | None = None) -> str:
+        token, _ = await self._token_with_ref(
+            override,
+            operation="access_token.resolve",
+        )
+        return token
+
+    async def _token_with_ref(
+        self,
+        override: str | None,
+        *,
+        operation: str,
+    ) -> tuple[str, str | None]:
         if override:
-            return override
+            return override, None
         if self._access_token:
-            return self._access_token
+            return self._access_token, None
         if not self._page_access_token_ref or self._secret_store is None:
             raise SecretStoreError(
                 "facebook_pages access token unavailable",
                 reason="missing_access_token_ref",
+            )
+        if (
+            self._pool is not None
+            and self._tenant_id is not None
+            and self._installation_row_id is not None
+        ):
+            from services.ingest.integrations.facebook_pages.token_lifecycle import (
+                page_access_token_for_request,
+            )
+
+            return await page_access_token_for_request(
+                self._pool,
+                self._secret_store,
+                tenant_id=self._tenant_id,
+                installation_row_id=self._installation_row_id,
+                operation=operation,
             )
         try:
             raw = await self._secret_store.get(
@@ -116,7 +173,8 @@ class FacebookPagesClient:
             )
         except (SecretNotFoundError, SecretStoreError, ValueError):
             raise
-        return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        token = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        return token, self._page_access_token_ref
 
     async def _request(
         self,
@@ -129,14 +187,71 @@ class FacebookPagesClient:
         operation: str,
     ) -> dict[str, Any]:
         qs = dict(params or {})
-        qs["access_token"] = await self._token(access_token)
-        return await self._execute_json(
-            method,
-            f"{self._base_url}/{path.lstrip('/')}",
-            params=qs,
-            data=data,
+        token, token_ref = await self._token_with_ref(
+            access_token,
             operation=operation,
         )
+        qs["access_token"] = token
+        url = f"{self._base_url}/{path.lstrip('/')}"
+        try:
+            return await self._execute_json(
+                method,
+                url,
+                params=qs,
+                data=data,
+                operation=operation,
+            )
+        except FacebookGraphAuthError as exc:
+            # User-token operations (for example /me/accounts during recovery)
+            # must not recursively attempt Page-token recovery.
+            if (
+                access_token is not None
+                or token_ref is None
+                or self._pool is None
+                or self._secret_store is None
+                or self._tenant_id is None
+                or self._installation_row_id is None
+            ):
+                raise
+            from services.ingest.integrations.facebook_pages.token_lifecycle import (
+                page_access_token_for_request,
+                recover_page_access_token,
+                schedule_page_token_recovery,
+            )
+
+            schedule = await schedule_page_token_recovery(
+                self._pool,
+                tenant_id=self._tenant_id,
+                installation_row_id=self._installation_row_id,
+                expected_page_token_ref=token_ref,
+                graph_error_subcode=exc.graph_error_subcode,
+            )
+            if schedule.stale_page_token_ref:
+                replacement, _ = await page_access_token_for_request(
+                    self._pool,
+                    self._secret_store,
+                    tenant_id=self._tenant_id,
+                    installation_row_id=self._installation_row_id,
+                    operation=operation,
+                )
+            else:
+                replacement = await recover_page_access_token(
+                    self._pool,
+                    self._secret_store,
+                    tenant_id=self._tenant_id,
+                    installation_row_id=self._installation_row_id,
+                    operation=operation,
+                )
+            qs["access_token"] = replacement
+            # This is a separate, fully metered ProviderTransport execution.
+            # A second auth failure escapes; no recursive recovery loop exists.
+            return await self._execute_json(
+                method,
+                url,
+                params=qs,
+                data=data,
+                operation=operation,
+            )
 
     async def _execute_json(
         self,
@@ -187,21 +302,43 @@ class FacebookPagesClient:
                     operation=operation,
                     http_status=response.status_code,
                 )
+            payload: Any = None
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
             if response.status_code // 100 != 2:
+                graph_error = (
+                    payload.get("error")
+                    if isinstance(payload, dict)
+                    and isinstance(payload.get("error"), dict)
+                    else {}
+                )
+                if graph_error.get("code") == 190:
+                    raw_subcode = graph_error.get("error_subcode")
+                    subcode = (
+                        raw_subcode
+                        if isinstance(raw_subcode, int)
+                        and not isinstance(raw_subcode, bool)
+                        else None
+                    )
+                    raise FacebookGraphAuthError(
+                        operation=operation,
+                        http_status=response.status_code,
+                        graph_error_subcode=subcode,
+                    )
                 raise ProviderPermanentError(
                     f"Facebook Pages returned HTTP {response.status_code}",
                     source="facebook_pages",
                     operation=operation,
                     http_status=response.status_code,
                 )
-            try:
-                payload = response.json()
-            except ValueError as exc:
+            if payload is None:
                 raise ProviderTransientError(
                     "Facebook Pages returned malformed JSON",
                     source="facebook_pages",
                     operation=operation,
-                ) from exc
+                )
             if not isinstance(payload, dict):
                 raise ProviderTransientError(
                     "Facebook Pages response was not a JSON object",
@@ -230,6 +367,27 @@ class FacebookPagesClient:
                 "code": code,
             },
             operation="oauth.token.exchange",
+        )
+
+    async def exchange_long_lived_user_token(
+        self,
+        *,
+        short_lived_user_access_token: str,
+        client_id: str,
+        client_secret: str,
+    ) -> dict[str, Any]:
+        """Exchange a valid short-lived User token for Meta's long-lived form."""
+
+        return await self._execute_json(
+            "GET",
+            f"{self._base_url}/oauth/access_token",
+            params={
+                "grant_type": "fb_exchange_token",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "fb_exchange_token": short_lived_user_access_token,
+            },
+            operation="oauth.user_token.extend",
         )
 
     async def list_pages(self, user_access_token: str) -> list[dict[str, Any]]:
@@ -427,4 +585,9 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
-__all__ = ["FacebookPagesClient", "graph_api_base_url", "graph_api_version"]
+__all__ = [
+    "FacebookGraphAuthError",
+    "FacebookPagesClient",
+    "graph_api_base_url",
+    "graph_api_version",
+]

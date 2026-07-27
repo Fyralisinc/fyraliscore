@@ -121,7 +121,7 @@ uv run python -m services.platform.cli.fyralis byoc source rehearse \
 | Carta | Generic OAuth/ref package | Carta issuer/app authorization |
 | LinkedIn | Generic polling/ref package | LinkedIn app approval and rate-limit scope |
 | Figma | Generic API token package | Team/file token and webhook scope |
-| Miro | Generic API token package | Board/team token and webhook scope |
+| Miro | Generic API token package | Board/team token and polling scope; no production webhook |
 | Grafana | Generic API token package | Service account token and folder scope |
 | Mercury | Generic API token package | Banking API token and account scope |
 | Brex | Generic API token package | API token and account/card scope |
@@ -192,4 +192,3 @@ A source is considered test-complete when:
 - Fyralis status endpoint reports the source installed or ready.
 - Historical backfill or live event trigger has run.
 - UI shows sanitized observations or a clear no-observations status.
-

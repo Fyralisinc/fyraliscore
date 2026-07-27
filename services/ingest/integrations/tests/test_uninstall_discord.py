@@ -276,7 +276,7 @@ async def test_disabled_installation_rejects_next_inbound(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         r = await c.post(
-            "/webhooks/discord/events",
+            "/webhooks/discord",
             content=body,
             headers={
                 "X-Signature-Ed25519": sig,

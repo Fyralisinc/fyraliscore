@@ -165,6 +165,72 @@ async def test_enforced_scoped_token_bucket_refills_on_virtual_clock() -> None:
     assert refilled.status_code == 200
 
 
+async def test_simultaneous_quota_constraints_are_charged_atomically() -> None:
+    app = build_provider_lab_app()
+    requirements = [
+        {
+            "scope": "app:slack",
+            "bucket": "web-api",
+            "limit_id": "steady-hour",
+            "cost": 1.5,
+        },
+        {
+            "scope": "workspace:T_ONE",
+            "bucket": "web-api",
+            "limit_id": "burst-minute",
+            "cost": 1,
+        },
+    ]
+    async with httpx.AsyncClient(
+        transport=_transport(app),
+        base_url="http://provider-lab",
+    ) as client:
+        for config in (
+            {
+                "source": "slack",
+                "scope": "app:slack",
+                "bucket": "web-api",
+                "limit_id": "steady-hour",
+                "mode": "enforce",
+                "capacity": 3,
+                "refill_per_second": 0,
+            },
+            {
+                "source": "slack",
+                "scope": "workspace:T_ONE",
+                "bucket": "web-api",
+                "limit_id": "burst-minute",
+                "mode": "enforce",
+                "capacity": 1,
+                "refill_per_second": 0,
+            },
+        ):
+            configured = await client.post("/_lab/quotas", json=config)
+            assert configured.status_code == 201
+
+        headers = {
+            "X-Provider-Lab-Quota-Requirements": json.dumps(requirements),
+        }
+        first = await client.get(
+            "/slack/api/conversations.list",
+            headers=headers,
+        )
+        limited = await client.get(
+            "/slack/api/conversations.list",
+            headers=headers,
+        )
+        snapshot = (await client.get("/_lab/quotas")).json()["buckets"]
+
+    assert first.status_code == 200
+    assert first.headers["x-provider-lab-quota-constraints"] == "2"
+    assert limited.status_code == 429
+    assert limited.headers["x-provider-lab-quota-limit"] == "burst-minute"
+    by_limit = {item["limit_id"]: item for item in snapshot}
+    assert by_limit["burst-minute"]["tokens"] == 0
+    # The rejected second call cannot partially drain the app/hour window.
+    assert by_limit["steady-hour"]["tokens"] == 1.5
+
+
 async def test_observe_quota_records_exhaustion_but_allows_request() -> None:
     app = build_provider_lab_app()
     async with httpx.AsyncClient(

@@ -121,7 +121,7 @@ async def test_run_short_smoke():
     respx.post("http://fake/webhooks/slack/events").mock(
         return_value=httpx.Response(200, json={"ok": True}),
     )
-    respx.post("http://fake/webhooks/github/events").mock(
+    respx.post("http://fake/webhooks/github").mock(
         return_value=httpx.Response(200, json={"ok": True}),
     )
     config = LoadConfig(
@@ -141,7 +141,7 @@ async def test_run_handles_error_responses():
     respx.post("http://fake/webhooks/slack/events").mock(
         return_value=httpx.Response(503, text="overloaded"),
     )
-    respx.post("http://fake/webhooks/github/events").mock(
+    respx.post("http://fake/webhooks/github").mock(
         return_value=httpx.Response(503, text="overloaded"),
     )
     config = LoadConfig(

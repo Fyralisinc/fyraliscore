@@ -18,7 +18,7 @@ from services.ingest.synthetic.validation_runs import (
 )
 
 
-def test_run3_has_two_tenants_for_every_historical_contract_source() -> None:
+def test_run3_has_two_tenants_and_two_installs_for_every_history_source() -> None:
     scenarios = run3_module.run3_scenarios()
     expected_sources = tuple(
         definition.source_id
@@ -27,11 +27,13 @@ def test_run3_has_two_tenants_for_every_historical_contract_source() -> None:
     )
 
     assert len(expected_sources) == 26
-    assert len(scenarios) == 52
+    assert len(scenarios) == 104
     assert tuple(dict.fromkeys(s.source for s in scenarios)) == expected_sources
     assert Counter(s.source for s in scenarios) == Counter(
-        {source_id: 2 for source_id in expected_sources},
+        {source_id: 4 for source_id in expected_sources},
     )
+    assert all(s.installation_key is not None for s in scenarios)
+    assert len({s.identity for s in scenarios}) == len(scenarios)
     assert "whatsapp" not in {s.source for s in scenarios}
 
 
@@ -42,7 +44,7 @@ def test_run3_uses_each_sources_exact_fixture_count_oracle() -> None:
     assert first == second
     for scenario in first:
         installation_id = (
-            f"x3-{scenario.tenant_slug}-{scenario.source}"
+            f"x3-{scenario.resolved_installation_key}-{scenario.source}"
         )
         fixture = resolve_fixture_factory(scenario.source)(
             fixture_params=scenario.fixture_params,
@@ -62,9 +64,12 @@ def test_run3_fails_closed_on_non_positive_or_non_exact_count(
     monkeypatch.setattr(
         run3_module,
         "certification_history_scenarios",
-        lambda *, tenants_per_source: [
+        lambda *, tenants_per_source, installations_per_tenant: [
             BackfillScenario(
-                tenant_slug=f"invalid-{tenants_per_source}",
+                tenant_slug=(
+                    f"invalid-{tenants_per_source}-"
+                    f"{installations_per_tenant}"
+                ),
                 source="slack",
                 expected_observation_count=invalid_count,
             ),
@@ -86,8 +91,25 @@ def test_run3_source_grouping_preserves_contract_scenario_order() -> None:
     assert tuple(grouped) == tuple(
         dict.fromkeys(scenario.source for scenario in scenarios),
     )
-    assert all(len(source_scenarios) == 2 for source_scenarios in grouped.values())
+    assert all(len(source_scenarios) == 4 for source_scenarios in grouped.values())
     assert [
         scenario for source_scenarios in grouped.values()
         for scenario in source_scenarios
     ] == scenarios
+
+
+def test_working_signal_bound_tracks_exact_shard_fanout() -> None:
+    assert run3_module._working_signal_bound(
+        planned_shards=408,
+        installations=104,
+    ) == 512
+    assert run3_module._working_signal_bound(
+        planned_shards=1,
+        installations=1,
+    ) == 2
+
+    with pytest.raises(ValueError, match="non-negative"):
+        run3_module._working_signal_bound(
+            planned_shards=-1,
+            installations=1,
+        )

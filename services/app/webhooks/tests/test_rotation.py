@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from services.app.webhooks.secrets import load_secrets
+from services.app.webhooks.secrets import load_installation_secrets
 from services.app.webhooks.signatures.github import verifier as github_verifier
 from services.app.webhooks.tests.conftest import github_sign
 from services.app.webhooks.verifier import Secret, WebhookVerificationError
+from services.ingest.source_contract import resolve_webhook_secret_loader
 
 
 @pytest.mark.asyncio
@@ -81,7 +82,7 @@ async def test_env_layout_parses_comma_separated(
         "WEBHOOK_SECRET_SLACK",
         "old=old-secret,new=new-secret",
     )
-    secrets = await load_secrets("slack")
+    secrets = await load_installation_secrets("slack")
     assert len(secrets) == 2
     labels = {s.label for s in secrets}
     values = {s.value for s in secrets}
@@ -92,7 +93,7 @@ async def test_env_layout_parses_comma_separated(
 @pytest.mark.asyncio
 async def test_env_layout_unlabelled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WEBHOOK_SECRET_SLACK", "plain-secret")
-    secrets = await load_secrets("slack")
+    secrets = await load_installation_secrets("slack")
     assert len(secrets) == 1
     assert secrets[0].label is None
     assert secrets[0].value == "plain-secret"
@@ -110,7 +111,7 @@ async def test_env_per_tenant_overrides_global(
         f"WEBHOOK_SECRET_SLACK__{tenant.hex.upper()}",
         "tenant-secret",
     )
-    secrets = await load_secrets("slack", tenant_id=tenant)
+    secrets = await load_installation_secrets("slack", tenant_id=tenant)
     assert [s.value for s in secrets] == ["tenant-secret"]
 
 
@@ -122,7 +123,8 @@ async def test_github_app_level_current_and_previous(
     for rotation overlap. Not a comma list — separate env vars."""
     monkeypatch.setenv("WEBHOOK_SECRET_GITHUB", "current-app-secret")
     monkeypatch.setenv("WEBHOOK_SECRET_GITHUB_PREV", "previous-app-secret")
-    secrets = await load_secrets("github")
+    loader = resolve_webhook_secret_loader("github")
+    secrets = await loader("github")
     assert len(secrets) == 2
     by_label = {s.label: s.value for s in secrets}
     assert by_label == {

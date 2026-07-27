@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "facebook_pages",
+  "spec_hash": "12792e2d88b0e33f2042cab221750ddbd8122481e76a39547c0b2fb3ed3102f9",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "facebook_pages",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "c74b1656a652b49fd547917b8f74001f5170fbe2802945af402b7c5c711891a7"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_FACEBOOK_PAGES"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_FACEBOOK_PAGES"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "facebook_pages",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "c74b1656a652b49fd547917b8f74001f5170fbe2802945af402b7c5c711891a7"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "facebook_pages",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "c74b1656a652b49fd547917b8f74001f5170fbe2802945af402b7c5c711891a7"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "facebook_pages",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "c74b1656a652b49fd547917b8f74001f5170fbe2802945af402b7c5c711891a7"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

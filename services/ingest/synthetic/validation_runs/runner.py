@@ -1,21 +1,19 @@
 """Composed validation runner — spine (A29).
 
-Standalone, operator-invokable (Decision 1). Brings up its own moto S3
+Standalone, operator-invokable (Decision 1). It brings up its own moto S3
 (Decision 9), resets Kafka + bucket state (Decision 10), runs the
-fixture-realism pre-flight (Decision 12), executes Run 1's backfill
-across every history-capable source via the proven `BackfillHarness`
-(which already does the consumer-drain wait, Decision 4), checks
-run-level assertions (Decision 5), and writes a markdown report
-(Decision 6) with the consumer-rc policy applied (Decision 11).
+fixture-realism pre-flight (Decision 12), executes the selected contract-
+derived validation run, checks run-level assertions (Decision 5), and writes
+a markdown report (Decision 6) with the consumer-rc policy applied
+(Decision 11).
 
     COMPANY_OS_ENV=test \
     DATABASE_URL=postgresql://... \
     KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \
     python -m services.ingest.synthetic.validation_runs.runner --run=1
 
-DEFERRED to M-Validate-Live (ticket #47): the live phase (4 in-process
-generators) and Runs 2 (fault) + 3 (concurrency). `--run=2|3` exit with
-a pointer to that work-unit.
+Runs 1–4 and the Provider Lab capstone are executable. ``--run=all`` executes
+Runs 1–4 sequentially; ``--run=5`` executes the Provider Lab capstone shape.
 """
 from __future__ import annotations
 
@@ -416,6 +414,13 @@ async def run1(
                 concurrency=8,
                 completion_deadline_s=120.0,
                 kafka_bootstrap_servers=bootstrap_servers,
+                # The all-source matrix emits more than one thousand raw
+                # records.  Producer completion can precede the
+                # observation-writer by tens of seconds on a contended CI
+                # host; the harness must keep the consumers alive until the
+                # exact per-tenant count oracle is satisfied.  Run 4 already
+                # uses a larger explicit drain budget for the same reason.
+                drain_timeout_s=120.0,
             )
             result = await harness.run()
             report.subprocess_returncodes = dict(result.subprocess_returncodes)
@@ -544,6 +549,14 @@ async def run1(
             await _run_assertion(
                 report.assertions, "assert_external_id_unique_across_paths",
                 A.assert_external_id_unique_across_paths(pool),
+            )
+            await _run_assertion(
+                report.assertions,
+                "assert_observations_have_exactly_one_t1_trigger",
+                A.assert_observations_have_exactly_one_t1_trigger(
+                    pool,
+                    tenant_ids,
+                ),
             )
             await _run_assertion(
                 report.assertions,

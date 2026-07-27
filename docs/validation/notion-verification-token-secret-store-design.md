@@ -34,7 +34,7 @@ verifier reads it from that env var on the next request.
 | 2. Handshake detection (non-empty `verification_token`, no event fields) | `is_verification_handshake` | `services/ingest/integrations/notion/webhook.py:72-83` |
 | 3. **Token logged in plaintext at WARNING** + 200 ack | `handle_verification_handshake` | `services/ingest/integrations/notion/webhook.py:86-106` (the `verification_token=token` kwarg at `:104`) |
 | 4. Operator copies the logged value into the env var `NOTION_WEBHOOK_VERIFICATION_TOKEN` and redeploys | (manual / runbook) | documented at `webhook.py:91-95` and `secrets.py:318-323` |
-| 5. Signed events: secrets loaded App-level from the env var | `_load_notion_app_secrets` (called by `load_secrets` for `provider == "notion"`) | `services/app/webhooks/secrets.py:260-261`, `:307-344` (reads `NOTION_WEBHOOK_VERIFICATION_TOKEN` / `..._PREV` at `:325-328`) |
+| 5. Signed events: the canonical Notion webhook contract resolves its App-level loader | `load_app_webhook_secrets` | `services/ingest/integrations/notion/webhook_secrets.py` (reads `NOTION_WEBHOOK_VERIFICATION_TOKEN` / `..._PREV`) |
 | 6. Verifier HMACs the body with each active token | `NotionVerifier.verify` | `services/app/webhooks/signatures/notion.py:42-82` |
 
 Key facts that constrain the redesign:
@@ -73,7 +73,7 @@ sequenceDiagram
     participant R as router.receive (notion branch)
     participant H as handle_verification_handshake
     participant S as secret_store (Fernet / encrypted_secrets)
-    participant V as load_secrets / NotionVerifier
+    participant V as contract secret loader / NotionVerifier
 
     N->>R: POST {verification_token} (unsigned)
     R->>H: payload + pool + secret_store + app_tenant_id
@@ -82,7 +82,7 @@ sequenceDiagram
     H-->>R: 200 + log {length, stored_ref} (NO token)
     Note over R,N: later — signed events
     N->>R: POST event + X-Notion-Signature
-    R->>V: load_secrets("notion")
+    R->>V: resolve Notion secret_loader_binding
     V->>S: read app-level notion token(s) from encrypted_secrets
     S-->>V: plaintext token(s)
     V-->>R: HMAC verify OK
@@ -126,7 +126,7 @@ verifier read selects rows by `(tenant_id=APP_TENANT, label LIKE
 'notion_webhook_verification_token%')` newest-first, mirroring the
 multi-secret rotation-overlap pattern already in `_load_from_db`
 (`secrets.py:178-224`) and the env `..._PREV` overlap in
-`_load_notion_app_secrets` (`secrets.py:325-344`).
+`load_app_webhook_secrets` (`notion/webhook_secrets.py`).
 
 > Note: the existing `encrypted_secrets` store keys reads by `ref` (the
 > uuid7), not by label (`store.py:129-149`). To resolve the App-level token
@@ -198,24 +198,22 @@ handle without exposing the token.
   (`router.py:834-840`); we are only changing what the handshake *does* with
   the token.
 
-### 3.3 `services/app/webhooks/secrets.py` — verifier read path
+### 3.3 `services/ingest/integrations/notion/webhook_secrets.py` — verifier read path
 
-- Extend `_load_notion_app_secrets` (or add `_load_notion_app_secrets_from_store`
-  called from the `provider == "notion"` branch at `secrets.py:260-261`) to:
+- Extend the contract-bound `load_app_webhook_secrets` to:
   1. Read App-level token rows from the store
      (`(tenant_id=APP_TENANT, label LIKE 'notion_webhook_verification_token%')`,
      newest-first, decrypt each), returning them as `Secret(provider="notion",
      value=..., tenant_id=None, label="app:store:<ref>")`.
   2. **Dual-read during rollout (§4):** if the store yields nothing, fall back
      to the existing env-var read (`NOTION_WEBHOOK_VERIFICATION_TOKEN` /
-     `..._PREV`, `secrets.py:325-344`). After rollout completes the env read
+     `..._PREV`). After rollout completes the env read
      can be dropped (or kept as a permanent dev-only fallback gated like
      `WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW`, mirroring `_load_from_db`'s posture).
-- This needs `pool` + `secret_store` + the App-tenant UUID. `load_secrets`
-  already receives `app_state` (`secrets.py:231-235`, `:263`) and has the
-  `_app_state_attr` helper to pull `pool` / `secret_store`
-  (`secrets.py:152-158`). The notion branch currently ignores `app_state`
-  because the env path needs nothing; the store path will use it.
+- This needs `pool` + `secret_store` + the App-tenant UUID. The uniform
+  contract loader signature already receives `app_state`; the Notion loader
+  currently ignores it because the env path needs nothing, while the future
+  store path will use it.
 
 ### 3.4 Config — App-tenant UUID
 
@@ -273,8 +271,8 @@ every step the operator can still onboard.
    that closes finding #29.
 
 5. **(Optional, later) retire the env-var read.** Drop the env fallback in
-   `_load_notion_app_secrets`, or gate it dev-only behind a flag analogous to
-   `WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW` (`secrets.py:92-93`).
+   Notion's `load_app_webhook_secrets`, or gate it dev-only behind a flag
+   analogous to `WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW`.
 
 > Rollback at any step is safe: steps 1–2 are purely additive (store write +
 > dual-read), so reverting them falls back to the env var; the log is still
@@ -327,9 +325,10 @@ the handshake path):
   assert the raw token string is absent). Add a store-failure case asserting
   still-200 + non-sensitive error log.
 - **Unit — verifier read (`services/app/webhooks/tests/`):** with a fake
-  secret_store returning a stored App-level token, assert `load_secrets("notion",
-  app_state=...)` returns the stored token; assert dual-read fallback to env
-  when the store is empty; assert newest-first ordering with two rows.
+  secret store returning a stored App-level token, resolve the Notion
+  `secret_loader_binding` and assert it returns the stored token; assert
+  dual-read fallback to env when the store is empty; assert newest-first
+  ordering with two rows.
 - **Router integration (`services/app/webhooks/tests/test_router.py`):**
   mirror `test_slack_url_verification_handshake` (`test_router.py:194`): POST
   the notion handshake body through `receive`, assert 200 + that the token was

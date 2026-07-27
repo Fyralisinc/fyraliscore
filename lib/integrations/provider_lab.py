@@ -5,12 +5,14 @@ Production endpoint resolution deliberately does not consume
 provider-shaped URLs, then pass those URLs through an explicit client
 constructor or per-source endpoint environment variable.
 """
+
 from __future__ import annotations
 
 import ipaddress
 import os
 from urllib.parse import urlsplit
 
+from lib.integrations.endpoint_contract import PROVIDER_ENDPOINT_CATALOG
 from lib.shared.env import is_prod
 
 
@@ -21,6 +23,7 @@ PROVIDER_LAB_URL_ENV = "PROVIDER_LAB_URL"
 # providers (Google and Discord) remain explicit.
 _ENDPOINT_PATHS: dict[str, str] = {
     "gmail_api": "/gmail/gmail/v1",
+    "gmail_pubsub_api": "/gmail/v1",
     "google_directory": "/gmail/admin/directory/v1",
     "google_token": "/gmail/token",
     "github_api": "/github",
@@ -46,36 +49,40 @@ _ENDPOINT_PATHS: dict[str, str] = {
     "ashby_api": "/ashby",
     "linkedin_api": "/linkedin",
     "facebook_graph_api": "/facebook",
+    "signal_jsonrpc": "/signal/jsonrpc",
+    "signal_sse": "/signal/events/{subscription_id}",
+    "slack_oauth_token": "/slack/api/oauth.v2.access",
+    "discord_oauth_token": "/discord/api/v10/oauth2/token",
+    "notion_oauth_token": "/notion/v1/oauth/token",
+    "figma_oauth_token": "/figma/v1/oauth/token",
+    "figma_oauth_refresh": "/figma/v1/oauth/token",
+    "quickbooks_token": "/quickbooks/oauth2/v1/tokens/bearer",
+    "ramp_token": "/ramp/token",
+    "gusto_token": "/gusto/oauth/token",
+    "carta_token": "/carta/o/access_token/",
+    "linkedin_token": "/linkedin/oauth/v2/accessToken",
 }
 
-_ENDPOINT_ENV: dict[str, str] = {
-    "gmail_api": "GMAIL_API_BASE_URL",
-    "google_directory": "GOOGLE_DIRECTORY_BASE_URL",
-    "google_token": "GOOGLE_TOKEN_URI",
-    "github_api": "GITHUB_API_BASE_URL",
-    "slack_api": "SLACK_API_BASE_URL",
-    "discord_api": "DISCORD_API_BASE_URL",
-    "discord_gateway_bot": "DISCORD_GATEWAY_BOT_URL",
-    "notion_api": "NOTION_API_BASE_URL",
-    "google_calendar_api": "GOOGLE_CALENDAR_API_BASE_URL",
-    "google_drive_api": "GOOGLE_DRIVE_API_BASE_URL",
-    "jira_api": "JIRA_API_BASE_URL",
-    "mercury_api": "MERCURY_API_BASE_URL",
-    "quickbooks_api": "QUICKBOOKS_API_BASE_URL",
-    "grafana_api": "GRAFANA_API_BASE_URL",
-    "brex_api": "BREX_API_BASE_URL",
-    "ramp_api": "RAMP_API_BASE_URL",
-    "gusto_api": "GUSTO_API_BASE_URL",
-    "deel_api": "DEEL_API_BASE_URL",
-    "fireflies_api": "FIREFLIES_API_BASE_URL",
-    "miro_api": "MIRO_API_BASE_URL",
-    "figma_api": "FIGMA_API_BASE_URL",
-    "carta_api": "CARTA_API_BASE_URL",
-    "hibob_api": "HIBOB_API_BASE_URL",
-    "ashby_api": "ASHBY_API_BASE_URL",
-    "linkedin_api": "LINKEDIN_API_BASE_URL",
-    "facebook_graph_api": "FACEBOOK_GRAPH_API_BASE_URL",
+_LAB_ONLY_ENDPOINT_ENV: dict[str, str] = {
+    "signal_jsonrpc": "SIGNAL_JSONRPC_ENDPOINT",
+    "signal_sse": "SIGNAL_SSE_ENDPOINT",
+    "slack_oauth_token": "SLACK_OAUTH_TOKEN_URL",
+    "discord_oauth_token": "DISCORD_OAUTH_TOKEN_URL",
+    "notion_oauth_token": "NOTION_OAUTH_TOKEN_URL",
+    "figma_oauth_token": "FIGMA_OAUTH_TOKEN_URL",
+    "figma_oauth_refresh": "FIGMA_OAUTH_REFRESH_URL",
+    "quickbooks_token": "QUICKBOOKS_TOKEN_URL",
+    "ramp_token": "RAMP_TOKEN_URL",
+    "gusto_token": "GUSTO_TOKEN_URL",
+    "carta_token": "CARTA_TOKEN_URL",
+    "linkedin_token": "LINKEDIN_TOKEN_URL",
 }
+_ENDPOINT_ENV: dict[str, str] = {
+    name: PROVIDER_ENDPOINT_CATALOG[name].override_env
+    for name in _ENDPOINT_PATHS
+    if name in PROVIDER_ENDPOINT_CATALOG
+}
+_ENDPOINT_ENV.update(_LAB_ONLY_ENDPOINT_ENV)
 
 
 def _validated_root(value: str) -> str:
@@ -144,10 +151,7 @@ def provider_lab_endpoint_overrides(root_url: str | None = None) -> dict[str, st
                 f"{PROVIDER_LAB_URL_ENV} is test-only and must be unset in production",
             )
         root = _validated_root(root_url)
-    return {
-        _ENDPOINT_ENV[name]: root + path
-        for name, path in _ENDPOINT_PATHS.items()
-    }
+    return {_ENDPOINT_ENV[name]: root + path for name, path in _ENDPOINT_PATHS.items()}
 
 
 __all__ = [

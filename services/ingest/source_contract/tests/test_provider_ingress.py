@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
@@ -21,6 +22,9 @@ from services.ingest.source_contract import (
     provider_for_dedicated_ingress,
     resolve_callable_reference,
     resolve_webhook_ingress_metadata_builder,
+    resolve_webhook_secret_loader,
+    resolve_webhook_verified_pre_tenant_handler,
+    resolve_webhook_verified_tenant_handler,
     validate_provider_ingress_catalog,
 )
 from services.ingest.source_contract.catalog import (
@@ -51,7 +55,7 @@ _EXPECTED_PROVIDER_EDGE = {
         "notion",
         "notion",
         "notion:object",
-        "dedicated_shadow_then_ack",
+        "dedicated_kafka_first_with_inline_fallback",
     ),
     "jira": (
         "atlassian",
@@ -105,12 +109,6 @@ _EXPECTED_PROVIDER_EDGE = {
         "fireflies",
         "fireflies",
         "fireflies:transcript",
-        "flagged_kafka_first_with_inline_fallback",
-    ),
-    "miro": (
-        "miro",
-        "miro",
-        "miro:item",
         "flagged_kafka_first_with_inline_fallback",
     ),
     "figma": (
@@ -212,6 +210,7 @@ def test_every_webhook_binding_resolves_from_the_contract() -> None:
         assert verifier_for_provider(route_id) is not None
         assert tenant_extractor_for_provider(route_id) is not None
         assert callable(resolve_webhook_ingress_metadata_builder(route_id))
+        assert callable(resolve_webhook_secret_loader(route_id))
 
     assert verifier_for_provider("unknown") is None
     assert tenant_extractor_for_provider("unknown") is None
@@ -297,6 +296,89 @@ def test_github_owns_the_only_webhook_handler_header_projection() -> None:
     }
 
 
+def test_verified_webhook_policies_are_contract_owned() -> None:
+    declared = {
+        route_id: (
+            ingress.verified_pre_tenant_handler_binding,
+            ingress.verified_tenant_handler_binding,
+        )
+        for route_id, ingress in WEBHOOK_INGRESS_CATALOG.items()
+        if ingress.verified_pre_tenant_handler_binding is not None
+        or ingress.verified_tenant_handler_binding is not None
+    }
+
+    assert declared == {
+        "slack": (
+            "services.ingest.integrations.slack.webhook_ingress:"
+            "handle_verified_pre_tenant",
+            "services.ingest.integrations.slack.webhook_ingress:"
+            "handle_verified_tenant",
+        ),
+        "github": (
+            "services.ingest.integrations.github.webhook_ingress:"
+            "handle_verified_pre_tenant",
+            "services.ingest.integrations.github.webhook_ingress:"
+            "handle_verified_tenant",
+        ),
+        "quickbooks": (
+            None,
+            "services.ingest.integrations.quickbooks.webhook_ingress:"
+            "handle_verified_tenant",
+        ),
+    }
+    assert callable(resolve_webhook_verified_pre_tenant_handler("github"))
+    assert callable(resolve_webhook_verified_tenant_handler("github"))
+    assert callable(resolve_webhook_verified_pre_tenant_handler("slack"))
+    assert callable(resolve_webhook_verified_tenant_handler("slack"))
+    assert callable(resolve_webhook_verified_tenant_handler("quickbooks"))
+    assert resolve_webhook_verified_pre_tenant_handler("discord") is None
+    assert resolve_webhook_verified_tenant_handler("discord") is None
+
+
+def test_webhook_secret_loader_scope_is_contract_owned() -> None:
+    app_scoped = {
+        route_id: ingress.secret_loader_binding
+        for route_id, ingress in WEBHOOK_INGRESS_CATALOG.items()
+        if ingress.secret_loader_binding
+        != "services.app.webhooks.secrets:load_installation_secrets"
+    }
+
+    assert app_scoped == {
+        "github": (
+            "services.ingest.integrations.github.webhook_secrets:"
+            "load_app_webhook_secrets"
+        ),
+        "notion": (
+            "services.ingest.integrations.notion.webhook_secrets:"
+            "load_app_webhook_secrets"
+        ),
+    }
+
+
+def test_webhook_verified_policy_rejects_malformed_or_dedicated_bindings() -> None:
+    github = WEBHOOK_INGRESS_CATALOG["github"]
+    with pytest.raises(ValueError, match="module:callable"):
+        replace(
+            github,
+            verified_pre_tenant_handler_binding="github.pre_tenant",
+        )
+    with pytest.raises(ValueError, match="module:callable"):
+        replace(
+            github,
+            secret_loader_binding="github.webhook_secret_loader",
+        )
+
+    notion = WEBHOOK_INGRESS_CATALOG["notion"]
+    with pytest.raises(ValueError, match="dedicated webhook ingress"):
+        replace(
+            notion,
+            verified_tenant_handler_binding=(
+                "services.ingest.integrations.github.webhook_ingress:"
+                "handle_verified_tenant"
+            ),
+        )
+
+
 @pytest.mark.parametrize(
     "projection",
     (
@@ -321,6 +403,10 @@ def test_dedicated_notion_and_ingress_only_provider_semantics() -> None:
     notion = WEBHOOK_INGRESS_CATALOG["notion"]
     assert notion.handler_mode == "dedicated"
     assert notion.acknowledgement_policy == "dedicated_handler"
+    assert notion.kafka_mode == "dedicated_kafka_first_with_inline_fallback"
+    assert notion.shadow_write_enabled is True
+    assert notion.kafka_cutover_enabled is False
+    assert notion.inline_fallback_enabled is True
     assert notion.verification_handshake_binding is not None
     assert notion.verification_handshake_handler_binding is not None
     assert notion.dedicated_handler_binding is not None
@@ -329,6 +415,20 @@ def test_dedicated_notion_and_ingress_only_provider_semantics() -> None:
         ingress = WEBHOOK_INGRESS_CATALOG[route_id]
         assert ingress.source_id is None
         assert ingress.kafka_mode == "inline_only"
+        assert ingress.inline_fallback_enabled is False
+
+
+def test_dedicated_kafka_fallback_mode_cannot_be_used_by_generic_webhooks() -> None:
+    github = WEBHOOK_INGRESS_CATALOG["github"]
+    with pytest.raises(ValueError, match="dedicated Kafka mode"):
+        replace(
+            github,
+            kafka_mode="dedicated_kafka_first_with_inline_fallback",
+        )
+
+    notion = WEBHOOK_INGRESS_CATALOG["notion"]
+    with pytest.raises(ValueError, match="Kafka-first inline-fallback"):
+        replace(notion, kafka_mode="inline_only")
 
 
 def test_provider_edge_catalog_and_entries_are_immutable() -> None:
@@ -340,6 +440,23 @@ def test_provider_edge_catalog_and_entries_are_immutable() -> None:
         DEDICATED_INGRESS_CATALOG["other"] = DEDICATED_INGRESS_CATALOG["gmail_pubsub"]  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         DEDICATED_INGRESS_CATALOG["gmail_pubsub"].route_path = "/other"  # type: ignore[misc]
+
+
+def test_webhook_route_parameters_must_be_declared_single_segments() -> None:
+    ashby = WEBHOOK_INGRESS_CATALOG["ashby"]
+
+    with pytest.raises(ValueError, match="single-segment"):
+        replace(
+            ashby,
+            route_path="/webhooks/ashby/{installation_id:path}",
+        )
+    with pytest.raises(ValueError, match="require tenant_binding"):
+        replace(ashby, tenant_binding="payload")
+    with pytest.raises(ValueError, match="requires a declared"):
+        replace(
+            ashby,
+            route_path="/webhooks/ashby",
+        )
 
 
 def test_validator_rejects_duplicate_public_routes() -> None:
@@ -402,3 +519,29 @@ def test_legacy_provider_edge_registries_are_absent() -> None:
     assert not hasattr(signatures, "VERIFIERS")
     assert not hasattr(tenant_resolver, "PROVIDER_EXTRACTORS")
     assert not hasattr(tenant_resolver, "_PATH_RESOLVED_PROVIDERS")
+
+
+def test_shared_router_has_no_github_verified_policy_switch() -> None:
+    source = inspect.getsource(router)
+    assert 'provider == "github"' not in source
+    assert 'provider != "github"' not in source
+    for helper_name in (
+        "_is_github_ping",
+        "_handle_github_lifecycle",
+        "_load_github_selected_repositories",
+    ):
+        assert not hasattr(router, helper_name)
+
+
+def test_shared_router_has_no_slack_verified_policy_switch() -> None:
+    source = inspect.getsource(router)
+    assert "slack" not in source.casefold()
+    assert 'provider == "slack"' not in source
+    assert 'provider != "slack"' not in source
+    assert "slack_url_verification" not in source
+    for helper_name in (
+        "_is_slack_url_verification",
+        "_slack_lifecycle_event",
+        "_handle_slack_lifecycle",
+    ):
+        assert not hasattr(router, helper_name)

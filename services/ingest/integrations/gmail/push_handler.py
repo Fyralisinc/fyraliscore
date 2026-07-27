@@ -13,6 +13,7 @@ token has been verified upstream. This function is responsible for:
 Idempotency: a re-delivered push (Google retries) is safe — the ingest
 path dedups on observations.UNIQUE and on gmail_thread_members.PK.
 """
+
 from __future__ import annotations
 
 import base64
@@ -26,6 +27,7 @@ from lib.shared.errors import CompanyOSError
 
 from services.ingest.integrations.gmail.client import (
     GmailClient,
+    GmailHistoryRecoveryIncomplete,
     GoogleApiError,
     GoogleRateLimited,
     build_google_http_client,
@@ -137,8 +139,20 @@ async def handle_push(
             retry_after_s=getattr(exc, "kwargs", {}).get("retry_after_s"),
         )
         return {"status": "rate_limited", "tenant_id": str(tenant_id)}
+    except GmailHistoryRecoveryIncomplete as exc:
+        log.warning(
+            "gmail.push.history_recovery_incomplete",
+            email=email_address,
+            error=str(exc)[:200],
+        )
+        return {
+            "status": "history_recovery_incomplete",
+            "tenant_id": str(tenant_id),
+        }
     except GoogleApiError as exc:
-        log.warning("gmail.push.google_error", email=email_address, error=str(exc)[:200])
+        log.warning(
+            "gmail.push.google_error", email=email_address, error=str(exc)[:200]
+        )
         return {"status": "google_error", "tenant_id": str(tenant_id)}
 
 

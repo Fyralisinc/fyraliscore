@@ -46,12 +46,32 @@ def _validate_tenant_count(tenants_per_source: int) -> None:
         raise ValueError("tenants_per_source must be non-negative")
 
 
+def _validate_installation_count(installations_per_tenant: int) -> None:
+    if not isinstance(installations_per_tenant, int) or isinstance(
+        installations_per_tenant,
+        bool,
+    ):
+        raise TypeError("installations_per_tenant must be an int")
+    if installations_per_tenant < 1:
+        raise ValueError("installations_per_tenant must be positive")
+
+
 def _certification_scenario(
     source_id: str,
     tenant_index: int,
+    installation_index: int,
+    *,
+    installations_per_tenant: int,
 ) -> BackfillScenario:
     tenant_slug = f"val-{source_id}-{tenant_index}"
-    installation_id = f"x3-{tenant_slug}-{source_id}"
+    installation_key = (
+        None
+        if installations_per_tenant == 1
+        else f"{tenant_slug}-installation-{installation_index}"
+    )
+    installation_id = (
+        f"x3-{installation_key or tenant_slug}-{source_id}"
+    )
     factory = resolve_fixture_factory(source_id)
     count_observations = resolve_fixture_count_oracle(source_id)
     fixture_params: dict[str, object] = {}
@@ -72,6 +92,7 @@ def _certification_scenario(
     return BackfillScenario(
         tenant_slug=tenant_slug,
         source=source_id,
+        installation_key=installation_key,
         # The source-owned certification factory supplies its deterministic
         # defaults and receives the harness's slug-derived installation_id.
         fixture_params=fixture_params,
@@ -81,14 +102,20 @@ def _certification_scenario(
 
 def certification_history_scenarios(
     tenants_per_source: int = 4,
+    *,
+    installations_per_tenant: int = 1,
 ) -> list[BackfillScenario]:
     """Build historical certification scenarios in canonical source order.
 
-    The default produces 104 scenarios: four deterministic tenants for each of
-    the 26 history-capable canonical sources. WhatsApp is excluded explicitly
-    because its source contract declares ``history=None``.
+    The default produces 104 scenarios: four deterministic tenants with one
+    installation each for every one of the 26 history-capable canonical
+    sources. ``installations_per_tenant`` expands each tenant into exact
+    sibling-installation scenarios without creating another source registry.
+    WhatsApp is excluded explicitly because its source contract declares
+    ``history=None``.
     """
     _validate_tenant_count(tenants_per_source)
+    _validate_installation_count(installations_per_tenant)
 
     scenarios: list[BackfillScenario] = []
     for source_id in _HISTORY_SOURCE_IDS:
@@ -98,8 +125,14 @@ def certification_history_scenarios(
         resolve_fixture_factory(source_id)
         resolve_fixture_count_oracle(source_id)
         scenarios.extend(
-            _certification_scenario(source_id, tenant_index)
+            _certification_scenario(
+                source_id,
+                tenant_index,
+                installation_index,
+                installations_per_tenant=installations_per_tenant,
+            )
             for tenant_index in range(tenants_per_source)
+            for installation_index in range(installations_per_tenant)
         )
     return scenarios
 

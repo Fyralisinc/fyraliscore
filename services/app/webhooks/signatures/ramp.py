@@ -11,7 +11,7 @@ This keeps the edge resilient regardless of which encoding Ramp ships — and if
 they ever switch, no code change is needed.
 
 The per-tenant verifier token is resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='ramp') the seed/onboarding step registers. The verifier loops over
 ALL active secrets so a verifier-token rotation never drops a delivery.
 

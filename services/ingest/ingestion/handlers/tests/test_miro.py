@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from lib.shared.errors import ValidationError
 from services.ingest.ingestion.handlers import CHANNEL_TRUST_MAP, get_handler
 from services.ingest.ingestion.handlers.miro import handle_miro_item
 
@@ -79,42 +80,23 @@ async def test_four_items_distinct_external_ids():
     assert len(ids) == 4
 
 
-# --- live webhook path -----------------------------------------------------
-
-async def test_webhook_item_created():
-    payload = {
-        "event": "board_item.created",
-        "_fyralis_org_id": _ORG,
-        "_fyralis_board_id": _BOARD,
-        "item": {"id": "i-1001", "boardId": _BOARD, "type": "sticky_note",
-                 "version": "1", "modifiedAt": "2026-05-20T12:30:00.000Z"},
-    }
-    draft = await handle_miro_item(payload, {})
-    assert draft.content["object_type"] == "item"
-    # external_id parity with the backfilled item record.
-    assert draft.external_id == f"miro:{_ORG}:item:i-1001:1"
+async def test_retired_webhook_shape_is_rejected():
+    with pytest.raises(ValidationError, match="tagged backfill/poll"):
+        await handle_miro_item({
+            "event": "board_item.created",
+            "_fyralis_org_id": _ORG,
+            "_fyralis_board_id": _BOARD,
+            "item": {
+                "id": "i-1001",
+                "boardId": _BOARD,
+                "type": "sticky_note",
+            },
+        }, {})
 
 
-async def test_backfill_and_webhook_dedup_to_same_external_id():
-    backfill = await handle_miro_item(_item(), {})
-    webhook = await handle_miro_item({
-        "event": "board_item.updated", "_fyralis_org_id": _ORG,
-        "_fyralis_board_id": _BOARD,
-        "item": {"id": "i-1001", "boardId": _BOARD, "type": "sticky_note",
-                 "version": "1", "modifiedAt": "2026-05-20T12:30:00.000Z"},
-    }, {})
-    assert backfill.external_id == webhook.external_id
-
-
-async def test_webhook_delete_is_state_change():
-    draft = await handle_miro_item({
-        "event": "board_item.deleted", "_fyralis_org_id": _ORG,
-        "_fyralis_board_id": _BOARD,
-        "item": {"id": "i-1001", "boardId": _BOARD, "type": "sticky_note",
-                 "version": "3", "modifiedAt": "2026-05-22T08:00:00.000Z"},
-    }, {})
-    assert draft.kind == "state_change"
-    assert draft.content["deleted"] is True
+async def test_untagged_item_shape_is_rejected():
+    with pytest.raises(ValidationError, match="tagged backfill/poll"):
+        await handle_miro_item({"item": _item()["item"]}, {})
 
 
 # --- rich-field ingestion ---------------------------------------------------
@@ -144,6 +126,5 @@ async def test_extras_absent_keys_not_emitted():
 
 
 async def test_unknown_payload_raises():
-    from lib.shared.errors import ValidationError
     with pytest.raises(ValidationError):
         await handle_miro_item({"foo": "bar"}, {})

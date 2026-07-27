@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "hibob",
+  "spec_hash": "6e15c6869328938e867c403ae4bfe1eecc94c03f3f8ae9e36927426cfd1ce42b",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "hibob",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "dfcda0be034b696253fbca7691710283f2d388f0d35821ff99242e15512ac0d4"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_HIBOB"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_HIBOB"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "hibob",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "dfcda0be034b696253fbca7691710283f2d388f0d35821ff99242e15512ac0d4"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "hibob",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "dfcda0be034b696253fbca7691710283f2d388f0d35821ff99242e15512ac0d4"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "hibob",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "dfcda0be034b696253fbca7691710283f2d388f0d35821ff99242e15512ac0d4"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

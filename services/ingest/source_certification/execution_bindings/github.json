@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "github",
+  "spec_hash": "8c9d187ec5e21f36af1b7bf0bdfb534f4e1bc36950cc20c591b1a66873299935",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "github",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "4e0581c4da82347b86acafd1823b95f1764050bb1b651f15166b9dc7e243b406"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_GITHUB"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_GITHUB"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "github",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "4e0581c4da82347b86acafd1823b95f1764050bb1b651f15166b9dc7e243b406"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "github",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "4e0581c4da82347b86acafd1823b95f1764050bb1b651f15166b9dc7e243b406"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "github",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "4e0581c4da82347b86acafd1823b95f1764050bb1b651f15166b9dc7e243b406"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

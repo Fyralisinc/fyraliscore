@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://grafana.com/docs/grafana/latest/developers/http_api/",
       "api_version": "Grafana HTTP API",
-      "schema_sha256": null,
+      "schema_sha256": "afdc2c4cf47062a46b8ce3ccf23fc635914c0baf0bb93af44767153c9d8f66a7",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 schema lock and reviewer verification."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

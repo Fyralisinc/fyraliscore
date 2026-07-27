@@ -51,14 +51,6 @@ _HMAC_CASES = (
         hashlib.sha256,
     ),
     HmacCase(
-        "miro",
-        "miro",
-        "X-Miro-Signature",
-        "sha256=",
-        "hex",
-        hashlib.sha256,
-    ),
-    HmacCase(
         "hibob",
         "hibob",
         "Bob-Signature",
@@ -90,7 +82,6 @@ _NEGATIVE_COVERED_PROVIDERS = {
     "jira",
     "linear",
     "mercury",
-    "miro",
     "notion",
     "quickbooks",
     "ramp",

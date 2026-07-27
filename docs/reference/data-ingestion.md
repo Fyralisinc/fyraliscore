@@ -413,7 +413,7 @@ they authenticate and how live data arrives.
 | 17 | **fireflies** | Bearer API token | HMAC webhook | GraphQL `skip`/`limit` | meeting transcripts |
 | 18 | **signal** | linked-device session | **Gateway** | message-timestamp cursor | messages, group updates |
 | 19 | **aws** | IAM creds (assume-role / static; SigV4) | **poll** (CloudTrail) | date-range | CloudTrail API events |
-| 20 | **miro** | org-app Bearer | HMAC webhook | cursor pagination | boards, items, comments |
+| 20 | **miro** | org-app Bearer | **poll-only** | cursor pagination | boards, items, comments |
 | 21 | **figma** | PAT / org-team token (`X-Figma-Token`) | webhook (passcode-in-body) | versions/comments merge | files, versions, comments |
 | 22 | **carta** | OAuth2 | **poll-only** | cursor pagination | cap-table, shares, investors |
 | 23 | **hibob** | service-user HTTP Basic | webhook (**SHA512/base64 `Bob-Signature`**) | people search + Bob bulk cursors | HR records, lifecycle, time-off |

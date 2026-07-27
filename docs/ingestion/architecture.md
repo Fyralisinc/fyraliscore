@@ -227,8 +227,8 @@ flowchart TB
 
 The control plane drives **onboarding & backfill** (see §6); the data plane is
 the live pipeline. `reconciler` / `periodic_reconciler` re-run fetchers to close
-gaps and to provide the *live* path for poll-only sources (Notion, Calendar,
-Drive).
+gaps and to provide a correctness backstop for sources with live notifications
+(Notion, Calendar, Drive).
 
 ---
 
@@ -248,7 +248,7 @@ flowchart LR
         S2["discord<br/>interactions=inline · messages=WSS gateway"]
         S3["gmail<br/>Pub/Sub push"]
         S4["notion<br/>webhook (special) + poll"]
-        S5["google_calendar · google_drive<br/>poll only"]
+        S5["google_calendar · google_drive<br/>native watch push + fallback poll"]
     end
     Q["planner → fetcher → handler → reconciler<br/>(backfill + poll, all 8)"]
     P(["ingestion.raw → … → observations"])
@@ -272,16 +272,16 @@ Flag TRUE → router calls `_attempt_kafka_path` → `202`; flag FALSE or Kafka 
 
 ### Special webhook source
 
-- **[notion](sources/notion.md)** — webhook `/webhooks/notion/...` **always** routes to the full pipeline via a dedicated handler that fetches the full page and calls `shadow_write_raw()` directly (using the `app.state.notion_data_plane` alias, which points at the *same* producer/S3 instances). There is **no** inline path and **no** `_PROVIDER_CHANNEL` entry for Notion — the handler short-circuits the router before the inline block. Channel `notion:object`; a DB row with a status property → `kind=state_change`. The "live" path is a **poll** via `periodic_reconciler` (`NOTION_POLL_INTERVAL_SECONDS`).
+- **[notion](sources/notion.md)** — webhook `/webhooks/notion/events` routes to a dedicated hydration handler. Its provider contract declares `dedicated_kafka_first_with_inline_fallback`: fetch the full page, attempt `shadow_write_raw()` through S3 + Kafka, and use `ingest("notion:object", ...)` inline if the durable path is unavailable or cannot confirm delivery. The handler acknowledges only after one path succeeds. Channel `notion:object`; a DB row with a status property → `kind=state_change`. Periodic reconciliation remains the broader live correctness backstop (`NOTION_POLL_INTERVAL_SECONDS`).
 
 ### Push (Pub/Sub) source
 
 - **[gmail](sources/gmail.md)** — Google Pub/Sub push hits the dedicated endpoint [gmail_pubsub.py](../../services/app/webhooks/gmail_pubsub.py) (NOT the generic router), which publishes to `ingestion.raw` via the canonical `app.state.kafka_producer`/`s3_raw_client` (with `flush()`). Channel `gmail:`, `ingress_kind="pubsub"`. Backfill/poll via the History API (`ingress_kind="poll"`).
 
-### Poll/backfill-only sources (no webhook)
+### Native Google watch push with poll/backfill
 
-- **[google_calendar](sources/google-calendar.md)** — **no push/webhook**. Planner enumerates calendars → fetcher pulls events (incremental via `nextSyncToken`) → `google_calendar:event`. Mutable entities use a versioned `external_id` (`gcal:{cal}:{event}:{status}:{start}`).
-- **[google_drive](sources/google-drive.md)** — **no push/webhook**. Planner enumerates My Drive + Shared Drives → fetcher pulls file activity + **content extraction** (Docs/Sheets/Slides/PDF→text) + comments + revisions → all on channel `google_drive:file`, distinguished by `content.object_type` + `external_id` namespace. Incremental via the Changes-API start-page-token captured at backfill **start**. Versioned `external_id` `gdrive:{file_id}:{version}`.
+- **[google_calendar](sources/google-calendar.md)** — native `events.watch` sends content-less notifications to `/webhooks/google_calendar/push`; the dedicated edge verifies the stored channel token and drains the `nextSyncToken` delta. The two-minute poller is the liveness backstop. Mutable entities use a versioned `external_id` (`gcal:{cal}:{event}:{status}:{start}`).
+- **[google_drive](sources/google-drive.md)** — native Changes watches notify `/webhooks/google_drive/push`; the dedicated edge drains the same Changes cursor used by polling. The fetcher performs **content extraction** (Docs/Sheets/Slides/PDF→text) plus comments and revisions on `google_drive:file`. Versioned `external_id` `gdrive:{file_id}:{version}`.
 
 ### The one intentional inline exception
 
@@ -299,8 +299,8 @@ Flag TRUE → router calls `_attempt_kafka_path` → `202`; flag FALSE or Kafka 
 | jira | ✅ cutover | — | ✅ | `jira:issue` | no |
 | notion | ✅ always (special handler) | — | ✅ (poll) | `notion:object` | no |
 | gmail | — | ✅ Pub/Sub | ✅ | `gmail:` | no |
-| google_calendar | — | — | ✅ | `google_calendar:event` | no |
-| google_drive | — | — | ✅ | `google_drive:file` (+comment/revision) | no |
+| google_calendar | — | ✅ `events.watch` | ✅ | `google_calendar:event` | no |
+| google_drive | — | ✅ Changes watch | ✅ | `google_drive:file` (+comment/revision) | no |
 | discord | interactions inline (by design) | — | ✅ messages | `discord:message`, `discord:interaction` | interactions only |
 
 ### Channel → trust tier ([handlers/__init__.py](../../services/ingest/ingestion/handlers/__init__.py) `CHANNEL_TRUST_MAP`)

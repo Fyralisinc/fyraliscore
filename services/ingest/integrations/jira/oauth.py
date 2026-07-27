@@ -48,6 +48,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import JiraApiError
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.jira.client import JiraClient
 from services.ingest.integrations.jira.onboarding import (
     finalize_install,
@@ -89,19 +90,19 @@ def _secret_store_from_request(request: Request) -> Any:
 
 def _require_credentials(body: dict[str, Any]) -> tuple[str, str, str]:
     """Pull + validate the three required credential fields."""
-    base_url = (body.get("base_url") or "").strip().rstrip("/")
     account_email = (body.get("account_email") or "").strip()
     api_token = (body.get("api_token") or "").strip()
 
-    if not base_url.startswith(("https://", "http://")) or "." not in base_url:
-        raise HTTPException(
-            status_code=400,
-            detail="base_url must be the full site URL, e.g. https://acme.atlassian.net",
-        )
     if "@" not in account_email:
         raise HTTPException(status_code=400, detail="account_email is required")
     if not api_token:
         raise HTTPException(status_code=400, detail="api_token is required")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="jira_api",
+        installation_owned=True,
+        allowed_hostname_suffixes=(".atlassian.net",),
+    )
     return base_url, account_email, api_token
 
 

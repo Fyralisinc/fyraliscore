@@ -1,0 +1,2381 @@
+{
+  "implementation_sha256": {
+    "scripts.run_discord_gateway_worker": "8069816add781b85d6b12fcaee05766b643385a20484564dffdd36680614dcdd",
+    "services.app.gateway.byoc_onboarding_router": "79550bddf71513aaa3704465053922b17e3a1314ae50500e34f1dd4af3531ab5",
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.discord": "fd7d8aead95b067a9f50fd3bad0ced9a99dfccd72f4216d4fb5f6c670e0c61cb",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.discord": "09cf468989f381700ec8153759862558255c107e6e4e2468bf4f9eda8028f2af",
+    "services.ingest.ingestion.handlers.discord": "f71d3cd52517dc26e22b54a7fddcb428210f20b262cde72926d6e0edaca740ed",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.discord": "f4413397cec37814566b638a78cb6badc914b368d9e3652d10366856ad156eee",
+    "services.ingest.ingestion.reconcilers.discord": "bf743c2e569e0ca3987148d46a820d414429cf06f9ab9484311d8092d44c01bc",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.discord": "6b48f86b21ade034f627d3009e96804f75f44d0a0ae00ef88c447104a868606d",
+    "services.ingest.integrations.discord.client": "6bdf45e107f003e8b6a5b75e915e7a01076fca698e07be8fe250a58bbecbb372",
+    "services.ingest.integrations.discord.commands": "bf624e050d10163959810a20b3e7812df46a1b696b067220ed99a838c2611af3",
+    "services.ingest.integrations.discord.gateway": "3b63df81702f108beece783046ae18bb1639a1cae9ae6e184434f2161649cee5",
+    "services.ingest.integrations.discord.gateway._durability": "d771984365262e4714cda2fa5d9d75349d458de3515bbaf8b4cc4372dc4ca32e",
+    "services.ingest.integrations.discord.gateway.client": "6f2618d04f2cf39eff26edb2dcfcf14e91f61cd996010be75d7bf89de5fd7129",
+    "services.ingest.integrations.discord.gateway.dispatch": "d539fe0c874a2b4bc7af33c44caf498ef069ef48954767062b996a4581d8b5e8",
+    "services.ingest.integrations.discord.gateway.leader_lock": "03f4a6fe7c05573102fca9375da1949b105ec8c19a031bcd94e3baafcc899b96",
+    "services.ingest.integrations.discord.gateway.lifecycle": "87be5ce2a6fe03ef6405b8c7b11f297f4a255c2709c4cb548c303ad90f4cbd6b",
+    "services.ingest.integrations.discord.gateway.metrics": "1f93c9c67aea320ce5f30db602a331be55504b92660c0c0ada563582b4ad0d0e",
+    "services.ingest.integrations.discord.gateway.session_state": "037b5c4aef22b1f7eccd2aa094501b7a89aad5684fc627132859f12b2c1a73be",
+    "services.ingest.integrations.discord.gateway.worker": "3464595ac2c37e1e6b751b71686699c65180578d98477d27c5c670dfaa274512",
+    "services.ingest.integrations.discord.metrics": "36fdc3430f9ae52837c403cca791fd4da4df1e7193cc0340c21afc9c46edfe8b",
+    "services.ingest.integrations.discord.oauth": "0bc1940bdd915daf48343052cd18d32c96c1d94d483d61f69fe64ba116e23274",
+    "services.ingest.integrations.discord.uninstall": "c6aba07896f2e54ca2efe60fcea59f9b4f8fbd3a463702fa88243aa09f3831e9",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.adapters": "f036c41246c136c64769e9bb5eca1b30345dd5fe926351b75226cc12bcce6843",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "HTTP v10 / Gateway v10",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "oauth2_bot"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Discord",
+    "oauth_ingresses": [
+      {
+        "callback_handler_binding": "services.ingest.integrations.discord.oauth:callback_handler",
+        "callback_path": "/integrations/discord/callback",
+        "install_handler_binding": "services.ingest.integrations.discord.oauth:install_handler",
+        "install_path": "/integrations/discord/install",
+        "mount_mode": "shared_router",
+        "public_result_paths": [
+          "/integrations/discord/installed",
+          "/integrations/discord/install-error"
+        ],
+        "source_id": "discord"
+      }
+    ],
+    "operation_policy_ids": [
+      "/guilds/{guild_id}/members/{user_id}",
+      "/channels/{channel_id}",
+      "/applications/{application_id}/commands",
+      "/users/@me/guilds",
+      "/guilds/{guild_id}/channels",
+      "/guilds/{guild_id}/threads/active",
+      "/channels/{channel_id}/threads/archived/public",
+      "/channels/{channel_id}/threads/archived/private",
+      "/channels/{channel_id}/messages",
+      "/gateway/bot",
+      "/webhooks/{application_id}/{interaction_token}",
+      "/oauth2/token"
+    ],
+    "outbound_endpoint_names": [
+      "discord_api",
+      "discord_gateway_bot"
+    ],
+    "provider_id": "discord",
+    "source_ids": [
+      "discord"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "synchronous_provider_response",
+        "channel": "discord:interaction",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_discord_metadata",
+        "kafka_mode": "inline_then_shadow",
+        "normalizer_header_projection": [],
+        "route_id": "discord",
+        "route_path": "/webhooks/discord",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "discord",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_discord",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.discord:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "channels": [
+        {
+          "id": "485244",
+          "messages": [
+            {
+              "author": {
+                "id": "3508302",
+                "username": "user-0"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #0",
+              "id": "3326782",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "4197070800",
+                "username": "user-1"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #1",
+              "id": "4197865390",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "8392710538",
+                "username": "user-2"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #2",
+              "id": "8389655369",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "12584425601",
+                "username": "user-3"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #3",
+              "id": "12585116778",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "16781188066",
+                "username": "user-4"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #4",
+              "id": "16778272856",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "20974110912",
+                "username": "user-5"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #5",
+              "id": "20973900218",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "25168022460",
+                "username": "user-6"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #6",
+              "id": "25169948499",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "29360993573",
+                "username": "user-7"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #7",
+              "id": "29362353582",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "33557424391",
+                "username": "user-8"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #8",
+              "id": "33556128606",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "37749998466",
+                "username": "user-9"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #9",
+              "id": "37752887696",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "41946605819",
+                "username": "user-10"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #10",
+              "id": "41945921171",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "46140550294",
+                "username": "user-11"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #11",
+              "id": "46137676474",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "50335703854",
+                "username": "user-12"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #12",
+              "id": "50335408152",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "54528181379",
+                "username": "user-13"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #13",
+              "id": "54526493663",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "58724431584",
+                "username": "user-14"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #14",
+              "id": "58724393582",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "62915048503",
+                "username": "user-15"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #15",
+              "id": "62918233899",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "67110775394",
+                "username": "user-16"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #16",
+              "id": "67111135300",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "71304510733",
+                "username": "user-17"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #17",
+              "id": "71306586699",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "75501482954",
+                "username": "user-18"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #18",
+              "id": "75501496863",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "79694627522",
+                "username": "user-19"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #19",
+              "id": "79692806183",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "83887307577",
+                "username": "user-20"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #20",
+              "id": "83889132266",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "88081298311",
+                "username": "user-21"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #21",
+              "id": "88081497083",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "92278497536",
+                "username": "user-22"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #22",
+              "id": "92276603069",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "96470697956",
+                "username": "user-23"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #23",
+              "id": "96469074559",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "100665594814",
+                "username": "user-24"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #24",
+              "id": "100665406640",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "104860960269",
+                "username": "user-25"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #25",
+              "id": "104859694339",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "109053328217",
+                "username": "user-26"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #26",
+              "id": "109054139151",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "113247529123",
+                "username": "user-27"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #27",
+              "id": "113248096528",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "117443058431",
+                "username": "user-28"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #28",
+              "id": "117443862888",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "121636414044",
+                "username": "user-29"
+              },
+              "channel_id": "485244",
+              "content": "synthetic discord message #29",
+              "id": "121638843187",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            }
+          ],
+          "name": "channel-0",
+          "type": 0
+        },
+        {
+          "id": "4197589227",
+          "messages": [
+            {
+              "author": {
+                "id": "3508302",
+                "username": "user-0"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #0",
+              "id": "2667373",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "4197070800",
+                "username": "user-1"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #1",
+              "id": "4197625961",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "8392710538",
+                "username": "user-2"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #2",
+              "id": "8390741449",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "12584425601",
+                "username": "user-3"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #3",
+              "id": "12586140350",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "16781188066",
+                "username": "user-4"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #4",
+              "id": "16778860900",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "20974110912",
+                "username": "user-5"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #5",
+              "id": "20974088816",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "25168022460",
+                "username": "user-6"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #6",
+              "id": "25168688277",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "29360993573",
+                "username": "user-7"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #7",
+              "id": "29362604948",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "33557424391",
+                "username": "user-8"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #8",
+              "id": "33556824331",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "37749998466",
+                "username": "user-9"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #9",
+              "id": "37749619736",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "41946605819",
+                "username": "user-10"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #10",
+              "id": "41946988326",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "46140550294",
+                "username": "user-11"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #11",
+              "id": "46140868417",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "50335703854",
+                "username": "user-12"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #12",
+              "id": "50334541550",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "54528181379",
+                "username": "user-13"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #13",
+              "id": "54529708654",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "58724431584",
+                "username": "user-14"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #14",
+              "id": "58721574806",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "62915048503",
+                "username": "user-15"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #15",
+              "id": "62917244367",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "67110775394",
+                "username": "user-16"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #16",
+              "id": "67112574870",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "71304510733",
+                "username": "user-17"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #17",
+              "id": "71304608207",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "75501482954",
+                "username": "user-18"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #18",
+              "id": "75499774272",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "79694627522",
+                "username": "user-19"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #19",
+              "id": "79693086647",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "83887307577",
+                "username": "user-20"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #20",
+              "id": "83889992831",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "88081298311",
+                "username": "user-21"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #21",
+              "id": "88080867113",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "92278497536",
+                "username": "user-22"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #22",
+              "id": "92276880038",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "96470697956",
+                "username": "user-23"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #23",
+              "id": "96471495684",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "100665594814",
+                "username": "user-24"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #24",
+              "id": "100667156457",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "104860960269",
+                "username": "user-25"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #25",
+              "id": "104857601369",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "109053328217",
+                "username": "user-26"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #26",
+              "id": "109052602076",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "113247529123",
+                "username": "user-27"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #27",
+              "id": "113248311149",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "117443058431",
+                "username": "user-28"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #28",
+              "id": "117443857056",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "121636414044",
+                "username": "user-29"
+              },
+              "channel_id": "4197589227",
+              "content": "synthetic discord message #29",
+              "id": "121637090870",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            }
+          ],
+          "name": "channel-1",
+          "type": 0
+        },
+        {
+          "id": "8391387909",
+          "messages": [
+            {
+              "author": {
+                "id": "3508302",
+                "username": "user-0"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #0",
+              "id": "534458",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "4197070800",
+                "username": "user-1"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #1",
+              "id": "4196241213",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "8392710538",
+                "username": "user-2"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #2",
+              "id": "8388651267",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "12584425601",
+                "username": "user-3"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #3",
+              "id": "12586860327",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "16781188066",
+                "username": "user-4"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #4",
+              "id": "16778213397",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "20974110912",
+                "username": "user-5"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #5",
+              "id": "20975037821",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "25168022460",
+                "username": "user-6"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #6",
+              "id": "25167646870",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "29360993573",
+                "username": "user-7"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #7",
+              "id": "29364222370",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "33557424391",
+                "username": "user-8"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #8",
+              "id": "33558621003",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "37749998466",
+                "username": "user-9"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #9",
+              "id": "37752870873",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "41946605819",
+                "username": "user-10"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #10",
+              "id": "41946452284",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "46140550294",
+                "username": "user-11"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #11",
+              "id": "46139815622",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "50335703854",
+                "username": "user-12"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #12",
+              "id": "50332026890",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "54528181379",
+                "username": "user-13"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #13",
+              "id": "54525958010",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "58724431584",
+                "username": "user-14"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #14",
+              "id": "58721559669",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "62915048503",
+                "username": "user-15"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #15",
+              "id": "62915253023",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "67110775394",
+                "username": "user-16"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #16",
+              "id": "67111944274",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "71304510733",
+                "username": "user-17"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #17",
+              "id": "71303213912",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "75501482954",
+                "username": "user-18"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #18",
+              "id": "75498972952",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "79694627522",
+                "username": "user-19"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #19",
+              "id": "79694529492",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "83887307577",
+                "username": "user-20"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #20",
+              "id": "83889517464",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "88081298311",
+                "username": "user-21"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #21",
+              "id": "88083966667",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "92278497536",
+                "username": "user-22"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #22",
+              "id": "92275571596",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "96470697956",
+                "username": "user-23"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #23",
+              "id": "96471535008",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "100665594814",
+                "username": "user-24"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #24",
+              "id": "100664858872",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "104860960269",
+                "username": "user-25"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #25",
+              "id": "104861707955",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "109053328217",
+                "username": "user-26"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #26",
+              "id": "109054354217",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "113247529123",
+                "username": "user-27"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #27",
+              "id": "113247093722",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "117443058431",
+                "username": "user-28"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #28",
+              "id": "117443607435",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "121636414044",
+                "username": "user-29"
+              },
+              "channel_id": "8391387909",
+              "content": "synthetic discord message #29",
+              "id": "121635526340",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            }
+          ],
+          "name": "channel-2",
+          "type": 0
+        },
+        {
+          "id": "12585743256",
+          "messages": [
+            {
+              "author": {
+                "id": "3508302",
+                "username": "user-0"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #0",
+              "id": "1037138",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "4197070800",
+                "username": "user-1"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #1",
+              "id": "4197247000",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "8392710538",
+                "username": "user-2"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #2",
+              "id": "8391542849",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "12584425601",
+                "username": "user-3"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #3",
+              "id": "12584603324",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "16781188066",
+                "username": "user-4"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #4",
+              "id": "16780921288",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "20974110912",
+                "username": "user-5"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #5",
+              "id": "20972512046",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "25168022460",
+                "username": "user-6"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #6",
+              "id": "25167979858",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "29360993573",
+                "username": "user-7"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #7",
+              "id": "29363109037",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "33557424391",
+                "username": "user-8"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #8",
+              "id": "33557316706",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "37749998466",
+                "username": "user-9"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #9",
+              "id": "37752089754",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "41946605819",
+                "username": "user-10"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #10",
+              "id": "41946669629",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "46140550294",
+                "username": "user-11"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #11",
+              "id": "46140935136",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "50335703854",
+                "username": "user-12"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #12",
+              "id": "50332356759",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "54528181379",
+                "username": "user-13"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #13",
+              "id": "54528637612",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "58724431584",
+                "username": "user-14"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #14",
+              "id": "58720831083",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "62915048503",
+                "username": "user-15"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #15",
+              "id": "62917001471",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "67110775394",
+                "username": "user-16"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #16",
+              "id": "67111535231",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "71304510733",
+                "username": "user-17"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #17",
+              "id": "71307167109",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "75501482954",
+                "username": "user-18"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #18",
+              "id": "75500621224",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "79694627522",
+                "username": "user-19"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #19",
+              "id": "79695600791",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "83887307577",
+                "username": "user-20"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #20",
+              "id": "83887303775",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "88081298311",
+                "username": "user-21"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #21",
+              "id": "88083533950",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "92278497536",
+                "username": "user-22"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #22",
+              "id": "92278016666",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "96470697956",
+                "username": "user-23"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #23",
+              "id": "96469350344",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "100665594814",
+                "username": "user-24"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #24",
+              "id": "100665635857",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "104860960269",
+                "username": "user-25"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #25",
+              "id": "104858618777",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "109053328217",
+                "username": "user-26"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #26",
+              "id": "109055317992",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "113247529123",
+                "username": "user-27"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #27",
+              "id": "113248028817",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "117443058431",
+                "username": "user-28"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #28",
+              "id": "117440842799",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            },
+            {
+              "author": {
+                "id": "121636414044",
+                "username": "user-29"
+              },
+              "channel_id": "12585743256",
+              "content": "synthetic discord message #29",
+              "id": "121636082336",
+              "timestamp": "2026-01-01T00:00:00+00:00",
+              "type": 0
+            }
+          ],
+          "name": "channel-3",
+          "type": 0
+        }
+      ],
+      "guild_id": "certification-surface-discord",
+      "page_size": 100
+    },
+    "protocol_surfaces": [
+      {
+        "operation_ids": [],
+        "surface_id": "discord.gateway",
+        "transport": "websocket"
+      }
+    ],
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "/gateway/bot",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/gateway/bot"
+        ],
+        "path_template": "/api/v10/gateway/bot",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.gateway_bot",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "/users/@me/guilds",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/users/@me/guilds"
+        ],
+        "path_template": "/api/v10/users/@me/guilds",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.guilds",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "/guilds/{guild_id}/channels",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/guilds/{guild_id}/channels"
+        ],
+        "path_template": "/api/v10/guilds/{guild_id}/channels",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.guild_channels",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "/guilds/{guild_id}/threads/active",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/guilds/{guild_id}/threads/active"
+        ],
+        "path_template": "/api/v10/guilds/{guild_id}/threads/active",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.active_guild_threads",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "/channels/{channel_id}/threads/archived/public",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/channels/{channel_id}/threads/archived/public"
+        ],
+        "path_template": "/api/v10/channels/{channel_id}/threads/archived/public",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.archived_public_threads",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "/channels/{channel_id}/threads/archived/private",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/channels/{channel_id}/threads/archived/private"
+        ],
+        "path_template": "/api/v10/channels/{channel_id}/threads/archived/private",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.archived_private_threads",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "/channels/{channel_id}/messages",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/channels/{channel_id}/messages"
+        ],
+        "path_template": "/api/v10/channels/{channel_id}/messages",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.channel_messages",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "/guilds/{guild_id}/members/{user_id}",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/guilds/{guild_id}/members/{user_id}"
+        ],
+        "path_template": "/api/v10/guilds/{guild_id}/members/{user_id}",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.guild_member",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "/channels/{channel_id}",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/channels/{channel_id}"
+        ],
+        "path_template": "/api/v10/channels/{channel_id}",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.channel",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "/applications/{application_id}/commands",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/applications/{application_id}/commands"
+        ],
+        "path_template": "/api/v10/applications/{application_id}/commands",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.application_commands",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "/webhooks/{application_id}/{interaction_token}",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/webhooks/{application_id}/{interaction_token}"
+        ],
+        "path_template": "/api/v10/webhooks/{application_id}/{interaction_token}",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "discord.interaction_followup",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "/oauth2/token",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "/oauth2/token"
+        ],
+        "path_template": "/api/v10/oauth2/token",
+        "quota_bucket": "oauth",
+        "quota_cost": 1.0,
+        "route_id": "discord.oauth_token",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "checkpoint_after_durable",
+      "durable_before_ack"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.discord",
+      "evidence_id": "ingest.evidence.discord",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.discord",
+      "validation_runtime": {
+        "generator_group": "discord",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_discord_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_discord_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_discord_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_discord_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_discord",
+        "replay_probe_binding": null,
+        "signature_probe_binding": null,
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.discord.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "guild_message",
+      "thread_message",
+      "interaction"
+    ],
+    "delivery_policies": [
+      "replayable_stream",
+      "at_least_once"
+    ],
+    "display": {
+      "category": "Communication",
+      "connection_method": "Gateway",
+      "description": "Community and team message streams.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 7,
+      "setup_requirements": "Discord app or bot token, guild/channel allowlist, gateway intents, single-worker lease readiness.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Discord",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.discord:fetch_page_discord",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:discord_event"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "discord:message",
+        "ingress_kind": "gateway"
+      },
+      {
+        "channel": "discord:interaction",
+        "ingress_kind": "webhook"
+      },
+      {
+        "channel": "discord:message",
+        "ingress_kind": "backfill"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_discord_installation",
+      "management": null,
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": "services.ingest.ingestion.installations:build_discord_planner_client",
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_discord_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "guild_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "discord",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": null,
+          "component_id": "discord_gateway_worker",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "discord_gateway_worker",
+          "dispatch_binding": null,
+          "launcher_binding": "scripts.run_discord_gateway_worker:_main",
+          "lease_scope": "deployment",
+          "managed_reason": null,
+          "role": "persistent_gateway",
+          "transport": "websocket"
+        },
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": null
+        }
+      ]
+    },
+    "live_transports": [
+      "websocket",
+      "webhook"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.discord.metrics:export_metrics",
+      "services.ingest.integrations.discord.gateway.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "discord:message",
+      "discord:interaction"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.discord:handle_discord_message",
+      "services.ingest.ingestion.handlers.discord:handle_discord_webhook"
+    ],
+    "onboarding": {
+      "access_status_binding": "services.app.gateway.byoc_onboarding_router:build_discord_source_access_status",
+      "browser_agent": {
+        "agent_collects": [
+          "application id",
+          "guild ids",
+          "channel ids",
+          "enabled intents"
+        ],
+        "agent_generates": [
+          "bot/gateway session contract",
+          "webhook verifier ref"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "server admin signs in and completes MFA when prompted",
+          "server admin approves bot install and gateway intents"
+        ],
+        "settings_targets": [
+          "application OAuth2 settings",
+          "bot settings",
+          "guild settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "pilot-guilds",
+        "approved-channels"
+      ],
+      "discovery_target": "guilds, message channels, private channels, forum/media posts, and threads",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/integrations/discord/callback",
+        "/webhooks/discord"
+      ],
+      "local_rehearsal": {
+        "callback_path": "/integrations/discord/callback",
+        "default_env": [],
+        "derived_env": [],
+        "env": [
+          "DISCORD_CLIENT_ID",
+          "DISCORD_CLIENT_SECRET",
+          "DISCORD_REDIRECT_URI",
+          "DISCORD_APPLICATION_ID",
+          "DISCORD_BOT_TOKEN",
+          "WEBHOOK_SECRET_DISCORD",
+          "OAUTH_STATE_HMAC_KEY"
+        ],
+        "finalize_endpoint": null,
+        "install_endpoint": "/integrations/discord/install",
+        "kind": "oauth_app",
+        "manual_gate_names": [
+          "discord_application_creation_or_update",
+          "discord_oauth_consent"
+        ],
+        "needs_public_url": true,
+        "preflight_endpoint": null,
+        "required_env": [
+          "DISCORD_CLIENT_ID",
+          "DISCORD_CLIENT_SECRET",
+          "DISCORD_REDIRECT_URI",
+          "DISCORD_APPLICATION_ID",
+          "DISCORD_BOT_TOKEN",
+          "WEBHOOK_SECRET_DISCORD",
+          "OAUTH_STATE_HMAC_KEY"
+        ],
+        "runtime_components": [],
+        "webhook_path": "/webhooks/discord"
+      },
+      "method": "oauth_plus_gateway",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/discord/connect/finalize",
+        "kind": "oauth_gateway_native_connect",
+        "payload_fields": [
+          "guild_id",
+          "application_id",
+          "approved_channel_ids",
+          "oauth_redirect_url",
+          "events_request_url"
+        ],
+        "preflight_path": "/integrations/discord/connect/preflight",
+        "preflight_payload_fields": [],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": null,
+      "provider_console_url": "https://discord.com/developers/applications",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:discord_provider_handoff",
+      "provider_permissions": [
+        "bot token",
+        "message content intent",
+        "guild read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:discord_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "provider_callback",
+      "required_inputs": null,
+      "required_refs": [
+        "bot_token",
+        "signing_secret"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "/guilds/{guild_id}/members/{user_id}",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/channels/{channel_id}",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/applications/{application_id}/commands",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/users/@me/guilds",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/guilds/{guild_id}/channels",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/guilds/{guild_id}/threads/active",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/channels/{channel_id}/threads/archived/public",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/channels/{channel_id}/threads/archived/private",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/channels/{channel_id}/messages",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/gateway/bot",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/webhooks/{application_id}/{interaction_token}",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "/oauth2/token",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "discord.rate_limit_headers",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "discord_api",
+        "operation_ids": [
+          "/guilds/{guild_id}/members/{user_id}",
+          "/channels/{channel_id}",
+          "/applications/{application_id}/commands",
+          "/users/@me/guilds",
+          "/guilds/{guild_id}/channels",
+          "/guilds/{guild_id}/threads/active",
+          "/channels/{channel_id}/threads/archived/public",
+          "/channels/{channel_id}/threads/archived/private",
+          "/channels/{channel_id}/messages",
+          "/webhooks/{application_id}/{interaction_token}",
+          "/oauth2/token"
+        ]
+      },
+      {
+        "endpoint_name": "discord_gateway_bot",
+        "operation_ids": [
+          "/gateway/bot"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.discord:plan_shards_discord",
+    "provider_id": "discord",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.discord:reconcile_discord",
+    "runtime_identifiers": [
+      "guild_id",
+      "application_id"
+    ],
+    "source_id": "discord",
+    "trust_tiers": [
+      "attested_agent"
+    ],
+    "ui_slug": "discord"
+  },
+  "source_id": "discord"
+}

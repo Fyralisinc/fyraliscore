@@ -319,7 +319,9 @@ Over-budget → 429 `{"error":"rate_limited","tier":...}`.
 2. Look up the per-provider verifier in `signatures.VERIFIERS` (slack, github, discord, jira, notion, mercury, quickbooks, grafana, linear, stripe); unknown → 404.
 3. Best-effort JSON parse (for tenant resolve + Slack/Notion handshakes).
 4. Resolve tenant via `app.state.tenant_resolver.resolve(provider, payload, headers)` → `provider_installations` (IN-07 DB-backed, TTL `InstallationCache`); outcome captured but **rejection deferred until after signature verify** (no JSON-validity oracle).
-5. Load secrets via IN-08 envelope-encrypted secret store (`secrets.load_secrets`); dev env-var fallback only.
+5. Resolve the route's contract-owned secret loader; the default exact-installation
+   loader uses the envelope-encrypted secret store and permits an env-var fallback
+   only in development.
 6. Verify signature; `WebhookVerificationError` → 401 + metric. Verified handshakes return early (Slack `challenge`, Discord `{type:1}`, Notion verification).
 7. Enforce resolver outcome: `UnknownInstallation` → 401, `PayloadMissing` → 400.
 8. **Kafka-first cutover** (`_attempt_kafka_path`): for providers in `_CUTOVER_ENABLED_PROVIDERS` (slack, github, jira, mercury, quickbooks, grafana) whose tenant has `ingestion.kafka_path_enabled` (read via `TenantFlags`, default-on), shadow-write raw → S3 PutIfAbsent → publish to `ingestion.raw` → **flush** (bounded) → return 202. On any failure it falls back to inline `ingest()` (graceful degradation, 200/201 preserved; a `fallback` metric is the operator signal). Discord stays inline (synchronous response-shape constraint).

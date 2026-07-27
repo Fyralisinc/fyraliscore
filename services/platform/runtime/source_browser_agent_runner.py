@@ -692,7 +692,8 @@ def _native_payload_template_value(
     if field == "backfill_window_days":
         return 30, "auto_default"
     if field == "credential_kind":
-        if str(run.get("source") or "").strip().lower().replace("-", "_") == "aws":
+        native_kind = str(native_connect.get("kind") or "").strip()
+        if native_kind == "aws_iam_native_connect":
             return "assume_role", "auto_default"
         return "customer_admin_approved", "auto_default"
     if field == "repository_selection":
@@ -780,7 +781,7 @@ def _native_payload_field_is_secret(field: str) -> bool:
 
 def _field_can_use_agent_generated_secret(field: str, run: dict[str, Any]) -> bool:
     return any(
-        _generated_secret_field_for_ref(str(run.get("source") or "source"), label) == field
+        _generated_secret_field_for_ref(label) == field
         for label in _run_generated_ref_labels(run)
     )
 
@@ -794,8 +795,7 @@ def _run_generated_ref_labels(run: dict[str, Any]) -> list[str]:
     return [label for label in labels if label.strip()]
 
 
-def _generated_secret_field_for_ref(source: str, label: str) -> str | None:
-    normalized_source = source.strip().lower().replace("-", "_")
+def _generated_secret_field_for_ref(label: str) -> str | None:
     slug = _slug(label)
     if "app-secret" in slug or "api-hash" in slug or "session" in slug:
         return None
@@ -809,7 +809,7 @@ def _generated_secret_field_for_ref(source: str, label: str) -> str | None:
         return "webhook_secret"
     if "webhook-signing-secret" in slug:
         return "webhook_secret"
-    if "webhook-verifier" in slug and normalized_source not in {"slack"}:
+    if "webhook-verifier" in slug:
         return "webhook_verifier_token"
     if "external-id" in slug:
         return "external_id"
@@ -852,7 +852,7 @@ def _load_generated_secret_refs(output_dir: Path, run: dict[str, Any]) -> dict[s
         for ref in refs:
             if not isinstance(ref, dict):
                 continue
-            field = _generated_secret_field_for_ref(source, str(ref.get("label") or ""))
+            field = _generated_secret_field_for_ref(str(ref.get("label") or ""))
             if not field:
                 continue
             local_ref = str(ref.get("local_ref") or "").strip()
@@ -1305,7 +1305,7 @@ def _dom_generate_refs(
     refs = [str(ref) for ref in step.get("refs") or [] if str(ref).strip()]
     ref_payloads: list[dict[str, Any]] = []
     for ref in refs:
-        field = _generated_secret_field_for_ref(source, ref)
+        field = _generated_secret_field_for_ref(ref)
         if field:
             _ensure_generated_secret(
                 source=source,

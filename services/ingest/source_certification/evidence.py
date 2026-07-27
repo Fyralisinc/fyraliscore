@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import Mapping as TypingMapping
 
 from services.ingest.source_certification.models import EvidenceReference
 from services.ingest.source_contract.catalog import CANONICAL_SOURCE_IDS
@@ -21,6 +22,7 @@ from services.ingest.source_contract.catalog import CANONICAL_SOURCE_IDS
 
 EVIDENCE_PACK_SCHEMA_VERSION = 1
 EVIDENCE_PACK_DIRECTORY = Path(__file__).with_name("evidence")
+SURFACE_ARTIFACT_DIRECTORY = Path(__file__).with_name("surfaces")
 _TOP_LEVEL_FIELDS = frozenset(
     {
         "schema_version",
@@ -48,6 +50,9 @@ _REQUIRED_BEHAVIORS = frozenset(
         "quota_policy",
         "fyralis_runtime_contract",
     }
+)
+_HTTP_METHODS = frozenset(
+    {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}
 )
 
 
@@ -189,6 +194,7 @@ def load_evidence_pack(
     source_id: str,
     *,
     directory: Path = EVIDENCE_PACK_DIRECTORY,
+    surface_directory: Path = SURFACE_ARTIFACT_DIRECTORY,
 ) -> EvidencePack:
     """Load and strictly validate one canonical source evidence pack."""
 
@@ -253,6 +259,22 @@ def load_evidence_pack(
         raise EvidencePackError(
             f"{source_id} used API surface version differs from pack version"
         )
+    if surface.schema_sha256 is not None:
+        surface_path = surface_directory / f"{source_id}.json"
+        try:
+            actual_surface_sha256 = hashlib.sha256(
+                surface_path.read_bytes(),
+            ).hexdigest()
+        except OSError as exc:
+            raise EvidencePackError(
+                f"cannot read pinned used API surface for {source_id!r}: {exc}"
+            ) from exc
+        if actual_surface_sha256 != surface.schema_sha256:
+            raise EvidencePackError(
+                f"{source_id} used API surface checksum differs from "
+                f"{surface_path.name!r}: expected {surface.schema_sha256}, "
+                f"got {actual_surface_sha256}"
+            )
     canonical = json.dumps(
         raw,
         sort_keys=True,
@@ -269,9 +291,90 @@ def load_evidence_pack(
     )
 
 
+def load_surface_operation_methods(
+    source_id: str,
+    *,
+    directory: Path = SURFACE_ARTIFACT_DIRECTORY,
+) -> TypingMapping[str, str]:
+    """Load the hash-pinned exact HTTP method for each provider operation.
+
+    Older or incomplete surface bundles yield no inferred method for missing
+    bindings. The canary catalog treats those operations as unclassified, so
+    stale generation fails closed without importing the production-guarded
+    synthetic Provider Lab package.
+    """
+
+    if source_id not in CANONICAL_SOURCE_IDS:
+        raise EvidencePackError(f"unknown canonical source {source_id!r}")
+    path = directory / f"{source_id}.json"
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except EvidencePackError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise EvidencePackError(
+            f"cannot load used API surface for {source_id!r}: {exc}"
+        ) from exc
+    surface = _mapping(raw, f"{source_id}.surface")
+    if surface.get("source_id") != source_id:
+        raise EvidencePackError(
+            f"used API surface identity differs for {source_id!r}"
+        )
+    provider_lab = _mapping(
+        surface.get("provider_lab"),
+        f"{source_id}.surface.provider_lab",
+    )
+    routes = provider_lab.get("routes")
+    if not isinstance(routes, list):
+        raise EvidencePackError(
+            f"{source_id}.surface.provider_lab.routes must be an array"
+        )
+    methods: dict[str, str] = {}
+    for route_index, route_raw in enumerate(routes):
+        route = _mapping(
+            route_raw,
+            f"{source_id}.surface.provider_lab.routes[{route_index}]",
+        )
+        bindings = route.get("operation_bindings", [])
+        if not isinstance(bindings, list):
+            raise EvidencePackError(
+                f"{source_id}.surface route operation_bindings must be an array"
+            )
+        for binding_index, binding_raw in enumerate(bindings):
+            binding = _mapping(
+                binding_raw,
+                (
+                    f"{source_id}.surface.provider_lab.routes[{route_index}]"
+                    f".operation_bindings[{binding_index}]"
+                ),
+            )
+            operation_id = _text(
+                binding.get("operation_id"),
+                f"{source_id}.surface operation_id",
+            )
+            method = _text(
+                binding.get("method"),
+                f"{source_id}.surface operation method",
+            ).upper()
+            if method not in _HTTP_METHODS:
+                raise EvidencePackError(
+                    f"{source_id} surface has unsupported HTTP method {method!r}"
+                )
+            if operation_id in methods:
+                raise EvidencePackError(
+                    f"{source_id} surface duplicates operation {operation_id!r}"
+                )
+            methods[operation_id] = method
+    return MappingProxyType(methods)
+
+
 def load_evidence_catalog(
     *,
     directory: Path = EVIDENCE_PACK_DIRECTORY,
+    surface_directory: Path = SURFACE_ARTIFACT_DIRECTORY,
 ) -> Mapping[str, EvidencePack]:
     """Load exactly one evidence pack for every canonical source."""
 
@@ -294,7 +397,11 @@ def load_evidence_catalog(
         )
     return MappingProxyType(
         {
-            source_id: load_evidence_pack(source_id, directory=directory)
+            source_id: load_evidence_pack(
+                source_id,
+                directory=directory,
+                surface_directory=surface_directory,
+            )
             for source_id in CANONICAL_SOURCE_IDS
         }
     )
@@ -303,8 +410,10 @@ def load_evidence_catalog(
 __all__ = [
     "EVIDENCE_PACK_DIRECTORY",
     "EVIDENCE_PACK_SCHEMA_VERSION",
+    "SURFACE_ARTIFACT_DIRECTORY",
     "EvidencePack",
     "EvidencePackError",
     "load_evidence_catalog",
     "load_evidence_pack",
+    "load_surface_operation_methods",
 ]

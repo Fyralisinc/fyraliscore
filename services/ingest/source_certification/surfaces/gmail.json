@@ -1,0 +1,1737 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.gmail_pubsub": "37d9f1a971ed59d05eb8259f78d809485a1dce36b389c3c4e1fb00d089fe7fe1",
+    "services.app.webhooks.google_push": "a126960f3c7a39fc06e9a3d38087e4fc4f6690c80d7947c1f087b4539db5bece",
+    "services.app.webhooks.signatures.google_oidc": "8b2f7ab34af9524eade5087adf58a78bb78d2f9e2fd74fee1a9011045258b047",
+    "services.ingest.ingestion.fetchers.gmail": "13cd1808e4aa6d72665941c94ce66da017e58daa9f1c0d354bdb8882bb53b57c",
+    "services.ingest.ingestion.handlers.gmail": "27db7654fed7306a1fa6fd0f6907cd34e676ae7a032e3b5950075f27ee6707e2",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.gmail": "2896662d5f4c022f0184b4c7db9c55ca70d6d89d201ef7247c6b8b762f3cc184",
+    "services.ingest.ingestion.reconcilers.gmail": "3f985d4ae6f6a485f9c9cc329d4b427b10373d142c6a47afebd5b256303550c8",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations._google_watch": "1db73db2bbaab06c7107eb00b75e0737035042f356d94e6416c4744601b0be0e",
+    "services.ingest.integrations.gmail": "c870ffc10f43dc2894edd5ab5ae3e58b76e6b973ea1f9efcf06169a2e42b9e3a",
+    "services.ingest.integrations.gmail.audit": "fc10358270074fe4d596445a9bb5e325195d788fae8e78ba7fa3e435967cf210",
+    "services.ingest.integrations.gmail.client": "ce95c28daf1bf0fdd2a5ec1b5b7e80991c771211ea6e70386e722e107d2a16ba",
+    "services.ingest.integrations.gmail.directory": "8fa4da93f8f695da1fd7055b7ba7e6b9e4b85a968edf9ca988b1c3b54a764426",
+    "services.ingest.integrations.gmail.dwd": "dcbf40810833b289f182f73282db0a6092dbc02b96f20db4ebe8e50e840ba19c",
+    "services.ingest.integrations.gmail.fetcher": "b41095b6b485d67c5b5b9aaded5ffa5b81b18a80b4eb605367439fc8e79e66d6",
+    "services.ingest.integrations.gmail.history_poller": "293c3a0ecd2779aed226980cef9d0558c517184545eead43bdf940e885f073f4",
+    "services.ingest.integrations.gmail.oauth": "db12ba30d318c1cde497453317fe464af9a5bce1d26e5706c935888bc81d44e3",
+    "services.ingest.integrations.gmail.optout": "2d3b994d58e4e6b561a69e302627806d33d942fc5f7173ffc12565d73fe7dcc6",
+    "services.ingest.integrations.gmail.pubsub": "3b704689233a23b6a52da652853660d08b58a4536000f5b50713e7245f46705b",
+    "services.ingest.integrations.gmail.push_handler": "e8679de4c3f4b3b2ef7854bb4b325416640d1899e9c293863c68018b60bbfb0e",
+    "services.ingest.integrations.gmail.status_api": "ae8fb3db9378c4f7ac04f47cfaa9ed45f7f22a8b3633cbbcb1a384c578b1724d",
+    "services.ingest.integrations.gmail.threading": "6cdfd56c4f105fa492093cfb4854ad8e6b2b5be56dc19d96521152f727d4815f",
+    "services.ingest.integrations.gmail.uninstall": "690286ca3a7ab2a75345e0af9717ad13aaa5df27319028d24a13d4ed6c129225",
+    "services.ingest.integrations.gmail.watch": "b1eb64fe7c1a7e370f064f44e80eb4197d2fc8d980e8d31b158a5ab1fc7d953a",
+    "services.ingest.integrations.gmail.watch_scheduler": "00643cecb5b28c52d5acf3826a342ebc572be62d7ca5b9699fa4c185b7a9f79b",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.adapters": "f036c41246c136c64769e9bb5eca1b30345dd5fe926351b75226cc12bcce6843",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Gmail API v1",
+  "provider_contract": {
+    "aliases": [
+      "google_workspace",
+      "workspace"
+    ],
+    "auth_strategies": [
+      "domain_wide_delegation"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [
+      {
+        "acknowledgement_policy": "ack_and_reconcile_on_failure",
+        "channel": null,
+        "dispatcher_binding": "services.app.webhooks.gmail_pubsub:gmail_pubsub_push",
+        "ingress_id": "gmail_pubsub",
+        "ingress_kind": "pubsub",
+        "kafka_mode": "hydrated_messages_handler_managed",
+        "methods": [
+          "POST"
+        ],
+        "route_path": "/webhooks/gmail/pubsub",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.webhooks.gmail_pubsub:build_gmail_pubsub_router",
+        "source_id": "gmail",
+        "tenant_binding_policy": "subscription_installation",
+        "tenant_resolver_binding": "services.ingest.integrations.gmail.push_handler:handle_push",
+        "verification_bindings": [
+          "services.app.webhooks.signatures.google_oidc:verify_pubsub_oidc_token"
+        ],
+        "verification_policy": "google_oidc"
+      },
+      {
+        "acknowledgement_policy": "ack_and_reconcile_on_failure",
+        "channel": "google_calendar:event",
+        "dispatcher_binding": "services.app.webhooks.google_push:google_calendar_push",
+        "ingress_id": "google_calendar_push",
+        "ingress_kind": "webhook",
+        "kafka_mode": "reconciled_delta_drain",
+        "methods": [
+          "POST"
+        ],
+        "route_path": "/webhooks/google_calendar/push",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.webhooks.google_push:build_google_push_router",
+        "source_id": "google_calendar",
+        "tenant_binding_policy": "watch_channel_installation",
+        "tenant_resolver_binding": "services.ingest.integrations._google_watch:resolve_push",
+        "verification_bindings": [
+          "services.ingest.integrations._google_watch:resolve_push"
+        ],
+        "verification_policy": "google_watch_channel_token"
+      },
+      {
+        "acknowledgement_policy": "ack_and_reconcile_on_failure",
+        "channel": "google_drive:file",
+        "dispatcher_binding": "services.app.webhooks.google_push:google_drive_push",
+        "ingress_id": "google_drive_push",
+        "ingress_kind": "webhook",
+        "kafka_mode": "reconciled_delta_drain",
+        "methods": [
+          "POST"
+        ],
+        "route_path": "/webhooks/google_drive/push",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.webhooks.google_push:build_google_push_router",
+        "source_id": "google_drive",
+        "tenant_binding_policy": "watch_channel_installation",
+        "tenant_resolver_binding": "services.ingest.integrations._google_watch:resolve_push",
+        "verification_bindings": [
+          "services.ingest.integrations._google_watch:resolve_push"
+        ],
+        "verification_policy": "google_watch_channel_token"
+      }
+    ],
+    "display_name": "Google",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "watch.stop",
+      "messages.list",
+      "history.list",
+      "messages.get",
+      "profile.get",
+      "directory.users.list",
+      "directory.groups.list",
+      "directory.group_members.list",
+      "directory.org_units.list",
+      "directory.users_by_org_unit.list",
+      "pubsub.topic.create",
+      "pubsub.topic.delete",
+      "pubsub.subscription.create",
+      "pubsub.subscription.delete",
+      "pubsub.iam.get",
+      "pubsub.iam.set",
+      "watch.create",
+      "dwd.token.exchange",
+      "calendarList.list",
+      "events.list",
+      "channels.stop",
+      "events.watch",
+      "drives.list",
+      "changes.getStartPageToken",
+      "files.list",
+      "changes.list",
+      "files.export",
+      "files.get",
+      "comments.list",
+      "revisions.list",
+      "changes.watch"
+    ],
+    "outbound_endpoint_names": [
+      "gmail_api",
+      "google_directory",
+      "gmail_pubsub_api",
+      "google_token",
+      "google_calendar_api",
+      "google_drive_api"
+    ],
+    "provider_id": "google",
+    "source_ids": [
+      "gmail",
+      "google_calendar",
+      "google_drive"
+    ],
+    "webhook_ingresses": []
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "current_history_id": "1000",
+      "email": "certification-surface-gmail@provider-lab.test",
+      "history_events": [],
+      "messages": [
+        {
+          "historyId": "991",
+          "id": "msg-053038346e14",
+          "internalDate": "1767225600000",
+          "payload": {
+            "body": {
+              "size": 2048
+            },
+            "headers": [
+              {
+                "name": "From",
+                "value": "sender-0@example.com"
+              },
+              {
+                "name": "To",
+                "value": "certification-surface-gmail@provider-lab.test"
+              },
+              {
+                "name": "Subject",
+                "value": "Subject 0"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<msg-053038346e14@mail.example.com>"
+              }
+            ]
+          },
+          "snippet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "threadId": "thr-964ef9e319fc"
+        },
+        {
+          "historyId": "992",
+          "id": "msg-7f91425214a2",
+          "internalDate": "1767225660000",
+          "payload": {
+            "body": {
+              "size": 2048
+            },
+            "headers": [
+              {
+                "name": "From",
+                "value": "sender-1@example.com"
+              },
+              {
+                "name": "To",
+                "value": "certification-surface-gmail@provider-lab.test"
+              },
+              {
+                "name": "Subject",
+                "value": "Subject 1"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<msg-7f91425214a2@mail.example.com>"
+              }
+            ]
+          },
+          "snippet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "threadId": "thr-964ef9e319fc"
+        },
+        {
+          "historyId": "993",
+          "id": "msg-b278f9b1ef93",
+          "internalDate": "1767225720000",
+          "payload": {
+            "body": {
+              "size": 2048
+            },
+            "headers": [
+              {
+                "name": "From",
+                "value": "sender-2@example.com"
+              },
+              {
+                "name": "To",
+                "value": "certification-surface-gmail@provider-lab.test"
+              },
+              {
+                "name": "Subject",
+                "value": "Subject 2"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<msg-b278f9b1ef93@mail.example.com>"
+              }
+            ]
+          },
+          "snippet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "threadId": "thr-964ef9e319fc"
+        },
+        {
+          "historyId": "994",
+          "id": "msg-896d899db4fe",
+          "internalDate": "1767225780000",
+          "payload": {
+            "body": {
+              "size": 2048
+            },
+            "headers": [
+              {
+                "name": "From",
+                "value": "sender-3@example.com"
+              },
+              {
+                "name": "To",
+                "value": "certification-surface-gmail@provider-lab.test"
+              },
+              {
+                "name": "Subject",
+                "value": "Subject 3"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<msg-896d899db4fe@mail.example.com>"
+              }
+            ]
+          },
+          "snippet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "threadId": "thr-e35d09199953"
+        },
+        {
+          "historyId": "995",
+          "id": "msg-a67758ab7d79",
+          "internalDate": "1767225840000",
+          "payload": {
+            "body": {
+              "size": 2048
+            },
+            "headers": [
+              {
+                "name": "From",
+                "value": "sender-4@example.com"
+              },
+              {
+                "name": "To",
+                "value": "certification-surface-gmail@provider-lab.test"
+              },
+              {
+                "name": "Subject",
+                "value": "Subject 4"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<msg-a67758ab7d79@mail.example.com>"
+              }
+            ]
+          },
+          "snippet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "threadId": "thr-e35d09199953"
+        },
+        {
+          "historyId": "996",
+          "id": "msg-4de9ed46c52f",
+          "internalDate": "1767225900000",
+          "payload": {
+            "body": {
+              "size": 2048
+            },
+            "headers": [
+              {
+                "name": "From",
+                "value": "sender-5@example.com"
+              },
+              {
+                "name": "To",
+                "value": "certification-surface-gmail@provider-lab.test"
+              },
+              {
+                "name": "Subject",
+                "value": "Subject 5"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<msg-4de9ed46c52f@mail.example.com>"
+              }
+            ]
+          },
+          "snippet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "threadId": "thr-e35d09199953"
+        },
+        {
+          "historyId": "997",
+          "id": "msg-18a7992768ae",
+          "internalDate": "1767225960000",
+          "payload": {
+            "body": {
+              "size": 2048
+            },
+            "headers": [
+              {
+                "name": "From",
+                "value": "sender-6@example.com"
+              },
+              {
+                "name": "To",
+                "value": "certification-surface-gmail@provider-lab.test"
+              },
+              {
+                "name": "Subject",
+                "value": "Subject 6"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<msg-18a7992768ae@mail.example.com>"
+              }
+            ]
+          },
+          "snippet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "threadId": "thr-24430a313b5e"
+        },
+        {
+          "historyId": "998",
+          "id": "msg-112af6abf3ec",
+          "internalDate": "1767226020000",
+          "payload": {
+            "body": {
+              "size": 2048
+            },
+            "headers": [
+              {
+                "name": "From",
+                "value": "sender-7@example.com"
+              },
+              {
+                "name": "To",
+                "value": "certification-surface-gmail@provider-lab.test"
+              },
+              {
+                "name": "Subject",
+                "value": "Subject 7"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<msg-112af6abf3ec@mail.example.com>"
+              }
+            ]
+          },
+          "snippet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "threadId": "thr-24430a313b5e"
+        },
+        {
+          "historyId": "999",
+          "id": "msg-b7ceaee243e5",
+          "internalDate": "1767226080000",
+          "payload": {
+            "body": {
+              "size": 2048
+            },
+            "headers": [
+              {
+                "name": "From",
+                "value": "sender-8@example.com"
+              },
+              {
+                "name": "To",
+                "value": "certification-surface-gmail@provider-lab.test"
+              },
+              {
+                "name": "Subject",
+                "value": "Subject 8"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<msg-b7ceaee243e5@mail.example.com>"
+              }
+            ]
+          },
+          "snippet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "threadId": "thr-24430a313b5e"
+        },
+        {
+          "historyId": "1000",
+          "id": "msg-1f31f1edeb7e",
+          "internalDate": "1767226140000",
+          "payload": {
+            "body": {
+              "size": 2048
+            },
+            "headers": [
+              {
+                "name": "From",
+                "value": "sender-9@example.com"
+              },
+              {
+                "name": "To",
+                "value": "certification-surface-gmail@provider-lab.test"
+              },
+              {
+                "name": "Subject",
+                "value": "Subject 9"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<msg-1f31f1edeb7e@mail.example.com>"
+              }
+            ]
+          },
+          "snippet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "threadId": "thr-5e08eb40ede6"
+        }
+      ],
+      "page_size": 5,
+      "starting_history_id": "1000"
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "dwd.token.exchange",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "dwd.token.exchange"
+        ],
+        "path_template": "/token",
+        "quota_bucket": null,
+        "quota_cost": 1.0,
+        "route_id": "gmail.token",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.users.list",
+            "path_values": [],
+            "query_items": [
+              [
+                "domain",
+                "provider-lab.test"
+              ]
+            ]
+          },
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.users_by_org_unit.list",
+            "path_values": [],
+            "query_items": [
+              [
+                "query",
+                "orgUnitPath=/"
+              ]
+            ]
+          }
+        ],
+        "operation_ids": [
+          "directory.users.list",
+          "directory.users_by_org_unit.list"
+        ],
+        "path_template": "/admin/directory/v1/users",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "gmail.directory_users",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.groups.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "directory.groups.list"
+        ],
+        "path_template": "/admin/directory/v1/groups",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "gmail.directory_groups",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.group_members.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "directory.group_members.list"
+        ],
+        "path_template": "/admin/directory/v1/groups/{group_key}/members",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "gmail.directory_group_members",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.org_units.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "directory.org_units.list"
+        ],
+        "path_template": "/admin/directory/v1/customer/{customer_id}/orgunits",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "gmail.directory_org_units",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "profile.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "profile.get"
+        ],
+        "path_template": "/gmail/v1/users/me/profile",
+        "quota_bucket": "gmail-api",
+        "quota_cost": 1.0,
+        "route_id": "gmail.profile",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "messages.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "messages.list"
+        ],
+        "path_template": "/gmail/v1/users/me/messages",
+        "quota_bucket": "gmail-api",
+        "quota_cost": 1.0,
+        "route_id": "gmail.messages_list",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "messages.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "messages.get"
+        ],
+        "path_template": "/gmail/v1/users/me/messages/{message_id}",
+        "quota_bucket": "gmail-api",
+        "quota_cost": 1.0,
+        "route_id": "gmail.message_get",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "history.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "history.list"
+        ],
+        "path_template": "/gmail/v1/users/me/history",
+        "quota_bucket": "gmail-api",
+        "quota_cost": 1.0,
+        "route_id": "gmail.history_list",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "watch.create",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "watch.create"
+        ],
+        "path_template": "/gmail/v1/users/me/watch",
+        "quota_bucket": "gmail-api",
+        "quota_cost": 1.0,
+        "route_id": "gmail.watch",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "watch.stop",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "watch.stop"
+        ],
+        "path_template": "/gmail/v1/users/me/stop",
+        "quota_bucket": "gmail-api",
+        "quota_cost": 1.0,
+        "route_id": "gmail.stop",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "DELETE",
+          "PUT"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ]
+            ],
+            "method": "PUT",
+            "operation_id": "pubsub.topic.create",
+            "path_values": [],
+            "query_items": []
+          },
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "DELETE",
+            "operation_id": "pubsub.topic.delete",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "pubsub.topic.create",
+          "pubsub.topic.delete"
+        ],
+        "path_template": "/v1/projects/{project_id}/topics/{topic_id}",
+        "quota_bucket": "pubsub-admin",
+        "quota_cost": 1.0,
+        "route_id": "gmail.pubsub_topic",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "DELETE",
+          "PUT"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ]
+            ],
+            "method": "PUT",
+            "operation_id": "pubsub.subscription.create",
+            "path_values": [],
+            "query_items": []
+          },
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "DELETE",
+            "operation_id": "pubsub.subscription.delete",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "pubsub.subscription.create",
+          "pubsub.subscription.delete"
+        ],
+        "path_template": "/v1/projects/{project_id}/subscriptions/{subscription_id}",
+        "quota_bucket": "pubsub-admin",
+        "quota_cost": 1.0,
+        "route_id": "gmail.pubsub_subscription",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "pubsub.iam.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "pubsub.iam.get"
+        ],
+        "path_template": "/v1/projects/{project_id}/topics/{topic_id}:getIamPolicy",
+        "quota_bucket": "pubsub-admin",
+        "quota_cost": 1.0,
+        "route_id": "gmail.pubsub_iam_get",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "pubsub.iam.set",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "pubsub.iam.set"
+        ],
+        "path_template": "/v1/projects/{project_id}/topics/{topic_id}:setIamPolicy",
+        "quota_bucket": "pubsub-admin",
+        "quota_cost": 1.0,
+        "route_id": "gmail.pubsub_iam_set",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [
+      "google_mail"
+    ],
+    "allowed_observation_kinds": [
+      "signal"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.gmail",
+      "evidence_id": "ingest.evidence.gmail",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.gmail",
+      "validation_runtime": {
+        "generator_group": "gmail",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_gmail_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_gmail_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_gmail_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_gmail_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_gmail",
+        "replay_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_gmail_replay",
+        "signature_probe_binding": null,
+        "twin_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_gmail_twin"
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.gmail.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "mail_message",
+      "thread_link"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Productivity",
+      "connection_method": "Workspace DWD",
+      "description": "Workspace email with watch and history polling.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 1,
+      "setup_requirements": "Google Workspace admin approval, domain-wide delegation setup, mailbox scope, Pub/Sub watch topic, history-poller access.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Gmail",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.gmail:fetch_page_gmail",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:gmail_message"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "gmail:",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "gmail:",
+        "ingress_kind": "poll"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_gmail_installation",
+      "management": {
+        "base_url_column": null,
+        "enabled_column": null,
+        "entity_install_column": "gmail_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "gmail_mailbox_watches",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [],
+        "scope_column": "workspace_domain",
+        "source": "gmail",
+        "status_credential_column_groups": [
+          [
+            "service_account_email"
+          ]
+        ],
+        "status_detail_columns": [
+          "service_account_email",
+          "scope",
+          "resolved_user_count",
+          "resolved_at"
+        ],
+        "status_presence_columns": [],
+        "table": "gmail_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": null,
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "workspace_customer_id",
+      "mailbox_email"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "gmail_pubsub",
+          "boundary_kind": "dedicated_ingress",
+          "deployment_unit": "gateway",
+          "transport": "pubsub"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 600,
+          "component_id": "gmail_history_poller",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "gmail_history_poller",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.integrations.gmail.history_poller:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "incremental_poll",
+          "transport": "api_poll"
+        },
+        {
+          "cadence_seconds": 900,
+          "component_id": "gmail_watch_scheduler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "gmail_watch_scheduler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.integrations.gmail.watch_scheduler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "watch_renewal",
+          "transport": null
+        },
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": null
+        }
+      ]
+    },
+    "live_transports": [
+      "pubsub",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "gmail:"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.gmail:handle_gmail"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "workspace domain",
+          "admin email",
+          "mailbox/user/group/org-unit scope"
+        ],
+        "agent_generates": [
+          "DWD preflight payload",
+          "mailbox inclusion contract",
+          "watch verifier ref"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "Google Workspace admin signs in and completes MFA when prompted",
+          "Google Workspace admin authorizes the Fyralis service account client ID and scopes",
+          "admin approves workspace inclusion scope"
+        ],
+        "settings_targets": [
+          "Domain-wide delegation",
+          "API controls",
+          "mailbox inclusion scope",
+          "Pub/Sub topic"
+        ]
+      },
+      "consent_scopes": [
+        "https://www.googleapis.com/auth/gmail.metadata",
+        "https://www.googleapis.com/auth/admin.directory.user.readonly",
+        "https://www.googleapis.com/auth/admin.directory.group.readonly"
+      ],
+      "default_scopes": [
+        "gmail.metadata",
+        "approved-mailboxes"
+      ],
+      "discovery_target": "mailboxes, labels, watch channels, and Pub/Sub topic readiness",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/gmail/pubsub"
+      ],
+      "local_rehearsal": null,
+      "method": "dwd",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/gmail/connect/finalize",
+        "kind": "google_workspace_dwd",
+        "payload_fields": [
+          "workspace_domain",
+          "admin_email",
+          "scope",
+          "inclusion_spec"
+        ],
+        "preflight_path": "/integrations/gmail/connect/preflight",
+        "preflight_payload_fields": [
+          "workspace_domain",
+          "admin_email",
+          "scope"
+        ],
+        "retry_path": null,
+        "scope_aliases": [
+          "gmail.metadata"
+        ],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "scope",
+        "inclusion_spec",
+        "pubsub_topic",
+        "watch_channel_id"
+      ],
+      "provider_console_url": "https://admin.google.com/ac/owl/domainwidedelegation",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "Domain-Wide Delegation",
+        "gmail.metadata",
+        "directory users/groups read",
+        "pubsub.topics.attachSubscription"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "workspace_domain",
+        "admin_email",
+        "dwd_grant"
+      ],
+      "required_refs": [
+        "workspace_domain",
+        "admin_email",
+        "dwd_grant_receipt"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "watch.stop",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "messages.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "history.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "messages.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "profile.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.users.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.groups.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.group_members.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.org_units.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.users_by_org_unit.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "pubsub.topic.create",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "pubsub.topic.delete",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "pubsub.subscription.create",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "pubsub.subscription.delete",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "pubsub.iam.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "pubsub.iam.set",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "watch.create",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "dwd.token.exchange",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "gmail_api",
+        "operation_ids": [
+          "watch.stop",
+          "messages.list",
+          "history.list",
+          "messages.get",
+          "profile.get",
+          "watch.create"
+        ]
+      },
+      {
+        "endpoint_name": "google_directory",
+        "operation_ids": [
+          "directory.users.list",
+          "directory.groups.list",
+          "directory.group_members.list",
+          "directory.org_units.list",
+          "directory.users_by_org_unit.list"
+        ]
+      },
+      {
+        "endpoint_name": "gmail_pubsub_api",
+        "operation_ids": [
+          "pubsub.topic.create",
+          "pubsub.topic.delete",
+          "pubsub.subscription.create",
+          "pubsub.subscription.delete",
+          "pubsub.iam.get",
+          "pubsub.iam.set"
+        ]
+      },
+      {
+        "endpoint_name": "google_token",
+        "operation_ids": [
+          "dwd.token.exchange"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.gmail:plan_shards_gmail",
+    "provider_id": "google",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.gmail:reconcile_gmail",
+    "runtime_identifiers": [
+      "gmail_installation_id",
+      "email_address"
+    ],
+    "source_id": "gmail",
+    "trust_tiers": [
+      "attested_agent"
+    ],
+    "ui_slug": "gmail"
+  },
+  "source_id": "gmail"
+}

@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "ashby",
+  "spec_hash": "6609c8fc0584dfc0fb78a525d65f60d9d5af6d553ce565876893eb0e613e4738",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "ashby",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "4c9a882795cfa7e48d28f3e510df26a479b36f03779b1e91dff5441d45c6206f"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_ASHBY"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_ASHBY"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "ashby",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "4c9a882795cfa7e48d28f3e510df26a479b36f03779b1e91dff5441d45c6206f"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "ashby",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "4c9a882795cfa7e48d28f3e510df26a479b36f03779b1e91dff5441d45c6206f"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "ashby",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "4c9a882795cfa7e48d28f3e510df26a479b36f03779b1e91dff5441d45c6206f"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

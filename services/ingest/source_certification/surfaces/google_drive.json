@@ -1,0 +1,1443 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.gmail_pubsub": "37d9f1a971ed59d05eb8259f78d809485a1dce36b389c3c4e1fb00d089fe7fe1",
+    "services.app.webhooks.google_push": "a126960f3c7a39fc06e9a3d38087e4fc4f6690c80d7947c1f087b4539db5bece",
+    "services.app.webhooks.signatures.google_oidc": "8b2f7ab34af9524eade5087adf58a78bb78d2f9e2fd74fee1a9011045258b047",
+    "services.ingest.ingestion.fetchers.google_drive": "6878c01721f67d6558a64511e170e9572a3c573dac27405f7ff66463ad41bacb",
+    "services.ingest.ingestion.handlers.google_drive": "d557f151365a729311f8f78f20e428edd88d5b864a7c079c4d3986699ffcf104",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.google_drive": "c6f1d9d9cb7f6a75102bffe526d59fea69d71b838dad06007ac3b300f6206054",
+    "services.ingest.ingestion.reconcilers.google_drive": "96bcb0e0f4846cac83d764dc01743fee8d3951c471e524996e346125e54d1edd",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations._google_watch": "1db73db2bbaab06c7107eb00b75e0737035042f356d94e6416c4744601b0be0e",
+    "services.ingest.integrations.gmail.push_handler": "e8679de4c3f4b3b2ef7854bb4b325416640d1899e9c293863c68018b60bbfb0e",
+    "services.ingest.integrations.google_drive": "0e8d183cc318f93045061acd44f69b86a304bb21720061f10839a6e43bcf9b4e",
+    "services.ingest.integrations.google_drive.client": "936bf9a4cb3e5357e3ee12a32835032ad0dfe5b33aa5f4d28b32b96e6d6ca723",
+    "services.ingest.integrations.google_drive.live_poller": "10298beb5327e81bd40b904e75d0b6e42bcb9b79fa5d165ec6028a3bd569109e",
+    "services.ingest.integrations.google_drive.metrics": "81e716cc3199b0fc5a201ac2ccd1cdd3be7b1982cde6bb68eada6c8ab595ab61",
+    "services.ingest.integrations.google_drive.oauth": "a18bfc94e237a96f8cab1370b83ffce52b8636ebe566e72da7c4ab2e8776d142",
+    "services.ingest.integrations.google_drive.onboarding": "08d5f651c6156c8b29ffa6586b633fe2244eb9af8a26a298efc72ca411267f26",
+    "services.ingest.integrations.google_drive.watch": "e1588f56c1bf0e7d36ade8f1933defcc4990f0f502c2031c6bf9b435e438c9ce",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Drive API v3",
+  "provider_contract": {
+    "aliases": [
+      "google_workspace",
+      "workspace"
+    ],
+    "auth_strategies": [
+      "domain_wide_delegation"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [
+      {
+        "acknowledgement_policy": "ack_and_reconcile_on_failure",
+        "channel": null,
+        "dispatcher_binding": "services.app.webhooks.gmail_pubsub:gmail_pubsub_push",
+        "ingress_id": "gmail_pubsub",
+        "ingress_kind": "pubsub",
+        "kafka_mode": "hydrated_messages_handler_managed",
+        "methods": [
+          "POST"
+        ],
+        "route_path": "/webhooks/gmail/pubsub",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.webhooks.gmail_pubsub:build_gmail_pubsub_router",
+        "source_id": "gmail",
+        "tenant_binding_policy": "subscription_installation",
+        "tenant_resolver_binding": "services.ingest.integrations.gmail.push_handler:handle_push",
+        "verification_bindings": [
+          "services.app.webhooks.signatures.google_oidc:verify_pubsub_oidc_token"
+        ],
+        "verification_policy": "google_oidc"
+      },
+      {
+        "acknowledgement_policy": "ack_and_reconcile_on_failure",
+        "channel": "google_calendar:event",
+        "dispatcher_binding": "services.app.webhooks.google_push:google_calendar_push",
+        "ingress_id": "google_calendar_push",
+        "ingress_kind": "webhook",
+        "kafka_mode": "reconciled_delta_drain",
+        "methods": [
+          "POST"
+        ],
+        "route_path": "/webhooks/google_calendar/push",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.webhooks.google_push:build_google_push_router",
+        "source_id": "google_calendar",
+        "tenant_binding_policy": "watch_channel_installation",
+        "tenant_resolver_binding": "services.ingest.integrations._google_watch:resolve_push",
+        "verification_bindings": [
+          "services.ingest.integrations._google_watch:resolve_push"
+        ],
+        "verification_policy": "google_watch_channel_token"
+      },
+      {
+        "acknowledgement_policy": "ack_and_reconcile_on_failure",
+        "channel": "google_drive:file",
+        "dispatcher_binding": "services.app.webhooks.google_push:google_drive_push",
+        "ingress_id": "google_drive_push",
+        "ingress_kind": "webhook",
+        "kafka_mode": "reconciled_delta_drain",
+        "methods": [
+          "POST"
+        ],
+        "route_path": "/webhooks/google_drive/push",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.webhooks.google_push:build_google_push_router",
+        "source_id": "google_drive",
+        "tenant_binding_policy": "watch_channel_installation",
+        "tenant_resolver_binding": "services.ingest.integrations._google_watch:resolve_push",
+        "verification_bindings": [
+          "services.ingest.integrations._google_watch:resolve_push"
+        ],
+        "verification_policy": "google_watch_channel_token"
+      }
+    ],
+    "display_name": "Google",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "watch.stop",
+      "messages.list",
+      "history.list",
+      "messages.get",
+      "profile.get",
+      "directory.users.list",
+      "directory.groups.list",
+      "directory.group_members.list",
+      "directory.org_units.list",
+      "directory.users_by_org_unit.list",
+      "pubsub.topic.create",
+      "pubsub.topic.delete",
+      "pubsub.subscription.create",
+      "pubsub.subscription.delete",
+      "pubsub.iam.get",
+      "pubsub.iam.set",
+      "watch.create",
+      "dwd.token.exchange",
+      "calendarList.list",
+      "events.list",
+      "channels.stop",
+      "events.watch",
+      "drives.list",
+      "changes.getStartPageToken",
+      "files.list",
+      "changes.list",
+      "files.export",
+      "files.get",
+      "comments.list",
+      "revisions.list",
+      "changes.watch"
+    ],
+    "outbound_endpoint_names": [
+      "gmail_api",
+      "google_directory",
+      "gmail_pubsub_api",
+      "google_token",
+      "google_calendar_api",
+      "google_drive_api"
+    ],
+    "provider_id": "google",
+    "source_ids": [
+      "gmail",
+      "google_calendar",
+      "google_drive"
+    ],
+    "webhook_ingresses": []
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "page_size": 200,
+      "targets": [
+        {
+          "changes": [],
+          "comments": {
+            "file-drive-d94f27c8a6450206-0": [],
+            "file-drive-d94f27c8a6450206-1": [],
+            "file-drive-d94f27c8a6450206-2": []
+          },
+          "drive_id": "drive-d94f27c8a6450206",
+          "drive_kind": "shared_drive",
+          "extracted_text": {
+            "file-drive-d94f27c8a6450206-0": "Extracted body of Doc 0 (drive-d94f27c8a6450206)",
+            "file-drive-d94f27c8a6450206-1": "Extracted body of Doc 1 (drive-d94f27c8a6450206)",
+            "file-drive-d94f27c8a6450206-2": "Extracted body of Doc 2 (drive-d94f27c8a6450206)"
+          },
+          "files": [
+            {
+              "createdTime": "2026-01-05T00:00:00Z",
+              "driveId": "drive-d94f27c8a6450206",
+              "explicitlyTrashed": false,
+              "id": "file-drive-d94f27c8a6450206-0",
+              "lastModifyingUser": {
+                "displayName": "owner-d94f27c8a6450206@provider-lab.test",
+                "emailAddress": "owner-d94f27c8a6450206@provider-lab.test"
+              },
+              "mimeType": "application/vnd.google-apps.document",
+              "modifiedTime": "2026-01-05T00:01:00Z",
+              "name": "Doc 0 (drive-d94f27c8a6450206)",
+              "owners": [
+                {
+                  "displayName": "owner-d94f27c8a6450206@provider-lab.test",
+                  "emailAddress": "owner-d94f27c8a6450206@provider-lab.test"
+                }
+              ],
+              "parents": [
+                "drive-d94f27c8a6450206"
+              ],
+              "shared": false,
+              "starred": false,
+              "trashed": false,
+              "version": "100",
+              "webViewLink": "https://docs.google.com/document/d/file-drive-d94f27c8a6450206-0"
+            },
+            {
+              "createdTime": "2026-01-05T00:01:00Z",
+              "driveId": "drive-d94f27c8a6450206",
+              "explicitlyTrashed": false,
+              "id": "file-drive-d94f27c8a6450206-1",
+              "lastModifyingUser": {
+                "displayName": "owner-d94f27c8a6450206@provider-lab.test",
+                "emailAddress": "owner-d94f27c8a6450206@provider-lab.test"
+              },
+              "mimeType": "application/vnd.google-apps.document",
+              "modifiedTime": "2026-01-05T00:02:00Z",
+              "name": "Doc 1 (drive-d94f27c8a6450206)",
+              "owners": [
+                {
+                  "displayName": "owner-d94f27c8a6450206@provider-lab.test",
+                  "emailAddress": "owner-d94f27c8a6450206@provider-lab.test"
+                }
+              ],
+              "parents": [
+                "drive-d94f27c8a6450206"
+              ],
+              "shared": false,
+              "starred": false,
+              "trashed": false,
+              "version": "101",
+              "webViewLink": "https://docs.google.com/document/d/file-drive-d94f27c8a6450206-1"
+            },
+            {
+              "createdTime": "2026-01-05T00:02:00Z",
+              "driveId": "drive-d94f27c8a6450206",
+              "explicitlyTrashed": false,
+              "id": "file-drive-d94f27c8a6450206-2",
+              "lastModifyingUser": {
+                "displayName": "owner-d94f27c8a6450206@provider-lab.test",
+                "emailAddress": "owner-d94f27c8a6450206@provider-lab.test"
+              },
+              "mimeType": "application/vnd.google-apps.document",
+              "modifiedTime": "2026-01-05T00:03:00Z",
+              "name": "Doc 2 (drive-d94f27c8a6450206)",
+              "owners": [
+                {
+                  "displayName": "owner-d94f27c8a6450206@provider-lab.test",
+                  "emailAddress": "owner-d94f27c8a6450206@provider-lab.test"
+                }
+              ],
+              "parents": [
+                "drive-d94f27c8a6450206"
+              ],
+              "shared": false,
+              "starred": false,
+              "trashed": false,
+              "version": "102",
+              "webViewLink": "https://docs.google.com/document/d/file-drive-d94f27c8a6450206-2"
+            }
+          ],
+          "owner_email": "owner-d94f27c8a6450206@provider-lab.test",
+          "revisions": {
+            "file-drive-d94f27c8a6450206-0": [],
+            "file-drive-d94f27c8a6450206-1": [],
+            "file-drive-d94f27c8a6450206-2": []
+          },
+          "start_page_token": "start-drive-d94f27c8a6450206"
+        }
+      ]
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "dwd.token.exchange",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "dwd.token.exchange"
+        ],
+        "path_template": "/token",
+        "quota_bucket": null,
+        "quota_cost": 1.0,
+        "route_id": "google_drive.token",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.users.list",
+            "path_values": [],
+            "query_items": [
+              [
+                "domain",
+                "provider-lab.test"
+              ]
+            ]
+          },
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.users_by_org_unit.list",
+            "path_values": [],
+            "query_items": [
+              [
+                "query",
+                "orgUnitPath=/"
+              ]
+            ]
+          }
+        ],
+        "operation_ids": [
+          "directory.users.list",
+          "directory.users_by_org_unit.list"
+        ],
+        "path_template": "/admin/directory/v1/users",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.directory_users",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.groups.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "directory.groups.list"
+        ],
+        "path_template": "/admin/directory/v1/groups",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.directory_groups",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.group_members.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "directory.group_members.list"
+        ],
+        "path_template": "/admin/directory/v1/groups/{group_key}/members",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.directory_group_members",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.org_units.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "directory.org_units.list"
+        ],
+        "path_template": "/admin/directory/v1/customer/{customer_id}/orgunits",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.directory_org_units",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "changes.getStartPageToken",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "changes.getStartPageToken"
+        ],
+        "path_template": "/changes/startPageToken",
+        "quota_bucket": "drive-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.start_page_token",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "changes.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "changes.list"
+        ],
+        "path_template": "/changes",
+        "quota_bucket": "drive-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.changes",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "changes.watch",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "changes.watch"
+        ],
+        "path_template": "/changes/watch",
+        "quota_bucket": "drive-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.changes_watch",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "channels.stop",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "channels.stop"
+        ],
+        "path_template": "/channels/stop",
+        "quota_bucket": "drive-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.channels_stop",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "drives.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "drives.list"
+        ],
+        "path_template": "/drives",
+        "quota_bucket": "drive-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.drives",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "files.export",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "files.export"
+        ],
+        "path_template": "/files/{file_id}/export",
+        "quota_bucket": "drive-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.file_export",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "comments.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "comments.list"
+        ],
+        "path_template": "/files/{file_id}/comments",
+        "quota_bucket": "drive-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.file_comments",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "revisions.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "revisions.list"
+        ],
+        "path_template": "/files/{file_id}/revisions",
+        "quota_bucket": "drive-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.file_revisions",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "files.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "files.get"
+        ],
+        "path_template": "/files/{file_id}",
+        "quota_bucket": "drive-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.file_media",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "files.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "files.list"
+        ],
+        "path_template": "/files",
+        "quota_bucket": "drive-api",
+        "quota_cost": 1.0,
+        "route_id": "google_drive.files",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [
+      "gdrive",
+      "drive"
+    ],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.google_drive",
+      "evidence_id": "ingest.evidence.google_drive",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.google_drive",
+      "validation_runtime": {
+        "generator_group": "google_push",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_google_drive_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_google_drive_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_google_drive_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_google_drive_live_target",
+        "preflight_binding": null,
+        "replay_probe_binding": null,
+        "signature_probe_binding": null,
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.google_drive.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "file",
+      "comment",
+      "reply",
+      "revision",
+      "permission",
+      "extracted_text"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Knowledge",
+      "connection_method": "Workspace DWD",
+      "description": "Files, metadata, and Drive watches.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 3,
+      "setup_requirements": "Google Workspace admin approval, domain-wide delegation setup, Drive scopes, shared-drive scope, change watch setup, large-file policy.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Google Drive",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.google_drive:fetch_page_google_drive",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:google_drive_file",
+      "services.ingest.ingestion.idempotency:google_drive_comment",
+      "services.ingest.ingestion.idempotency:google_drive_revision"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "google_drive:file",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "google_drive:file",
+        "ingress_kind": "poll"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_google_drive_installation",
+      "management": {
+        "base_url_column": null,
+        "enabled_column": null,
+        "entity_install_column": "google_drive_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "google_drive_targets",
+        "extra_output_columns": [],
+        "native_google_watch_table": true,
+        "ref_columns": [],
+        "scope_column": "workspace_domain",
+        "source": "google_drive",
+        "status_credential_column_groups": [
+          [
+            "service_account_email"
+          ]
+        ],
+        "status_detail_columns": [
+          "service_account_email",
+          "scope",
+          "include_shared_drives",
+          "resolved_target_count",
+          "resolved_at"
+        ],
+        "status_presence_columns": [],
+        "table": "google_drive_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": null,
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "workspace_customer_id",
+      "owner_email",
+      "drive_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "google_drive_push",
+          "boundary_kind": "dedicated_ingress",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 120,
+          "component_id": "google_drive_live_poller",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "google_drive_live_poller",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.integrations.google_drive.live_poller:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "incremental_poll",
+          "transport": "api_poll"
+        },
+        {
+          "cadence_seconds": 900,
+          "component_id": "google_drive_watch_scheduler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "google_drive_watch_scheduler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.integrations.google_drive.watch:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "watch_renewal",
+          "transport": null
+        },
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": null
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.google_drive.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "google_drive:file"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.google_drive:handle_google_drive_file"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "workspace domain",
+          "admin email",
+          "shared-drive/user/group/org-unit scope"
+        ],
+        "agent_generates": [
+          "DWD preflight payload",
+          "Drive inclusion contract",
+          "drive watch verifier ref"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "Google Workspace admin signs in and completes MFA when prompted",
+          "Google Workspace admin authorizes the Fyralis service account client ID and scopes",
+          "admin approves workspace inclusion scope"
+        ],
+        "settings_targets": [
+          "Domain-wide delegation",
+          "Drive API controls",
+          "Drive inclusion scope"
+        ]
+      },
+      "consent_scopes": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/admin.directory.user.readonly",
+        "https://www.googleapis.com/auth/admin.directory.group.readonly"
+      ],
+      "default_scopes": [
+        "drive.readonly",
+        "shared-drives",
+        "approved-folders"
+      ],
+      "discovery_target": "shared drives, folders, files, and change tokens",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/google_drive/push"
+      ],
+      "local_rehearsal": null,
+      "method": "dwd",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/google_drive/connect/finalize",
+        "kind": "google_workspace_dwd",
+        "payload_fields": [
+          "workspace_domain",
+          "admin_email",
+          "scope",
+          "inclusion_spec",
+          "include_shared_drives"
+        ],
+        "preflight_path": "/integrations/google_drive/connect/preflight",
+        "preflight_payload_fields": [
+          "workspace_domain",
+          "admin_email",
+          "scope"
+        ],
+        "retry_path": null,
+        "scope_aliases": [
+          "drive.readonly"
+        ],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "scope",
+        "inclusion_spec",
+        "include_shared_drives",
+        "watch_channel_id"
+      ],
+      "provider_console_url": "https://admin.google.com/ac/owl/domainwidedelegation",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "Domain-Wide Delegation",
+        "drive.readonly",
+        "directory users/groups read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "workspace_domain",
+        "admin_email",
+        "dwd_grant"
+      ],
+      "required_refs": [
+        "workspace_domain",
+        "admin_email",
+        "dwd_grant_receipt"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "directory.users.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.groups.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.group_members.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.org_units.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.users_by_org_unit.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "drives.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "changes.getStartPageToken",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "files.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "changes.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "files.export",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "files.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "comments.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "revisions.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "channels.stop",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "dwd.token.exchange",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "changes.watch",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "google_directory",
+        "operation_ids": [
+          "directory.users.list",
+          "directory.groups.list",
+          "directory.group_members.list",
+          "directory.org_units.list",
+          "directory.users_by_org_unit.list"
+        ]
+      },
+      {
+        "endpoint_name": "google_drive_api",
+        "operation_ids": [
+          "drives.list",
+          "changes.getStartPageToken",
+          "files.list",
+          "changes.list",
+          "files.export",
+          "files.get",
+          "comments.list",
+          "revisions.list",
+          "channels.stop",
+          "changes.watch"
+        ]
+      },
+      {
+        "endpoint_name": "google_token",
+        "operation_ids": [
+          "dwd.token.exchange"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.google_drive:plan_shards_google_drive",
+    "provider_id": "google",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.google_drive:reconcile_google_drive",
+    "runtime_identifiers": [
+      "channel_id",
+      "resource_id",
+      "drive_id"
+    ],
+    "source_id": "google_drive",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "google-drive"
+  },
+  "source_id": "google_drive"
+}

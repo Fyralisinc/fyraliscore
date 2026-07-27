@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "telegram",
+  "spec_hash": "050fef87942d16cd855b4f32a1b229a3624f1e921f656147be9ea07668558561",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "telegram",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "5ed58a682994f07b1ab618b5d9ddd326f66e80506a8372e5c41348101173e1fc"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_TELEGRAM"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_TELEGRAM"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "telegram",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "5ed58a682994f07b1ab618b5d9ddd326f66e80506a8372e5c41348101173e1fc"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "telegram",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "5ed58a682994f07b1ab618b5d9ddd326f66e80506a8372e5c41348101173e1fc"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "telegram",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "5ed58a682994f07b1ab618b5d9ddd326f66e80506a8372e5c41348101173e1fc"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

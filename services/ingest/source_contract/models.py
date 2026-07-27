@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from lib.integrations.endpoint_contract import PROVIDER_ENDPOINT_CATALOG
 from lib.shared.provider_transport import RequestPolicy, RetrySafety
 
 
@@ -27,6 +28,16 @@ LiveTransportKind = Literal[
     "api_poll",
     "queue_poll",
 ]
+LiveIngressBoundaryKind = Literal["webhook_route", "dedicated_ingress"]
+LiveWorkerRole = Literal[
+    "persistent_gateway",
+    "incremental_poll",
+    "watch_renewal",
+    "periodic_reconciliation",
+    "managed_dispatch",
+]
+LiveDeploymentOwner = Literal["fyralis_worker", "customer_deployment"]
+LiveLeaseScope = Literal["none", "deployment", "installation", "resource"]
 AcknowledgementPolicy = Literal[
     "durable_before_ack",
     "checkpoint_after_durable",
@@ -68,7 +79,7 @@ WebhookKafkaMode = Literal[
     "inline_only",
     "inline_then_shadow",
     "flagged_kafka_first_with_inline_fallback",
-    "dedicated_shadow_then_ack",
+    "dedicated_kafka_first_with_inline_fallback",
 ]
 DedicatedIngressMethod = Literal["GET", "POST"]
 DedicatedAcknowledgementPolicy = Literal[
@@ -112,6 +123,13 @@ SourceSyncMode = Literal[
     "Backfill plus live",
     "Backfill plus polling",
 ]
+RehearsalFinalizeMode = Literal[
+    "provider_callback",
+    "source_specific",
+    "native_finalizer_required",
+    "generic_customer_refs",
+]
+NonResolverEndpointKind = Literal["installation", "regional", "protocol"]
 
 
 _HISTORY_KINDS = frozenset({"api", "session"})
@@ -126,6 +144,24 @@ _LIVE_TRANSPORT_KINDS = frozenset(
         "api_poll",
         "queue_poll",
     }
+)
+_LIVE_INGRESS_BOUNDARY_KINDS = frozenset(
+    {"webhook_route", "dedicated_ingress"}
+)
+_LIVE_WORKER_ROLES = frozenset(
+    {
+        "persistent_gateway",
+        "incremental_poll",
+        "watch_renewal",
+        "periodic_reconciliation",
+        "managed_dispatch",
+    }
+)
+_LIVE_DEPLOYMENT_OWNERS = frozenset(
+    {"fyralis_worker", "customer_deployment"}
+)
+_LIVE_LEASE_SCOPES = frozenset(
+    {"none", "deployment", "installation", "resource"}
 )
 _ACKNOWLEDGEMENT_POLICIES = frozenset(
     {
@@ -175,7 +211,7 @@ _WEBHOOK_KAFKA_MODES = frozenset(
         "inline_only",
         "inline_then_shadow",
         "flagged_kafka_first_with_inline_fallback",
-        "dedicated_shadow_then_ack",
+        "dedicated_kafka_first_with_inline_fallback",
     }
 )
 _DEDICATED_INGRESS_METHODS = frozenset({"GET", "POST"})
@@ -230,6 +266,15 @@ _SOURCE_SYNC_MODES = frozenset(
         "Backfill plus polling",
     }
 )
+_REHEARSAL_FINALIZE_MODES = frozenset(
+    {
+        "provider_callback",
+        "source_specific",
+        "native_finalizer_required",
+        "generic_customer_refs",
+    }
+)
+_NON_RESOLVER_ENDPOINT_KINDS = frozenset({"installation", "regional", "protocol"})
 
 _IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _BINDING_RE = re.compile(r"^[a-z][a-z0-9_.:-]*$")
@@ -244,6 +289,7 @@ _FIELD_PATH_RE = re.compile(r"^[a-z][a-z0-9_.]*$")
 _HTTP_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _NON_IDENTIFIER_RUN_RE = re.compile(r"[^a-z0-9]+")
 _ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_ROUTE_PARAMETER_RE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
 
 
 def normalize_catalog_name(value: str) -> str:
@@ -346,6 +392,286 @@ def _require_unique_strings(
 
 
 @dataclass(frozen=True, slots=True)
+class LiveIngressBoundaryDefinition:
+    """A provider-managed push transport mounted by the Fyralis gateway."""
+
+    transport: LiveTransportKind
+    boundary_kind: LiveIngressBoundaryKind
+    boundary_id: str
+    deployment_unit: str = "gateway"
+
+    def __post_init__(self) -> None:
+        if self.transport not in {"webhook", "pubsub"}:
+            raise ValueError(
+                "live ingress boundaries only cover webhook or pubsub "
+                f"transports; got {self.transport!r}"
+            )
+        if self.boundary_kind not in _LIVE_INGRESS_BOUNDARY_KINDS:
+            raise ValueError(
+                f"unknown live ingress boundary kind {self.boundary_kind!r}"
+            )
+        _require_identifier(
+            self.boundary_id,
+            field_name="live ingress boundary_id",
+        )
+        _require_identifier(
+            self.deployment_unit,
+            field_name="live ingress deployment_unit",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LiveWorkerDefinition:
+    """One executable or explicitly customer-managed live runtime component.
+
+    Fyralis-owned workers declare an importable launcher and a production
+    deployment unit. Customer-managed boundaries declare the exact Fyralis
+    dispatch callable they feed and explain the external launcher gap.
+    """
+
+    component_id: str
+    role: LiveWorkerRole
+    transport: LiveTransportKind | None
+    deployment_owner: LiveDeploymentOwner
+    lease_scope: LiveLeaseScope
+    launcher_binding: str | None = None
+    dispatch_binding: str | None = None
+    cadence_seconds: float | None = None
+    deployment_unit: str | None = None
+    managed_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_identifier(
+            self.component_id,
+            field_name="live worker component_id",
+        )
+        if self.role not in _LIVE_WORKER_ROLES:
+            raise ValueError(f"unknown live worker role {self.role!r}")
+        if (
+            self.transport is not None
+            and self.transport not in _LIVE_TRANSPORT_KINDS
+        ):
+            raise ValueError(
+                f"unknown live worker transport {self.transport!r}"
+            )
+        if self.deployment_owner not in _LIVE_DEPLOYMENT_OWNERS:
+            raise ValueError(
+                "unknown live worker deployment owner "
+                f"{self.deployment_owner!r}"
+            )
+        if self.lease_scope not in _LIVE_LEASE_SCOPES:
+            raise ValueError(
+                f"unknown live worker lease scope {self.lease_scope!r}"
+            )
+        _require_callable_ref(
+            self.launcher_binding,
+            field_name="live worker launcher_binding",
+        )
+        _require_callable_ref(
+            self.dispatch_binding,
+            field_name="live worker dispatch_binding",
+        )
+        if self.deployment_unit is not None:
+            _require_identifier(
+                self.deployment_unit,
+                field_name="live worker deployment_unit",
+            )
+        if self.managed_reason is not None:
+            _require_nonempty_text(
+                self.managed_reason,
+                field_name="live worker managed_reason",
+            )
+        if self.cadence_seconds is not None and (
+            isinstance(self.cadence_seconds, bool)
+            or not isinstance(self.cadence_seconds, (int, float))
+            or self.cadence_seconds <= 0
+        ):
+            raise ValueError(
+                "live worker cadence_seconds must be a positive number"
+            )
+
+        if self.deployment_owner == "fyralis_worker":
+            if self.launcher_binding is None or self.deployment_unit is None:
+                raise ValueError(
+                    "Fyralis live workers require launcher_binding and "
+                    "deployment_unit"
+                )
+            if self.managed_reason is not None:
+                raise ValueError(
+                    "Fyralis live workers cannot declare managed_reason"
+                )
+        else:
+            if self.role != "managed_dispatch":
+                raise ValueError(
+                    "customer-managed live components must use "
+                    "role='managed_dispatch'"
+                )
+            if self.launcher_binding is not None:
+                raise ValueError(
+                    "customer-managed live components cannot claim a Fyralis "
+                    "launcher"
+                )
+            if self.dispatch_binding is None or self.managed_reason is None:
+                raise ValueError(
+                    "customer-managed live components require an exact "
+                    "dispatch_binding and managed_reason"
+                )
+            if self.deployment_unit is not None:
+                raise ValueError(
+                    "customer-managed live components cannot claim a Fyralis "
+                    "deployment_unit"
+                )
+
+        cadence_roles = {
+            "incremental_poll",
+            "watch_renewal",
+            "periodic_reconciliation",
+        }
+        if self.role in cadence_roles and self.cadence_seconds is None:
+            raise ValueError(
+                f"live worker role {self.role!r} requires cadence_seconds"
+            )
+        if self.role not in cadence_roles and self.cadence_seconds is not None:
+            raise ValueError(
+                f"live worker role {self.role!r} cannot declare a cadence"
+            )
+        if self.role == "persistent_gateway" and self.transport not in {
+            "websocket",
+            "mtproto",
+            "json_rpc",
+        }:
+            raise ValueError(
+                "persistent live workers require websocket, mtproto, or "
+                "json_rpc transport"
+            )
+        if self.role == "incremental_poll" and self.transport != "api_poll":
+            raise ValueError(
+                "incremental poll workers require transport='api_poll'"
+            )
+        if self.role == "watch_renewal" and self.transport is not None:
+            raise ValueError(
+                "watch renewal is supplemental and must use transport=None"
+            )
+        if (
+            self.role == "periodic_reconciliation"
+            and self.transport not in {None, "api_poll"}
+        ):
+            raise ValueError(
+                "periodic reconciliation may cover api_poll or be "
+                "supplemental"
+            )
+        if self.role == "managed_dispatch" and self.transport != "queue_poll":
+            raise ValueError(
+                "managed dispatch currently requires transport='queue_poll'"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class LiveRuntimeDefinition:
+    """Executable live ingress, worker, cadence, lease, and deployment plan."""
+
+    ingress_boundaries: tuple[LiveIngressBoundaryDefinition, ...] = ()
+    workers: tuple[LiveWorkerDefinition, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_tuple(
+            self.ingress_boundaries,
+            field_name="live ingress_boundaries",
+            allow_empty=True,
+        )
+        _require_tuple(
+            self.workers,
+            field_name="live workers",
+            allow_empty=True,
+        )
+        if not self.ingress_boundaries and not self.workers:
+            raise ValueError("live runtime must declare a boundary or worker")
+        boundary_ids: set[tuple[LiveIngressBoundaryKind, str]] = set()
+        for boundary in self.ingress_boundaries:
+            if not isinstance(boundary, LiveIngressBoundaryDefinition):
+                raise TypeError(
+                    "live ingress_boundaries entries must be "
+                    "LiveIngressBoundaryDefinition"
+                )
+            identity = (boundary.boundary_kind, boundary.boundary_id)
+            if identity in boundary_ids:
+                raise ValueError(
+                    f"live runtime contains duplicate boundary {identity!r}"
+                )
+            boundary_ids.add(identity)
+        component_ids: set[str] = set()
+        for worker in self.workers:
+            if not isinstance(worker, LiveWorkerDefinition):
+                raise TypeError(
+                    "live workers entries must be LiveWorkerDefinition"
+                )
+            if worker.component_id in component_ids:
+                raise ValueError(
+                    "live runtime contains duplicate component_id "
+                    f"{worker.component_id!r}"
+                )
+            component_ids.add(worker.component_id)
+
+    def transport_owners(
+        self,
+    ) -> tuple[LiveIngressBoundaryDefinition | LiveWorkerDefinition, ...]:
+        """Return components that directly cover a declared live transport."""
+
+        return (
+            *self.ingress_boundaries,
+            *(worker for worker in self.workers if worker.transport is not None),
+        )
+
+    def worker(self, component_id: str) -> LiveWorkerDefinition:
+        """Return one exact worker component or raise ``KeyError``."""
+
+        for worker in self.workers:
+            if worker.component_id == component_id:
+                return worker
+        raise KeyError(component_id)
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationRuntimeDefinition:
+    """Contract-owned bindings used by deterministic ingestion validation.
+
+    The validation runner is shared orchestration.  Provider-shaped target
+    construction, generator selection, installation seeding, event dispatch,
+    and optional probes therefore live behind source-owned callables instead
+    of source switches in the runner.
+    """
+
+    live_target_binding: str
+    live_generator_binding: str
+    live_install_binding: str
+    live_event_binding: str
+    generator_group: str
+    preflight_binding: str | None = None
+    live_only_bootstrap_binding: str | None = None
+    twin_probe_binding: str | None = None
+    signature_probe_binding: str | None = None
+    replay_probe_binding: str | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "live_target_binding",
+            "live_generator_binding",
+            "live_install_binding",
+            "live_event_binding",
+        ):
+            _require_callable_ref(getattr(self, field_name), field_name=field_name)
+        for field_name in (
+            "preflight_binding",
+            "live_only_bootstrap_binding",
+            "twin_probe_binding",
+            "signature_probe_binding",
+            "replay_probe_binding",
+        ):
+            _require_callable_ref(getattr(self, field_name), field_name=field_name)
+        _require_identifier(self.generator_group, field_name="generator_group")
+
+
+@dataclass(frozen=True, slots=True)
 class Certification:
     """Governance declaration for certifying a source implementation.
 
@@ -363,6 +689,7 @@ class Certification:
     evidence_id: str | None = None
     canary_id: str | None = None
     notes: tuple[str, ...] = ()
+    validation_runtime: ValidationRuntimeDefinition | None = None
 
     def __post_init__(self) -> None:
         if self.status not in _CERTIFICATION_STATUSES:
@@ -381,6 +708,13 @@ class Certification:
             field_name="certification notes",
             allow_empty=True,
         )
+        if (
+            self.validation_runtime is not None
+            and not isinstance(self.validation_runtime, ValidationRuntimeDefinition)
+        ):
+            raise TypeError(
+                "validation_runtime must be a ValidationRuntimeDefinition"
+            )
         if self.status == "verified" and self.missing_required_declarations():
             missing = ", ".join(self.missing_required_declarations())
             raise ValueError(
@@ -409,6 +743,12 @@ class WebhookIngressDefinition:
     vendor identity (for example ``atlassian`` → ``jira`` and ``intuit`` →
     ``quickbooks``).  Bindings remain dependency-light strings and are
     resolved lazily at the gateway boundary.
+
+    Optional verified handlers own provider behavior that does not belong in
+    the shared router.  The pre-tenant handler runs after signature
+    verification but before an unresolved tenant is rejected (for bootstrap
+    handshakes and replay control).  The tenant handler runs only after exact
+    installation resolution (for lifecycle state and provider filtering).
     """
 
     route_id: str
@@ -418,6 +758,7 @@ class WebhookIngressDefinition:
     verifier_binding: str
     tenant_extractor_binding: str
     ingress_metadata_binding: str
+    secret_loader_binding: str
     normalizer_header_projection: tuple[tuple[str, str], ...] = ()
     tenant_binding: WebhookTenantBinding = "payload"
     handler_mode: WebhookHandlerMode = "generic"
@@ -426,6 +767,8 @@ class WebhookIngressDefinition:
     verification_handshake_binding: str | None = None
     verification_handshake_handler_binding: str | None = None
     dedicated_handler_binding: str | None = None
+    verified_pre_tenant_handler_binding: str | None = None
+    verified_tenant_handler_binding: str | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.route_id, field_name="webhook route_id")
@@ -440,6 +783,31 @@ class WebhookIngressDefinition:
                 f"webhook route_path {self.route_path!r} must be owned by "
                 f"route_id {self.route_id!r} below {route_prefix!r}"
             )
+        route_parameters = _ROUTE_PARAMETER_RE.findall(self.route_path)
+        route_without_parameters = _ROUTE_PARAMETER_RE.sub(
+            "",
+            self.route_path,
+        )
+        if "{" in route_without_parameters or "}" in route_without_parameters:
+            raise ValueError(
+                "webhook route_path parameters must be named, single-segment "
+                f"parameters such as {{installation_id}}; got {self.route_path!r}"
+            )
+        if len(route_parameters) != len(set(route_parameters)):
+            raise ValueError(
+                "webhook route_path contains duplicate path parameters: "
+                f"{self.route_path!r}"
+            )
+        if route_parameters and self.tenant_binding != "path_then_payload":
+            raise ValueError(
+                "webhook route_path parameters require tenant_binding="
+                f"'path_then_payload'; got {self.tenant_binding!r}"
+            )
+        if self.tenant_binding == "path_then_payload" and not route_parameters:
+            raise ValueError(
+                "tenant_binding='path_then_payload' requires a declared "
+                "webhook route_path parameter"
+            )
         _require_binding(self.channel, field_name="webhook channel")
         _require_callable_ref(
             self.verifier_binding,
@@ -452,6 +820,10 @@ class WebhookIngressDefinition:
         _require_callable_ref(
             self.ingress_metadata_binding,
             field_name="webhook ingress metadata binding",
+        )
+        _require_callable_ref(
+            self.secret_loader_binding,
+            field_name="webhook secret loader binding",
         )
         _require_tuple(
             self.normalizer_header_projection,
@@ -519,6 +891,14 @@ class WebhookIngressDefinition:
             self.dedicated_handler_binding,
             field_name="webhook dedicated handler binding",
         )
+        _require_callable_ref(
+            self.verified_pre_tenant_handler_binding,
+            field_name="webhook verified pre-tenant handler binding",
+        )
+        _require_callable_ref(
+            self.verified_tenant_handler_binding,
+            field_name="webhook verified tenant handler binding",
+        )
 
         dedicated_bindings = (
             self.verification_handshake_binding,
@@ -535,13 +915,27 @@ class WebhookIngressDefinition:
                 raise ValueError(
                     "dedicated webhook ingress requires dedicated_handler ACK"
                 )
-            if self.kafka_mode != "dedicated_shadow_then_ack":
+            if self.kafka_mode != "dedicated_kafka_first_with_inline_fallback":
                 raise ValueError(
-                    "dedicated webhook ingress requires dedicated Kafka mode"
+                    "dedicated webhook ingress requires its declared "
+                    "Kafka-first inline-fallback mode"
                 )
         elif any(binding is not None for binding in dedicated_bindings):
             raise ValueError(
                 "generic webhook ingress cannot declare dedicated bindings"
+            )
+        elif self.kafka_mode == "dedicated_kafka_first_with_inline_fallback":
+            raise ValueError(
+                "generic webhook ingress cannot declare dedicated Kafka mode"
+            )
+
+        if self.handler_mode == "dedicated" and (
+            self.verified_pre_tenant_handler_binding is not None
+            or self.verified_tenant_handler_binding is not None
+        ):
+            raise ValueError(
+                "dedicated webhook ingress cannot declare generic verified "
+                "handler bindings"
             )
 
         if (
@@ -558,11 +952,21 @@ class WebhookIngressDefinition:
         return self.kafka_mode in {
             "inline_then_shadow",
             "flagged_kafka_first_with_inline_fallback",
+            "dedicated_kafka_first_with_inline_fallback",
         }
 
     @property
     def kafka_cutover_enabled(self) -> bool:
         return self.kafka_mode == "flagged_kafka_first_with_inline_fallback"
+
+    @property
+    def inline_fallback_enabled(self) -> bool:
+        """Whether a failed Kafka-first attempt must persist inline."""
+
+        return self.kafka_mode in {
+            "flagged_kafka_first_with_inline_fallback",
+            "dedicated_kafka_first_with_inline_fallback",
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -736,6 +1140,56 @@ class OperationPolicyDefinition:
 
 
 @dataclass(frozen=True, slots=True)
+class OutboundEndpointBinding:
+    """Operations routed through one named provider endpoint contract."""
+
+    endpoint_name: str
+    operation_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.endpoint_name not in PROVIDER_ENDPOINT_CATALOG:
+            raise ValueError(f"unknown provider endpoint {self.endpoint_name!r}")
+        _require_unique_strings(
+            self.operation_ids,
+            field_name="outbound endpoint operation_ids",
+        )
+        for operation_id in self.operation_ids:
+            _require_operation_id(
+                operation_id,
+                field_name="outbound endpoint operation_id",
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class NonResolverOperationBinding:
+    """Operations whose endpoint is exact but not a global URL resolver name.
+
+    Installation-scoped URLs, regional AWS URLs, and provider protocols such
+    as MTProto are intentionally explicit here.  This prevents an operation
+    from silently escaping endpoint ownership just because no global base URL
+    is appropriate.
+    """
+
+    resolution_kind: NonResolverEndpointKind
+    operation_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.resolution_kind not in _NON_RESOLVER_ENDPOINT_KINDS:
+            raise ValueError(
+                "unknown non-resolver endpoint kind " f"{self.resolution_kind!r}"
+            )
+        _require_unique_strings(
+            self.operation_ids,
+            field_name="non-resolver operation_ids",
+        )
+        for operation_id in self.operation_ids:
+            _require_operation_id(
+                operation_id,
+                field_name="non-resolver operation_id",
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderDefinition:
     """Provider-level identity, auth, and ingress adapter."""
 
@@ -749,6 +1203,7 @@ class ProviderDefinition:
     dedicated_ingresses: tuple[DedicatedIngressDefinition, ...] = ()
     data_plane: bool = True
     operation_policy_ids: tuple[str, ...] = ()
+    outbound_endpoint_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_identifier(self.provider_id, field_name="provider_id")
@@ -883,6 +1338,14 @@ class ProviderDefinition:
                 operation_id,
                 field_name="operation_policy_id",
             )
+        _require_unique_strings(
+            self.outbound_endpoint_names,
+            field_name="outbound_endpoint_names",
+            allow_empty=True,
+        )
+        for endpoint_name in self.outbound_endpoint_names:
+            if endpoint_name not in PROVIDER_ENDPOINT_CATALOG:
+                raise ValueError(f"unknown provider endpoint {endpoint_name!r}")
         normalized_aliases: set[str] = set()
         for alias in self.aliases:
             normalized = normalize_catalog_name(alias)
@@ -1395,6 +1858,13 @@ class OnboardingDefinition:
     discovery_target: str
     native_connect: NativeConnectDefinition
     browser_agent: BrowserAgentDefinition
+    provider_handoff_binding: str
+    provider_setup_notes_binding: str
+    rehearsal_finalize_mode: RehearsalFinalizeMode
+    access_status_binding: str | None = None
+    provider_setup_builder_binding: str | None = None
+    rehearsal_artifact_builder_binding: str | None = None
+    consent_scopes: tuple[str, ...] = ()
     default_scopes: tuple[str, ...] = ()
     provider_permissions: tuple[str, ...] = ()
     ingress_paths: tuple[str, ...] = ()
@@ -1408,6 +1878,7 @@ class OnboardingDefinition:
 
     def __post_init__(self) -> None:
         for field_name in (
+            "consent_scopes",
             "default_scopes",
             "provider_permissions",
             "required_refs",
@@ -1489,6 +1960,37 @@ class OnboardingDefinition:
                 self.generic_authorization_mode,
                 field_name="onboarding generic_authorization_mode",
             )
+        _require_callable_ref(
+            self.provider_handoff_binding,
+            field_name="onboarding provider_handoff_binding",
+        )
+        _require_callable_ref(
+            self.provider_setup_notes_binding,
+            field_name="onboarding provider_setup_notes_binding",
+        )
+        _require_callable_ref(
+            self.access_status_binding,
+            field_name="onboarding access_status_binding",
+        )
+        _require_callable_ref(
+            self.provider_setup_builder_binding,
+            field_name="onboarding provider_setup_builder_binding",
+        )
+        _require_callable_ref(
+            self.rehearsal_artifact_builder_binding,
+            field_name="onboarding rehearsal_artifact_builder_binding",
+        )
+        for scope in self.consent_scopes:
+            if not scope.startswith("https://"):
+                raise ValueError(
+                    "onboarding consent_scopes entries must use HTTPS; "
+                    f"got {scope!r}"
+                )
+        if self.rehearsal_finalize_mode not in _REHEARSAL_FINALIZE_MODES:
+            raise ValueError(
+                "unknown onboarding rehearsal_finalize_mode "
+                f"{self.rehearsal_finalize_mode!r}"
+            )
         _require_identifier(self.method, field_name="onboarding method")
         _require_nonempty_text(
             self.discovery_target,
@@ -1496,6 +1998,13 @@ class OnboardingDefinition:
         )
         if not isinstance(self.native_connect, NativeConnectDefinition):
             raise TypeError("onboarding native_connect must be NativeConnectDefinition")
+        if (
+            self.native_connect.kind == "google_workspace_dwd"
+            and not self.consent_scopes
+        ):
+            raise ValueError(
+                "Google Workspace DWD onboarding must declare exact consent_scopes"
+            )
         if not isinstance(self.browser_agent, BrowserAgentDefinition):
             raise TypeError("onboarding browser_agent must be BrowserAgentDefinition")
         if self.provider_console_url is None:
@@ -1658,9 +2167,10 @@ class SourceDisplayDefinition:
 class SourceDefinition:
     """Complete declarative contract for one canonical ingestion source.
 
-    The four live-policy tuples are positional: index ``i`` describes one
-    transport, its acknowledgement boundary, its delivery semantics, and its
-    runtime binding.  ``live_contracts()`` exposes the zipped form.
+    The three live-policy tuples are positional: index ``i`` describes one
+    transport, its acknowledgement boundary, and its delivery semantics.
+    Executable launch, managed ingress, cadence, lease, watch, and deployment
+    ownership live in ``live_runtime`` instead of fabricated binding names.
     """
 
     source_id: str
@@ -1677,12 +2187,13 @@ class SourceDefinition:
     normalization_inputs: tuple[str, ...]
     normalizer_bindings: tuple[str, ...]
     idempotency_builder_bindings: tuple[str, ...]
+    metrics_export_bindings: tuple[str, ...]
     allowed_observation_kinds: tuple[AllowedObservationKind, ...]
     trust_tiers: tuple[AllowedTrustTier, ...]
     live_transports: tuple[LiveTransportKind, ...]
     acknowledgement_policies: tuple[AcknowledgementPolicy, ...]
     delivery_policies: tuple[DeliveryPolicy, ...]
-    live_bindings: tuple[str, ...]
+    live_runtime: LiveRuntimeDefinition
     planner_binding: str | None
     fetcher_binding: str | None
     reconciler_binding: str | None
@@ -1693,8 +2204,14 @@ class SourceDefinition:
     credential_refresh: CredentialRefreshDefinition | None = None
     capability_flags: tuple[str, ...] = ()
     operation_policies: tuple[OperationPolicyDefinition, ...] = ()
+    outbound_endpoint_bindings: tuple[OutboundEndpointBinding, ...] = ()
+    non_resolver_operation_bindings: tuple[
+        NonResolverOperationBinding,
+        ...,
+    ] = ()
     provider_transport_enforced: bool = False
     operator_live_ingress: str | None = None
+    finance_testing_binding: str | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.source_id, field_name="source_id")
@@ -1777,6 +2294,16 @@ class SourceDefinition:
                 binding,
                 field_name="idempotency builder binding",
             )
+        _require_unique_strings(
+            self.metrics_export_bindings,
+            field_name="metrics_export_bindings",
+            allow_empty=True,
+        )
+        for binding in self.metrics_export_bindings:
+            _require_callable_ref(
+                binding,
+                field_name="metrics export binding",
+            )
 
         _require_unique_strings(
             self.allowed_observation_kinds,
@@ -1810,19 +2337,42 @@ class SourceDefinition:
         unknown_delivery = set(self.delivery_policies) - _DELIVERY_POLICIES
         if unknown_delivery:
             raise ValueError(f"unknown delivery policies: {sorted(unknown_delivery)}")
-        _require_unique_strings(self.live_bindings, field_name="live_bindings")
-        for binding in self.live_bindings:
-            _require_binding(binding, field_name="live binding")
         live_lengths = {
             len(self.live_transports),
             len(self.acknowledgement_policies),
             len(self.delivery_policies),
-            len(self.live_bindings),
         }
         if len(live_lengths) != 1:
             raise ValueError(
                 "live_transports, acknowledgement_policies, "
-                "delivery_policies, and live_bindings must have equal length"
+                "and delivery_policies must have equal length"
+            )
+        if not isinstance(self.live_runtime, LiveRuntimeDefinition):
+            raise TypeError("live_runtime must be a LiveRuntimeDefinition")
+        transport_owner_counts = {
+            transport: sum(
+                owner.transport == transport
+                for owner in self.live_runtime.transport_owners()
+            )
+            for transport in self.live_transports
+        }
+        invalid_owner_counts = {
+            transport: count
+            for transport, count in transport_owner_counts.items()
+            if count != 1
+        }
+        runtime_transports = {
+            owner.transport for owner in self.live_runtime.transport_owners()
+        }
+        undeclared_runtime_transports = runtime_transports - set(
+            self.live_transports
+        )
+        if invalid_owner_counts or undeclared_runtime_transports:
+            raise ValueError(
+                "live_runtime must cover each declared live transport exactly "
+                "once and no others; invalid counts="
+                f"{invalid_owner_counts!r}, undeclared="
+                f"{sorted(undeclared_runtime_transports)!r}"
             )
 
         for field_name in (
@@ -1924,6 +2474,18 @@ class SourceDefinition:
         )
         for capability in self.capability_flags:
             _require_binding(capability, field_name="capability flag")
+        if self.finance_testing_binding is not None:
+            _require_callable_ref(
+                self.finance_testing_binding,
+                field_name="finance_testing_binding",
+            )
+        if ("finance_testing" in self.capability_flags) != (
+            self.finance_testing_binding is not None
+        ):
+            raise ValueError(
+                "finance_testing capability and finance_testing_binding "
+                "must be declared together"
+            )
         no_outbound_requests = "no_outbound_provider_requests" in self.capability_flags
         if no_outbound_requests and (
             self.history is not None
@@ -1948,6 +2510,83 @@ class SourceDefinition:
             operation_ids.append(operation_policy.operation_id)
         if len(operation_ids) != len(set(operation_ids)):
             raise ValueError("operation_policies contains duplicate operation IDs")
+        _require_tuple(
+            self.outbound_endpoint_bindings,
+            field_name="outbound_endpoint_bindings",
+            allow_empty=True,
+        )
+        _require_tuple(
+            self.non_resolver_operation_bindings,
+            field_name="non_resolver_operation_bindings",
+            allow_empty=True,
+        )
+        operation_owner: dict[str, str] = {}
+        endpoint_names: set[str] = set()
+        for binding in self.outbound_endpoint_bindings:
+            if not isinstance(binding, OutboundEndpointBinding):
+                raise TypeError(
+                    "outbound_endpoint_bindings entries must be "
+                    "OutboundEndpointBinding"
+                )
+            if binding.endpoint_name in endpoint_names:
+                raise ValueError(
+                    "outbound_endpoint_bindings contains duplicate endpoint "
+                    f"{binding.endpoint_name!r}"
+                )
+            endpoint_names.add(binding.endpoint_name)
+            for operation_id in binding.operation_ids:
+                existing = operation_owner.get(operation_id)
+                if existing is not None:
+                    raise ValueError(
+                        f"operation {operation_id!r} has duplicate endpoint "
+                        f"ownership: {existing!r} and "
+                        f"{binding.endpoint_name!r}"
+                    )
+                operation_owner[operation_id] = binding.endpoint_name
+        non_resolver_kinds: set[NonResolverEndpointKind] = set()
+        for binding in self.non_resolver_operation_bindings:
+            if not isinstance(binding, NonResolverOperationBinding):
+                raise TypeError(
+                    "non_resolver_operation_bindings entries must be "
+                    "NonResolverOperationBinding"
+                )
+            if binding.resolution_kind in non_resolver_kinds:
+                raise ValueError(
+                    "non_resolver_operation_bindings contains duplicate kind "
+                    f"{binding.resolution_kind!r}"
+                )
+            non_resolver_kinds.add(binding.resolution_kind)
+            owner = f"non_resolver:{binding.resolution_kind}"
+            for operation_id in binding.operation_ids:
+                existing = operation_owner.get(operation_id)
+                if existing is not None:
+                    raise ValueError(
+                        f"operation {operation_id!r} has duplicate endpoint "
+                        f"ownership: {existing!r} and {owner!r}"
+                    )
+                operation_owner[operation_id] = owner
+        if self.credential_refresh is not None:
+            refresh_operation_id = self.credential_refresh.operation_id
+            existing = operation_owner.get(refresh_operation_id)
+            if existing is not None:
+                raise ValueError(
+                    f"operation {refresh_operation_id!r} has duplicate endpoint "
+                    f"ownership: {existing!r} and 'credential_refresh'"
+                )
+            operation_owner[refresh_operation_id] = "credential_refresh"
+        operation_id_set = set(operation_ids)
+        unknown_endpoint_operations = set(operation_owner) - operation_id_set
+        if unknown_endpoint_operations:
+            raise ValueError(
+                "endpoint ownership references unknown operation IDs: "
+                f"{sorted(unknown_endpoint_operations)!r}"
+            )
+        missing_endpoint_operations = operation_id_set - set(operation_owner)
+        if missing_endpoint_operations:
+            raise ValueError(
+                "operation IDs are missing endpoint ownership: "
+                f"{sorted(missing_endpoint_operations)!r}"
+            )
         if not isinstance(self.provider_transport_enforced, bool):
             raise TypeError("provider_transport_enforced must be a boolean")
         if self.operator_live_ingress is not None:
@@ -1986,7 +2625,6 @@ class SourceDefinition:
             LiveTransportKind,
             AcknowledgementPolicy,
             DeliveryPolicy,
-            str,
         ],
         ...,
     ]:
@@ -1997,7 +2635,6 @@ class SourceDefinition:
                 self.live_transports,
                 self.acknowledgement_policies,
                 self.delivery_policies,
-                self.live_bindings,
                 strict=True,
             )
         )
@@ -2136,18 +2773,27 @@ __all__ = [
     "DedicatedKafkaMode",
     "HistoryKind",
     "InstallationAdapter",
+    "LiveDeploymentOwner",
+    "LiveIngressBoundaryDefinition",
+    "LiveIngressBoundaryKind",
+    "LiveLeaseScope",
+    "LiveRuntimeDefinition",
     "LiveTransportKind",
+    "LiveWorkerDefinition",
+    "LiveWorkerRole",
     "LocalRehearsalDefinition",
     "NativeConnectDefinition",
     "NonSourceChannelDefinition",
     "OnboardingDefinition",
     "ProviderDefinition",
+    "RehearsalFinalizeMode",
     "RequestPolicy",
     "SourceCategory",
     "SourceConnectionMethod",
     "SourceDefinition",
     "SourceDisplayDefinition",
     "SourceSyncMode",
+    "ValidationRuntimeDefinition",
     "WebhookAcknowledgementPolicy",
     "WebhookHandlerMode",
     "WebhookIngressDefinition",

@@ -9,6 +9,7 @@ and restore correctly across nested scopes.
 from __future__ import annotations
 
 import importlib
+import inspect
 import re
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -18,6 +19,7 @@ from types import MappingProxyType
 from typing import Any, Literal
 
 from services.ingest.source_contract.catalog import (
+    DEDICATED_INGRESS_CATALOG,
     NORMALIZER_BINDING_CATALOG,
     PROVIDER_DEFINITIONS,
     SOURCE_DEFINITIONS,
@@ -27,6 +29,7 @@ from services.ingest.source_contract.catalog import (
     source_definition,
     webhook_ingress_definition,
 )
+from services.ingest.source_contract.models import LiveWorkerDefinition
 
 
 HistoryBindingRole = Literal["planner", "fetcher", "reconciler"]
@@ -37,10 +40,18 @@ InstallationLoaderCallable = Callable[..., Any]
 InstallationStatusLoaderCallable = Callable[..., Any]
 PlannerClientBuilderCallable = Callable[..., Any]
 OnboardingFailureCallable = Callable[..., Any]
+OnboardingAccessStatusCallable = Callable[..., Any]
+ProviderHandoffCallable = Callable[..., Any]
+ProviderSetupBuilderCallable = Callable[..., dict[str, Any]]
+ProviderSetupNotesCallable = Callable[[str], list[str]]
+RehearsalArtifactBuilderCallable = Callable[..., tuple[dict[str, Any], ...]]
 WebhookVerifierCallable = Callable[..., Any]
 WebhookTenantExtractorCallable = Callable[..., str | None]
 WebhookIngressMetadataCallable = Callable[..., Mapping[str, Any]]
+WebhookSecretLoaderCallable = Callable[..., Any]
+WebhookVerifiedHandlerCallable = Callable[..., Any]
 DedicatedIngressCallable = Callable[..., Any]
+LiveWorkerCallable = Callable[..., Any]
 
 _CALLABLE_REF_RE = re.compile(
     r"^(?P<module>[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*):"
@@ -74,6 +85,14 @@ class NormalizerIngressMetadataError(BindingResolutionError):
 
 class InstallationBindingNotFoundError(BindingResolutionError):
     """A source has no historical installation binding."""
+
+
+class LiveWorkerNotFoundError(BindingResolutionError):
+    """A source has no live worker with the requested component identity."""
+
+
+class ManagedLiveRuntimeError(BindingResolutionError):
+    """A live boundary is explicitly launched outside Fyralis."""
 
 
 _OverrideKey = tuple[str, HistoryBindingRole]
@@ -242,6 +261,52 @@ def resolve_onboarding_failure_handler(
     return resolve_callable_reference(reference) if reference is not None else None
 
 
+def resolve_provider_handoff(source_name: str) -> ProviderHandoffCallable:
+    """Resolve the source-owned BYOC provider handoff."""
+
+    source = source_definition(source_name)
+    return resolve_callable_reference(source.onboarding.provider_handoff_binding)
+
+
+def resolve_provider_setup_builder(
+    source_name: str,
+) -> ProviderSetupBuilderCallable | None:
+    """Resolve the optional provider-specific browser setup bundle builder."""
+
+    source = source_definition(source_name)
+    reference = source.onboarding.provider_setup_builder_binding
+    return resolve_callable_reference(reference) if reference is not None else None
+
+
+def resolve_provider_setup_notes(
+    source_name: str,
+) -> ProviderSetupNotesCallable:
+    """Resolve the source-owned provider setup note builder."""
+
+    source = source_definition(source_name)
+    return resolve_callable_reference(source.onboarding.provider_setup_notes_binding)
+
+
+def resolve_rehearsal_artifact_builder(
+    source_name: str,
+) -> RehearsalArtifactBuilderCallable | None:
+    """Resolve optional source-specific local rehearsal artifact generation."""
+
+    source = source_definition(source_name)
+    reference = source.onboarding.rehearsal_artifact_builder_binding
+    return resolve_callable_reference(reference) if reference is not None else None
+
+
+def resolve_onboarding_access_status(
+    source_name: str,
+) -> OnboardingAccessStatusCallable | None:
+    """Resolve optional source-owned access diagnostics."""
+
+    source = source_definition(source_name)
+    reference = source.onboarding.access_status_binding
+    return resolve_callable_reference(reference) if reference is not None else None
+
+
 def resolve_webhook_verifier(route_id: str) -> WebhookVerifierCallable:
     """Resolve the verifier callable declared for a webhook route."""
 
@@ -265,6 +330,35 @@ def resolve_webhook_ingress_metadata_builder(
 
     ingress = webhook_ingress_definition(route_id)
     return resolve_callable_reference(ingress.ingress_metadata_binding)
+
+
+def resolve_webhook_secret_loader(
+    route_id: str,
+) -> WebhookSecretLoaderCallable:
+    """Resolve the route's contract-owned signing-secret loader."""
+
+    ingress = webhook_ingress_definition(route_id)
+    return resolve_callable_reference(ingress.secret_loader_binding)
+
+
+def resolve_webhook_verified_pre_tenant_handler(
+    route_id: str,
+) -> WebhookVerifiedHandlerCallable | None:
+    """Resolve optional verified handling that runs before tenant rejection."""
+
+    ingress = webhook_ingress_definition(route_id)
+    reference = ingress.verified_pre_tenant_handler_binding
+    return resolve_callable_reference(reference) if reference is not None else None
+
+
+def resolve_webhook_verified_tenant_handler(
+    route_id: str,
+) -> WebhookVerifiedHandlerCallable | None:
+    """Resolve optional provider handling after exact tenant resolution."""
+
+    ingress = webhook_ingress_definition(route_id)
+    reference = ingress.verified_tenant_handler_binding
+    return resolve_callable_reference(reference) if reference is not None else None
 
 
 def build_webhook_ingress_metadata(
@@ -309,9 +403,10 @@ def build_normalizer_ingress_headers(
     """Project verified webhook metadata into handler-required headers.
 
     The provider edge owns extraction into ``ingress_metadata``. This reverse
-    projection is declared on that same :class:`WebhookIngressDefinition`, so
-    the normalizer never switches on a provider ID or carries another route
-    registry. Missing, ambiguous, or malformed declared values fail closed.
+    projection is resolved from the same generic or dedicated ingress contract,
+    so the normalizer never switches on a provider ID or carries another route
+    registry. Dedicated webhooks currently declare no header projection.
+    Missing, ambiguous, or malformed contracts fail closed.
     """
 
     if ingress_kind != "webhook":
@@ -322,35 +417,53 @@ def build_normalizer_ingress_headers(
         raise NormalizerIngressMetadataError(
             f"unknown normalizer source {source_name!r}"
         ) from exc
-    matches = tuple(
-        ingress
+    webhook_matches = tuple(
+        (
+            ingress.route_id,
+            ingress.normalizer_header_projection,
+        )
         for ingress in WEBHOOK_INGRESS_CATALOG.values()
         if ingress.source_id == source_id and ingress.channel == channel
     )
+    dedicated_matches = tuple(
+        (
+            ingress.ingress_id,
+            (),
+        )
+        for ingress in DEDICATED_INGRESS_CATALOG.values()
+        if (
+            ingress.source_id == source_id
+            and ingress.ingress_kind == "webhook"
+            and ingress.channel == channel
+        )
+    )
+    matches = webhook_matches + dedicated_matches
     if len(matches) != 1:
         raise NormalizerIngressMetadataError(
             f"source {source_id!r} channel {channel!r} must resolve to exactly "
-            f"one webhook ingress contract; found {len(matches)}"
+            f"one webhook or dedicated webhook ingress contract; "
+            f"found {len(matches)}"
         )
+    ingress_id, header_projection = matches[0]
     if not isinstance(ingress_metadata, Mapping):
         raise NormalizerIngressMetadataError(
-            f"webhook route {matches[0].route_id!r} ingress_metadata must be "
+            f"webhook ingress {ingress_id!r} ingress_metadata must be "
             "a mapping"
         )
 
     headers: dict[str, str] = {}
-    for metadata_path, header_name in matches[0].normalizer_header_projection:
+    for metadata_path, header_name in header_projection:
         value: Any = ingress_metadata
         for segment in metadata_path.split("."):
             if not isinstance(value, Mapping) or segment not in value:
                 raise NormalizerIngressMetadataError(
-                    f"webhook route {matches[0].route_id!r} requires "
+                    f"webhook ingress {ingress_id!r} requires "
                     f"ingress_metadata field {metadata_path!r}"
                 )
             value = value[segment]
         if not isinstance(value, str) or not value.strip():
             raise NormalizerIngressMetadataError(
-                f"webhook route {matches[0].route_id!r} ingress_metadata "
+                f"webhook ingress {ingress_id!r} ingress_metadata "
                 f"field {metadata_path!r} must be a non-empty string"
             )
         headers[header_name] = value
@@ -373,6 +486,82 @@ def resolve_dedicated_ingress_router_factory(
 
     ingress = dedicated_ingress_definition(ingress_id)
     return resolve_callable_reference(ingress.router_factory_binding)
+
+
+def live_worker_definition(
+    source_name: str,
+    component_id: str,
+) -> LiveWorkerDefinition:
+    """Return one exact source-owned live worker declaration."""
+
+    source = source_definition(source_name)
+    try:
+        return source.live_runtime.worker(component_id)
+    except KeyError as exc:
+        raise LiveWorkerNotFoundError(
+            f"source {source.source_id!r} has no live worker "
+            f"{component_id!r}"
+        ) from exc
+
+
+def resolve_live_worker_launcher(
+    source_name: str,
+    component_id: str,
+) -> LiveWorkerCallable:
+    """Resolve a Fyralis-owned live worker launcher.
+
+    Customer-managed boundaries fail explicitly instead of pretending an
+    in-repository launcher exists.
+    """
+
+    worker = live_worker_definition(source_name, component_id)
+    if worker.deployment_owner != "fyralis_worker":
+        raise ManagedLiveRuntimeError(
+            f"live worker {source_name}:{component_id} is owned by "
+            f"{worker.deployment_owner}: {worker.managed_reason}"
+        )
+    if worker.launcher_binding is None:
+        raise BindingResolutionError(
+            f"live worker {source_name}:{component_id} has no launcher binding"
+        )
+    return resolve_callable_reference(worker.launcher_binding)
+
+
+def resolve_live_worker_dispatch(
+    source_name: str,
+    component_id: str,
+) -> LiveWorkerCallable | None:
+    """Resolve an optional customer-managed boundary dispatch callable."""
+
+    worker = live_worker_definition(source_name, component_id)
+    if worker.dispatch_binding is None:
+        return None
+    return resolve_callable_reference(worker.dispatch_binding)
+
+
+async def launch_live_worker(
+    source_name: str,
+    component_id: str,
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Execute one contract-owned launcher with injected dependencies."""
+
+    launcher = resolve_live_worker_launcher(source_name, component_id)
+    result = launcher(*args, **kwargs)
+    return await result if inspect.isawaitable(result) else result
+
+
+def validate_live_worker_startup(
+    source_name: str,
+    component_id: str,
+) -> LiveWorkerDefinition:
+    """Fail one worker process before I/O if its contract launcher is broken."""
+
+    worker = live_worker_definition(source_name, component_id)
+    resolve_live_worker_launcher(source_name, component_id)
+    return worker
 
 
 @lru_cache(maxsize=1)
@@ -401,9 +590,12 @@ def validate_runtime_bindings() -> None:
                     ingress.verifier_binding,
                     ingress.tenant_extractor_binding,
                     ingress.ingress_metadata_binding,
+                    ingress.secret_loader_binding,
                     ingress.verification_handshake_binding,
                     ingress.verification_handshake_handler_binding,
                     ingress.dedicated_handler_binding,
+                    ingress.verified_pre_tenant_handler_binding,
+                    ingress.verified_tenant_handler_binding,
                 )
                 if reference is not None
             )
@@ -418,6 +610,43 @@ def validate_runtime_bindings() -> None:
             )
     for source in SOURCE_DEFINITIONS:
         references.update(source.idempotency_builder_bindings)
+        references.update(source.metrics_export_bindings)
+        if source.finance_testing_binding is not None:
+            references.add(source.finance_testing_binding)
+        for worker in source.live_runtime.workers:
+            references.update(
+                reference
+                for reference in (
+                    worker.launcher_binding,
+                    worker.dispatch_binding,
+                )
+                if reference is not None
+            )
+        references.add(source.onboarding.provider_handoff_binding)
+        references.add(source.onboarding.provider_setup_notes_binding)
+        if source.onboarding.provider_setup_builder_binding is not None:
+            references.add(source.onboarding.provider_setup_builder_binding)
+        if source.onboarding.rehearsal_artifact_builder_binding is not None:
+            references.add(source.onboarding.rehearsal_artifact_builder_binding)
+        if source.onboarding.access_status_binding is not None:
+            references.add(source.onboarding.access_status_binding)
+        validation_runtime = source.certification.validation_runtime
+        if validation_runtime is not None:
+            references.update(
+                reference
+                for reference in (
+                    validation_runtime.live_target_binding,
+                    validation_runtime.live_generator_binding,
+                    validation_runtime.live_install_binding,
+                    validation_runtime.live_event_binding,
+                    validation_runtime.preflight_binding,
+                    validation_runtime.live_only_bootstrap_binding,
+                    validation_runtime.twin_probe_binding,
+                    validation_runtime.signature_probe_binding,
+                    validation_runtime.replay_probe_binding,
+                )
+                if reference is not None
+            )
         references.update(
             reference
             for reference in (
@@ -506,11 +735,21 @@ __all__ = [
     "InstallationBindingNotFoundError",
     "InstallationLoaderCallable",
     "InstallationStatusLoaderCallable",
+    "launch_live_worker",
+    "live_worker_definition",
+    "LiveWorkerCallable",
+    "LiveWorkerNotFoundError",
+    "ManagedLiveRuntimeError",
     "NormalizationChannelNotFoundError",
     "NormalizerIngressMetadataError",
     "NormalizerCallable",
+    "OnboardingAccessStatusCallable",
     "OnboardingFailureCallable",
     "PlannerClientBuilderCallable",
+    "ProviderHandoffCallable",
+    "ProviderSetupBuilderCallable",
+    "ProviderSetupNotesCallable",
+    "RehearsalArtifactBuilderCallable",
     "override_history_bindings",
     "resolve_callable_reference",
     "resolve_dedicated_ingress_dispatcher",
@@ -521,13 +760,26 @@ __all__ = [
     "resolve_idempotency_builders",
     "resolve_installation_loader",
     "resolve_installation_status_loader",
+    "resolve_live_worker_dispatch",
+    "resolve_live_worker_launcher",
+    "resolve_onboarding_access_status",
     "resolve_onboarding_failure_handler",
     "resolve_planner",
     "resolve_planner_client_builder",
+    "resolve_provider_handoff",
+    "resolve_provider_setup_builder",
+    "resolve_provider_setup_notes",
     "resolve_reconciler",
+    "resolve_rehearsal_artifact_builder",
     "resolve_webhook_tenant_extractor",
     "resolve_webhook_ingress_metadata_builder",
+    "resolve_webhook_secret_loader",
+    "resolve_webhook_verified_pre_tenant_handler",
+    "resolve_webhook_verified_tenant_handler",
     "resolve_webhook_verifier",
     "split_callable_reference",
     "validate_runtime_bindings",
+    "validate_live_worker_startup",
+    "WebhookSecretLoaderCallable",
+    "WebhookVerifiedHandlerCallable",
 ]

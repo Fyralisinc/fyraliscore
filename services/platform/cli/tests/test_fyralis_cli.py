@@ -5,10 +5,23 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import services.platform.cli.fyralis as fyralis_cli
+from services.ingest.source_contract import SOURCE_DEFINITIONS
 from services.platform.cli.fyralis import main
 
 
 ROLE_ARN = "arn:aws:iam::123456789012:role/fyralis-dep-example01-bootstrap"
+
+
+def test_source_display_names_are_contract_derived() -> None:
+    assert {
+        source.source_id: fyralis_cli._source_display_name(source.source_id)
+        for source in SOURCE_DEFINITIONS
+    } == {
+        source.source_id: (
+            source.display.display_name_override or source.display_name
+        )
+        for source in SOURCE_DEFINITIONS
+    }
 
 
 def test_byoc_agent_cli_runs_customer_cloud_artifact_flow(
@@ -365,7 +378,7 @@ def test_byoc_source_rehearse_supports_core_provider_set(
 ) -> None:
     expected = {
         "ashby": ("ashby-connection-checklist.json", "ashby.env.example"),
-        "jira": ("jira-provider-setup.json", "jira.env.example"),
+        "jira": ("jira-connect-payload.example.json", "jira.env.example"),
         "github": ("fyralis-github-app-manifest.json", "github.env.example"),
         "discord": ("fyralis-discord-app-setup.json", "discord.env.example"),
         "notion": ("fyralis-notion-app-setup.json", "notion.env.example"),
@@ -638,7 +651,6 @@ def test_figma_runtime_deployment_discovery_skips_absent_optional_reconcilers(
 
     targets = fyralis_cli._provider_runtime_deployments(
         SimpleNamespace(kubectl="kubectl-test", namespace="customer-fyralis"),
-        "figma",
         fyralis_cli._source_rehearsal_profile("figma"),
     )
 
@@ -672,7 +684,6 @@ def test_figma_runtime_deployment_discovery_requires_gateway_and_shard_fetch(
     try:
         fyralis_cli._provider_runtime_deployments(
             SimpleNamespace(kubectl="kubectl-test", namespace="customer-fyralis"),
-            "figma",
             fyralis_cli._source_rehearsal_profile("figma"),
         )
     except ValueError as exc:
@@ -1242,11 +1253,16 @@ def test_byoc_source_autopilot_can_prepare_all_sources(
     assert google_calendar_connection["native_connect"]["preflight_path"] == (
         "/integrations/google_calendar/connect/preflight"
     )
-    assert google_calendar_connection["provider_ingress_endpoints"] == []
-    assert google_calendar_connection["browser_agent_run"]["events_request_url"] is None
-    assert "Google Calendar DWD install is poll-only" in json.dumps(
-        google_calendar_connection
+    assert google_calendar_connection["provider_ingress_endpoints"] == [
+        (
+            "https://fyralis-ingress.customer.example"
+            "/webhooks/google_calendar/push"
+        )
+    ]
+    assert google_calendar_connection["browser_agent_run"]["events_request_url"] == (
+        "https://fyralis-ingress.customer.example/webhooks/google_calendar/push"
     )
+    assert "poll-only" not in json.dumps(google_calendar_connection)
     assert discord_connection["method"] == "oauth_plus_gateway"
     assert notion_connection["method"] == "oauth"
     figma_connection = json.loads(

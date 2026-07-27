@@ -1,0 +1,610 @@
+{
+  "implementation_sha256": {
+    "services.app.gateway.finance_router": "6537167042aadcacf629ffb2947d3585825e26021635949e3adbc78b3843c4ef",
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.mercury": "df21a2f7eab490003bf7df5b6ce89fe8dbccc7788b4714f048256a6cfc4a09f3",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.mercury": "cfc86d9bcf62e221769f723c409daf0121eb5533e42f36a76ee15809efe6a217",
+    "services.ingest.ingestion.handlers.mercury": "3fc3918918969027737116113079eb79801f66ccecfa71c8b36cc4d1da008ce8",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.mercury": "1fc3f95e7501ba9d422a899b6a595211e59d3a28a9dbbce4a56bcbf94b1ef266",
+    "services.ingest.ingestion.reconcilers.mercury": "c2e7f6054448f0d9c4f8c4e925a53e4182040c4cae9f5577014d0d67fce11367",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.mercury": "a96dfa04a6c41ddc635f1c86d25545bb881b69cd34732d93ea8ae1dbdec0c31f",
+    "services.ingest.integrations.mercury.client": "6f310ae7626c15657448642544db4d291cd6cd4112c8f814cfd6e1a156024e63",
+    "services.ingest.integrations.mercury.metrics": "6d831cb9567d6fd51c27310f8a6537fdb03f96ba4944efe044294b70f94d4eb7",
+    "services.ingest.integrations.mercury.oauth": "7692de55c96222678be910c6c4d914c87f4726fccefe8f4d7c303256f4ee8ab4",
+    "services.ingest.integrations.mercury.onboarding": "fb063a091c5b232b95f8ee2847826083dc884219e5d9c627de9f2c669c175aed",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Mercury API",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "api_token"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Mercury",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "accounts.list",
+      "accounts.get",
+      "transactions.list"
+    ],
+    "outbound_endpoint_names": [
+      "mercury_api"
+    ],
+    "provider_id": "mercury",
+    "source_ids": [
+      "mercury"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "mercury:transaction",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "mercury",
+        "route_path": "/webhooks/mercury",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "mercury",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_mercury",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.mercury:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "account_order": [
+        "acct_d9480bda0c1f82c2"
+      ],
+      "accounts": {
+        "acct_d9480bda0c1f82c2": {
+          "availableBalance": 12159.31,
+          "createdAt": "2026-01-05T00:00:00Z",
+          "currentBalance": 12159.31,
+          "id": "acct_d9480bda0c1f82c2",
+          "kind": "checking",
+          "legalBusinessName": "Acme Robotics, Inc.",
+          "name": "Operating Checking 1",
+          "nickname": "Acct 1",
+          "status": "active",
+          "transactions": [
+            {
+              "accountId": "acct_d9480bda0c1f82c2",
+              "amount": 879.26,
+              "bankDescription": "CREDIT Counterparty b96014",
+              "counterpartyId": "cp_35c284bc0f",
+              "counterpartyName": "Counterparty b96014",
+              "createdAt": "2026-01-05T23:00:00Z",
+              "details": {
+                "accountNumber": "42438efaf133",
+                "rail": "ach",
+                "routingNumber": "49eec1f44"
+              },
+              "externalMemo": "memo-0",
+              "id": "txn_ceeb6ab7565505ebe277",
+              "kind": "credit",
+              "mercuryCategory": "Revenue",
+              "note": "transaction 0 on acct_d9480bda0c1f82c2",
+              "postedAt": "2026-01-05T23:00:00Z",
+              "status": "sent"
+            },
+            {
+              "accountId": "acct_d9480bda0c1f82c2",
+              "amount": -817.65,
+              "bankDescription": "DEBIT Counterparty 57a573",
+              "counterpartyId": "cp_87115ed415",
+              "counterpartyName": "Counterparty 57a573",
+              "createdAt": "2026-01-05T22:00:00Z",
+              "details": {
+                "accountNumber": "be1825d3c0d4",
+                "rail": "wire",
+                "routingNumber": "fc9b8b8fc"
+              },
+              "externalMemo": "memo-1",
+              "id": "txn_b3df0768124109833ee0",
+              "kind": "debit",
+              "mercuryCategory": "Vendors",
+              "note": "transaction 1 on acct_d9480bda0c1f82c2",
+              "postedAt": "2026-01-05T22:00:00Z",
+              "status": "posted"
+            },
+            {
+              "accountId": "acct_d9480bda0c1f82c2",
+              "amount": 441.76,
+              "bankDescription": "CREDIT Counterparty dee8a4",
+              "counterpartyId": "cp_fa54301778",
+              "counterpartyName": "Counterparty dee8a4",
+              "createdAt": "2026-01-05T21:00:00Z",
+              "details": {
+                "accountNumber": "71ef33c3b1e8",
+                "rail": "ach",
+                "routingNumber": "6ac675ae7"
+              },
+              "externalMemo": "memo-2",
+              "id": "txn_3d184ce2c491ecf2b0be",
+              "kind": "credit",
+              "mercuryCategory": "Revenue",
+              "note": "transaction 2 on acct_d9480bda0c1f82c2",
+              "postedAt": "2026-01-05T21:00:00Z",
+              "status": "pending"
+            },
+            {
+              "accountId": "acct_d9480bda0c1f82c2",
+              "amount": -573.16,
+              "bankDescription": "DEBIT Counterparty 3ce82b",
+              "counterpartyId": "cp_db0c1d10a4",
+              "counterpartyName": "Counterparty 3ce82b",
+              "createdAt": "2026-01-05T20:00:00Z",
+              "details": {
+                "accountNumber": "595c031ba5d3",
+                "rail": "wire",
+                "routingNumber": "3513be4a5"
+              },
+              "externalMemo": "memo-3",
+              "id": "txn_253647b128ea86e5edb6",
+              "kind": "debit",
+              "mercuryCategory": "Vendors",
+              "note": "transaction 3 on acct_d9480bda0c1f82c2",
+              "postedAt": "2026-01-05T20:00:00Z",
+              "status": "sent"
+            }
+          ],
+          "type": "checking"
+        }
+      },
+      "page_size": 100
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "accounts.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "accounts.list"
+        ],
+        "path_template": "/accounts",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "mercury.accounts",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "transactions.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "transactions.list"
+        ],
+        "path_template": "/account/{account_id}/transactions",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "mercury.account_transactions",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "accounts.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "accounts.get"
+        ],
+        "path_template": "/account/{account_id}",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "mercury.account",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [
+      "finance_testing"
+    ],
+    "certification": {
+      "canary_id": "ingest.canary.mercury",
+      "evidence_id": "ingest.evidence.mercury",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.mercury",
+      "validation_runtime": {
+        "generator_group": "mercury",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_mercury_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_mercury_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_mercury_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_mercury_live_target",
+        "preflight_binding": null,
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_mercury_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.mercury.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "account",
+      "balance_snapshot",
+      "transaction"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Finance",
+      "connection_method": "API token",
+      "description": "Banking, cash accounts, and transactions.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 17,
+      "setup_requirements": "Mercury organization ID, account IDs, API token, webhook secret if live events are enabled, account scope.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Mercury",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.mercury:fetch_page_mercury",
+    "finance_testing_binding": "services.app.gateway.finance_router:build_mercury_finance_testing",
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:mercury_transaction",
+      "services.ingest.ingestion.idempotency:mercury_balance"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "mercury:transaction",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "mercury:transaction",
+        "ingress_kind": "poll"
+      },
+      {
+        "channel": "mercury:transaction",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_mercury_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": "mercury_installation_id",
+        "entity_status_columns": [
+          "account_id",
+          "account_name",
+          "state"
+        ],
+        "entity_table": "mercury_accounts",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref",
+          "webhook_secret_ref"
+        ],
+        "scope_column": "organization_id",
+        "source": "mercury",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "mercury_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": "organization_id",
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "organization_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "mercury",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.mercury.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "mercury:transaction"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.mercury:handle_mercury_transaction"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "organization id",
+          "account ids",
+          "transaction scope"
+        ],
+        "agent_generates": [
+          "webhook secret ref",
+          "bank account scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin creates or approves a least-privilege service credential"
+        ],
+        "settings_targets": [
+          "API token settings",
+          "account settings",
+          "webhook settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "organization",
+        "accounts",
+        "transactions"
+      ],
+      "discovery_target": "organization, accounts, and transaction scopes",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/mercury/events"
+      ],
+      "local_rehearsal": null,
+      "method": "api_token",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/mercury/connect/finalize",
+        "kind": "api_token_native_connect",
+        "payload_fields": [
+          "api_token",
+          "base_url",
+          "account_ids",
+          "organization_id",
+          "webhook_secret"
+        ],
+        "preflight_path": "/integrations/mercury/connect/preflight",
+        "preflight_payload_fields": [
+          "api_token",
+          "base_url"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "organization_id",
+        "base_url",
+        "account_ids",
+        "webhook_secret"
+      ],
+      "provider_console_url": "https://app.mercury.com/settings/tokens",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "accounts read",
+        "transactions read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "api_token"
+      ],
+      "required_refs": [
+        "api_token",
+        "webhook_secret"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "accounts.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "accounts.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "transactions.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "mercury_api",
+        "operation_ids": [
+          "accounts.list",
+          "accounts.get",
+          "transactions.list"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.mercury:plan_shards_mercury",
+    "provider_id": "mercury",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.mercury:reconcile_mercury",
+    "runtime_identifiers": [
+      "installation_id",
+      "account_id"
+    ],
+    "source_id": "mercury",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "mercury"
+  },
+  "source_id": "mercury"
+}

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -57,28 +57,65 @@ GOOD_METRICS = (
     ("cpu_percent", 50.0),
     ("memory_bytes", 1_024.0),
     ("warmup_seconds", 120.0),
+    ("step_seconds", 120.0),
     ("validation_seconds", 900.0),
     ("soak_seconds", 3_600.0),
     ("search_tolerance_ratio", 0.04),
     ("offered_rate", 100.0),
     ("stable_rate", 95.0),
+    ("tenants", 2.0),
+    ("installations_per_tenant", 2.0),
+    ("replicas", 2.0),
+    ("clock_mode_wall", 1.0),
+    ("lab_calibration_elapsed_seconds", 30.0),
+    ("operation_mix_coverage_ratio", 1.0),
+    ("pipeline_e2e_proven", 1.0),
+    ("promotion_eligible", 1.0),
+    ("quota_config_verified", 1.0),
+    ("wall_clock_duration_ratio", 1.0),
 )
 
 
-def _suite(kind: str) -> SuiteResult:
+def _suite(
+    kind: str,
+    *,
+    stable_rate: float = 95.0,
+    offered_rate: float = 100.0,
+    headroom_ratio: float = 1.2,
+) -> SuiteResult:
+    metrics = dict(GOOD_METRICS)
+    metrics.update(
+        stable_rate=stable_rate,
+        offered_rate=offered_rate,
+        headroom_ratio=headroom_ratio,
+    )
     return SuiteResult(
         kind=kind,  # type: ignore[arg-type]
         state="passed",
         artifact_uri=f"artifact://{kind}",
         started_at=NOW,
         completed_at=NOW,
-        metrics=GOOD_METRICS,
+        metrics=tuple(metrics.items()),
         limiting_component="provider_quota",
     )
 
 
 def _passing_input(spec) -> CertificationInput:  # noqa: ANN001
-    suites = (_suite("historical"), _suite("live"), _suite("combined"))
+    provider_safe_suites = tuple(
+        _suite(kind) for kind in ("historical", "live", "combined")
+    )
+    fyralis_ceiling_suites = tuple(
+        _suite(
+            kind,
+            stable_rate=114.0,
+            offered_rate=120.0,
+            headroom_ratio=1.2,
+        )
+        for kind in ("historical", "live", "combined")
+    )
+    fault_recovery_suites = tuple(
+        _suite(kind) for kind in ("historical", "live", "combined")
+    )
     return CertificationInput(
         spec_hash=spec.declaration_hash(),
         local_correctness="passed",
@@ -91,9 +128,9 @@ def _passing_input(spec) -> CertificationInput:  # noqa: ANN001
             )
             for scenario_id in spec.required_scenarios
         ),
-        provider_safe_suites=suites,
-        fyralis_ceiling_suites=suites,
-        fault_recovery_suites=suites,
+        provider_safe_suites=provider_safe_suites,
+        fyralis_ceiling_suites=fyralis_ceiling_suites,
+        fault_recovery_suites=fault_recovery_suites,
         canary=CanaryResult(
             state="passed",
             operation_results=tuple(
@@ -108,6 +145,8 @@ def _passing_input(spec) -> CertificationInput:  # noqa: ANN001
             account_type=spec.canary.account_type,
             api_version=spec.provider_api_version,
             artifact_uri="artifact://canary",
+            request_count=len(spec.canary.required_operations),
+            account_identity_sha256="b" * 64,
         ),
         legacy_reference_count=0,
     )
@@ -126,7 +165,19 @@ def _lock_evidence(spec):  # noqa: ANN001
         )
         for item in spec.evidence
     )
-    return replace(spec, evidence=locked)
+    classified_canary = replace(
+        spec.canary,
+        operation_contracts=tuple(
+            replace(
+                contract,
+                mutability="read",
+                cleanup_action=None,
+                classification_basis="test-owned explicit read classification",
+            )
+            for contract in spec.canary.operation_contracts
+        ),
+    )
+    return replace(spec, evidence=locked, canary=classified_canary)
 
 
 def test_exactly_one_certification_spec_exists_for_every_source() -> None:
@@ -173,6 +224,52 @@ def test_canary_operations_cover_contract_requests_and_live_transports() -> None
         assert len(spec.canary.required_operations) <= spec.canary.max_requests
 
 
+def test_canary_mutability_uses_exact_http_binding_and_fails_closed() -> None:
+    slack = SOURCE_CERTIFICATION_CATALOG["slack"].canary
+    assert (
+        slack.operation_contract_for(
+            "provider_request.conversations.list"
+        ).mutability
+        == "read"
+    )
+    assert (
+        slack.operation_contract_for(
+            "provider_request.chat.postMessage"
+        ).mutability
+        == "unclassified"
+    )
+    assert (
+        slack.operation_contract_for("live_transport.webhook").mutability
+        == "unclassified"
+    )
+
+    # A safe-looking HTTP method cannot override an unsafe source policy.
+    facebook = SOURCE_CERTIFICATION_CATALOG["facebook_pages"].canary
+    assert (
+        facebook.operation_contract_for(
+            "provider_request.oauth.token.exchange"
+        ).mutability
+        == "unclassified"
+    )
+    assert (
+        facebook.operation_contract_for("live_transport.api_poll").mutability
+        == "read"
+    )
+
+    # Protocol-only operations have no HTTP-method evidence to infer from.
+    telegram = SOURCE_CERTIFICATION_CATALOG["telegram"].canary
+    assert (
+        telegram.operation_contract_for(
+            "provider_request.session.connect"
+        ).mutability
+        == "unclassified"
+    )
+    assert (
+        telegram.operation_contract_for("live_transport.mtproto").mutability
+        == "unclassified"
+    )
+
+
 def test_unlocked_evidence_blocks_even_otherwise_passing_results() -> None:
     spec = SOURCE_CERTIFICATION_CATALOG["slack"]
     decision = evaluate_certification(
@@ -182,7 +279,13 @@ def test_unlocked_evidence_blocks_even_otherwise_passing_results() -> None:
     )
     assert decision.state == "blocked"
     assert any("unverified evidence" in failure for failure in decision.failures)
-    assert any("schema checksum" in failure for failure in decision.failures)
+    assert not any("schema checksum" in failure for failure in decision.failures)
+    surface = next(
+        item
+        for item in spec.evidence
+        if item.behavior_id == "used_api_surface"
+    )
+    assert surface.schema_sha256 is not None
 
 
 def test_locked_evidence_and_complete_results_can_pass() -> None:
@@ -194,6 +297,210 @@ def test_locked_evidence_and_complete_results_can_pass() -> None:
     )
     assert decision.state == "passed"
     assert decision.failures == ()
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        (
+            NOW - timedelta(hours=25),
+            "timestamps are older than 24 hours",
+        ),
+        (
+            NOW + timedelta(minutes=6),
+            "timestamps are in the future",
+        ),
+    ],
+)
+def test_passing_suite_timestamps_must_be_fresh_and_not_future(
+    timestamp: datetime,
+    expected: str,
+) -> None:
+    spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
+    passing = _passing_input(spec)
+    supplied = replace(
+        passing,
+        provider_safe_suites=tuple(
+            replace(
+                suite,
+                started_at=timestamp,
+                completed_at=timestamp,
+            )
+            if suite.kind == "live"
+            else suite
+            for suite in passing.provider_safe_suites
+        ),
+    )
+
+    decision = evaluate_certification(spec, supplied, now=NOW)
+
+    assert decision.state == "blocked"
+    assert any(expected in failure for failure in decision.failures)
+
+
+def test_passing_suite_requires_a_complete_execution_window() -> None:
+    spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
+    passing = _passing_input(spec)
+    supplied = replace(
+        passing,
+        provider_safe_suites=tuple(
+            replace(suite, started_at=None, completed_at=None)
+            if suite.kind == "live"
+            else suite
+            for suite in passing.provider_safe_suites
+        ),
+    )
+
+    decision = evaluate_certification(spec, supplied, now=NOW)
+
+    assert decision.state == "blocked"
+    assert (
+        "provider_safe.live requires started_at and completed_at"
+        in decision.failures
+    )
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        (
+            NOW - timedelta(hours=25),
+            "tested_at is older than 24 hours",
+        ),
+        (
+            NOW + timedelta(minutes=6),
+            "tested_at is in the future",
+        ),
+    ],
+)
+def test_passing_canary_timestamp_must_be_fresh_and_not_future(
+    timestamp: datetime,
+    expected: str,
+) -> None:
+    spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
+    passing = _passing_input(spec)
+    supplied = replace(
+        passing,
+        canary=replace(passing.canary, tested_at=timestamp),
+    )
+
+    decision = evaluate_certification(spec, supplied, now=NOW)
+
+    assert decision.state == "blocked"
+    assert any(expected in failure for failure in decision.failures)
+
+
+def test_suite_topology_must_match_catalog_declaration() -> None:
+    spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
+    passing = _passing_input(spec)
+    live = next(
+        suite for suite in passing.provider_safe_suites if suite.kind == "live"
+    )
+    metrics = dict(live.metrics)
+    metrics["replicas"] = 1.0
+    supplied = replace(
+        passing,
+        provider_safe_suites=tuple(
+            replace(suite, metrics=tuple(metrics.items()))
+            if suite.kind == "live"
+            else suite
+            for suite in passing.provider_safe_suites
+        ),
+    )
+
+    decision = evaluate_certification(spec, supplied, now=NOW)
+
+    assert decision.state == "blocked"
+    assert (
+        "provider_safe.live.replicas must equal declared topology value 2"
+        in decision.failures
+    )
+
+
+def test_short_or_synthetic_load_provenance_cannot_pass() -> None:
+    spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
+    passing = _passing_input(spec)
+    live = next(
+        suite for suite in passing.provider_safe_suites if suite.kind == "live"
+    )
+    metrics = dict(live.metrics)
+    metrics.update(
+        clock_mode_wall=0.0,
+        lab_calibration_elapsed_seconds=0.01,
+        operation_mix_coverage_ratio=0.5,
+        pipeline_e2e_proven=0.0,
+        promotion_eligible=0.0,
+        quota_config_verified=0.0,
+        step_seconds=1.0,
+        wall_clock_duration_ratio=0.01,
+    )
+    supplied = replace(
+        passing,
+        provider_safe_suites=tuple(
+            replace(suite, metrics=tuple(metrics.items()))
+            if suite.kind == "live"
+            else suite
+            for suite in passing.provider_safe_suites
+        ),
+    )
+
+    decision = evaluate_certification(spec, supplied, now=NOW)
+
+    assert decision.state == "blocked"
+    expected = {
+        "provider_safe.live.clock_mode_wall must equal 1",
+        "provider_safe.live.promotion_eligible must equal 1",
+        "provider_safe.live.pipeline_e2e_proven must equal 1",
+        "provider_safe.live.operation_mix_coverage_ratio must equal 1",
+        "provider_safe.live.quota_config_verified must equal 1",
+    }
+    assert expected <= set(decision.failures)
+
+
+@pytest.mark.parametrize(
+    ("ceiling_rate", "headroom", "expected_failure"),
+    [
+        (
+            90.0,
+            90.0 / 95.0,
+            "stable_rate must be >= provider_safe.live.stable_rate",
+        ),
+        (
+            114.0,
+            1.1,
+            "headroom_ratio must equal ceiling stable_rate / "
+            "provider-safe stable_rate",
+        ),
+    ],
+)
+def test_ceiling_and_headroom_must_match_measured_stable_rates(
+    ceiling_rate: float,
+    headroom: float,
+    expected_failure: str,
+) -> None:
+    spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
+    passing = _passing_input(spec)
+    supplied = replace(
+        passing,
+        fyralis_ceiling_suites=tuple(
+            _suite(
+                suite.kind,
+                stable_rate=ceiling_rate,
+                offered_rate=max(100.0, ceiling_rate),
+                headroom_ratio=headroom,
+            )
+            if suite.kind == "live"
+            else suite
+            for suite in passing.fyralis_ceiling_suites
+        ),
+    )
+
+    decision = evaluate_certification(spec, supplied, now=NOW)
+
+    assert decision.state == "blocked"
+    assert any(
+        expected_failure in failure for failure in decision.failures
+    )
 
 
 def test_no_todos_skips_or_legacy_references_can_be_waived() -> None:
@@ -314,6 +621,62 @@ def test_canary_requires_exact_artifact_backed_operation_coverage() -> None:
     assert any(
         f"operation.{first.operation_id} state is failed" in item
         for item in decision.failures
+    )
+
+
+def test_canary_request_budget_is_enforced_by_the_evaluator() -> None:
+    spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
+    passing = _passing_input(spec)
+    supplied = replace(
+        passing,
+        canary=replace(
+            passing.canary,
+            request_count=spec.canary.max_requests + 1,
+        ),
+    )
+
+    decision = evaluate_certification(spec, supplied, now=NOW)
+
+    assert decision.state == "blocked"
+    assert any(
+        "request count exceeds" in failure for failure in decision.failures
+    )
+
+
+def test_canary_with_unclassified_operation_cannot_pass() -> None:
+    spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
+    provider_operation = next(
+        contract
+        for contract in spec.canary.operation_contracts
+        if contract.operation_id.startswith("provider_request.")
+    )
+    spec = replace(
+        spec,
+        canary=replace(
+            spec.canary,
+            operation_contracts=tuple(
+                replace(
+                    contract,
+                    mutability="unclassified",
+                    cleanup_action=None,
+                    classification_basis=(
+                        "test deliberately leaves this operation unclassified"
+                    ),
+                )
+                if contract.operation_id == provider_operation.operation_id
+                else contract
+                for contract in spec.canary.operation_contracts
+            ),
+        ),
+    )
+
+    decision = evaluate_certification(spec, _passing_input(spec), now=NOW)
+
+    assert decision.state == "blocked"
+    assert any(
+        provider_operation.operation_id in failure
+        and "mutability is unclassified" in failure
+        for failure in decision.failures
     )
 
 

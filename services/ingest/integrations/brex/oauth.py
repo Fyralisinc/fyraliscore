@@ -47,6 +47,7 @@ from services.ingest.integrations.brex.onboarding import (
     finalize_install,
     register_webhook_installation,
 )
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.provider_transport import (
     tenant_preinstall_transport_kwargs,
 )
@@ -55,14 +56,8 @@ from services.ingest.integrations.provider_transport import (
 log = structlog.get_logger("integrations.brex.oauth")
 
 
-# Default Brex API host for the connect-wizard UI fallback only (an operator may
-# override per-install via the `base_url` field). The canonical default + env
-# override live in `lib/integrations/endpoints.py` (`brex_api`).
 # TODO(human): confirm Brex API host (blueprint §5 #6) — this is UNVERIFIED;
-# the blueprint's default is "https://platform.brexapis.com".
-_DEFAULT_BASE_URL = "https://platform.brexapis.com"
-
-
+# the named endpoint contract owns the current production default.
 router = APIRouter(prefix="/integrations/brex", tags=["brex"])
 
 
@@ -90,11 +85,12 @@ def _secret_store_from_request(request: Request) -> Any:
 
 def _require_token(body: dict[str, Any]) -> tuple[str, str]:
     api_token = (body.get("api_token") or "").strip()
-    base_url = (body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     if not api_token:
         raise HTTPException(status_code=400, detail="api_token is required")
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="brex_api",
+    )
     return api_token, base_url
 
 

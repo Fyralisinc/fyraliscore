@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""scripts/sandbox_miro.py — local end-to-end sandbox for Miro ingestion
-(whiteboard / design), with NO real Miro credentials.
+"""Local end-to-end sandbox for poll-only Miro ingestion.
 
-Miro is a whiteboard REST API (org-app Bearer token) with BOTH a historical
-query surface (GET /boards, /boards/{id}/items) and a live push surface
-(HMAC-signed webhooks). This sandbox stands up a REAL local mock of the Miro v2
-endpoints and drives the REAL pipeline against it:
+Miro is a whiteboard REST API authenticated with an org-app Bearer token. This
+sandbox stands up a local mock of the Miro v2 read endpoints and drives the real
+pipeline against it:
 
     MiroClient (real httpx, Provider Lab auth) -> fetch_page_miro (real opaque-cursor
     pagination + fan-out) -> handle_miro_item (real ObservationDraft) -> ingest()
@@ -13,8 +11,7 @@ endpoints and drives the REAL pipeline against it:
 
 It exercises: board enumeration, per-board backfill with the item fan-out, the
 opaque-cursor pagination, an item edit (version bump -> a new observation), the
-live-webhook path through the SAME handler (asserting external_id parity / dedup
-with backfill), cross-path dedup, and the reconciler gap probe — then prints the
+poll/refetch dedup path, and the reconciler gap probe, then prints the
 observations that landed.
 
 Database:
@@ -36,14 +33,14 @@ import pathlib
 import sys
 from uuid import UUID, uuid4
 
+import asyncpg
+
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 os.environ.setdefault("COMPANY_OS_ENV", "test")
 os.environ.setdefault("FYRALIS_ENV", "test")
-
-import asyncpg
 
 
 _DEFAULT_ADMIN_URL = "postgresql://company_os:company_os@localhost:5434/company_os"
@@ -161,12 +158,14 @@ async def run(args) -> int:
     created_db: str | None = None
     if provided_url:
         db_url = provided_url
-        _hr("DATABASE"); print(f"  Using DATABASE_URL: {db_url}")
+        _hr("DATABASE")
+        print(f"  Using DATABASE_URL: {db_url}")
     else:
         created_db = f"miro_sandbox_{uuid4().hex[:8]}"
         await _create_throwaway_db(admin_url, created_db)
         db_url = admin_url.rsplit("/", 1)[0] + "/" + created_db
-        _hr("DATABASE"); print(f"  Created throwaway DB: {created_db}")
+        _hr("DATABASE")
+        print(f"  Created throwaway DB: {created_db}")
 
     from services.app.gateway.db_bootstrap import _register_codecs
     pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5, init=_register_codecs)
@@ -199,19 +198,14 @@ async def run(args) -> int:
         print(f"  boards discovered: {board_ids}")
         _check("board enumeration returned the design board", _BOARD in board_ids)
 
-        # 3. Provision the install + webhook row.
+        # 3. Provision the exact poll installation.
         _hr("PROVISION (miro.onboarding.finalize_install)")
-        from services.ingest.integrations.miro.onboarding import (
-            finalize_install, register_webhook_installation,
-        )
+        from services.ingest.integrations.miro.onboarding import finalize_install
         install_id = await finalize_install(
             pool, tenant_id=_TENANT_ID, base_url=_BASE_URL,
             boards=[{"board_id": b["id"], "board_name": b.get("name"),
                      "board_kind": b.get("type")} for b in boards],
             org_id=_ORG_ID,
-        )
-        await register_webhook_installation(
-            pool, tenant_id=_TENANT_ID, org_id=_ORG_ID, webhook_secret_ref=None,
         )
         board_count = await pool.fetchval(
             "SELECT count(*) FROM miro_boards WHERE miro_installation_id=$1", install_id,
@@ -248,8 +242,12 @@ async def run(args) -> int:
             _TENANT_ID,
         )
         print(f"  observations: total={counts['tot']} signal={counts['sig']} state_change={counts['sc']}")
-        # 2 items -> 2 observations (both present -> signal).
-        _check("backfill produced 2 observations (one per item)", counts["tot"] == 2)
+        # 2 items -> 2 signal observations. Poll-only Miro has no retired
+        # webhook deletion/state-change branch.
+        _check(
+            "backfill produced 2 signal observations (one per item)",
+            counts["tot"] == 2 and counts["sig"] == 2 and counts["sc"] == 0,
+        )
 
         # 6. Item edit: a fresh version of i-1001 lands as a NEW observation.
         _hr("ITEM EDIT (version bump -> new observation)")
@@ -270,37 +268,12 @@ async def run(args) -> int:
         _check("re-ingesting an existing item dedups (versioned external_id parity)",
                res.deduped is True)
 
-        # 8. LIVE WEBHOOK path: a board_item.created with the SAME item flows
-        #    through the SAME handler; its external_id matches the backfilled
-        #    item, so it dedups (proves backfill+live parity).
-        _hr("LIVE WEBHOOK (handler parity with backfill)")
-        webhook_payload = {
-            "event": "board_item.created",
-            "_fyralis_org_id": _ORG_ID,
-            "_fyralis_board_id": _BOARD,
-            "item": fixtures[_BOARD]["items"][1],
-        }
-        res = await ingest("miro:item", webhook_payload, pool=pool, tenant_id=_TENANT_ID)
-        _check("live webhook item dedups against backfilled twin (external_id parity)",
-               res.deduped is True)
-
-        # A brand-new live item lands as a fresh observation.
-        fresh_item = {
-            "event": "board_item.created",
-            "_fyralis_org_id": _ORG_ID, "_fyralis_board_id": _BOARD,
-            "item": {"id": "i-live-1", "boardId": _BOARD, "type": "text",
-                     "data": {"content": "live note"}, "version": "1",
-                     "modifiedAt": "2026-06-09T00:00:00Z"},
-        }
-        res = await ingest("miro:item", fresh_item, pool=pool, tenant_id=_TENANT_ID)
-        _check("new live item lands as a fresh observation", res.deduped is False)
-
-        # 9. Reconciler gap probe against the live (mock) board.
+        # 8. Reconciler gap probe against the mock board.
         _hr("RECONCILER GAP PROBE (list_items)")
         items, _, _ = await client.list_items(_BOARD, limit=1, cursor=None)
         _check("reconciler probe lists the board items", len(items) >= 1)
 
-        # 10. Inspect.
+        # 9. Inspect.
         _hr("OBSERVATIONS")
         rows = await pool.fetch(
             "SELECT kind, trust_tier, external_id, content_text FROM observations "

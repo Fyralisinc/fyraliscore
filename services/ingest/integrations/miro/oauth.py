@@ -1,10 +1,8 @@
-"""services/ingest/integrations/miro/oauth.py — admin connect wizard.
+"""Miro's poll-only admin connect wizard.
 
-Miro authenticates with a long-lived org-app Bearer token (Brex/Jira-shaped).
-This is the production install surface: `finalize_install` /
-`register_webhook_installation` mirror the Brex connect wizard — Bearer-authed,
-real credentials persisted encrypted via the gateway `secret_store` (only opaque
-refs reach the install tables).
+Miro authenticates with a long-lived org-app Bearer token. This production
+surface verifies the token before persisting its opaque secret-store reference,
+the exact organization scope, and the selected boards.
 
 Flow:
 
@@ -15,19 +13,16 @@ Flow:
         → on auth failure: a structured 400 (no secret is stored)
 
     POST /integrations/miro/connect/finalize
-        body: { api_token, base_url?, board_ids?, org_id?, webhook_secret? }
+        body: { api_token, base_url?, board_ids?, org_id? }
         → re-verify creds, resolve the board set (all enumerated, or the
           `board_ids` subset)
-        → store the API token (+ webhook secret, if given) in the secret store
+        → store the API token in the secret store
         → finalize_install(): UPSERT miro_installations + miro_boards + an
           onboarding_triggers row (source='miro') so the M6 backfill chain
-          fires; when an org_id + webhook secret are supplied,
-          register_webhook_installation() seeds the provider_installations row
-          the webhook edge resolves the tenant + HMAC secret from
+          fires
         → 200 OK with the new miro_installations.id
 
-Backfill (miro_installations) and the live webhook edge
-(provider_installations) are seeded together but stay independent.
+Miro's discontinued webhook surface is deliberately not accepted here.
 """
 from __future__ import annotations
 
@@ -40,11 +35,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import MiroApiError
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.miro.client import MiroClient
-from services.ingest.integrations.miro.onboarding import (
-    finalize_install,
-    register_webhook_installation,
-)
+from services.ingest.integrations.miro.onboarding import finalize_install
 from services.ingest.integrations.provider_transport import (
     tenant_preinstall_transport_kwargs,
 )
@@ -53,16 +46,10 @@ from services.ingest.integrations.provider_transport import (
 log = structlog.get_logger("integrations.miro.oauth")
 
 
-# Default Miro API host for the connect-wizard UI fallback only (an operator may
-# override per-install via the `base_url` field). The canonical default + env
-# override live in `lib/integrations/endpoints.py` (`miro_api`).
 # CONFIRMED (developers.miro.com): REST base https://api.miro.com/v2. OAuth2
 # Bearer — authorize https://miro.com/oauth/authorize; token (NOTE: /v1)
 # https://api.miro.com/v1/oauth/token; grants authorization_code + refresh_token
 # (access 60 min, refresh 60 days); read scope `boards:read` (covers board items).
-_DEFAULT_BASE_URL = "https://api.miro.com/v2"
-
-
 router = APIRouter(prefix="/integrations/miro", tags=["miro"])
 
 
@@ -90,11 +77,12 @@ def _secret_store_from_request(request: Request) -> Any:
 
 def _require_token(body: dict[str, Any]) -> tuple[str, str]:
     api_token = (body.get("api_token") or "").strip()
-    base_url = (body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     if not api_token:
         raise HTTPException(status_code=400, detail="api_token is required")
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="miro_api",
+    )
     return api_token, base_url
 
 
@@ -167,12 +155,16 @@ async def connect_finalize(request: Request) -> JSONResponse:
     store = _secret_store_from_request(request)
     body = await request.json()
     api_token, base_url = _require_token(body)
+    if "webhook_secret" in body:
+        raise HTTPException(
+            status_code=400,
+            detail="webhook_secret is not supported for poll-only Miro",
+        )
 
     requested_ids = body.get("board_ids")
     if requested_ids is not None and not isinstance(requested_ids, list):
         raise HTTPException(status_code=400, detail="board_ids must be a list")
     org_id = (body.get("org_id") or "").strip() or None
-    webhook_secret = (body.get("webhook_secret") or "").strip() or None
 
     # 1. Verify creds + resolve the board set — before any write.
     client = MiroClient(
@@ -196,12 +188,6 @@ async def connect_finalize(request: Request) -> JSONResponse:
     secret_ref = await store.put(
         api_token, label=f"miro_api_token:{base_url}", tenant_id=tenant_id,
     )
-    webhook_secret_ref = None
-    if webhook_secret:
-        webhook_secret_ref = await store.put(
-            webhook_secret, label=f"miro_webhook_secret:{base_url}",
-            tenant_id=tenant_id,
-        )
 
     # 3. Install: miro_installations + miro_boards + onboarding trigger.
     install_id = await finalize_install(
@@ -211,32 +197,17 @@ async def connect_finalize(request: Request) -> JSONResponse:
         boards=boards,
         secret_ref=secret_ref,
         org_id=org_id,
-        webhook_secret_ref=webhook_secret_ref,
     )
-
-    # 4. Live webhook edge — needs both the org id (the webhook installation_id)
-    #    and a signing secret.
-    webhook_registered = False
-    if webhook_secret_ref and org_id:
-        await register_webhook_installation(
-            pool,
-            tenant_id=tenant_id,
-            org_id=org_id,
-            webhook_secret_ref=webhook_secret_ref,
-        )
-        webhook_registered = True
 
     log.info(
         "miro.connect.finalized",
         installation_id=str(install_id),
         board_count=len(boards),
-        webhook_registered=webhook_registered,
     )
     return JSONResponse(content={
         "ok": True,
         "installation_id": str(install_id),
         "board_count": len(boards),
-        "webhook_registered": webhook_registered,
     })
 
 

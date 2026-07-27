@@ -586,6 +586,45 @@ class TenantOnboardingOrchestrator(LongRunningService):
         source = sig.signal_data["source"]
         failure_reason = sig.signal_data.get("failure_reason")
 
+        run = await _load_run_row(conn, run_id)
+        if run is None:
+            # A tenant can be removed after a source worker emitted its
+            # completion signal but before this shared inbox consumed it.
+            # The signal is terminally orphaned: consuming it is correct,
+            # while attempting the ordinary roll-up would derive a null
+            # tenant and crash every orchestrator replica in a restart loop.
+            log.warning(
+                "orchestrator.source_completion_run_missing",
+                extra={
+                    "run_id": str(run_id),
+                    "source": source,
+                    "signal_id": str(sig.id),
+                },
+            )
+            return []
+        source_exists = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                  FROM source_onboarding_runs
+                 WHERE onboarding_run_id = $1
+                   AND source = $2
+            )
+            """,
+            run_id,
+            source,
+        )
+        if source_exists is not True:
+            log.warning(
+                "orchestrator.source_completion_row_missing",
+                extra={
+                    "run_id": str(run_id),
+                    "source": source,
+                    "signal_id": str(sig.id),
+                },
+            )
+            return []
+
         if failure_reason:
             await _mark_source_failed(
                 conn, run_id=run_id, source=source,
@@ -614,9 +653,7 @@ class TenantOnboardingOrchestrator(LongRunningService):
         # emit tenant_onboarding_completed.
         await conn.execute(_MARK_RUN_COMPLETE_SQL, run_id)
 
-        tenant_id = await conn.fetchval(
-            "SELECT tenant_id FROM onboarding_runs WHERE id = $1", run_id,
-        )
+        tenant_id = run["tenant_id"]
         await emit_signal(
             conn,
             workflow_kind=BRIDGE_INBOX_KIND,

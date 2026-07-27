@@ -39,7 +39,7 @@ def _enable_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     gated. Legacy webhooks tests configure their secrets via
     `WEBHOOK_SECRET_<PROVIDER>` env vars (the IN-06 contract); they
     must explicitly opt into the dev fallback so the IN-08-aware
-    `load_secrets` reaches that path. Tests that exercise the
+    `load_installation_secrets` reaches that path. Tests that exercise the
     DB-backed path (test_secrets_db_backed.py) override this with
     their own monkeypatch.
 

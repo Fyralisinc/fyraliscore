@@ -196,6 +196,11 @@ async def persist_telegram_update_state(
 
 
 async def _main() -> int:
+    from services.ingest.source_contract.runtime import (
+        validate_live_worker_startup,
+    )
+
+    validate_live_worker_startup("telegram", "telegram_gateway_worker")
     # Keep module import side-effect free for exact-binding tests while direct
     # script execution still resolves the scripts-local observability helper.
     from worker_observability import (

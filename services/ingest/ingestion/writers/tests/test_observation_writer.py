@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import orjson
@@ -130,3 +131,16 @@ async def test_malformed_envelope_does_not_record_event():
     # The run_writer loop's except clause does bump + log + continue.
     # No event was recorded because _record_shadow_event was never reached.
     assert writer_module.get_shadow_log() == []
+
+
+async def test_commit_rebalance_after_persistence_is_replayable() -> None:
+    consumer = MagicMock()
+    consumer.commit = AsyncMock(
+        side_effect=writer_module.CommitFailedError(),
+    )
+
+    committed = await writer_module._commit_persisted_boundary(consumer)
+
+    assert committed is False
+    assert writer_module.get_metrics()["writer.commit_rebalanced"] == 1
+    consumer.commit.assert_awaited_once_with()

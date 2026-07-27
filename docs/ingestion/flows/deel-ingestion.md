@@ -364,7 +364,8 @@ Each active secret is tried in turn (for rotation), and the digest is over the
 **body alone** — there is **no timestamp envelope and no replay window** (like
 GitHub/Jira). Idempotency is enforced at the ingestion layer via the versioned
 `external_id`, not here ([signatures/deel.py:14‑17](../../../services/app/webhooks/signatures/deel.py#L14-L17)).
-The per-tenant signing secret is resolved by `webhooks/secrets.py::load_secrets`
+The per-tenant signing secret is resolved by
+`webhooks/secrets.py::load_installation_secrets`
 from the `provider_installations` row (`provider='deel'`).
 
 > **TODO(human)** *(reproduced from [signatures/deel.py:1‑9](../../../services/app/webhooks/signatures/deel.py#L1-L9))*:

@@ -32,7 +32,7 @@ v
 | [Fireflies.ai](fireflies.md) | Comms | token + HMAC webhook | cursor list | HMAC webhook → 202 + hydrate | ✅ Yes | M | high |
 | [Signal](signal.md) | Comms | **Telegram** (gateway session) | linked-device sync | gateway persistent conn | ⚠️ Narrow (own/linked acct only) | M | high |
 | [AWS](aws.md) | Infra | *novel* — IAM/SigV4, closest to Grafana | time-window per service/account | SQS/EventBridge **poll** | ✅ Yes (own/consenting acct) | **M–L** | high |
-| [Miro](miro.md) | Design | token + HMAC webhook | opaque cursor | HMAC webhook → 202 | ✅ Yes (org app) | M | high |
+| [Miro](miro.md) | Design | org Bearer token | opaque cursor | **poll-only** reconciler | ✅ Yes (org app) | M | high |
 | [Figma](figma.md) | Design | token + HMAC webhook | cursor | HMAC webhook → 202 (passcode-in-body verifier) | ✅ Yes (org/team) | M | high |
 | [Carta](carta.md) | Cap table | **QuickBooks** (OAuth + scope-id) | OAuth list | **Poll** (no webhook) | ⚠️ Conditional (API gating) | M | medium |
 
@@ -70,7 +70,7 @@ contract, mechanical), L = large (new auth/transport primitives).*
 3. **Deel** (M) — completes the finance/payroll cluster.
 4. **Fireflies** (M) — clean token + HMAC-webhook source; adjacent to the
    call-transcript signal goal.
-5. **Miro** / **Figma** (M) — standard HMAC-webhook sources; second-tier value.
+5. **Miro** / **Figma** (M) — Miro uses polling; Figma uses its provider event path.
 6. **AWS** (M–L) — higher value but needs new SigV4/poll primitives; do after the
    webhook-shaped sources land.
 7. **Signal** / **Carta** — gate on the open access questions first (linked-device

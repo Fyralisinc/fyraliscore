@@ -160,6 +160,7 @@ nav:
           - Overview: ingestion/README.md
           - Canonical architecture: ingestion/architecture.md
           - End-to-end flow and architecture: ingestion/ingestion-flow-and-architecture.md
+          - Source certification load runner: ingestion/source-certification-load-runner.md
           - Source isolation: ingestion/source-isolation.md
           - Finance sources: ingestion/finance-sources.md
           - Finance API map: ingestion/finance-api-map.md

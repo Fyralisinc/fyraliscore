@@ -1,8 +1,8 @@
 """HmacWebhookGenerator — synthetic HMAC-signed webhooks for the finance/ops
 providers that share the gateway webhook router + the M5.3 Kafka cutover:
 **jira, mercury, quickbooks, grafana** plus the IN-FIN2 finance sources
-**brex, ramp, gusto, deel**, the IN-FF/IN-MIRO/IN-FIGMA sources
-**fireflies, miro, figma** (Brex archetype: HMAC-SHA256, `sha256=`+hex), and the
+**brex, ramp, gusto, deel**, the IN-FF/IN-FIGMA sources
+**fireflies, figma** (Brex archetype: HMAC-SHA256, `sha256=`+hex), and the
 IN-PEOPLE/IN-RECRUITING sources **hibob, ashby** (hibob = HMAC-SHA512/base64/
 no-prefix; ashby = HMAC-SHA256/`sha256=`+hex like brex). (LinkedIn is poll-only —
 NOT an HMAC webhook source — so it is driven by LinkedinPollGenerator, not here.)
@@ -10,8 +10,9 @@ NOT an HMAC webhook source — so it is driven by LinkedinPollGenerator, not her
 This is the generalisation of `slack_webhook.py` / `github_webhook.py` to the
 providers added after the original 4-source live harness. All four:
 
-  - POST to `/webhooks/{provider}` on the SAME shared FastAPI app the slack /
-    github generators use (built by `services.app.gateway.main.build_app`).
+  - POST to the exact contract-declared webhook route on the SAME shared
+    FastAPI app the slack / github generators use (built by
+    `services.app.gateway.main.build_app`).
   - Are verified by the real per-provider `signatures/{provider}.py` verifier
     (so the generator reproduces each scheme byte-for-byte).
   - Resolve the tenant via the real `tenant_resolver` against a seeded
@@ -31,11 +32,10 @@ Per-provider signature scheme (verified against signatures/*.py):
   - gusto:      header `intuit-signature`           = base64(HMAC-SHA256(body))   (no prefix; UNVERIFIED QBO default)
   - deel:       header `Deel-Signature`             = `sha256=` + hex(HMAC-SHA256(body))
   - fireflies:  header `X-Fireflies-Signature`      = `sha256=` + hex(HMAC-SHA256(body))
-  - miro:       header `X-Miro-Signature`           = `sha256=` + hex(HMAC-SHA256(body))
   - figma:      header `Figma-Signature`            = `sha256=` + hex(HMAC-SHA256(body))
   - hibob:      header `Bob-Signature`              = base64(HMAC-SHA512(body))   (NO prefix; CONFIRMED)
   - ashby:      header `Ashby-Signature`            = `sha256=` + hex(HMAC-SHA256(body))  (CONFIRMED, brex-shaped)
-  (brex/ramp/gusto/deel/fireflies/miro/figma schemes mirror their signatures/*.py
+  (brex/ramp/gusto/deel/fireflies/figma schemes mirror their signatures/*.py
    module constants, which are UNVERIFIED archetype defaults — see those modules'
    TODO(human). figma's real scheme is passcode-in-body, not an HMAC header.
    hibob's SHA512+base64 and ashby's SHA256+hex schemes are CONFIRMED from each
@@ -51,7 +51,6 @@ Per-provider tenant-resolution key (verified against tenant_resolver.py):
   - gusto:      `eventNotifications[0].company_uuid` (snake) / top-level `company_uuid`
   - deel:       top-level `organizationId`
   - fireflies:  top-level `workspaceId`
-  - miro:       top-level `organizationId`
   - figma:      top-level `team_id`
   - hibob:      top-level `companyId`
   - ashby:      top-level `organizationId`
@@ -78,13 +77,15 @@ from uuid import UUID
 import httpx
 from fastapi import FastAPI
 
+from services.ingest.source_contract import webhook_ingress_definition
+
 
 log = logging.getLogger(__name__)
 
 HMAC_PROVIDERS = (
     "jira", "mercury", "quickbooks", "grafana",
     "brex", "ramp", "gusto", "deel",
-    "fireflies", "miro", "figma",
+    "fireflies", "figma",
     "hibob", "ashby",
 )
 
@@ -298,31 +299,6 @@ def _build_fireflies_payload(
     return payload, f"fireflies:{ws}:transcript:{tid}:{iso}"
 
 
-def _build_miro_payload(
-    target: Any,
-    content: str,
-    suffix: str,
-    iso: str,
-    secret: str,
-) -> tuple[dict[str, Any], str]:
-    org = target.miro_org
-    board = target.miro_board
-    item_id = f"live-{target.slug}-{suffix}"
-    payload = {
-        "event": "board_item.created",
-        "organizationId": org,
-        "item": {
-            "id": item_id,
-            "boardId": board,
-            "version": iso,
-            "modifiedAt": iso,
-            "type": "sticky_note",
-            "data": {"content": content},
-        },
-    }
-    return payload, f"miro:{org}:item:{item_id}:{iso}"
-
-
 def _build_figma_payload(
     target: Any,
     content: str,
@@ -429,7 +405,6 @@ _PAYLOAD_BUILDERS = {
     "gusto": _build_gusto_payload,
     "deel": _build_deel_payload,
     "fireflies": _build_fireflies_payload,
-    "miro": _build_miro_payload,
     "figma": _build_figma_payload,
     "hibob": _build_hibob_payload,
     "ashby": _build_ashby_payload,
@@ -482,10 +457,10 @@ class HmacWebhookGenerator:
             mac512 = hmac.new(self._secret.encode("utf-8"), body, hashlib.sha512)
             return base64.b64encode(mac512.digest()).decode("ascii")
         mac = hmac.new(self._secret.encode("utf-8"), body, hashlib.sha256)
-        # `sha256=`+hex schemes: jira, mercury, brex, deel, fireflies, miro, figma,
+        # `sha256=`+hex schemes: jira, mercury, brex, deel, fireflies, figma,
         # ashby (ashby is brex-shaped: sha256= + hex, CONFIRMED).
         if self._provider in (
-            "jira", "mercury", "brex", "deel", "fireflies", "miro", "figma",
+            "jira", "mercury", "brex", "deel", "fireflies", "figma",
             "ashby",
         ):
             return "sha256=" + mac.hexdigest()
@@ -509,7 +484,6 @@ class HmacWebhookGenerator:
             "deel": "Deel-Signature",
             # Must match each verifier's _HEADER_NAME constant (signatures/<src>.py).
             "fireflies": "x-hub-signature",  # CONFIRMED (docs.fireflies.ai)
-            "miro": "X-Miro-Signature",
             "figma": "Figma-Signature",
             "hibob": "Bob-Signature",      # CONFIRMED (signatures/hibob.py)
             "ashby": "Ashby-Signature",    # CONFIRMED (signatures/ashby.py)
@@ -561,7 +535,7 @@ class HmacWebhookGenerator:
             # check and rejects on the HMAC compare.
             signature = base64.b64encode(b"wrong-hibob-signature-tamper").decode("ascii")
         elif self._provider in (
-            "jira", "mercury", "brex", "deel", "fireflies", "miro", "figma",
+            "jira", "mercury", "brex", "deel", "fireflies", "figma",
             "ashby",
         ):
             # `sha256=`+hex schemes (incl. ashby, brex-shaped): keep the prefix so
@@ -574,11 +548,13 @@ class HmacWebhookGenerator:
         # R3: Ashby resolves the tenant from a PER-INSTALL ENDPOINT URL
         # (`/webhooks/ashby/{installId}`), not a body field. Post to the
         # per-install path (installId == the seeded provider_installations id)
-        # so the gate exercises the real path-based resolution. Other providers
-        # post to the bare `/webhooks/{provider}` endpoint.
-        post_path = f"/webhooks/{self._provider}"
+        # so the gate exercises the real path-based resolution. Every provider
+        # path comes from the same catalog the gateway uses to mount routes.
+        post_path = webhook_ingress_definition(self._provider).route_path
         if self._provider == "ashby":
-            post_path = f"/webhooks/ashby/{target.ashby_org}"
+            post_path = post_path.format(
+                installation_id=target.ashby_org,
+            )
         response = await self._client.post(
             post_path,
             content=body,

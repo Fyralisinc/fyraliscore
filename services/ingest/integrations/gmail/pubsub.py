@@ -27,6 +27,7 @@ from uuid import UUID
 import httpx
 import structlog
 
+from lib.integrations.endpoints import endpoint
 from lib.shared.errors import CompanyOSError
 from lib.shared.provider_transport import (
     ProviderRateLimited,
@@ -57,9 +58,6 @@ log = structlog.get_logger("integrations.gmail.pubsub")
 GMAIL_PUSH_SA = "serviceAccount:gmail-api-push@system.gserviceaccount.com"
 
 PUBSUB_SCOPE = "https://www.googleapis.com/auth/pubsub"
-
-_PUBSUB_BASE = "https://pubsub.googleapis.com/v1"
-
 
 class PubsubProvisioningError(CompanyOSError):
     default_code = "gmail_pubsub_provisioning_error"
@@ -395,7 +393,7 @@ class PubsubAdmin:
             try:
                 response = await self._client.request(
                     method,
-                    f"{_PUBSUB_BASE}/{path}",
+                    f"{endpoint('gmail_pubsub_api')}/{path}",
                     headers=headers,
                     json=json_body,
                 )

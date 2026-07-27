@@ -2,7 +2,8 @@
 
 Drives the PRODUCTION Notion live path in-process:
 
-  Generator → POST /webhooks/notion  (thin {type, workspace_id, entity})
+  Generator → POST /webhooks/notion/events
+              (thin {type, workspace_id, entity})
                  signed `X-Notion-Signature: sha256=<hex>` with the
                  app-level NOTION_WEBHOOK_VERIFICATION_TOKEN
             → router verify (signatures/notion.py) + tenant resolve
@@ -177,7 +178,7 @@ class NotionWebhookGenerator:
             "sha256=" + ("f" * 64) if tamper_signature else self._sign(body)
         )
         response = await self._client.post(
-            "/webhooks/notion",
+            "/webhooks/notion/events",
             content=body,
             headers={
                 "Content-Type": "application/json",

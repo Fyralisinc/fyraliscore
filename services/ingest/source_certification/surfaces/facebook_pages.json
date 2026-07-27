@@ -1,0 +1,935 @@
+{
+  "implementation_sha256": {
+    "services.app.gateway.facebook_pages_router": "f1bb1c38767f197e33088286daebf904be230266098a6ec95b20332f5c6e7463",
+    "services.app.gateway.whatsapp_router": "30c7a6f7ba7f12c839ec4195e2718af4cc1dadad325e6d9457fb562c4a9b4414",
+    "services.ingest.ingestion.fetchers.facebook_pages": "f02f85e363bf4463596070ccacc477c9f57d6acdf0e90425bbb81f7657765bd4",
+    "services.ingest.ingestion.handlers.facebook_pages": "db101c7f1803bebc094e6900fc5c5b10f7019734ef4c1bba43417bd3cc71ef61",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.facebook_pages": "b4f721e9ec2383ac31f568df867ee0d085d3b62d1c65c896d75d37857c16cb34",
+    "services.ingest.ingestion.reconcilers.facebook_pages": "c5297008b5516d4c2939deac842aabf84bc654f07975fbae8908e4a6d991728c",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.facebook_pages": "952179b2c3c58c12272075076982ff3ab3542e65b9fe0e84baf1374555786342",
+    "services.ingest.integrations.facebook_pages.client": "f0cf8a7de6d9bae2ad82527b06996e3949eaf26fcf32f964c6cd26a0c5662635",
+    "services.ingest.integrations.facebook_pages.oauth": "fbf5dd93afe5b6c734663e63e606e8f4e9537ebec914b1203dd402901db66cd3",
+    "services.ingest.integrations.facebook_pages.token_lifecycle": "ec3dc857b4bed73dec6add6c6fd3854ca8abc373aead0737e950dc670720e3a8",
+    "services.ingest.integrations.whatsapp.signature": "1e2114f289c8380f034d0f1b69a821b482319a260225059f69af1dfea959f208",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_cd": "41c4c2a2e3d41386cae397e018f3cd519f08baae2bdf5e148c00e36c3df41929",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Meta Graph API v23.0",
+  "provider_contract": {
+    "aliases": [
+      "facebook",
+      "meta_platforms"
+    ],
+    "auth_strategies": [
+      "oauth2",
+      "app_secret_webhook"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [
+      {
+        "acknowledgement_policy": "durable_or_inline_before_ack",
+        "channel": "whatsapp:message",
+        "dispatcher_binding": "services.app.gateway.whatsapp_router:build_whatsapp_router",
+        "ingress_id": "whatsapp_webhook",
+        "ingress_kind": "webhook",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "route_path": "/integrations/whatsapp/webhook",
+        "router_factory_accepts_debug_endpoints": true,
+        "router_factory_binding": "services.app.gateway.whatsapp_router:build_whatsapp_router",
+        "source_id": "whatsapp",
+        "tenant_binding_policy": "phone_number_installation",
+        "tenant_resolver_binding": "services.app.gateway.whatsapp_router:_lookup_installation",
+        "verification_bindings": [
+          "services.app.gateway.whatsapp_router:_verify_token_matches_installation",
+          "services.ingest.integrations.whatsapp.signature:verify_signature"
+        ],
+        "verification_policy": "meta_verify_token_hmac"
+      },
+      {
+        "acknowledgement_policy": "durable_or_inline_before_ack",
+        "channel": "facebook_pages:message",
+        "dispatcher_binding": "services.app.gateway.facebook_pages_router:build_facebook_pages_router",
+        "ingress_id": "facebook_pages_webhook",
+        "ingress_kind": "webhook",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "route_path": "/integrations/facebook_pages/webhook",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.gateway.facebook_pages_router:build_facebook_pages_router",
+        "source_id": "facebook_pages",
+        "tenant_binding_policy": "page_installation",
+        "tenant_resolver_binding": "services.app.gateway.facebook_pages_router:_lookup_installation",
+        "verification_bindings": [
+          "services.app.gateway.facebook_pages_router:_verify_token_matches_installation",
+          "services.ingest.integrations.whatsapp.signature:verify_signature"
+        ],
+        "verification_policy": "meta_verify_token_hmac"
+      }
+    ],
+    "display_name": "Meta",
+    "oauth_ingresses": [
+      {
+        "callback_handler_binding": "services.ingest.integrations.facebook_pages.oauth:callback_handler",
+        "callback_path": "/integrations/facebook_pages/callback",
+        "install_handler_binding": "services.ingest.integrations.facebook_pages.oauth:install_handler",
+        "install_path": "/integrations/facebook_pages/install",
+        "mount_mode": "shared_router",
+        "public_result_paths": [
+          "/integrations/facebook_pages/installed",
+          "/integrations/facebook_pages/install-error"
+        ],
+        "source_id": "facebook_pages"
+      }
+    ],
+    "operation_policy_ids": [
+      "pages.list",
+      "pages.subscribe",
+      "conversations.list",
+      "messages.list",
+      "oauth.token.exchange",
+      "oauth.user_token.extend"
+    ],
+    "outbound_endpoint_names": [
+      "facebook_graph_api"
+    ],
+    "provider_id": "meta",
+    "source_ids": [
+      "whatsapp",
+      "facebook_pages"
+    ],
+    "webhook_ingresses": []
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "app_secrets": {
+        "global": "provider-lab-secret"
+      },
+      "conversations": {
+        "certification-surface-facebook_pages": [
+          {
+            "id": "certification-surface-facebook_pages-conversation-1",
+            "participants": {
+              "data": [
+                {
+                  "id": "certification-surface-facebook_pages-participant-1",
+                  "name": "Person 1"
+                },
+                {
+                  "id": "certification-surface-facebook_pages",
+                  "name": "Synthetic Page"
+                }
+              ]
+            },
+            "updated_time": "2026-01-02T00:00:00+00:00"
+          },
+          {
+            "id": "certification-surface-facebook_pages-conversation-2",
+            "participants": {
+              "data": [
+                {
+                  "id": "certification-surface-facebook_pages-participant-2",
+                  "name": "Person 2"
+                },
+                {
+                  "id": "certification-surface-facebook_pages",
+                  "name": "Synthetic Page"
+                }
+              ]
+            },
+            "updated_time": "2026-01-03T00:00:00+00:00"
+          }
+        ]
+      },
+      "installations": {
+        "certification-surface-facebook_pages": {
+          "enabled": true
+        }
+      },
+      "messages": {
+        "certification-surface-facebook_pages-conversation-1": [
+          {
+            "created_time": "2026-01-01T00:00:00+00:00",
+            "from": {
+              "id": "certification-surface-facebook_pages-participant-1",
+              "name": "Person 1"
+            },
+            "id": "certification-surface-facebook_pages-conversation-1-message-1",
+            "message": "Synthetic Messenger message 1.1",
+            "to": {
+              "data": [
+                {
+                  "id": "certification-surface-facebook_pages",
+                  "name": "Synthetic Page"
+                }
+              ]
+            }
+          },
+          {
+            "created_time": "2026-01-01T00:01:00+00:00",
+            "from": {
+              "id": "certification-surface-facebook_pages-participant-1",
+              "name": "Person 1"
+            },
+            "id": "certification-surface-facebook_pages-conversation-1-message-2",
+            "message": "Synthetic Messenger message 1.2",
+            "to": {
+              "data": [
+                {
+                  "id": "certification-surface-facebook_pages",
+                  "name": "Synthetic Page"
+                }
+              ]
+            }
+          },
+          {
+            "created_time": "2026-01-01T00:02:00+00:00",
+            "from": {
+              "id": "certification-surface-facebook_pages-participant-1",
+              "name": "Person 1"
+            },
+            "id": "certification-surface-facebook_pages-conversation-1-message-3",
+            "message": "Synthetic Messenger message 1.3",
+            "to": {
+              "data": [
+                {
+                  "id": "certification-surface-facebook_pages",
+                  "name": "Synthetic Page"
+                }
+              ]
+            }
+          }
+        ],
+        "certification-surface-facebook_pages-conversation-2": [
+          {
+            "created_time": "2026-01-02T00:00:00+00:00",
+            "from": {
+              "id": "certification-surface-facebook_pages-participant-2",
+              "name": "Person 2"
+            },
+            "id": "certification-surface-facebook_pages-conversation-2-message-1",
+            "message": "Synthetic Messenger message 2.1",
+            "to": {
+              "data": [
+                {
+                  "id": "certification-surface-facebook_pages",
+                  "name": "Synthetic Page"
+                }
+              ]
+            }
+          },
+          {
+            "created_time": "2026-01-02T00:01:00+00:00",
+            "from": {
+              "id": "certification-surface-facebook_pages-participant-2",
+              "name": "Person 2"
+            },
+            "id": "certification-surface-facebook_pages-conversation-2-message-2",
+            "message": "Synthetic Messenger message 2.2",
+            "to": {
+              "data": [
+                {
+                  "id": "certification-surface-facebook_pages",
+                  "name": "Synthetic Page"
+                }
+              ]
+            }
+          },
+          {
+            "created_time": "2026-01-02T00:02:00+00:00",
+            "from": {
+              "id": "certification-surface-facebook_pages-participant-2",
+              "name": "Person 2"
+            },
+            "id": "certification-surface-facebook_pages-conversation-2-message-3",
+            "message": "Synthetic Messenger message 2.3",
+            "to": {
+              "data": [
+                {
+                  "id": "certification-surface-facebook_pages",
+                  "name": "Synthetic Page"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "page_size": 100,
+      "pages": {
+        "certification-surface-facebook_pages": {
+          "access_token": "lab-facebook-pages::certification-surface-facebook_pages",
+          "id": "certification-surface-facebook_pages",
+          "name": "Synthetic Page",
+          "tasks": [
+            "MESSAGING",
+            "MANAGE",
+            "ANALYZE"
+          ]
+        }
+      },
+      "user_pages": {
+        "provider-lab-user-token": [
+          {
+            "access_token": "lab-facebook-pages::certification-surface-facebook_pages",
+            "id": "certification-surface-facebook_pages",
+            "name": "Synthetic Page",
+            "tasks": [
+              "MESSAGING",
+              "MANAGE",
+              "ANALYZE"
+            ]
+          }
+        ]
+      },
+      "verify_tokens": [
+        "provider-lab-verify"
+      ]
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "oauth.token.exchange",
+            "path_values": [
+              [
+                "version",
+                "v23.0"
+              ]
+            ],
+            "query_items": [
+              [
+                "client_id",
+                "provider-lab"
+              ],
+              [
+                "client_secret",
+                "provider-lab"
+              ],
+              [
+                "redirect_uri",
+                "https://provider-lab.test/facebook/callback"
+              ],
+              [
+                "code",
+                "provider-lab-code"
+              ]
+            ]
+          },
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "oauth.user_token.extend",
+            "path_values": [
+              [
+                "version",
+                "v23.0"
+              ]
+            ],
+            "query_items": [
+              [
+                "grant_type",
+                "fb_exchange_token"
+              ],
+              [
+                "client_id",
+                "provider-lab"
+              ],
+              [
+                "client_secret",
+                "provider-lab"
+              ],
+              [
+                "fb_exchange_token",
+                "provider-lab-short-user-token"
+              ]
+            ]
+          }
+        ],
+        "operation_ids": [
+          "oauth.token.exchange",
+          "oauth.user_token.extend"
+        ],
+        "path_template": "/{version}/oauth/access_token",
+        "quota_bucket": null,
+        "quota_cost": 1.0,
+        "route_id": "facebook_pages.oauth_token",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "pages.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "pages.list"
+        ],
+        "path_template": "/{version}/me/accounts",
+        "quota_bucket": "graph",
+        "quota_cost": 1.0,
+        "route_id": "facebook_pages.accounts",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "pages.subscribe",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "pages.subscribe"
+        ],
+        "path_template": "/{version}/{page_id}/subscribed_apps",
+        "quota_bucket": "graph",
+        "quota_cost": 1.0,
+        "route_id": "facebook_pages.subscribe",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "conversations.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "conversations.list"
+        ],
+        "path_template": "/{version}/{page_id}/conversations",
+        "quota_bucket": "graph",
+        "quota_cost": 1.0,
+        "route_id": "facebook_pages.conversations",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "messages.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "messages.list"
+        ],
+        "path_template": "/{version}/{conversation_id}/messages",
+        "quota_bucket": "graph",
+        "quota_cost": 1.0,
+        "route_id": "facebook_pages.messages",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [],
+        "operation_ids": [],
+        "path_template": "/webhook",
+        "quota_bucket": null,
+        "quota_cost": 1.0,
+        "route_id": "facebook_pages.webhook_verify",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [],
+        "operation_ids": [],
+        "path_template": "/webhook",
+        "quota_bucket": "webhook",
+        "quota_cost": 1.0,
+        "route_id": "facebook_pages.webhook_delivery",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [
+      "facebook",
+      "facebook_messenger",
+      "messenger"
+    ],
+    "allowed_observation_kinds": [
+      "signal"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.facebook_pages",
+      "evidence_id": "ingest.evidence.facebook_pages",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.facebook_pages",
+      "validation_runtime": {
+        "generator_group": "facebook_pages",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_facebook_pages_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_facebook_pages_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_facebook_pages_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_facebook_pages_live_target",
+        "preflight_binding": null,
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_facebook_pages_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.facebook_pages.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "conversation",
+      "message",
+      "attachment"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Communication",
+      "connection_method": "OAuth",
+      "description": "All available Page message history via Graph API, plus live webhooks.",
+      "display_name_override": "Facebook Page Messages",
+      "notice": null,
+      "order": 8,
+      "setup_requirements": "Meta app review, Page selection, OAuth approval, Page message permissions, app secret, verify token, and messages webhook subscription.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events",
+        "Backfill plus live"
+      ]
+    },
+    "display_name": "Facebook Pages / Messenger",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.facebook_pages:fetch_page_facebook_pages",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:facebook_page_message"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "facebook_pages:message",
+        "ingress_kind": "webhook"
+      },
+      {
+        "channel": "facebook_pages:message",
+        "ingress_kind": "backfill"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_facebook_pages_installation",
+      "management": null,
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_facebook_pages_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "page_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "facebook_pages_webhook",
+          "boundary_kind": "dedicated_ingress",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "facebook_pages:message"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.facebook_pages:handle_facebook_pages"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "page id",
+          "Page message scope",
+          "webhook callback URL"
+        ],
+        "agent_generates": [
+          "verify token ref",
+          "app secret ref",
+          "Facebook Page message scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "Meta admin signs in and completes MFA when prompted",
+          "Meta admin approves Page messaging scopes and webhook subscription"
+        ],
+        "settings_targets": [
+          "Meta app settings",
+          "Messenger API settings",
+          "Page access settings",
+          "webhook settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "pages_show_list",
+        "pages_messaging",
+        "pages_manage_metadata",
+        "pages_read_engagement"
+      ],
+      "discovery_target": "Facebook Pages, Messenger conversations, Page message history, and webhooks",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/integrations/facebook_pages/callback",
+        "/integrations/facebook_pages/webhook"
+      ],
+      "local_rehearsal": {
+        "callback_path": "/integrations/facebook_pages/callback",
+        "default_env": [],
+        "derived_env": [],
+        "env": [
+          "FACEBOOK_APP_ID",
+          "FACEBOOK_APP_SECRET",
+          "FACEBOOK_REDIRECT_URI",
+          "FACEBOOK_WEBHOOK_VERIFY_TOKEN",
+          "FACEBOOK_PAGE_ID",
+          "FACEBOOK_GRAPH_API_VERSION",
+          "OAUTH_STATE_HMAC_KEY"
+        ],
+        "finalize_endpoint": null,
+        "install_endpoint": "/integrations/facebook_pages/install",
+        "kind": "oauth_app",
+        "manual_gate_names": [
+          "facebook_pages_app_creation_or_update",
+          "facebook_pages_oauth_consent",
+          "facebook_pages_webhook_subscription_approval"
+        ],
+        "needs_public_url": true,
+        "preflight_endpoint": null,
+        "required_env": [
+          "FACEBOOK_APP_ID",
+          "FACEBOOK_APP_SECRET",
+          "FACEBOOK_REDIRECT_URI",
+          "FACEBOOK_WEBHOOK_VERIFY_TOKEN",
+          "OAUTH_STATE_HMAC_KEY"
+        ],
+        "runtime_components": [],
+        "webhook_path": "/integrations/facebook_pages/webhook"
+      },
+      "method": "oauth",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/facebook_pages/connect/finalize",
+        "kind": "oauth_native_connect",
+        "payload_fields": [
+          "page_id",
+          "installation_id",
+          "oauth_redirect_url",
+          "events_request_url"
+        ],
+        "preflight_path": "/integrations/facebook_pages/connect/preflight",
+        "preflight_payload_fields": [
+          "page_id",
+          "oauth_redirect_url",
+          "events_request_url"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "oauth_redirect_url",
+        "events_request_url"
+      ],
+      "provider_console_url": "https://developers.facebook.com/apps/",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "pages_show_list",
+        "pages_messaging",
+        "pages_manage_metadata",
+        "pages_read_engagement"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:facebook_pages_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "provider_callback",
+      "required_inputs": [
+        "page_id"
+      ],
+      "required_refs": [
+        "oauth_client",
+        "page_access_token",
+        "app_secret",
+        "verify_token"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "pages.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "pages.subscribe",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "conversations.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "messages.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "oauth.token.exchange",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "oauth.user_token.extend",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "facebook_graph_api",
+        "operation_ids": [
+          "pages.list",
+          "pages.subscribe",
+          "conversations.list",
+          "messages.list",
+          "oauth.token.exchange",
+          "oauth.user_token.extend"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.facebook_pages:plan_shards_facebook_pages",
+    "provider_id": "meta",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.facebook_pages:reconcile_facebook_pages",
+    "runtime_identifiers": [
+      "page_id"
+    ],
+    "source_id": "facebook_pages",
+    "trust_tiers": [
+      "attested_agent"
+    ],
+    "ui_slug": "facebook_pages"
+  },
+  "source_id": "facebook_pages"
+}

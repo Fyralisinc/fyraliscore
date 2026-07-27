@@ -115,7 +115,7 @@ async def test_signed_interaction_resolves_via_db_backed_public_key(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         r = await c.post(
-            "/webhooks/discord/events",
+            "/webhooks/discord",
             content=body,
             headers={
                 "X-Signature-Ed25519": sig,
@@ -157,7 +157,7 @@ async def test_ping_uses_env_var_public_key_when_no_install_row(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         r = await c.post(
-            "/webhooks/discord/events",
+            "/webhooks/discord",
             content=body,
             headers={
                 "X-Signature-Ed25519": sig,
@@ -198,7 +198,7 @@ async def test_unknown_guild_returns_unknown_installation_no_leak(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         r = await c.post(
-            "/webhooks/discord/events",
+            "/webhooks/discord",
             content=body,
             headers={
                 "X-Signature-Ed25519": sig,

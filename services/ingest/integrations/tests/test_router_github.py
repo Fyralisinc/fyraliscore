@@ -91,7 +91,7 @@ async def test_verified_pull_request_lands_as_observation(
     }).encode()
 
     response = await gateway_client.post(
-        "/webhooks/github/events",
+        "/webhooks/github",
         content=body,
         headers={
             "Content-Type": "application/json",
@@ -121,7 +121,7 @@ async def test_verified_pull_request_lands_as_observation(
 async def test_ping_bootstrap_no_installation(gateway_client) -> None:
     body = json.dumps({"zen": "Half measures are as bad as nothing at all."}).encode()
     response = await gateway_client.post(
-        "/webhooks/github/events",
+        "/webhooks/github",
         content=body,
         headers={
             "Content-Type": "application/json",
@@ -148,7 +148,7 @@ async def test_forged_signature_returns_401(
         "repository": {"full_name": "octo/repo-a"},
     }).encode()
     response = await gateway_client.post(
-        "/webhooks/github/events",
+        "/webhooks/github",
         content=body,
         headers={
             "Content-Type": "application/json",
@@ -172,7 +172,7 @@ async def test_unknown_installation_returns_401(gateway_client) -> None:
         "repository": {"full_name": "octo/repo-x"},
     }).encode()
     response = await gateway_client.post(
-        "/webhooks/github/events",
+        "/webhooks/github",
         content=body,
         headers={
             "Content-Type": "application/json",
@@ -204,7 +204,7 @@ async def test_repo_filter_drops_unlisted(
         "sender": {"login": "bob"},
     }).encode()
     response = await gateway_client.post(
-        "/webhooks/github/events",
+        "/webhooks/github",
         content=body,
         headers={
             "Content-Type": "application/json",
@@ -248,12 +248,12 @@ async def test_replay_short_circuit_within_5_min(
     }
 
     resp1 = await gateway_client.post(
-        "/webhooks/github/events", content=body, headers=headers,
+        "/webhooks/github", content=body, headers=headers,
     )
     assert resp1.status_code in (200, 201)
 
     resp2 = await gateway_client.post(
-        "/webhooks/github/events", content=body, headers=headers,
+        "/webhooks/github", content=body, headers=headers,
     )
     assert resp2.status_code == 200
     assert resp2.json().get("handled") == "replay"
@@ -272,7 +272,7 @@ async def test_installation_deleted_disables_row(
         "installation": {"id": 12345678, "account": {"login": "octo"}},
     }).encode()
     response = await gateway_client.post(
-        "/webhooks/github/events",
+        "/webhooks/github",
         content=body,
         headers={
             "Content-Type": "application/json",

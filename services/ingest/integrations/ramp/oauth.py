@@ -54,6 +54,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import RampApiError
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.provider_transport import (
     tenant_preinstall_transport_kwargs,
 )
@@ -68,11 +69,6 @@ from services.ingest.integrations.ramp.onboarding import (
 
 
 log = structlog.get_logger("integrations.ramp.oauth")
-
-
-# Ramp production host (VERIFIED docs.ramp.com; overridable per-install via the
-# base_url field and per-env via RAMP_API_BASE_URL).
-_DEFAULT_BASE_URL = "https://api.ramp.com/developer/v1"
 
 
 router = APIRouter(prefix="/integrations/ramp", tags=["ramp"])
@@ -107,14 +103,15 @@ def _require_creds(body: dict[str, Any]) -> dict[str, Any]:
     client_id = (body.get("client_id") or "").strip() or None
     client_secret = (body.get("client_secret") or "").strip() or None
     scopes = (body.get("scopes") or "").strip() or None
-    base_url = (body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     if not access_token and not (client_id and client_secret):
         raise HTTPException(
             status_code=400,
             detail="provide either access_token or client_id + client_secret",
         )
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="ramp_api",
+    )
     return {
         "access_token": access_token,
         "client_id": client_id,

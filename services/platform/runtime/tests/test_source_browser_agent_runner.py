@@ -253,6 +253,34 @@ def test_figma_oauth_bundle_never_generates_pat_or_webhook_refs() -> None:
     assert "webhook_secret" not in rendered
 
 
+@pytest.mark.parametrize(
+    ("source_id", "source_scope"),
+    (
+        ("gmail", "https://www.googleapis.com/auth/gmail.metadata"),
+        (
+            "google_calendar",
+            "https://www.googleapis.com/auth/calendar.readonly",
+        ),
+        ("google_drive", "https://www.googleapis.com/auth/drive.readonly"),
+    ),
+)
+def test_google_dwd_bundle_uses_exact_contract_consent_scopes(
+    source_id: str,
+    source_scope: str,
+) -> None:
+    bundle = build_source_provider_setup_bundle(
+        source=source_id,
+        recipe=browser_agent_recipe_for_source(source_id),
+    )
+    scopes = bundle["artifacts"][0]["json"]["domain_wide_delegation"]["scopes"]
+
+    assert scopes == [
+        source_scope,
+        "https://www.googleapis.com/auth/admin.directory.user.readonly",
+        "https://www.googleapis.com/auth/admin.directory.group.readonly",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_browser_dom_config_values_generate_secret_in_memory() -> None:
     page = _FakePage()

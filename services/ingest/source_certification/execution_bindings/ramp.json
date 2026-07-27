@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "ramp",
+  "spec_hash": "a75f56bb874414baab2287813d4b8e5426476cf888b93b741bcd418208073777",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "ramp",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "a20b2ee9d6b669f41fe22d8dc79e88d427a8aba889b2fcc9459e9bbd7b59294c"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_RAMP"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_RAMP"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "ramp",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "a20b2ee9d6b669f41fe22d8dc79e88d427a8aba889b2fcc9459e9bbd7b59294c"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "ramp",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "a20b2ee9d6b669f41fe22d8dc79e88d427a8aba889b2fcc9459e9bbd7b59294c"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "ramp",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "a20b2ee9d6b669f41fe22d8dc79e88d427a8aba889b2fcc9459e9bbd7b59294c"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

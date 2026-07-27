@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "google_calendar",
+  "spec_hash": "b73583d9d5fb45d71ad057afb48f380d14f92906e48f119bf06f06603226d1bf",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "google_calendar",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "95a383b4bbd23bc87bbc001dc25c6fc7a365506aeae8ad04ba9d04e8bdb6b63a"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_GOOGLE_CALENDAR"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_GOOGLE_CALENDAR"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "google_calendar",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "95a383b4bbd23bc87bbc001dc25c6fc7a365506aeae8ad04ba9d04e8bdb6b63a"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "google_calendar",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "95a383b4bbd23bc87bbc001dc25c6fc7a365506aeae8ad04ba9d04e8bdb6b63a"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "google_calendar",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "95a383b4bbd23bc87bbc001dc25c6fc7a365506aeae8ad04ba9d04e8bdb6b63a"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

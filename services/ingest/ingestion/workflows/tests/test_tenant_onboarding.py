@@ -590,6 +590,65 @@ async def test_orchestrator_completes_run_when_all_sources_done(
     assert data["tenant_id"] == str(tid)
 
 
+@pytest.mark.parametrize("existing_run", [False, True])
+async def test_orchestrator_consumes_orphan_source_completion(
+    fresh_db: asyncpg.Pool,
+    existing_run: bool,
+) -> None:
+    """Deleted runs and missing source rows cannot crash the shared inbox."""
+
+    run_id = uuid4()
+    if existing_run:
+        tenant_id = await _seed_tenant(fresh_db)
+        run_id = await _seed_onboarding_run(
+            fresh_db,
+            tenant_id=tenant_id,
+            status="pending",
+        )
+    await _emit_source_completed_signal(
+        fresh_db,
+        run_id=run_id,
+        source="slack",
+    )
+
+    await _orch(fresh_db).run(max_ticks=1)
+
+    signal = await fresh_db.fetchrow(
+        """
+        SELECT consumed_at
+          FROM workflow_signals
+         WHERE workflow_kind = $1
+           AND workflow_id = $2
+           AND signal_kind = $3
+           AND idempotency_key = $4
+        """,
+        WORKFLOW_KIND,
+        WORKFLOW_ID_INBOX,
+        SIGNAL_KIND_SOURCE_COMPLETED,
+        f"{run_id}:slack",
+    )
+    assert signal["consumed_at"] is not None
+    assert await fresh_db.fetchval(
+        """
+        SELECT count(*)
+          FROM workflow_signals
+         WHERE workflow_kind = $1
+           AND workflow_id = $2
+           AND signal_kind = $3
+           AND idempotency_key = $4
+        """,
+        BRIDGE_INBOX_KIND,
+        BRIDGE_INBOX_ID,
+        SIGNAL_KIND_TENANT_COMPLETED,
+        str(run_id),
+    ) == 0
+    if existing_run:
+        assert await fresh_db.fetchval(
+            "SELECT status FROM onboarding_runs WHERE id = $1",
+            run_id,
+        ) == "pending"
+
+
 # =====================================================================
 # 5. Partial-failure: one source failed → parent run failed.
 # =====================================================================

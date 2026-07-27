@@ -1,6 +1,8 @@
 """services/ingest/integrations/carta/metrics.py — lightweight in-process counters."""
 from __future__ import annotations
 
+from services.ingest.integrations.metrics_contract import make_snapshot_exporter
+
 
 _counters: dict[str, int] = {}
 
@@ -25,4 +27,12 @@ def _reset_for_tests() -> None:
     _counters.clear()
 
 
-__all__ = ["record_request", "record_provision_outcome", "snapshot"]
+export_metrics = make_snapshot_exporter(snapshot)
+
+
+__all__ = [
+    "export_metrics",
+    "record_request",
+    "record_provision_outcome",
+    "snapshot",
+]

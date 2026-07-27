@@ -1,0 +1,238 @@
+name: Source Certification Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_dedicated_accounts:
+        description: "I confirm the runner is connected only to dedicated disposable provider accounts and approved test environments."
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-certification-evidence-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Derive exact source matrix
+    if: inputs.confirm_dedicated_accounts == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.catalog.outputs.matrix }}
+
+    steps:
+      - name: Check out the exact main commit
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the exact project
+        run: |
+          set -euo pipefail
+          python -m venv "${RUNNER_TEMP}/source-certification-venv"
+          "${RUNNER_TEMP}/source-certification-venv/bin/pip" install --upgrade pip
+          "${RUNNER_TEMP}/source-certification-venv/bin/pip" install -e ".[dev]"
+
+      - name: Build matrix from the canonical catalog
+        id: catalog
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/source-certification-venv/bin/python" - <<'PY'
+          import json
+          import os
+          from services.ingest.source_contract.catalog import CANONICAL_SOURCE_IDS
+
+          matrix = {
+              "include": [
+                  {"source_id": source_id, "source_index": index}
+                  for index, source_id in enumerate(CANONICAL_SOURCE_IDS)
+              ]
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write("matrix=" + json.dumps(matrix, separators=(",", ":")) + "\n")
+          PY
+
+  produce-source:
+    name: Execute ${{ matrix.source_id }} certification
+    needs: plan
+    if: inputs.confirm_dedicated_accounts == true
+    runs-on: [self-hosted, linux, source-certification]
+    timeout-minutes: 360
+    environment:
+      name: source-certification-${{ matrix.source_id }}
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    steps:
+      - name: Check out the exact main commit
+        uses: actions/checkout@v4
+
+      - name: Require a main-branch commit
+        env:
+          TARGET_REF: ${{ github.ref }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${TARGET_REF}" != "refs/heads/main" ]; then
+            echo "Source Certification Evidence must run on main, got ${TARGET_REF}" >&2
+            exit 1
+          fi
+          if [[ ! "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "github.sha must be a lowercase full 40-character commit SHA" >&2
+            exit 1
+          fi
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the exact project
+        run: |
+          set -euo pipefail
+          python -m venv "${RUNNER_TEMP}/source-certification-venv"
+          "${RUNNER_TEMP}/source-certification-venv/bin/pip" install --upgrade pip
+          "${RUNNER_TEMP}/source-certification-venv/bin/pip" install -e ".[dev]"
+
+      - name: Materialize process-local certification secret bundle
+        env:
+          CERTIFICATION_SECRET_BUNDLE_JSON: ${{ secrets.SOURCE_CERTIFICATION_SECRET_BUNDLE_JSON }}
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          secret_path="${RUNNER_TEMP}/source-certification-secrets.json"
+          if [ -n "${CERTIFICATION_SECRET_BUNDLE_JSON}" ]; then
+            printf '%s' "${CERTIFICATION_SECRET_BUNDLE_JSON}" > "${secret_path}"
+          else
+            printf '%s\n' '{}' > "${secret_path}"
+          fi
+          chmod 0600 "${secret_path}"
+          test "$(stat -c '%a' "${secret_path}")" = "600"
+
+      - name: Produce one source-isolated receipt-backed bundle
+        env:
+          SOURCE_INDEX: ${{ matrix.source_index }}
+          SOURCE_ID: ${{ matrix.source_id }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          run_id="sc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${TARGET_SHA}"
+          lock_path="/tmp/fyralis-source-certification-data-plane.lock"
+          (
+            flock --exclusive --wait 21600 9
+            "${RUNNER_TEMP}/source-certification-venv/bin/python" \
+              scripts/produce_source_certification_evidence.py \
+              --commit-sha "${TARGET_SHA}" \
+              --run-id "${run_id}" \
+              --shard-index "${SOURCE_INDEX}" \
+              --shard-count 27 \
+              --secret-bundle \
+                "${RUNNER_TEMP}/source-certification-secrets.json" \
+              --secret-bundle-source "${SOURCE_ID}" \
+              --output-dir "${RUNNER_TEMP}/source-certification-source"
+          ) 9>"${lock_path}"
+
+      - name: Remove process-local certification secret bundle
+        if: always()
+        run: |
+          set -euo pipefail
+          secret_path="${RUNNER_TEMP}/source-certification-secrets.json"
+          if [ -e "${secret_path}" ] && [ ! -L "${secret_path}" ]; then
+            chmod 0600 "${secret_path}"
+            rm -f -- "${secret_path}"
+          fi
+
+      # Provider Lab state and receipt paths are process-local. The explicit
+      # host lock still serializes opt-in Postgres/Kafka/S3 probes because
+      # their current harness workers subscribe broadly to shared endpoints.
+      # The current load executable remains a short, non-promoting diagnostic:
+      # no long promotion suite is scheduled until an artifact validator and
+      # runner prove S3 -> Kafka -> Observation -> T1 under offered load.
+      - name: Upload source-isolated bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-certification-source-${{ matrix.source_id }}
+          path: ${{ runner.temp }}/source-certification-source
+          if-no-files-found: error
+          retention-days: 30
+
+  merge-and-verify:
+    name: Merge and verify exact 27-source evidence
+    needs: produce-source
+    if: always() && inputs.confirm_dedicated_accounts == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the exact main commit
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the exact project
+        run: |
+          set -euo pipefail
+          python -m venv "${RUNNER_TEMP}/source-certification-venv"
+          "${RUNNER_TEMP}/source-certification-venv/bin/pip" install --upgrade pip
+          "${RUNNER_TEMP}/source-certification-venv/bin/pip" install -e ".[dev]"
+
+      - name: Download every producer shard
+        uses: actions/download-artifact@v4
+        with:
+          pattern: source-certification-source-*
+          path: ${{ runner.temp }}/source-certification-shards
+          merge-multiple: false
+
+      - name: Require exact shard membership and merge
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/source-certification-venv/bin/python" \
+            scripts/merge_source_certification_evidence.py \
+            --target-sha "${TARGET_SHA}" \
+            --shard-root "${RUNNER_TEMP}/source-certification-shards" \
+            --output-dir "${RUNNER_TEMP}/source-certification-evidence"
+
+      # Blocked bundles remain inspectable, but the strict verification below
+      # fails this workflow and the release consumer rejects unsuccessful runs.
+      - name: Upload exact certification inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-certification-inputs
+          path: ${{ runner.temp }}/source-certification-evidence/inputs/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload merged producer receipts and manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-certification-provenance
+          path: ${{ runner.temp }}/source-certification-evidence/provenance
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Require complete replayable evidence
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/source-certification-venv/bin/python" \
+            scripts/verify_source_certification_evidence.py \
+            --input-dir "${RUNNER_TEMP}/source-certification-evidence/inputs" \
+            --provenance-dir "${RUNNER_TEMP}/source-certification-evidence/provenance" \
+            --target-sha "${TARGET_SHA}"

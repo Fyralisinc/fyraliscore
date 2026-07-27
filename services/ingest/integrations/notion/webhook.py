@@ -10,7 +10,8 @@ a one-time handshake and the steady-state event path:
     BEFORE signature verification (see router.py), logs the token loudly
     for the operator to copy into ``NOTION_WEBHOOK_VERIFICATION_TOKEN``,
     and 200s. This is the documented one-and-only delivery of that token
-    (see services/app/webhooks/secrets.py::_load_notion_app_secrets).
+    (see the contract-bound loader in
+    services/ingest/integrations/notion/webhook_secrets.py).
 
   * ``handle_notion_event`` — a verified, tenant-resolved event. Notion
     deliveries are THIN: ``entity.id`` + a dotted event ``type`` (e.g.
@@ -27,15 +28,19 @@ a one-time handshake and the steady-state event path:
     collapses a webhook-delivered page and its backfill twin to one
     observation.
 
-    Why the data plane and not inline ``ingest()``: Notion has no inline
-    handler wired in the gateway, and we deliberately route Notion through
-    the full pipeline. The producer + S3 client come from
+    The durable data plane is the primary path. The producer + S3 client come from
     ``app.state.notion_data_plane`` (wired in
     services/app/gateway/state_wiring.py::wire_ingestion_data_plane), scoped so the
     slack/github cutover stays inline. The observation lands once the
     tenant's ``ingestion.kafka_path_enabled`` flag is on (the
     observation_writer full-mode gate) — the same gate backfill lives
     behind.
+
+    The provider catalog declares this behavior as
+    ``dedicated_kafka_first_with_inline_fallback``. If the durable path is
+    unavailable before the provider is acknowledged, the already-hydrated page
+    uses the uniform inline ingestion path. This avoids silently dropping an
+    otherwise valid Notion delivery during an S3/Kafka outage.
 
 Scope (v1): PAGE entities only. The NotionClient's single-object getter is
 ``retrieve_page``; pages are the high-value surface and the only entity a
@@ -55,6 +60,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import NotionApiError
+from services.ingest.ingestion.core import ingest
 from services.ingest.ingestion.kafka.flush_batcher import coalesced_flush
 from services.ingest.ingestion.shadow_write import (
     CUTOVER_FLUSH_TIMEOUT_SEC,
@@ -213,13 +219,48 @@ async def handle_notion_event(
         event_type=event_type,
         entity_id=entity_id,
     )
+    inline_fallback = False
+    if not written:
+        await _inline_ingest_page(
+            request,
+            tenant_id=outcome.tenant_id,
+            page=page,
+        )
+        inline_fallback = True
     return JSONResponse(
         {
             "handled": "event",
             "event_type": event_type,
             "shadow_write": written,
+            "inline_fallback": inline_fallback,
         },
         status_code=200,
+    )
+
+
+async def _inline_ingest_page(
+    request: Request,
+    *,
+    tenant_id: Any,
+    page: dict[str, Any],
+) -> None:
+    """Persist one hydrated page through the uniform inline ingestion path.
+
+    Errors intentionally propagate. A provider retry is safer than returning
+    a successful acknowledgement after both durable and inline paths fail.
+    """
+
+    deps = getattr(request.app.state, "deps", None)
+    if deps is None:
+        raise RuntimeError("Gateway deps not initialised (call lifespan startup)")
+    await ingest(
+        "notion:object",
+        page,
+        pool=deps.pool,
+        tenant_id=tenant_id,
+        actor_repo=deps.actor_repo,
+        alias_repo=deps.alias_repo,
+        embedder=deps.embedder,
     )
 
 
@@ -237,10 +278,9 @@ async def _shadow_write_page(
     ``app.state.notion_data_plane`` (see
     services/app/gateway/state_wiring.py::wire_ingestion_data_plane). Returns True when
     the write was attempted, False when the data plane is unwired
-    (KAFKA_BOOTSTRAP_SERVERS unset / startup failed). A failure mid-write
-    propagates the exception to the caller's 200 path only via the log —
-    the function swallows it (Notion must not retry a transient S3/Kafka
-    hiccup; backfill/poll reconciles).
+    (KAFKA_BOOTSTRAP_SERVERS unset / startup failed). A failure mid-write is
+    logged and returns False so the caller can execute the declared inline
+    fallback before acknowledging the provider.
     """
     ndp = getattr(request.app.state, "notion_data_plane", None)
     if ndp is None:

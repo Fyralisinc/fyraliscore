@@ -14,6 +14,7 @@ from scripts.manage_dedicated_source_installations import (
     INSTALLATION_MANAGEMENT_SPECS,
     DedicatedSourceInstallationCliError,
     _installation_projection_sql,
+    _selector_clause,
     _uninstall_installation,
     _webhook_cleanup_complete,
     _webhook_cleanup_status,
@@ -34,6 +35,36 @@ def _parse(argv: list[str]) -> argparse.Namespace:
 
 def test_cli_uses_the_immutable_contract_derived_management_view() -> None:
     assert INSTALLATION_MANAGEMENT_SPECS is INSTALLATION_MANAGEMENT_CATALOG
+
+
+def test_region_selector_is_enabled_by_installation_contract_metadata() -> None:
+    aws_values: list[object] = [UUID(int=1)]
+    aws_clauses = _selector_clause(
+        args=argparse.Namespace(
+            installation_row_id=None,
+            scope_id="111122223333",
+            region="us-west-2",
+        ),
+        spec=INSTALLATION_MANAGEMENT_SPECS["aws"],
+        values=aws_values,
+    )
+
+    assert aws_clauses == ["tenant_id = $1", "account_id = $2", "region = $3"]
+    assert aws_values == [UUID(int=1), "111122223333", "us-west-2"]
+
+    with pytest.raises(
+        DedicatedSourceInstallationCliError,
+        match="not declared by the mercury installation contract",
+    ):
+        _selector_clause(
+            args=argparse.Namespace(
+                installation_row_id=None,
+                scope_id="mercury-org",
+                region="us-west-2",
+            ),
+            spec=INSTALLATION_MANAGEMENT_SPECS["mercury"],
+            values=[UUID(int=1)],
+        )
 
 
 def _metadata(row: asyncpg.Record) -> dict[str, object]:

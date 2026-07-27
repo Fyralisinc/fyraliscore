@@ -17,6 +17,11 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
+from services.ingest.integrations.metrics_contract import (
+    MetricSample,
+    export_labeled_metrics,
+)
+
 
 _counters: Counter[tuple[str, frozenset[tuple[str, str]]]] = Counter()
 _gauges: dict[tuple[str, frozenset[tuple[str, str]]], float] = defaultdict(float)
@@ -65,10 +70,28 @@ def snapshot() -> dict[str, float]:
     return out
 
 
+def export_metrics(_source_id: str) -> tuple[MetricSample, ...]:
+    """Copy the Gateway's provider-owned metric families."""
+
+    return export_labeled_metrics(
+        counters=dict(_counters),
+        gauges=dict(_gauges),
+    )
+
+
 def reset() -> None:
     """Reset all counters and gauges (test helper)."""
     _counters.clear()
     _gauges.clear()
 
 
-__all__ = ["inc", "add", "set_gauge", "get", "get_gauge", "snapshot", "reset"]
+__all__ = [
+    "add",
+    "export_metrics",
+    "get",
+    "get_gauge",
+    "inc",
+    "reset",
+    "set_gauge",
+    "snapshot",
+]

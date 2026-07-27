@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://core.telegram.org/api",
       "api_version": "Telegram MTProto layer (Telethon boundary)",
-      "schema_sha256": null,
+      "schema_sha256": "4298d2ce5b44d9c52d58edb33195dc811f68602a3c11ee276b14ed07c2b70bdf",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 TelegramTransport schema lock and Telethon-boundary verification."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

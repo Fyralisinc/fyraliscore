@@ -131,7 +131,7 @@ async def _post_interaction(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         return await c.post(
-            "/webhooks/discord/events",
+            "/webhooks/discord",
             content=body,
             headers={
                 "X-Signature-Ed25519": sig,

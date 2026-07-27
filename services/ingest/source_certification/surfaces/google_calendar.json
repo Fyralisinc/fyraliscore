@@ -1,0 +1,1193 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.gmail_pubsub": "37d9f1a971ed59d05eb8259f78d809485a1dce36b389c3c4e1fb00d089fe7fe1",
+    "services.app.webhooks.google_push": "a126960f3c7a39fc06e9a3d38087e4fc4f6690c80d7947c1f087b4539db5bece",
+    "services.app.webhooks.signatures.google_oidc": "8b2f7ab34af9524eade5087adf58a78bb78d2f9e2fd74fee1a9011045258b047",
+    "services.ingest.ingestion.fetchers.google_calendar": "683981b7b02940e143ba504df0bfecbef0e2d4945b8181ebe64692d45f1b30a6",
+    "services.ingest.ingestion.handlers.google_calendar": "39fad6fb8a38c793005a727db0caf334245918ddb11908d13c2450e2b29850d2",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.google_calendar": "73985fcfc765dc7d775f8e49a256fce8f5a769bfc43486dd330103c4306de358",
+    "services.ingest.ingestion.reconcilers.google_calendar": "253eddd28d33deaabc908c4b1e9edb5077de8ea0bcb08e5c8e30851bdf2ad0f7",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations._google_watch": "1db73db2bbaab06c7107eb00b75e0737035042f356d94e6416c4744601b0be0e",
+    "services.ingest.integrations.gmail.push_handler": "e8679de4c3f4b3b2ef7854bb4b325416640d1899e9c293863c68018b60bbfb0e",
+    "services.ingest.integrations.google_calendar": "09ce24ab17b1aebb71ccc1b6ff1cd120a0f1e868f023b270c432a0d1461502da",
+    "services.ingest.integrations.google_calendar.client": "946b0e1106ae3cd3861210aea289238b49e1a92db1a0cda4a037237a3865c227",
+    "services.ingest.integrations.google_calendar.live_poller": "4729172a4e2c043fa1b5d464d67ed15532f0bcaf714d76a14bc293d3a6c17ff4",
+    "services.ingest.integrations.google_calendar.metrics": "5cf38b0a70db2c05ad0f4903c95d8713018d3a8e67b085f3722df3a31cda97ce",
+    "services.ingest.integrations.google_calendar.oauth": "3a0d78d93af3fd9d8b458eba779e179dda88afd158393e9b69018e05bcb6c101",
+    "services.ingest.integrations.google_calendar.onboarding": "ed05dd19f92ff376061f02d0d6393137b3e5370c08e90c3abab89c6de1cf408a",
+    "services.ingest.integrations.google_calendar.watch": "004e27905f01ae06186b25f7703313cc73f763abd6ebc46731175654ccf714b4",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Calendar API v3",
+  "provider_contract": {
+    "aliases": [
+      "google_workspace",
+      "workspace"
+    ],
+    "auth_strategies": [
+      "domain_wide_delegation"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [
+      {
+        "acknowledgement_policy": "ack_and_reconcile_on_failure",
+        "channel": null,
+        "dispatcher_binding": "services.app.webhooks.gmail_pubsub:gmail_pubsub_push",
+        "ingress_id": "gmail_pubsub",
+        "ingress_kind": "pubsub",
+        "kafka_mode": "hydrated_messages_handler_managed",
+        "methods": [
+          "POST"
+        ],
+        "route_path": "/webhooks/gmail/pubsub",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.webhooks.gmail_pubsub:build_gmail_pubsub_router",
+        "source_id": "gmail",
+        "tenant_binding_policy": "subscription_installation",
+        "tenant_resolver_binding": "services.ingest.integrations.gmail.push_handler:handle_push",
+        "verification_bindings": [
+          "services.app.webhooks.signatures.google_oidc:verify_pubsub_oidc_token"
+        ],
+        "verification_policy": "google_oidc"
+      },
+      {
+        "acknowledgement_policy": "ack_and_reconcile_on_failure",
+        "channel": "google_calendar:event",
+        "dispatcher_binding": "services.app.webhooks.google_push:google_calendar_push",
+        "ingress_id": "google_calendar_push",
+        "ingress_kind": "webhook",
+        "kafka_mode": "reconciled_delta_drain",
+        "methods": [
+          "POST"
+        ],
+        "route_path": "/webhooks/google_calendar/push",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.webhooks.google_push:build_google_push_router",
+        "source_id": "google_calendar",
+        "tenant_binding_policy": "watch_channel_installation",
+        "tenant_resolver_binding": "services.ingest.integrations._google_watch:resolve_push",
+        "verification_bindings": [
+          "services.ingest.integrations._google_watch:resolve_push"
+        ],
+        "verification_policy": "google_watch_channel_token"
+      },
+      {
+        "acknowledgement_policy": "ack_and_reconcile_on_failure",
+        "channel": "google_drive:file",
+        "dispatcher_binding": "services.app.webhooks.google_push:google_drive_push",
+        "ingress_id": "google_drive_push",
+        "ingress_kind": "webhook",
+        "kafka_mode": "reconciled_delta_drain",
+        "methods": [
+          "POST"
+        ],
+        "route_path": "/webhooks/google_drive/push",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.webhooks.google_push:build_google_push_router",
+        "source_id": "google_drive",
+        "tenant_binding_policy": "watch_channel_installation",
+        "tenant_resolver_binding": "services.ingest.integrations._google_watch:resolve_push",
+        "verification_bindings": [
+          "services.ingest.integrations._google_watch:resolve_push"
+        ],
+        "verification_policy": "google_watch_channel_token"
+      }
+    ],
+    "display_name": "Google",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "watch.stop",
+      "messages.list",
+      "history.list",
+      "messages.get",
+      "profile.get",
+      "directory.users.list",
+      "directory.groups.list",
+      "directory.group_members.list",
+      "directory.org_units.list",
+      "directory.users_by_org_unit.list",
+      "pubsub.topic.create",
+      "pubsub.topic.delete",
+      "pubsub.subscription.create",
+      "pubsub.subscription.delete",
+      "pubsub.iam.get",
+      "pubsub.iam.set",
+      "watch.create",
+      "dwd.token.exchange",
+      "calendarList.list",
+      "events.list",
+      "channels.stop",
+      "events.watch",
+      "drives.list",
+      "changes.getStartPageToken",
+      "files.list",
+      "changes.list",
+      "files.export",
+      "files.get",
+      "comments.list",
+      "revisions.list",
+      "changes.watch"
+    ],
+    "outbound_endpoint_names": [
+      "gmail_api",
+      "google_directory",
+      "gmail_pubsub_api",
+      "google_token",
+      "google_calendar_api",
+      "google_drive_api"
+    ],
+    "provider_id": "google",
+    "source_ids": [
+      "gmail",
+      "google_calendar",
+      "google_drive"
+    ],
+    "webhook_ingresses": []
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "calendars": [
+        "primary-16882dbe93571528@provider-lab.test",
+        "secondary-16882dbe93571528@provider-lab.test"
+      ],
+      "delta": {
+        "primary-16882dbe93571528@provider-lab.test": [],
+        "secondary-16882dbe93571528@provider-lab.test": []
+      },
+      "events": {
+        "primary-16882dbe93571528@provider-lab.test": [
+          {
+            "attendees": [
+              {
+                "email": "primary-16882dbe93571528@provider-lab.test",
+                "responseStatus": "accepted"
+              },
+              {
+                "email": "guest@partner.example",
+                "responseStatus": "tentative"
+              }
+            ],
+            "creator": {
+              "email": "primary-16882dbe93571528@provider-lab.test"
+            },
+            "end": {
+              "dateTime": "2026-06-03T12:30:00.000Z"
+            },
+            "eventType": "default",
+            "htmlLink": "https://calendar.google.com/event?eid=primary-16882dbe93571528@provider-lab.test-evt-1",
+            "id": "primary-16882dbe93571528@provider-lab.test-evt-1",
+            "kind": "calendar#event",
+            "organizer": {
+              "email": "primary-16882dbe93571528@provider-lab.test"
+            },
+            "start": {
+              "dateTime": "2026-06-03T12:00:00.000Z"
+            },
+            "status": "confirmed",
+            "summary": "Meeting 1 (primary-16882dbe93571528@provider-lab.test)",
+            "updated": "2026-06-01T09:01:00.000Z"
+          },
+          {
+            "attendees": [
+              {
+                "email": "primary-16882dbe93571528@provider-lab.test",
+                "responseStatus": "accepted"
+              },
+              {
+                "email": "guest@partner.example",
+                "responseStatus": "tentative"
+              }
+            ],
+            "creator": {
+              "email": "primary-16882dbe93571528@provider-lab.test"
+            },
+            "end": {
+              "dateTime": "2026-06-04T12:30:00.000Z"
+            },
+            "eventType": "default",
+            "htmlLink": "https://calendar.google.com/event?eid=primary-16882dbe93571528@provider-lab.test-evt-2",
+            "id": "primary-16882dbe93571528@provider-lab.test-evt-2",
+            "kind": "calendar#event",
+            "organizer": {
+              "email": "primary-16882dbe93571528@provider-lab.test"
+            },
+            "start": {
+              "dateTime": "2026-06-04T12:00:00.000Z"
+            },
+            "status": "confirmed",
+            "summary": "Meeting 2 (primary-16882dbe93571528@provider-lab.test)",
+            "updated": "2026-06-01T09:02:00.000Z"
+          },
+          {
+            "attendees": [
+              {
+                "email": "primary-16882dbe93571528@provider-lab.test",
+                "responseStatus": "accepted"
+              },
+              {
+                "email": "guest@partner.example",
+                "responseStatus": "tentative"
+              }
+            ],
+            "creator": {
+              "email": "primary-16882dbe93571528@provider-lab.test"
+            },
+            "end": {
+              "dateTime": "2026-06-05T12:30:00.000Z"
+            },
+            "eventType": "default",
+            "htmlLink": "https://calendar.google.com/event?eid=primary-16882dbe93571528@provider-lab.test-evt-3",
+            "id": "primary-16882dbe93571528@provider-lab.test-evt-3",
+            "kind": "calendar#event",
+            "organizer": {
+              "email": "primary-16882dbe93571528@provider-lab.test"
+            },
+            "start": {
+              "dateTime": "2026-06-05T12:00:00.000Z"
+            },
+            "status": "confirmed",
+            "summary": "Meeting 3 (primary-16882dbe93571528@provider-lab.test)",
+            "updated": "2026-06-01T09:03:00.000Z"
+          }
+        ],
+        "secondary-16882dbe93571528@provider-lab.test": [
+          {
+            "attendees": [
+              {
+                "email": "secondary-16882dbe93571528@provider-lab.test",
+                "responseStatus": "accepted"
+              },
+              {
+                "email": "guest@partner.example",
+                "responseStatus": "tentative"
+              }
+            ],
+            "creator": {
+              "email": "secondary-16882dbe93571528@provider-lab.test"
+            },
+            "end": {
+              "dateTime": "2026-06-03T13:30:00.000Z"
+            },
+            "eventType": "default",
+            "htmlLink": "https://calendar.google.com/event?eid=secondary-16882dbe93571528@provider-lab.test-evt-1",
+            "id": "secondary-16882dbe93571528@provider-lab.test-evt-1",
+            "kind": "calendar#event",
+            "organizer": {
+              "email": "secondary-16882dbe93571528@provider-lab.test"
+            },
+            "start": {
+              "dateTime": "2026-06-03T13:00:00.000Z"
+            },
+            "status": "confirmed",
+            "summary": "Meeting 1 (secondary-16882dbe93571528@provider-lab.test)",
+            "updated": "2026-06-01T09:01:00.000Z"
+          },
+          {
+            "attendees": [
+              {
+                "email": "secondary-16882dbe93571528@provider-lab.test",
+                "responseStatus": "accepted"
+              },
+              {
+                "email": "guest@partner.example",
+                "responseStatus": "tentative"
+              }
+            ],
+            "creator": {
+              "email": "secondary-16882dbe93571528@provider-lab.test"
+            },
+            "end": {
+              "dateTime": "2026-06-04T13:30:00.000Z"
+            },
+            "eventType": "default",
+            "htmlLink": "https://calendar.google.com/event?eid=secondary-16882dbe93571528@provider-lab.test-evt-2",
+            "id": "secondary-16882dbe93571528@provider-lab.test-evt-2",
+            "kind": "calendar#event",
+            "organizer": {
+              "email": "secondary-16882dbe93571528@provider-lab.test"
+            },
+            "start": {
+              "dateTime": "2026-06-04T13:00:00.000Z"
+            },
+            "status": "confirmed",
+            "summary": "Meeting 2 (secondary-16882dbe93571528@provider-lab.test)",
+            "updated": "2026-06-01T09:02:00.000Z"
+          },
+          {
+            "attendees": [
+              {
+                "email": "secondary-16882dbe93571528@provider-lab.test",
+                "responseStatus": "accepted"
+              },
+              {
+                "email": "guest@partner.example",
+                "responseStatus": "tentative"
+              }
+            ],
+            "creator": {
+              "email": "secondary-16882dbe93571528@provider-lab.test"
+            },
+            "end": {
+              "dateTime": "2026-06-05T13:30:00.000Z"
+            },
+            "eventType": "default",
+            "htmlLink": "https://calendar.google.com/event?eid=secondary-16882dbe93571528@provider-lab.test-evt-3",
+            "id": "secondary-16882dbe93571528@provider-lab.test-evt-3",
+            "kind": "calendar#event",
+            "organizer": {
+              "email": "secondary-16882dbe93571528@provider-lab.test"
+            },
+            "start": {
+              "dateTime": "2026-06-05T13:00:00.000Z"
+            },
+            "status": "confirmed",
+            "summary": "Meeting 3 (secondary-16882dbe93571528@provider-lab.test)",
+            "updated": "2026-06-01T09:03:00.000Z"
+          }
+        ]
+      },
+      "page_size": 250
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "dwd.token.exchange",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "dwd.token.exchange"
+        ],
+        "path_template": "/token",
+        "quota_bucket": null,
+        "quota_cost": 1.0,
+        "route_id": "google_calendar.token",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.users.list",
+            "path_values": [],
+            "query_items": [
+              [
+                "domain",
+                "provider-lab.test"
+              ]
+            ]
+          },
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.users_by_org_unit.list",
+            "path_values": [],
+            "query_items": [
+              [
+                "query",
+                "orgUnitPath=/"
+              ]
+            ]
+          }
+        ],
+        "operation_ids": [
+          "directory.users.list",
+          "directory.users_by_org_unit.list"
+        ],
+        "path_template": "/admin/directory/v1/users",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "google_calendar.directory_users",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.groups.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "directory.groups.list"
+        ],
+        "path_template": "/admin/directory/v1/groups",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "google_calendar.directory_groups",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.group_members.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "directory.group_members.list"
+        ],
+        "path_template": "/admin/directory/v1/groups/{group_key}/members",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "google_calendar.directory_group_members",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "directory.org_units.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "directory.org_units.list"
+        ],
+        "path_template": "/admin/directory/v1/customer/{customer_id}/orgunits",
+        "quota_bucket": "directory-api",
+        "quota_cost": 1.0,
+        "route_id": "google_calendar.directory_org_units",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "calendarList.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "calendarList.list"
+        ],
+        "path_template": "/users/me/calendarList",
+        "quota_bucket": "calendar-api",
+        "quota_cost": 1.0,
+        "route_id": "google_calendar.calendar_list",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "events.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "events.list"
+        ],
+        "path_template": "/calendars/{calendar_id}/events",
+        "quota_bucket": "calendar-api",
+        "quota_cost": 1.0,
+        "route_id": "google_calendar.events",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "events.watch",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "events.watch"
+        ],
+        "path_template": "/calendars/{calendar_id}/events/watch",
+        "quota_bucket": "calendar-api",
+        "quota_cost": 1.0,
+        "route_id": "google_calendar.events_watch",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "channels.stop",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "channels.stop"
+        ],
+        "path_template": "/channels/stop",
+        "quota_bucket": "calendar-api",
+        "quota_cost": 1.0,
+        "route_id": "google_calendar.channels_stop",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [
+      "gcal",
+      "calendar"
+    ],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.google_calendar",
+      "evidence_id": "ingest.evidence.google_calendar",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.google_calendar",
+      "validation_runtime": {
+        "generator_group": "google_push",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_google_calendar_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_google_calendar_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_google_calendar_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_google_calendar_live_target",
+        "preflight_binding": null,
+        "replay_probe_binding": null,
+        "signature_probe_binding": null,
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.google_calendar.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "calendar_event"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Productivity",
+      "connection_method": "Workspace DWD",
+      "description": "Calendar events, shared calendars, and watch notifications.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 2,
+      "setup_requirements": "Google Workspace admin approval, domain-wide delegation setup, calendar scope, allowlist, events.watch setup, and local polling access.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Google Calendar",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.google_calendar:fetch_page_google_calendar",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:google_calendar_event"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "google_calendar:event",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "google_calendar:event",
+        "ingress_kind": "poll"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_google_calendar_installation",
+      "management": {
+        "base_url_column": null,
+        "enabled_column": null,
+        "entity_install_column": "google_calendar_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "google_calendar_calendars",
+        "extra_output_columns": [],
+        "native_google_watch_table": true,
+        "ref_columns": [],
+        "scope_column": "workspace_domain",
+        "source": "google_calendar",
+        "status_credential_column_groups": [
+          [
+            "service_account_email"
+          ]
+        ],
+        "status_detail_columns": [
+          "service_account_email",
+          "scope",
+          "resolved_calendar_count",
+          "resolved_at"
+        ],
+        "status_presence_columns": [],
+        "table": "google_calendar_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": null,
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "workspace_customer_id",
+      "owner_email",
+      "calendar_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "google_calendar_push",
+          "boundary_kind": "dedicated_ingress",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 120,
+          "component_id": "google_calendar_live_poller",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "google_calendar_live_poller",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.integrations.google_calendar.live_poller:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "incremental_poll",
+          "transport": "api_poll"
+        },
+        {
+          "cadence_seconds": 900,
+          "component_id": "google_calendar_watch_scheduler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "google_calendar_watch_scheduler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.integrations.google_calendar.watch:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "watch_renewal",
+          "transport": null
+        },
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": null
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.google_calendar.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "google_calendar:event"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.google_calendar:handle_google_calendar_event"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "workspace domain",
+          "admin email",
+          "calendar/user/group/org-unit scope"
+        ],
+        "agent_generates": [
+          "DWD preflight payload",
+          "calendar inclusion contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "Google Workspace admin signs in and completes MFA when prompted",
+          "Google Workspace admin authorizes the Fyralis service account client ID and scopes",
+          "admin approves workspace inclusion scope"
+        ],
+        "settings_targets": [
+          "Domain-wide delegation",
+          "Calendar API controls",
+          "calendar inclusion scope"
+        ]
+      },
+      "consent_scopes": [
+        "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/admin.directory.user.readonly",
+        "https://www.googleapis.com/auth/admin.directory.group.readonly"
+      ],
+      "default_scopes": [
+        "calendar.readonly",
+        "pilot-calendars"
+      ],
+      "discovery_target": "calendars and shared calendar inclusion scope",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/google_calendar/push"
+      ],
+      "local_rehearsal": null,
+      "method": "dwd",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/google_calendar/connect/finalize",
+        "kind": "google_workspace_dwd",
+        "payload_fields": [
+          "workspace_domain",
+          "admin_email",
+          "scope",
+          "inclusion_spec"
+        ],
+        "preflight_path": "/integrations/google_calendar/connect/preflight",
+        "preflight_payload_fields": [
+          "workspace_domain",
+          "admin_email",
+          "scope"
+        ],
+        "retry_path": null,
+        "scope_aliases": [
+          "calendar.readonly"
+        ],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "scope",
+        "inclusion_spec"
+      ],
+      "provider_console_url": "https://admin.google.com/ac/owl/domainwidedelegation",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "Domain-Wide Delegation",
+        "calendar.readonly",
+        "directory users/groups read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "workspace_domain",
+        "admin_email",
+        "dwd_grant"
+      ],
+      "required_refs": [
+        "workspace_domain",
+        "admin_email",
+        "dwd_grant_receipt"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "directory.users.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.groups.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.group_members.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.org_units.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "directory.users_by_org_unit.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "calendarList.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "events.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "channels.stop",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            403,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "dwd.token.exchange",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "events.watch",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "google_directory",
+        "operation_ids": [
+          "directory.users.list",
+          "directory.groups.list",
+          "directory.group_members.list",
+          "directory.org_units.list",
+          "directory.users_by_org_unit.list"
+        ]
+      },
+      {
+        "endpoint_name": "google_calendar_api",
+        "operation_ids": [
+          "calendarList.list",
+          "events.list",
+          "channels.stop",
+          "events.watch"
+        ]
+      },
+      {
+        "endpoint_name": "google_token",
+        "operation_ids": [
+          "dwd.token.exchange"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.google_calendar:plan_shards_google_calendar",
+    "provider_id": "google",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.google_calendar:reconcile_google_calendar",
+    "runtime_identifiers": [
+      "channel_id",
+      "resource_id",
+      "calendar_id"
+    ],
+    "source_id": "google_calendar",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "google-calendar"
+  },
+  "source_id": "google_calendar"
+}

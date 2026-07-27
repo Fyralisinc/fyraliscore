@@ -75,6 +75,58 @@ def test_certification_history_counts_are_positive_exact_and_deterministic() -> 
         )
 
 
+def test_certification_history_expands_exact_sibling_installations() -> None:
+    scenarios = certification_history_scenarios(
+        tenants_per_source=2,
+        installations_per_tenant=2,
+    )
+
+    assert len(scenarios) == 26 * 2 * 2
+    slack = [scenario for scenario in scenarios if scenario.source == "slack"]
+    assert [scenario.tenant_slug for scenario in slack] == [
+        "val-slack-0",
+        "val-slack-0",
+        "val-slack-1",
+        "val-slack-1",
+    ]
+    assert [scenario.resolved_installation_key for scenario in slack] == [
+        "val-slack-0-installation-0",
+        "val-slack-0-installation-1",
+        "val-slack-1-installation-0",
+        "val-slack-1-installation-1",
+    ]
+    assert len({scenario.identity for scenario in scenarios}) == len(scenarios)
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, 1.5])
+def test_certification_history_rejects_invalid_installation_count(
+    invalid: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        certification_history_scenarios(
+            tenants_per_source=1,
+            installations_per_tenant=invalid,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("source_id", "provider_scope"),
+    (("hibob", "company_id"), ("ashby", "org_id")),
+)
+def test_hmac_fixture_provider_scope_is_unique_per_installation(
+    source_id: str,
+    provider_scope: str,
+) -> None:
+    factory = resolve_fixture_factory(source_id)
+
+    first = factory(fixture_params={}, installation_id=f"x3-first-{source_id}")
+    second = factory(fixture_params={}, installation_id=f"x3-second-{source_id}")
+
+    assert first[provider_scope] == f"x3-first-{source_id}"
+    assert second[provider_scope] == f"x3-second-{source_id}"
+    assert first[provider_scope] != second[provider_scope]
+
+
 def test_certification_history_has_no_zero_count_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

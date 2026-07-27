@@ -219,7 +219,8 @@ async def _persist_secrets(
     tenant_id: UUID,
     page_id: str,
     page_access_token: str,
-) -> tuple[str, str, str]:
+    long_lived_user_access_token: str,
+) -> tuple[str, str, str, str]:
     app_secret = load_app_secret_text_from_env("FACEBOOK_APP_SECRET")
     verify_token = load_app_secret_text_from_env("FACEBOOK_WEBHOOK_VERIFY_TOKEN")
     if not app_secret or not verify_token:
@@ -232,6 +233,11 @@ async def _persist_secrets(
         label=f"facebook_pages_page_token:{page_id}",
         tenant_id=tenant_id,
     )
+    user_token_ref = await secret_store.put(
+        long_lived_user_access_token,
+        label=f"facebook_pages_user_token:{page_id}",
+        tenant_id=tenant_id,
+    )
     app_secret_ref = await secret_store.put(
         app_secret,
         label=f"facebook_pages_app_secret:{page_id}",
@@ -242,7 +248,7 @@ async def _persist_secrets(
         label=f"facebook_pages_verify_token:{page_id}",
         tenant_id=tenant_id,
     )
-    return token_ref, app_secret_ref, verify_token_ref
+    return token_ref, user_token_ref, app_secret_ref, verify_token_ref
 
 
 async def _upsert_provider_installation(
@@ -283,6 +289,8 @@ async def _upsert_page_installation(
     tenant_id: UUID,
     page: dict[str, Any],
     token_ref: str,
+    user_token_ref: str,
+    user_token_expires_at: datetime,
     app_secret_ref: str,
     verify_token_ref: str,
     granted_scopes: list[str],
@@ -294,18 +302,22 @@ async def _upsert_page_installation(
         """
         INSERT INTO facebook_page_installations (
             tenant_id, page_id, page_name, page_access_token_ref,
+            user_access_token_ref, user_token_expires_at,
             app_secret_ref, verify_token_ref, granted_scopes,
-            subscribed_fields, webhook_subscribed_at, enabled, updated_at
+            subscribed_fields, webhook_subscribed_at, connection_state,
+            enabled, updated_at
         ) VALUES (
-            $1,$2,$3,$4,$5,$6,$7,
-            CASE WHEN $8 THEN $9::text[] ELSE '{}'::text[] END,
-            CASE WHEN $8 THEN now() ELSE NULL END,
-            true, now()
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,
+            CASE WHEN $10 THEN $11::text[] ELSE '{}'::text[] END,
+            CASE WHEN $10 THEN now() ELSE NULL END,
+            'connected', true, now()
         )
         ON CONFLICT (page_id) DO UPDATE SET
             tenant_id = EXCLUDED.tenant_id,
             page_name = COALESCE(EXCLUDED.page_name, facebook_page_installations.page_name),
             page_access_token_ref = EXCLUDED.page_access_token_ref,
+            user_access_token_ref = EXCLUDED.user_access_token_ref,
+            user_token_expires_at = EXCLUDED.user_token_expires_at,
             app_secret_ref = EXCLUDED.app_secret_ref,
             verify_token_ref = EXCLUDED.verify_token_ref,
             granted_scopes = EXCLUDED.granted_scopes,
@@ -314,6 +326,13 @@ async def _upsert_page_installation(
                 EXCLUDED.webhook_subscribed_at,
                 facebook_page_installations.webhook_subscribed_at
             ),
+            connection_state = 'connected',
+            reauthorization_required_at = NULL,
+            page_token_recovery_next_attempt_at = NULL,
+            page_token_recovery_attempts = 0,
+            page_recovery_last_error_code = NULL,
+            page_recovery_lease_owner = NULL,
+            page_token_recovery_lease_until = NULL,
             enabled = true,
             updated_at = now()
             WHERE facebook_page_installations.tenant_id = EXCLUDED.tenant_id
@@ -323,6 +342,8 @@ async def _upsert_page_installation(
         page_id,
         page.get("name"),
         token_ref,
+        user_token_ref,
+        user_token_expires_at,
         app_secret_ref,
         verify_token_ref,
         granted_scopes,
@@ -396,10 +417,29 @@ async def callback_handler(request: Request) -> Any:
             client_secret=client_secret,
             redirect_uri=redirect_uri,
         )
-        user_token = token_response.get("access_token")
-        if not isinstance(user_token, str) or not user_token:
+        short_lived_user_token = token_response.get("access_token")
+        if (
+            not isinstance(short_lived_user_token, str)
+            or not short_lived_user_token
+        ):
             return _error_redirect("facebook_oauth_error")
-        pages = await client.list_pages(user_token)
+        long_token_response = await client.exchange_long_lived_user_token(
+            short_lived_user_access_token=short_lived_user_token,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        long_lived_user_token = long_token_response.get("access_token")
+        if (
+            not isinstance(long_lived_user_token, str)
+            or not long_lived_user_token
+        ):
+            return _error_redirect("facebook_long_lived_user_token_missing")
+        user_token_expires_at = _long_lived_user_token_expiry(
+            long_token_response,
+        )
+        if user_token_expires_at is None:
+            return _error_redirect("facebook_long_lived_user_token_expiry_missing")
+        pages = await client.list_pages(long_lived_user_token)
         page = _select_page(
             pages,
             requested_page_id=(
@@ -431,11 +471,17 @@ async def callback_handler(request: Request) -> Any:
         await client.aclose()
 
     try:
-        token_ref, app_secret_ref, verify_token_ref = await _persist_secrets(
+        (
+            token_ref,
+            user_token_ref,
+            app_secret_ref,
+            verify_token_ref,
+        ) = await _persist_secrets(
             secret_store,
             tenant_id=tenant_id,
             page_id=page_id,
             page_access_token=page_token,
+            long_lived_user_access_token=long_lived_user_token,
         )
     except SecretStoreError:
         return _error_redirect("secret_store_unavailable")
@@ -456,6 +502,8 @@ async def callback_handler(request: Request) -> Any:
                     tenant_id=tenant_id,
                     page=page,
                     token_ref=token_ref,
+                    user_token_ref=user_token_ref,
+                    user_token_expires_at=user_token_expires_at,
                     app_secret_ref=app_secret_ref,
                     verify_token_ref=verify_token_ref,
                     granted_scopes=granted_scopes,
@@ -506,6 +554,28 @@ def _granted_scopes(token_response: dict[str, Any]) -> list[str]:
     if isinstance(raw, list):
         return [str(s) for s in raw if str(s)]
     return list(_SCOPES)
+
+
+def _long_lived_user_token_expiry(
+    token_response: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Use Meta's returned expiry; never guess an undocumented lifetime."""
+
+    raw = token_response.get("expires_in")
+    if isinstance(raw, bool):
+        return None
+    try:
+        expires_in = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if expires_in <= 0:
+        return None
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    return current.astimezone(timezone.utc) + timedelta(seconds=expires_in)
 
 
 router = build_oauth_native_connect_router(

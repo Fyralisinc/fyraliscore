@@ -9,7 +9,7 @@ as `sha256=<hex>` (the same scheme GitHub uses, but under the un-suffixed
 Per the IN-17 design doc (§6): we deliberately use HMAC signing rather than a
 URL-embedded token because the admin webhook secret fits the existing Verifier
 contract cleanly. The per-tenant secret is resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='jira') the seed/onboarding step registers.
 
 Like GitHub, Jira's digest is over the body alone (no timestamp envelope), so

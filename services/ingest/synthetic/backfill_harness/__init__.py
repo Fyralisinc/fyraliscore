@@ -38,6 +38,7 @@ from services.ingest.synthetic.backfill_harness.assertions import (
     assert_no_duplicate_observations,
     assert_observation_count_matches_fixture,
     assert_reshare_cycles_completed,
+    assert_sibling_installation_identity,
 )
 from services.ingest.synthetic.backfill_harness.harness import (
     BackfillHarness,
@@ -59,4 +60,5 @@ __all__ = [
     "assert_no_duplicate_observations",
     "assert_observation_count_matches_fixture",
     "assert_reshare_cycles_completed",
+    "assert_sibling_installation_identity",
 ]

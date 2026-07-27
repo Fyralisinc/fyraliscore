@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
+from services.ingest.source_contract import runtime as source_runtime
 from services.ingest.source_contract.catalog import (
     NORMALIZER_BINDING_CATALOG,
     SOURCE_DEFINITIONS,
@@ -13,6 +15,9 @@ from services.ingest.source_contract.runtime import (
     build_normalizer_ingress_headers,
     HistoryCallable,
     HistoryNotSupportedError,
+    launch_live_worker,
+    LiveWorkerNotFoundError,
+    ManagedLiveRuntimeError,
     NormalizationChannelNotFoundError,
     NormalizerIngressMetadataError,
     override_history_bindings,
@@ -21,8 +26,15 @@ from services.ingest.source_contract.runtime import (
     resolve_history_binding,
     resolve_handler,
     resolve_idempotency_builders,
+    resolve_live_worker_dispatch,
+    resolve_live_worker_launcher,
+    resolve_onboarding_access_status,
     resolve_planner,
+    resolve_provider_handoff,
+    resolve_provider_setup_builder,
+    resolve_provider_setup_notes,
     resolve_reconciler,
+    resolve_rehearsal_artifact_builder,
     split_callable_reference,
     validate_runtime_bindings,
 )
@@ -57,8 +69,183 @@ def test_every_source_idempotency_builder_resolves_to_a_callable() -> None:
         assert all(callable(builder) for builder in builders)
 
 
+def test_every_source_provider_handoff_resolves_to_a_callable() -> None:
+    for source in SOURCE_DEFINITIONS:
+        assert callable(resolve_provider_handoff(source.source_id))
+
+
+def test_provider_setup_and_rehearsal_bindings_are_source_owned() -> None:
+    for source in SOURCE_DEFINITIONS:
+        notes = resolve_provider_setup_notes(source.source_id)
+        assert notes(source.source_id)
+
+    assert callable(resolve_provider_setup_builder("slack"))
+    assert callable(resolve_provider_setup_builder("notion"))
+    assert resolve_provider_setup_builder("github") is None
+    for source_id in ("slack", "jira", "telegram"):
+        assert callable(resolve_rehearsal_artifact_builder(source_id))
+    assert resolve_rehearsal_artifact_builder("github") is None
+
+
+def test_access_status_binding_is_source_owned_and_optional() -> None:
+    assert callable(resolve_onboarding_access_status("discord"))
+    assert resolve_onboarding_access_status("slack") is None
+
+
 def test_startup_guard_resolves_every_contract_callable() -> None:
     validate_runtime_bindings()
+
+
+def test_every_live_runtime_callable_resolves_or_declares_managed_boundary() -> None:
+    for source in SOURCE_DEFINITIONS:
+        for worker in source.live_runtime.workers:
+            if worker.deployment_owner == "customer_deployment":
+                with pytest.raises(ManagedLiveRuntimeError):
+                    resolve_live_worker_launcher(
+                        source.source_id,
+                        worker.component_id,
+                    )
+                assert callable(
+                    resolve_live_worker_dispatch(
+                        source.source_id,
+                        worker.component_id,
+                    )
+                )
+                continue
+            assert callable(
+                resolve_live_worker_launcher(
+                    source.source_id,
+                    worker.component_id,
+                )
+            )
+            assert (
+                resolve_live_worker_dispatch(
+                    source.source_id,
+                    worker.component_id,
+                )
+                is None
+            )
+
+
+async def test_launch_live_worker_executes_resolved_async_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def fake_launcher(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "stopped"
+
+    monkeypatch.setattr(
+        source_runtime,
+        "resolve_live_worker_launcher",
+        lambda source_name, component_id: fake_launcher,
+    )
+
+    result = await launch_live_worker(
+        "gmail",
+        "gmail_history_poller",
+        object(),
+        stop_event=object(),
+    )
+
+    assert result == "stopped"
+    assert len(calls) == 1
+    assert len(calls[0][0]) == 1
+    assert set(calls[0][1]) == {"stop_event"}
+
+
+def test_unknown_live_worker_fails_explicitly() -> None:
+    with pytest.raises(LiveWorkerNotFoundError, match="no live worker"):
+        resolve_live_worker_launcher("slack", "imaginary_gateway")
+
+
+def test_startup_guard_fails_closed_on_broken_live_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = next(
+        candidate
+        for candidate in SOURCE_DEFINITIONS
+        if candidate.source_id == "gmail"
+    )
+    worker = source.live_runtime.worker("gmail_history_poller")
+    broken_worker = replace(
+        worker,
+        launcher_binding=(
+            "services.ingest.source_contract.catalog:"
+            "not_a_real_live_launcher"
+        ),
+    )
+    replacement = replace(
+        source,
+        live_runtime=replace(
+            source.live_runtime,
+            workers=tuple(
+                broken_worker if candidate is worker else candidate
+                for candidate in source.live_runtime.workers
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        source_runtime,
+        "SOURCE_DEFINITIONS",
+        tuple(
+            replacement if candidate is source else candidate
+            for candidate in SOURCE_DEFINITIONS
+        ),
+    )
+    source_runtime.validate_runtime_bindings.cache_clear()
+    try:
+        with pytest.raises(BindingResolutionError, match="has no attribute"):
+            source_runtime.validate_runtime_bindings()
+    finally:
+        source_runtime.validate_runtime_bindings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("source_id", "field_name"),
+    (
+        ("slack", "metrics_export_bindings"),
+        ("mercury", "finance_testing_binding"),
+    ),
+)
+def test_startup_guard_fails_closed_on_broken_auxiliary_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    source_id: str,
+    field_name: str,
+) -> None:
+    source = next(
+        candidate
+        for candidate in SOURCE_DEFINITIONS
+        if candidate.source_id == source_id
+    )
+    broken_reference = (
+        "services.ingest.source_contract.catalog:not_a_real_auxiliary_callable"
+    )
+    if field_name == "metrics_export_bindings":
+        replacement = replace(
+            source,
+            metrics_export_bindings=(broken_reference,),
+        )
+    else:
+        replacement = replace(
+            source,
+            finance_testing_binding=broken_reference,
+        )
+    monkeypatch.setattr(
+        source_runtime,
+        "SOURCE_DEFINITIONS",
+        tuple(
+            replacement if candidate is source else candidate
+            for candidate in SOURCE_DEFINITIONS
+        ),
+    )
+    source_runtime.validate_runtime_bindings.cache_clear()
+    try:
+        with pytest.raises(BindingResolutionError, match="has no attribute"):
+            source_runtime.validate_runtime_bindings()
+    finally:
+        source_runtime.validate_runtime_bindings.cache_clear()
 
 
 def test_unknown_normalizer_channel_fails_explicitly() -> None:
@@ -135,6 +322,30 @@ def test_webhook_handler_header_projection_requires_exact_contract() -> None:
             channel="github:not-the-contract-channel",
             ingress_metadata={"event_type": "issues"},
         )
+
+
+@pytest.mark.parametrize(
+    ("source_name", "channel"),
+    (
+        ("whatsapp", "whatsapp:message"),
+        ("facebook_pages", "facebook_pages:message"),
+        ("google_calendar", "google_calendar:event"),
+        ("google_drive", "google_drive:file"),
+    ),
+)
+def test_dedicated_webhook_ingress_without_projection_builds_empty_headers(
+    source_name: str,
+    channel: str,
+) -> None:
+    assert (
+        build_normalizer_ingress_headers(
+            source_name=source_name,
+            ingress_kind="webhook",
+            channel=channel,
+            ingress_metadata={"delivery_id": "dedicated-delivery"},
+        )
+        == {}
+    )
 
 
 @pytest.mark.parametrize("role", ["planner", "fetcher", "reconciler"])

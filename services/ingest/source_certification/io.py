@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -197,6 +199,10 @@ def _canary(value: object) -> CanaryResult:
                 "account_type",
                 "api_version",
                 "artifact_uri",
+                "request_count",
+                "account_identity_sha256",
+                "mutation_actions",
+                "cleanup_state",
                 "failures",
             }
         ),
@@ -210,6 +216,13 @@ def _canary(value: object) -> CanaryResult:
         account_type=item.get("account_type"),
         api_version=item.get("api_version"),
         artifact_uri=item.get("artifact_uri"),
+        request_count=item.get("request_count", 0),
+        account_identity_sha256=item.get("account_identity_sha256"),
+        mutation_actions=_strings(
+            item.get("mutation_actions", []),
+            "canary.mutation_actions",
+        ),
+        cleanup_state=item.get("cleanup_state", "not_required"),
         failures=_strings(item.get("failures", []), "canary.failures"),
     )
 
@@ -273,4 +286,110 @@ def load_certification_input(path: Path) -> CertificationInput:
     return parse_certification_input(value)
 
 
-__all__ = ["load_certification_input", "parse_certification_input"]
+def _render_timestamp(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _suite_dict(result: SuiteResult) -> dict[str, Any]:
+    return {
+        "kind": result.kind,
+        "state": result.state,
+        "artifact_uri": result.artifact_uri,
+        "started_at": _render_timestamp(result.started_at),
+        "completed_at": _render_timestamp(result.completed_at),
+        "metrics": dict(result.metrics),
+        "limiting_component": result.limiting_component,
+        "failures": list(result.failures),
+    }
+
+
+def certification_input_dict(value: CertificationInput) -> dict[str, Any]:
+    """Return the canonical JSON shape accepted by the strict parser."""
+
+    return {
+        "spec_hash": value.spec_hash,
+        "local_correctness": value.local_correctness,
+        "local_correctness_artifact": value.local_correctness_artifact,
+        "scenario_results": [
+            {
+                "scenario_id": result.scenario_id,
+                "state": result.state,
+                "artifact_uri": result.artifact_uri,
+                "failures": list(result.failures),
+            }
+            for result in value.scenario_results
+        ],
+        "provider_safe_suites": [
+            _suite_dict(result) for result in value.provider_safe_suites
+        ],
+        "fyralis_ceiling_suites": [
+            _suite_dict(result) for result in value.fyralis_ceiling_suites
+        ],
+        "fault_recovery_suites": [
+            _suite_dict(result) for result in value.fault_recovery_suites
+        ],
+        "canary": {
+            "state": value.canary.state,
+            "operation_results": [
+                {
+                    "operation_id": result.operation_id,
+                    "state": result.state,
+                    "artifact_uri": result.artifact_uri,
+                    "failures": list(result.failures),
+                }
+                for result in value.canary.operation_results
+            ],
+            "tested_at": _render_timestamp(value.canary.tested_at),
+            "account_type": value.canary.account_type,
+            "api_version": value.canary.api_version,
+            "artifact_uri": value.canary.artifact_uri,
+            "request_count": value.canary.request_count,
+            "account_identity_sha256": (
+                value.canary.account_identity_sha256
+            ),
+            "mutation_actions": list(value.canary.mutation_actions),
+            "cleanup_state": value.canary.cleanup_state,
+            "failures": list(value.canary.failures),
+        },
+        "legacy_reference_count": value.legacy_reference_count,
+        "skipped_tests": list(value.skipped_tests),
+        "todos": list(value.todos),
+    }
+
+
+def write_certification_input(
+    path: Path,
+    value: CertificationInput,
+) -> None:
+    """Atomically write one parser-round-trippable certification input."""
+
+    rendered = json.dumps(
+        certification_input_dict(value),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(rendered)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+__all__ = [
+    "certification_input_dict",
+    "load_certification_input",
+    "parse_certification_input",
+    "write_certification_input",
+]

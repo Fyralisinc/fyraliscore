@@ -11,21 +11,34 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Mapping
 
-from services.ingest.source_certification.evidence import load_evidence_catalog
+from lib.shared.provider_transport import RetrySafety
+from services.ingest.source_certification.evidence import (
+    load_evidence_catalog,
+    load_surface_operation_methods,
+)
 from services.ingest.source_certification.models import (
     CanaryDefinition,
+    CanaryOperationContract,
     CertificationBindingRole,
     CertificationCallableBinding,
     LoadSuite,
     SourceCertificationSpec,
+    SuiteKind,
 )
 from services.ingest.source_contract.catalog import (
     CANONICAL_SOURCE_IDS,
+    effective_request_policy,
     source_definition,
 )
 
 
 _EVIDENCE_PACKS = load_evidence_catalog()
+_PROVIDER_OPERATION_METHODS = MappingProxyType(
+    {
+        source_id: load_surface_operation_methods(source_id)
+        for source_id in CANONICAL_SOURCE_IDS
+    }
+)
 
 
 _BASE_SCENARIOS = (
@@ -98,6 +111,8 @@ def _callable_binding(
 ) -> CertificationCallableBinding:
     if role == "fixture_factory":
         reference = f"{_FIXTURE_BINDING_MODULE}:build_{source_id}_fixture"
+    elif role == "live_fixture_factory":
+        reference = f"{_FIXTURE_BINDING_MODULE}:build_{source_id}_live_fixture"
     elif role == "fixture_count_oracle":
         reference = (
             f"{_FIXTURE_BINDING_MODULE}:" f"count_{source_id}_fixture_observations"
@@ -113,7 +128,11 @@ def _callable_binding(
     )
 
 
-def _suite(kind: str, source_id: str, history_supported: bool) -> LoadSuite:
+def _suite(
+    kind: SuiteKind,
+    source_id: str,
+    history_supported: bool,
+) -> LoadSuite:
     if kind == "historical":
         mix = (
             ("plan", "fetch_page", "reconcile")
@@ -143,6 +162,100 @@ def _canary_operations(source) -> tuple[str, ...]:  # noqa: ANN001
         ),
         *(f"live_transport.{transport}" for transport in source.live_transports),
     )
+
+
+def _canary_operation_contracts(source) -> tuple[CanaryOperationContract, ...]:  # noqa: ANN001
+    """Classify only exact, unambiguously read-only canary operations.
+
+    Safe HTTP methods are insufficient by themselves: a source-contract
+    operation marked ``UNSAFE`` remains unclassified even when a provider
+    happens to encode it as GET. Non-safe HTTP methods, protocol-only
+    operations, and live subscription/gateway lifecycles also remain
+    unclassified until a source-specific canary declares their mutation and
+    cleanup semantics. An unclassified operation makes release promotion
+    structurally impossible.
+    """
+
+    contracts = [
+        CanaryOperationContract(
+            operation_id="auth.conformance",
+            mutability="read",
+            cleanup_action=None,
+            classification_basis=(
+                "credential conformance performs no provider resource mutation"
+            ),
+        )
+    ]
+    for provider_operation_id in source.operation_policy_ids:
+        operation_id = f"provider_request.{provider_operation_id}"
+        method = _PROVIDER_OPERATION_METHODS[source.source_id].get(
+            provider_operation_id
+        )
+        request_policy = effective_request_policy(
+            source.source_id,
+            provider_operation_id,
+        )
+        if (
+            method in {"GET", "HEAD", "OPTIONS"}
+            and request_policy.retry_safety is not RetrySafety.UNSAFE
+        ):
+            contracts.append(
+                CanaryOperationContract(
+                    operation_id=operation_id,
+                    mutability="read",
+                    cleanup_action=None,
+                    classification_basis=(
+                        f"hash-pinned exact Provider Lab binding uses safe "
+                        f"HTTP {method} and the source request policy is "
+                        f"{request_policy.retry_safety.value}"
+                    ),
+                )
+            )
+            continue
+        binding_description = (
+            f"hash-pinned exact HTTP {method}"
+            if method is not None
+            else "operation without a hash-pinned HTTP binding"
+        )
+        contracts.append(
+            CanaryOperationContract(
+                operation_id=operation_id,
+                mutability="unclassified",
+                cleanup_action=None,
+                classification_basis=(
+                    f"{binding_description} with "
+                    f"{request_policy.retry_safety.value} retry safety has no "
+                    "source-specific read/mutation and cleanup declaration"
+                ),
+            )
+        )
+    for transport in source.live_transports:
+        operation_id = f"live_transport.{transport}"
+        if transport == "api_poll":
+            contracts.append(
+                CanaryOperationContract(
+                    operation_id=operation_id,
+                    mutability="read",
+                    cleanup_action=None,
+                    classification_basis=(
+                        "source contract declares a provider-data poll with no "
+                        "subscription lifecycle"
+                    ),
+                )
+            )
+        else:
+            contracts.append(
+                CanaryOperationContract(
+                    operation_id=operation_id,
+                    mutability="unclassified",
+                    cleanup_action=None,
+                    classification_basis=(
+                        "live transport session/subscription behavior and "
+                        "cleanup are not explicitly classified"
+                    ),
+                )
+            )
+    return tuple(contracts)
 
 
 def _spec(source_id: str) -> SourceCertificationSpec:
@@ -177,12 +290,18 @@ def _spec(source_id: str) -> SourceCertificationSpec:
             credential_env_prefix=f"FYRALIS_CANARY_{source_id.upper()}",
             account_type=f"dedicated disposable {source.display_name} test account",
             required_operations=_canary_operations(source),
+            operation_contracts=_canary_operation_contracts(source),
             read_only_by_default=True,
             max_requests=25,
         ),
         fixture_factory_binding=(
             _callable_binding(source_id, "fixture_factory")
             if history_supported
+            else None
+        ),
+        live_fixture_factory_binding=(
+            _callable_binding(source_id, "live_fixture_factory")
+            if not history_supported
             else None
         ),
         fixture_count_oracle_binding=(
@@ -228,6 +347,15 @@ def _validate_source_linkage(spec: SourceCertificationSpec) -> None:
             f"source {spec.source_id!r} {support} history but its "
             "certification callable bindings disagree"
         )
+    if (spec.live_fixture_factory_binding is not None) != (
+        source.history is None
+    ):
+        support = (
+            "requires a live fixture"
+            if source.history is None
+            else "must not declare a live-only fixture"
+        )
+        raise RuntimeError(f"source {spec.source_id!r} {support}")
 
 
 SOURCE_CERTIFICATION_SPECS: tuple[SourceCertificationSpec, ...] = tuple(

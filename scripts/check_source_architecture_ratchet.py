@@ -28,6 +28,12 @@ modules. It parses production Python and SQL and reports these rule IDs:
 ``SRCARCH009``
     A provider integration performs a raw HTTP request outside the callback
     governed by ``ProviderRequestBinding`` / ``ProviderTransport``.
+``SRCARCH010``
+    Shared ingress or control-plane code branches on a canonical source to
+    select provider behavior instead of resolving a contract-owned callable.
+``SRCARCH011``
+    A live runtime is represented by a fabricated ``ingest.live.*`` label
+    instead of an executable launcher or explicit managed ingress boundary.
 
 Normal CI mode subtracts the exact, reviewed entries in the baseline file and
 fails only for new findings. ``--no-baseline`` ignores that debt allowance and
@@ -62,6 +68,8 @@ RULE_PARALLEL_SOURCE_MAP = "SRCARCH006"
 RULE_LEGACY_PROVIDER_HARNESS = "SRCARCH007"
 RULE_ARBITRARY_INSTALLATION_SELECTION = "SRCARCH008"
 RULE_PROVIDER_TRANSPORT_BYPASS = "SRCARCH009"
+RULE_SHARED_SOURCE_BEHAVIOR_SWITCH = "SRCARCH010"
+RULE_FABRICATED_LIVE_BINDING = "SRCARCH011"
 
 RULE_DESCRIPTIONS: dict[str, str] = {
     RULE_MUTABLE_DISPATCH: ("mutable planner/fetcher/reconciler dispatch registration"),
@@ -79,6 +87,10 @@ RULE_DESCRIPTIONS: dict[str, str] = {
     RULE_PROVIDER_TRANSPORT_BYPASS: (
         "provider HTTP request bypasses ProviderTransport"
     ),
+    RULE_SHARED_SOURCE_BEHAVIOR_SWITCH: (
+        "shared ingress/control-plane source behavior switch"
+    ),
+    RULE_FABRICATED_LIVE_BINDING: "fabricated non-executable live binding",
 }
 
 _DISPATCH_NAMES = frozenset(
@@ -158,6 +170,16 @@ _SOURCE_MAP_EXEMPT_PATHS = frozenset(
         Path("services/ingest/source_certification/catalog.py"),
     }
 )
+# Shared source-classification modules must not recreate even a small
+# membership list.  Their grouping decision comes from SourceDefinition
+# metadata; the repository-wide 80% threshold below remains appropriate for
+# ordinary domain fixtures and scenario definitions.
+_STRICT_SOURCE_LIST_PATHS = frozenset(
+    {
+        Path("scripts/webhook_install.py"),
+        Path("services/platform/runtime/source_browser_agent_setup.py"),
+    }
+)
 _LEGACY_PROVIDER_HARNESS_PATHS: tuple[Path, ...] = (
     Path("services/ingest/synthetic/mock_servers"),
     Path("services/ingest/synthetic/spammer"),
@@ -175,6 +197,32 @@ _PROVIDER_TRANSPORT_EXEMPT_PATHS = frozenset(
     {
         Path("services/ingest/integrations/provider_transport.py"),
         Path("services/ingest/integrations/provider_transport_runtime.py"),
+    }
+)
+# These are deliberately shared, provider-agnostic orchestration surfaces.
+# Provider-specific algorithms belong in ``services/ingest/integrations`` and
+# must be referenced by SourceDefinition/ProviderDefinition callables. Keep
+# this list exact: source comparisons in provider-owned modules and ordinary
+# application data filtering are not architecture dispatch.
+_SHARED_SOURCE_BEHAVIOR_PATHS = frozenset(
+    {
+        Path("scripts/manage_dedicated_source_installations.py"),
+        Path("scripts/webhook_install.py"),
+        Path("services/app/gateway/finance_router.py"),
+        Path("services/app/gateway/route_mounts.py"),
+        Path("services/app/gateway/byoc_onboarding_router.py"),
+        Path("services/app/webhooks/secrets.py"),
+        Path("services/app/webhooks/signatures/__init__.py"),
+        Path("services/app/webhooks/router.py"),
+        Path("services/app/webhooks/tenant_resolver.py"),
+        Path("services/ingest/ingestion/reconcilers/__init__.py"),
+        Path("services/ingest/integrations/oauth_refresh.py"),
+        Path("services/ingest/integrations/router.py"),
+        Path("services/platform/runtime/source_browser_agent_recipes.py"),
+        Path("services/platform/runtime/source_browser_agent_runner.py"),
+        Path("services/platform/runtime/source_browser_agent_workflow.py"),
+        Path("services/ingest/synthetic/validation_runs/composition.py"),
+        Path("services/ingest/synthetic/validation_runs/preflight.py"),
     }
 )
 _RAW_HTTP_CLIENT_TYPES = frozenset(
@@ -465,40 +513,105 @@ def _source_selector(node: ast.AST) -> bool:
 def _canonical_literals(
     node: ast.AST,
     canonical_source_ids: frozenset[str],
+    aliases: Mapping[str, frozenset[str]] | None = None,
 ) -> frozenset[str]:
     value = _literal_string(node)
     if value is not None:
         return frozenset({value}) if value in canonical_source_ids else frozenset()
+    if isinstance(node, ast.Name) and aliases is not None:
+        return aliases.get(node.id, frozenset())
     if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
         return frozenset(
             value
             for element in node.elts
             if (value := _literal_string(element)) in canonical_source_ids
         )
+    strings = _collection_strings(node)
+    if strings is not None:
+        return frozenset(strings) & canonical_source_ids
     return frozenset()
 
 
 def _selected_source_ids(
     node: ast.AST,
     canonical_source_ids: frozenset[str],
+    aliases: Mapping[str, frozenset[str]] | None = None,
 ) -> frozenset[str]:
     if isinstance(node, ast.BoolOp):
         selected: set[str] = set()
         for value in node.values:
-            selected.update(_selected_source_ids(value, canonical_source_ids))
+            selected.update(
+                _selected_source_ids(
+                    value,
+                    canonical_source_ids,
+                    aliases,
+                )
+            )
         return frozenset(selected)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return _selected_source_ids(
+            node.operand,
+            canonical_source_ids,
+            aliases,
+        )
     if not isinstance(node, ast.Compare) or len(node.ops) != 1:
         return frozenset()
     left, right = node.left, node.comparators[0]
     operation = node.ops[0]
-    if isinstance(operation, ast.Eq):
+    if isinstance(operation, (ast.Eq, ast.NotEq)):
         if _source_selector(left):
-            return _canonical_literals(right, canonical_source_ids)
+            return _canonical_literals(right, canonical_source_ids, aliases)
         if _source_selector(right):
-            return _canonical_literals(left, canonical_source_ids)
-    if isinstance(operation, ast.In) and _source_selector(left):
-        return _canonical_literals(right, canonical_source_ids)
+            return _canonical_literals(left, canonical_source_ids, aliases)
+    if isinstance(operation, (ast.In, ast.NotIn)) and _source_selector(left):
+        return _canonical_literals(right, canonical_source_ids, aliases)
     return frozenset()
+
+
+def _canonical_literal_aliases(
+    tree: ast.Module,
+    canonical_source_ids: frozenset[str],
+) -> dict[str, frozenset[str]]:
+    """Resolve module-level names that contain literal canonical source IDs."""
+
+    assignments: list[tuple[tuple[str, ...], ast.AST]] = []
+    for node in tree.body:
+        targets: tuple[ast.AST, ...]
+        value: ast.AST | None
+        if isinstance(node, ast.Assign):
+            targets = tuple(node.targets)
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = (node.target,)
+            value = node.value
+        else:
+            continue
+        if value is None:
+            continue
+        names = _assignment_target_names(targets)
+        if names:
+            assignments.append((names, value))
+
+    aliases: dict[str, frozenset[str]] = {}
+    # A small fixed point also handles ``PROVIDER = SOURCE`` aliases without
+    # importing the module or evaluating arbitrary expressions.
+    for _ in range(len(assignments) + 1):
+        changed = False
+        for names, value in assignments:
+            selected = _canonical_literals(
+                value,
+                canonical_source_ids,
+                aliases,
+            )
+            if not selected:
+                continue
+            for name in names:
+                if aliases.get(name) != selected:
+                    aliases[name] = selected
+                    changed = True
+        if not changed:
+            break
+    return aliases
 
 
 def _is_client_constructor(call: ast.Call) -> bool:
@@ -538,13 +651,24 @@ def _client_calls(statements: Sequence[ast.stmt]) -> tuple[str, ...]:
 def _match_pattern_source_ids(
     pattern: ast.pattern,
     canonical_source_ids: frozenset[str],
+    aliases: Mapping[str, frozenset[str]] | None = None,
 ) -> frozenset[str]:
     if isinstance(pattern, ast.MatchValue):
-        return _canonical_literals(pattern.value, canonical_source_ids)
+        return _canonical_literals(
+            pattern.value,
+            canonical_source_ids,
+            aliases,
+        )
     if isinstance(pattern, ast.MatchOr):
         selected: set[str] = set()
         for child in pattern.patterns:
-            selected.update(_match_pattern_source_ids(child, canonical_source_ids))
+            selected.update(
+                _match_pattern_source_ids(
+                    child,
+                    canonical_source_ids,
+                    aliases,
+                )
+            )
         return frozenset(selected)
     return frozenset()
 
@@ -1300,10 +1424,16 @@ class _PythonScanner(ast.NodeVisitor):
         path: Path,
         canonical_source_ids: tuple[str, ...],
         authoritative_catalog_path: Path,
+        behavior_selector_ids: Sequence[str] | None = None,
+        canonical_literal_aliases: Mapping[str, frozenset[str]] | None = None,
     ) -> None:
         self.path = path
         self.canonical_source_ids = frozenset(canonical_source_ids)
+        self.behavior_selector_ids = frozenset(
+            behavior_selector_ids or canonical_source_ids
+        )
         self.authoritative_catalog_path = authoritative_catalog_path
+        self.canonical_literal_aliases = dict(canonical_literal_aliases or {})
         self.findings: list[Finding] = []
         self._definition_depth = 0
         self._qualname: list[str] = []
@@ -1400,12 +1530,19 @@ class _PythonScanner(ast.NodeVisitor):
             return
         unique_strings = frozenset(strings)
         canonical_overlap = unique_strings & self.canonical_source_ids
-        minimum_overlap = max(
-            4,
-            math.ceil(len(self.canonical_source_ids) * 0.8),
+        minimum_overlap = (
+            2
+            if self.path in _STRICT_SOURCE_LIST_PATHS
+            else max(
+                4,
+                math.ceil(len(self.canonical_source_ids) * 0.8),
+            )
         )
         noncanonical = unique_strings - self.canonical_source_ids
-        if len(canonical_overlap) < minimum_overlap or len(noncanonical) > 1:
+        if len(canonical_overlap) < minimum_overlap or (
+            self.path not in _STRICT_SOURCE_LIST_PATHS
+            and len(noncanonical) > 1
+        ):
             return
         coverage = len(canonical_overlap) / len(self.canonical_source_ids)
         self._add(
@@ -1542,6 +1679,19 @@ class _PythonScanner(ast.NodeVisitor):
     def visit_Constant(self, node: ast.Constant) -> None:  # noqa: N802
         if not isinstance(node.value, str):
             return
+        if (
+            self.path != Path("scripts/check_source_architecture_ratchet.py")
+            and node.value.startswith("ingest.live.")
+        ):
+            self._add(
+                rule_id=RULE_FABRICATED_LIVE_BINDING,
+                node=node,
+                signature=f"binding={node.value}",
+                message=(
+                    f"{node.value!r} is not executable; declare a real live "
+                    "launcher or managed ingress boundary in SourceDefinition"
+                ),
+            )
         arbitrary = _arbitrary_installation_selection(node.value)
         if arbitrary is None:
             return
@@ -1637,7 +1787,26 @@ class _PythonScanner(ast.NodeVisitor):
         self._definition_depth -= 1
 
     def visit_If(self, node: ast.If) -> None:  # noqa: N802
-        selected = _selected_source_ids(node.test, self.canonical_source_ids)
+        selected = _selected_source_ids(
+            node.test,
+            self.behavior_selector_ids,
+            self.canonical_literal_aliases,
+        )
+        if selected and self.path in _SHARED_SOURCE_BEHAVIOR_PATHS:
+            function = ".".join(self._qualname) or "<module>"
+            self._add(
+                rule_id=RULE_SHARED_SOURCE_BEHAVIOR_SWITCH,
+                node=node,
+                signature=(
+                    f"if:{function}:condition={_display_node(node.test)}:"
+                    f"sources={','.join(sorted(selected))}"
+                ),
+                message=(
+                    f"shared orchestration branches on "
+                    f"{', '.join(sorted(selected))}; resolve provider behavior "
+                    "from the source/provider contract"
+                ),
+            )
         calls = _client_calls(node.body)
         if selected and calls:
             function = ".".join(self._qualname) or "<module>"
@@ -1656,14 +1825,53 @@ class _PythonScanner(ast.NodeVisitor):
             )
         self.generic_visit(node)
 
+    def visit_IfExp(self, node: ast.IfExp) -> None:  # noqa: N802
+        selected = _selected_source_ids(
+            node.test,
+            self.behavior_selector_ids,
+            self.canonical_literal_aliases,
+        )
+        if selected and self.path in _SHARED_SOURCE_BEHAVIOR_PATHS:
+            function = ".".join(self._qualname) or "<module>"
+            self._add(
+                rule_id=RULE_SHARED_SOURCE_BEHAVIOR_SWITCH,
+                node=node,
+                signature=(
+                    f"ifexp:{function}:condition={_display_node(node.test)}:"
+                    f"sources={','.join(sorted(selected))}"
+                ),
+                message=(
+                    f"shared orchestration conditionally selects behavior for "
+                    f"{', '.join(sorted(selected))}; resolve it from the "
+                    "source/provider contract"
+                ),
+            )
+        self.generic_visit(node)
+
     def visit_Match(self, node: ast.Match) -> None:  # noqa: N802
         if _source_selector(node.subject):
             function = ".".join(self._qualname) or "<module>"
             for case in node.cases:
                 selected = _match_pattern_source_ids(
                     case.pattern,
-                    self.canonical_source_ids,
+                    self.behavior_selector_ids,
+                    self.canonical_literal_aliases,
                 )
+                if selected and self.path in _SHARED_SOURCE_BEHAVIOR_PATHS:
+                    self._add(
+                        rule_id=RULE_SHARED_SOURCE_BEHAVIOR_SWITCH,
+                        node=case.pattern,
+                        signature=(
+                            f"match:{function}:"
+                            f"subject={_display_node(node.subject)}:"
+                            f"sources={','.join(sorted(selected))}"
+                        ),
+                        message=(
+                            f"shared orchestration match-selects behavior for "
+                            f"{', '.join(sorted(selected))}; resolve it from "
+                            "the source/provider contract"
+                        ),
+                    )
                 calls = _client_calls(case.body)
                 if not selected or not calls:
                     continue
@@ -1796,6 +2004,66 @@ def load_canonical_source_ids(
     )
 
 
+def load_contract_provider_ids(
+    *,
+    repo_root: Path,
+    catalog_path: Path = DEFAULT_CATALOG_PATH,
+) -> tuple[str, ...]:
+    """Read provider identities without importing the production catalog.
+
+    ``PROVIDER_DEFINITIONS`` is assembled from a filtered base tuple, so its
+    final assignment is not a literal that an AST-only ratchet can evaluate.
+    Each base entry is nevertheless a literal ``ProviderDefinition`` call whose
+    first argument (or ``provider_id=`` keyword) names the provider.  Those
+    identities matter to shared behavior switches even when they are ingress-only
+    providers (Linear and Stripe) or vendor groups whose ID differs from the
+    observation source (Google, Atlassian, Intuit, and Meta).
+    """
+
+    resolved = _resolve_under_repo(repo_root, catalog_path)
+    try:
+        tree = ast.parse(resolved.read_text(encoding="utf-8"), filename=str(resolved))
+    except (OSError, SyntaxError) as exc:
+        raise SourceArchitectureCheckError(
+            f"cannot parse canonical source catalog {resolved}: {exc}"
+        ) from exc
+
+    provider_ids: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        callable_name = _dotted_name(node.func)
+        if callable_name is None or callable_name.rsplit(".", 1)[-1] != (
+            "ProviderDefinition"
+        ):
+            continue
+        provider_keyword = next(
+            (keyword for keyword in node.keywords if keyword.arg == "provider_id"),
+            None,
+        )
+        provider_node = (
+            provider_keyword.value
+            if provider_keyword is not None
+            else node.args[0]
+            if node.args
+            else None
+        )
+        provider_id = (
+            _literal_string(provider_node) if provider_node is not None else None
+        )
+        if provider_id is None:
+            raise SourceArchitectureCheckError(
+                f"{resolved} ProviderDefinition at line {node.lineno} must "
+                "declare a literal provider identity"
+            )
+        provider_ids.append(provider_id)
+    if len(provider_ids) != len(set(provider_ids)):
+        raise SourceArchitectureCheckError(
+            f"{resolved} contains duplicate ProviderDefinition provider IDs"
+        )
+    return tuple(provider_ids)
+
+
 def scan_repository(
     *,
     repo_root: Path,
@@ -1804,6 +2072,7 @@ def scan_repository(
 ) -> tuple[Finding, ...]:
     """Scan production source without importing it."""
     root = repo_root.resolve()
+    authoritative_catalog = _resolve_under_repo(root, catalog_path)
     canonical = tuple(
         canonical_source_ids
         if canonical_source_ids is not None
@@ -1813,7 +2082,15 @@ def scan_repository(
         raise SourceArchitectureCheckError(
             "canonical_source_ids must be non-empty and unique"
         )
-    authoritative_catalog = _resolve_under_repo(root, catalog_path)
+    provider_ids = (
+        load_contract_provider_ids(
+            repo_root=root,
+            catalog_path=catalog_path,
+        )
+        if authoritative_catalog.is_file()
+        else ()
+    )
+    behavior_selector_ids = tuple(dict.fromkeys((*canonical, *provider_ids)))
     try:
         authoritative_relative = authoritative_catalog.resolve().relative_to(root)
     except (OSError, ValueError) as exc:
@@ -1894,6 +2171,11 @@ def scan_repository(
             path=relative,
             canonical_source_ids=canonical,
             authoritative_catalog_path=authoritative_relative,
+            behavior_selector_ids=behavior_selector_ids,
+            canonical_literal_aliases=_canonical_literal_aliases(
+                tree,
+                frozenset(behavior_selector_ids),
+            ),
         )
         scanner.visit(tree)
         findings.extend(scanner.findings)
@@ -1923,12 +2205,19 @@ def scan_repository(
             path=relative,
             canonical_source_ids=canonical,
             authoritative_catalog_path=authoritative_relative,
+            behavior_selector_ids=behavior_selector_ids,
         )
         scanner.visit(tree)
         findings.extend(
             finding
             for finding in scanner.findings
-            if finding.rule_id == RULE_ARBITRARY_INSTALLATION_SELECTION
+            if (
+                finding.rule_id == RULE_ARBITRARY_INSTALLATION_SELECTION
+                or (
+                    finding.rule_id == RULE_SHARED_SOURCE_BEHAVIOR_SWITCH
+                    and relative in _SHARED_SOURCE_BEHAVIOR_PATHS
+                )
+            )
         )
 
     findings.sort(

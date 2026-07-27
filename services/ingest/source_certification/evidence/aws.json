@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://docs.aws.amazon.com/awscloudtrail/latest/APIReference/Welcome.html",
       "api_version": "AWS CloudTrail / STS / SQS APIs",
-      "schema_sha256": null,
+      "schema_sha256": "21713cd5c0f3f05225bcdec68d8186a6c21903cb46b5dff8b59a0c25c9bb867a",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 SigV4 and used-operation schema lock."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

@@ -1,0 +1,571 @@
+{
+  "implementation_sha256": {
+    "services.ingest.ingestion.fetchers.aws": "8f9fa83eb6fa22c44b6285131c3976ffbd78be3deb6018ed2905098f1a058e9a",
+    "services.ingest.ingestion.handlers.aws": "cfa3b23181ab51a70ce7740d06b239cc08b1e20474354469dccc6de3eb8e3d23",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.aws": "3019e2ee64161620d7ed26107d607bbe65356b1fe1307a6ca6eda18620965777",
+    "services.ingest.ingestion.reconcilers.aws": "2f91ea223de91bd81c1b2b20360d682b0463df2020083adb31dbb02f2ec2feac",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.aws": "46d951cff4d82900a4d991ce67463f29cf553d68b60a8d5e49380660b85d3406",
+    "services.ingest.integrations.aws.client": "97f515f11cc6b06d4be0a35a9431657e5def54ef97c71a2f03bd36a3a06d69d9",
+    "services.ingest.integrations.aws.credentials": "10c41b2a77ba7c6f8d8a8584eb5a16442fefd2f6d805e4e5020d95b9d75e3cc9",
+    "services.ingest.integrations.aws.live_poll": "e2fb29283261265c9d27128b8d487f1881caa4efb9bce19a6ec189e3f513d52c",
+    "services.ingest.integrations.aws.oauth": "6c65be0203b8d900d7315a921d86b414711778948a93067df995da5ca8d2a8b4",
+    "services.ingest.integrations.aws.onboarding": "53d14cd5c892122992716204d9ecca1162af2df0beadedcc0c4ceb70cffa315d",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_cd": "41c4c2a2e3d41386cae397e018f3cd519f08baae2bdf5e148c00e36c3df41929",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "AWS CloudTrail / STS / SQS APIs",
+  "provider_contract": {
+    "aliases": [
+      "amazon_web_services"
+    ],
+    "auth_strategies": [
+      "sigv4_assume_role",
+      "sigv4_static_credentials"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Amazon Web Services",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "sts.get_caller_identity",
+      "cloudtrail.lookup_events",
+      "sts.assume_role"
+    ],
+    "outbound_endpoint_names": [],
+    "provider_id": "aws",
+    "source_ids": [
+      "aws"
+    ],
+    "webhook_ingresses": []
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "account_id": "175524298756",
+      "events": [
+        {
+          "awsRegion": "us-east-1",
+          "cloudTrailEvent": {
+            "awsRegion": "us-east-1",
+            "eventID": "b1321508-e3c8-f871-72cf-149fe781d4c6",
+            "eventVersion": "1.08",
+            "managementEvent": true,
+            "readOnly": false,
+            "recipientAccountId": "175524298756"
+          },
+          "eventId": "b1321508-e3c8-f871-72cf-149fe781d4c6",
+          "eventName": "RunInstances",
+          "eventSource": "ec2.amazonaws.com",
+          "eventTime": 1785067200000,
+          "recipientAccountId": "175524298756",
+          "userIdentity": {
+            "arn": "arn:aws:iam::175524298756:role/deploy-b13215",
+            "principalId": "AROAB1321508E3C8",
+            "type": "AssumedRole",
+            "userName": "deploy-b13215"
+          }
+        },
+        {
+          "alarmName": "high-cpu-93c5db",
+          "awsRegion": "us-east-1",
+          "cloudTrailEvent": {
+            "awsRegion": "us-east-1",
+            "eventID": "93c5dbe3-4847-ff60-1301-585180b803bc",
+            "eventVersion": "1.08",
+            "managementEvent": true,
+            "readOnly": false,
+            "recipientAccountId": "175524298756"
+          },
+          "eventId": "93c5dbe3-4847-ff60-1301-585180b803bc",
+          "eventName": "DescribeAlarms",
+          "eventSource": "monitoring.amazonaws.com",
+          "eventTime": 1785067140000,
+          "newState": "ALARM",
+          "prevState": "OK",
+          "recipientAccountId": "175524298756",
+          "userIdentity": {
+            "invokedBy": "cloudwatch.amazonaws.com",
+            "type": "AWSService"
+          }
+        },
+        {
+          "awsRegion": "us-east-1",
+          "cloudTrailEvent": {
+            "awsRegion": "us-east-1",
+            "eventID": "94839edb-ef5a-17c5-193a-9c7065087e7e",
+            "eventVersion": "1.08",
+            "managementEvent": true,
+            "readOnly": false,
+            "recipientAccountId": "175524298756"
+          },
+          "eventId": "94839edb-ef5a-17c5-193a-9c7065087e7e",
+          "eventName": "PutObject",
+          "eventSource": "s3.amazonaws.com",
+          "eventTime": 1785067080000,
+          "recipientAccountId": "175524298756",
+          "userIdentity": {
+            "arn": "arn:aws:iam::175524298756:role/deploy-94839e",
+            "principalId": "AROA94839EDBEF5A",
+            "type": "AssumedRole",
+            "userName": "deploy-94839e"
+          }
+        }
+      ],
+      "per_page": 50,
+      "poll_event": {
+        "awsRegion": "us-east-1",
+        "cloudTrailEvent": {
+          "awsRegion": "us-east-1",
+          "eventID": "bae558b4-438c-2b6b-99b4-cee338c0064b",
+          "eventVersion": "1.08",
+          "managementEvent": true,
+          "readOnly": false,
+          "recipientAccountId": "175524298756"
+        },
+        "eventId": "bae558b4-438c-2b6b-99b4-cee338c0064b",
+        "eventName": "StartInstances",
+        "eventSource": "ec2.amazonaws.com",
+        "eventTime": 1785067200000,
+        "recipientAccountId": "175524298756",
+        "userIdentity": {
+          "arn": "arn:aws:iam::175524298756:role/ops-bae558",
+          "type": "AssumedRole",
+          "userName": "ops-bae558"
+        }
+      },
+      "region": "us-east-1"
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": "ab821ae955788b0e33ebd34c208442ccfc2d406e2edc5e7a39bd6458fbb4f843",
+            "headers": [
+              [
+                "Authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIDLABprovider/20250101/us-east-1/sts/aws4_request, SignedHeaders=host;x-amz-date, Signature=provider-lab"
+              ],
+              [
+                "Content-Type",
+                "application/x-www-form-urlencoded"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "sts.get_caller_identity",
+            "path_values": [],
+            "query_items": []
+          },
+          {
+            "body_sha256": "12f2b27b2a1f1c127b8903958cdaacf03733a2036a75d25f215eccb72d0b3dab",
+            "headers": [
+              [
+                "Authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIDLABprovider/20250101/us-east-1/cloudtrail/aws4_request, SignedHeaders=host;x-amz-date;x-amz-target, Signature=provider-lab"
+              ],
+              [
+                "Content-Type",
+                "application/x-amz-json-1.1"
+              ],
+              [
+                "X-Amz-Target",
+                "com.amazonaws.cloudtrail.v20131101.CloudTrail_20131101.LookupEvents"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "cloudtrail.lookup_events",
+            "path_values": [],
+            "query_items": []
+          },
+          {
+            "body_sha256": "e8fc7019ff38aab4fa62eba11fe2fd929d16934898d9e27905da70b5c953c43a",
+            "headers": [
+              [
+                "Authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIDLABprovider/20250101/us-east-1/sts/aws4_request, SignedHeaders=host;x-amz-date, Signature=provider-lab"
+              ],
+              [
+                "Content-Type",
+                "application/x-www-form-urlencoded"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "sts.assume_role",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "sts.get_caller_identity",
+          "cloudtrail.lookup_events",
+          "sts.assume_role"
+        ],
+        "path_template": "/",
+        "quota_bucket": "service-api",
+        "quota_cost": 1.0,
+        "route_id": "aws.service_operation",
+        "transport": "aws_sigv4"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "cursor_after_durable",
+      "cursor_after_durable"
+    ],
+    "aliases": [
+      "amazon_web_services",
+      "cloudtrail"
+    ],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.aws",
+      "evidence_id": "ingest.evidence.aws",
+      "notes": [
+        "The queue live adapter requires a deployed poll loop."
+      ],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.aws",
+      "validation_runtime": {
+        "generator_group": "aws",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_aws_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_aws_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_aws_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_aws_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_aws",
+        "replay_probe_binding": null,
+        "signature_probe_binding": null,
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.aws.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "cloudtrail_event",
+      "cloudwatch_alarm_state"
+    ],
+    "delivery_policies": [
+      "replayable_pull",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Cloud",
+      "connection_method": "IAM role",
+      "description": "Cloud inventory and operational events.",
+      "display_name_override": null,
+      "notice": "Fyralis polls customer-authorized AWS APIs from the local data plane.",
+      "order": 16,
+      "setup_requirements": "AWS account and region, customer IAM role or access ref, inventory scope, CloudTrail/EventBridge scope if enabled.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "AWS",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.aws:fetch_page_aws",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:aws_event"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "aws:event",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "aws:event",
+        "ingress_kind": "poll"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_aws_installation",
+      "management": {
+        "base_url_column": null,
+        "enabled_column": null,
+        "entity_install_column": null,
+        "entity_status_columns": [],
+        "entity_table": null,
+        "extra_output_columns": [
+          "region",
+          "credential_kind"
+        ],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref"
+        ],
+        "scope_column": "account_id",
+        "source": "aws",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [
+          "backfill_window_days"
+        ],
+        "status_presence_columns": [],
+        "table": "aws_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": null,
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "account_id",
+      "role_arn"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [],
+      "workers": [
+        {
+          "cadence_seconds": null,
+          "component_id": "aws_queue_consumer",
+          "deployment_owner": "customer_deployment",
+          "deployment_unit": null,
+          "dispatch_binding": "services.ingest.integrations.aws.live_poll:handle_polled_event",
+          "launcher_binding": null,
+          "lease_scope": "installation",
+          "managed_reason": "Fyralis exposes the exact CloudTrail event dispatch boundary, but the customer deployment must provision and operate its SQS/EventBridge consumer.",
+          "role": "managed_dispatch",
+          "transport": "queue_poll"
+        },
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "queue_poll",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [],
+    "non_resolver_operation_bindings": [
+      {
+        "operation_ids": [
+          "sts.get_caller_identity",
+          "cloudtrail.lookup_events",
+          "sts.assume_role"
+        ],
+        "resolution_kind": "regional"
+      }
+    ],
+    "normalization_inputs": [
+      "aws:event"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.aws:handle_aws_event"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "account id",
+          "region list",
+          "role ARN",
+          "event source availability"
+        ],
+        "agent_generates": [
+          "read-only IAM policy template",
+          "external id",
+          "role trust contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "cloud admin signs in and completes MFA when prompted",
+          "cloud admin creates or approves the read-only Fyralis role"
+        ],
+        "settings_targets": [
+          "IAM roles",
+          "CloudTrail",
+          "EventBridge",
+          "AWS Organizations"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "inventory",
+        "cloudtrail",
+        "eventbridge"
+      ],
+      "discovery_target": "account, region, CloudTrail, and inventory scope",
+      "generic_authorization_mode": "customer_iam_role_ref",
+      "ingress_paths": [],
+      "local_rehearsal": null,
+      "method": "iam_role",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/aws/connect/finalize",
+        "kind": "aws_iam_native_connect",
+        "payload_fields": [
+          "account_id",
+          "region",
+          "credential_kind",
+          "role_arn",
+          "external_id",
+          "backfill_window_days"
+        ],
+        "preflight_path": "/integrations/aws/connect/preflight",
+        "preflight_payload_fields": [],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": "Fyralis polls customer-authorized AWS APIs locally.",
+      "optional_inputs": [
+        "account_id",
+        "region"
+      ],
+      "provider_console_url": "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:aws_provider_handoff",
+      "provider_permissions": [
+        "inventory read",
+        "cloudtrail read",
+        "eventbridge read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "role_arn"
+      ],
+      "required_refs": [
+        "role_arn"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "sts.get_caller_identity",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "aws.sdk_throttle_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            400,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "cloudtrail.lookup_events",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "aws.sdk_throttle_headers",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            400,
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "sts.assume_role",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "aws.sdk_throttle_headers",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": "customer-cloud SQS/EventBridge and API polling workers",
+    "outbound_endpoint_bindings": [],
+    "planner_binding": "services.ingest.ingestion.planners.aws:plan_shards_aws",
+    "provider_id": "aws",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.aws:reconcile_aws",
+    "runtime_identifiers": [
+      "account_id",
+      "region"
+    ],
+    "source_id": "aws",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "aws"
+  },
+  "source_id": "aws"
+}

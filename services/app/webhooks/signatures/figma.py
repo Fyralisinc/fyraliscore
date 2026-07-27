@@ -15,7 +15,7 @@ passcode in the body (a wrong passcode is its tamper-rejection probe).
 ============================================================================
 
 The per-tenant secret(s) are resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='figma') the seed/onboarding step registers. The verifier loops
 over ALL active secrets so a rotation (two valid secrets in flight) verifies.
 

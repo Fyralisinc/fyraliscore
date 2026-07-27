@@ -6,7 +6,7 @@ batches multiple `eventNotifications[]` — EACH with its own `realmId` (a
 connected company = a distinct Fyralis tenant) — and each notification's
 `dataChangeEvent.entities[]` lists multiple changed entities. The pre-R1
 ingress did one resolve→one ingest, dropping every realm past the first and
-every entity past the first. The router now fans out: `_qbo_fanout_units`
+every entity past the first. The contract-owned QuickBooks ingress policy
 splits the delivery, and each unit is re-resolved to ITS realm's tenant.
 
 Verified against developer.intuit.com webhooks docs. `intuit-signature` is
@@ -25,8 +25,8 @@ import pytest
 from services.app.webhooks.signatures.quickbooks import verifier as qbo_verifier
 from services.app.webhooks.tenant_resolver import _extract_quickbooks
 from services.app.webhooks.verifier import Secret, WebhookVerificationError
-from services.app.webhooks.router import _qbo_fanout_units
 from services.ingest.ingestion.handlers.quickbooks import handle_quickbooks_object
+from services.ingest.integrations.quickbooks.webhook_ingress import fanout_units
 from tests.contract.framework import load_fixture
 
 pytestmark = pytest.mark.contract
@@ -53,7 +53,7 @@ def _sign_b64(raw: bytes) -> str:
 
 def test_qbo_fanout_splits_into_per_realm_per_entity_units():
     body = _fixture().body
-    units = _qbo_fanout_units(body)
+    units = fanout_units(body)
     # realm A has 2 entities, realm B has 1 → 3 units total.
     assert len(units) == 3
     realms = [realm for realm, _ in units]
@@ -77,7 +77,7 @@ def test_qbo_fanout_splits_into_per_realm_per_entity_units():
 
 def test_qbo_each_realm_resolves_independently():
     body = _fixture().body
-    units = _qbo_fanout_units(body)
+    units = fanout_units(body)
     # The fan-out re-resolves each realm via a minimal {realmId}; the resolver
     # extractor must read a top-level realmId so per-realm resolution works.
     for realm, _unit in units:
@@ -113,7 +113,7 @@ async def test_qbo_tampered_signature_rejected():
 
 async def test_qbo_each_unit_handler_parses_to_distinct_observation():
     body = _fixture().body
-    units = _qbo_fanout_units(body)
+    units = fanout_units(body)
     drafts = [await handle_quickbooks_object(unit, {}) for _realm, unit in units]
 
     # Every unit produces a thin-change observation on the one QBO channel.

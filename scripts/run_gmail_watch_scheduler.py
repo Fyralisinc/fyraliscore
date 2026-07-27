@@ -21,6 +21,11 @@ from services.ingest.integrations.gmail.watch_scheduler import run_forever
 
 
 async def _main() -> None:
+    from services.ingest.source_contract.runtime import (
+        validate_live_worker_startup,
+    )
+
+    validate_live_worker_startup("gmail", "gmail_watch_scheduler")
     log = structlog.get_logger("dogfood.gmail_watch_scheduler")
     dsn = os.environ["DATABASE_URL"]
     pool_max = positive_int_env("SOURCE_SCHEDULER_POSTGRES_POOL_SIZE", default=8)

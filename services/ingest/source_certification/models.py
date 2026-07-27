@@ -20,8 +20,11 @@ from typing import Any, Literal
 EvidenceKind = Literal["documented", "observed_live", "fyralis_specific"]
 SuiteKind = Literal["historical", "live", "combined"]
 CertificationState = Literal["unverified", "passed", "failed", "blocked"]
+CanaryCleanupState = Literal["not_required", "passed", "failed", "blocked"]
+CanaryOperationMutability = Literal["read", "mutation", "unclassified"]
 CertificationBindingRole = Literal[
     "fixture_factory",
+    "live_fixture_factory",
     "fixture_count_oracle",
     "installation_seeder",
 ]
@@ -131,6 +134,35 @@ class LoadSuite:
 
 
 @dataclass(frozen=True, slots=True)
+class CanaryOperationContract:
+    """Operation-bound mutability and cleanup policy for a live canary."""
+
+    operation_id: str
+    mutability: CanaryOperationMutability
+    cleanup_action: str | None
+    classification_basis: str
+
+    def __post_init__(self) -> None:
+        _nonempty(self.operation_id, "canary operation_id")
+        if self.mutability not in {"read", "mutation", "unclassified"}:
+            raise CertificationInvariantError(
+                "canary operation mutability must be read, mutation, or "
+                "unclassified"
+            )
+        _nonempty(self.classification_basis, "classification_basis")
+        if self.mutability == "mutation":
+            if self.cleanup_action is None:
+                raise CertificationInvariantError(
+                    "mutating canary operation requires a cleanup_action"
+                )
+            _nonempty(self.cleanup_action, "cleanup_action")
+        elif self.cleanup_action is not None:
+            raise CertificationInvariantError(
+                "only mutating canary operations may declare cleanup_action"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class CanaryDefinition:
     """Low-rate real-provider proof; never a saturation test."""
 
@@ -138,9 +170,9 @@ class CanaryDefinition:
     credential_env_prefix: str
     account_type: str
     required_operations: tuple[str, ...]
+    operation_contracts: tuple[CanaryOperationContract, ...]
     read_only_by_default: bool = True
     max_requests: int = 25
-    mutating_actions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _nonempty(self.canary_id, "canary_id")
@@ -152,6 +184,22 @@ class CanaryDefinition:
         if len(self.required_operations) != len(set(self.required_operations)):
             raise CertificationInvariantError(
                 "required_operations must not contain duplicates"
+            )
+        if not isinstance(self.operation_contracts, tuple) or not all(
+            isinstance(contract, CanaryOperationContract)
+            for contract in self.operation_contracts
+        ):
+            raise CertificationInvariantError(
+                "operation_contracts must be a tuple of "
+                "CanaryOperationContract values"
+            )
+        operation_ids = tuple(
+            contract.operation_id for contract in self.operation_contracts
+        )
+        if operation_ids != self.required_operations:
+            raise CertificationInvariantError(
+                "operation_contracts must cover required_operations exactly "
+                "once and in order"
             )
         if (
             isinstance(self.max_requests, bool)
@@ -171,6 +219,31 @@ class CanaryDefinition:
                     "mutating canaries must name a disposable account type"
                 )
 
+    @property
+    def mutating_actions(self) -> tuple[str, ...]:
+        return tuple(
+            contract.cleanup_action
+            for contract in self.operation_contracts
+            if contract.cleanup_action is not None
+        )
+
+    @property
+    def unclassified_operations(self) -> tuple[str, ...]:
+        return tuple(
+            contract.operation_id
+            for contract in self.operation_contracts
+            if contract.mutability == "unclassified"
+        )
+
+    def operation_contract_for(
+        self,
+        operation_id: str,
+    ) -> CanaryOperationContract:
+        for contract in self.operation_contracts:
+            if contract.operation_id == operation_id:
+                return contract
+        raise KeyError(operation_id)
+
 
 @dataclass(frozen=True, slots=True)
 class CertificationCallableBinding:
@@ -184,6 +257,7 @@ class CertificationCallableBinding:
         _nonempty(self.source_id, "binding source_id")
         if self.role not in {
             "fixture_factory",
+            "live_fixture_factory",
             "fixture_count_oracle",
             "installation_seeder",
         }:
@@ -215,6 +289,7 @@ class SourceCertificationSpec:
     load_suites: tuple[LoadSuite, ...]
     canary: CanaryDefinition
     fixture_factory_binding: CertificationCallableBinding | None = None
+    live_fixture_factory_binding: CertificationCallableBinding | None = None
     fixture_count_oracle_binding: CertificationCallableBinding | None = None
     installation_seeder_binding: CertificationCallableBinding | None = None
 
@@ -253,6 +328,7 @@ class SourceCertificationSpec:
             )
         bindings = (
             ("fixture_factory", self.fixture_factory_binding),
+            ("live_fixture_factory", self.live_fixture_factory_binding),
             ("fixture_count_oracle", self.fixture_count_oracle_binding),
             ("installation_seeder", self.installation_seeder_binding),
         )
@@ -272,7 +348,14 @@ class SourceCertificationSpec:
                 raise CertificationInvariantError(
                     f"{expected_role} binding declares role " f"{binding.role!r}"
                 )
-        declared_bindings = tuple(binding is not None for _, binding in bindings)
+        historical_bindings = (
+            self.fixture_factory_binding,
+            self.fixture_count_oracle_binding,
+            self.installation_seeder_binding,
+        )
+        declared_bindings = tuple(
+            binding is not None for binding in historical_bindings
+        )
         if len(set(declared_bindings)) != 1:
             raise CertificationInvariantError(
                 "fixture_factory_binding, fixture_count_oracle_binding, and "
@@ -394,6 +477,10 @@ class CanaryResult:
     account_type: str | None = None
     api_version: str | None = None
     artifact_uri: str | None = None
+    request_count: int = 0
+    account_identity_sha256: str | None = None
+    mutation_actions: tuple[str, ...] = ()
+    cleanup_state: CanaryCleanupState = "not_required"
     failures: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -415,6 +502,36 @@ class CanaryResult:
             value = getattr(self, name)
             if value is not None:
                 _nonempty(value, name)
+        if (
+            isinstance(self.request_count, bool)
+            or not isinstance(self.request_count, int)
+            or self.request_count < 0
+        ):
+            raise CertificationInvariantError(
+                "request_count must be a non-negative integer"
+            )
+        if self.account_identity_sha256 is not None:
+            digest = self.account_identity_sha256.lower()
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise CertificationInvariantError(
+                    "account_identity_sha256 must be a lowercase SHA-256 digest"
+                )
+        _strings(self.mutation_actions, "mutation_actions")
+        if len(self.mutation_actions) != len(set(self.mutation_actions)):
+            raise CertificationInvariantError(
+                "mutation_actions must not contain duplicates"
+            )
+        if self.cleanup_state not in {
+            "not_required",
+            "passed",
+            "failed",
+            "blocked",
+        }:
+            raise CertificationInvariantError(
+                "cleanup_state must be not_required, passed, failed, or blocked"
+            )
         _strings(self.failures, "failures")
         if self.state == "passed":
             required = (
@@ -422,11 +539,25 @@ class CanaryResult:
                 self.account_type,
                 self.api_version,
                 self.artifact_uri,
+                self.account_identity_sha256,
             )
-            if any(value is None for value in required) or self.failures:
+            if (
+                any(value is None for value in required)
+                or self.request_count <= 0
+                or self.failures
+            ):
                 raise CertificationInvariantError(
                     "a passed canary requires timestamp, account/API metadata, "
-                    "artifact, and no failures"
+                    "account identity, positive request count, artifact, and "
+                    "no failures"
+                )
+            if self.mutation_actions and self.cleanup_state != "passed":
+                raise CertificationInvariantError(
+                    "a mutating passed canary requires successful cleanup"
+                )
+            if not self.mutation_actions and self.cleanup_state != "not_required":
+                raise CertificationInvariantError(
+                    "a read-only passed canary must declare cleanup not_required"
                 )
 
 

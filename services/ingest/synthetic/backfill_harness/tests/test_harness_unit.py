@@ -25,6 +25,7 @@ import pytest
 from services.ingest.synthetic.backfill_harness import (
     BackfillHarness,
     BackfillScenario,
+    HarnessResult,
 )
 from services.ingest.source_contract.catalog import (
     CANONICAL_SOURCE_IDS,
@@ -171,9 +172,79 @@ async def test_harness_install_idempotent_on_retry(
 
 
 @pytest.mark.asyncio
+async def test_harness_seeds_exact_same_tenant_sibling_installations(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Two Slack installs share a tenant but retain exact durable identities."""
+
+    scenarios = [
+        BackfillScenario(
+            tenant_slug="shared-slack-tenant",
+            source="slack",
+            installation_key=f"shared-slack-installation-{index}",
+        )
+        for index in range(2)
+    ]
+    harness = BackfillHarness(pool=fresh_db, scenarios=scenarios)
+    outcomes = harness._build_outcomes()
+
+    assert len({outcome.tenant_id for outcome in outcomes}) == 1
+    await harness._setup_tenants_and_fixtures(outcomes)
+    harness._prepare_provider_lab_fixtures(outcomes)
+    await harness._invoke_oauth_callbacks(outcomes)
+    # Retry the same exact installs after both siblings exist. The prior
+    # outcome bindings make this unambiguous and idempotent.
+    await harness._invoke_oauth_callbacks(outcomes)
+
+    tenant_id = outcomes[0].tenant_id
+    installs = await fresh_db.fetch(
+        """
+        SELECT id, installation_id
+          FROM provider_installations
+         WHERE tenant_id = $1 AND provider = 'slack'
+         ORDER BY installation_id
+        """,
+        tenant_id,
+    )
+    triggers = await fresh_db.fetch(
+        """
+        SELECT id, installation_row_id
+          FROM onboarding_triggers
+         WHERE tenant_id = $1 AND source = 'slack'
+         ORDER BY id
+        """,
+        tenant_id,
+    )
+
+    assert len(installs) == 2
+    assert len(triggers) == 2
+    assert len({outcome.installation_row_id for outcome in outcomes}) == 2
+    assert len({outcome.trigger_id for outcome in outcomes}) == 2
+    assert {outcome.installation_row_id for outcome in outcomes} == {
+        row["id"] for row in installs
+    }
+    assert {outcome.trigger_id for outcome in outcomes} == {
+        row["id"] for row in triggers
+    }
+    assert {
+        row["installation_row_id"] for row in triggers
+    } == {row["id"] for row in installs}
+    assert [row["installation_id"] for row in installs] == [
+        "x3-shared-slack-installation-0-slack",
+        "x3-shared-slack-installation-1-slack",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_all_26_history_installation_bindings_write_triggers(
     fresh_db: asyncpg.Pool,
 ) -> None:
+    """Execute every catalog seeder and its conflict target against Postgres.
+
+    This is intentionally a database-backed SQL compilation gate: a copied
+    conflict expression that names another source's scope column must fail
+    here, before a long validation run reaches the worker processes.
+    """
     history_sources = [
         source_id
         for source_id in CANONICAL_SOURCE_IDS
@@ -212,6 +283,63 @@ async def test_all_26_history_installation_bindings_write_triggers(
     assert all(outcome.installation_row_id is not None for outcome in outcomes)
 
 
+@pytest.mark.asyncio
+async def test_legacy_scoped_seeders_preserve_same_tenant_siblings(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Canonical API hosts must not merge exact provider-scope installs."""
+
+    scoped_sources = ("mercury", "brex", "deel", "fireflies", "miro", "figma")
+    scenarios = [
+        BackfillScenario(
+            tenant_slug=f"shared-{source_id}-tenant",
+            source=source_id,
+            installation_key=f"shared-{source_id}-installation-{index}",
+        )
+        for source_id in scoped_sources
+        for index in range(2)
+    ]
+    harness = BackfillHarness(
+        pool=fresh_db,
+        scenarios=scenarios,
+        concurrency=8,
+    )
+    outcomes = harness._build_outcomes()
+
+    await harness._setup_tenants_and_fixtures(outcomes)
+    harness._prepare_provider_lab_fixtures(outcomes)
+    await harness._invoke_oauth_callbacks(outcomes)
+    await harness._invoke_oauth_callbacks(outcomes)
+
+    for source_id in scoped_sources:
+        source_outcomes = [
+            outcome
+            for outcome in outcomes
+            if outcome.scenario.source == source_id
+        ]
+        assert len(source_outcomes) == 2
+        assert {outcome.install_error for outcome in source_outcomes} == {None}
+        assert len(
+            {outcome.installation_row_id for outcome in source_outcomes},
+        ) == 2
+        assert len({outcome.trigger_id for outcome in source_outcomes}) == 2
+
+    miro_tenant_ids = [
+        outcome.tenant_id
+        for outcome in outcomes
+        if outcome.scenario.source == "miro"
+    ]
+    assert await fresh_db.fetchval(
+        """
+        SELECT count(*)
+          FROM provider_installations
+         WHERE provider = 'miro'
+           AND tenant_id = ANY($1::uuid[])
+        """,
+        miro_tenant_ids,
+    ) == 0
+
+
 def test_harness_binds_only_the_new_sibling_trigger() -> None:
     scenario = BackfillScenario(tenant_slug="siblings", source="slack")
     outcome = _stub_outcome(scenario)
@@ -247,6 +375,20 @@ def test_harness_binds_only_the_new_sibling_trigger() -> None:
     assert outcome.installation_row_id == new_installation
 
 
+def test_harness_rejects_duplicate_scenario_installation_identity() -> None:
+    scenario = BackfillScenario(
+        tenant_slug="duplicate",
+        source="slack",
+        installation_key="same-installation",
+    )
+
+    with pytest.raises(ValueError, match="must have unique"):
+        BackfillHarness(
+            pool=None,  # type: ignore[arg-type]
+            scenarios=[scenario, scenario],
+        )
+
+
 def test_harness_rejects_ambiguous_preexisting_sibling_triggers() -> None:
     scenario = BackfillScenario(tenant_slug="siblings", source="slack")
     outcome = _stub_outcome(scenario)
@@ -269,6 +411,43 @@ def test_harness_rejects_ambiguous_preexisting_sibling_triggers() -> None:
             before=rows,
             after=rows,
         )
+
+
+def test_harness_result_exposes_machine_readable_identity_and_replica_evidence(
+) -> None:
+    scenario = BackfillScenario(
+        tenant_slug="evidence",
+        source="slack",
+        installation_key="evidence-installation",
+    )
+    outcome = _stub_outcome(scenario)
+    outcome.installation_row_id = uuid4()
+    outcome.trigger_id = uuid4()
+    outcome.onboarding_run_id = uuid4()
+    result = HarnessResult(
+        outcomes=[outcome],
+        configured_replicas=2,
+        replica_workflow_activity={
+            "oauth_poller": {
+                "poll-replica-1": 3,
+                "poll-replica-2": 2,
+            },
+        },
+    )
+
+    assert result.installation_identity_evidence == (
+        {
+            "source": "slack",
+            "tenant_slug": "evidence",
+            "installation_key": "evidence-installation",
+            "tenant_id": str(outcome.tenant_id),
+            "installation_row_id": str(outcome.installation_row_id),
+            "trigger_id": str(outcome.trigger_id),
+            "onboarding_run_id": str(outcome.onboarding_run_id),
+        },
+    )
+    assert result.observed_replica_count == 2
+    assert result.participating_replica_count == 2
 
 
 @pytest.mark.asyncio
@@ -320,6 +499,37 @@ def test_harness_has_no_client_mode_switch_or_generated_helper() -> None:
     assert "real_clients" not in inspect.signature(BackfillHarness).parameters
     assert not hasattr(module, "_write_helper")
     assert not hasattr(module, "_HELPER_TEMPLATE")
+
+
+def test_harness_inherits_kafka_bootstrap_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KAFKA_BOOTSTRAP_SERVERS", "kafka.test:29092")
+
+    harness = BackfillHarness(
+        pool=None,  # type: ignore[arg-type]
+        scenarios=[
+            BackfillScenario(tenant_slug="broker-env", source="gmail"),
+        ],
+    )
+
+    assert harness._kafka_bootstrap == "kafka.test:29092"
+
+
+def test_harness_explicit_kafka_bootstrap_wins_over_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KAFKA_BOOTSTRAP_SERVERS", "kafka.env:29092")
+
+    harness = BackfillHarness(
+        pool=None,  # type: ignore[arg-type]
+        scenarios=[
+            BackfillScenario(tenant_slug="broker-explicit", source="gmail"),
+        ],
+        kafka_bootstrap_servers="kafka.explicit:39092",
+    )
+
+    assert harness._kafka_bootstrap == "kafka.explicit:39092"
 
 
 def test_provider_lab_fixtures_are_certification_owned_per_tenant(
@@ -395,6 +605,111 @@ def test_harness_service_specs_include_normalizer_and_writer(
     assert specs["observation_writer"][0] == (
         "services.ingest.ingestion.writers.observation_writer"
     )
+
+
+def test_harness_two_replicas_expand_the_complete_service_roster() -> None:
+    scenario = BackfillScenario(tenant_slug="replicas", source="slack")
+    harness = BackfillHarness(
+        pool=None,  # type: ignore[arg-type]
+        scenarios=[scenario],
+        replicas=2,
+    )
+
+    specs = harness._service_specs()
+
+    assert len(specs) == 14
+    assert set(specs) == {
+        f"{service}@{replica}"
+        for replica in (1, 2)
+        for service in {
+            "oauth_poller",
+            "tenant_onboarding",
+            "source_onboarding",
+            "shard_fetch",
+            "reconciler",
+            "normalizer",
+            "observation_writer",
+        }
+    }
+    oauth_instance_ids = {
+        specs[f"oauth_poller@{replica}"][1]["OAUTH_POLLER_INSTANCE"]
+        for replica in (1, 2)
+    }
+    assert oauth_instance_ids == set(
+        harness.replica_workflow_ids("oauth_poller"),
+    )
+    assert all(
+        specs[f"oauth_poller@{replica}"][1]["OAUTH_POLLER_BATCH"] == "1"
+        for replica in (1, 2)
+    )
+    assert (
+        specs["normalizer@1"][0]
+        == specs["normalizer@2"][0]
+        == "services.ingest.ingestion.normalizer.worker"
+    )
+
+
+def test_harness_teardown_signals_every_replica_before_waiting() -> None:
+    scenario = BackfillScenario(tenant_slug="replica-teardown", source="slack")
+    harness = BackfillHarness(
+        pool=None,  # type: ignore[arg-type]
+        scenarios=[scenario],
+        replicas=2,
+    )
+    events: list[tuple[str, str]] = []
+
+    class _Stderr:
+        def read(self) -> bytes:
+            return b""
+
+    class _Process:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.stderr = _Stderr()
+
+        def send_signal(self, _signal: int) -> None:
+            events.append(("signal", self.name))
+
+        def wait(self, *, timeout: int) -> None:
+            assert timeout == 15
+            assert [event for event in events if event[0] == "signal"] == [
+                ("signal", "normalizer@1"),
+                ("signal", "normalizer@2"),
+            ]
+            events.append(("wait", self.name))
+
+        def kill(self) -> None:
+            raise AssertionError("cooperative test process should not be killed")
+
+    harness._procs = {
+        name: _Process(name)  # type: ignore[dict-item]
+        for name in ("normalizer@1", "normalizer@2")
+    }
+
+    stderrs = harness._teardown_services()
+
+    assert stderrs == {
+        "normalizer@1": "",
+        "normalizer@2": "",
+    }
+    assert events == [
+        ("signal", "normalizer@1"),
+        ("signal", "normalizer@2"),
+        ("wait", "normalizer@1"),
+        ("wait", "normalizer@2"),
+    ]
+
+
+@pytest.mark.parametrize("replicas", [0, -1, True, 1.5])
+def test_harness_rejects_invalid_replica_count(replicas: object) -> None:
+    with pytest.raises(ValueError, match="replicas must be a positive integer"):
+        BackfillHarness(
+            pool=None,  # type: ignore[arg-type]
+            scenarios=[
+                BackfillScenario(tenant_slug="invalid", source="slack"),
+            ],
+            replicas=replicas,  # type: ignore[arg-type]
+        )
 
 
 def test_harness_base_env_wires_s3(monkeypatch) -> None:

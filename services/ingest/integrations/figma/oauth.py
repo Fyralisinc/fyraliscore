@@ -53,6 +53,7 @@ from lib.shared.provider_transport import (
 )
 from lib.shared.secrets import load_app_secret_text_from_env
 from lib.shared.tenant_context import tenant_transaction
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.figma.artifact_router import router as artifact_router
 from services.ingest.integrations.figma.client import FigmaClient
 from services.ingest.integrations.figma.onboarding import (
@@ -73,7 +74,6 @@ from services.platform.access_control.roles import has_role
 log = structlog.get_logger("integrations.figma.oauth")
 
 
-_DEFAULT_BASE_URL = "https://api.figma.com"
 _FIGMA_AUTHORIZE_URL = "https://www.figma.com/oauth"
 _FIGMA_TOKEN_URL = "https://api.figma.com/v1/oauth/token"
 _DEFAULT_STATE_TTL_S = 600
@@ -1818,11 +1818,12 @@ async def connect_disconnect(
 
 def _require_token(body: dict[str, Any]) -> tuple[str, str]:
     api_token = (body.get("api_token") or "").strip()
-    base_url = (body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     if not api_token:
         raise HTTPException(status_code=400, detail="api_token is required")
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="figma_api",
+    )
     return api_token, base_url
 
 

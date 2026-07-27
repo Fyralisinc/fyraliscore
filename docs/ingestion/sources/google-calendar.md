@@ -10,7 +10,7 @@
 | Source | `google_calendar` |
 | Primary channel | `google_calendar:event` (handler branches on `status`) |
 | Trust tier | `authoritative` |
-| Live ingress | **none** — poll-only (no push/webhook in v1) |
+| Live ingress | Native `events.watch` push at `/webhooks/google_calendar/push`, with the `syncToken` poller as the liveness backstop |
 | Backfill | windowed per included user's primary calendar (`GOOGLE_CALENDAR_BACKFILL_DAYS`, default 180, `singleEvents=true`) |
 | Incremental | Google's native `nextSyncToken` |
 | Auth | Domain-Wide Delegation (reuses the Gmail substrate) |
@@ -41,6 +41,15 @@ calendars + onboarding trigger).
   — **one channel `google_calendar:event`**; branches on `status` (`cancelled` →
   `kind=state_change`, else `signal`) (D3). Trust `authoritative` (D4) — a
   calendar event is the system of record for scheduling.
+
+## Live watch and fallback poll
+
+[google_calendar/watch.py](../../../services/ingest/integrations/google_calendar/watch.py)
+registers and renews native `events.watch` channels. Google sends content-less
+`X-Goog-*` notifications to `/webhooks/google_calendar/push`; the dedicated
+Google push router verifies the stored channel token and drains the same
+`syncToken` delta fetcher. The two-minute poller remains enabled as the
+correctness backstop for missed or expired notifications.
 
 ## Dedup / external_id (D7 — mutable entities)
 

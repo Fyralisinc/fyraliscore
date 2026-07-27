@@ -1,0 +1,606 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.fireflies": "a11ad361248ed9a6cf4758e37826f97062c32617e9723e54e5778ce8c2a4e0b0",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.fireflies": "d9200cdd8b1ca6ed1e6247bdea18fc3fb82acbbaa94ee524cc89b908edf08427",
+    "services.ingest.ingestion.handlers.fireflies": "625c3645e190eeab6c6d242782400e07a2f5c322f92ad14b5cd4f39ba84aff56",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.fireflies": "1fc5038b765f21fe7efb41c202e1cab1473b02ec54af6858e3778bd76b2cbfc6",
+    "services.ingest.ingestion.reconcilers.fireflies": "8c89771362566cb2f05a7193b5f80ad685a149881d11a7d813fec50b9905299e",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.fireflies": "bc1d37bf7b9d25123c29aa449cf061e92932ff195431ed3601140c698a1e7c85",
+    "services.ingest.integrations.fireflies.client": "65c808558aad527d860a88770c7dca9f32e9a5360d6e715157385c3d125e273b",
+    "services.ingest.integrations.fireflies.metrics": "aa0ecef288608d4881a3519e50055d00ba8e87f94b53d2c6749f4c9442c4abaa",
+    "services.ingest.integrations.fireflies.oauth": "ac92d052fffee7abcff8c44349da70dbfd6d90486578e00ac2b5114e17255be7",
+    "services.ingest.integrations.fireflies.onboarding": "3d6cf47c36d2b1991e02243d9de376b6310ce3ff82c0d89e6174be74582f51e7",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Fireflies GraphQL API",
+  "provider_contract": {
+    "aliases": [
+      "fireflies_ai"
+    ],
+    "auth_strategies": [
+      "api_key"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Fireflies.ai",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "user.get",
+      "transcript.get",
+      "transcripts.list"
+    ],
+    "outbound_endpoint_names": [
+      "fireflies_api"
+    ],
+    "provider_id": "fireflies",
+    "source_ids": [
+      "fireflies"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "fireflies:transcript",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "fireflies",
+        "route_path": "/webhooks/fireflies",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "fireflies",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_fireflies",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.fireflies:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "page_size": 50,
+      "transcripts": [
+        {
+          "date": "2026-01-05T23:00:00Z",
+          "dateTime": "2026-01-05T23:00:00Z",
+          "duration": 30,
+          "id": "ts_399ea316320fd08001e6",
+          "meetingLink": "https://app.fireflies.ai/view/ts_399ea316320fd08001e6",
+          "organizerEmail": "organizer-0@acme.example",
+          "participants": [
+            {
+              "email": "alice0@acme.example",
+              "name": "Alice 5b0f"
+            },
+            {
+              "email": "bob0@acme.example",
+              "name": "Bob 7f11"
+            }
+          ],
+          "summary": {
+            "action_items": [
+              "Follow up on item 0"
+            ],
+            "overview": "Discussion of weekly engineering sync #1 and follow-ups."
+          },
+          "title": "Weekly Engineering Sync #1",
+          "transcriptId": "ts_399ea316320fd08001e6",
+          "version": "2026-01-05T23:00:00Z",
+          "workspaceId": "certification-surface-fireflies"
+        },
+        {
+          "date": "2026-01-05T22:00:00Z",
+          "dateTime": "2026-01-05T22:00:00Z",
+          "duration": 45,
+          "id": "ts_34e029eaefe9d5d091ac",
+          "meetingLink": "https://app.fireflies.ai/view/ts_34e029eaefe9d5d091ac",
+          "organizerEmail": "organizer-1@acme.example",
+          "participants": [
+            {
+              "email": "alice1@acme.example",
+              "name": "Alice 32fd"
+            },
+            {
+              "email": "bob1@acme.example",
+              "name": "Bob 8337"
+            }
+          ],
+          "summary": {
+            "action_items": [
+              "Follow up on item 1"
+            ],
+            "overview": "Discussion of customer discovery call #2 and follow-ups."
+          },
+          "title": "Customer Discovery Call #2",
+          "transcriptId": "ts_34e029eaefe9d5d091ac",
+          "version": "2026-01-05T22:00:00Z",
+          "workspaceId": "certification-surface-fireflies"
+        },
+        {
+          "date": "2026-01-05T21:00:00Z",
+          "dateTime": "2026-01-05T21:00:00Z",
+          "duration": 60,
+          "id": "ts_08fa8d36472832ea95ca",
+          "meetingLink": "https://app.fireflies.ai/view/ts_08fa8d36472832ea95ca",
+          "organizerEmail": "organizer-2@acme.example",
+          "participants": [
+            {
+              "email": "alice2@acme.example",
+              "name": "Alice d7f2"
+            },
+            {
+              "email": "bob2@acme.example",
+              "name": "Bob 17e5"
+            }
+          ],
+          "summary": {
+            "action_items": [
+              "Follow up on item 2"
+            ],
+            "overview": "Discussion of product roadmap review #3 and follow-ups."
+          },
+          "title": "Product Roadmap Review #3",
+          "transcriptId": "ts_08fa8d36472832ea95ca",
+          "version": "2026-01-05T21:00:00Z",
+          "workspaceId": "certification-surface-fireflies"
+        },
+        {
+          "date": "2026-01-05T20:00:00Z",
+          "dateTime": "2026-01-05T20:00:00Z",
+          "duration": 75,
+          "id": "ts_36772a0fe842b5381761",
+          "meetingLink": "https://app.fireflies.ai/view/ts_36772a0fe842b5381761",
+          "organizerEmail": "organizer-3@acme.example",
+          "participants": [
+            {
+              "email": "alice3@acme.example",
+              "name": "Alice ca04"
+            },
+            {
+              "email": "bob3@acme.example",
+              "name": "Bob 81a2"
+            }
+          ],
+          "summary": {
+            "action_items": [
+              "Follow up on item 3"
+            ],
+            "overview": "Discussion of sales pipeline standup #4 and follow-ups."
+          },
+          "title": "Sales Pipeline Standup #4",
+          "transcriptId": "ts_36772a0fe842b5381761",
+          "version": "2026-01-05T20:00:00Z",
+          "workspaceId": "certification-surface-fireflies"
+        }
+      ],
+      "workspace_id": "certification-surface-fireflies"
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": "2fa932323b65f0176f652d027ee37082f6175ea7407b3f04f7319dcd99e8aeb4",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "user.get",
+            "path_values": [],
+            "query_items": []
+          },
+          {
+            "body_sha256": "602c87ffccedc033a559b899d6fb1c9bdfbd028099cd1b9c595a33e6874bae25",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "transcript.get",
+            "path_values": [],
+            "query_items": []
+          },
+          {
+            "body_sha256": "56d7886a4b4c2daf71db3757a86cbced5e570425d085a658b955a4d840646700",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "transcripts.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "user.get",
+          "transcript.get",
+          "transcripts.list"
+        ],
+        "path_template": "/graphql",
+        "quota_bucket": "graphql",
+        "quota_cost": 1.0,
+        "route_id": "fireflies.graphql",
+        "transport": "graphql"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [
+      "fireflies_ai"
+    ],
+    "allowed_observation_kinds": [
+      "signal"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.fireflies",
+      "evidence_id": "ingest.evidence.fireflies",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.fireflies",
+      "validation_runtime": {
+        "generator_group": "fireflies",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_fireflies_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_fireflies_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_fireflies_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_fireflies_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_fireflies",
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_fireflies_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.fireflies.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "meeting",
+      "summary",
+      "action_item"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Meetings",
+      "connection_method": "API token",
+      "description": "Meeting transcripts and conversation records.",
+      "display_name_override": "Fireflies",
+      "notice": null,
+      "order": 12,
+      "setup_requirements": "Workspace approval, API token, transcript scope, meeting history window, webhook or poll setup.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Fireflies.ai",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.fireflies:fetch_page_fireflies",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:fireflies_transcript"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "fireflies:transcript",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "fireflies:transcript",
+        "ingress_kind": "poll"
+      },
+      {
+        "channel": "fireflies:transcript",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_fireflies_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": null,
+        "entity_status_columns": [],
+        "entity_table": null,
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref",
+          "webhook_secret_ref"
+        ],
+        "scope_column": "workspace_id",
+        "source": "fireflies",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "fireflies_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": "workspace_id",
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "workspace_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "fireflies",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.fireflies.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "fireflies:transcript"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.fireflies:handle_fireflies_transcript"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "workspace id",
+          "transcript scope",
+          "meeting history availability"
+        ],
+        "agent_generates": [
+          "webhook signing secret ref",
+          "meeting transcript scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin creates or approves a least-privilege service credential"
+        ],
+        "settings_targets": [
+          "integration settings",
+          "workspace settings",
+          "webhook settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "transcripts",
+        "meetings"
+      ],
+      "discovery_target": "workspace, meetings, and transcripts",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/fireflies"
+      ],
+      "local_rehearsal": null,
+      "method": "api_token",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/fireflies/connect/finalize",
+        "kind": "api_token_native_connect",
+        "payload_fields": [
+          "api_token",
+          "base_url",
+          "workspace_id",
+          "webhook_secret"
+        ],
+        "preflight_path": "/integrations/fireflies/connect/preflight",
+        "preflight_payload_fields": [
+          "api_token",
+          "base_url"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "workspace_id",
+        "base_url",
+        "webhook_secret"
+      ],
+      "provider_console_url": "https://app.fireflies.ai/integrations",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "transcripts read",
+        "meetings read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "api_token"
+      ],
+      "required_refs": [
+        "api_token",
+        "webhook_secret"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "user.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "transcript.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "transcripts.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "fireflies_api",
+        "operation_ids": [
+          "user.get",
+          "transcript.get",
+          "transcripts.list"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.fireflies:plan_shards_fireflies",
+    "provider_id": "fireflies",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.fireflies:reconcile_fireflies",
+    "runtime_identifiers": [
+      "workspace_id",
+      "transcript_id"
+    ],
+    "source_id": "fireflies",
+    "trust_tiers": [
+      "attested_agent"
+    ],
+    "ui_slug": "fireflies"
+  },
+  "source_id": "fireflies"
+}

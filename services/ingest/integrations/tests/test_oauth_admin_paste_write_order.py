@@ -408,15 +408,113 @@ async def test_miro_finalize_bad_credentials_writes_nothing(
     payload = {
         "api_token": "bad-miro-api-token",
         "org_id": "miro-org-bad",
-        "webhook_secret": "bad-miro-webhook-secret",
     }
     response = await _post_json(app, "/integrations/miro/connect/finalize", payload)
 
     assert response.status_code == 400
     assert response.json()["error_code"] == "miro_auth_failed"
     assert "bad-miro-api-token" not in response.text
-    assert "bad-miro-webhook-secret" not in response.text
     await _assert_no_durable_state(fresh_db, tenant, "miro_installations", "miro")
+
+
+async def test_miro_finalize_rejects_retired_webhook_secret_without_writes(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    from services.ingest.integrations.miro import oauth as miro_oauth
+
+    tenant = await _seed_tenant(fresh_db)
+    app, _ = _make_app(fresh_db, tenant, miro_oauth.router)
+    response = await _post_json(
+        app,
+        "/integrations/miro/connect/finalize",
+        {
+            "api_token": "miro-api-token",
+            "org_id": "miro-org",
+            "webhook_secret": "retired-miro-webhook-secret",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "not supported for poll-only Miro" in response.json()["detail"]
+    assert "retired-miro-webhook-secret" not in response.text
+    await _assert_no_durable_state(
+        fresh_db,
+        tenant,
+        "miro_installations",
+        "miro",
+    )
+
+
+async def test_miro_finalize_persists_only_exact_poll_installation(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.ingest.integrations.miro import oauth as miro_oauth
+
+    class _SuccessfulMiroClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def list_boards(self):
+            return [
+                {
+                    "id": "miro-board-1",
+                    "name": "Product",
+                    "type": "board",
+                },
+            ]
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(miro_oauth, "MiroClient", _SuccessfulMiroClient)
+    tenant = await _seed_tenant(fresh_db)
+    app, store = _make_app(fresh_db, tenant, miro_oauth.router)
+    response = await _post_json(
+        app,
+        "/integrations/miro/connect/finalize",
+        {
+            "api_token": "miro-api-token",
+            "org_id": "  miro-org-1  ",
+            "board_ids": ["miro-board-1"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "webhook_registered" not in response.json()
+    row = await fresh_db.fetchrow(
+        """
+        SELECT id, org_id, secret_ref, webhook_secret_ref
+          FROM miro_installations
+         WHERE tenant_id = $1
+        """,
+        tenant,
+    )
+    assert row is not None
+    assert row["org_id"] == "miro-org-1"
+    assert row["secret_ref"]
+    assert row["webhook_secret_ref"] is None
+    assert await fresh_db.fetchval(
+        """
+        SELECT count(*)
+          FROM provider_installations
+         WHERE tenant_id = $1 AND provider = 'miro'
+        """,
+        tenant,
+    ) == 0
+    assert await fresh_db.fetchval(
+        """
+        SELECT count(*)
+          FROM miro_boards
+         WHERE tenant_id = $1
+           AND miro_installation_id = $2
+           AND board_id = 'miro-board-1'
+        """,
+        tenant,
+        row["id"],
+    ) == 1
+    api_token = await store.get(row["secret_ref"], tenant_id=tenant)
+    assert api_token.decode("utf-8") == "miro-api-token"
 
 
 async def test_figma_finalize_bad_credentials_writes_nothing(

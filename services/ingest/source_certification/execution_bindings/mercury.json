@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "mercury",
+  "spec_hash": "fccf36ccfb483421538c399c164cffeba2c3230e4008ca8b8a0d53e41b532c31",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "mercury",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "cde8ec1287fed59813c63ef1f9cabfb00df9bdd116f1ce43a980e44ffa68477a"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_MERCURY"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_MERCURY"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "mercury",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "cde8ec1287fed59813c63ef1f9cabfb00df9bdd116f1ce43a980e44ffa68477a"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "mercury",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "cde8ec1287fed59813c63ef1f9cabfb00df9bdd116f1ce43a980e44ffa68477a"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "mercury",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "cde8ec1287fed59813c63ef1f9cabfb00df9bdd116f1ce43a980e44ffa68477a"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

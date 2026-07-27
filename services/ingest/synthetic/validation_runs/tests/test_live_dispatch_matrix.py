@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from collections import Counter
-from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
 
-from services.ingest.synthetic.live_generators import HMAC_PROVIDERS
 from services.ingest.source_contract.catalog import CANONICAL_SOURCE_IDS
 from services.ingest.synthetic.validation_runs import composition
 from services.ingest.synthetic.validation_runs.composition import (
@@ -21,18 +19,7 @@ from services.ingest.synthetic.validation_runs.composition import (
 )
 
 
-_CORE_SOURCES = ("gmail", "slack", "github", "discord")
-_GOOGLE_SOURCES = ("google_calendar", "google_drive")
-_DIRECT_SOURCES = ("telegram", "signal", "aws", "carta", "linkedin")
-_META_SOURCES = ("whatsapp", "facebook_pages")
-_CONFIGURED_SOURCES = (
-    *_CORE_SOURCES,
-    *HMAC_PROVIDERS,
-    *_GOOGLE_SOURCES,
-    "notion",
-    *_DIRECT_SOURCES,
-    *_META_SOURCES,
-)
+_CONFIGURED_SOURCES = CANONICAL_SOURCE_IDS
 
 
 class _FakeResult:
@@ -66,26 +53,22 @@ class _FakeGenerator:
         return await self._record(**kwargs)
 
 
-def _fake_drivers(calls: list[str]) -> SimpleNamespace:
-    return SimpleNamespace(
-        gmail_pubsub=_FakeGenerator("gmail", calls),
-        slack_webhook=_FakeGenerator("slack", calls),
-        github_webhook=_FakeGenerator("github", calls),
-        discord_gateway=_FakeGenerator("discord", calls),
-        hmac={
+class _FakeDrivers:
+    def __init__(self, calls: list[str]) -> None:
+        self._generators = {
             source: _FakeGenerator(source, calls)
-            for source in HMAC_PROVIDERS
-        },
-        google_push=_FakeGenerator("google_push", calls),
-        notion_webhook=_FakeGenerator("notion", calls),
-        telegram_gateway=_FakeGenerator("telegram", calls),
-        signal_gateway=_FakeGenerator("signal", calls),
-        aws_poll=_FakeGenerator("aws", calls),
-        carta_poll=_FakeGenerator("carta", calls),
-        linkedin_poll=_FakeGenerator("linkedin", calls),
-        whatsapp_webhook=_FakeGenerator("whatsapp", calls),
-        facebook_pages_webhook=_FakeGenerator("facebook_pages", calls),
-    )
+            for source in _CONFIGURED_SOURCES
+        }
+
+    def generator_for(self, source: str) -> _FakeGenerator:
+        generator = self._generators.get(source)
+        if generator is None:
+            raise RuntimeError(f"live generator for {source!r} was not built")
+        return generator
+
+
+def _fake_drivers(calls: list[str]) -> _FakeDrivers:
+    return _FakeDrivers(calls)
 
 
 def _target(source: str) -> LiveTarget:

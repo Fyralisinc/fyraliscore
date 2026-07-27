@@ -65,6 +65,30 @@ async def test_live_calibrator_drives_exact_injected_operation() -> None:
     assert result.passed
 
 
+async def test_live_calibrator_honors_minimum_samples_after_deadline() -> None:
+    calls = 0
+
+    async def operation() -> bool:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        return True
+
+    result = await calibrate_provider_lab(
+        operation,
+        config=LabCalibrationConfig(
+            target_fyralis_rps=1,
+            client_timeout_seconds=1,
+            probe_seconds=0.001,
+            concurrency=1,
+            minimum_samples=3,
+        ),
+    )
+
+    assert calls == result.attempted_requests == 3
+    assert result.passed
+
+
 async def test_calibrator_is_forbidden_in_production(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -725,6 +725,12 @@ async def load_linkedin_installation(
 
 _FACEBOOK_PAGES_INSTALL_SQL = """
 SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
+       user_access_token_ref, user_token_expires_at, connection_state,
+       reauthorization_required_at,
+       page_token_recovery_next_attempt_at, page_token_recovery_attempts,
+       page_token_recovery_last_attempt_at,
+       page_recovery_last_error_code
+           AS page_token_recovery_last_error_code,
        app_secret_ref, verify_token_ref, granted_scopes, subscribed_fields,
        webhook_subscribed_at, enabled, oldest_message_at,
        backfill_exhausted_at, backfill_exhausted_reason,

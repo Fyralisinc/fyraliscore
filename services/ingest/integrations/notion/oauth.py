@@ -228,7 +228,9 @@ async def _exchange_code_for_token(
     async def _once() -> httpx.Response:
         try:
             response = await client.post(
-                token_url or _NOTION_TOKEN_URL,
+                token_url
+                or os.environ.get("NOTION_OAUTH_TOKEN_URL")
+                or _NOTION_TOKEN_URL,
                 headers={
                     "Authorization": f"Basic {basic}",
                     "Content-Type": "application/json",

@@ -8,11 +8,13 @@ import pytest
 from scripts.check_source_architecture_ratchet import (
     RULE_ARBITRARY_INSTALLATION_SELECTION,
     RULE_DUPLICATE_SOURCE_IDS,
+    RULE_FABRICATED_LIVE_BINDING,
     RULE_HANDLER_IMPORT_REGISTRATION,
     RULE_LEGACY_PROVIDER_HARNESS,
     RULE_MUTABLE_DISPATCH,
     RULE_PARALLEL_SOURCE_MAP,
     RULE_PROVIDER_TRANSPORT_BYPASS,
+    RULE_SHARED_SOURCE_BEHAVIOR_SWITCH,
     RULE_SOURCE_CLIENT_SWITCH,
     RULE_SQL_SOURCE_CHECK,
     SourceArchitectureCheckError,
@@ -23,6 +25,7 @@ from scripts.check_source_architecture_ratchet import (
     main,
     scan_repository,
     load_canonical_source_ids,
+    load_contract_provider_ids,
     write_baseline,
 )
 
@@ -44,12 +47,23 @@ def _scan(root: Path):
     )
 
 
-def _write_catalog(root: Path) -> None:
+def _write_catalog(
+    root: Path,
+    *,
+    provider_ids: tuple[str, ...] = (),
+) -> None:
     entries = "\n".join(f'    _source("{source_id}"),' for source_id in CANONICAL)
+    providers = "\n".join(
+        f'    ProviderDefinition(provider_id="{provider_id}"),'
+        for provider_id in provider_ids
+    )
     _write(
         root,
         "services/ingest/source_contract/catalog.py",
-        f"SOURCE_DEFINITIONS = (\n{entries}\n)\n",
+        (
+            f"SOURCE_DEFINITIONS = (\n{entries}\n)\n"
+            f"PROVIDER_DEFINITIONS = (\n{providers}\n)\n"
+        ),
     )
 
 
@@ -59,6 +73,25 @@ def test_canonical_ids_are_read_from_source_definition_entries(
     _write_catalog(tmp_path)
 
     assert load_canonical_source_ids(repo_root=tmp_path) == CANONICAL
+
+
+def test_provider_ids_are_read_from_provider_definition_entries(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(tmp_path, provider_ids=("linear", "stripe"))
+    catalog = tmp_path / "services/ingest/source_contract/catalog.py"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            'ProviderDefinition(provider_id="linear")',
+            'ProviderDefinition("linear")',
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_contract_provider_ids(repo_root=tmp_path) == (
+        "linear",
+        "stripe",
+    )
 
 
 def test_file_discovery_excludes_nonproduction_and_generated_paths(
@@ -156,6 +189,24 @@ def test_provider_lab_is_not_a_legacy_harness(tmp_path: Path) -> None:
         for finding in _scan(tmp_path)
         if finding.rule_id == RULE_LEGACY_PROVIDER_HARNESS
     ]
+
+
+def test_fabricated_live_binding_is_a_strict_finding(tmp_path: Path) -> None:
+    _write_catalog(tmp_path)
+    _write(
+        tmp_path,
+        "services/ingest/source_contract/legacy_live.py",
+        'LIVE_BINDING = "ingest.live.slack.webhook"\n',
+    )
+
+    findings = [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_FABRICATED_LIVE_BINDING
+    ]
+
+    assert len(findings) == 1
+    assert findings[0].signature == "binding=ingest.live.slack.webhook"
 
 
 def test_mutable_dispatch_registration_rule_covers_assignment_and_methods(
@@ -259,6 +310,35 @@ FINANCE_SOURCES = ("slack", "github")
     assert len(duplicate_lists) == 1
     assert duplicate_lists[0].path == Path("services/ingest/legacy.py")
     assert "VALID_SOURCES" in duplicate_lists[0].message
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "scripts/webhook_install.py",
+        "services/platform/runtime/source_browser_agent_setup.py",
+    ),
+)
+def test_shared_classifications_cannot_recreate_small_source_lists(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    _write_catalog(tmp_path)
+    _write(
+        tmp_path,
+        relative_path,
+        'API_TOKEN_SOURCES = {"slack", "github", "linear", "stripe"}\n',
+    )
+
+    duplicate_lists = [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_DUPLICATE_SOURCE_IDS
+    ]
+
+    assert len(duplicate_lists) == 1
+    assert duplicate_lists[0].path == Path(relative_path)
+    assert "API_TOKEN_SOURCES" in duplicate_lists[0].signature
 
 
 def test_parallel_source_map_catches_partial_route_or_policy_registries(
@@ -401,6 +481,149 @@ def llm(provider):
     assert len(switches) == 2
     assert {finding.line_number for finding in switches} == {2, 7}
     assert all("notion" not in finding.signature for finding in switches)
+
+
+def test_shared_source_behavior_switch_covers_control_flow_without_client_calls(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "services/app/webhooks/router.py",
+        """
+GITHUB_PROVIDER = "github"
+PUSH_PROVIDERS = {"slack", "discord"}
+
+async def dispatch(source, provider, normalized_source, rows):
+    if provider == GITHUB_PROVIDER:
+        return await run_github_hook()
+    if source not in PUSH_PROVIDERS:
+        return await run_pull_hook()
+    match normalized_source:
+        case "gmail" | "notion":
+            return await run_hydration_hook()
+    selected = source == "github"
+    filtered = [row for row in rows if row.source == "github"]
+    return run_slack() if source != "slack" else run_default()
+""".lstrip(),
+    )
+
+    findings = [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_SHARED_SOURCE_BEHAVIOR_SWITCH
+    ]
+
+    assert len(findings) == 4
+    assert {finding.line_number for finding in findings} == {5, 7, 10, 14}
+    assert {
+        source_id
+        for finding in findings
+        for source_id in finding.signature.rsplit("sources=", 1)[1].split(",")
+    } == set(CANONICAL)
+    assert all("selected =" not in finding.signature for finding in findings)
+    assert all("filtered =" not in finding.signature for finding in findings)
+
+
+def test_shared_behavior_switch_includes_ingress_only_provider_identities(
+    tmp_path: Path,
+) -> None:
+    _write_catalog(tmp_path, provider_ids=("linear", "stripe"))
+    _write(
+        tmp_path,
+        "services/app/webhooks/router.py",
+        """
+def dispatch(provider):
+    if provider == "linear":
+        return run_linear()
+    return run_default()
+""".lstrip(),
+    )
+
+    findings = [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_SHARED_SOURCE_BEHAVIOR_SWITCH
+    ]
+
+    assert len(findings) == 1
+    assert findings[0].signature.endswith("sources=linear")
+
+
+def test_shared_source_behavior_rule_is_scoped_to_shared_orchestration(
+    tmp_path: Path,
+) -> None:
+    provider_owned = _write(
+        tmp_path,
+        "services/ingest/integrations/github/lifecycle.py",
+        """
+def dispatch(source):
+    if source == "github":
+        return handle_lifecycle()
+""".lstrip(),
+    )
+    ordinary_gateway = _write(
+        tmp_path,
+        "services/app/gateway/reporting.py",
+        """
+def label(source):
+    if source == "github":
+        return "GitHub"
+""".lstrip(),
+    )
+    assert provider_owned.is_file()
+    assert ordinary_gateway.is_file()
+
+    assert not [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_SHARED_SOURCE_BEHAVIOR_SWITCH
+    ]
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "scripts/manage_dedicated_source_installations.py",
+        "scripts/webhook_install.py",
+        "services/app/gateway/finance_router.py",
+        "services/app/gateway/route_mounts.py",
+        "services/app/gateway/byoc_onboarding_router.py",
+        "services/app/webhooks/secrets.py",
+        "services/app/webhooks/signatures/__init__.py",
+        "services/app/webhooks/router.py",
+        "services/app/webhooks/tenant_resolver.py",
+        "services/ingest/ingestion/reconcilers/__init__.py",
+        "services/ingest/integrations/oauth_refresh.py",
+        "services/ingest/integrations/router.py",
+        "services/ingest/synthetic/validation_runs/composition.py",
+        "services/ingest/synthetic/validation_runs/preflight.py",
+        "services/platform/runtime/source_browser_agent_recipes.py",
+        "services/platform/runtime/source_browser_agent_runner.py",
+        "services/platform/runtime/source_browser_agent_workflow.py",
+    ),
+)
+def test_shared_source_behavior_rule_protects_each_shared_router(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    _write(
+        tmp_path,
+        relative_path,
+        """
+def dispatch(source):
+    if source == "github":
+        return run_github()
+""".lstrip(),
+    )
+
+    findings = [
+        finding
+        for finding in _scan(tmp_path)
+        if finding.rule_id == RULE_SHARED_SOURCE_BEHAVIOR_SWITCH
+    ]
+
+    assert len(findings) == 1
+    assert findings[0].path == Path(relative_path)
 
 
 def test_provider_http_call_must_be_a_transport_callback(

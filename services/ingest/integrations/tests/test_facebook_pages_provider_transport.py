@@ -15,6 +15,10 @@ from lib.shared.provider_transport import (
 from services.ingest.integrations.facebook_pages.client import (
     FacebookPagesClient,
 )
+from services.ingest.integrations.facebook_pages.token_lifecycle import (
+    DEGRADED,
+    RecoverySchedule,
+)
 from services.ingest.synthetic.provider_lab import build_provider_lab_app
 
 
@@ -91,6 +95,11 @@ async def test_every_graph_call_uses_exact_binding_and_finite_operation() -> Non
             client_secret="secret",
             redirect_uri="https://fyralis.test/callback",
         )
+        await client.exchange_long_lived_user_token(
+            short_lived_user_access_token="user-token",
+            client_id="client",
+            client_secret="secret",
+        )
         await client.list_pages("user-token")
         await client.subscribe_page(
             page_id="page-1",
@@ -101,6 +110,7 @@ async def test_every_graph_call_uses_exact_binding_and_finite_operation() -> Non
 
     assert [context.operation for context in recorder.contexts] == [
         "oauth.token.exchange",
+        "oauth.user_token.extend",
         "pages.list",
         "pages.subscribe",
         "conversations.list",
@@ -137,6 +147,100 @@ async def test_long_graph_cooldown_returns_retry_later_without_looping() -> None
     assert exc.value.reason is RetryReason.RATE_LIMIT
     assert exc.value.request_context.operation == "conversations.list"
     assert exc.value.retry_after_seconds == 120
+
+
+async def test_graph_code_190_recovers_exact_installation_and_retries_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = uuid4()
+    expected_tenant_id = tenant_id
+    installation_id = uuid4()
+    old_ref = "secret://old-page"
+    observed_tokens: list[str] = []
+    lifecycle_calls: list[tuple[str, object]] = []
+
+    class _Secrets:
+        async def get(self, ref, *, tenant_id):  # noqa: ANN001,ANN202
+            assert ref == old_ref
+            assert tenant_id == expected_tenant_id
+            return b"old-token"
+
+    async def _current(*_args, **kwargs):  # noqa: ANN003,ANN202
+        lifecycle_calls.append(("load", kwargs["installation_row_id"]))
+        return "old-token", old_ref
+
+    async def _schedule(*_args, **kwargs):  # noqa: ANN003,ANN202
+        lifecycle_calls.append(("schedule", kwargs["installation_row_id"]))
+        assert kwargs["tenant_id"] == tenant_id
+        assert kwargs["expected_page_token_ref"] == old_ref
+        assert kwargs["graph_error_subcode"] == 463
+        return RecoverySchedule(state=DEGRADED, not_before=None)
+
+    async def _recover(*_args, **kwargs):  # noqa: ANN003,ANN202
+        lifecycle_calls.append(("recover", kwargs["installation_row_id"]))
+        assert kwargs["tenant_id"] == tenant_id
+        return "replacement-token"
+
+    monkeypatch.setattr(
+        "services.ingest.integrations.facebook_pages.token_lifecycle."
+        "page_access_token_for_request",
+        _current,
+    )
+    monkeypatch.setattr(
+        "services.ingest.integrations.facebook_pages.token_lifecycle."
+        "schedule_page_token_recovery",
+        _schedule,
+    )
+    monkeypatch.setattr(
+        "services.ingest.integrations.facebook_pages.token_lifecycle."
+        "recover_page_access_token",
+        _recover,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        token = request.url.params["access_token"]
+        observed_tokens.append(token)
+        if token == "old-token":
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "type": "OAuthException",
+                        "code": 190,
+                        "error_subcode": 463,
+                    },
+                },
+            )
+        return httpx.Response(200, json={"data": [{"id": "conversation-1"}]})
+
+    recorder = _Recorder()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = FacebookPagesClient(
+            base_url="https://graph.test/v23.0",
+            page_access_token_ref=old_ref,
+            pool=object(),
+            secret_store=_Secrets(),
+            tenant_id=tenant_id,
+            installation_row_id=installation_id,
+            http_client=http,
+            provider_transport=recorder,
+            quota_resolver=_quota,
+            allow_unlimited_local=False,
+        )
+        conversations, cursor = await client.list_conversations(page_id="page-1")
+
+    assert conversations == [{"id": "conversation-1"}]
+    assert cursor is None
+    assert observed_tokens == ["old-token", "replacement-token"]
+    assert lifecycle_calls == [
+        ("load", installation_id),
+        ("schedule", installation_id),
+        ("recover", installation_id),
+    ]
+    assert [context.operation for context in recorder.contexts] == [
+        "conversations.list",
+        "conversations.list",
+    ]
 
 
 async def test_production_client_conforms_to_provider_lab_used_surface() -> None:
@@ -184,7 +288,12 @@ async def test_production_client_conforms_to_provider_lab_used_surface() -> None
             client_secret="secret",
             redirect_uri="https://fyralis.test/callback",
         )
-        pages = await client.list_pages(token["access_token"])
+        long_token = await client.exchange_long_lived_user_token(
+            short_lived_user_access_token=token["access_token"],
+            client_id="client",
+            client_secret="secret",
+        )
+        pages = await client.list_pages(long_token["access_token"])
         subscribed = await client.subscribe_page(
             page_id="page-1",
             page_access_token="page-token",
@@ -209,6 +318,7 @@ async def test_production_client_conforms_to_provider_lab_used_surface() -> None
     assert messages[0]["id"] == "message-1"
     assert message_cursor is None
     assert [entry["route_id"] for entry in ledger] == [
+        "facebook_pages.oauth_token",
         "facebook_pages.oauth_token",
         "facebook_pages.accounts",
         "facebook_pages.subscribe",

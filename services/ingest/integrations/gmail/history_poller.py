@@ -9,6 +9,7 @@ path call the same drain_mailbox_history() helper, so observations
 written from either are indistinguishable downstream — and the dedup
 at observations.UNIQUE + gmail_thread_members.PK makes overlap safe.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +25,7 @@ from lib.shared.tenant_context import bind_tenant
 
 from services.ingest.integrations.gmail.client import (
     GmailClient,
+    GmailHistoryRecoveryIncomplete,
     GoogleApiError,
     GoogleRateLimited,
     build_google_http_client,
@@ -35,13 +37,11 @@ from services.ingest.integrations.gmail.fetcher import drain_mailbox_history
 log = structlog.get_logger("integrations.gmail.history_poller")
 
 
-_DEFAULT_TICK_S = 60.0           # how often the loop wakes
-_POLL_GAP_S = 10 * 60            # min seconds between polls per mailbox
+_DEFAULT_TICK_S = 60.0  # how often the loop wakes
+_POLL_GAP_S = 10 * 60  # min seconds between polls per mailbox
 _LEASE_BATCH = 50
 _MAX_FAILURES = 5
-_MAX_CONCURRENCY = int(
-    os.environ.get("GMAIL_HISTORY_POLLER_MAX_CONCURRENCY", "1")
-)
+_MAX_CONCURRENCY = int(os.environ.get("GMAIL_HISTORY_POLLER_MAX_CONCURRENCY", "1"))
 
 
 def _worker_name() -> str:
@@ -49,7 +49,9 @@ def _worker_name() -> str:
 
 
 async def _lease_due_mailboxes(
-    conn: asyncpg.Connection, *, limit: int,
+    conn: asyncpg.Connection,
+    *,
+    limit: int,
 ) -> list[asyncpg.Record]:
     return await conn.fetch(
         f"""
@@ -95,12 +97,22 @@ async def poll_one(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
             )
         except GoogleRateLimited as exc:
             await _bump_failure(pool, tenant_id, row["id"], f"rate_limited: {exc}")
+        except GmailHistoryRecoveryIncomplete as exc:
+            await _bump_failure(
+                pool,
+                tenant_id,
+                row["id"],
+                f"history_recovery: {str(exc)[:280]}",
+            )
         except GoogleApiError as exc:
             await _bump_failure(pool, tenant_id, row["id"], str(exc)[:300])
 
 
 async def _bump_failure(
-    pool: asyncpg.Pool, tenant_id: UUID, watch_id: UUID, err: str,
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    watch_id: UUID,
+    err: str,
 ) -> None:
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -116,12 +128,16 @@ async def _bump_failure(
                            END
                      WHERE id = $1 AND tenant_id = $2
                     """,
-                    watch_id, tenant_id, err,
+                    watch_id,
+                    tenant_id,
+                    err,
                 )
 
 
 async def tick(
-    pool: asyncpg.Pool, *, max_concurrency: int | None = None,
+    pool: asyncpg.Pool,
+    *,
+    max_concurrency: int | None = None,
 ) -> int:
     async with pool.acquire() as conn:
         rows = await _lease_due_mailboxes(conn, limit=_LEASE_BATCH)
@@ -138,7 +154,8 @@ async def tick(
             except Exception as exc:  # noqa: BLE001
                 log.exception(
                     "gmail.poller.tick_error",
-                    email=row["email_address"], error=str(exc)[:200],
+                    email=row["email_address"],
+                    error=str(exc)[:200],
                 )
                 return 0
 

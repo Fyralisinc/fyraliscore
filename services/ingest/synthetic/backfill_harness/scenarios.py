@@ -1,9 +1,12 @@
 """BackfillScenario configuration.
 
-One scenario describes a single tenant's synthetic install + backfill:
+One scenario describes one synthetic installation + backfill:
 which source, what fixture shape to build, what Provider Lab fault profile
 applies, and the expected observation count (for
-assertion validation).
+assertion validation).  Several scenarios may deliberately share a
+``tenant_slug`` while declaring different ``installation_key`` values.  The
+harness then binds those scenarios to the same tenant UUID and proves sibling
+installation isolation.
 """
 from __future__ import annotations
 
@@ -24,12 +27,16 @@ _VALID_SOURCES = frozenset(
 
 @dataclass(frozen=True)
 class BackfillScenario:
-    """One tenant's synthetic install + backfill configuration.
+    """One installation's synthetic backfill configuration.
 
     Attributes:
       tenant_slug:
-        Human-readable identifier; the harness seeds a real tenant row
-        with this slug and resolves the tenant_id from it.
+        Human-readable tenant identity. Scenarios with the same slug share one
+        tenant UUID.
+      installation_key:
+        Optional human-readable installation identity within the tenant. When
+        omitted it defaults to ``tenant_slug`` for backward compatibility.
+        Sibling installations must use distinct keys.
       source:
         One of 'gmail', 'slack', 'github', 'discord'.
       fixture_params:
@@ -50,6 +57,7 @@ class BackfillScenario:
 
     tenant_slug: str
     source: str
+    installation_key: str | None = None
     fixture_params: dict[str, Any] = field(default_factory=dict)
     fault_profile: FaultProfile = HAPPY_PATH
     expected_observation_count: int = 0
@@ -62,3 +70,23 @@ class BackfillScenario:
             )
         if not self.tenant_slug:
             raise ValueError("BackfillScenario.tenant_slug is required")
+        if self.installation_key is not None and not self.installation_key:
+            raise ValueError(
+                "BackfillScenario.installation_key must be non-empty when set"
+            )
+
+    @property
+    def resolved_installation_key(self) -> str:
+        """Stable fixture/install identity without changing old scenarios."""
+
+        return self.installation_key or self.tenant_slug
+
+    @property
+    def identity(self) -> tuple[str, str, str]:
+        """Exact source + tenant + installation identity for accounting."""
+
+        return (
+            self.source,
+            self.tenant_slug,
+            self.resolved_installation_key,
+        )

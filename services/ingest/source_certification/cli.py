@@ -108,9 +108,34 @@ def _strict_ratchet_clean() -> bool:
 
 
 def _load_inputs(input_dir: Path) -> dict[str, CertificationInput]:
+    if not input_dir.is_dir():
+        raise CertificationInvariantError(
+            f"certification input directory does not exist: {input_dir}"
+        )
+    expected_names = {
+        f"{source_id}.json" for source_id in SOURCE_CERTIFICATION_CATALOG
+    }
+    entries = tuple(input_dir.iterdir())
+    unexpected = sorted(
+        {
+            path.name
+            for path in entries
+            if path.name not in expected_names
+            or (not path.is_file() and not path.is_symlink())
+        }
+    )
+    if unexpected:
+        raise CertificationInvariantError(
+            "certification input directory contains unexpected files: "
+            + ", ".join(unexpected)
+        )
     inputs: dict[str, CertificationInput] = {}
     for source_id in SOURCE_CERTIFICATION_CATALOG:
         path = input_dir / f"{source_id}.json"
+        if path.is_symlink():
+            raise CertificationInvariantError(
+                f"certification input must not be a symlink: {path.name}"
+            )
         if path.is_file():
             inputs[source_id] = load_certification_input(path)
     return inputs

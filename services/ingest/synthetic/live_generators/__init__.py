@@ -71,6 +71,10 @@ from services.ingest.synthetic.live_generators.linkedin_poll import (
     LinkedinPollGenerator,
     LinkedinPollResult,
 )
+from services.ingest.synthetic.live_generators.miro_poll import (
+    MiroPollGenerator,
+    MiroPollResult,
+)
 from services.ingest.synthetic.live_generators.meta_webhook import (
     FacebookPagesWebhookGenerator,
     MetaWebhookResult,
@@ -97,6 +101,8 @@ __all__ = [
     "HmacWebhookResult",
     "LinkedinPollGenerator",
     "LinkedinPollResult",
+    "MiroPollGenerator",
+    "MiroPollResult",
     "MetaWebhookResult",
     "NotionWebhookGenerator",
     "NotionWebhookResult",

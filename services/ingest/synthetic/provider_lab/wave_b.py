@@ -3,6 +3,7 @@
 Only the pinned production-client route surfaces are declared here. Production
 client calls outside those surfaces continue to receive the lab's strict 501.
 """
+
 from __future__ import annotations
 
 import base64
@@ -12,9 +13,15 @@ import re
 import threading
 from datetime import datetime, timezone
 from typing import Any, Mapping
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
-from .protocol import ProviderRequest, ProviderResponse, ProviderRoute
+from .protocol import (
+    ProviderOperationBinding,
+    ProviderProtocolSurface,
+    ProviderRequest,
+    ProviderResponse,
+    ProviderRoute,
+)
 
 
 def _scope(request: ProviderRequest) -> str:
@@ -45,6 +52,7 @@ def _integer(
 
 class _WaveBAdapter:
     routes: tuple[ProviderRoute, ...]
+    protocol_surfaces: tuple[ProviderProtocolSurface, ...] = ()
 
     def default_state(self) -> Mapping[str, Any]:
         return {}
@@ -56,16 +64,28 @@ class _WaveBAdapter:
 class BrexAdapter(_WaveBAdapter):
     source = "brex"
     routes = (
-        ProviderRoute("brex.cash_accounts", "/v2/accounts/cash", quota_bucket="rest"),
-        ProviderRoute("brex.card_accounts", "/v2/accounts/card", quota_bucket="rest"),
+        ProviderRoute(
+            "brex.cash_accounts",
+            "/v2/accounts/cash",
+            operation_ids=("accounts.cash.list",),
+            quota_bucket="rest",
+        ),
+        ProviderRoute(
+            "brex.card_accounts",
+            "/v2/accounts/card",
+            operation_ids=("accounts.card.list",),
+            quota_bucket="rest",
+        ),
         ProviderRoute(
             "brex.cash_transactions",
             "/v2/transactions/cash/{account_id}",
+            operation_ids=("transactions.cash.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "brex.card_transactions",
             "/v2/transactions/card/primary",
+            operation_ids=("transactions.card.list",),
             quota_bucket="rest",
         ),
     )
@@ -126,9 +146,7 @@ def _account_kind(account: Mapping[str, Any]) -> str:
     return "card" if value in {"card", "credit_card", "primary_card"} else "cash"
 
 
-def _financial_accounts(
-    fixtures: Mapping[str, Any], kind: str
-) -> list[dict[str, Any]]:
+def _financial_accounts(fixtures: Mapping[str, Any], kind: str) -> list[dict[str, Any]]:
     accounts = []
     for account_id, fixture in fixtures.items():
         if not isinstance(fixture, dict):
@@ -151,7 +169,7 @@ def _offset_page(
 ) -> tuple[list[dict[str, Any]], str | None]:
     limit = _integer(params.get("limit"), default_limit)
     offset = _integer(params.get("cursor"), 0)
-    page = items[offset:offset + limit]
+    page = items[offset : offset + limit]
     next_offset = offset + len(page)
     return page, str(next_offset) if page and next_offset < len(items) else None
 
@@ -191,6 +209,7 @@ class CartaAdapter(_WaveBAdapter):
         ProviderRoute(
             "carta.oauth_token",
             "/o/access_token/",
+            operation_ids=("oauth.token.mint",),
             methods=("POST",),
             quota_bucket=None,
         ),
@@ -200,16 +219,30 @@ class CartaAdapter(_WaveBAdapter):
             methods=("POST",),
             quota_bucket=None,
         ),
-        ProviderRoute("carta.issuers", "/v1alpha1/issuers", quota_bucket="rest"),
+        ProviderRoute(
+            "carta.issuers",
+            "/v1alpha1/issuers",
+            operation_ids=("issuers.list",),
+            quota_bucket="rest",
+        ),
         ProviderRoute(
             "carta.issuer",
             "/v1alpha1/issuers/{issuer_id}",
+            operation_ids=("issuers.get",),
             quota_bucket="rest",
         ),
         *tuple(
             ProviderRoute(
                 f"carta.{collection}",
                 f"/v1alpha1/issuers/{{issuer_id}}/{collection}",
+                operation_ids=(
+                    {
+                        "stakeholders": "stakeholders.list",
+                        "shareClasses": "share_classes.list",
+                        "optionGrants": "option_grants.list",
+                        "convertibleNotes": "convertible_notes.list",
+                    }[collection],
+                ),
                 quota_bucket="rest",
             )
             for collection in _CARTA_COLLECTIONS
@@ -217,7 +250,21 @@ class CartaAdapter(_WaveBAdapter):
     )
 
     def default_state(self) -> Mapping[str, Any]:
-        return {"firm_id": "", "issuer": {}, "entities": {}}
+        return {"issuers": {}}
+
+    def resolve_scope(self, request: ProviderRequest) -> str:
+        explicit = request.headers.get("x-provider-lab-scope")
+        if explicit and explicit != "global":
+            return explicit
+        authorization = request.headers.get("authorization", "")
+        if authorization.lower().startswith("bearer "):
+            token = authorization[7:].strip()
+            for prefix in ("lab-carta::", "spam-carta::"):
+                if token.startswith(prefix):
+                    issuer_id = token[len(prefix) :]
+                    if issuer_id:
+                        return issuer_id
+        return "global"
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
         if request.route.route_id in {
@@ -240,30 +287,37 @@ class CartaAdapter(_WaveBAdapter):
                 {"error": "missing Authorization header"}, status_code=401
             )
 
-        state = request.source_state
-        issuer = state.get("issuer")
-        if not isinstance(issuer, dict) or not issuer.get("id"):
-            firm_id = str(state.get("firm_id") or "")
-            issuer = (
-                {"id": firm_id, "legalName": "Sandbox Issuer"}
-                if firm_id
-                else {}
-            )
+        fixtures = request.source_state.get("issuers") or {}
+        if not isinstance(fixtures, dict):
+            fixtures = {}
         route_id = request.route.route_id
         if route_id == "carta.issuers":
-            return ProviderResponse.json({"issuers": [issuer] if issuer else []})
+            visible = (
+                {request.scope: fixtures.get(request.scope)}
+                if request.scope != "global"
+                else fixtures
+            )
+            issuers = [
+                _carta_issuer(fixture, issuer_id)
+                for issuer_id, fixture in visible.items()
+                if isinstance(fixture, dict)
+            ]
+            return ProviderResponse.json({"issuers": issuers})
 
         issuer_id = str(request.path_params["issuer_id"])
-        if not issuer or str(issuer.get("id")) != issuer_id:
-            return ProviderResponse.json(
-                {"error": "issuer not found"}, status_code=404
-            )
+        fixture = fixtures.get(issuer_id)
+        if not isinstance(fixture, dict) or request.scope not in {"global", issuer_id}:
+            return ProviderResponse.json({"error": "issuer not found"}, status_code=404)
+        issuer = _carta_issuer(fixture, issuer_id)
         if route_id == "carta.issuer":
             return ProviderResponse.json({"issuer": issuer})
 
         collection = route_id.split(".", 1)[1]
         rows = list(
-            (state.get("entities") or {}).get(_CARTA_COLLECTIONS[collection], [])
+            (fixture.get("entities") or {}).get(
+                _CARTA_COLLECTIONS[collection],
+                [],
+            )
         )
         params = _params(request)
         bound = params.get("lastModifiedDatetimeAfter")
@@ -271,15 +325,10 @@ class CartaAdapter(_WaveBAdapter):
             rows = [
                 row
                 for row in rows
-                if str(
-                    ((row.get("lastModifiedDatetime") or {}).get("value"))
-                    or ""
-                )
+                if str(((row.get("lastModifiedDatetime") or {}).get("value")) or "")
                 > bound
             ]
-        page_size = _integer(
-            params.get("pageSize"), 25, minimum=1, maximum=100
-        )
+        page_size = _integer(params.get("pageSize"), 25, minimum=1, maximum=100)
         token = params.get("pageToken")
         if token:
             if not token.startswith("off:"):
@@ -294,7 +343,7 @@ class CartaAdapter(_WaveBAdapter):
                 )
         else:
             offset = 0
-        page = rows[offset:offset + page_size]
+        page = rows[offset : offset + page_size]
         end = offset + len(page)
         body: dict[str, Any] = {collection: page}
         if page and end < len(rows):
@@ -302,14 +351,37 @@ class CartaAdapter(_WaveBAdapter):
         return ProviderResponse.json(body)
 
 
+def _carta_issuer(
+    fixture: Mapping[str, Any],
+    issuer_id: str,
+) -> dict[str, Any]:
+    issuer = fixture.get("issuer")
+    if isinstance(issuer, dict) and issuer.get("id"):
+        return dict(issuer)
+    return {"id": issuer_id, "legalName": "Sandbox Issuer"}
+
+
 class DeelAdapter(_WaveBAdapter):
     source = "deel"
     routes = (
-        ProviderRoute("deel.contracts", "/contracts", quota_bucket="rest"),
         ProviderRoute(
-            "deel.contract", "/contracts/{contract_id}", quota_bucket="rest"
+            "deel.contracts",
+            "/contracts",
+            operation_ids=("contracts.list",),
+            quota_bucket="rest",
         ),
-        ProviderRoute("deel.invoices", "/invoices", quota_bucket="rest"),
+        ProviderRoute(
+            "deel.contract",
+            "/contracts/{contract_id}",
+            operation_ids=("contracts.get",),
+            quota_bucket="rest",
+        ),
+        ProviderRoute(
+            "deel.invoices",
+            "/invoices",
+            operation_ids=("invoices.list",),
+            quota_bucket="rest",
+        ),
     )
 
     def default_state(self) -> Mapping[str, Any]:
@@ -374,7 +446,7 @@ def _deel_page(
     limit = _integer(params.get("limit"), 100)
     offset = _integer(params.get("offset"), 0)
     return {
-        "data": items[offset:offset + limit],
+        "data": items[offset : offset + limit],
         "page": {"cursor": None, "total_rows": len(items)},
     }
 
@@ -382,29 +454,82 @@ def _deel_page(
 class FigmaAdapter(_WaveBAdapter):
     source = "figma"
     routes = (
-        ProviderRoute("figma.me", "/v1/me", quota_bucket="rest"),
+        ProviderRoute(
+            "figma.me",
+            "/v1/me",
+            operation_ids=("users.me.get",),
+            quota_bucket="rest",
+        ),
         ProviderRoute(
             "figma.team_projects",
             "/v1/teams/{team_id}/projects",
+            operation_ids=("teams.projects.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "figma.project_files",
             "/v1/projects/{project_id}/files",
+            operation_ids=("projects.files.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "figma.file_versions",
             "/v1/files/{file_key}/versions",
+            operation_ids=("file_versions.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "figma.file_comments",
             "/v1/files/{file_key}/comments",
+            operation_ids=("file_comments.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
-            "figma.file", "/v1/files/{file_key}", quota_bucket="rest"
+            "figma.file",
+            "/v1/files/{file_key}",
+            operation_ids=("files.get",),
+            quota_bucket="rest",
+        ),
+        ProviderRoute(
+            "figma.oauth_token",
+            "/v1/oauth/token",
+            operation_ids=(
+                "oauth.token.exchange",
+                "oauth.token.refresh",
+            ),
+            operation_bindings=(
+                ProviderOperationBinding(
+                    operation_id="oauth.token.exchange",
+                    method="POST",
+                    headers=(
+                        (
+                            "Content-Type",
+                            "application/x-www-form-urlencoded",
+                        ),
+                    ),
+                    body=(
+                        b"grant_type=authorization_code&code=provider-lab"
+                        b"&redirect_uri=https%3A%2F%2Fprovider-lab.test"
+                        b"&code_verifier=provider-lab"
+                    ),
+                ),
+                ProviderOperationBinding(
+                    operation_id="oauth.token.refresh",
+                    method="POST",
+                    headers=(
+                        (
+                            "Content-Type",
+                            "application/x-www-form-urlencoded",
+                        ),
+                    ),
+                    body=(
+                        b"grant_type=refresh_token"
+                        b"&refresh_token=provider-lab"
+                    ),
+                ),
+            ),
+            methods=("POST",),
+            quota_bucket="oauth",
         ),
     )
 
@@ -427,6 +552,18 @@ class FigmaAdapter(_WaveBAdapter):
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
         files = request.source_state.get("files") or {}
         route_id = request.route.route_id
+        if route_id == "figma.oauth_token":
+            form = parse_qs(request.body.decode("utf-8", "replace"))
+            grant_type = (form.get("grant_type") or ["authorization_code"])[0]
+            return ProviderResponse.json(
+                {
+                    "access_token": "lab-figma-access-token",
+                    "refresh_token": "lab-figma-refresh-token",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                    "grant_type": grant_type,
+                }
+            )
         if route_id == "figma.me":
             return ProviderResponse.json(
                 {
@@ -454,9 +591,7 @@ class FigmaAdapter(_WaveBAdapter):
                 return ProviderResponse.json(
                     {"error": f"no file {file_key}"}, status_code=404
                 )
-            return ProviderResponse.json(
-                fixture.get("file") or {"key": file_key}
-            )
+            return ProviderResponse.json(fixture.get("file") or {"key": file_key})
         if not isinstance(fixture, dict):
             events: list[dict[str, Any]] = []
         else:
@@ -472,8 +607,7 @@ class FigmaAdapter(_WaveBAdapter):
                 else "events"
             )
             events = [
-                event for event in fixture.get(key, [])
-                if isinstance(event, dict)
+                event for event in fixture.get(key, []) if isinstance(event, dict)
             ]
         if route_id == "figma.file_versions":
             versions = [
@@ -516,8 +650,43 @@ class FirefliesAdapter(_WaveBAdapter):
         ProviderRoute(
             "fireflies.graphql",
             "/graphql",
+            operation_ids=(
+                "user.get",
+                "transcript.get",
+                "transcripts.list",
+            ),
+            operation_bindings=(
+                ProviderOperationBinding(
+                    operation_id="user.get",
+                    method="POST",
+                    headers=(("Content-Type", "application/json"),),
+                    body=(
+                        b'{"query":"query { user { id email name } }",'
+                        b'"variables":{}}'
+                    ),
+                ),
+                ProviderOperationBinding(
+                    operation_id="transcript.get",
+                    method="POST",
+                    headers=(("Content-Type", "application/json"),),
+                    body=(
+                        b'{"query":"query($id: String!) { transcript(id: $id) '
+                        b'{ id } }","variables":{"id":"provider-lab"}}'
+                    ),
+                ),
+                ProviderOperationBinding(
+                    operation_id="transcripts.list",
+                    method="POST",
+                    headers=(("Content-Type", "application/json"),),
+                    body=(
+                        b'{"query":"query { transcripts { id } }",'
+                        b'"variables":{"limit":50,"skip":0}}'
+                    ),
+                ),
+            ),
             methods=("POST",),
             quota_bucket="graphql",
+            transport="graphql",
         ),
     )
 
@@ -535,9 +704,7 @@ class FirefliesAdapter(_WaveBAdapter):
             body = {}
         query = str(body.get("query") or "")
         variables = (
-            body.get("variables")
-            if isinstance(body.get("variables"), dict)
-            else {}
+            body.get("variables") if isinstance(body.get("variables"), dict) else {}
         )
         state = request.source_state
         if (
@@ -554,8 +721,7 @@ class FirefliesAdapter(_WaveBAdapter):
                         or state.get("workspace_id")
                         or "ws-mock"
                     ),
-                    "email": workspace.get("email")
-                    or "mock-fireflies@example.com",
+                    "email": workspace.get("email") or "mock-fireflies@example.com",
                     "name": (
                         workspace.get("name")
                         or workspace.get("workspace_name")
@@ -586,9 +752,7 @@ class FirefliesAdapter(_WaveBAdapter):
                 ),
                 None,
             )
-            return ProviderResponse.json(
-                {"data": {"transcript": transcript}}
-            )
+            return ProviderResponse.json({"data": {"transcript": transcript}})
         if "transcripts" in query:
             floor = variables.get("fromDate")
             key = (
@@ -598,19 +762,13 @@ class FirefliesAdapter(_WaveBAdapter):
                 and isinstance(state.get("delta"), list)
                 else "transcripts"
             )
-            items = [
-                item for item in state.get(key, []) if isinstance(item, dict)
-            ]
+            items = [item for item in state.get(key, []) if isinstance(item, dict)]
             if isinstance(floor, str) and floor:
-                items = [
-                    item
-                    for item in items
-                    if _fireflies_date(item) >= floor[:10]
-                ]
+                items = [item for item in items if _fireflies_date(item) >= floor[:10]]
             skip = _integer(variables.get("skip"), 0)
             limit = _integer(variables.get("limit"), 50)
             return ProviderResponse.json(
-                {"data": {"transcripts": items[skip:skip + limit]}}
+                {"data": {"transcripts": items[skip : skip + limit]}}
             )
         return ProviderResponse.json({"data": {}})
 
@@ -618,10 +776,83 @@ class FirefliesAdapter(_WaveBAdapter):
 def _fireflies_date(item: Mapping[str, Any]) -> str:
     value = item.get("dateTime") or item.get("date") or item.get("createdAt") or ""
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(
-            value / 1000.0, tz=timezone.utc
-        ).date().isoformat()
+        return (
+            datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).date().isoformat()
+        )
     return value[:10] if isinstance(value, str) else ""
+
+
+def _google_directory_routes(source: str) -> tuple[ProviderRoute, ...]:
+    return (
+        ProviderRoute(
+            f"{source}.directory_users",
+            "/admin/directory/v1/users",
+            operation_ids=(
+                "directory.users.list",
+                "directory.users_by_org_unit.list",
+            ),
+            operation_bindings=(
+                ProviderOperationBinding(
+                    operation_id="directory.users.list",
+                    method="GET",
+                    query_items=(("domain", "provider-lab.test"),),
+                ),
+                ProviderOperationBinding(
+                    operation_id="directory.users_by_org_unit.list",
+                    method="GET",
+                    query_items=(("query", "orgUnitPath=/"),),
+                ),
+            ),
+            quota_bucket="directory-api",
+        ),
+        ProviderRoute(
+            f"{source}.directory_groups",
+            "/admin/directory/v1/groups",
+            operation_ids=("directory.groups.list",),
+            quota_bucket="directory-api",
+        ),
+        ProviderRoute(
+            f"{source}.directory_group_members",
+            "/admin/directory/v1/groups/{group_key}/members",
+            operation_ids=("directory.group_members.list",),
+            quota_bucket="directory-api",
+        ),
+        ProviderRoute(
+            f"{source}.directory_org_units",
+            "/admin/directory/v1/customer/{customer_id}/orgunits",
+            operation_ids=("directory.org_units.list",),
+            quota_bucket="directory-api",
+        ),
+    )
+
+
+def _google_directory_response(request: ProviderRequest) -> ProviderResponse:
+    directory = request.source_state.get("directory") or {}
+    suffix = request.route.route_id.split(".", 1)[1]
+    if suffix == "directory_org_units":
+        return ProviderResponse.json(
+            {"organizationUnits": list(directory.get("org_units") or [])}
+        )
+    if suffix == "directory_group_members":
+        group_key = str(request.path_params["group_key"]).lower()
+        rows = list((directory.get("group_members") or {}).get(group_key, []))
+        return ProviderResponse.json({"members": rows})
+    if suffix == "directory_groups":
+        return ProviderResponse.json(
+            {"groups": list(directory.get("groups") or [])}
+        )
+    if suffix == "directory_users":
+        rows = list(directory.get("users") or [])
+        query = request.query_one("query", "") or ""
+        if query.startswith("orgUnitPath="):
+            path = query.removeprefix("orgUnitPath=")
+            rows = [
+                row
+                for row in rows
+                if str(row.get("orgUnitPath") or "") == path
+            ]
+        return ProviderResponse.json({"users": rows})
+    raise RuntimeError(f"unhandled Google Directory route {request.route.route_id}")
 
 
 class GoogleCalendarAdapter(_WaveBAdapter):
@@ -630,28 +861,34 @@ class GoogleCalendarAdapter(_WaveBAdapter):
         ProviderRoute(
             "google_calendar.token",
             "/token",
+            operation_ids=("dwd.token.exchange",),
             methods=("POST",),
             quota_bucket=None,
         ),
+        *_google_directory_routes("google_calendar"),
         ProviderRoute(
             "google_calendar.calendar_list",
             "/users/me/calendarList",
+            operation_ids=("calendarList.list",),
             quota_bucket="calendar-api",
         ),
         ProviderRoute(
             "google_calendar.events",
             "/calendars/{calendar_id}/events",
+            operation_ids=("events.list",),
             quota_bucket="calendar-api",
         ),
         ProviderRoute(
             "google_calendar.events_watch",
             "/calendars/{calendar_id}/events/watch",
+            operation_ids=("events.watch",),
             methods=("POST",),
             quota_bucket="calendar-api",
         ),
         ProviderRoute(
             "google_calendar.channels_stop",
             "/channels/stop",
+            operation_ids=("channels.stop",),
             methods=("POST",),
             quota_bucket="calendar-api",
         ),
@@ -669,6 +906,8 @@ class GoogleCalendarAdapter(_WaveBAdapter):
                     "token_type": "Bearer",
                 }
             )
+        if ".directory_" in request.route.route_id:
+            return _google_directory_response(request)
         if request.route.route_id == "google_calendar.calendar_list":
             calendars = request.source_state.get("calendars") or {}
             return ProviderResponse.json(
@@ -703,9 +942,7 @@ class GoogleCalendarAdapter(_WaveBAdapter):
             )
         fixture = (request.source_state.get("calendars") or {}).get(calendar_id)
         if not isinstance(fixture, dict):
-            return ProviderResponse.json(
-                {"items": [], "nextSyncToken": "sync-empty"}
-            )
+            return ProviderResponse.json({"items": [], "nextSyncToken": "sync-empty"})
         params = _params(request)
         events = list(fixture.get("events", []))
         delta = list(fixture.get("delta", []))
@@ -720,21 +957,15 @@ class GoogleCalendarAdapter(_WaveBAdapter):
                     },
                     status_code=410,
                 )
-            return ProviderResponse.json(
-                {"items": delta, "nextSyncToken": "sync-2"}
-            )
+            return ProviderResponse.json({"items": delta, "nextSyncToken": "sync-2"})
         if "updatedMin" in params:
             bound = params["updatedMin"]
             rows = [
-                item
-                for item in events + delta
-                if str(item.get("updated", "")) > bound
+                item for item in events + delta if str(item.get("updated", "")) > bound
             ]
             maximum = _integer(params.get("maxResults"), 250)
             return ProviderResponse.json({"items": rows[:maximum]})
-        return ProviderResponse.json(
-            {"items": events, "nextSyncToken": "sync-1"}
-        )
+        return ProviderResponse.json({"items": events, "nextSyncToken": "sync-1"})
 
 
 class GoogleDriveAdapter(_WaveBAdapter):
@@ -743,54 +974,72 @@ class GoogleDriveAdapter(_WaveBAdapter):
         ProviderRoute(
             "google_drive.token",
             "/token",
+            operation_ids=("dwd.token.exchange",),
             methods=("POST",),
             quota_bucket=None,
         ),
+        *_google_directory_routes("google_drive"),
         ProviderRoute(
             "google_drive.start_page_token",
             "/changes/startPageToken",
+            operation_ids=("changes.getStartPageToken",),
             quota_bucket="drive-api",
         ),
         ProviderRoute(
-            "google_drive.changes", "/changes", quota_bucket="drive-api"
+            "google_drive.changes",
+            "/changes",
+            operation_ids=("changes.list",),
+            quota_bucket="drive-api",
         ),
         ProviderRoute(
             "google_drive.changes_watch",
             "/changes/watch",
+            operation_ids=("changes.watch",),
             methods=("POST",),
             quota_bucket="drive-api",
         ),
         ProviderRoute(
             "google_drive.channels_stop",
             "/channels/stop",
+            operation_ids=("channels.stop",),
             methods=("POST",),
             quota_bucket="drive-api",
         ),
         ProviderRoute(
-            "google_drive.drives", "/drives", quota_bucket="drive-api"
+            "google_drive.drives",
+            "/drives",
+            operation_ids=("drives.list",),
+            quota_bucket="drive-api",
         ),
         ProviderRoute(
             "google_drive.file_export",
             "/files/{file_id}/export",
+            operation_ids=("files.export",),
             quota_bucket="drive-api",
         ),
         ProviderRoute(
             "google_drive.file_comments",
             "/files/{file_id}/comments",
+            operation_ids=("comments.list",),
             quota_bucket="drive-api",
         ),
         ProviderRoute(
             "google_drive.file_revisions",
             "/files/{file_id}/revisions",
+            operation_ids=("revisions.list",),
             quota_bucket="drive-api",
         ),
         ProviderRoute(
             "google_drive.file_media",
             "/files/{file_id}",
+            operation_ids=("files.get",),
             quota_bucket="drive-api",
         ),
         ProviderRoute(
-            "google_drive.files", "/files", quota_bucket="drive-api"
+            "google_drive.files",
+            "/files",
+            operation_ids=("files.list",),
+            quota_bucket="drive-api",
         ),
     )
 
@@ -817,7 +1066,7 @@ class GoogleDriveAdapter(_WaveBAdapter):
         if scheme.lower() == "bearer":
             for prefix in ("lab-gmail::", "lab-gdrive::", "wstok:"):
                 if token.startswith(prefix):
-                    return token[len(prefix):].lower() or "global"
+                    return token[len(prefix) :].lower() or "global"
         return "global"
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
@@ -831,6 +1080,8 @@ class GoogleDriveAdapter(_WaveBAdapter):
                     "token_type": "Bearer",
                 }
             )
+        if ".directory_" in route_id:
+            return _google_directory_response(request)
         fixture = self._fixture(request)
         if route_id == "google_drive.start_page_token":
             return ProviderResponse.json(
@@ -885,27 +1136,17 @@ class GoogleDriveAdapter(_WaveBAdapter):
                 {"drives": list(state.get("shared_drives", []))}
             )
         if route_id == "google_drive.files":
-            return ProviderResponse.json(
-                {"files": list(fixture.get("files", []))}
-            )
+            return ProviderResponse.json({"files": list(fixture.get("files", []))})
 
         file_id = str(request.path_params["file_id"])
         content_fixture = self._fixture_for_file(request, file_id)
         if route_id == "google_drive.file_comments":
             return ProviderResponse.json(
-                {
-                    "comments": (
-                        content_fixture.get("comments") or {}
-                    ).get(file_id, [])
-                }
+                {"comments": (content_fixture.get("comments") or {}).get(file_id, [])}
             )
         if route_id == "google_drive.file_revisions":
             return ProviderResponse.json(
-                {
-                    "revisions": (
-                        content_fixture.get("revisions") or {}
-                    ).get(file_id, [])
-                }
+                {"revisions": (content_fixture.get("revisions") or {}).get(file_id, [])}
             )
         if (
             route_id == "google_drive.file_media"
@@ -945,7 +1186,20 @@ class GoogleDriveAdapter(_WaveBAdapter):
                 return fixture
         users = state.get("user_drives") or {}
         fixture = users.get(request.scope)
-        return fixture if isinstance(fixture, Mapping) else state
+        if isinstance(fixture, Mapping):
+            return fixture
+
+        # Preserve the convenient unscoped single-fixture surface used by
+        # focused Provider Lab tests, but fail closed once sibling corpora are
+        # present. Production shared-drive requests select by driveId above;
+        # My Drive requests select by their DWD-derived bearer scope.
+        candidates = [
+            candidate
+            for collection_name in ("user_drives", "shared_drive_content")
+            for candidate in (state.get(collection_name) or {}).values()
+            if isinstance(candidate, Mapping)
+        ]
+        return candidates[0] if len(candidates) == 1 else state
 
     def _fixture_for_file(
         self,
@@ -979,17 +1233,58 @@ class GrafanaAdapter(_WaveBAdapter):
     source = "grafana"
     routes = (
         ProviderRoute(
-            "grafana.annotations", "/api/annotations", quota_bucket="http-api"
+            "grafana.annotations",
+            "/api/annotations",
+            operation_ids=("annotations.list",),
+            quota_bucket="http-api",
         ),
-        ProviderRoute("grafana.org", "/api/org", quota_bucket="http-api"),
+        ProviderRoute(
+            "grafana.org",
+            "/api/org",
+            operation_ids=("org.get",),
+            quota_bucket="http-api",
+        ),
     )
 
     def default_state(self) -> Mapping[str, Any]:
-        return {"annotations": []}
+        return {"annotations": [], "instances": {}}
+
+    def resolve_scope(self, request: ProviderRequest) -> str:
+        explicit = request.headers.get("x-provider-lab-scope")
+        if explicit:
+            return explicit
+        authorization = request.headers.get("authorization", "")
+        scheme, separator, token = authorization.partition(" ")
+        if separator and scheme.lower() == "bearer":
+            for prefix in ("lab-grafana::", "spam-grafana::"):
+                if token.startswith(prefix):
+                    instance = token[len(prefix) :]
+                    return instance.rstrip("/") or "global"
+        return "global"
+
+    @staticmethod
+    def _fixture(request: ProviderRequest) -> Mapping[str, Any]:
+        state = request.source_state
+        instances = state.get("instances") or {}
+        fixture = instances.get(request.scope)
+        if isinstance(fixture, Mapping):
+            return fixture
+        candidates = [
+            candidate
+            for candidate in instances.values()
+            if isinstance(candidate, Mapping)
+        ]
+        return candidates[0] if len(candidates) == 1 else state
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
+        fixture = self._fixture(request)
         if request.route.route_id == "grafana.org":
-            return ProviderResponse.json({"id": 1, "name": "Sandbox Org"})
+            return ProviderResponse.json(
+                {
+                    "id": fixture.get("org_id", 1),
+                    "name": fixture.get("org_name", "Sandbox Org"),
+                }
+            )
         params = _params(request)
 
         def optional_int(name: str) -> int | None:
@@ -1006,7 +1301,7 @@ class GrafanaAdapter(_WaveBAdapter):
         limit = optional_int("limit") or 100
         rows = [
             item
-            for item in request.source_state.get("annotations", [])
+            for item in fixture.get("annotations", [])
             if (from_ms is None or int(item.get("time", 0)) >= from_ms)
             and (to_ms is None or int(item.get("time", 0)) <= to_ms)
         ]
@@ -1020,17 +1315,27 @@ class GustoAdapter(_WaveBAdapter):
         ProviderRoute(
             "gusto.employees",
             "/v1/companies/{company_uuid}/employees",
+            operation_ids=("employees.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "gusto.payrolls",
             "/v1/companies/{company_uuid}/payrolls",
+            operation_ids=("payrolls.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "gusto.company",
             "/v1/companies/{company_uuid}",
+            operation_ids=("companies.get",),
             quota_bucket="rest",
+        ),
+        ProviderRoute(
+            "gusto.oauth_token",
+            "/oauth/token",
+            operation_ids=("oauth.token.refresh",),
+            methods=("POST",),
+            quota_bucket="oauth",
         ),
     )
 
@@ -1039,8 +1344,17 @@ class GustoAdapter(_WaveBAdapter):
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
         state = request.source_state
-        company_uuid = str(request.path_params["company_uuid"])
         route_id = request.route.route_id
+        if route_id == "gusto.oauth_token":
+            return ProviderResponse.json(
+                {
+                    "access_token": "lab-gusto-access-token",
+                    "refresh_token": "lab-gusto-refresh-token",
+                    "expires_in": 7200,
+                    "token_type": "Bearer",
+                }
+            )
+        company_uuid = str(request.path_params["company_uuid"])
         if route_id == "gusto.company":
             company = state.get("company")
             if not isinstance(company, dict):
@@ -1065,14 +1379,12 @@ class GustoAdapter(_WaveBAdapter):
                 ]
             if end_date:
                 rows = [
-                    row
-                    for row in rows
-                    if str(row.get("check_date") or "") <= end_date
+                    row for row in rows if str(row.get("check_date") or "") <= end_date
                 ]
         page = _integer(params.get("page"), 1, minimum=1)
         per = _integer(params.get("per"), 25, minimum=1, maximum=100)
         total = len(rows)
-        selected = rows[(page - 1) * per:page * per]
+        selected = rows[(page - 1) * per : page * per]
         return ProviderResponse.json(
             selected,
             headers={
@@ -1084,9 +1396,7 @@ class GustoAdapter(_WaveBAdapter):
         )
 
 
-_JIRA_PROJECT_RE = re.compile(
-    r'project\s*=\s*"([^"]+)"', re.IGNORECASE
-)
+_JIRA_PROJECT_RE = re.compile(r'project\s*=\s*"([^"]+)"', re.IGNORECASE)
 
 
 class JiraAdapter(_WaveBAdapter):
@@ -1095,22 +1405,28 @@ class JiraAdapter(_WaveBAdapter):
         ProviderRoute(
             "jira.search",
             "/rest/api/3/search/jql",
+            operation_ids=("issues.search",),
             methods=("POST",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "jira.approximate_count",
             "/rest/api/3/search/approximate-count",
+            operation_ids=("issues.approximate_count",),
             methods=("POST",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "jira.project_search",
             "/rest/api/3/project/search",
+            operation_ids=("projects.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
-            "jira.myself", "/rest/api/3/myself", quota_bucket="rest"
+            "jira.myself",
+            "/rest/api/3/myself",
+            operation_ids=("users.myself.get",),
+            quota_bucket="rest",
         ),
     )
 
@@ -1136,7 +1452,7 @@ class JiraAdapter(_WaveBAdapter):
                 {"id": str(1000 + index), "key": key, "name": f"{key} project"}
                 for index, key in enumerate(keys)
             ]
-            page = projects[start:start + maximum]
+            page = projects[start : start + maximum]
             return ProviderResponse.json(
                 {
                     "startAt": start,
@@ -1157,7 +1473,7 @@ class JiraAdapter(_WaveBAdapter):
             return ProviderResponse.json({"count": len(pool)})
         maximum = _integer(body.get("maxResults"), 50)
         offset = _integer(body.get("nextPageToken"), 0)
-        page = pool[offset:offset + maximum]
+        page = pool[offset : offset + maximum]
         next_offset = offset + len(page)
         last = next_offset >= len(pool)
         response: dict[str, Any] = {"issues": page, "isLast": last}
@@ -1166,35 +1482,36 @@ class JiraAdapter(_WaveBAdapter):
         return ProviderResponse.json(response)
 
     @staticmethod
-    def _pool(
-        state: Mapping[str, Any], jql: str
-    ) -> list[dict[str, Any]]:
+    def _pool(state: Mapping[str, Any], jql: str) -> list[dict[str, Any]]:
         match = _JIRA_PROJECT_RE.search(jql)
         project = match.group(1) if match else None
-        fixture = (
-            (state.get("projects") or {}).get(project)
-            if project
-            else None
-        )
+        fixture = (state.get("projects") or {}).get(project) if project else None
         if not isinstance(fixture, dict):
             return []
-        incremental = (
-            "updated >" in jql.lower() or "updated>" in jql.lower()
-        )
+        incremental = "updated >" in jql.lower() or "updated>" in jql.lower()
         return list(fixture.get("delta" if incremental else "issues", []))
 
 
 class MercuryAdapter(_WaveBAdapter):
     source = "mercury"
     routes = (
-        ProviderRoute("mercury.accounts", "/accounts", quota_bucket="rest"),
         ProviderRoute(
-            "mercury.account_transactions",
-            "/account/{account_id}/transactions",
+            "mercury.accounts",
+            "/accounts",
+            operation_ids=("accounts.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
-            "mercury.account", "/account/{account_id}", quota_bucket="rest"
+            "mercury.account_transactions",
+            "/account/{account_id}/transactions",
+            operation_ids=("transactions.list",),
+            quota_bucket="rest",
+        ),
+        ProviderRoute(
+            "mercury.account",
+            "/account/{account_id}",
+            operation_ids=("accounts.get",),
+            quota_bucket="rest",
         ),
     )
 
@@ -1210,9 +1527,7 @@ class MercuryAdapter(_WaveBAdapter):
                 for account_id, fixture in fixtures.items()
                 if isinstance(fixture, dict)
             ]
-            return ProviderResponse.json(
-                {"accounts": accounts, "total": len(accounts)}
-            )
+            return ProviderResponse.json({"accounts": accounts, "total": len(accounts)})
         account_id = str(request.path_params["account_id"])
         fixture = fixtures.get(account_id)
         if route_id == "mercury.account":
@@ -1220,9 +1535,7 @@ class MercuryAdapter(_WaveBAdapter):
                 return ProviderResponse.json(
                     {"error": f"no account {account_id}"}, status_code=404
                 )
-            return ProviderResponse.json(
-                fixture.get("account") or {"id": account_id}
-            )
+            return ProviderResponse.json(fixture.get("account") or {"id": account_id})
         params = _params(request)
         if not isinstance(fixture, dict):
             rows = []
@@ -1234,14 +1547,13 @@ class MercuryAdapter(_WaveBAdapter):
                 rows = [
                     row
                     for row in rows
-                    if isinstance(row, dict)
-                    and _mercury_transaction_date(row) >= floor
+                    if isinstance(row, dict) and _mercury_transaction_date(row) >= floor
                 ]
         limit = _integer(params.get("limit"), 100)
         offset = _integer(params.get("offset"), 0)
         return ProviderResponse.json(
             {
-                "transactions": rows[offset:offset + limit],
+                "transactions": rows[offset : offset + limit],
                 "total": len(rows),
             }
         )
@@ -1250,14 +1562,23 @@ class MercuryAdapter(_WaveBAdapter):
 class MiroAdapter(_WaveBAdapter):
     source = "miro"
     routes = (
-        ProviderRoute("miro.boards", "/boards", quota_bucket="rest"),
         ProviderRoute(
-            "miro.board_items",
-            "/boards/{board_id}/items",
+            "miro.boards",
+            "/boards",
+            operation_ids=("boards.list",),
             quota_bucket="rest",
         ),
         ProviderRoute(
-            "miro.board", "/boards/{board_id}", quota_bucket="rest"
+            "miro.board_items",
+            "/boards/{board_id}/items",
+            operation_ids=("board_items.list",),
+            quota_bucket="rest",
+        ),
+        ProviderRoute(
+            "miro.board",
+            "/boards/{board_id}",
+            operation_ids=("boards.get",),
+            quota_bucket="rest",
         ),
     )
 
@@ -1273,9 +1594,7 @@ class MiroAdapter(_WaveBAdapter):
                 for board_id, fixture in fixtures.items()
                 if isinstance(fixture, dict)
             ]
-            return ProviderResponse.json(
-                {"data": boards, "total": len(boards)}
-            )
+            return ProviderResponse.json({"data": boards, "total": len(boards)})
         board_id = str(request.path_params["board_id"])
         fixture = fixtures.get(board_id)
         if route_id == "miro.board":
@@ -1283,20 +1602,18 @@ class MiroAdapter(_WaveBAdapter):
                 return ProviderResponse.json(
                     {"error": f"no board {board_id}"}, status_code=404
                 )
-            return ProviderResponse.json(
-                fixture.get("board") or {"id": board_id}
-            )
+            return ProviderResponse.json(fixture.get("board") or {"id": board_id})
         if not isinstance(fixture, dict):
             return ProviderResponse.json({"data": [], "total": 0})
         params = _params(request)
         cursor = params.get("cursor")
         if cursor and cursor.startswith("miro-cursor:"):
-            offset = _integer(cursor[len("miro-cursor:"):], 0)
+            offset = _integer(cursor[len("miro-cursor:") :], 0)
         else:
             offset = 0
         limit = _integer(params.get("limit"), 50)
         rows = list(fixture.get("items", []))
-        page = rows[offset:offset + limit]
+        page = rows[offset : offset + limit]
         next_offset = offset + len(page)
         body: dict[str, Any] = {"data": page, "total": len(rows)}
         if page and next_offset < len(rows):
@@ -1316,12 +1633,21 @@ class QuickBooksAdapter(_WaveBAdapter):
         ProviderRoute(
             "quickbooks.query",
             "/v3/company/{realm_id}/query",
+            operation_ids=("entities.query",),
             quota_bucket="rest",
         ),
         ProviderRoute(
             "quickbooks.company_info",
             "/v3/company/{realm_id}/companyinfo/{company_realm_id}",
+            operation_ids=("company_info.get",),
             quota_bucket="rest",
+        ),
+        ProviderRoute(
+            "quickbooks.oauth_token",
+            "/oauth2/v1/tokens/bearer",
+            operation_ids=("oauth.token.refresh",),
+            methods=("POST",),
+            quota_bucket="oauth",
         ),
     )
 
@@ -1329,17 +1655,23 @@ class QuickBooksAdapter(_WaveBAdapter):
         return {"entities": {}}
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
-        if request.route.route_id == "quickbooks.company_info":
+        if request.route.route_id == "quickbooks.oauth_token":
             return ProviderResponse.json(
-                {"CompanyInfo": {"CompanyName": "Sandbox Co"}}
+                {
+                    "access_token": "lab-quickbooks-access-token",
+                    "refresh_token": "lab-quickbooks-refresh-token",
+                    "expires_in": 3600,
+                    "x_refresh_token_expires_in": 8_726_400,
+                    "token_type": "bearer",
+                }
             )
+        if request.route.route_id == "quickbooks.company_info":
+            return ProviderResponse.json({"CompanyInfo": {"CompanyName": "Sandbox Co"}})
         sql = request.query_one("query", "") or ""
         match = _QBO_FROM_RE.search(sql)
         entity = match.group(1) if match else None
         fixture = (
-            (request.source_state.get("entities") or {}).get(entity)
-            if entity
-            else None
+            (request.source_state.get("entities") or {}).get(entity) if entity else None
         )
         if not isinstance(fixture, dict):
             return ProviderResponse.json(
@@ -1351,15 +1683,13 @@ class QuickBooksAdapter(_WaveBAdapter):
                 }
             )
         pool = list(
-            fixture.get(
-                "delta" if _QBO_INCREMENTAL_RE.search(sql) else "rows", []
-            )
+            fixture.get("delta" if _QBO_INCREMENTAL_RE.search(sql) else "rows", [])
         )
         start_match = _QBO_START_RE.search(sql)
         max_match = _QBO_MAX_RE.search(sql)
         start = int(start_match.group(1)) if start_match else 1
         maximum = int(max_match.group(1)) if max_match else 100
-        page = pool[start - 1:start - 1 + maximum]
+        page = pool[start - 1 : start - 1 + maximum]
         return ProviderResponse.json(
             {
                 "QueryResponse": {
@@ -1385,13 +1715,22 @@ class RampAdapter(_WaveBAdapter):
         ProviderRoute(
             "ramp.token",
             "/token",
+            operation_ids=("oauth.token.mint",),
             methods=("POST",),
             quota_bucket=None,
         ),
-        ProviderRoute("ramp.business", "/business", quota_bucket="rest"),
+        ProviderRoute(
+            "ramp.business",
+            "/business",
+            operation_ids=("business.get",),
+            quota_bucket="rest",
+        ),
         *tuple(
             ProviderRoute(
-                f"ramp.{resource}", f"/{resource}", quota_bucket="rest"
+                f"ramp.{resource}",
+                f"/{resource}",
+                operation_ids=(f"{resource}.list",),
+                quota_bucket="rest",
             )
             for resource in _RAMP_RESOURCES
         ),
@@ -1435,13 +1774,9 @@ class RampAdapter(_WaveBAdapter):
         }
         window = _RAMP_WINDOW.get(resource)
         rows = list(
-            fixture.get(
-                "delta" if window and params.get(window) else "rows", []
-            )
+            fixture.get("delta" if window and params.get(window) else "rows", [])
         )
-        page_size = _integer(
-            params.get("page_size"), 20, minimum=2, maximum=100
-        )
+        page_size = _integer(params.get("page_size"), 20, minimum=2, maximum=100)
         position = 0
         start = params.get("start")
         if start:
@@ -1449,22 +1784,14 @@ class RampAdapter(_WaveBAdapter):
                 if str(row.get("id")) == start:
                     position = index + 1
                     break
-        page = rows[position:position + page_size]
+        page = rows[position : position + page_size]
         next_url = None
-        if (
-            page
-            and len(page) == page_size
-            and position + page_size < len(rows)
-        ):
+        if page and len(page) == page_size and position + page_size < len(rows):
             next_params = dict(params)
             next_params["start"] = str(page[-1].get("id"))
             next_params["page_size"] = str(page_size)
-            next_url = (
-                f"{request.url.split('?', 1)[0]}?{urlencode(next_params)}"
-            )
-        return ProviderResponse.json(
-            {"data": page, "page": {"next": next_url}}
-        )
+            next_url = f"{request.url.split('?', 1)[0]}?{urlencode(next_params)}"
+        return ProviderResponse.json({"data": page, "page": {"next": next_url}})
 
 
 def wave_b_adapters() -> dict[str, Any]:
@@ -1521,7 +1848,12 @@ def _seed_brex(entries: list[Mapping[str, Any]]) -> Mapping[str, Any]:
 
 
 def _seed_carta(entries: list[Mapping[str, Any]]) -> Mapping[str, Any]:
-    return copy.deepcopy(dict(entries[0]))
+    return {
+        "issuers": {
+            str(entry.get("firm_id") or f"issuer-{index}"): copy.deepcopy(dict(entry))
+            for index, entry in enumerate(entries)
+        }
+    }
 
 
 def _seed_deel(entries: list[Mapping[str, Any]]) -> Mapping[str, Any]:
@@ -1589,6 +1921,21 @@ def _seed_drive(entries: list[Mapping[str, Any]]) -> Mapping[str, Any]:
     shared_drive_content: dict[str, Any] = {}
     start_token = "spt-1"
     new_token = "spt-2"
+
+    def insert_unique(
+        target: dict[str, Any],
+        key: str,
+        fixture: Mapping[str, Any],
+        *,
+        identity_kind: str,
+    ) -> None:
+        if key in target:
+            raise ValueError(
+                "google_drive fixtures contain duplicate "
+                f"{identity_kind} identity {key!r}"
+            )
+        target[key] = _normalize_drive_fixture(fixture)
+
     for entry in entries:
         raw_user_drives = entry.get("drive_my")
         raw_shared_content = entry.get("drive_shared")
@@ -1596,21 +1943,23 @@ def _seed_drive(entries: list[Mapping[str, Any]]) -> Mapping[str, Any]:
             raw_shared_content, Mapping
         ):
             if isinstance(raw_user_drives, Mapping):
-                user_drives.update(
-                    {
-                        str(email).lower(): _normalize_drive_fixture(fixture)
-                        for email, fixture in raw_user_drives.items()
-                        if isinstance(fixture, Mapping)
-                    }
-                )
+                for email, fixture in raw_user_drives.items():
+                    if isinstance(fixture, Mapping):
+                        insert_unique(
+                            user_drives,
+                            str(email).lower(),
+                            fixture,
+                            identity_kind="owner",
+                        )
             if isinstance(raw_shared_content, Mapping):
-                shared_drive_content.update(
-                    {
-                        str(drive_id): _normalize_drive_fixture(fixture)
-                        for drive_id, fixture in raw_shared_content.items()
-                        if isinstance(fixture, Mapping)
-                    }
-                )
+                for drive_id, fixture in raw_shared_content.items():
+                    if isinstance(fixture, Mapping):
+                        insert_unique(
+                            shared_drive_content,
+                            str(drive_id),
+                            fixture,
+                            identity_kind="shared-drive",
+                        )
             shared_drives.extend(copy.deepcopy(entry.get("shared_drives", [])))
             start_token = str(entry.get("start_page_token") or start_token)
             new_token = str(entry.get("new_start_page_token") or new_token)
@@ -1620,24 +1969,46 @@ def _seed_drive(entries: list[Mapping[str, Any]]) -> Mapping[str, Any]:
         for target in sources:
             if not isinstance(target, dict):
                 continue
-            files.extend(copy.deepcopy(target.get("files", [])))
-            changes.extend(copy.deepcopy(target.get("changes", [])))
-            comments.update(copy.deepcopy(target.get("comments", {})))
-            revisions.update(copy.deepcopy(target.get("revisions", {})))
-            extracted = target.get("exports") or target.get("extracted_text") or {}
-            for file_id, value in extracted.items():
-                if isinstance(value, bytes):
-                    exports[file_id] = {
-                        "base64": base64.b64encode(value).decode("ascii"),
-                        "content_type": "application/pdf",
-                    }
-                else:
-                    exports[file_id] = copy.deepcopy(value)
             drive_id = target.get("drive_id")
-            if target.get("drive_kind") == "shared_drive" and drive_id:
-                shared_drives.append(
-                    {"id": drive_id, "name": target.get("name") or str(drive_id)}
+            drive_kind = target.get("drive_kind") or (
+                "shared_drive" if drive_id and drive_id != "my-drive" else "my_drive"
+            )
+            owner_email = target.get("owner_email")
+            if drive_kind == "shared_drive" and drive_id:
+                drive_key = str(drive_id)
+                insert_unique(
+                    shared_drive_content,
+                    drive_key,
+                    target,
+                    identity_kind="shared-drive",
                 )
+                shared_drives.append(
+                    {"id": drive_key, "name": target.get("name") or drive_key}
+                )
+            elif isinstance(owner_email, str) and owner_email:
+                insert_unique(
+                    user_drives,
+                    owner_email.lower(),
+                    target,
+                    identity_kind="owner",
+                )
+            else:
+                # Legacy flat fixtures predate target identity. Keep their
+                # single-corpus behavior without allowing canonical target
+                # fixtures to bleed into this global fallback.
+                files.extend(copy.deepcopy(target.get("files", [])))
+                changes.extend(copy.deepcopy(target.get("changes", [])))
+                comments.update(copy.deepcopy(target.get("comments", {})))
+                revisions.update(copy.deepcopy(target.get("revisions", {})))
+                extracted = target.get("exports") or target.get("extracted_text") or {}
+                for file_id, value in extracted.items():
+                    if isinstance(value, bytes):
+                        exports[file_id] = {
+                            "base64": base64.b64encode(value).decode("ascii"),
+                            "content_type": "application/pdf",
+                        }
+                    else:
+                        exports[file_id] = copy.deepcopy(value)
             start_token = str(target.get("start_page_token") or start_token)
             new_token = str(target.get("new_start_page_token") or new_token)
     return {
@@ -1675,16 +2046,25 @@ def _normalize_drive_fixture(fixture: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _seed_grafana(entries: list[Mapping[str, Any]]) -> Mapping[str, Any]:
-    annotations = []
+    annotations: list[Any] = []
+    instances: dict[str, Any] = {}
     for entry in entries:
         if isinstance(entry, list):
             annotations.extend(copy.deepcopy(entry))
         elif "time" in entry and "annotations" not in entry:
             # Also accept Grafana's flat annotation fixture list.
             annotations.append(copy.deepcopy(dict(entry)))
+        elif entry.get("base_url"):
+            instance = str(entry["base_url"]).rstrip("/")
+            if instance in instances:
+                raise ValueError(
+                    "grafana fixtures contain duplicate instance identity "
+                    f"{instance!r}"
+                )
+            instances[instance] = copy.deepcopy(dict(entry))
         else:
             annotations.extend(copy.deepcopy(entry.get("annotations", [])))
-    return {"annotations": annotations}
+    return {"annotations": annotations, "instances": instances}
 
 
 def _seed_gusto(entries: list[Mapping[str, Any]]) -> Mapping[str, Any]:
@@ -1740,11 +2120,11 @@ def _seed_miro(entries: list[Mapping[str, Any]]) -> Mapping[str, Any]:
 def _seed_quickbooks(entries: list[Mapping[str, Any]]) -> Mapping[str, Any]:
     entities: dict[str, Any] = {}
     for entry in entries:
-        raw = entry.get("entities") if isinstance(entry.get("entities"), dict) else entry
+        raw = (
+            entry.get("entities") if isinstance(entry.get("entities"), dict) else entry
+        )
         for entity, rows in raw.items():
-            if isinstance(rows, dict) and (
-                "rows" in rows or "delta" in rows
-            ):
+            if isinstance(rows, dict) and ("rows" in rows or "delta" in rows):
                 entities[str(entity)] = copy.deepcopy(rows)
             elif isinstance(rows, list):
                 entities[str(entity)] = {"rows": copy.deepcopy(rows), "delta": []}

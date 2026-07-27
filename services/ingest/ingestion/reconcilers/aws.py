@@ -40,6 +40,7 @@ log = logging.getLogger(__name__)
 
 SHARD_KIND_ACCOUNT_EVENTS = "aws_account_events"
 RESHARE_RECENCY_SCORE = 1.5
+_MS_PER_SECOND = 1_000
 
 
 _pool_provider: Any = None
@@ -85,6 +86,17 @@ async def _load_shard_high_water(pool: Any, shard_id: Any) -> int | None:
     return None
 
 
+def _next_cloudtrail_second(timestamp_ms: int) -> int:
+    """Return the first whole-second CloudTrail timestamp after ``timestamp_ms``.
+
+    Botocore serializes the CloudTrail JSON protocol's ``StartTime`` to integer
+    epoch seconds.  Adding one millisecond therefore collapses back to the same
+    wire value and lets the high-water event match forever.  Round down to the
+    represented second and advance once so the gap probe is truly exclusive.
+    """
+    return ((timestamp_ms // _MS_PER_SECOND) + 1) * _MS_PER_SECOND
+
+
 async def _check_one_shard_for_gap(
     *, pool: Any, client: Any, shard: asyncpg.Record, account_id: str, region: str,
 ) -> ResharedShard | None:
@@ -96,11 +108,14 @@ async def _check_one_shard_for_gap(
     if high_water is None:
         return None  # No reference point (empty account / cursor).
 
-    # EXCLUSIVE floor = high-water + 1ms so the high-water event does not
-    # re-match itself forever (eventTime is ms-precise).
+    # CloudTrail's JSON protocol encodes StartTime as integer epoch seconds.
+    # Advance to the next representable second so the high-water event cannot
+    # re-match itself and create an unbounded reconciliation reshard loop.
     try:
         has_updates = await client.has_events_since(
-            account_id=account_id, region=region, from_ms=high_water + 1,
+            account_id=account_id,
+            region=region,
+            from_ms=_next_cloudtrail_second(high_water),
         )
     except RetryLater:
         # Durable provider cooldowns must reach the reconciler workflow; treating

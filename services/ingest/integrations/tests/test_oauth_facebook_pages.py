@@ -116,7 +116,7 @@ class _FacebookClient:
         }
 
     async def list_pages(self, user_access_token: str) -> list[dict[str, object]]:
-        assert user_access_token == "user-token"
+        assert user_access_token == "long-user-token"
         return [
             {
                 "id": "PAGE1",
@@ -129,6 +129,22 @@ class _FacebookClient:
                 "access_token": "page-token-2",
             },
         ]
+
+    async def exchange_long_lived_user_token(
+        self,
+        *,
+        short_lived_user_access_token: str,
+        client_id: str,
+        client_secret: str,
+    ) -> dict[str, object]:
+        assert short_lived_user_access_token == "user-token"
+        assert client_id == "fb-client"
+        assert client_secret == "fb-secret"
+        return {
+            "access_token": "long-user-token",
+            "token_type": "bearer",
+            "expires_in": 5_184_000,
+        }
 
     async def subscribe_page(
         self,
@@ -290,6 +306,7 @@ async def test_callback_selects_page_stores_tokens_subscribes_and_triggers_backf
     ]
     assert [record["label"] for record in secret_store.records] == [
         "facebook_pages_page_token:PAGE2",
+        "facebook_pages_user_token:PAGE2",
         "facebook_pages_app_secret:PAGE2",
         "facebook_pages_verify_token:PAGE2",
     ]
@@ -307,16 +324,18 @@ async def test_callback_selects_page_stores_tokens_subscribes_and_triggers_backf
     assert page_args[1] == "PAGE2"
     assert page_args[2] == "Selected Page"
     assert page_args[3] == "secret://facebook_pages_page_token:PAGE2"
-    assert page_args[4] == "secret://facebook_pages_app_secret:PAGE2"
-    assert page_args[5] == "secret://facebook_pages_verify_token:PAGE2"
-    assert set(page_args[6]) == {
+    assert page_args[4] == "secret://facebook_pages_user_token:PAGE2"
+    assert page_args[5].tzinfo is not None
+    assert page_args[6] == "secret://facebook_pages_app_secret:PAGE2"
+    assert page_args[7] == "secret://facebook_pages_verify_token:PAGE2"
+    assert set(page_args[8]) == {
         "pages_show_list",
         "pages_messaging",
         "pages_manage_metadata",
         "pages_read_engagement",
     }
-    assert page_args[7] is True
-    assert set(page_args[8]) == {"messages", "message_echoes"}
+    assert page_args[9] is True
+    assert set(page_args[10]) == {"messages", "message_echoes"}
 
     trigger_args = pool.conn.trigger_args
     assert trigger_args is not None

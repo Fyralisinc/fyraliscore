@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://docs.discord.com/developers/reference",
       "api_version": "HTTP v10 / Gateway v10",
-      "schema_sha256": null,
+      "schema_sha256": "a669f361e0954c40c0084e721f38578b8c4988048e1203e3d0951abc1edd3921",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 schema lock and reviewer verification."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

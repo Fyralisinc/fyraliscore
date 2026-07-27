@@ -1,0 +1,576 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.grafana": "05671be4cd262a2d5ee48d38c9d0a71672cd6ecae3cd23d8acc3ec1d72817c9a",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.grafana": "098e11615bc39d8987d4c19047a68fc3d8b2db56e5719158f1e47538f7713a8d",
+    "services.ingest.ingestion.handlers.grafana": "99af9e2011f1d2043f3094c5e251e22b9371f8915c4dcaa66f1dbbbcfc925a82",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.grafana": "327f934c81d66be001e0c377175a19a5cba847d4465f2115a08e1267052c3e88",
+    "services.ingest.ingestion.reconcilers.grafana": "01b86381d1cd1e9dad7292632131b7a3c855d4ac449ac544b75b2865a21c4e85",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.grafana": "5f77b1ae5da9095c35e77727c0c6d3ad37f1d3c628e4f41401c946660f74c57d",
+    "services.ingest.integrations.grafana.client": "59aa95c882a08645d3555d63c4241487c560125e2643c9398df96cf1d83ae843",
+    "services.ingest.integrations.grafana.oauth": "ce0457c718562d0291a9c49a9572deb423d999179835f89bd4828a41ca958936",
+    "services.ingest.integrations.grafana.onboarding": "aecfaa1e064ab2d5494fdc9ff31be93964e0783b7a839f40f3f1df8493791ad7",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Grafana HTTP API",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "service_account_token"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Grafana",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "annotations.list",
+      "org.get"
+    ],
+    "outbound_endpoint_names": [
+      "grafana_api"
+    ],
+    "provider_id": "grafana",
+    "source_ids": [
+      "grafana"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "grafana:alert",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "grafana",
+        "route_path": "/webhooks/grafana/events",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "grafana",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_grafana",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.grafana:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "alert_webhook": {
+        "alerts": [
+          {
+            "annotations": {
+              "summary": "Error rate above threshold"
+            },
+            "endsAt": "0001-01-01T00:00:00Z",
+            "fingerprint": "deadbeefcafef00d",
+            "generatorURL": "https://grafana-eedc3aa50007e39b.provider-lab.test/alerting",
+            "labels": {
+              "alertname": "HighErrorRate",
+              "namespace": "prod",
+              "service": "checkout"
+            },
+            "startsAt": "2026-01-05T00:00:00.000Z",
+            "status": "firing"
+          }
+        ],
+        "commonAnnotations": {
+          "summary": "Error rate above threshold"
+        },
+        "commonLabels": {
+          "alertname": "HighErrorRate",
+          "namespace": "prod",
+          "service": "checkout",
+          "severity": "critical"
+        },
+        "externalURL": "https://grafana-eedc3aa50007e39b.provider-lab.test",
+        "groupKey": "{}:{alertname=\"HighErrorRate\"}",
+        "message": "1 alert is firing",
+        "orgId": 1,
+        "status": "firing",
+        "title": "[FIRING:1] HighErrorRate"
+      },
+      "annotations": [
+        {
+          "alertId": 0,
+          "dashboardUID": "dash-3d3bc3d0",
+          "data": {},
+          "id": 1000,
+          "newState": "",
+          "panelId": 1,
+          "prevState": "",
+          "tags": [
+            "env:prod",
+            "team:3d3b"
+          ],
+          "text": "deploy marker #0",
+          "time": 1785067200000,
+          "timeEnd": 0,
+          "userId": 10,
+          "userName": "user-3d3bc3"
+        },
+        {
+          "alertId": 501,
+          "dashboardUID": "dash-f3c930da",
+          "data": {},
+          "id": 1001,
+          "newState": "Alerting",
+          "panelId": 2,
+          "prevState": "OK",
+          "tags": [
+            "env:staging",
+            "team:f3c9"
+          ],
+          "text": "alert state change #1",
+          "time": 1785067140000,
+          "timeEnd": 1785067140000,
+          "userId": 0,
+          "userName": ""
+        },
+        {
+          "alertId": 0,
+          "dashboardUID": "dash-0e0949a4",
+          "data": {},
+          "id": 1002,
+          "newState": "",
+          "panelId": 3,
+          "prevState": "",
+          "tags": [
+            "env:prod",
+            "team:0e09"
+          ],
+          "text": "deploy marker #2",
+          "time": 1785067080000,
+          "timeEnd": 0,
+          "userId": 12,
+          "userName": "user-0e0949"
+        },
+        {
+          "alertId": 503,
+          "dashboardUID": "dash-626938c3",
+          "data": {},
+          "id": 1003,
+          "newState": "OK",
+          "panelId": 4,
+          "prevState": "Alerting",
+          "tags": [
+            "env:staging",
+            "team:6269"
+          ],
+          "text": "alert state change #3",
+          "time": 1785067020000,
+          "timeEnd": 1785067020000,
+          "userId": 0,
+          "userName": ""
+        },
+        {
+          "alertId": 0,
+          "dashboardUID": "dash-237e9412",
+          "data": {},
+          "id": 1004,
+          "newState": "",
+          "panelId": 5,
+          "prevState": "",
+          "tags": [
+            "env:prod",
+            "team:237e"
+          ],
+          "text": "deploy marker #4",
+          "time": 1785066960000,
+          "timeEnd": 0,
+          "userId": 14,
+          "userName": "user-237e94"
+        }
+      ],
+      "base_url": "https://grafana-eedc3aa50007e39b.provider-lab.test",
+      "per_page": 100
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "annotations.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "annotations.list"
+        ],
+        "path_template": "/api/annotations",
+        "quota_bucket": "http-api",
+        "quota_cost": 1.0,
+        "route_id": "grafana.annotations",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "org.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "org.get"
+        ],
+        "path_template": "/api/org",
+        "quota_bucket": "http-api",
+        "quota_cost": 1.0,
+        "route_id": "grafana.org",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.grafana",
+      "evidence_id": "ingest.evidence.grafana",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.grafana",
+      "validation_runtime": {
+        "generator_group": "grafana",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_grafana_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_grafana_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_grafana_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_grafana_live_target",
+        "preflight_binding": null,
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_grafana_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.grafana.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "annotation",
+      "alert_group"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Operations",
+      "connection_method": "API token",
+      "description": "Dashboards, alerts, and operations signals.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 15,
+      "setup_requirements": "Grafana instance URL, service account token, dashboard/folder scope, alert scope, network reachability from BYOC.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill"
+      ]
+    },
+    "display_name": "Grafana",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.grafana:fetch_page_grafana",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:grafana_annotation",
+      "services.ingest.ingestion.idempotency:grafana_alert"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "grafana:annotation",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "grafana:annotation",
+        "ingress_kind": "poll"
+      },
+      {
+        "channel": "grafana:alert",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_grafana_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": null,
+        "entity_status_columns": [],
+        "entity_table": null,
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref",
+          "webhook_secret_ref"
+        ],
+        "scope_column": "base_url",
+        "source": "grafana",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "grafana_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": "base_url",
+        "webhook_installation_id_transform": "host"
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "base_url",
+      "org_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "grafana",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "grafana:annotation",
+      "grafana:alert"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.grafana:handle_grafana_annotation",
+      "services.ingest.ingestion.handlers.grafana:handle_grafana_alert"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "instance URL",
+          "folder ids",
+          "dashboard ids",
+          "alert scope"
+        ],
+        "agent_generates": [
+          "service account token ref",
+          "webhook secret ref",
+          "dashboard/alert scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin creates or approves a least-privilege service credential"
+        ],
+        "settings_targets": [
+          "service account settings",
+          "folder settings",
+          "alerting settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "dashboards",
+        "alerts",
+        "folders"
+      ],
+      "discovery_target": "folders, dashboards, alert rules, and org metadata",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/grafana/events"
+      ],
+      "local_rehearsal": null,
+      "method": "api_token",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/grafana/connect/finalize",
+        "kind": "api_token_native_connect",
+        "payload_fields": [
+          "base_url",
+          "service_account_token",
+          "org_id",
+          "webhook_secret"
+        ],
+        "preflight_path": "/integrations/grafana/connect/preflight",
+        "preflight_payload_fields": [
+          "base_url",
+          "service_account_token",
+          "org_id"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "webhook_secret"
+      ],
+      "provider_console_url": "https://grafana.com/auth/sign-in/",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "dashboards read",
+        "alerts read",
+        "folders read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "base_url",
+        "service_account_token"
+      ],
+      "required_refs": [
+        "service_account_token",
+        "base_url",
+        "webhook_secret"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "annotations.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "org.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "grafana_api",
+        "operation_ids": [
+          "annotations.list",
+          "org.get"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.grafana:plan_shards_grafana",
+    "provider_id": "grafana",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.grafana:reconcile_grafana",
+    "runtime_identifiers": [
+      "installation_id",
+      "org_id"
+    ],
+    "source_id": "grafana",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "grafana"
+  },
+  "source_id": "grafana"
+}

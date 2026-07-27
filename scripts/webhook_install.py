@@ -50,9 +50,10 @@ from services.app.webhooks.tenant_resolver import (
     build_tenant_resolver,
     noop_metrics,
 )
+from services.ingest.source_contract import WEBHOOK_INGRESS_ROUTE_IDS
 
 
-_PROVIDERS: tuple[str, ...] = ("slack", "github", "linear", "stripe", "discord")
+_PROVIDERS: tuple[str, ...] = WEBHOOK_INGRESS_ROUTE_IDS
 
 
 def _parse_args() -> argparse.Namespace:

@@ -12,7 +12,7 @@ Signed bytes:
     when `GRAFANA_WEBHOOK_TIMESTAMP_HEADER` names the header (off by default).
 
 The per-tenant signing secret is resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='grafana') the seed/onboarding step registers (webhook_secret_ref).
 
 Unlike GitHub/Jira/Mercury (which prefix `sha256=`), Grafana's header value is the

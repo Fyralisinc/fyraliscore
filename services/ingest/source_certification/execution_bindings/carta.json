@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "carta",
+  "spec_hash": "2be91c3b7ec05073a6c3a6fe57d9100a0c1c7b21946559cf19bee751270cf50e",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "carta",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "8d4fab3a83f81ca1fe9f5cf015688ba6d873d7dfec7fad3759be4fde0373f512"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_CARTA"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_CARTA"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "carta",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "8d4fab3a83f81ca1fe9f5cf015688ba6d873d7dfec7fad3759be4fde0373f512"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "carta",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "8d4fab3a83f81ca1fe9f5cf015688ba6d873d7dfec7fad3759be4fde0373f512"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "carta",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "8d4fab3a83f81ca1fe9f5cf015688ba6d873d7dfec7fad3759be4fde0373f512"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

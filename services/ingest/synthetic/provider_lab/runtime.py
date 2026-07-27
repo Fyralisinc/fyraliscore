@@ -8,7 +8,7 @@ import math
 import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, Sequence
 
 from .protocol import AdapterRegistry
 
@@ -81,6 +81,7 @@ class QuotaConfiguration:
     mode: QuotaMode
     capacity: float
     refill_per_second: float
+    limit_id: str = "default"
     initial_tokens: float | None = None
 
     def __post_init__(self) -> None:
@@ -90,6 +91,8 @@ class QuotaConfiguration:
             raise ValueError("quota scope must contain 1..256 characters")
         if not self.bucket or len(self.bucket) > 128:
             raise ValueError("quota bucket must contain 1..128 characters")
+        if not self.limit_id or len(self.limit_id) > 128:
+            raise ValueError("quota limit_id must contain 1..128 characters")
         if self.capacity <= 0:
             raise ValueError("quota capacity must be greater than zero")
         if self.refill_per_second < 0:
@@ -118,17 +121,47 @@ class QuotaDecision:
     headers: Mapping[str, str]
 
 
+@dataclass(frozen=True)
+class QuotaRequirement:
+    """One independently enforced quota constraint charged by a request."""
+
+    scope: str
+    bucket: str
+    cost: float
+    limit_id: str = "default"
+
+    def __post_init__(self) -> None:
+        if not self.scope or len(self.scope) > 256:
+            raise ValueError("quota scope must contain 1..256 characters")
+        if not self.bucket or len(self.bucket) > 128:
+            raise ValueError("quota bucket must contain 1..128 characters")
+        if not self.limit_id or len(self.limit_id) > 128:
+            raise ValueError("quota limit_id must contain 1..128 characters")
+        if (
+            isinstance(self.cost, bool)
+            or not isinstance(self.cost, (int, float))
+            or not math.isfinite(float(self.cost))
+            or self.cost <= 0
+        ):
+            raise ValueError("quota request cost must be finite and greater than zero")
+
+
 class QuotaManager:
     """Scoped deterministic token buckets driven by ``VirtualClock``."""
 
     def __init__(self, clock: VirtualClock) -> None:
         self._clock = clock
         self._lock = threading.RLock()
-        self._buckets: dict[tuple[str, str, str], _TokenBucket] = {}
+        self._buckets: dict[tuple[str, str, str, str], _TokenBucket] = {}
 
     @staticmethod
-    def _key(source: str, scope: str, bucket: str) -> tuple[str, str, str]:
-        return source, scope, bucket
+    def _key(
+        source: str,
+        scope: str,
+        bucket: str,
+        limit_id: str,
+    ) -> tuple[str, str, str, str]:
+        return source, scope, bucket, limit_id
 
     def configure(self, config: QuotaConfiguration) -> dict[str, Any]:
         initial = (
@@ -137,21 +170,33 @@ class QuotaManager:
             else config.initial_tokens
         )
         with self._lock:
-            self._buckets[self._key(config.source, config.scope, config.bucket)] = (
-                _TokenBucket(
-                    config=config,
-                    tokens=initial,
-                    last_refill=self._clock.now(),
-                )
+            key = self._key(
+                config.source,
+                config.scope,
+                config.bucket,
+                config.limit_id,
             )
-            return self._snapshot_bucket(
-                self._buckets[self._key(config.source, config.scope, config.bucket)]
+            self._buckets[key] = _TokenBucket(
+                config=config,
+                tokens=initial,
+                last_refill=self._clock.now(),
             )
+            return self._snapshot_bucket(self._buckets[key])
 
-    def remove(self, source: str, scope: str, bucket: str) -> bool:
+    def remove(
+        self,
+        source: str,
+        scope: str,
+        bucket: str,
+        limit_id: str = "default",
+    ) -> bool:
         with self._lock:
             return (
-                self._buckets.pop(self._key(source, scope, bucket), None) is not None
+                self._buckets.pop(
+                    self._key(source, scope, bucket, limit_id),
+                    None,
+                )
+                is not None
             )
 
     def clear(self) -> None:
@@ -175,12 +220,77 @@ class QuotaManager:
         bucket: str,
         cost: float,
     ) -> QuotaDecision:
-        if cost <= 0:
-            raise ValueError("quota request cost must be greater than zero")
-        key = self._key(source, scope, bucket)
+        return self.check_many(
+            source=source,
+            requirements=(
+                QuotaRequirement(
+                    scope=scope,
+                    bucket=bucket,
+                    cost=cost,
+                ),
+            ),
+        )
+
+    def check_many(
+        self,
+        *,
+        source: str,
+        requirements: Sequence[QuotaRequirement],
+    ) -> QuotaDecision:
+        """Atomically check and charge every independent quota constraint.
+
+        A request subject to app, workspace, route, and multiple time-window
+        limits must consume all of them or none of them.  This prevents a
+        rejected request from partially draining unrelated scopes and lets the
+        load harness model steady and burst windows independently.
+        """
+
+        if not requirements:
+            raise ValueError("quota requirements must not be empty")
+        keys = [
+            self._key(
+                source,
+                requirement.scope,
+                requirement.bucket,
+                requirement.limit_id,
+            )
+            for requirement in requirements
+        ]
+        if len(keys) != len(set(keys)):
+            raise ValueError("quota requirements must identify unique constraints")
+
         with self._lock:
-            state = self._buckets.get(key)
-            if state is None:
+            now = self._clock.now()
+            configured: list[
+                tuple[QuotaRequirement, _TokenBucket, bool, int | None]
+            ] = []
+            for requirement, key in zip(requirements, keys, strict=True):
+                state = self._buckets.get(key)
+                if state is None:
+                    continue
+                self._refill(state, now)
+                config = state.config
+                would_limit = (
+                    config.mode != "disabled"
+                    and state.tokens + 1e-12 < requirement.cost
+                )
+                retry_after: int | None = None
+                if would_limit:
+                    if config.refill_per_second > 0:
+                        retry_after = max(
+                            1,
+                            math.ceil(
+                                (requirement.cost - state.tokens)
+                                / config.refill_per_second
+                            ),
+                        )
+                    else:
+                        retry_after = 86_400
+                configured.append(
+                    (requirement, state, would_limit, retry_after)
+                )
+
+            if not configured:
                 return QuotaDecision(
                     allowed=True,
                     configured=False,
@@ -191,57 +301,71 @@ class QuotaManager:
                     headers={},
                 )
 
-            config = state.config
-            now = self._clock.now()
-            self._refill(state, now)
+            blocked = [
+                item
+                for item in configured
+                if item[1].config.mode == "enforce" and item[2]
+            ]
+            if not blocked:
+                for requirement, state, would_limit, _retry_after in configured:
+                    if (
+                        state.config.mode != "disabled"
+                        and not would_limit
+                    ):
+                        state.tokens -= requirement.cost
 
-            if config.mode == "disabled":
-                return QuotaDecision(
-                    allowed=True,
-                    configured=True,
-                    mode="disabled",
-                    would_limit=False,
-                    remaining=state.tokens,
-                    retry_after_seconds=None,
-                    headers={
-                        "X-Provider-Lab-Quota-Mode": "disabled",
-                    },
+            limiting = (
+                max(
+                    blocked,
+                    key=lambda item: item[3] or 0,
                 )
-
-            would_limit = state.tokens + 1e-12 < cost
-            retry_after: int | None = None
-            if would_limit:
-                if config.refill_per_second > 0:
-                    retry_after = max(
-                        1,
-                        math.ceil(
-                            (cost - state.tokens) / config.refill_per_second
-                        ),
-                    )
-                else:
-                    # A zero-refill bucket remains exhausted until a control
-                    # operation resets/reconfigures it.
-                    retry_after = 86_400
-            else:
-                state.tokens -= cost
-
+                if blocked
+                else next(
+                    (item for item in configured if item[2]),
+                    configured[0],
+                )
+            )
+            requirement, state, _limited, _retry_after = limiting
+            config = state.config
             remaining = max(0.0, state.tokens)
+            retry_after = (
+                max(item[3] or 0 for item in blocked)
+                if blocked
+                else None
+            )
+            modes = {item[1].config.mode for item in configured}
+            mode: QuotaMode = (
+                "enforce"
+                if "enforce" in modes
+                else "observe"
+                if "observe" in modes
+                else "disabled"
+            )
+            would_limit = any(item[2] for item in configured)
             headers = {
                 "X-RateLimit-Limit": _format_number(config.capacity),
                 "X-RateLimit-Remaining": _format_number(remaining),
-                "X-Provider-Lab-Quota-Mode": config.mode,
-                "X-Provider-Lab-Quota-Scope": scope,
-                "X-Provider-Lab-Quota-Bucket": bucket,
+                "X-Provider-Lab-Quota-Mode": mode,
+                "X-Provider-Lab-Quota-Scope": requirement.scope,
+                "X-Provider-Lab-Quota-Bucket": requirement.bucket,
+                "X-Provider-Lab-Quota-Limit": requirement.limit_id,
+                "X-Provider-Lab-Quota-Constraints": str(len(configured)),
             }
             if retry_after is not None:
                 headers["Retry-After"] = str(retry_after)
-            if config.mode == "observe" and would_limit:
+            if (
+                not blocked
+                and any(
+                    item[1].config.mode == "observe" and item[2]
+                    for item in configured
+                )
+            ):
                 headers["X-Provider-Lab-Quota-Observed"] = "exceeded"
 
             return QuotaDecision(
-                allowed=not (config.mode == "enforce" and would_limit),
+                allowed=not blocked,
                 configured=True,
-                mode=config.mode,
+                mode=mode,
                 would_limit=would_limit,
                 remaining=remaining,
                 retry_after_seconds=retry_after,
@@ -254,6 +378,7 @@ class QuotaManager:
             "source": state.config.source,
             "scope": state.config.scope,
             "bucket": state.config.bucket,
+            "limit_id": state.config.limit_id,
             "mode": state.config.mode,
             "capacity": state.config.capacity,
             "refill_per_second": state.config.refill_per_second,

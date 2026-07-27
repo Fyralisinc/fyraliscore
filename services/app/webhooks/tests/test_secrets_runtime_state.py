@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 
-from services.app.webhooks.secrets import load_secrets
+from services.app.webhooks.secrets import load_installation_secrets
 
 
 class _FakePool:
@@ -23,7 +23,7 @@ class _FakeSecretStore:
 
 
 @pytest.mark.asyncio
-async def test_load_secrets_reads_integration_runtime_before_legacy_aliases(
+async def test_installation_loader_reads_runtime_before_legacy_state_aliases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW", raising=False)
@@ -36,7 +36,7 @@ async def test_load_secrets_reads_integration_runtime_before_legacy_aliases(
         ),
     )
 
-    secrets = await load_secrets(
+    secrets = await load_installation_secrets(
         "slack",
         UUID("11111111-1111-1111-1111-111111111111"),
         installation_row_id=UUID(

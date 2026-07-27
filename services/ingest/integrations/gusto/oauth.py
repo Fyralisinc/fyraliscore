@@ -49,6 +49,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import GustoApiError
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.provider_transport import (
     tenant_preinstall_transport_kwargs,
 )
@@ -63,12 +64,6 @@ from services.ingest.integrations.gusto.onboarding import (
 
 
 log = structlog.get_logger("integrations.gusto.oauth")
-
-
-# CONFIRMED (docs.gusto.com): production host is https://api.gusto.com; the
-# operator may pass the demo host (https://api.gusto-demo.com) via base_url
-# when testing against a Gusto demo company.
-_DEFAULT_BASE_URL = "https://api.gusto.com"
 
 
 router = APIRouter(prefix="/integrations/gusto", tags=["gusto"])
@@ -99,13 +94,14 @@ def _secret_store_from_request(request: Request) -> Any:
 def _require_creds(body: dict[str, Any]) -> tuple[str, str, str]:
     company_uuid = (body.get("company_uuid") or "").strip()
     access_token = (body.get("access_token") or "").strip()
-    base_url = (body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     if not company_uuid:
         raise HTTPException(status_code=400, detail="company_uuid is required")
     if not access_token:
         raise HTTPException(status_code=400, detail="access_token is required")
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="gusto_api",
+    )
     return company_uuid, access_token, base_url
 
 

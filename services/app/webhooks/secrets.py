@@ -1,19 +1,22 @@
-"""Exact webhook-installation secret resolution.
+"""Generic exact-installation webhook-secret resolution.
 
-IN-08 cutover: the canonical source of truth for webhook signing
-secrets is now `provider_installations.secret_ref` resolved via the
-envelope-encrypted `lib.shared.secrets` store. The legacy env-var path
-is retained as a development-only fallback, gated by
-`WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW=1`.
+The canonical webhook ingress contract selects the signing-secret loader for
+each route.  Most routes bind to :func:`load_installation_secrets`, whose
+source of truth is ``provider_installations.secret_ref`` resolved through the
+envelope-encrypted ``lib.shared.secrets`` store.  Providers with a different
+secret scope own their loader in their integration package; this module never
+switches on a provider identity.
+
+The legacy env-var path is retained as a development-only fallback, gated by
+``WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW=1``.
 
 Public surface
 --------------
-* `load_secrets(provider, tenant_id, *, installation_row_id, app_state=None)`
-  — async. Resolves the active signing secret for the exact installation
-  selected by tenant resolution. Returns a list of `Secret` records compatible
-  with the
-  verifier Protocol. Empty list ⇒ caller emits the same
-  `secret_not_configured` shape as before this feature shipped.
+* ``load_installation_secrets(provider, tenant_id, *,
+  installation_row_id, app_state=None)`` — async. Resolves the active signing
+  secret for the exact installation selected by tenant resolution. Returns a
+  list of ``Secret`` records compatible with the verifier protocol. Empty list
+  means the verifier emits ``secret_not_configured``.
 
 * `assert_prod_safety_invariants()` — startup helper. Raises
   `RuntimeError` when `FYRALIS_ENV=prod` and
@@ -43,10 +46,10 @@ Env-var layout (legacy)
     WEBHOOK_SECRET_<PROVIDER>=<value>[,<value>,...]
     WEBHOOK_SECRET_<PROVIDER>__<TENANT_HEX>=<value>[,<value>,...]
 
-Where `<PROVIDER>` is one of `SLACK`, `GITHUB`, `LINEAR`, `STRIPE`,
-`DISCORD` and `<TENANT_HEX>` is a tenant UUID with dashes stripped and
-uppercased. Per-tenant overrides take precedence; the global key is
-the fallback used during dev/dogfood.
+Where ``<PROVIDER>`` is the upper-cased webhook route ID and
+``<TENANT_HEX>`` is a tenant UUID with dashes stripped and uppercased.
+Per-tenant overrides take precedence; the global key is the fallback used
+during development.
 
 A secret value may be prefixed with `LABEL=` to tag it for rotation
 observability.
@@ -58,7 +61,6 @@ from typing import Any, Sequence
 from uuid import UUID
 
 from lib.shared.errors import SecretNotFoundError, SecretStoreError
-from lib.shared.secrets import load_app_secret_text_from_env
 from services.app.webhooks.verifier import Secret
 
 
@@ -221,7 +223,7 @@ async def _load_from_db(
 # Public surface
 # ---------------------------------------------------------------------
 
-async def load_secrets(
+async def load_installation_secrets(
     provider: str,
     tenant_id: UUID | None = None,
     *,
@@ -231,29 +233,15 @@ async def load_secrets(
     """Return signing secrets for one resolved installation.
 
     Resolution order (see module docstring):
-      1. GitHub special-case (IN-13): App-level secret, never
-         per-tenant. Reads from `WEBHOOK_SECRET_GITHUB` env var
-         (operator-supplied; matches the App's developer-settings
-         webhook secret). Optional rotation overlap via
-         `WEBHOOK_SECRET_GITHUB_PREV`. The env-var path is allowed for
-         GitHub in prod WITHOUT the `WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW`
-         flag because the secret is App-level (single value across the
-         whole deployment), not tenant-scoped — see Clarifications Q1.
-      2. Exact DB ref via secret store (when `app_state`, `tenant_id`, and
+      1. Exact DB ref via secret store (when `app_state`, `tenant_id`, and
          `installation_row_id` are provided).
-      3. Env-var fallback (when DB lookup yielded nothing AND the
+      2. Env-var fallback (when DB lookup yielded nothing AND the
          fallback flag is on, OR when `app_state` is absent).
 
     Returns an empty sequence when no secret is configured — the
     verifier raises `secret_not_configured` in that case so the
     operator sees a distinct dashboard signal vs. signature mismatch.
     """
-    if provider == "github":
-        return _load_github_app_secrets()
-
-    if provider == "notion":
-        return _load_notion_app_secrets()
-
     if (
         app_state is not None
         and tenant_id is not None
@@ -279,83 +267,8 @@ async def load_secrets(
     return _load_from_env(provider, tenant_id)
 
 
-def _load_github_app_secrets() -> list[Secret]:
-    """IN-13: load the GitHub App-level webhook secret + optional
-    previous secret (rotation overlap window).
-
-    Env vars:
-      - WEBHOOK_SECRET_GITHUB       — current App-level secret (required)
-      - WEBHOOK_SECRET_GITHUB_PREV  — previous secret during rotation
-                                      (optional)
-    """
-    current = load_app_secret_text_from_env("WEBHOOK_SECRET_GITHUB").strip()
-    previous = load_app_secret_text_from_env("WEBHOOK_SECRET_GITHUB_PREV").strip()
-    out: list[Secret] = []
-    if current:
-        out.append(
-            Secret(
-                provider="github",
-                value=current,
-                tenant_id=None,
-                label="app:current",
-            )
-        )
-    if previous:
-        out.append(
-            Secret(
-                provider="github",
-                value=previous,
-                tenant_id=None,
-                label="app:previous",
-            )
-        )
-    return out
-
-
-def _load_notion_app_secrets() -> list[Secret]:
-    """IN-14: load the Notion webhook verification token + optional
-    previous token (rotation overlap window).
-
-    Notion subscriptions are App-level (one subscription per integration;
-    every workspace's events arrive on the one endpoint signed with the
-    one `verification_token`), so the token is a single deployment-wide
-    value — same shape as the GitHub App webhook secret. The
-    `provider_installations.secret_ref` column is NOT used here; it holds
-    the per-workspace bot token (outbound API), a different secret.
-
-    Env vars:
-      - NOTION_WEBHOOK_VERIFICATION_TOKEN       — current token (required)
-      - NOTION_WEBHOOK_VERIFICATION_TOKEN_PREV  — previous (optional, rotation)
-
-    The token is delivered once by Notion's verification POST (logged by
-    services/ingest/integrations/notion/webhook.py for the operator to copy here).
-    """
-    current = load_app_secret_text_from_env(
-        "NOTION_WEBHOOK_VERIFICATION_TOKEN",
-    ).strip()
-    previous = load_app_secret_text_from_env(
-        "NOTION_WEBHOOK_VERIFICATION_TOKEN_PREV",
-    ).strip()
-    out: list[Secret] = []
-    if current:
-        out.append(
-            Secret(
-                provider="notion", value=current,
-                tenant_id=None, label="app:current",
-            )
-        )
-    if previous:
-        out.append(
-            Secret(
-                provider="notion", value=previous,
-                tenant_id=None, label="app:previous",
-            )
-        )
-    return out
-
-
 __all__ = [
     "Secret",
-    "load_secrets",
+    "load_installation_secrets",
     "assert_prod_safety_invariants",
 ]

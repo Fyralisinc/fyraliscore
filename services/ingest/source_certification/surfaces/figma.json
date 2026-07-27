@@ -1,0 +1,913 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.figma": "63dbd9a3172bfb3731d5f2907021b1e3ef25a2f493993d27fdbe5d6eff1db44e",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.figma": "31b640f3a6ff9d7c0d0f105e6305ed03a0ac82e88ceecaa6fc0b7632a5baa655",
+    "services.ingest.ingestion.handlers.figma": "24b1872c70e67e6429b94720939a96a3afc10f77c711e16b7808697fca8e4976",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.figma": "eda6b5d8e68619f548660b9d24776949255a67819980c237fa0077979ebccfb3",
+    "services.ingest.ingestion.reconcilers.figma": "0ae3427200ce8023eacf0a09de24d4f4c2e0e4d50da0894c4b56f038d88f0b1a",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.figma": "8099a111487ed8c468650345c9afee02f4320fdd2be6ab73ddaf2c2a594e5319",
+    "services.ingest.integrations.figma.artifact_router": "5ded48773cdbd45c6efd0d8ae05f79b2c9f4df3fe0536cc061ce0fea9308754d",
+    "services.ingest.integrations.figma.client": "2057b3d531adca760a7315cfb9e00cbe3c855d63b7d8daf575cb5b5f693d7f4a",
+    "services.ingest.integrations.figma.metrics": "d4cf4f31c59c7833d1f15c767ab3bb210ffef9c12744e2eef12f46753ac3a8d9",
+    "services.ingest.integrations.figma.oauth": "4831fab65877bc8f0ae70cacc3ac88e5048234236ff36589b7b2db9d7e3615d5",
+    "services.ingest.integrations.figma.onboarding": "1e743bec6e71ef9e395f2f28c5b51d7aa957730600af2c830476eeae1c2aa878",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Figma REST API v1",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "oauth2_pkce",
+      "personal_access_token"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Figma",
+    "oauth_ingresses": [
+      {
+        "callback_handler_binding": "services.ingest.integrations.figma.oauth:oauth_callback",
+        "callback_path": "/integrations/figma/oauth/callback",
+        "install_handler_binding": "services.ingest.integrations.figma.oauth:oauth_start",
+        "install_path": "/integrations/figma/oauth/start",
+        "mount_mode": "native_router",
+        "public_result_paths": [],
+        "source_id": "figma"
+      }
+    ],
+    "operation_policy_ids": [
+      "teams.projects.list",
+      "projects.files.list",
+      "users.me.get",
+      "files.get",
+      "file_versions.list",
+      "file_comments.list",
+      "oauth.token.exchange",
+      "oauth.token.refresh"
+    ],
+    "outbound_endpoint_names": [
+      "figma_api"
+    ],
+    "provider_id": "figma",
+    "source_ids": [
+      "figma"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "figma:event",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "figma",
+        "route_path": "/webhooks/figma",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "figma",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_figma",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.figma:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "file_order": [
+        "effd13e860531d1c032cd8"
+      ],
+      "files": {
+        "effd13e860531d1c032cd8": {
+          "editorType": "figma",
+          "events": [
+            {
+              "createdAt": "2026-01-05T23:00:00Z",
+              "created_at": "2026-01-05T23:00:00Z",
+              "description": "event 0 on effd13e860531d1c032cd8",
+              "event_id": "evt_0b746b5bf24749cce6ce",
+              "event_type": "FILE_VERSION_UPDATE",
+              "fileKey": "effd13e860531d1c032cd8",
+              "file_key": "effd13e860531d1c032cd8",
+              "id": "evt_0b746b5bf24749cce6ce",
+              "label": "File Version Update 0",
+              "message": null,
+              "status": null,
+              "team_id": "certification-surface-figma",
+              "triggered_by": {
+                "handle": "user_741bd51f",
+                "id": "user_741bd51f"
+              },
+              "type": "FILE_VERSION_UPDATE",
+              "user": "user_741bd51f",
+              "version": "4ff47a8608ff"
+            },
+            {
+              "createdAt": "2026-01-05T22:00:00Z",
+              "created_at": "2026-01-05T22:00:00Z",
+              "description": "event 1 on effd13e860531d1c032cd8",
+              "event_id": "evt_d3e5f4ec6cbca87c959b",
+              "event_type": "FILE_COMMENT",
+              "fileKey": "effd13e860531d1c032cd8",
+              "file_key": "effd13e860531d1c032cd8",
+              "id": "evt_d3e5f4ec6cbca87c959b",
+              "label": "File Comment 1",
+              "message": "comment 1",
+              "status": null,
+              "team_id": "certification-surface-figma",
+              "triggered_by": {
+                "handle": "user_c86b3d99",
+                "id": "user_c86b3d99"
+              },
+              "type": "FILE_COMMENT",
+              "user": "user_c86b3d99",
+              "version": "b2ae9ccaeff0"
+            },
+            {
+              "createdAt": "2026-01-05T21:00:00Z",
+              "created_at": "2026-01-05T21:00:00Z",
+              "description": "event 2 on effd13e860531d1c032cd8",
+              "event_id": "evt_3474bf5cca87b835e4a4",
+              "event_type": "LIBRARY_PUBLISH",
+              "fileKey": "effd13e860531d1c032cd8",
+              "file_key": "effd13e860531d1c032cd8",
+              "id": "evt_3474bf5cca87b835e4a4",
+              "label": "Library Publish 2",
+              "message": null,
+              "status": null,
+              "team_id": "certification-surface-figma",
+              "triggered_by": {
+                "handle": "user_0ec6d89f",
+                "id": "user_0ec6d89f"
+              },
+              "type": "LIBRARY_PUBLISH",
+              "user": "user_0ec6d89f",
+              "version": "8fe8c380eaae"
+            },
+            {
+              "createdAt": "2026-01-05T20:00:00Z",
+              "created_at": "2026-01-05T20:00:00Z",
+              "description": "event 3 on effd13e860531d1c032cd8",
+              "event_id": "evt_9214cbd6d45aea30da95",
+              "event_type": "DEV_MODE_STATUS_UPDATE",
+              "fileKey": "effd13e860531d1c032cd8",
+              "file_key": "effd13e860531d1c032cd8",
+              "id": "evt_9214cbd6d45aea30da95",
+              "label": "Dev Mode Status Update 3",
+              "message": null,
+              "status": "ready_for_dev",
+              "team_id": "certification-surface-figma",
+              "triggered_by": {
+                "handle": "user_70a9db57",
+                "id": "user_70a9db57"
+              },
+              "type": "DEV_MODE_STATUS_UPDATE",
+              "user": "user_70a9db57",
+              "version": "0b3896f24e1e"
+            }
+          ],
+          "key": "effd13e860531d1c032cd8",
+          "lastModified": "2026-01-05T00:00:00Z",
+          "name": "Design File 1",
+          "role": "owner",
+          "version": "b22f25e737dd"
+        }
+      },
+      "page_size": 100,
+      "team_id": "certification-surface-figma"
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "users.me.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "users.me.get"
+        ],
+        "path_template": "/v1/me",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "figma.me",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "teams.projects.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "teams.projects.list"
+        ],
+        "path_template": "/v1/teams/{team_id}/projects",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "figma.team_projects",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "projects.files.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "projects.files.list"
+        ],
+        "path_template": "/v1/projects/{project_id}/files",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "figma.project_files",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "file_versions.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "file_versions.list"
+        ],
+        "path_template": "/v1/files/{file_key}/versions",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "figma.file_versions",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "file_comments.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "file_comments.list"
+        ],
+        "path_template": "/v1/files/{file_key}/comments",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "figma.file_comments",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "files.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "files.get"
+        ],
+        "path_template": "/v1/files/{file_key}",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "figma.file",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": "d47204dc9fc3d017d32a4fa2133729a410750b46b1f24901b92c68155d95436a",
+            "headers": [
+              [
+                "Content-Type",
+                "application/x-www-form-urlencoded"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "oauth.token.exchange",
+            "path_values": [],
+            "query_items": []
+          },
+          {
+            "body_sha256": "1df313e2febbb1cdf59805a881532ae1a3d98beab69d43dd4f4778e29f9bd182",
+            "headers": [
+              [
+                "Content-Type",
+                "application/x-www-form-urlencoded"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "oauth.token.refresh",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "oauth.token.exchange",
+          "oauth.token.refresh"
+        ],
+        "path_template": "/v1/oauth/token",
+        "quota_bucket": "oauth",
+        "quota_cost": 1.0,
+        "route_id": "figma.oauth_token",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.figma",
+      "evidence_id": "ingest.evidence.figma",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.figma",
+      "validation_runtime": {
+        "generator_group": "figma",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_figma_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_figma_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_figma_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_figma_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_figma",
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_figma_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.figma.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "file_snapshot",
+      "version",
+      "comment"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Design",
+      "connection_method": "OAuth",
+      "description": "Selected design files, durable snapshots, comments, and versions.",
+      "display_name_override": null,
+      "notice": "Figma OAuth starts with a durable snapshot and scheduled polling. Provider webhooks are an optional future acceleration, not required for correctness.",
+      "order": 13,
+      "setup_requirements": "A deployment administrator configures one customer-owned Figma OAuth app, then users paste the Figma file URLs to approve. The file allowlist is kept current by scheduled polling.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Backfill plus polling"
+      ]
+    },
+    "display_name": "Figma",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.figma:fetch_page_figma",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:figma_event",
+      "services.ingest.ingestion.idempotency:figma_file_snapshot"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "figma:event",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "figma:event",
+        "ingress_kind": "poll"
+      },
+      {
+        "channel": "figma:event",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_figma_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": "figma_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "figma_files",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref",
+          "webhook_secret_ref"
+        ],
+        "scope_column": "team_id",
+        "source": "figma",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "figma_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": "team_id",
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": "services.ingest.ingestion.installations:record_figma_onboarding_failure",
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "installation_id",
+      "file_key"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "figma",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.figma.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "figma:event",
+      "figma:file_snapshot"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.figma:handle_figma_event",
+      "services.ingest.ingestion.handlers.figma:handle_figma_event"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "OAuth client ID",
+          "registered redirect URL",
+          "approved design file scope"
+        ],
+        "agent_generates": [
+          "Figma OAuth client secret deployment ref",
+          "OAuth state HMAC key deployment ref",
+          "design file scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "deployment admin signs in and completes MFA when prompted",
+          "deployment admin creates or updates the private Figma OAuth app",
+          "deployment admin stores the Client Secret only in the customer-cloud secret manager",
+          "each user later approves Figma consent for explicitly selected design files"
+        ],
+        "settings_targets": [
+          "private OAuth app settings",
+          "OAuth redirect URL",
+          "read-only Figma document scopes"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "current_user:read",
+        "file_metadata:read",
+        "file_content:read",
+        "file_comments:read",
+        "file_versions:read"
+      ],
+      "discovery_target": "explicitly selected Figma design files, document structure, comments, and version history",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/integrations/figma/oauth/callback"
+      ],
+      "local_rehearsal": {
+        "callback_path": "/integrations/figma/oauth/callback",
+        "default_env": [
+          [
+            "FIGMA_OAUTH_ENABLED",
+            "1"
+          ],
+          [
+            "FIGMA_OAUTH_SCOPES",
+            "current_user:read,file_metadata:read,file_content:read,file_comments:read,file_versions:read"
+          ]
+        ],
+        "derived_env": [],
+        "env": [
+          "FIGMA_OAUTH_ENABLED",
+          "FIGMA_CLIENT_ID",
+          "FIGMA_CLIENT_SECRET_SECRET_REF",
+          "FIGMA_REDIRECT_URI",
+          "FIGMA_OAUTH_UI_BASE_URL",
+          "FIGMA_OAUTH_SCOPES",
+          "OAUTH_STATE_HMAC_KEY_SECRET_REF"
+        ],
+        "finalize_endpoint": null,
+        "install_endpoint": null,
+        "kind": "oauth_app",
+        "manual_gate_names": [
+          "figma_private_oauth_app_creation_or_update",
+          "figma_redirect_uri_registration",
+          "figma_deployment_secret_storage",
+          "figma_file_scoped_oauth_consent"
+        ],
+        "needs_public_url": true,
+        "preflight_endpoint": null,
+        "required_env": [
+          "FIGMA_OAUTH_ENABLED",
+          "FIGMA_CLIENT_ID",
+          "FIGMA_CLIENT_SECRET_SECRET_REF",
+          "FIGMA_REDIRECT_URI",
+          "FIGMA_OAUTH_UI_BASE_URL",
+          "FIGMA_OAUTH_SCOPES",
+          "OAUTH_STATE_HMAC_KEY_SECRET_REF"
+        ],
+        "runtime_components": [
+          "gateway",
+          "shard-fetch",
+          "reconciler",
+          "periodic-reconciler"
+        ],
+        "webhook_path": null
+      },
+      "method": "oauth",
+      "native_connect": {
+        "disconnect_path": "/integrations/figma/connect",
+        "finalize_path": null,
+        "kind": "figma_oauth_file_scoped_connect",
+        "payload_fields": [
+          "file_urls",
+          "return_path"
+        ],
+        "preflight_path": null,
+        "preflight_payload_fields": [],
+        "retry_path": "/integrations/figma/connect/retry",
+        "scope_aliases": [],
+        "start_path": "/integrations/figma/oauth/start",
+        "status_path": "/integrations/figma/connect/status"
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [],
+      "provider_console_url": "https://www.figma.com/developers/apps",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:figma_provider_handoff",
+      "provider_permissions": [
+        "current user identity read",
+        "file metadata read",
+        "file document content read",
+        "file comments read",
+        "file version history read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:figma_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "provider_callback",
+      "required_inputs": [
+        "file_urls"
+      ],
+      "required_refs": [
+        "figma_client_secret",
+        "oauth_state_hmac_key"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "teams.projects.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "projects.files.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "users.me.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "files.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "file_versions.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "file_comments.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "oauth.token.exchange",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "oauth.token.refresh",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "figma_api",
+        "operation_ids": [
+          "teams.projects.list",
+          "projects.files.list",
+          "users.me.get",
+          "files.get",
+          "file_versions.list",
+          "file_comments.list",
+          "oauth.token.exchange",
+          "oauth.token.refresh"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.figma:plan_shards_figma",
+    "provider_id": "figma",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.figma:reconcile_figma",
+    "runtime_identifiers": [
+      "webhook_id",
+      "file_key"
+    ],
+    "source_id": "figma",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "figma"
+  },
+  "source_id": "figma"
+}

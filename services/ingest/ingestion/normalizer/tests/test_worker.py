@@ -430,3 +430,32 @@ async def test_normalize_envelope_byte_stable_for_equal_input(
     )
     # Dict-equality follows but is asserted for failure-mode clarity.
     assert first_dict == second_dict
+
+
+async def test_raw_offset_commit_rejects_undelivered_normalized_output() -> None:
+    producer = MagicMock()
+    producer.flush = AsyncMock(return_value=1)
+
+    with pytest.raises(RuntimeError, match="undelivered=1"):
+        await worker_module._flush_normalized_before_commit(producer)
+
+    producer.flush.assert_awaited_once_with(10.0)
+
+
+async def test_raw_offset_commit_treats_rebalance_as_replayable_handoff() -> None:
+    producer = MagicMock()
+    producer.flush = AsyncMock(return_value=0)
+    consumer = MagicMock()
+    consumer.commit = AsyncMock(
+        side_effect=worker_module.CommitFailedError(),
+    )
+
+    committed = await worker_module._commit_normalized_boundary(
+        consumer,
+        producer,
+    )
+
+    assert committed is False
+    assert worker_module.get_metrics()["normalizer.commit_rebalanced"] == 1
+    producer.flush.assert_awaited_once_with(10.0)
+    consumer.commit.assert_awaited_once_with()

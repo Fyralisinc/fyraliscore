@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "fireflies",
+  "spec_hash": "2dcbf45b1e24fa090f7c80232b8192b554d2e6c2872bfcb6b99154128fef2f10",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "fireflies",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "b81d4c9aac1c7d310e2926197056dd20c1db07e97ea849098aebdbec812874c7"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_FIREFLIES"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_FIREFLIES"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "fireflies",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "b81d4c9aac1c7d310e2926197056dd20c1db07e97ea849098aebdbec812874c7"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "fireflies",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "b81d4c9aac1c7d310e2926197056dd20c1db07e97ea849098aebdbec812874c7"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "fireflies",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "b81d4c9aac1c7d310e2926197056dd20c1db07e97ea849098aebdbec812874c7"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

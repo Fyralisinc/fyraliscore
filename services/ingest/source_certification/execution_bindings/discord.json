@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "discord",
+  "spec_hash": "e23df6b904db7e925d643b429ea3c9af0a6b281b44e6da1fcd6a73aa30b6e231",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "discord",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "e5d0fe5afa549fdaa04ff0cc71a66ed98d0e87af7471b02ac2c957fa65dd4314"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_DISCORD"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_DISCORD"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "discord",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "e5d0fe5afa549fdaa04ff0cc71a66ed98d0e87af7471b02ac2c957fa65dd4314"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "discord",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "e5d0fe5afa549fdaa04ff0cc71a66ed98d0e87af7471b02ac2c957fa65dd4314"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "discord",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "e5d0fe5afa549fdaa04ff0cc71a66ed98d0e87af7471b02ac2c957fa65dd4314"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

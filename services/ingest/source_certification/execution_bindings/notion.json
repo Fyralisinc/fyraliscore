@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "notion",
+  "spec_hash": "1862c9cc35728fb3ca7c891dd577b8c9f765731016a7a687de3af3ec8fb24158",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "notion",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "06e74e4c45fc68e24a6cfb5905ae28288914bf2d505dece54f773fdcd4d84253"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_NOTION"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_NOTION"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "notion",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "06e74e4c45fc68e24a6cfb5905ae28288914bf2d505dece54f773fdcd4d84253"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "notion",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "06e74e4c45fc68e24a6cfb5905ae28288914bf2d505dece54f773fdcd4d84253"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "notion",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "06e74e4c45fc68e24a6cfb5905ae28288914bf2d505dece54f773fdcd4d84253"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

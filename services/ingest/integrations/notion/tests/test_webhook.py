@@ -145,6 +145,7 @@ async def test_page_event_fetches_and_shadow_writes(patch_client) -> None:
     body = json.loads(resp.body)
     assert body["handled"] == "event"
     assert body["shadow_write"] is True
+    assert body["inline_fallback"] is False
     assert client.requested_id == "page-123"
     assert client.closed is True
     assert client.install is not None
@@ -240,13 +241,28 @@ async def test_retry_later_propagates_without_success_ack(patch_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_data_plane_unwired_acks_without_write(patch_client) -> None:
-    """No notion_data_plane on app.state ⇒ shadow_write skipped, still 200."""
+async def test_data_plane_unwired_falls_back_to_uniform_inline_ingest(
+    patch_client,
+    monkeypatch,
+) -> None:
+    """No Notion data plane must persist inline before returning 200."""
     page = {"object": "page", "id": "p9"}
     client = _FakeClient(page=page)
     patch_client(client)
 
-    state = SimpleNamespace(notion_data_plane=None)
+    calls = []
+
+    async def _ingest(channel, payload, **kwargs):
+        calls.append((channel, payload, kwargs))
+
+    monkeypatch.setattr(webhook, "ingest", _ingest)
+    deps = SimpleNamespace(
+        pool=object(),
+        actor_repo=object(),
+        alias_repo=object(),
+        embedder=None,
+    )
+    state = SimpleNamespace(notion_data_plane=None, deps=deps)
     request = SimpleNamespace(app=SimpleNamespace(state=state))
 
     resp = await webhook.handle_notion_event(
@@ -255,4 +271,13 @@ async def test_data_plane_unwired_acks_without_write(patch_client) -> None:
         payload={"workspace_id": "ws", "type": "page.created", "entity": {"id": "p9", "type": "page"}},
     )
     assert resp.status_code == 200
-    assert json.loads(resp.body)["shadow_write"] is False
+    body = json.loads(resp.body)
+    assert body["shadow_write"] is False
+    assert body["inline_fallback"] is True
+    assert len(calls) == 1
+    channel, payload, kwargs = calls[0]
+    assert channel == "notion:object"
+    assert payload["id"] == "p9"
+    assert payload["_fyralis_workspace_id"] == "ws"
+    assert kwargs["tenant_id"] == TENANT
+    assert kwargs["pool"] is deps.pool

@@ -35,6 +35,7 @@ from .runtime import (
     InjectedDisconnect,
     LabRuntime,
     QuotaConfiguration,
+    QuotaRequirement,
     body_fingerprint,
     isoformat_z,
     sanitize_headers,
@@ -78,6 +79,7 @@ class QuotaConfigure(_StrictModel):
     source: str
     scope: str = Field(min_length=1, max_length=256)
     bucket: str = Field(min_length=1, max_length=128)
+    limit_id: str = Field(default="default", min_length=1, max_length=128)
     mode: Literal["disabled", "observe", "enforce"] = "enforce"
     capacity: float = Field(gt=0)
     refill_per_second: float = Field(default=0.0, ge=0)
@@ -139,6 +141,57 @@ def _problem(
         status_code=status_code,
         headers=headers,
     )
+
+
+def _quota_requirements(
+    *,
+    headers: Mapping[str, str],
+    scope: str,
+    bucket: str,
+    default_cost: float,
+) -> tuple[QuotaRequirement, ...]:
+    """Decode the test-only atomic quota vector used by certification load."""
+
+    raw = headers.get("x-provider-lab-quota-requirements")
+    if raw is None:
+        return (
+            QuotaRequirement(
+                scope=scope,
+                bucket=bucket,
+                cost=default_cost,
+            ),
+        )
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "X-Provider-Lab-Quota-Requirements must be valid JSON"
+        ) from exc
+    if not isinstance(decoded, list) or not 1 <= len(decoded) <= 32:
+        raise ValueError(
+            "X-Provider-Lab-Quota-Requirements must contain 1..32 items"
+        )
+    requirements: list[QuotaRequirement] = []
+    fields = {"scope", "bucket", "limit_id", "cost"}
+    for index, item in enumerate(decoded):
+        if not isinstance(item, Mapping) or set(item) != fields:
+            raise ValueError(
+                "quota requirement "
+                f"{index} fields must equal {sorted(fields)}"
+            )
+        if item["bucket"] != bucket:
+            raise ValueError(
+                "quota requirement bucket must match the routed quota bucket"
+            )
+        requirements.append(
+            QuotaRequirement(
+                scope=item["scope"],  # type: ignore[arg-type]
+                bucket=item["bucket"],  # type: ignore[arg-type]
+                limit_id=item["limit_id"],  # type: ignore[arg-type]
+                cost=item["cost"],  # type: ignore[arg-type]
+            )
+        )
+    return tuple(requirements)
 
 
 def _client_is_loopback(request: Request) -> bool:
@@ -515,6 +568,7 @@ def build_provider_lab_app(
                     source=command.source,
                     scope=command.scope,
                     bucket=command.bucket,
+                    limit_id=command.limit_id,
                     mode=command.mode,
                     capacity=command.capacity,
                     refill_per_second=command.refill_per_second,
@@ -538,8 +592,14 @@ def build_provider_lab_app(
         source: str,
         bucket: str,
         scope: str = Query(..., min_length=1, max_length=256),
+        limit_id: str = Query(default="default", min_length=1, max_length=128),
     ) -> Response:
-        removed = runtime.quotas.remove(source, scope, bucket)
+        removed = runtime.quotas.remove(
+            source,
+            scope,
+            bucket,
+            limit_id,
+        )
         if not removed:
             return _materialize(
                 _problem(
@@ -740,12 +800,37 @@ def build_provider_lab_app(
 
         quota = None
         if route.quota_bucket is not None:
-            quota = runtime.quotas.check(
-                source=source,
-                scope=scope,
-                bucket=route.quota_bucket,
-                cost=route.quota_cost,
-            )
+            try:
+                quota_requirements = _quota_requirements(
+                    headers=headers,
+                    scope=scope,
+                    bucket=route.quota_bucket,
+                    default_cost=route.quota_cost,
+                )
+                quota = runtime.quotas.check_many(
+                    source=source,
+                    requirements=quota_requirements,
+                )
+            except (TypeError, ValueError) as exc:
+                provider_response = _problem(
+                    status_code=400,
+                    code="invalid_quota_requirements",
+                    message=str(exc),
+                )
+                return _complete_request(
+                    runtime=runtime,
+                    request=request,
+                    source=source,
+                    route_id=route.route_id,
+                    scope=scope,
+                    path=path,
+                    query_items=query_items,
+                    headers=headers,
+                    request_body=body,
+                    started_at=started_at,
+                    provider_response=provider_response,
+                    outcome="invalid_quota_requirements",
+                )
             if not quota.allowed:
                 provider_response = _problem(
                     status_code=429,
@@ -755,6 +840,7 @@ def build_provider_lab_app(
                         "source": source,
                         "scope": scope,
                         "bucket": route.quota_bucket,
+                        "constraint_count": len(quota_requirements),
                     },
                     headers=quota.headers,
                 )

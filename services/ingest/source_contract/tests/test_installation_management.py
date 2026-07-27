@@ -142,7 +142,7 @@ _GOLDEN_MANAGEMENT_ROWS = {
     "jira": (
         "jira_installations",
         "base_url",
-        ("secret_ref", "webhook_secret_ref"),
+        ("secret_ref",),
         "jira_projects",
         "jira_installation_id",
         "base_url",
@@ -212,12 +212,12 @@ _GOLDEN_MANAGEMENT_ROWS = {
     "miro": (
         "miro_installations",
         "org_id",
-        ("secret_ref", "webhook_secret_ref"),
+        ("secret_ref",),
         "miro_boards",
         "miro_installation_id",
         "base_url",
         (),
-        "org_id",
+        None,
         None,
         None,
         None,

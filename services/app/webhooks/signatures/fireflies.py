@@ -9,7 +9,7 @@ knobs (`_PREFIX`, `_DIGEST_ENCODING`) keep the GitHub-style default
 delivery. The header name is confirmed.
 
 The per-tenant signing secret(s) are resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='fireflies') the seed/onboarding step registers. The verifier
 loops over ALL active secrets so a rotation (two valid secrets in flight)
 verifies.

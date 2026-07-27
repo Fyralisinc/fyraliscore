@@ -1,0 +1,667 @@
+{
+  "implementation_sha256": {
+    "services.app.gateway.finance_router": "6537167042aadcacf629ffb2947d3585825e26021635949e3adbc78b3843c4ef",
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.brex": "41297c1d53560a06f28f9ee6e365fb8712b52a1d43f35f3d262372d9e8f0dcfb",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.brex": "1a1d3fed797c17986ed72f531b69e53355d2a58f0f8d16788d74470299bc1117",
+    "services.ingest.ingestion.handlers.brex": "b71038f02f9b797320116af875dddae573e18aa6f5c9e1747efd760bf25cfff4",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.brex": "7d7f334a308b841a68a4328477b861d36b73b8ca3538a23e5da2e0dedcdde6eb",
+    "services.ingest.ingestion.reconcilers.brex": "7e686aa699695e3c614e661385b820f0cee79f77755bc5d7bf1165995a5cd61a",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.brex": "e9fa0c2641442bf33534131c3dae8df48b37ed3813e9d7c3a7bef106f34a0d04",
+    "services.ingest.integrations.brex.client": "a739152910fa4cce92d8f4994adb02ac64de7bb46c6c87fe97cfb8ee6ae21e1c",
+    "services.ingest.integrations.brex.metrics": "5277e11e11a2ccf682b796366508bef37beef2af63c7843022de37e810e32004",
+    "services.ingest.integrations.brex.oauth": "c8749cbf0152cfeb7c7168e34e50f280acba48a635c6b298eaee40ac80eed635",
+    "services.ingest.integrations.brex.onboarding": "bd78a8c9a7d772982e861c41389e7b580f8ccd7055ae8574f51483c56566bae7",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Brex API",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "api_token"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Brex",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "accounts.cash.list",
+      "accounts.card.list",
+      "transactions.cash.list",
+      "transactions.card.list"
+    ],
+    "outbound_endpoint_names": [
+      "brex_api"
+    ],
+    "provider_id": "brex",
+    "source_ids": [
+      "brex"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "brex:transaction",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "brex",
+        "route_path": "/webhooks/brex",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "brex",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_brex",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.brex:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "account_order": [
+        "acct_7402147366e7caea"
+      ],
+      "accounts": {
+        "acct_7402147366e7caea": {
+          "availableBalance": 10465.48,
+          "createdAt": "2026-01-05T00:00:00Z",
+          "currentBalance": 10465.48,
+          "id": "acct_7402147366e7caea",
+          "kind": "checking",
+          "legalBusinessName": "Acme Robotics, Inc.",
+          "name": "Operating Checking 1",
+          "nickname": "Acct 1",
+          "status": "active",
+          "transactions": [
+            {
+              "accountId": "acct_7402147366e7caea",
+              "amount": 737.96,
+              "bankDescription": "CREDIT Counterparty 9f8e92",
+              "brexCategory": "Revenue",
+              "counterpartyId": "cp_10dba1f83d",
+              "counterpartyName": "Counterparty 9f8e92",
+              "createdAt": "2026-01-05T23:00:00Z",
+              "details": {
+                "accountNumber": "bd0c4c356e7a",
+                "rail": "ach",
+                "routingNumber": "dd3bfc3ac"
+              },
+              "externalMemo": "memo-0",
+              "id": "txn_ba05f4eb4e5e4c7af789",
+              "kind": "credit",
+              "note": "transaction 0 on acct_7402147366e7caea",
+              "postedAt": "2026-01-05T23:00:00Z",
+              "status": "sent"
+            },
+            {
+              "accountId": "acct_7402147366e7caea",
+              "amount": -367.29,
+              "bankDescription": "DEBIT Counterparty 63f8b5",
+              "brexCategory": "Vendors",
+              "counterpartyId": "cp_d8b69ee312",
+              "counterpartyName": "Counterparty 63f8b5",
+              "createdAt": "2026-01-05T22:00:00Z",
+              "details": {
+                "accountNumber": "379ed7aacda3",
+                "rail": "wire",
+                "routingNumber": "53aa7d608"
+              },
+              "externalMemo": "memo-1",
+              "id": "txn_d425f07cd0a55186a391",
+              "kind": "debit",
+              "note": "transaction 1 on acct_7402147366e7caea",
+              "postedAt": "2026-01-05T22:00:00Z",
+              "status": "posted"
+            },
+            {
+              "accountId": "acct_7402147366e7caea",
+              "amount": 829.04,
+              "bankDescription": "CREDIT Counterparty 2459d3",
+              "brexCategory": "Revenue",
+              "counterpartyId": "cp_e7e3d74c7e",
+              "counterpartyName": "Counterparty 2459d3",
+              "createdAt": "2026-01-05T21:00:00Z",
+              "details": {
+                "accountNumber": "3c6b02fbd30b",
+                "rail": "ach",
+                "routingNumber": "51253164d"
+              },
+              "externalMemo": "memo-2",
+              "id": "txn_c92c34b1c0022ba28509",
+              "kind": "credit",
+              "note": "transaction 2 on acct_7402147366e7caea",
+              "postedAt": "2026-01-05T21:00:00Z",
+              "status": "pending"
+            },
+            {
+              "accountId": "acct_7402147366e7caea",
+              "amount": -59.3,
+              "bankDescription": "DEBIT Counterparty bc6d51",
+              "brexCategory": "Vendors",
+              "counterpartyId": "cp_14b14c8278",
+              "counterpartyName": "Counterparty bc6d51",
+              "createdAt": "2026-01-05T20:00:00Z",
+              "details": {
+                "accountNumber": "4e3a1caad40a",
+                "rail": "wire",
+                "routingNumber": "47526abda"
+              },
+              "externalMemo": "memo-3",
+              "id": "txn_8277e9e4350c487da226",
+              "kind": "debit",
+              "note": "transaction 3 on acct_7402147366e7caea",
+              "postedAt": "2026-01-05T20:00:00Z",
+              "status": "sent"
+            }
+          ],
+          "type": "checking"
+        }
+      },
+      "page_size": 100
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "accounts.cash.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "accounts.cash.list"
+        ],
+        "path_template": "/v2/accounts/cash",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "brex.cash_accounts",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "accounts.card.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "accounts.card.list"
+        ],
+        "path_template": "/v2/accounts/card",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "brex.card_accounts",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "transactions.cash.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "transactions.cash.list"
+        ],
+        "path_template": "/v2/transactions/cash/{account_id}",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "brex.cash_transactions",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "transactions.card.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "transactions.card.list"
+        ],
+        "path_template": "/v2/transactions/card/primary",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "brex.card_transactions",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [
+      "finance_testing"
+    ],
+    "certification": {
+      "canary_id": "ingest.canary.brex",
+      "evidence_id": "ingest.evidence.brex",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.brex",
+      "validation_runtime": {
+        "generator_group": "brex",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_brex_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_brex_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_brex_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_brex_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_brex",
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_brex_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.brex.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "account",
+      "balance_snapshot",
+      "transaction"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Finance",
+      "connection_method": "API token",
+      "description": "Corporate cards, cash, and transactions.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 19,
+      "setup_requirements": "Brex organization ID, account IDs, API token, webhook secret if live events are enabled, transaction scope.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Brex",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.brex:fetch_page_brex",
+    "finance_testing_binding": "services.app.gateway.finance_router:build_brex_finance_testing",
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:brex_transaction",
+      "services.ingest.ingestion.idempotency:brex_balance"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "brex:transaction",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "brex:transaction",
+        "ingress_kind": "poll"
+      },
+      {
+        "channel": "brex:transaction",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_brex_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": "brex_installation_id",
+        "entity_status_columns": [
+          "account_id",
+          "account_name",
+          "state"
+        ],
+        "entity_table": "brex_accounts",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref",
+          "webhook_secret_ref"
+        ],
+        "scope_column": "organization_id",
+        "source": "brex",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "brex_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": "organization_id",
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "organization_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "brex",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.brex.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "brex:transaction"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.brex:handle_brex_transaction"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "organization id",
+          "account ids",
+          "supported card and transaction scopes"
+        ],
+        "agent_generates": [
+          "webhook verifier ref",
+          "finance entity scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin creates or approves a least-privilege service credential"
+        ],
+        "settings_targets": [
+          "developer API settings",
+          "webhook settings",
+          "organization settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "accounts",
+        "transactions",
+        "cards"
+      ],
+      "discovery_target": "cash accounts, cards, and transaction scopes",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/brex"
+      ],
+      "local_rehearsal": null,
+      "method": "api_token",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/brex/connect/finalize",
+        "kind": "api_token_native_connect",
+        "payload_fields": [
+          "api_token",
+          "base_url",
+          "account_ids",
+          "organization_id",
+          "webhook_secret"
+        ],
+        "preflight_path": "/integrations/brex/connect/preflight",
+        "preflight_payload_fields": [
+          "api_token",
+          "base_url"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "organization_id",
+        "base_url",
+        "account_ids",
+        "webhook_secret"
+      ],
+      "provider_console_url": "https://developer.brex.com/",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "accounts read",
+        "transactions read",
+        "cards read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "api_token"
+      ],
+      "required_refs": [
+        "api_token",
+        "webhook_secret"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "accounts.cash.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "accounts.card.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "transactions.cash.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "transactions.card.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "brex_api",
+        "operation_ids": [
+          "accounts.cash.list",
+          "accounts.card.list",
+          "transactions.cash.list",
+          "transactions.card.list"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.brex:plan_shards_brex",
+    "provider_id": "brex",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.brex:reconcile_brex",
+    "runtime_identifiers": [
+      "installation_id",
+      "account_id"
+    ],
+    "source_id": "brex",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "brex"
+  },
+  "source_id": "brex"
+}

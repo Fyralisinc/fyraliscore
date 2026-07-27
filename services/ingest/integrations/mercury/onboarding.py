@@ -51,10 +51,17 @@ async def finalize_install(
     `accounts` is the resolved set of accounts to backfill (enumerate via
     MercuryClient.list_accounts at seed time); each dict carries at least
     ``account_id`` and optionally ``account_name`` / ``account_kind``. Returns
-    the mercury_installations id. Idempotent on (tenant_id, base_url) and per
-    (install, account_id).
+    the mercury_installations id. Idempotent on the exact
+    ``(tenant_id, organization_id)`` provider scope when it is known, with
+    ``(tenant_id, base_url)`` retained only for unresolved legacy installs, and
+    per ``(install, account_id)``.
     """
     base_url = base_url.rstrip("/")
+    organization_id = (
+        organization_id.strip()
+        if organization_id and organization_id.strip()
+        else None
+    )
     # Dedup accounts defensively on the natural key.
     seen: set[str] = set()
     deduped: list[dict] = []
@@ -71,8 +78,13 @@ async def finalize_install(
                 id, tenant_id, base_url, secret_ref,
                 organization_id, webhook_secret_ref
             ) VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (tenant_id, base_url) DO UPDATE
-                SET secret_ref = COALESCE(EXCLUDED.secret_ref, mercury_installations.secret_ref),
+            ON CONFLICT (
+                tenant_id,
+                (organization_id IS NULL),
+                (COALESCE(organization_id, base_url))
+            ) DO UPDATE
+                SET base_url = EXCLUDED.base_url,
+                    secret_ref = COALESCE(EXCLUDED.secret_ref, mercury_installations.secret_ref),
                     organization_id = COALESCE(EXCLUDED.organization_id, mercury_installations.organization_id),
                     webhook_secret_ref = COALESCE(
                         EXCLUDED.webhook_secret_ref, mercury_installations.webhook_secret_ref),

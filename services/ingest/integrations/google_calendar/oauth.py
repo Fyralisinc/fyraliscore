@@ -28,10 +28,12 @@ Flow:
         → 200 OK with the new google_calendar_installations.id
 
 No OAuth state token is needed (the user never bounces through Google for
-consent — DWD is pre-granted in the Admin Console). Calendar is poll-only (no
-Pub/Sub topics or push watches), so unlike Gmail there is no out-of-band
-provisioning step: resolution + persistence complete inline and the response
-carries the resolved calendar count.
+consent — DWD is pre-granted in the Admin Console). Resolution + persistence
+complete inline and the response carries the resolved calendar count. After
+the initial cursor is seeded, the separate watch scheduler registers and renews
+native ``events.watch`` channels for the contract-owned
+``/webhooks/google_calendar/push`` endpoint; the delta poller remains the
+liveness backstop.
 """
 from __future__ import annotations
 

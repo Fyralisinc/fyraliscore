@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "figma",
+  "spec_hash": "85a3b1f66dd932c39ce40d0a300e75574687ea45ef734d12ab34684459ca7a72",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "figma",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "3a0d1e984f2b0452ac09ac8c724465b65f3dc94fce253936658ca5e87850f355"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_FIGMA"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_FIGMA"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "figma",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "3a0d1e984f2b0452ac09ac8c724465b65f3dc94fce253936658ca5e87850f355"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "figma",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "3a0d1e984f2b0452ac09ac8c724465b65f3dc94fce253936658ca5e87850f355"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "figma",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "3a0d1e984f2b0452ac09ac8c724465b65f3dc94fce253936658ca5e87850f355"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

@@ -4,8 +4,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Mapping
 
 from services.ingest.source_certification.catalog import (
@@ -14,6 +15,8 @@ from services.ingest.source_certification.catalog import (
 from services.ingest.source_certification.models import (
     CertificationDecision,
     CertificationInput,
+    CertificationState,
+    LoadSuite,
     SourceCertificationSpec,
     SuiteResult,
 )
@@ -59,8 +62,25 @@ _REQUIRED_REPORT_METRICS = frozenset(
         "search_tolerance_ratio",
         "offered_rate",
         "stable_rate",
+        "tenants",
+        "installations_per_tenant",
+        "replicas",
     }
 )
+_REQUIRED_LOAD_PROVENANCE_METRICS = frozenset(
+    {
+        "clock_mode_wall",
+        "lab_calibration_elapsed_seconds",
+        "operation_mix_coverage_ratio",
+        "pipeline_e2e_proven",
+        "promotion_eligible",
+        "quota_config_verified",
+        "step_seconds",
+        "wall_clock_duration_ratio",
+    }
+)
+MAX_CERTIFICATION_RESULT_AGE = timedelta(hours=24)
+CERTIFICATION_CLOCK_SKEW = timedelta(minutes=5)
 
 
 def _metrics(result: SuiteResult) -> dict[str, float]:
@@ -123,6 +143,7 @@ def _suite_failures(
     label: str,
     suites: tuple[SuiteResult, ...],
     *,
+    declarations: Mapping[str, LoadSuite],
     provider_safe: bool = False,
     ceiling: bool = False,
     fault_recovery: bool = False,
@@ -145,6 +166,15 @@ def _suite_failures(
                 f"{prefix} is missing report metrics: "
                 f"{', '.join(missing_metrics)}"
             )
+        if provider_safe or ceiling:
+            missing_provenance = sorted(
+                _REQUIRED_LOAD_PROVENANCE_METRICS - metrics.keys(),
+            )
+            if missing_provenance:
+                failures.append(
+                    f"{prefix} is missing load provenance metrics: "
+                    f"{', '.join(missing_provenance)}"
+                )
         if not suite.limiting_component:
             failures.append(f"{prefix}.limiting_component is missing")
         for name in _ZERO_METRICS:
@@ -158,6 +188,10 @@ def _suite_failures(
             failures.append(f"{prefix}.lab_p99_timeout_ratio must be <= 0.1")
         if metrics.get("warmup_seconds", 0) < 120:
             failures.append(f"{prefix}.warmup_seconds must be >= 120")
+        if (
+            provider_safe or ceiling
+        ) and metrics.get("step_seconds", 0) < 120:
+            failures.append(f"{prefix}.step_seconds must be >= 120")
         if metrics.get("validation_seconds", 0) < 900:
             failures.append(f"{prefix}.validation_seconds must be >= 900")
         if metrics.get("soak_seconds", 0) < 3_600:
@@ -170,12 +204,150 @@ def _suite_failures(
             failures.append(f"{prefix}.offered_rate must be > 0")
         if metrics.get("stable_rate", 0) <= 0:
             failures.append(f"{prefix}.stable_rate must be > 0")
+        declaration = declarations.get(suite.kind)
+        if declaration is not None:
+            for metric_name in (
+                "tenants",
+                "installations_per_tenant",
+                "replicas",
+            ):
+                measured = metrics.get(metric_name)
+                expected = getattr(declaration, metric_name)
+                if measured != expected:
+                    failures.append(
+                        f"{prefix}.{metric_name} must equal declared "
+                        f"topology value {expected}"
+                    )
+        if provider_safe or ceiling:
+            if metrics.get("clock_mode_wall") != 1:
+                failures.append(f"{prefix}.clock_mode_wall must equal 1")
+            if metrics.get("promotion_eligible") != 1:
+                failures.append(f"{prefix}.promotion_eligible must equal 1")
+            if metrics.get("pipeline_e2e_proven") != 1:
+                failures.append(f"{prefix}.pipeline_e2e_proven must equal 1")
+            if metrics.get("operation_mix_coverage_ratio") != 1:
+                failures.append(
+                    f"{prefix}.operation_mix_coverage_ratio must equal 1",
+                )
+            if metrics.get("wall_clock_duration_ratio", 0) < 0.99:
+                failures.append(
+                    f"{prefix}.wall_clock_duration_ratio must be >= 0.99",
+                )
+            if metrics.get("lab_calibration_elapsed_seconds", 0) < 29.7:
+                failures.append(
+                    f"{prefix}.lab_calibration_elapsed_seconds must be >= 29.7",
+                )
+        if provider_safe and metrics.get("quota_config_verified") != 1:
+            failures.append(
+                f"{prefix}.quota_config_verified must equal 1",
+            )
         if provider_safe and metrics.get("quota_utilization_ratio", 0) < 0.9:
             failures.append(f"{prefix}.quota_utilization_ratio must be >= 0.9")
         if ceiling and metrics.get("headroom_ratio", 0) < 1:
             failures.append(f"{prefix}.headroom_ratio must be >= 1")
         if fault_recovery and metrics.get("recovered_faults_ratio", 0) < 1:
             failures.append(f"{prefix}.recovered_faults_ratio must equal 1")
+    return failures
+
+
+def _temporal_failures(
+    supplied: CertificationInput,
+    *,
+    evaluated_at: datetime,
+) -> list[str]:
+    """Reject replayed or future-dated positive execution claims."""
+
+    failures: list[str] = []
+    earliest = evaluated_at - MAX_CERTIFICATION_RESULT_AGE
+    latest = evaluated_at + CERTIFICATION_CLOCK_SKEW
+    for label, suites in (
+        ("provider_safe", supplied.provider_safe_suites),
+        ("fyralis_ceiling", supplied.fyralis_ceiling_suites),
+        ("fault_recovery", supplied.fault_recovery_suites),
+    ):
+        for suite in suites:
+            if suite.state != "passed":
+                continue
+            prefix = f"{label}.{suite.kind}"
+            if suite.started_at is None or suite.completed_at is None:
+                failures.append(
+                    f"{prefix} requires started_at and completed_at"
+                )
+                continue
+            started = suite.started_at.astimezone(timezone.utc)
+            completed = suite.completed_at.astimezone(timezone.utc)
+            if started < earliest or completed < earliest:
+                failures.append(
+                    f"{prefix} timestamps are older than 24 hours"
+                )
+            if started > latest or completed > latest:
+                failures.append(
+                    f"{prefix} timestamps are in the future"
+                )
+
+    canary = supplied.canary
+    if canary.state == "passed":
+        if canary.tested_at is None:
+            failures.append("real-provider canary tested_at is missing")
+        else:
+            tested_at = canary.tested_at.astimezone(timezone.utc)
+            if tested_at < earliest:
+                failures.append(
+                    "real-provider canary tested_at is older than 24 hours"
+                )
+            if tested_at > latest:
+                failures.append(
+                    "real-provider canary tested_at is in the future"
+                )
+    return failures
+
+
+def _envelope_consistency_failures(
+    provider_safe_suites: tuple[SuiteResult, ...],
+    fyralis_ceiling_suites: tuple[SuiteResult, ...],
+) -> list[str]:
+    """Cross-check measured ceiling rates against provider-safe rates."""
+
+    provider_by_kind: dict[str, SuiteResult] = {
+        suite.kind: suite for suite in provider_safe_suites
+    }
+    ceiling_by_kind: dict[str, SuiteResult] = {
+        suite.kind: suite for suite in fyralis_ceiling_suites
+    }
+    failures: list[str] = []
+    for kind in sorted(_REQUIRED_SUITE_KINDS):
+        provider = provider_by_kind.get(kind)
+        ceiling = ceiling_by_kind.get(kind)
+        if provider is None or ceiling is None:
+            continue
+        provider_rate = _metrics(provider).get("stable_rate")
+        ceiling_metrics = _metrics(ceiling)
+        ceiling_rate = ceiling_metrics.get("stable_rate")
+        headroom = ceiling_metrics.get("headroom_ratio")
+        if (
+            provider_rate is None
+            or provider_rate <= 0
+            or ceiling_rate is None
+            or ceiling_rate <= 0
+            or headroom is None
+        ):
+            continue
+        prefix = f"fyralis_ceiling.{kind}"
+        if ceiling_rate < provider_rate:
+            failures.append(
+                f"{prefix}.stable_rate must be >= provider_safe.{kind}.stable_rate"
+            )
+        expected_headroom = ceiling_rate / provider_rate
+        if not math.isclose(
+            headroom,
+            expected_headroom,
+            rel_tol=1e-6,
+            abs_tol=1e-9,
+        ):
+            failures.append(
+                f"{prefix}.headroom_ratio must equal ceiling stable_rate / "
+                f"provider-safe stable_rate ({expected_headroom:.12g})"
+            )
     return failures
 
 
@@ -202,6 +374,12 @@ def evaluate_certification(
     )
     if surface is None or surface.schema_sha256 is None:
         failures.append("used API surface has no pinned schema checksum")
+    declarations: dict[str, LoadSuite] = {
+        suite.kind: suite for suite in spec.load_suites
+    }
+    failures.extend(
+        _temporal_failures(supplied, evaluated_at=evaluated_at)
+    )
 
     if supplied.local_correctness != "passed":
         failures.append(
@@ -222,6 +400,7 @@ def evaluate_certification(
         _suite_failures(
             "provider_safe",
             supplied.provider_safe_suites,
+            declarations=declarations,
             provider_safe=True,
         )
     )
@@ -229,6 +408,7 @@ def evaluate_certification(
         _suite_failures(
             "fyralis_ceiling",
             supplied.fyralis_ceiling_suites,
+            declarations=declarations,
             ceiling=True,
         )
     )
@@ -236,7 +416,14 @@ def evaluate_certification(
         _suite_failures(
             "fault_recovery",
             supplied.fault_recovery_suites,
+            declarations=declarations,
             fault_recovery=True,
+        )
+    )
+    failures.extend(
+        _envelope_consistency_failures(
+            supplied.provider_safe_suites,
+            supplied.fyralis_ceiling_suites,
         )
     )
 
@@ -247,6 +434,26 @@ def evaluate_certification(
         failures.append("canary API version differs from certification spec")
     if canary.account_type != spec.canary.account_type:
         failures.append("canary account type differs from certification spec")
+    if spec.canary.unclassified_operations:
+        failures.append(
+            "canary operation mutability is unclassified: "
+            + ", ".join(spec.canary.unclassified_operations)
+        )
+    if canary.request_count > spec.canary.max_requests:
+        failures.append(
+            "canary request count exceeds the declared low-rate maximum"
+        )
+    if canary.mutation_actions != spec.canary.mutating_actions:
+        failures.append(
+            "canary mutation summary differs from all declared mutating "
+            "operation contracts"
+        )
+    if canary.mutation_actions and canary.cleanup_state != "passed":
+        failures.append("mutating canary cleanup did not pass")
+    if not canary.mutation_actions and canary.cleanup_state != "not_required":
+        failures.append(
+            "read-only canary cleanup state must be not_required"
+        )
     failures.extend(
         _coverage_failures(
             "real-provider canary operation",
@@ -264,7 +471,7 @@ def evaluate_certification(
     if supplied.todos:
         failures.append(f"TODOs: {', '.join(supplied.todos)}")
 
-    state = "passed" if not failures else "blocked"
+    state: CertificationState = "passed" if not failures else "blocked"
     artifact = {
         "source_id": spec.source_id,
         "spec_version": spec.spec_version,

@@ -9,10 +9,10 @@
       "kind": "documented",
       "uri": "https://developer.deel.com/docs/welcome",
       "api_version": "Deel API",
-      "schema_sha256": null,
+      "schema_sha256": "1f02935d6b557e63f3510bcc84e8a12856602ce7dd648647e6462d92abf4b87b",
       "quota_uri": null,
       "verified_at": null,
-      "notes": "Pending P0 versioned-schema lock and reviewer verification."
+      "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."
     },
     {
       "behavior_id": "quota_policy",

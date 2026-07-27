@@ -40,6 +40,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import FirefliesApiError
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.fireflies.client import FirefliesClient
 from services.ingest.integrations.fireflies.onboarding import (
     finalize_install,
@@ -53,16 +54,10 @@ from services.ingest.integrations.provider_transport import (
 log = structlog.get_logger("integrations.fireflies.oauth")
 
 
-# Default Fireflies API host for the connect-wizard UI fallback only (an operator
-# may override per-install via the `base_url` field). The canonical default + env
-# override live in `lib/integrations/endpoints.py` (`fireflies_api`).
 # CONFIRMED (docs.fireflies.ai): the API is GraphQL — a single POST endpoint at
 # https://api.fireflies.ai/graphql. Auth is `Authorization: Bearer <api_key>`
 # (the key is issued in the Fireflies app's Integrations → Developer settings;
 # there is NO OAuth bounce — the connect wizard takes the API key directly).
-_DEFAULT_BASE_URL = "https://api.fireflies.ai"
-
-
 router = APIRouter(prefix="/integrations/fireflies", tags=["fireflies"])
 
 
@@ -90,11 +85,12 @@ def _secret_store_from_request(request: Request) -> Any:
 
 def _require_token(body: dict[str, Any]) -> tuple[str, str]:
     api_token = (body.get("api_token") or "").strip()
-    base_url = (body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     if not api_token:
         raise HTTPException(status_code=400, detail="api_token is required")
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="fireflies_api",
+    )
     return api_token, base_url
 
 

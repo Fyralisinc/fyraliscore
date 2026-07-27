@@ -1,0 +1,655 @@
+{
+  "implementation_sha256": {
+    "scripts.run_signal_gateway_worker": "80bb1badae3941c93e3fc92885ec5258157812a566352a0b711af306a0b3a4ad",
+    "services.ingest.ingestion.fetchers.signal": "201786a8e37bd59db51a69f54c2a014ee2b27b575ba6aac63bf58d7d000afd80",
+    "services.ingest.ingestion.handlers.signal": "48ce669212a4cc7ed0cec55779ca93a90b07c2f855a2474ed49597bf2fea2228",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.signal": "1c2a91f0c947f4fadda6e5157079cf889aaedcf5f5b59c0fb7c22100849da2da",
+    "services.ingest.ingestion.reconcilers.signal": "e09e88d695decbca72d646306df4a4e055190d24d7f6f6504ac904ce2a839d17",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.signal": "57bd3bba836a10cd4bf0eacb6e70da3cc718bca48dfde72044f6f713df459d2d",
+    "services.ingest.integrations.signal.client": "61902bd79bb28d72dfab13dc832af63bf85ea2eaf4ce70365521dee0586c07cb",
+    "services.ingest.integrations.signal.gateway": "eabf38c04335374df7844bc202646c1cabd77db35ab7dd263a581a233b946283",
+    "services.ingest.integrations.signal.gateway.dispatch": "54c24d5a504ee4f0fa36e430f29d48b6e3e1d7fe4e2b6f86f0cacaf87f75ab6e",
+    "services.ingest.integrations.signal.gateway.worker": "1a2edefd7a539dbd4c65218c9247234ff355351f8f18d803ced2b8fbe9201dbb",
+    "services.ingest.integrations.signal.oauth": "14a69e9c5f11ce0297221d5d467a537647691ed6d1bc56249f82dfa2ef1c2373",
+    "services.ingest.integrations.signal.onboarding": "2764a73efae41c34d99d5d981eba533ec4c769215f4505783dffbeea3af222cb",
+    "services.ingest.integrations.signal.records": "7502efb3e934f2ff7e34974098adeeb2700609a770c4d12ce806f04b0dfc8e47",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_cd": "41c4c2a2e3d41386cae397e018f3cd519f08baae2bdf5e148c00e36c3df41929",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "signal-cli JSON-RPC",
+  "provider_contract": {
+    "aliases": [
+      "signal_messenger"
+    ],
+    "auth_strategies": [
+      "linked_device_session"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Signal",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "list_groups",
+      "receive_poll",
+      "subscribe_receive",
+      "unsubscribe_receive",
+      "events_stream"
+    ],
+    "outbound_endpoint_names": [],
+    "provider_id": "signal",
+    "source_ids": [
+      "signal"
+    ],
+    "webhook_ingresses": []
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "page_size": 100,
+      "thread_order": [
+        67428941621515
+      ],
+      "threads": {
+        "67428941621515": {
+          "messages": [
+            {
+              "date": 1767571200,
+              "edit_date": null,
+              "from_id": {
+                "user_id": 771616469549
+              },
+              "id": 1,
+              "message": "message 1 in thread 67428941621515",
+              "out": false,
+              "sender_username": "user0_5e2aa"
+            },
+            {
+              "date": 1767574800,
+              "edit_date": null,
+              "from_id": {
+                "user_id": 443013467974
+              },
+              "id": 2,
+              "message": "message 2 in thread 67428941621515",
+              "out": false,
+              "sender_username": "user1_5e2aa"
+            },
+            {
+              "date": 1767578400,
+              "edit_date": null,
+              "from_id": {
+                "user_id": 775929025732
+              },
+              "id": 3,
+              "message": "message 3 in thread 67428941621515",
+              "out": false,
+              "sender_username": "user2_5e2aa"
+            },
+            {
+              "date": 1767582000,
+              "edit_date": null,
+              "from_id": {
+                "user_id": 771616469549
+              },
+              "id": 4,
+              "message": "message 4 in thread 67428941621515",
+              "out": false,
+              "sender_username": "user0_5e2aa"
+            },
+            {
+              "date": 1767585600,
+              "edit_date": null,
+              "from_id": {
+                "user_id": 443013467974
+              },
+              "id": 5,
+              "message": "message 5 in thread 67428941621515",
+              "out": false,
+              "sender_username": "user1_5e2aa"
+            }
+          ],
+          "thread_id": 67428941621515,
+          "thread_kind": "direct",
+          "title": "Thread 1 (certification-surface-signal)"
+        }
+      }
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": "8ed7e7311ce229c5113bf051c0322b750222a04e2c6cb5b6811cc9ccceb234bc",
+            "headers": [
+              [
+                "Authorization",
+                "Session provider-lab"
+              ],
+              [
+                "Content-Type",
+                "application/json"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "list_groups",
+            "path_values": [],
+            "query_items": []
+          },
+          {
+            "body_sha256": "9a5ea807f815d6b48bb84c206bcf4e61458c25ad33f9d4aab85fb0fd4e3c0976",
+            "headers": [
+              [
+                "Authorization",
+                "Session provider-lab"
+              ],
+              [
+                "Content-Type",
+                "application/json"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "receive_poll",
+            "path_values": [],
+            "query_items": []
+          },
+          {
+            "body_sha256": "0d8dafc5ad9fb41c7686e78ed58195eee26a1e36efa6af653603c074ac2aa29f",
+            "headers": [
+              [
+                "Authorization",
+                "Session provider-lab"
+              ],
+              [
+                "Content-Type",
+                "application/json"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "subscribe_receive",
+            "path_values": [],
+            "query_items": []
+          },
+          {
+            "body_sha256": "87971e1e47cfc70e5f1402ad7e56a9d3760a0dc48a9d48b2d5eb720478877572",
+            "headers": [
+              [
+                "Authorization",
+                "Session provider-lab"
+              ],
+              [
+                "Content-Type",
+                "application/json"
+              ]
+            ],
+            "method": "POST",
+            "operation_id": "unsubscribe_receive",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "list_groups",
+          "receive_poll",
+          "subscribe_receive",
+          "unsubscribe_receive"
+        ],
+        "path_template": "/jsonrpc",
+        "quota_bucket": "json-rpc",
+        "quota_cost": 1.0,
+        "route_id": "signal.json_rpc",
+        "transport": "json_rpc"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [
+              [
+                "Authorization",
+                "Session provider-lab"
+              ]
+            ],
+            "method": "GET",
+            "operation_id": "events_stream",
+            "path_values": [
+              [
+                "subscription_id",
+                "sub-1"
+              ]
+            ],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "events_stream"
+        ],
+        "path_template": "/events/{subscription_id}",
+        "quota_bucket": "json-rpc",
+        "quota_cost": 1.0,
+        "route_id": "signal.subscription_events",
+        "transport": "sse"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "checkpoint_after_durable"
+    ],
+    "aliases": [
+      "signal_messenger"
+    ],
+    "allowed_observation_kinds": [
+      "signal"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.signal",
+      "evidence_id": "ingest.evidence.signal",
+      "notes": [
+        "Uses the unofficial pinned signal-cli 0.14.4.1 HTTP JSON-RPC/SSE boundary; a linked-device real-provider canary remains mandatory."
+      ],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.signal",
+      "validation_runtime": {
+        "generator_group": "signal",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_signal_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_signal_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_signal_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_signal_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_signal",
+        "replay_probe_binding": null,
+        "signature_probe_binding": null,
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.signal.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "thread_message",
+      "message_edit"
+    ],
+    "delivery_policies": [
+      "replayable_stream"
+    ],
+    "display": {
+      "category": "Communication",
+      "connection_method": "Gateway",
+      "description": "Linked-device message ingestion.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 10,
+      "setup_requirements": "Linked-device session, account approval, contact or group scope, gateway worker readiness.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Live events"
+      ]
+    },
+    "display_name": "Signal",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.signal:fetch_page_signal",
+    "finance_testing_binding": null,
+    "history": "session",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:signal_message"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "signal:message",
+        "ingress_kind": "gateway"
+      },
+      {
+        "channel": "signal:message",
+        "ingress_kind": "backfill"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_signal_installation",
+      "management": {
+        "base_url_column": null,
+        "enabled_column": null,
+        "entity_install_column": "signal_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "signal_threads",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "session_secret_ref",
+          "backfill_session_secret_ref"
+        ],
+        "scope_column": "account_label",
+        "source": "signal",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "signal_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": null,
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "account_id",
+      "device_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [],
+      "workers": [
+        {
+          "cadence_seconds": null,
+          "component_id": "signal_gateway_worker",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "signal_gateway_worker",
+          "dispatch_binding": null,
+          "launcher_binding": "scripts.run_signal_gateway_worker:_main",
+          "lease_scope": "installation",
+          "managed_reason": null,
+          "role": "persistent_gateway",
+          "transport": "json_rpc"
+        },
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": null
+        }
+      ]
+    },
+    "live_transports": [
+      "json_rpc"
+    ],
+    "metrics_export_bindings": [],
+    "non_resolver_operation_bindings": [
+      {
+        "operation_ids": [
+          "list_groups",
+          "receive_poll",
+          "subscribe_receive",
+          "unsubscribe_receive",
+          "events_stream"
+        ],
+        "resolution_kind": "installation"
+      }
+    ],
+    "normalization_inputs": [
+      "signal:message"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.signal:handle_signal"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "account label",
+          "approved contacts",
+          "approved groups",
+          "thread scope"
+        ],
+        "agent_generates": [
+          "linked-device session ref",
+          "Signal gateway runner contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin authorizes the local customer-cloud session or device link"
+        ],
+        "settings_targets": [
+          "local device-link session",
+          "contact/group scope",
+          "gateway runner settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "approved-contacts",
+        "approved-groups"
+      ],
+      "discovery_target": "linked account, approved contacts, groups, and threads",
+      "generic_authorization_mode": "customer_linked_device_session",
+      "ingress_paths": [],
+      "local_rehearsal": null,
+      "method": "gateway",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/signal/connect/finalize",
+        "kind": "local_session_native_connect",
+        "payload_fields": [
+          "account_label",
+          "linked_device_session",
+          "backfill_session",
+          "threads"
+        ],
+        "preflight_path": "/integrations/signal/connect/preflight",
+        "preflight_payload_fields": [],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": "Linked-device gateway session runs from the customer cloud.",
+      "optional_inputs": [
+        "account_label",
+        "backfill_session",
+        "thread_scope"
+      ],
+      "provider_console_url": "https://signal.org/download/",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "linked device session",
+        "approved contacts",
+        "approved groups"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "linked_device_session"
+      ],
+      "required_refs": [
+        "linked_device_session"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "list_groups",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "signal.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "receive_poll",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "signal.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "subscribe_receive",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "signal.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "unsubscribe_receive",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "signal.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "events_stream",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "signal.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": "customer-cloud signal-cli HTTP JSON-RPC/SSE gateway worker",
+    "outbound_endpoint_bindings": [],
+    "planner_binding": "services.ingest.ingestion.planners.signal:plan_shards_signal",
+    "provider_id": "signal",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.signal:reconcile_signal",
+    "runtime_identifiers": [
+      "installation_id",
+      "thread_id"
+    ],
+    "source_id": "signal",
+    "trust_tiers": [
+      "attested_agent"
+    ],
+    "ui_slug": "signal"
+  },
+  "source_id": "signal"
+}

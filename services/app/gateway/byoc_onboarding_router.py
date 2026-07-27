@@ -8,9 +8,7 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any
-from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
@@ -41,13 +39,17 @@ from lib.shared.errors import DiscordApiError
 from lib.shared.ids import uuid7
 from services.ingest.integrations.discord.client import DiscordClient
 from services.ingest.source_contract.catalog import (
-    CANONICAL_SOURCE_IDS,
     OAUTH_INGRESS_CATALOG,
-    SOURCE_DEFINITIONS,
     SOURCE_LIVE_INGRESS_CATALOG,
+    source_definition,
+)
+from services.ingest.source_contract.onboarding_handoffs import (
+    aws_source_approval_url,
 )
 from services.ingest.source_contract.runtime import (
     resolve_installation_status_loader,
+    resolve_onboarding_access_status,
+    resolve_provider_handoff,
 )
 
 _DISCORD_TEXT_CHANNEL_TYPE = 0
@@ -74,35 +76,6 @@ _DISCORD_THREAD_PARENT_CHANNEL_TYPES = {
     _DISCORD_MEDIA_CHANNEL_TYPE,
 }
 
-_ALL_REHEARSAL_SOURCES = frozenset(CANONICAL_SOURCE_IDS)
-_OAUTH_REHEARSAL_SOURCES = frozenset(OAUTH_INGRESS_CATALOG)
-_FORM_REHEARSAL_SOURCES = {"jira", "telegram", "whatsapp"}
-_SOURCE_SPECIFIC_FINALIZE_SOURCES = {"jira", "telegram", "whatsapp"}
-_GENERIC_FINALIZE_BLOCKED_SOURCES = (
-    _OAUTH_REHEARSAL_SOURCES
-    | _SOURCE_SPECIFIC_FINALIZE_SOURCES
-    | {
-        "ashby",
-        "aws",
-        "brex",
-        "carta",
-        "deel",
-        "fireflies",
-        "gmail",
-        "google_calendar",
-        "google_drive",
-        "grafana",
-        "gusto",
-        "hibob",
-        "linkedin",
-        "mercury",
-        "miro",
-        "quickbooks",
-        "ramp",
-        "signal",
-    }
-)
-_REHEARSAL_SOURCES = _ALL_REHEARSAL_SOURCES
 _SAFE_PROVIDER_ERROR_CODES = {
     "telegram_connect_failed",
     "telegram_dialogs_must_be_list",
@@ -132,53 +105,6 @@ _DISCORD_ACCESS_STATUS_LOCKS: dict[tuple[str, str, str], asyncio.Lock] = {}
 def _oauth_callback_path(source: str) -> str | None:
     ingress = OAUTH_INGRESS_CATALOG.get(source)
     return ingress.callback_path if ingress is not None else None
-
-_SOURCE_REQUIRED_INPUTS = MappingProxyType(
-    {
-        source.source_id: list(source.onboarding.required_inputs)
-        for source in SOURCE_DEFINITIONS
-        if source.onboarding.required_inputs is not None
-    }
-)
-_SOURCE_OPTIONAL_INPUTS = MappingProxyType(
-    {
-        source.source_id: list(source.onboarding.optional_inputs)
-        for source in SOURCE_DEFINITIONS
-        if source.onboarding.optional_inputs is not None
-    }
-)
-_GENERIC_PROVIDER_CONSOLES = MappingProxyType(
-    {
-        source.source_id: source.onboarding.provider_console_url
-        for source in SOURCE_DEFINITIONS
-        if source.onboarding.provider_console_url is not None
-    }
-)
-_GENERIC_AUTHORIZATION_MODES = MappingProxyType(
-    {
-        source.source_id: source.onboarding.generic_authorization_mode
-        for source in SOURCE_DEFINITIONS
-        if source.onboarding.generic_authorization_mode is not None
-    }
-)
-_SOURCE_METHODS = MappingProxyType(
-    {
-        source.source_id: source.onboarding.method
-        for source in SOURCE_DEFINITIONS
-    }
-)
-_SOURCE_DISCOVERY_TARGETS = MappingProxyType(
-    {
-        source.source_id: source.onboarding.discovery_target
-        for source in SOURCE_DEFINITIONS
-    }
-)
-_SOURCE_NATIVE_CONNECT_CONTRACTS = MappingProxyType(
-    {
-        source.source_id: source.onboarding.native_connect.as_payload()
-        for source in SOURCE_DEFINITIONS
-    }
-)
 
 _AWS_RUNTIME_ROLE_ENV_KEYS = (
     "FYRALIS_BYOC_SOURCE_RUNTIME_ROLE_ARN",
@@ -604,9 +530,10 @@ def build_byoc_onboarding_router(
 
         body = await _json_body(request)
         inputs = _source_finalize_inputs(body)
+        whatsapp_onboarding = source_definition("whatsapp").onboarding
         missing_inputs = [
             name
-            for name in _SOURCE_REQUIRED_INPUTS["whatsapp"]
+            for name in whatsapp_onboarding.required_inputs or ()
             if not str(inputs.get(name, "")).strip()
         ]
         if missing_inputs:
@@ -852,12 +779,14 @@ def build_byoc_onboarding_router(
         source_id: str,
     ) -> dict[str, Any]:
         source = _normalize_rehearsal_source(source_id)
-        if source in _SOURCE_SPECIFIC_FINALIZE_SOURCES:
+        onboarding = source_definition(source).onboarding
+        finalize_mode = onboarding.rehearsal_finalize_mode
+        if finalize_mode == "source_specific":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"error": "source_specific_finalize_required"},
             )
-        if source in _OAUTH_REHEARSAL_SOURCES:
+        if finalize_mode == "provider_callback":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
@@ -869,7 +798,7 @@ def build_byoc_onboarding_router(
                     ),
                 },
             )
-        if source in _GENERIC_FINALIZE_BLOCKED_SOURCES:
+        if finalize_mode == "native_finalizer_required":
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail={
@@ -889,7 +818,7 @@ def build_byoc_onboarding_router(
 
         body = await _json_body(request)
         input_values = _source_finalize_inputs(body)
-        required_inputs = _SOURCE_REQUIRED_INPUTS.get(source, [])
+        required_inputs = onboarding.required_inputs or ()
         missing_inputs = [
             name
             for name in required_inputs
@@ -929,9 +858,9 @@ def build_byoc_onboarding_router(
         )
         trigger_payload = {
             "source": source,
-            "authorization_mode": _GENERIC_AUTHORIZATION_MODES.get(
-                source,
-                "customer_local_provider_refs",
+            "authorization_mode": (
+                onboarding.generic_authorization_mode
+                or "customer_local_provider_refs"
             ),
             "installation_id": installation_id,
             "inputs": visible_inputs,
@@ -1043,8 +972,18 @@ def _pool_from_state(request: Request) -> Any:
 
 
 def _normalize_rehearsal_source(source_id: str) -> str:
-    source = source_id.strip().lower().replace("-", "_")
-    if source not in _REHEARSAL_SOURCES:
+    normalized = source_id.strip().lower().replace("-", "_")
+    try:
+        definition = source_definition(normalized)
+    except (KeyError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "source_rehearsal_not_supported",
+                "source": source_id,
+            },
+        ) from None
+    if definition.source_id != normalized:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
@@ -1052,7 +991,7 @@ def _normalize_rehearsal_source(source_id: str) -> str:
                 "source": source_id,
             },
         )
-    return source
+    return definition.source_id
 
 
 def _bounded_telegram_error_code(exc: Exception) -> str:
@@ -1068,6 +1007,8 @@ async def _prepare_source_rehearsal_response(
     *,
     request_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    definition = source_definition(source)
+    onboarding = definition.onboarding
     _require_source_rehearsal_enabled(request)
     pool = _pool_from_state(request)
     tenant_id, actor_id = _rehearsal_actor_ids()
@@ -1080,17 +1021,13 @@ async def _prepare_source_rehearsal_response(
         ttl=timedelta(hours=24),
     )
     deployment_context = _source_deployment_context(request_payload or {})
-    handoff = await _source_provider_handoff(
+    handoff = await _contract_provider_handoff(
         source,
         pool=pool,
         tenant_id=tenant_id,
         request=request,
         request_payload=request_payload or {},
     )
-    if source == "aws":
-        handoff["provider_console_url"] = _aws_source_approval_url(
-            deployment_context.get("aws_region")
-        )
     status_payload = await _source_rehearsal_status_payload(
         pool,
         tenant_id=tenant_id,
@@ -1129,16 +1066,20 @@ async def _prepare_source_rehearsal_response(
         "missing_configuration": handoff["missing_configuration"],
         "setup_owner": handoff.get("setup_owner"),
         "deployment_model": handoff.get("deployment_model"),
-        "required_inputs": _SOURCE_REQUIRED_INPUTS.get(source, []),
-        "optional_inputs": _SOURCE_OPTIONAL_INPUTS.get(source, []),
-        "finalize_mode": _source_finalize_mode(source),
+        "required_inputs": list(onboarding.required_inputs or ()),
+        "optional_inputs": list(onboarding.optional_inputs or ()),
+        "finalize_mode": onboarding.rehearsal_finalize_mode,
         "automation_profile": _source_automation_profile(source),
         "browser_agent": browser_agent_recipe_for_source(source),
-        "native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS.get(source),
+        "native_connect": onboarding.native_connect.as_payload(),
         "deployment_context": deployment_context,
         "bearer_token": token,
         "session_expires_at": ctx.expires_at.isoformat(),
-        "state_expires_in_seconds": 600 if source in _OAUTH_REHEARSAL_SOURCES else None,
+        "state_expires_in_seconds": (
+            600
+            if onboarding.rehearsal_finalize_mode == "provider_callback"
+            else None
+        ),
         "status": status_payload,
     }
     payload["browser_agent_run"] = source_browser_agent_run_for_payload(
@@ -1148,7 +1089,7 @@ async def _prepare_source_rehearsal_response(
     return payload
 
 
-async def _source_provider_handoff(
+async def _contract_provider_handoff(
     source: str,
     *,
     pool: Any,
@@ -1157,241 +1098,17 @@ async def _source_provider_handoff(
     request_payload: dict[str, Any],
 ) -> dict[str, Any]:
     public_url = _public_url_from_env_or_request(request)
-    if source == "slack":
-        from services.ingest.integrations.slack import oauth as slack_oauth
-
-        client_id = os.environ.get("SLACK_CLIENT_ID", "").strip()
-        redirect_uri = os.environ.get("SLACK_REDIRECT_URI", "").strip()
-        missing = [
-            name
-            for name, value in {
-                "SLACK_CLIENT_ID": client_id,
-                "SLACK_REDIRECT_URI": redirect_uri,
-                "SLACK_CLIENT_SECRET": _env_or_secret_ref_configured(
-                    "SLACK_CLIENT_SECRET"
-                ),
-                "SLACK_SIGNING_SECRET": _env_or_secret_ref_configured(
-                    "SLACK_SIGNING_SECRET"
-                ),
-            }.items()
-            if not value
-        ]
-        install_url = None
-        if client_id and redirect_uri:
-            state_token = await slack_oauth.issue_state_token(tenant_id, pool)
-            install_url = f"{slack_oauth._SLACK_AUTHORIZE_URL}?" + urlencode(  # noqa: SLF001
-                {
-                    "client_id": client_id,
-                    "scope": slack_oauth._SLACK_BOT_SCOPES,  # noqa: SLF001
-                    "user_scope": slack_oauth._SLACK_USER_SCOPES,  # noqa: SLF001
-                    "redirect_uri": redirect_uri,
-                    "state": state_token,
-                }
-            )
-        return {
-            "authorization_mode": "oauth",
-            "install_url": install_url,
-            "oauth_redirect_url": redirect_uri
-            or f"{public_url}{_oauth_callback_path('slack')}",
-            "provider_console_url": "https://api.slack.com/apps",
-            "missing_configuration": missing,
-        }
-
-    if source == "discord":
-        from services.ingest.integrations.discord import oauth as discord_oauth
-
-        client_id = os.environ.get("DISCORD_CLIENT_ID", "").strip()
-        redirect_uri = os.environ.get("DISCORD_REDIRECT_URI", "").strip()
-        access_mode = discord_oauth.discord_access_mode(
-            request_payload.get("access_mode")
-            or request_payload.get("discord_access_mode")
-        )
-        missing = [
-            name
-            for name, value in {
-                "DISCORD_CLIENT_ID": client_id,
-                "DISCORD_REDIRECT_URI": redirect_uri,
-                "DISCORD_CLIENT_SECRET": _env_or_secret_ref_configured(
-                    "DISCORD_CLIENT_SECRET"
-                ),
-                "DISCORD_APPLICATION_ID": os.environ.get("DISCORD_APPLICATION_ID", ""),
-                "DISCORD_BOT_TOKEN": _env_or_secret_ref_configured("DISCORD_BOT_TOKEN"),
-                "WEBHOOK_SECRET_DISCORD": _env_or_secret_ref_configured(
-                    "WEBHOOK_SECRET_DISCORD"
-                ),
-            }.items()
-            if not value
-        ]
-        install_url = None
-        if client_id and redirect_uri:
-            state_token = await discord_oauth.issue_state_token(tenant_id, pool)
-            install_url = discord_oauth.discord_authorize_url(
-                client_id=client_id,
-                redirect_uri=redirect_uri,
-                state_token=state_token,
-                access_mode=access_mode,
-            )
-        return {
-            "authorization_mode": "oauth_plus_gateway",
-            "install_url": install_url,
-            "discord_access_mode": access_mode,
-            "discord_permissions": discord_oauth.discord_permissions_for_access_mode(
-                access_mode
-            ),
-            "oauth_redirect_url": redirect_uri
-            or f"{public_url}{_oauth_callback_path('discord')}",
-            "provider_console_url": "https://discord.com/developers/applications",
-            "missing_configuration": missing,
-        }
-
-    if source == "figma":
-        # Figma is deliberately deployment-app OAuth, not a PAT form.  The
-        # one-time administrator setup is reported as a single safe category;
-        # ordinary users must never see configuration gaps or credential refs.
-        from services.ingest.integrations.figma import oauth as figma_oauth
-
-        configured_redirect = ""
-        try:
-            configured_redirect = figma_oauth._figma_redirect_uri()  # noqa: SLF001
-        except figma_oauth.FigmaOAuthError:
-            pass
-        ready = figma_oauth._deployment_oauth_ready()  # noqa: SLF001
-        return {
-            "authorization_mode": "oauth",
-            # OAuth state must be created through POST /oauth/start with the
-            # selected file URLs, so there is no generic install URL to open.
-            "install_url": None,
-            "oauth_redirect_url": configured_redirect
-            or f"{public_url}{_oauth_callback_path('figma')}",
-            "provider_console_url": "https://www.figma.com/developers/apps",
-            "missing_configuration": ([] if ready else ["deployment_figma_oauth_app"]),
-            "setup_owner": "deployment_admin",
-            "deployment_model": "customer_owned_byoc_oauth_app",
-        }
-
-    if source == "github":
-        from services.ingest.integrations.github import oauth as github_oauth
-
-        app_slug = os.environ.get("GITHUB_APP_SLUG", "").strip()
-        private_key_sources = [
-            name
-            for name in (
-                "GITHUB_APP_PRIVATE_KEY_SECRET_REF",
-                "GITHUB_APP_PRIVATE_KEY",
-                "GITHUB_APP_PRIVATE_KEY_PATH",
-            )
-            if os.environ.get(name, "").strip()
-        ]
-        missing = [
-            name
-            for name, configured in {
-                "GITHUB_APP_SLUG": bool(app_slug),
-                "GITHUB_APP_ID": bool(os.environ.get("GITHUB_APP_ID", "").strip()),
-                "WEBHOOK_SECRET_GITHUB": _env_or_secret_ref_configured(
-                    "WEBHOOK_SECRET_GITHUB"
-                ),
-            }.items()
-            if not configured
-        ]
-        if not private_key_sources:
-            missing.append("GITHUB_APP_PRIVATE_KEY_SOURCE")
-        elif len(private_key_sources) > 1:
-            missing.append("GITHUB_APP_PRIVATE_KEY_SOURCE_CONFLICT")
-        install_url = None
-        if app_slug:
-            state_token = await github_oauth.issue_state_token(tenant_id, pool)
-            install_url = (
-                f"{github_oauth._GITHUB_INSTALL_BASE}/{app_slug}/installations/new?"  # noqa: SLF001
-                + urlencode({"state": state_token})
-            )
-        return {
-            "authorization_mode": "github_app",
-            "install_url": install_url,
-            "oauth_redirect_url": (
-                f"{public_url}{_oauth_callback_path('github')}"
-            ),
-            "provider_console_url": "https://github.com/settings/apps",
-            "missing_configuration": missing,
-        }
-
-    if source == "notion":
-        from services.ingest.integrations.notion import oauth as notion_oauth
-
-        client_id = os.environ.get("NOTION_CLIENT_ID", "").strip()
-        redirect_uri = os.environ.get("NOTION_REDIRECT_URI", "").strip()
-        missing = [
-            name
-            for name, value in {
-                "NOTION_CLIENT_ID": client_id,
-                "NOTION_REDIRECT_URI": redirect_uri,
-                "NOTION_CLIENT_SECRET": _env_or_secret_ref_configured(
-                    "NOTION_CLIENT_SECRET"
-                ),
-            }.items()
-            if not value
-        ]
-        install_url = None
-        if client_id and redirect_uri:
-            state_token = await notion_oauth.issue_state_token(  # type: ignore[attr-defined]
-                tenant_id,
-                pool,
-                provider="notion",
-            )
-            install_url = f"{notion_oauth._NOTION_AUTHORIZE_URL}?" + urlencode(  # noqa: SLF001
-                {
-                    "client_id": client_id,
-                    "response_type": "code",
-                    "owner": "user",
-                    "redirect_uri": redirect_uri,
-                    "state": state_token,
-                }
-            )
-        return {
-            "authorization_mode": "oauth",
-            "install_url": install_url,
-            "oauth_redirect_url": redirect_uri
-            or f"{public_url}{_oauth_callback_path('notion')}",
-            "provider_console_url": "https://www.notion.so/my-integrations",
-            "missing_configuration": missing,
-        }
-
-    if source == "jira":
-        return {
-            "authorization_mode": "customer_api_token",
-            "install_url": None,
-            "oauth_redirect_url": None,
-            "provider_console_url": "https://id.atlassian.com/manage-profile/security/api-tokens",
-            "missing_configuration": [],
-        }
-
-    if source == "telegram":
-        return {
-            "authorization_mode": "customer_mtproto_session",
-            "install_url": None,
-            "oauth_redirect_url": None,
-            "provider_console_url": "https://my.telegram.org/apps",
-            "missing_configuration": [],
-        }
-
-    if source in _ALL_REHEARSAL_SOURCES:
-        callback_path = _oauth_callback_path(source)
-        return {
-            "authorization_mode": _GENERIC_AUTHORIZATION_MODES.get(
-                source,
-                "customer_local_provider_refs",
-            ),
-            "install_url": None,
-            "oauth_redirect_url": (
-                f"{public_url}{callback_path}" if callback_path else None
-            ),
-            "provider_console_url": _GENERIC_PROVIDER_CONSOLES.get(
-                source,
-                "Customer provider admin console",
-            ),
-            "missing_configuration": [],
-        }
-
-    raise AssertionError(f"unsupported rehearsal source {source!r}")
+    definition = source_definition(source)
+    handoff = resolve_provider_handoff(definition.source_id)
+    return await handoff(
+        source_definition=definition,
+        pool=pool,
+        tenant_id=tenant_id,
+        public_url=public_url,
+        callback_path=_oauth_callback_path(definition.source_id),
+        request_payload=request_payload,
+        deployment_context=_source_deployment_context(request_payload),
+    )
 
 
 async def _json_body(request: Request) -> dict[str, Any]:
@@ -1442,13 +1159,10 @@ def _source_deployment_context(body: dict[str, Any]) -> dict[str, str]:
 
 
 def _aws_source_approval_url(region: str | None) -> str:
-    clean_region = _bounded_context_value(region)
-    if clean_region:
-        return (
-            f"https://{clean_region}.console.aws.amazon.com/cloudformation/home"
-            f"?region={clean_region}#/stacks/create/template"
-        )
-    return _GENERIC_PROVIDER_CONSOLES["aws"]
+    return aws_source_approval_url(
+        _bounded_context_value(region),
+        default_url=source_definition("aws").onboarding.provider_console_url,
+    )
 
 
 def _materialize_aws_source_runtime_bootstrap() -> Path:
@@ -1835,22 +1549,12 @@ async def _emit_source_connection_proof(
     )
 
 
-def _source_finalize_mode(source: str) -> str:
-    if source in _OAUTH_REHEARSAL_SOURCES:
-        return "provider_callback"
-    if source in _SOURCE_SPECIFIC_FINALIZE_SOURCES:
-        return "source_specific"
-    if source in _GENERIC_FINALIZE_BLOCKED_SOURCES:
-        return "native_finalizer_required"
-    return "generic_customer_refs"
-
-
 def _source_automation_profile(source: str) -> dict[str, Any]:
-    method = _SOURCE_METHODS.get(source, "api_token")
-    source_name = _source_display_name(source)
+    onboarding = source_definition(source).onboarding
+    method = onboarding.method
     human_steps = _source_human_steps(source, method)
-    required_inputs = list(_SOURCE_REQUIRED_INPUTS.get(source, []))
-    optional_inputs = list(_SOURCE_OPTIONAL_INPUTS.get(source, []))
+    required_inputs = list(onboarding.required_inputs or ())
+    optional_inputs = list(onboarding.optional_inputs or ())
     return {
         "automation_level": _source_automation_level(method),
         "method": method,
@@ -1858,10 +1562,7 @@ def _source_automation_profile(source: str) -> dict[str, Any]:
         "optional_hints": optional_inputs,
         "automated_actions": _source_automated_actions(source, method),
         "human_steps": human_steps,
-        "agent_discovery_target": _SOURCE_DISCOVERY_TARGETS.get(
-            source,
-            f"{source_name} approved workspace and source scope",
-        ),
+        "agent_discovery_target": onboarding.discovery_target,
         "post_connect_actions": [
             "store encrypted customer-cloud refs",
             "register source installation metadata",
@@ -1914,7 +1615,13 @@ def _source_auto_connect_state(source: str, payload: dict[str, Any]) -> dict[str
             "install_url": install_url,
         }
 
-    if source == "aws" and not _aws_source_runtime_role_from_payload(payload):
+    native_connect_kind = (
+        source_definition(source).onboarding.native_connect.kind
+    )
+    if (
+        native_connect_kind == "aws_iam_native_connect"
+        and not _aws_source_runtime_role_from_payload(payload)
+    ):
         bootstrap_template_path = _materialize_aws_source_runtime_bootstrap()
         bootstrap_url = _aws_source_approval_url(
             (payload.get("deployment_context") or {}).get("aws_region")
@@ -2301,15 +2008,16 @@ def _source_automation_level(method: str) -> str:
 
 
 def _source_automated_actions(source: str, method: str) -> list[str]:
+    onboarding = source_definition(source).onboarding
     actions = [
         "prepare provider handoff and gateway routes",
         "validate required customer-owned refs are present",
-        f"discover {_SOURCE_DISCOVERY_TARGETS.get(source, 'approved source scope')}",
+        f"discover {onboarding.discovery_target}",
         "generate least-privilege connection contract",
         "create encrypted secret refs in the customer cloud",
         "register install metadata and source trigger",
     ]
-    if source == "figma":
+    if onboarding.native_connect.kind == "figma_oauth_file_scoped_connect":
         actions.insert(1, "prepare deployment-owned Figma OAuth app contract")
         actions.insert(
             2,
@@ -2339,8 +2047,9 @@ def _source_automated_actions(source: str, method: str) -> list[str]:
 
 
 def _source_human_steps(source: str, method: str) -> list[dict[str, Any]]:
+    onboarding = source_definition(source).onboarding
     source_name = _source_display_name(source)
-    if source == "figma":
+    if onboarding.native_connect.kind == "figma_oauth_file_scoped_connect":
         steps = [
             (
                 "configure_deployment_figma_oauth_app",
@@ -2506,13 +2215,6 @@ def _require_source_rehearsal_enabled(request: Request) -> None:
 
 def _truthy(raw: str | None) -> bool:
     return (raw or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_or_secret_ref_configured(name: str) -> bool:
-    return bool(
-        os.environ.get(name, "").strip()
-        or os.environ.get(f"{name}_SECRET_REF", "").strip()
-    )
 
 
 def _rehearsal_actor_ids() -> tuple[UUID, UUID]:
@@ -2819,16 +2521,19 @@ async def _source_access_status_payload(
     installations: list[dict[str, Any]],
     installed: bool,
 ) -> dict[str, Any]:
-    if source != "discord" or not installed:
+    if not installed:
         return _empty_source_access_status()
-    return await _discord_source_access_payload_for_installations(
+    builder = resolve_onboarding_access_status(source)
+    if builder is None:
+        return _empty_source_access_status()
+    return await builder(
         pool,
         tenant_id=tenant_id,
         installations=installations,
     )
 
 
-async def _discord_source_access_payload_for_installations(
+async def build_discord_source_access_status(
     pool: Any,
     *,
     tenant_id: UUID,
@@ -3324,8 +3029,6 @@ async def _discord_existing_access_state_by_channel(
         for row in rows
         if row["resource_id"]
     }
-
-
 async def _discord_message_channels_for_access(
     client: DiscordClient,
     *,
@@ -3690,12 +3393,15 @@ def _source_rehearsal_next_action(
 ) -> str:
     source_name = _source_display_name(source)
     if not installed:
-        if source in _OAUTH_REHEARSAL_SOURCES:
+        if (
+            source_definition(source).onboarding.rehearsal_finalize_mode
+            == "provider_callback"
+        ):
             return f"Approve {source_name} in the provider browser window."
         return f"Submit the required {source_name} connection details."
     if not has_secret:
         return f"{source_name} install is present but required secret refs are missing."
-    if source == "whatsapp":
+    if source_definition(source).history is None:
         if observation_count == 0:
             return f"{source_name} install is present; send webhook events to the customer-cloud ingress."
         return f"{source_name} observations are landing in Fyralis."
@@ -3712,28 +3418,8 @@ def _source_rehearsal_next_action(
 
 
 def _source_display_name(source: str) -> str:
-    names = {
-        "aws": "AWS",
-        "brex": "Brex",
-        "figma": "Figma",
-        "facebook_pages": "Facebook Page Messages",
-        "gmail": "Gmail",
-        "github": "GitHub",
-        "google_calendar": "Google Calendar",
-        "google_drive": "Google Drive",
-        "grafana": "Grafana",
-        "hibob": "HiBob",
-        "jira": "Jira",
-        "miro": "Miro",
-        "notion": "Notion",
-        "quickbooks": "QuickBooks",
-        "slack": "Slack",
-        "whatsapp": "WhatsApp",
-    }
-    return names.get(
-        source,
-        " ".join(part.capitalize() for part in source.replace("_", "-").split("-")),
-    )
+    definition = source_definition(source)
+    return definition.display.display_name_override or definition.display_name
 
 
 __all__ = ["build_byoc_onboarding_router"]

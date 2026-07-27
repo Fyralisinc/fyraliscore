@@ -1,24 +1,11 @@
-"""services/ingest/ingestion/handlers/miro.py — Miro board-item handler.
+"""Normalize fetcher-tagged Miro board items.
 
-ONE channel `miro:item` (mirrors brex:transaction / github:webhook's
-one-channel/many-record-types shape). The handler is a pure function (no DB /
-network) and branches on the input shape to produce exactly ONE observation per
-call:
+The poll-only source has one channel, ``miro:item``. Backfill and reconciliation
+records must be tagged by the fetcher with ``_fyralis_record_type == "item"``,
+``_fyralis_org_id``, and ``_fyralis_board_id``. The handler is a pure function
+and produces exactly one signal observation per call.
 
-  - BACKFILL / POLL: records arrive tagged with a private `_fyralis_record_type`
-    == "item" (set by the fetcher's per-board fan-out), plus `_fyralis_org_id`
-    (the install-namespacing org id) and `_fyralis_board_id`.
-  - LIVE WEBHOOK: the raw Miro webhook body carries an `event`
-    (e.g. "board_item.created", "board_item.updated", "board_item.deleted");
-    the handler maps it onto the same item builder so a webhook-delivered change
-    and its backfill twin dedup.
-
-Signal mapping (the reasoning value):
-  - item created/updated (present)  -> kind="signal"
-  - item deleted/removed            -> kind="state_change" (the board-state
-                                       signal: an item was removed)
-
-external_id — VERSIONED for the MUTABLE item entity (the observations repo
+The external id is versioned for the mutable item entity (the observations repo
 dedups on (source_channel, external_id) IGNORING occurred_at; an edit must land
 as a NEW observation, not silently dedup):
   - item: miro:{org_id}:item:{item_id}:{version}
@@ -49,9 +36,6 @@ from services.ingest.ingestion.handlers import (
 
 _CHANNEL = "miro:item"
 _TRUST = "authoritative"
-
-# Webhook event suffixes that represent a removal (a board-state change).
-_DELETE_EVENTS = frozenset({"deleted", "removed"})
 
 
 def _utcnow() -> datetime:
@@ -137,11 +121,11 @@ def _nested_id(obj: Any) -> Any:
 
 
 # ---------------------------------------------------------------------
-# Per-record-type draft builders (shared by backfill + webhook paths)
+# Draft builder
 # ---------------------------------------------------------------------
 
 def _item_draft(
-    item: dict[str, Any], org_id: str, board_id: str, *, deleted: bool = False,
+    item: dict[str, Any], org_id: str, board_id: str,
 ) -> ObservationDraft:
     item_id = str(item.get("id") or "")
     if not org_id or not item_id:
@@ -159,11 +143,10 @@ def _item_draft(
     external_id = idempotency.miro_item(org_id, item_id, version)
 
     text = _item_text(item)
-    verb = "removed" if deleted else "updated"
     if text:
-        content_text = f"{item_type} {verb}: {text}"
+        content_text = f"{item_type} updated: {text}"
     else:
-        content_text = f"{item_type} {verb} on board {board_id}"
+        content_text = f"{item_type} updated on board {board_id}"
 
     entities: list[dict[str, Any]] = [
         {"type": "miro_board", "id": board_id},
@@ -179,7 +162,6 @@ def _item_draft(
         "item_id": item_id,
         "item_type": item_type,
         "text": text or None,
-        "deleted": deleted,
     }
     content.update(_item_extras(item))
     return ObservationDraft(
@@ -188,7 +170,7 @@ def _item_draft(
         content=content,
         occurred_at=occurred,
         trust_tier=_TRUST,  # type: ignore[arg-type]
-        kind="state_change" if deleted else "signal",
+        kind="signal",
         source_actor_ref=None,
         external_id=external_id,
         entities_hint=entities,
@@ -197,20 +179,20 @@ def _item_draft(
 
 
 def _org_id_of(payload: dict[str, Any], obj: dict[str, Any] | None) -> str:
-    """Resolve the org id for a webhook/backfill record."""
-    oid = payload.get("_fyralis_org_id") or payload.get("orgId") or payload.get("organizationId")
+    """Resolve the exact install scope from a fetcher-tagged record."""
+    oid = payload.get("_fyralis_org_id")
     if isinstance(oid, str) and oid:
         return oid
     if isinstance(obj, dict):
-        cand = obj.get("orgId") or obj.get("org_id")
+        cand = obj.get("org_id")
         if isinstance(cand, str) and cand:
             return cand
     return ""
 
 
 def _board_id_of(payload: dict[str, Any], obj: dict[str, Any] | None) -> str:
-    """Resolve the board id for a webhook/backfill record."""
-    bid = payload.get("_fyralis_board_id") or payload.get("boardId")
+    """Resolve the board id from a fetcher-tagged record."""
+    bid = payload.get("_fyralis_board_id")
     if isinstance(bid, str) and bid:
         return bid
     if isinstance(obj, dict):
@@ -228,45 +210,25 @@ def _board_id_of(payload: dict[str, Any], obj: dict[str, Any] | None) -> str:
 # ---------------------------------------------------------------------
 
 async def handle_miro_item(
-    payload: dict[str, Any], headers: dict[str, str]
+    payload: dict[str, Any], _headers: dict[str, str]
 ) -> ObservationDraft:
     if not isinstance(payload, dict):
         raise ValidationError("miro payload must be a JSON object", channel=_CHANNEL)
 
-    # --- LIVE WEBHOOK path (raw Miro webhook body) ---
-    event_type = payload.get("event") or payload.get("type")
-    if isinstance(event_type, str) and event_type:
-        if event_type.startswith(("board_item.", "item.")):
-            item = payload.get("item") or payload.get("data") or {}
-            if isinstance(item, dict) and item.get("id"):
-                deleted = event_type.rsplit(".", 1)[-1] in _DELETE_EVENTS
-                return _item_draft(
-                    item,
-                    _org_id_of(payload, item),
-                    _board_id_of(payload, item),
-                    deleted=deleted,
-                )
-            raise ValidationError(
-                f"miro {event_type} missing item", channel=_CHANNEL,
-            )
-        raise ValidationError(
-            f"unsupported miro webhook event {event_type!r}", channel=_CHANNEL,
-        )
-
-    # --- BACKFILL / POLL path (fetcher-tagged records) ---
     record_type = payload.get("_fyralis_record_type")
-    if record_type == "item" or "item" in payload:
-        item = payload.get("item") or {}
-        return _item_draft(
-            item, _org_id_of(payload, item), _board_id_of(payload, item),
+    if record_type != "item":
+        raise ValidationError(
+            "miro payload must be a tagged backfill/poll item record",
+            channel=_CHANNEL,
         )
-
-    raise ValidationError(
-        "miro payload is neither a webhook event nor a tagged record",
-        channel=_CHANNEL,
+    item = payload.get("item")
+    if not isinstance(item, dict):
+        raise ValidationError(
+            "miro tagged item record missing item",
+            channel=_CHANNEL,
+        )
+    return _item_draft(
+        item, _org_id_of(payload, item), _board_id_of(payload, item),
     )
-
-
-
 
 __all__ = ["handle_miro_item"]

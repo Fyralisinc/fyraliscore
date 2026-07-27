@@ -1,4 +1,4 @@
-"""services/app/webhooks/router.py — FastAPI router for /webhooks/{provider}/...
+"""Catalog-owned FastAPI routes for provider webhooks.
 
 Mounted by `services/app/gateway/main.py`. The Bearer middleware in the
 gateway skips this path prefix (see `_PUBLIC_PATH_PREFIXES`), so the
@@ -9,8 +9,8 @@ Request flow:
     1. Capture raw body bytes (NOT a re-parsed JSON form).
     2. Enforce IN-01 body-size precheck (1 MB).
     3. Look up the per-provider verifier; 404 on unknown provider.
-    4. Best-effort JSON-parse the body so the tenant resolver and the
-       Slack URL-verification handshake have a dict to inspect.
+    4. Best-effort JSON-parse the body so the tenant resolver and
+       contract-owned provider hooks have a dict to inspect.
        Malformed JSON does NOT immediately reject — the verifier still
        runs first so an attacker cannot probe the JSON-validity oracle.
     5. Resolve runtime from `request.app.state.integration_runtime`
@@ -19,11 +19,10 @@ Request flow:
        a tenant. The outcome is captured but the rejection (if any) is
        deferred until AFTER signature verification — same security
        posture as before IN-08: signature failure first, then tenant.
-    6. Load secrets via `await load_secrets(provider, tenant_id,
-       installation_row_id=outcome.installation_row_id,
-       app_state=request.app.state)`. With IN-08, this resolves
-       `provider_installations.secret_ref` through the envelope-
-       encrypted secret store; the env-var path is dev-only.
+    6. Resolve the route's contract-owned secret loader and invoke it
+       uniformly. Most routes resolve ``provider_installations.secret_ref``
+       for the exact installation; App-scoped providers own their loader.
+       Loader failures and malformed results fail closed with 503.
     7. Run the verifier; on any `WebhookVerificationError` return 401
        + structured error + metric increment.
     8. Enforce the resolver outcome: `UnknownInstallation` → 401,
@@ -36,6 +35,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -66,20 +66,24 @@ from services.ingest.ingestion.shadow_write import (
 )
 from services.app.webhooks import metrics
 from services.app.webhooks.signatures import verifier_for_provider
-from services.app.webhooks.secrets import load_secrets
 from services.app.webhooks.tenant_resolver import (
     PayloadMissing,
     Resolved,
     UnknownInstallation,
 )
 from services.app.webhooks.verifier import (
+    Secret,
     VerifiedContext,
     WebhookVerificationError,
 )
 from services.ingest.source_contract import (
+    WEBHOOK_INGRESS_CATALOG,
     WebhookIngressDefinition,
     build_webhook_ingress_metadata,
     resolve_callable_reference,
+    resolve_webhook_secret_loader,
+    resolve_webhook_verified_pre_tenant_handler,
+    resolve_webhook_verified_tenant_handler,
     webhook_ingress_definition,
 )
 
@@ -104,6 +108,7 @@ class WebhookRuntime:
     s3_raw_client: Any | None
     github_client: Any | None
     github_replay_cache: Any | None
+    record_failure: Any = metrics.record_failure
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +145,7 @@ def _webhook_runtime(request: Request) -> WebhookRuntime:
         s3_raw_client=runtime_attr("s3_raw_client"),
         github_client=runtime_attr("github_client"),
         github_replay_cache=runtime_attr("github_replay_cache"),
+        record_failure=metrics.record_failure,
     )
 
 
@@ -448,226 +454,9 @@ def _err_response(
     return JSONResponse(err.to_dict(), status_code=status_code)
 
 
-def _is_slack_url_verification(
-    payload: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Detect Slack's one-time `url_verification` handshake. Returns
-    the payload when matched, else None."""
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("type") == "url_verification":
-        return payload
-    return None
-
-
 def _is_discord_ping(payload: Mapping[str, Any] | None) -> bool:
     """Detect Discord's interaction PING (type=1)."""
     return isinstance(payload, dict) and payload.get("type") == 1
-
-
-def _is_github_ping(headers: Mapping[str, str]) -> bool:
-    """IN-13: Detect GitHub's `ping` event. The event type is in the
-    `X-GitHub-Event` header (not the body), so we check headers."""
-    event = headers.get("X-GitHub-Event") or headers.get("x-github-event")
-    return event == "ping"
-
-
-def _github_event_type(headers: Mapping[str, str]) -> str | None:
-    return headers.get("X-GitHub-Event") or headers.get("x-github-event")
-
-
-def _github_delivery_id(headers: Mapping[str, str]) -> str | None:
-    return headers.get("X-GitHub-Delivery") or headers.get("x-github-delivery")
-
-
-def _github_installation_id_from_payload(
-    payload: Mapping[str, Any] | None,
-) -> str | None:
-    """Mirror of tenant_resolver._extract_github: read `installation.id`."""
-    if not isinstance(payload, dict):
-        return None
-    inst = payload.get("installation")
-    if not isinstance(inst, Mapping):
-        return None
-    iid = inst.get("id")
-    if iid is None:
-        return None
-    if isinstance(iid, bool):
-        return None
-    if isinstance(iid, (int, str)):
-        s = str(iid).strip()
-        return s or None
-    return None
-
-
-def _github_repo_full_name(payload: Mapping[str, Any] | None) -> str | None:
-    if not isinstance(payload, dict):
-        return None
-    repo = payload.get("repository")
-    if isinstance(repo, Mapping):
-        full = repo.get("full_name")
-        if isinstance(full, str) and full:
-            return full
-    return None
-
-
-async def _load_github_selected_repositories(
-    pool: Any,
-    installation_row_id: Any,
-) -> list[str] | None:
-    """Read `selected_repositories` for an installation. Returns:
-    - list[str]: explicit selection (delivery must match)
-    - None:       all-repositories mode (no filter)
-    - []:         empty selection (every delivery is filtered out)
-    """
-    if pool is None or installation_row_id is None:
-        return None
-    row = await pool.fetchrow(
-        """
-        SELECT selected_repositories
-          FROM provider_installations
-         WHERE id = $1
-        """,
-        installation_row_id,
-    )
-    if row is None:
-        return None
-    raw = row["selected_repositories"]
-    if raw is None:
-        return None
-    # asyncpg may return JSONB as already-decoded list or as a JSON
-    # string depending on codec registration.
-    if isinstance(raw, list):
-        return [str(x) for x in raw if isinstance(x, str)]
-    try:
-        import json as _json
-
-        parsed = _json.loads(raw)
-    except Exception:  # noqa: BLE001
-        return None
-    if isinstance(parsed, list):
-        return [str(x) for x in parsed if isinstance(x, str)]
-    return None
-
-
-def _slack_lifecycle_event(payload: Mapping[str, Any] | None) -> str | None:
-    """Detect Slack installation-lifecycle events. Returns the event
-    type string when matched (`'app_uninstalled'` | `'tokens_revoked'`),
-    else None. IN-08 US4: these route to the uninstall handler instead
-    of ingestion."""
-    if not isinstance(payload, dict):
-        return None
-    event = payload.get("event")
-    if isinstance(event, dict):
-        t = event.get("type")
-        if t in ("app_uninstalled", "tokens_revoked"):
-            return t
-    return None
-
-
-async def _handle_github_lifecycle(
-    *,
-    request: Request,
-    runtime: WebhookRuntime,
-    outcome: Any,
-    payload: Mapping[str, Any],
-    event_type: str,
-    installation_id: str | None,
-) -> JSONResponse:
-    """IN-13: dispatch a verified, tenant-resolved GitHub lifecycle
-    event (installation, installation_repositories) to
-    `services.ingest.integrations.github.lifecycle.dispatch` and return its
-    JSON body with HTTP 200.
-    """
-    pool = runtime.pool
-    if pool is None or installation_id is None:
-        log.error(
-            "github_lifecycle_deps_missing",
-            has_pool=pool is not None,
-            has_installation_id=installation_id is not None,
-        )
-        return JSONResponse({"handled": event_type}, status_code=200)
-
-    github_client = runtime.github_client
-    cache_dict = None
-    if github_client is not None:
-        cache_dict = getattr(github_client, "_installation_tokens", None)
-
-    tenant_resolver = runtime.tenant_resolver
-
-    try:
-        from services.ingest.integrations.github.lifecycle import dispatch
-
-        body = await dispatch(
-            event_type=event_type,
-            payload=payload,
-            tenant_id=outcome.tenant_id,
-            installation_row_id=outcome.installation_row_id,
-            installation_id=installation_id,
-            pool=pool,
-            installation_token_cache=cache_dict,
-            tenant_resolver=tenant_resolver,
-        )
-    except Exception as exc:  # noqa: BLE001
-        # Don't 500 on lifecycle dispatch failure; GitHub will retry.
-        # Log loud and return a 200 so the retry budget closes out.
-        log.error(
-            "github_lifecycle_dispatch_failed",
-            event_type=event_type,
-            error_type=type(exc).__name__,
-        )
-        return JSONResponse(
-            {"handled": event_type, "error": "dispatch_failed"},
-            status_code=200,
-        )
-
-    return JSONResponse(body, status_code=200)
-
-
-async def _handle_slack_lifecycle(
-    request: Request,
-    runtime: WebhookRuntime,
-    outcome: Any,
-    payload: Mapping[str, Any],
-    event_type: str,
-) -> JSONResponse:
-    """Run the Slack uninstall flow for a verified, tenant-resolved
-    webhook. Returns 200 with `{handled: <event_type>}` so Slack's
-    retry budget closes out cleanly."""
-    from services.ingest.integrations.slack import uninstall as slack_uninstall
-
-    team_id = payload.get("team_id") if isinstance(payload, dict) else None
-    if not isinstance(team_id, str):
-        # The resolver already matched the team; this should never
-        # happen, but defensively close the request out.
-        return JSONResponse({"handled": event_type}, status_code=200)
-
-    pool = runtime.pool
-    secret_store = runtime.secret_store
-    tenant_resolver = runtime.tenant_resolver
-    if pool is None or secret_store is None or tenant_resolver is None:
-        log.error(
-            "slack_uninstall_deps_missing",
-            has_pool=pool is not None,
-            has_secret_store=secret_store is not None,
-            has_tenant_resolver=tenant_resolver is not None,
-        )
-        return JSONResponse({"handled": event_type}, status_code=200)
-
-    handler = (
-        slack_uninstall.handle_app_uninstalled
-        if event_type == "app_uninstalled"
-        else slack_uninstall.handle_tokens_revoked
-    )
-    await handler(
-        pool,
-        secret_store,
-        tenant_resolver,
-        outcome.tenant_id,
-        outcome.installation_row_id,
-        team_id,
-    )
-    return JSONResponse({"handled": event_type}, status_code=200)
 
 
 def _safe_json_loads(raw: bytes) -> dict[str, Any] | None:
@@ -681,92 +470,22 @@ def _safe_json_loads(raw: bytes) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-# =====================================================================
-# QuickBooks multi-tenant fan-out (R1, CRITICAL #7)
-# =====================================================================
-#
-# A single Intuit webhook delivery batches `eventNotifications[]`, and EACH
-# notification carries its OWN `realmId` — a realm is a connected QuickBooks
-# company, and each company maps to a DIFFERENT Fyralis tenant. Within a
-# notification, `dataChangeEvent.entities[]` lists MULTIPLE changed entities.
-#
-# The generic single-resolve→single-ingest tail resolves one tenant (from
-# `eventNotifications[0].realmId`) and runs the handler once, so every
-# notification past the first realm — and every entity past the first — is
-# silently dropped. This fans the delivery out into one ingest per
-# `(realmId, entity)` unit, each resolved to ITS realm's tenant.
-#
-# Security: `intuit-signature` is an APP-level secret (one verifier token per
-# Intuit app, shared across every connected realm), so the single up-front
-# signature verification in `receive` already authenticates the whole batch —
-# no per-unit re-verification is needed. (Spec R1: "intuit-signature already
-# verifies multi-realm".)
-#
-# Safety / gate-invariance: each unit is re-serialised as a FLAT single-entity
-# payload `{realmId, name, id, operation, lastUpdated}` — the exact shape the
-# QBO handler's "flattened webhook" branch already accepts, producing a draft
-# BYTE-IDENTICAL to today's `eventNotifications[0]` path. So a single-realm/
-# single-entity delivery (what the all-25 gate sends) fans out to exactly one
-# unit and yields the same observation + the same 202 cutover status as before.
-
-
-def _qbo_fanout_units(
-    payload: Mapping[str, Any],
-) -> list[tuple[str, dict[str, Any]]]:
-    """Split a QuickBooks `eventNotifications` delivery into
-    `(realm_id, flat_single_entity_payload)` units.
-
-    Returns one unit per (notification realm × changed entity). Drops
-    notifications/entities that carry no realmId or are malformed. Returns
-    `[]` when nothing resolvable is present (caller surfaces a 400).
-    """
-    notifications = payload.get("eventNotifications")
-    if not isinstance(notifications, list):
-        return []
-    units: list[tuple[str, dict[str, Any]]] = []
-    for notif in notifications:
-        if not isinstance(notif, dict):
-            continue
-        realm_id = str(notif.get("realmId") or "")
-        if not realm_id:
-            continue
-        dce = notif.get("dataChangeEvent")
-        ents = dce.get("entities") if isinstance(dce, dict) else None
-        if not isinstance(ents, list):
-            continue
-        for ent in ents:
-            if not isinstance(ent, dict):
-                continue
-            units.append(
-                (
-                    realm_id,
-                    {
-                        "realmId": realm_id,
-                        "name": ent.get("name"),
-                        "id": ent.get("id"),
-                        "operation": ent.get("operation"),
-                        "lastUpdated": ent.get("lastUpdated"),
-                    },
-                )
-            )
-    return units
-
-
-async def _process_qbo_unit(
+async def _process_verified_webhook_unit(
     request: Request,
     *,
     runtime: WebhookRuntime,
+    provider: str,
+    ingress: WebhookIngressDefinition,
     tenant_id: Any,
     unit_payload: dict[str, Any],
 ) -> int:
-    """Process ONE resolved (realm, entity) QuickBooks unit through the same
-    cutover-or-inline decision the generic tail uses for a single delivery.
+    """Process one contract-hook payload through the generic ingestion tail.
 
     Returns the HTTP status the unit produced (202 = Kafka cutover, 200 =
     inline). Raises `ValidationError` / `CompanyOSError` on an inline ingest
-    rejection (the caller logs + skips the offending unit).
+    rejection so the contract-owned provider policy can choose its batch
+    semantics.
     """
-    ingress = webhook_ingress_definition("quickbooks")
     assert ingress.source_id is not None
     unit_raw = json.dumps(unit_payload, separators=(",", ":")).encode("utf-8")
 
@@ -779,19 +498,19 @@ async def _process_qbo_unit(
         succeeded = await _attempt_kafka_path(
             request,
             runtime=runtime,
-            provider="quickbooks",
+            provider=provider,
             source=ingress.source_id,
             tenant_id=tenant_id,
             raw_body=unit_raw,
             payload=unit_payload,
         )
         if succeeded:
-            metrics.record_kafka_path_outcome("quickbooks", "success")
+            metrics.record_kafka_path_outcome(provider, "success")
             return 202
-        metrics.record_kafka_path_outcome("quickbooks", "fallback")
+        metrics.record_kafka_path_outcome(provider, "fallback")
         log.warning(
             "router.kafka_path_fallback_to_inline",
-            provider="quickbooks",
+            provider=provider,
             tenant_id=str(tenant_id),
         )
 
@@ -811,103 +530,12 @@ async def _process_qbo_unit(
         await _maybe_shadow_write_webhook(
             request,
             runtime=runtime,
-            provider="quickbooks",
+            provider=provider,
             tenant_id=tenant_id,
             raw_body=unit_raw,
             payload=unit_payload,
         )
     return 200
-
-
-async def _ingest_quickbooks_fanout(
-    request: Request,
-    *,
-    runtime: WebhookRuntime,
-    payload: Mapping[str, Any],
-    secret_label: str | None,
-) -> JSONResponse:
-    """Fan a verified QuickBooks `eventNotifications` delivery out into one
-    ingest per `(realmId, entity)`, each resolved to its realm's tenant.
-
-    Caller guarantees: signature already verified (app-level intuit-signature).
-    """
-    units = _qbo_fanout_units(payload)
-    if not units:
-        return JSONResponse(
-            {
-                "code": "validation_error",
-                "message": "quickbooks webhook carried no (realm, entity) units",
-                "context": {"provider": "quickbooks"},
-            },
-            status_code=400,
-        )
-
-    resolver = runtime.tenant_resolver
-    headers = dict(request.headers)
-    statuses: set[int] = set()
-    ingested = 0
-    unknown_realms = 0
-    realm_tenant: dict[str, Any] = {}
-
-    for realm_id, unit_payload in units:
-        tenant_id = realm_tenant.get(realm_id)
-        if tenant_id is None:
-            # Resolve THIS realm to its own tenant. `_extract_quickbooks`
-            # reads a top-level `realmId`, so a minimal `{realmId}` resolves.
-            outcome = await resolver.resolve(
-                "quickbooks",
-                {"realmId": realm_id},
-                headers,
-            )
-            if not isinstance(outcome, Resolved):
-                unknown_realms += 1
-                # Never log the realmId verbatim (resolver FR-015 posture).
-                log.warning("qbo_fanout_unknown_realm", provider="quickbooks")
-                continue
-            tenant_id = outcome.tenant_id
-            realm_tenant[realm_id] = tenant_id
-        try:
-            status = await _process_qbo_unit(
-                request,
-                runtime=runtime,
-                tenant_id=tenant_id,
-                unit_payload=unit_payload,
-            )
-        except (ValidationError, CompanyOSError) as exc:
-            # One malformed entity must not sink the rest of the batch.
-            log.warning(
-                "qbo_fanout_unit_rejected",
-                provider="quickbooks",
-                code=getattr(exc, "code", "error"),
-            )
-            continue
-        statuses.add(status)
-        ingested += 1
-
-    if ingested == 0:
-        # Every realm unknown/disabled (or every unit rejected) — surface as
-        # an auth failure so the provider retries + ops notices, matching the
-        # generic UnknownInstallation mapping.
-        err = WebhookVerificationError(
-            "unknown_installation",
-            "no enabled installation matched any realm in the delivery",
-            provider="quickbooks",
-        )
-        return _err_response(err, status_code=401)
-
-    # 202 if any unit took the Kafka cutover path (the gate asserts {202} for
-    # QBO when kafka_path_enabled is TRUE); otherwise 200 (inline).
-    status_code = 202 if 202 in statuses else 200
-    return JSONResponse(
-        {
-            "status": "accepted",
-            "units": ingested,
-            "unknown_realms": unknown_realms,
-            "secret_label": secret_label,
-        },
-        status_code=status_code,
-        headers={"X-Secret-Label": secret_label or ""},
-    )
 
 
 def _unknown_provider_response(provider: str) -> JSONResponse:
@@ -982,6 +610,7 @@ async def _resolve_and_verify_webhook(
     request: Request,
     *,
     provider: str,
+    ingress: WebhookIngressDefinition,
     subpath: str,
     payload: Mapping[str, Any] | None,
     raw: bytes,
@@ -1006,12 +635,33 @@ async def _resolve_and_verify_webhook(
     installation_row_id = (
         outcome.installation_row_id if isinstance(outcome, Resolved) else None
     )
-    secrets = await load_secrets(
-        provider,
-        tenant_id,
-        installation_row_id=installation_row_id,
-        app_state=request.app.state,
-    )
+    try:
+        secret_loader = resolve_webhook_secret_loader(ingress.route_id)
+        loaded_secrets = await secret_loader(
+            provider,
+            tenant_id,
+            installation_row_id=installation_row_id,
+            app_state=request.app.state,
+        )
+    except Exception as exc:  # noqa: BLE001 - secret resolution fails closed
+        log.error(
+            "webhook_secret_loader_failed",
+            provider=provider,
+            error_type=type(exc).__name__,
+        )
+        return _public_processing_unavailable_response(provider)
+    if (
+        not isinstance(loaded_secrets, Sequence)
+        or isinstance(loaded_secrets, (str, bytes, bytearray))
+        or any(not isinstance(secret, Secret) for secret in loaded_secrets)
+    ):
+        log.error(
+            "webhook_secret_loader_invalid_result",
+            provider=provider,
+            result_type=type(loaded_secrets).__name__,
+        )
+        return _public_processing_unavailable_response(provider)
+    secrets = tuple(loaded_secrets)
     try:
         verified = await verifier(
             body=raw,
@@ -1039,51 +689,37 @@ async def _verified_pre_tenant_response(
     ingress: WebhookIngressDefinition,
     runtime: WebhookRuntime,
     payload: Mapping[str, Any] | None,
-    slack_url_verification: Mapping[str, Any] | None,
 ) -> JSONResponse | None:
-    if slack_url_verification is not None:
-        challenge = slack_url_verification.get("challenge", "")
-        return JSONResponse({"challenge": challenge}, status_code=200)
     if (
         ingress.acknowledgement_policy == "synchronous_provider_response"
         and _is_discord_ping(payload)
     ):
         return JSONResponse({"type": 1}, status_code=200)
 
-    # IN-13 FR-022: GitHub bootstrap pings may arrive before installation rows.
-    if provider == "github" and _is_github_ping(request.headers):
-        try:
-            from services.ingest.integrations.github import metrics as gh_metrics
-
-            gh_metrics.record_webhook_verified(result="ok")
-        except Exception:  # noqa: BLE001
-            pass
-        log.info(
-            "github_webhook_ping",
-            event_type="ping",
-            delivery_id=_github_delivery_id(request.headers),
-        )
-        return JSONResponse({"handled": "ping"}, status_code=200)
-
-    if provider != "github":
-        return None
-
-    replay_cache = runtime.github_replay_cache
-    github_installation_id = _github_installation_id_from_payload(payload)
-    delivery_id = _github_delivery_id(request.headers)
-    if replay_cache is None or github_installation_id is None or delivery_id is None:
-        return None
-    if not replay_cache.seen(github_installation_id, delivery_id):
-        return None
-
     try:
-        from services.ingest.integrations.github import metrics as gh_metrics
-
-        gh_metrics.record_replay_dropped()
-    except Exception:  # noqa: BLE001
-        pass
-    log.info("github_webhook_replay_dropped", delivery_id=delivery_id)
-    return JSONResponse({"handled": "replay"}, status_code=200)
+        handler = resolve_webhook_verified_pre_tenant_handler(provider)
+        if handler is None:
+            return None
+        response = await handler(
+            request=request,
+            runtime=runtime,
+            payload=payload,
+        )
+    except Exception as exc:  # noqa: BLE001 - contract hook fails closed
+        log.error(
+            "webhook_verified_pre_tenant_handler_failed",
+            provider=provider,
+            error_type=type(exc).__name__,
+        )
+        return _public_processing_unavailable_response(provider)
+    if response is not None and not isinstance(response, JSONResponse):
+        log.error(
+            "webhook_verified_pre_tenant_handler_invalid_response",
+            provider=provider,
+            response_type=type(response).__name__,
+        )
+        return _public_processing_unavailable_response(provider)
+    return response
 
 
 def _resolver_outcome_rejection(
@@ -1143,65 +779,51 @@ async def _provider_verified_response(
             payload=payload or {},
         )
 
-    if provider == "slack":
-        slack_lifecycle = _slack_lifecycle_event(payload)
-        if slack_lifecycle is not None:
-            return await _handle_slack_lifecycle(
-                request,
-                runtime,
-                outcome,
-                payload or {},
-                slack_lifecycle,
-            )
+    async def process_unit(
+        *,
+        tenant_id: Any,
+        payload: dict[str, Any],
+    ) -> int:
+        return await _process_verified_webhook_unit(
+            request,
+            runtime=runtime,
+            provider=provider,
+            ingress=ingress,
+            tenant_id=tenant_id,
+            unit_payload=payload,
+        )
 
-    if provider == "github":
-        event_type = _github_event_type(request.headers)
-        github_installation_id = _github_installation_id_from_payload(payload)
-        if event_type in ("installation", "installation_repositories"):
-            return await _handle_github_lifecycle(
+    try:
+        handler = resolve_webhook_verified_tenant_handler(provider)
+        if handler is not None:
+            response = await handler(
                 request=request,
                 runtime=runtime,
                 outcome=outcome,
-                payload=payload or {},
-                event_type=event_type,
-                installation_id=github_installation_id,
+                tenant_id=tenant_id,
+                payload=payload,
+                verified=verified,
+                process_unit=process_unit,
             )
-
-        selected = await _load_github_selected_repositories(
-            runtime.pool,
-            outcome.installation_row_id,
+        else:
+            response = None
+    except Exception as exc:  # noqa: BLE001 - contract hook fails closed
+        log.error(
+            "webhook_verified_tenant_handler_failed",
+            provider=provider,
+            error_type=type(exc).__name__,
         )
-        if selected is not None:
-            repo_full = _github_repo_full_name(payload)
-            if repo_full is None or repo_full not in selected:
-                try:
-                    from services.ingest.integrations.github import (
-                        metrics as gh_metrics,
-                    )
-
-                    gh_metrics.record_filtered_repo(reason="not_selected")
-                except Exception:  # noqa: BLE001
-                    pass
-                log.info(
-                    "github_webhook_filtered_repo",
-                    event_type=event_type,
-                    repo_full_name=repo_full,
-                )
-                return JSONResponse(
-                    {"handled": "filtered_repo"},
-                    status_code=200,
-                )
-
-    if provider == "quickbooks" and isinstance(
-        (payload or {}).get("eventNotifications"),
-        list,
-    ):
-        return await _ingest_quickbooks_fanout(
-            request,
-            runtime=runtime,
-            payload=payload or {},
-            secret_label=verified.secret_label,
-        )
+        return _public_processing_unavailable_response(provider)
+    if handler is not None:
+        if response is not None and not isinstance(response, JSONResponse):
+            log.error(
+                "webhook_verified_tenant_handler_invalid_response",
+                provider=provider,
+                response_type=type(response).__name__,
+            )
+            return _public_processing_unavailable_response(provider)
+        if response is not None:
+            return response
 
     return None
 
@@ -1222,11 +844,7 @@ async def _kafka_cutover_response(
     if ingress.kafka_cutover_enabled and runtime.tenant_flags is not None:
         flag_enabled = await runtime.tenant_flags.kafka_path_enabled(tenant_id)
 
-    if (
-        not flag_enabled
-        or not ingress.kafka_cutover_enabled
-        or cutover_source is None
-    ):
+    if not flag_enabled or not ingress.kafka_cutover_enabled or cutover_source is None:
         return WebhookCutoverDecision(flag_enabled=flag_enabled, response=None)
 
     succeeded = await _attempt_kafka_path(
@@ -1387,23 +1005,18 @@ async def _receive_webhook(
         return read_error
     assert raw is not None  # for type checkers; read_error handled above.
 
-    slack_url_verification = (
-        _is_slack_url_verification(payload) if provider == "slack" else None
-    )
-
     handshake_binding = ingress.verification_handshake_binding
     handshake_handler_binding = ingress.verification_handshake_handler_binding
     if handshake_binding is not None and handshake_handler_binding is not None:
         is_handshake = resolve_callable_reference(handshake_binding)
         if is_handshake(payload):
-            handshake_handler = resolve_callable_reference(
-                handshake_handler_binding
-            )
+            handshake_handler = resolve_callable_reference(handshake_handler_binding)
             return handshake_handler(payload)
 
     auth = await _resolve_and_verify_webhook(
         request,
         provider=provider,
+        ingress=ingress,
         subpath=subpath,
         payload=payload,
         raw=raw,
@@ -1418,7 +1031,6 @@ async def _receive_webhook(
         ingress=ingress,
         runtime=auth.runtime,
         payload=payload,
-        slack_url_verification=slack_url_verification,
     )
     if response is not None:
         return response
@@ -1471,8 +1083,7 @@ async def _receive_webhook(
 
 
 def build_webhooks_router() -> APIRouter:
-    """Create the FastAPI router. Mounted at the app root by the
-    gateway so paths read as `/webhooks/{provider}/{subpath:path}`.
+    """Create exactly the webhook routes declared by the source contract.
 
     The router is stateless — all deps are resolved off the gateway
     runtime attached to `request.app.state`, so tests can construct the
@@ -1483,21 +1094,35 @@ def build_webhooks_router() -> APIRouter:
     """
     router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
-    # Register BOTH the bare `/webhooks/{provider}` and the
-    # `/webhooks/{provider}/{subpath}` forms on the same handler. GitHub (and
-    # other senders) do NOT follow 3xx on webhook delivery — they treat a
-    # redirect as a failed delivery — so we must NOT rely on Starlette's
-    # trailing-slash 307 (`/webhooks/github` → `/webhooks/github/`). Both
-    # forms now route directly to verification (no redirect). subpath="" for
-    # the bare form.
-    @router.post("/{provider}")
-    @router.post("/{provider}/{subpath:path}")
-    async def receive(
-        provider: str,
-        request: Request,
-        subpath: str = "",
-    ) -> JSONResponse:
-        return await _receive_webhook(provider, request, subpath=subpath)
+    def endpoint_for(
+        ingress: WebhookIngressDefinition,
+    ) -> Any:
+        async def receive(request: Request) -> JSONResponse:
+            route_prefix = f"/webhooks/{ingress.route_id}"
+            request_path = str(request.scope.get("path", ""))
+            subpath = (
+                request_path[len(route_prefix) :].removeprefix("/")
+                if request_path.startswith(route_prefix)
+                else ""
+            )
+            return await _receive_webhook(
+                ingress.route_id,
+                request,
+                subpath=subpath,
+            )
+
+        # Stable, unique route names make the mounted inventory and OpenAPI
+        # output deterministic without creating another source registry.
+        receive.__name__ = f"receive_{ingress.route_id}_webhook"
+        return receive
+
+    for ingress in WEBHOOK_INGRESS_CATALOG.values():
+        router.add_api_route(
+            ingress.route_path.removeprefix("/webhooks"),
+            endpoint_for(ingress),
+            methods=("POST",),
+            name=f"receive_{ingress.route_id}_webhook",
+        )
 
     return router
 

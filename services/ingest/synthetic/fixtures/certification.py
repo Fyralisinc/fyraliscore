@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from services.ingest.source_certification.runtime import certification_callable
 from services.ingest.synthetic.fixtures.ashby_generator import make_ashby
@@ -43,10 +46,97 @@ from services.ingest.synthetic.fixtures.telegram_generator import make_telegram
 FixtureGenerator = Callable[..., dict[str, Any]]
 FixtureFactory = Callable[..., dict[str, Any]]
 FixtureCountOracle = Callable[[Mapping[str, Any]], int]
+FixtureIdentityFactory = Callable[[str], Any]
+
+
+# Time-windowed providers must receive fixtures inside the window their real
+# production planner asks for.  Freeze the anchor once per process at the prior
+# UTC noon: fixture creation remains byte-stable throughout a certification
+# run, while CloudTrail's hard 90-day lookback and Grafana's configured history
+# window cannot silently turn a valid fixture into an empty backfill as the
+# calendar advances.
+_RECENT_CERTIFICATION_BASE = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+    hour=12, minute=0, second=0, microsecond=0
+)
+_RECENT_CERTIFICATION_BASE_MS = int(_RECENT_CERTIFICATION_BASE.timestamp() * 1000)
 
 
 class CertificationFixtureCountError(ValueError):
     """A fixture cannot yield one exact, positive Observation count."""
+
+
+def _identity(value: str) -> str:
+    return value
+
+
+def _identity_digest(value: str, *, length: int = 16) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:length]
+
+
+def _numeric_identity(value: str, *, digits: int) -> str:
+    """Build a provider-valid, stable positive decimal installation scope."""
+
+    floor = 10 ** (digits - 1)
+    return str(floor + int(_identity_digest(value, length=16), 16) % (9 * floor))
+
+
+def _calendar_identities(installation_id: str) -> list[str]:
+    """Preserve the default two-calendar shape while isolating siblings."""
+
+    token = _identity_digest(installation_id)
+    return [
+        f"primary-{token}@provider-lab.test",
+        f"secondary-{token}@provider-lab.test",
+    ]
+
+
+def _drive_identity(installation_id: str) -> list[dict[str, str]]:
+    """Preserve one Drive target and give it an installation-scoped file space."""
+
+    token = _identity_digest(installation_id)
+    return [
+        {
+            "owner_email": f"owner-{token}@provider-lab.test",
+            "drive_id": f"drive-{token}",
+            "drive_kind": "shared_drive",
+        }
+    ]
+
+
+def _jira_identity(installation_id: str) -> str:
+    return f"jira-{_identity_digest(installation_id)}.provider-lab.test"
+
+
+def _quickbooks_identity(installation_id: str) -> str:
+    return _numeric_identity(installation_id, digits=16)
+
+
+def _grafana_identity(installation_id: str) -> str:
+    return f"https://grafana-{_identity_digest(installation_id)}.provider-lab.test"
+
+
+def _gusto_identity(installation_id: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"fyralis:gusto:{installation_id}"))
+
+
+def _aws_identity(installation_id: str) -> str:
+    return _numeric_identity(installation_id, digits=12)
+
+
+def _recent_certification_base_ms(_installation_id: str) -> int:
+    return _RECENT_CERTIFICATION_BASE_MS
+
+
+def _recent_certification_base_iso(_installation_id: str) -> str:
+    return _RECENT_CERTIFICATION_BASE.isoformat().replace("+00:00", "Z")
+
+
+def _carta_identity(installation_id: str) -> str:
+    return str(uuid5(NAMESPACE_URL, f"fyralis:carta:{installation_id}"))
+
+
+def _linkedin_identity(installation_id: str) -> str:
+    return f"li-org-{_identity_digest(installation_id)}"
 
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
@@ -331,7 +421,7 @@ def _bind_fixture(
     *,
     count_observations: FixtureCountOracle,
     identity_parameter: str | None = None,
-    required_defaults: Mapping[str, str] | None = None,
+    required_defaults: Mapping[str, str | FixtureIdentityFactory] | None = None,
 ) -> tuple[FixtureFactory, FixtureCountOracle]:
     @certification_callable(source_id=source_id, role="fixture_factory")
     def _factory(
@@ -343,7 +433,12 @@ def _bind_fixture(
         if identity_parameter is not None:
             params[identity_parameter] = installation_id
         for key, value in (required_defaults or {}).items():
-            params.setdefault(key, value.format(installation_id=installation_id))
+            default = (
+                value(installation_id)
+                if callable(value)
+                else value.format(installation_id=installation_id)
+            )
+            params.setdefault(key, default)
         fixture = generator(**params)
         if not isinstance(fixture, dict):
             raise TypeError(
@@ -416,6 +511,7 @@ build_notion_fixture, count_notion_fixture_observations = _bind_fixture(
     "google_calendar",
     make_google_calendar,
     count_observations=lambda fixture: _count_mapping_lists(fixture, "events"),
+    required_defaults={"calendars": _calendar_identities},
 )
 (
     build_google_drive_fixture,
@@ -424,11 +520,13 @@ build_notion_fixture, count_notion_fixture_observations = _bind_fixture(
     "google_drive",
     make_google_drive,
     count_observations=_count_google_drive,
+    required_defaults={"targets": _drive_identity},
 )
 build_jira_fixture, count_jira_fixture_observations = _bind_fixture(
     "jira",
     make_jira,
     count_observations=_count_jira,
+    required_defaults={"site_host": _jira_identity},
 )
 build_mercury_fixture, count_mercury_fixture_observations = _bind_fixture(
     "mercury",
@@ -440,6 +538,7 @@ build_mercury_fixture, count_mercury_fixture_observations = _bind_fixture(
         children_key="transactions",
         snapshot_per_object=True,
     ),
+    identity_parameter="seed",
 )
 (
     build_quickbooks_fixture,
@@ -448,11 +547,16 @@ build_mercury_fixture, count_mercury_fixture_observations = _bind_fixture(
     "quickbooks",
     make_quickbooks,
     count_observations=_count_entity_rows,
+    required_defaults={"realm_id": _quickbooks_identity},
 )
 build_grafana_fixture, count_grafana_fixture_observations = _bind_fixture(
     "grafana",
     make_grafana,
     count_observations=lambda fixture: len(_list_field(fixture, "annotations")),
+    required_defaults={
+        "base_url": _grafana_identity,
+        "base_ms": _recent_certification_base_ms,
+    },
 )
 build_telegram_fixture, count_telegram_fixture_observations = _bind_fixture(
     "telegram",
@@ -463,6 +567,7 @@ build_telegram_fixture, count_telegram_fixture_observations = _bind_fixture(
         objects_key="dialogs",
         children_key="messages",
     ),
+    identity_parameter="seed",
 )
 build_brex_fixture, count_brex_fixture_observations = _bind_fixture(
     "brex",
@@ -474,16 +579,23 @@ build_brex_fixture, count_brex_fixture_observations = _bind_fixture(
         children_key="transactions",
         snapshot_per_object=True,
     ),
+    identity_parameter="seed",
 )
 build_ramp_fixture, count_ramp_fixture_observations = _bind_fixture(
     "ramp",
     make_ramp,
     count_observations=_count_entity_rows,
+    required_defaults={
+        "business_id": lambda installation_id: (
+            f"bus-{_identity_digest(installation_id)}"
+        ),
+    },
 )
 build_gusto_fixture, count_gusto_fixture_observations = _bind_fixture(
     "gusto",
     make_gusto,
     count_observations=_count_entity_rows,
+    required_defaults={"company_uuid": _gusto_identity},
 )
 build_deel_fixture, count_deel_fixture_observations = _bind_fixture(
     "deel",
@@ -495,6 +607,7 @@ build_deel_fixture, count_deel_fixture_observations = _bind_fixture(
         children_key="payments",
         snapshot_per_object=True,
     ),
+    identity_parameter="seed",
 )
 (
     build_fireflies_fixture,
@@ -503,7 +616,12 @@ build_deel_fixture, count_deel_fixture_observations = _bind_fixture(
     "fireflies",
     make_fireflies,
     count_observations=lambda fixture: len(_list_field(fixture, "transcripts")),
-    required_defaults={"workspace_id": "{installation_id}"},
+    # ``workspace_id`` is the provider installation identity and participates
+    # in every Fireflies Observation external ID.  Force it from the exact
+    # installation instead of treating it as a caller-overridable default;
+    # otherwise two sibling scenarios that happen to provide the same fixture
+    # parameter silently collapse onto the global Observation uniqueness key.
+    identity_parameter="workspace_id",
 )
 build_signal_fixture, count_signal_fixture_observations = _bind_fixture(
     "signal",
@@ -514,12 +632,17 @@ build_signal_fixture, count_signal_fixture_observations = _bind_fixture(
         objects_key="threads",
         children_key="messages",
     ),
+    identity_parameter="seed",
 )
 build_aws_fixture, count_aws_fixture_observations = _bind_fixture(
     "aws",
     make_aws,
     count_observations=lambda fixture: len(_list_field(fixture, "events")),
-    required_defaults={"account_id": "000000000000"},
+    identity_parameter="seed",
+    required_defaults={
+        "account_id": _aws_identity,
+        "base_ms": _recent_certification_base_ms,
+    },
 )
 build_miro_fixture, count_miro_fixture_observations = _bind_fixture(
     "miro",
@@ -542,16 +665,25 @@ build_carta_fixture, count_carta_fixture_observations = _bind_fixture(
     "carta",
     make_carta,
     count_observations=_count_entity_rows,
+    identity_parameter="seed",
+    required_defaults={"firm_id": _carta_identity},
 )
 build_hibob_fixture, count_hibob_fixture_observations = _bind_fixture(
     "hibob",
     make_hibob,
     count_observations=_count_entity_rows,
+    identity_parameter="company_id",
+    required_defaults={
+        "seed": _identity,
+        "base_iso": _recent_certification_base_iso,
+    },
 )
 build_ashby_fixture, count_ashby_fixture_observations = _bind_fixture(
     "ashby",
     make_ashby,
     count_observations=_count_entity_rows,
+    identity_parameter="org_id",
+    required_defaults={"seed": _identity},
 )
 (
     build_linkedin_fixture,
@@ -560,6 +692,8 @@ build_ashby_fixture, count_ashby_fixture_observations = _bind_fixture(
     "linkedin",
     make_linkedin,
     count_observations=_count_entity_rows,
+    identity_parameter="seed",
+    required_defaults={"organization_urn": _linkedin_identity},
 )
 (
     build_facebook_pages_fixture,
@@ -570,6 +704,65 @@ build_ashby_fixture, count_ashby_fixture_observations = _bind_fixture(
     count_observations=_count_facebook_pages,
     identity_parameter="page_id",
 )
+
+
+@certification_callable(
+    source_id="whatsapp",
+    role="live_fixture_factory",
+)
+def build_whatsapp_live_fixture(
+    *,
+    fixture_params: Mapping[str, Any] | None = None,
+    installation_id: str | None = None,
+) -> dict[str, Any]:
+    """Return one sanitized, deterministic WhatsApp live webhook payload."""
+
+    del fixture_params
+    phone_number_id = installation_id or "certification-phone"
+    return {
+        # Validation target construction needs the exact installation scope
+        # without reverse-engineering the provider webhook envelope.
+        "phone_number_id": phone_number_id,
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "certification-waba",
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {
+                                "display_phone_number": "+15550000000",
+                                "phone_number_id": phone_number_id,
+                            },
+                            "contacts": [
+                                {
+                                    "wa_id": "15550000001",
+                                    "profile": {
+                                        "name": "Certification Fixture",
+                                    },
+                                }
+                            ],
+                            "messages": [
+                                {
+                                    "id": "wamid.certification.1",
+                                    "from": "15550000001",
+                                    "timestamp": "1781000001",
+                                    "type": "text",
+                                    "text": {
+                                        "body": (
+                                            "sanitized certification payload"
+                                        ),
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
 
 
 __all__ = [
@@ -600,6 +793,7 @@ __all__ = [
     "build_signal_fixture",
     "build_slack_fixture",
     "build_telegram_fixture",
+    "build_whatsapp_live_fixture",
     "count_ashby_fixture_observations",
     "count_aws_fixture_observations",
     "count_brex_fixture_observations",

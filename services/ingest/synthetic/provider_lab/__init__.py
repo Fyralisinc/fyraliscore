@@ -13,6 +13,8 @@ from .calibration import (
 from .protocol import (
     AdapterRegistry,
     ProviderAdapter,
+    ProviderOperationBinding,
+    ProviderProtocolSurface,
     ProviderRequest,
     ProviderResponse,
     ProviderRoute,
@@ -30,6 +32,8 @@ __all__ = [
     "LabRuntime",
     "ProviderAdapter",
     "ProviderLabServer",
+    "ProviderOperationBinding",
+    "ProviderProtocolSurface",
     "ProviderRequest",
     "ProviderResponse",
     "ProviderRoute",

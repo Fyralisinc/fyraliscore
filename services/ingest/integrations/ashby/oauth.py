@@ -14,13 +14,13 @@ from services.ingest.integrations.ashby.onboarding import (
     finalize_install,
     register_webhook_installation,
 )
+from services.ingest.integrations.base_url_policy import native_connect_base_url
 from services.ingest.integrations.provider_transport import (
     tenant_preinstall_transport_kwargs,
 )
 
 
 router = APIRouter(prefix="/integrations/ashby", tags=["ashby"])
-_DEFAULT_BASE_URL = "https://api.ashbyhq.com"
 
 
 def _tenant_from_request(request: Request) -> UUID:
@@ -47,12 +47,13 @@ def _secret_store_from_request(request: Request) -> Any:
 
 def _inputs(body: dict[str, Any]) -> tuple[str, str, str]:
     api_token = str(body.get("api_token") or "").strip()
-    base_url = str(body.get("base_url") or _DEFAULT_BASE_URL).strip().rstrip("/")
     org_id = str(body.get("org_id") or body.get("organization_id") or "ashby").strip()
     if not api_token:
         raise HTTPException(status_code=400, detail="api_token is required")
-    if not base_url.startswith(("https://", "http://")):
-        raise HTTPException(status_code=400, detail="base_url must be a full URL")
+    base_url = native_connect_base_url(
+        body.get("base_url"),
+        endpoint_name="ashby_api",
+    )
     if not org_id:
         raise HTTPException(status_code=400, detail="org_id is required")
     return api_token, base_url, org_id

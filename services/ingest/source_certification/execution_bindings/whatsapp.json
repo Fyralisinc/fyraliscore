@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "whatsapp",
+  "spec_hash": "00ce01b01ffc2d9503e548aaa3615958541074471686cff7df076dc43273048b",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "whatsapp",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "0bbe87af0ebbdcdb7740ca48a7829b1f49db2bd25c48085c9e6ce782e8b2bcc9"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_WHATSAPP"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_WHATSAPP"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "whatsapp",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "0bbe87af0ebbdcdb7740ca48a7829b1f49db2bd25c48085c9e6ce782e8b2bcc9"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "whatsapp",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "0bbe87af0ebbdcdb7740ca48a7829b1f49db2bd25c48085c9e6ce782e8b2bcc9"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "whatsapp",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "0bbe87af0ebbdcdb7740ca48a7829b1f49db2bd25c48085c9e6ce782e8b2bcc9"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

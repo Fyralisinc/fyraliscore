@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "quickbooks",
+  "spec_hash": "8379467c2076bfe71ce8824169947eb6f206129c4fa828da69f2505909cf8766",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "quickbooks",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "d97317d621ed524eb6593dbda5591d86e12ed53efc4f6cbe4ea00866f4b16aac"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_QUICKBOOKS"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_QUICKBOOKS"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "quickbooks",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "d97317d621ed524eb6593dbda5591d86e12ed53efc4f6cbe4ea00866f4b16aac"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "quickbooks",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "d97317d621ed524eb6593dbda5591d86e12ed53efc4f6cbe4ea00866f4b16aac"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "quickbooks",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "d97317d621ed524eb6593dbda5591d86e12ed53efc4f6cbe4ea00866f4b16aac"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

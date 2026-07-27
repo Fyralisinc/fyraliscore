@@ -9,7 +9,7 @@ without touching the verify loop, which already iterates ALL active secrets for
 rotation.
 
 The per-tenant signing secret is resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='deel') the seed/onboarding step registers.
 
 Like GitHub/Jira, the digest is assumed to be over the body alone (no timestamp

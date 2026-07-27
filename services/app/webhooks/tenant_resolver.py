@@ -457,21 +457,6 @@ def _extract_fireflies(payload: Mapping[str, Any], headers: Mapping[str, str]) -
     return _str_or_none(payload.get("workspace_id"))
 
 
-def _extract_miro(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
-    # IN-MIRO (Brex/HMAC archetype). Miro scopes installs by organization; the
-    # install is registered keyed by the org id (provider_installations
-    # provider='miro', installation_id=<org_id>). The webhook body carries the
-    # org id at top level as `organizationId` (camel); the synthetic harness
-    # sends it explicitly. The signing secret is resolved separately in
-    # services/app/webhooks/secrets.py.
-    # TODO(human): confirm miro webhook tenant-id field (organizationId vs orgId)
-    #   against Miro webhook docs.
-    org = _str_or_none(payload.get("organizationId"))
-    if org is not None:
-        return org
-    return _str_or_none(payload.get("orgId"))
-
-
 def _extract_figma(payload: Mapping[str, Any], headers: Mapping[str, str]) -> str | None:
     # IN-FIGMA. VERIFIED against Figma Webhooks V2 docs (R2): a real Figma
     # delivery carries a Figma-assigned `webhook_id` and NO `team_id` in the

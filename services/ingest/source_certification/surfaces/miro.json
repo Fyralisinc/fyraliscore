@@ -1,0 +1,582 @@
+{
+  "implementation_sha256": {
+    "services.ingest.ingestion.fetchers.miro": "73d598a5aa26d86c2df3f61322b94fd356e72a4b32e5fad310b3fe2283464bb9",
+    "services.ingest.ingestion.handlers.miro": "5af0bf86b427b53782d5f410fbb9b87e1bf30ba615347cb82157ebace45da667",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.miro": "a5db82e0060cb49c76c096cd160b80fcd44f1fc5adbcb87011c17224d74b4e84",
+    "services.ingest.ingestion.reconcilers.miro": "7d7bcb0cc4b56b4822812b6f2c335d1febca7f716785f1eb6fb17afe73c5811b",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.miro": "8a3eb5517a952595085b52be95e5fb60fe4d358e30bc5a6c7a16bd4b0004ec8d",
+    "services.ingest.integrations.miro.client": "171dc4c697f20bc15c208efccb72da578050baa8a5df350865553bddd64f7876",
+    "services.ingest.integrations.miro.metrics": "06e9792cbce7c5062e2b183314a317b19ebeaaefd2f388be32a9e406030d6dd7",
+    "services.ingest.integrations.miro.oauth": "6504bb86f2bcb754033a67e15faa7e3ef3826bb5c945d85346057a11e34d4a6a",
+    "services.ingest.integrations.miro.onboarding": "5d634966bd1edbc43ffda097e0788d36a06e382ac4fc9b045331a836257efc80",
+    "services.ingest.integrations.miro.poll": "1cc6f28bb8c89199380edbf5884b6ae710a1413f835cfc75a26430b15833dbbf",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Miro REST API v2",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "api_token"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Miro",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "boards.list",
+      "boards.get",
+      "board_items.list"
+    ],
+    "outbound_endpoint_names": [
+      "miro_api"
+    ],
+    "provider_id": "miro",
+    "source_ids": [
+      "miro"
+    ],
+    "webhook_ingresses": []
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "board_order": [
+        "board_f2bc05416549cc85"
+      ],
+      "boards": {
+        "board_f2bc05416549cc85": {
+          "createdAt": "2026-01-05T00:00:00Z",
+          "id": "board_f2bc05416549cc85",
+          "items": [
+            {
+              "boardId": "board_f2bc05416549cc85",
+              "createdAt": "2026-01-05T23:00:00Z",
+              "createdBy": {
+                "id": "user_b6a7d321",
+                "type": "user"
+              },
+              "data": {
+                "content": "sticky_note 0 on board_f2bc05"
+              },
+              "geometry": {
+                "height": 120.0,
+                "width": 200.0
+              },
+              "id": "item_f43bb54b6e70c02b0b20",
+              "modifiedAt": "2026-01-05T23:00:00Z",
+              "modifiedBy": {
+                "id": "user_b6a7d321",
+                "type": "user"
+              },
+              "position": {
+                "x": 0.0,
+                "y": 0.0
+              },
+              "type": "sticky_note",
+              "version": "1"
+            },
+            {
+              "boardId": "board_f2bc05416549cc85",
+              "createdAt": "2026-01-05T22:00:00Z",
+              "createdBy": {
+                "id": "user_8539d821",
+                "type": "user"
+              },
+              "data": {
+                "content": "shape 1 on board_f2bc05"
+              },
+              "geometry": {
+                "height": 120.0,
+                "width": 200.0
+              },
+              "id": "item_dad94af926ac04a3532c",
+              "modifiedAt": "2026-01-05T22:00:00Z",
+              "modifiedBy": {
+                "id": "user_8539d821",
+                "type": "user"
+              },
+              "position": {
+                "x": 100.0,
+                "y": 50.0
+              },
+              "type": "shape",
+              "version": "2"
+            },
+            {
+              "boardId": "board_f2bc05416549cc85",
+              "createdAt": "2026-01-05T21:00:00Z",
+              "createdBy": {
+                "id": "user_57037904",
+                "type": "user"
+              },
+              "data": {
+                "content": "text 2 on board_f2bc05"
+              },
+              "geometry": {
+                "height": 120.0,
+                "width": 200.0
+              },
+              "id": "item_20180be62750f9d6631a",
+              "modifiedAt": "2026-01-05T21:00:00Z",
+              "modifiedBy": {
+                "id": "user_57037904",
+                "type": "user"
+              },
+              "position": {
+                "x": 200.0,
+                "y": 100.0
+              },
+              "type": "text",
+              "version": "3"
+            },
+            {
+              "boardId": "board_f2bc05416549cc85",
+              "createdAt": "2026-01-05T20:00:00Z",
+              "createdBy": {
+                "id": "user_b6a7d321",
+                "type": "user"
+              },
+              "data": {
+                "content": "card 3 on board_f2bc05"
+              },
+              "geometry": {
+                "height": 120.0,
+                "width": 200.0
+              },
+              "id": "item_c0aa9a8dc0a3b27112ca",
+              "modifiedAt": "2026-01-05T20:00:00Z",
+              "modifiedBy": {
+                "id": "user_b6a7d321",
+                "type": "user"
+              },
+              "position": {
+                "x": 300.0,
+                "y": 150.0
+              },
+              "type": "card",
+              "version": "4"
+            }
+          ],
+          "modifiedAt": "2026-01-05T00:00:00Z",
+          "name": "Design Board 1",
+          "type": "board"
+        }
+      },
+      "org_id": "certification-surface-miro",
+      "page_size": 50
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "boards.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "boards.list"
+        ],
+        "path_template": "/boards",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "miro.boards",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "board_items.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "board_items.list"
+        ],
+        "path_template": "/boards/{board_id}/items",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "miro.board_items",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "boards.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "boards.get"
+        ],
+        "path_template": "/boards/{board_id}",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "miro.board",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "cursor_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.miro",
+      "evidence_id": "ingest.evidence.miro",
+      "notes": [
+        "API polling is the dependable transport; webhook assumptions are not certified."
+      ],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.miro",
+      "validation_runtime": {
+        "generator_group": "miro",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_miro_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_miro_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_miro_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_miro_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_miro",
+        "replay_probe_binding": null,
+        "signature_probe_binding": null,
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.miro.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "board",
+      "board_item"
+    ],
+    "delivery_policies": [
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Design",
+      "connection_method": "API token",
+      "description": "Boards, items, and collaboration artifacts.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 14,
+      "setup_requirements": "Workspace admin approval, bearer token, board allowlist, polling setup, API base confirmation.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill"
+      ]
+    },
+    "display_name": "Miro",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.miro:fetch_page_miro",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:miro_item"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "miro:item",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "miro:item",
+        "ingress_kind": "poll"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_miro_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": "miro_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "miro_boards",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref"
+        ],
+        "scope_column": "org_id",
+        "source": "miro",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "miro_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": null,
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "org_id",
+      "board_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.miro.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "miro:item"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.miro:handle_miro_item"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "team id",
+          "board ids",
+          "polling scope"
+        ],
+        "agent_generates": [
+          "board scope contract",
+          "polling cadence guard"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin creates or approves a least-privilege service credential"
+        ],
+        "settings_targets": [
+          "developer app settings",
+          "team settings",
+          "board settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "team",
+        "approved-boards"
+      ],
+      "discovery_target": "teams, boards, and board items",
+      "generic_authorization_mode": null,
+      "ingress_paths": [],
+      "local_rehearsal": null,
+      "method": "api_token",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/miro/connect/finalize",
+        "kind": "api_token_native_connect",
+        "payload_fields": [
+          "api_token",
+          "base_url",
+          "board_ids",
+          "org_id"
+        ],
+        "preflight_path": "/integrations/miro/connect/preflight",
+        "preflight_payload_fields": [
+          "api_token",
+          "base_url"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": "Miro is poll-only from the customer data plane; provider webhooks are not configured.",
+      "optional_inputs": [
+        "base_url",
+        "board_ids",
+        "org_id"
+      ],
+      "provider_console_url": "https://developers.miro.com/",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "boards read",
+        "team read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "api_token"
+      ],
+      "required_refs": [
+        "api_token"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "boards.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "boards.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "board_items.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "miro_api",
+        "operation_ids": [
+          "boards.list",
+          "boards.get",
+          "board_items.list"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.miro:plan_shards_miro",
+    "provider_id": "miro",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.miro:reconcile_miro",
+    "runtime_identifiers": [
+      "org_id",
+      "board_id"
+    ],
+    "source_id": "miro",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "miro"
+  },
+  "source_id": "miro"
+}

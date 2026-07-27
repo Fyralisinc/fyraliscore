@@ -227,7 +227,11 @@ async def load_facebook_pages_installation_status_rows(
         predicates.append("enabled = TRUE")
     rows = await executor.fetch(
         f"""
-        SELECT id, page_id, enabled,
+        SELECT id, page_id, enabled, connection_state,
+               reauthorization_required_at, user_token_expires_at,
+               page_token_recovery_next_attempt_at,
+               page_recovery_last_error_code
+                   AS page_token_recovery_last_error_code,
                (page_access_token_ref IS NOT NULL
                 AND app_secret_ref IS NOT NULL
                 AND verify_token_ref IS NOT NULL) AS has_secret,
@@ -251,6 +255,20 @@ async def load_facebook_pages_installation_status_rows(
             "details": {
                 "page_id": row["page_id"],
                 "page_name": row["page_name"],
+                "connection_state": row["connection_state"],
+                "reauthorization_required": (
+                    row["connection_state"] == "reauthorization_required"
+                ),
+                "reauthorization_required_at": (
+                    row["reauthorization_required_at"]
+                ),
+                "user_token_expires_at": row["user_token_expires_at"],
+                "page_token_recovery_next_attempt_at": (
+                    row["page_token_recovery_next_attempt_at"]
+                ),
+                "page_token_recovery_last_error_code": (
+                    row["page_token_recovery_last_error_code"]
+                ),
                 "coverage": "All available history",
                 "oldest_message_at": row["oldest_message_at"],
                 "backfill_exhausted_at": row["backfill_exhausted_at"],

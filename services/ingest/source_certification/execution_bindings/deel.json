@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "deel",
+  "spec_hash": "5e6b5266ccb1aa66da8981889a8a53a248c656496d887528a5cbc346d530b38c",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "deel",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "470fc835348053331933e0e934138469e492237e30524606639c46ff8c17b872"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_DEEL"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_DEEL"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "deel",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "470fc835348053331933e0e934138469e492237e30524606639c46ff8c17b872"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "deel",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "470fc835348053331933e0e934138469e492237e30524606639c46ff8c17b872"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "deel",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "470fc835348053331933e0e934138469e492237e30524606639c46ff8c17b872"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

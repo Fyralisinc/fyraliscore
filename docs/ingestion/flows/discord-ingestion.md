@@ -127,7 +127,7 @@ Discord‑specific differences ([oauth.py:1‑34](../../../services/ingest/integ
 3. `_persist_secrets` stores the OAuth `access_token` under
    `discord_bot_token:{guild_id}` **and** mirrors the app public key
    (`WEBHOOK_SECRET_DISCORD`) under `discord_public_key:{guild_id}` — so the
-   DB‑backed `load_secrets` path resolves the verifier key uniformly via
+   DB‑backed `load_installation_secrets` path resolves the verifier key uniformly via
    `provider_installations.secret_ref`
    ([oauth.py:247‑281](../../../services/ingest/integrations/discord/oauth.py#L247-L281)).
 4. The callback **upserts** a `provider_installations` row keyed on

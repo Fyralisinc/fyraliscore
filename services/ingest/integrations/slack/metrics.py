@@ -11,6 +11,11 @@ from __future__ import annotations
 
 import threading
 
+from services.ingest.integrations.metrics_contract import (
+    MetricSample,
+    export_install_metrics,
+)
+
 
 _lock = threading.Lock()
 _install_outcomes: dict[str, int] = {}
@@ -57,6 +62,21 @@ def get_uninstall_outcome_count(outcome: str) -> int:
         return _uninstall_outcomes.get(outcome, 0)
 
 
+def export_metrics(source_id: str) -> tuple[MetricSample, ...]:
+    """Copy and normalize the source-owned counters under their lock."""
+
+    with _lock:
+        installs = dict(_install_outcomes)
+        uninstalls = dict(_uninstall_outcomes)
+        durations = list(_install_durations_s)
+    return export_install_metrics(
+        source_id,
+        install_outcomes=installs,
+        uninstall_outcomes=uninstalls,
+        install_durations_s=durations,
+    )
+
+
 def reset() -> None:
     """Test helper — clear all counters."""
     with _lock:
@@ -66,6 +86,7 @@ def reset() -> None:
 
 
 __all__ = [
+    "export_metrics",
     "record_install_outcome",
     "record_uninstall_outcome",
     "observe_install_duration",

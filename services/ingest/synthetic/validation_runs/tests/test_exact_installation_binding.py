@@ -270,6 +270,7 @@ async def test_provider_live_seeding_preserves_exact_existing_tenant() -> None:
         source="jira",
         slug="jira",
         jira_site="exact.atlassian.net",
+        provider_installation_id="exact.atlassian.net",
     )
 
     await seed_live_installs(  # type: ignore[arg-type]
@@ -300,6 +301,7 @@ async def test_provider_live_seeding_refuses_cross_tenant_rebinding() -> None:
         source="jira",
         slug="jira",
         jira_site="shared.atlassian.net",
+        provider_installation_id="shared.atlassian.net",
     )
 
     with pytest.raises(RuntimeError, match="refuses to rebind.*across tenants"):

@@ -2,17 +2,19 @@
 
 Every history-capable source runs the `FLAKY` fault profile (a deterministic
 one-in-ten Provider Lab 503 rule), every canonical source runs its live edge,
-and the suite adds
-a deliberate **partition-missing injection**: one out-of-range
-`occurred_at` event per source driven through the real
-`observation_writer` to verify A28's permanent-error DLQ routing fires
-under composition (NOT a crash-loop).
+and the suite certifies both sides of the writer's partition boundary for
+every source:
+
+* one distinct, in-guardrail missing month self-heals and persists;
+* one far-out timestamp is rejected as `out_of_bounds_occurred_at`.
 
 Validates the framework resilience contract:
   - A19 broad-exception handling — no orchestrator (non-consumer)
     subprocess crashes despite ~10% injected 5xx.
-  - A28 permanent-error routing — out-of-range rows land on
-    `ingestion.dlq` as `partition_missing`.
+  - A28 partition recovery — valid historical rows create their missing
+    monthly partition and persist exactly once.
+  - A28 guardrail routing — far-out rows land on `ingestion.dlq` as
+    `out_of_bounds_occurred_at`, with zero residual `partition_missing`.
 
 The injected failures are transient. Recovery is part of the certification
 contract, so missing data, incomplete onboarding, a failed assertion, or a
@@ -40,7 +42,7 @@ from services.ingest.synthetic.validation_runs.composition import (
     SigningSecrets,
     capture_twin_identities,
     live_target_for,
-    partition_missing_probe,
+    partition_boundary_probe,
     prepare_live_drivers,
     run_live_phase,
     seed_contract_live_only_targets,
@@ -151,7 +153,7 @@ async def run2(
     report = RunReport(
         run_name=(
             "Fault injection across all canonical sources "
-            "(FLAKY + partition-missing)"
+            "(FLAKY + partition recovery/bounds)"
         ),
         run_number=2,
         tenant_count=(
@@ -210,12 +212,15 @@ async def run2(
             finally:
                 await teardown_live_drivers(drivers)
 
-            # ---- A28 partition-missing injection (one per source) ----
-            expected_pm = await partition_missing_probe(
+            # ---- A28 recovery + guardrail probes (one each/source) ----
+            partition_probe = await partition_boundary_probe(
                 pool, targets, bootstrap_servers=bootstrap_servers)
             report.live_lines = [
                 "FLAKY (one-in-ten 503) applied to all Provider Lab sources",
-                f"partition-missing injections (one/source): {expected_pm}",
+                "partition self-heals (distinct month/source): "
+                f"{partition_probe.recovery_count}",
+                "out-of-bounds rejections (one/source): "
+                f"{partition_probe.out_of_bounds_count}",
                 f"live per-source deltas: {live.per_source_counts}",
                 f"live drain stable: {drained}",
             ]
@@ -241,19 +246,26 @@ async def run2(
                 actual = int(await pool.fetchval(
                     "SELECT count(*) FROM observations WHERE tenant_id = ANY($1)",
                     src_tids))
-                # +1/source for partition-missing tenants are NOT written
-                # (they DLQ), so expected excludes them.
-                exp = bf_expected + live_expected
+                # The valid partition-recovery probe writes exactly one row
+                # per source. Its far-out counterpart is DLQ'd and writes none.
+                recovery_expected = int(
+                    source in partition_probe.recovered,
+                )
+                exp = bf_expected + live_expected + recovery_expected
                 report.source_results.append(SourceResult(
                     source=source, tenants=len(src_targets),
                     expected_observations=exp, actual_observations=actual))
 
             # ---- Assertions ----
             await _run_assertion(
-                report.assertions, "assert_partition_missing_routes_to_dlq",
-                A.assert_partition_missing_routes_to_dlq(
+                report.assertions, "assert_partition_boundary_contract",
+                A.assert_partition_boundary_contract(
+                    pool=pool,
                     bootstrap_servers=bootstrap_servers,
-                    expected_count=expected_pm,
+                    recovered=partition_probe.recovered,
+                    rejected_out_of_bounds=(
+                        partition_probe.rejected_out_of_bounds
+                    ),
                     tenant_ids={t.tenant_id for t in targets}),
             )
             await _run_assertion(
@@ -297,7 +309,9 @@ async def run2(
                 "FLAKY faults are transient and must recover without missing "
                 "records; partial results fail certification. A19: "
                 "orchestrator subprocesses must not crash; A28: "
-                "partition-missing must route to DLQ. "
+                "a distinct missing month per source must self-heal, while "
+                "far-out data must be DLQ'd as out_of_bounds_occurred_at "
+                "with zero residual partition_missing. "
                 "Historical sources="
                 f"{sum(d.history is not None for d in SOURCE_DEFINITIONS)}; "
                 f"live-only sources={list(live_only_source_ids)}. "

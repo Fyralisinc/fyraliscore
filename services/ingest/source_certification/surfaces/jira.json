@@ -1,0 +1,781 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.jira": "f035214c2eb65a6f9e3763bc7087f8f72f7f289aeb97dee798cdd7c375eccd95",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.jira": "c010be6f8ad8d20b40aab83cd1aeae8a6e94411a817de043369347407e864df7",
+    "services.ingest.ingestion.handlers.jira": "8e7ec7e9f1472652ff994c353d7da6b742d33dfd5d50016429c13326071470fa",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.jira": "a3a145bbb589bda3b9988fda4830d85cca62f41370e74e8775b384a12a8f309b",
+    "services.ingest.ingestion.reconcilers.jira": "c728b80d8607ea93b027f86ffd34e63644297112d2a45eab24a294a031002488",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.jira": "0a3cb4d4308cfe987c280e7cb853fb1880e2d7d1c458c877b4faa28addd87f5e",
+    "services.ingest.integrations.jira.client": "c9d8abcb6e8722cc31f4927367e35f1bd8fd41c966783e938facf274c4863fd2",
+    "services.ingest.integrations.jira.oauth": "e2c61b1eba1b3576e10dc6024d6576175ccbe67fccec82a472838cf7aba426be",
+    "services.ingest.integrations.jira.onboarding": "c71d6a29bce4099c31e70192fcbb3e7707b0635339c295da6db311b11eac67dc",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Jira Cloud REST API v3",
+  "provider_contract": {
+    "aliases": [
+      "jira_cloud"
+    ],
+    "auth_strategies": [
+      "api_token_basic"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Atlassian",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "issues.search",
+      "projects.list",
+      "issues.approximate_count",
+      "users.myself.get"
+    ],
+    "outbound_endpoint_names": [
+      "jira_api"
+    ],
+    "provider_id": "atlassian",
+    "source_ids": [
+      "jira"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "jira:issue",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "jira",
+        "route_path": "/webhooks/jira/events",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "jira",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_jira",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.jira:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "page_size": 50,
+      "projects": [
+        {
+          "issues": [
+            {
+              "fields": {
+                "assignee": {
+                  "accountId": "937ec32e2814a1c3b303e636",
+                  "displayName": "Assignee 72337140",
+                  "emailAddress": "assignee-72337140@example.com"
+                },
+                "created": "2026-01-05T00:00:00.000+0000",
+                "creator": {
+                  "accountId": "9e1d0ace2c6ba665aa771ea9",
+                  "displayName": "Reporter 314ab596",
+                  "emailAddress": "reporter-314ab596@example.com"
+                },
+                "description": {
+                  "content": [
+                    {
+                      "content": [
+                        {
+                          "text": "Description for DVZ-1 (0d0e8ff9)",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "paragraph"
+                    }
+                  ],
+                  "type": "doc",
+                  "version": 1
+                },
+                "issuetype": {
+                  "name": "Task"
+                },
+                "labels": [
+                  "label-116059"
+                ],
+                "priority": {
+                  "name": "High"
+                },
+                "project": {
+                  "id": "10000",
+                  "key": "DVZ",
+                  "name": "Project DVZ"
+                },
+                "reporter": {
+                  "accountId": "9e1d0ace2c6ba665aa771ea9",
+                  "displayName": "Reporter 314ab596",
+                  "emailAddress": "reporter-314ab596@example.com"
+                },
+                "resolution": null,
+                "status": {
+                  "name": "In Progress"
+                },
+                "summary": "DVZ-1: b3a4790d66d0",
+                "updated": "2026-01-05T00:30:00.000+0000"
+              },
+              "id": "10000",
+              "key": "DVZ-1",
+              "self": "https://jira-7a4fb31c3908a964.provider-lab.test/rest/api/3/issue/10000"
+            },
+            {
+              "fields": {
+                "assignee": {
+                  "accountId": "a8ea70ad9145d4cf44269d0b",
+                  "displayName": "Assignee 72337140",
+                  "emailAddress": "assignee-72337140@example.com"
+                },
+                "created": "2026-01-05T01:00:00.000+0000",
+                "creator": {
+                  "accountId": "1f2836c5f63f77a18bfaaa64",
+                  "displayName": "Reporter 314ab596",
+                  "emailAddress": "reporter-314ab596@example.com"
+                },
+                "description": {
+                  "content": [
+                    {
+                      "content": [
+                        {
+                          "text": "Description for DVZ-2 (beed7cb1)",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "paragraph"
+                    }
+                  ],
+                  "type": "doc",
+                  "version": 1
+                },
+                "issuetype": {
+                  "name": "Bug"
+                },
+                "labels": [
+                  "label-d79766"
+                ],
+                "priority": {
+                  "name": "Medium"
+                },
+                "project": {
+                  "id": "10000",
+                  "key": "DVZ",
+                  "name": "Project DVZ"
+                },
+                "reporter": {
+                  "accountId": "1f2836c5f63f77a18bfaaa64",
+                  "displayName": "Reporter 314ab596",
+                  "emailAddress": "reporter-314ab596@example.com"
+                },
+                "resolution": null,
+                "status": {
+                  "name": "Open"
+                },
+                "summary": "DVZ-2: 8a430c836cdc",
+                "updated": "2026-01-05T01:30:00.000+0000"
+              },
+              "id": "10001",
+              "key": "DVZ-2",
+              "self": "https://jira-7a4fb31c3908a964.provider-lab.test/rest/api/3/issue/10001"
+            },
+            {
+              "fields": {
+                "assignee": {
+                  "accountId": "108545c12191d1cad622ffb7",
+                  "displayName": "Assignee 72337140",
+                  "emailAddress": "assignee-72337140@example.com"
+                },
+                "created": "2026-01-05T02:00:00.000+0000",
+                "creator": {
+                  "accountId": "d129d67f8809837591639628",
+                  "displayName": "Reporter 314ab596",
+                  "emailAddress": "reporter-314ab596@example.com"
+                },
+                "description": {
+                  "content": [
+                    {
+                      "content": [
+                        {
+                          "text": "Description for DVZ-3 (ab0e95e7)",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "paragraph"
+                    }
+                  ],
+                  "type": "doc",
+                  "version": 1
+                },
+                "issuetype": {
+                  "name": "Task"
+                },
+                "labels": [
+                  "label-a8de3e"
+                ],
+                "priority": {
+                  "name": "Medium"
+                },
+                "project": {
+                  "id": "10000",
+                  "key": "DVZ",
+                  "name": "Project DVZ"
+                },
+                "reporter": {
+                  "accountId": "d129d67f8809837591639628",
+                  "displayName": "Reporter 314ab596",
+                  "emailAddress": "reporter-314ab596@example.com"
+                },
+                "resolution": null,
+                "status": {
+                  "name": "In Progress"
+                },
+                "summary": "DVZ-3: 69ccdd0c43d4",
+                "updated": "2026-01-05T02:30:00.000+0000"
+              },
+              "id": "10002",
+              "key": "DVZ-3",
+              "self": "https://jira-7a4fb31c3908a964.provider-lab.test/rest/api/3/issue/10002"
+            }
+          ],
+          "project_id": "10000",
+          "project_key": "DVZ"
+        }
+      ],
+      "site_host": "jira-7a4fb31c3908a964.provider-lab.test"
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "issues.search",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "issues.search"
+        ],
+        "path_template": "/rest/api/3/search/jql",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "jira.search",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "issues.approximate_count",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "issues.approximate_count"
+        ],
+        "path_template": "/rest/api/3/search/approximate-count",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "jira.approximate_count",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "projects.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "projects.list"
+        ],
+        "path_template": "/rest/api/3/project/search",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "jira.project_search",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "users.myself.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "users.myself.get"
+        ],
+        "path_template": "/rest/api/3/myself",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "jira.myself",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [
+      "jira_cloud"
+    ],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.jira",
+      "evidence_id": "ingest.evidence.jira",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.jira",
+      "validation_runtime": {
+        "generator_group": "jira",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_jira_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_jira_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_jira_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_jira_live_target",
+        "preflight_binding": null,
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_jira_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.jira.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "issue",
+      "comment",
+      "status_transition"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Engineering",
+      "connection_method": "API token",
+      "description": "Issues, projects, and work tracking signals.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 5,
+      "setup_requirements": "Jira site URL, project scope, API token or OAuth app, webhook callback approval, issue/comment permissions.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Jira",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.jira:fetch_page_jira",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:jira_issue",
+      "services.ingest.ingestion.idempotency:jira_transition",
+      "services.ingest.ingestion.idempotency:jira_comment"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "jira:issue",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "jira:issue",
+        "ingress_kind": "poll"
+      },
+      {
+        "channel": "jira:issue",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_jira_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": "jira_installation_id",
+        "entity_status_columns": [],
+        "entity_table": "jira_projects",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref"
+        ],
+        "scope_column": "base_url",
+        "source": "jira",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [
+          "account_email",
+          "cloud_id"
+        ],
+        "status_presence_columns": [
+          [
+            "webhook_registered",
+            "webhook_secret_ref"
+          ]
+        ],
+        "table": "jira_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": "base_url",
+        "webhook_installation_id_transform": "host"
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "site_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "jira",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "jira:issue"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.jira:handle_jira_issue"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "site URL",
+          "project keys",
+          "issue/comment scope"
+        ],
+        "agent_generates": [
+          "webhook secret ref",
+          "Jira project scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin creates or approves a least-privilege service credential"
+        ],
+        "settings_targets": [
+          "API token page",
+          "Jira project settings",
+          "webhook settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "pilot-projects",
+        "issues",
+        "comments"
+      ],
+      "discovery_target": "projects, issue types, comments, and webhook registration",
+      "generic_authorization_mode": "customer_api_token",
+      "ingress_paths": [
+        "/webhooks/jira/events"
+      ],
+      "local_rehearsal": {
+        "callback_path": null,
+        "default_env": [],
+        "derived_env": [],
+        "env": [
+          "JIRA_BASE_URL",
+          "JIRA_ACCOUNT_EMAIL",
+          "JIRA_API_TOKEN_REF",
+          "JIRA_PROJECT_KEYS",
+          "JIRA_WEBHOOK_SECRET_REF"
+        ],
+        "finalize_endpoint": "/integrations/jira/connect/finalize",
+        "install_endpoint": null,
+        "kind": "api_token_connect",
+        "manual_gate_names": [
+          "jira_api_token_creation",
+          "jira_project_scope_admin_approval",
+          "jira_webhook_admin_approval"
+        ],
+        "needs_public_url": true,
+        "preflight_endpoint": "/integrations/jira/connect/preflight",
+        "required_env": [
+          "JIRA_BASE_URL",
+          "JIRA_ACCOUNT_EMAIL",
+          "JIRA_API_TOKEN_REF"
+        ],
+        "runtime_components": [],
+        "webhook_path": "/webhooks/jira/events"
+      },
+      "method": "api_token",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/jira/connect/finalize",
+        "kind": "jira_api_token_native_connect",
+        "payload_fields": [
+          "base_url",
+          "account_email",
+          "api_token",
+          "project_keys",
+          "webhook_secret"
+        ],
+        "preflight_path": "/integrations/jira/connect/preflight",
+        "preflight_payload_fields": [
+          "base_url",
+          "account_email",
+          "api_token"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "project_keys",
+        "webhook_secret"
+      ],
+      "provider_console_url": "https://id.atlassian.com/manage-profile/security/api-tokens",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "read:jira-work",
+        "read:jira-user",
+        "webhook registration"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": "services.platform.runtime.source_rehearsal_contract:build_jira_rehearsal_artifacts",
+      "rehearsal_finalize_mode": "source_specific",
+      "required_inputs": [
+        "base_url",
+        "account_email",
+        "api_token"
+      ],
+      "required_refs": [
+        "api_token",
+        "site_url"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "issues.search",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "projects.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "issues.approximate_count",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "users.myself.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "jira_api",
+        "operation_ids": [
+          "issues.search",
+          "projects.list",
+          "issues.approximate_count",
+          "users.myself.get"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.jira:plan_shards_jira",
+    "provider_id": "atlassian",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.jira:reconcile_jira",
+    "runtime_identifiers": [
+      "installation_id",
+      "project_id"
+    ],
+    "source_id": "jira",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "jira"
+  },
+  "source_id": "jira"
+}

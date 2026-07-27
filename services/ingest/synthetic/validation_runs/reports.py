@@ -18,6 +18,12 @@ _CONSUMER_SERVICES = ("normalizer", "observation_writer")
 _ACCEPTED_CONSUMER_RC = (0, -9, -15)
 
 
+def _logical_service_name(process_name: str) -> str:
+    """Strip the harness's ``@<replica>`` process suffix."""
+
+    return process_name.partition("@")[0]
+
+
 @dataclass
 class SourceResult:
     source: str
@@ -62,7 +68,7 @@ class RunReport:
         """Return rc entries that are real failures under Decision 11."""
         bad: list[str] = []
         for name, rc in self.subprocess_returncodes.items():
-            if name in _CONSUMER_SERVICES:
+            if _logical_service_name(name) in _CONSUMER_SERVICES:
                 if rc not in _ACCEPTED_CONSUMER_RC:
                     bad.append(f"{name}={rc}")
             elif rc != 0:
@@ -79,9 +85,10 @@ class RunReport:
 
 
 def _rc_annotation(name: str, rc: int) -> str:
-    if name in _CONSUMER_SERVICES and rc in (-9, -15):
+    is_consumer = _logical_service_name(name) in _CONSUMER_SERVICES
+    if is_consumer and rc in (-9, -15):
         return " — expected per ticket #45 (consumer graceful-shutdown)"
-    if name in _CONSUMER_SERVICES and rc == 0:
+    if is_consumer and rc == 0:
         return " — clean (ticket #45 resolved)"
     if rc != 0:
         return " — **UNEXPECTED (real failure)**"

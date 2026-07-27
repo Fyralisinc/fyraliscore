@@ -1,0 +1,611 @@
+{
+  "implementation_sha256": {
+    "services.app.gateway.finance_router": "6537167042aadcacf629ffb2947d3585825e26021635949e3adbc78b3843c4ef",
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.secrets": "1bdbd384359149732d0f755a0044ac376899befc311aeaaf9d6bc2323a5a18c2",
+    "services.app.webhooks.signatures.deel": "8c624d8de1057028f4997dccb7ee0b652d0b3fc9c19c056d197dec9e0d2c52bc",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.deel": "c647267496954f3c777ba5fa4ebb01f3423de0c17c996e46614fb6b0d3d55014",
+    "services.ingest.ingestion.handlers.deel": "4c5c174c2c7b38277d41a8d22b35018a0428479a8f96936a6f1414a6be051619",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.deel": "66e4eb0bf5b09bd3b1bf45941afb33d00160a65f0a1279e213ac4c5da0615fa1",
+    "services.ingest.ingestion.reconcilers.deel": "526b3e749421718eae1ae9b759c853af823c14ccce1f2dee33c9f537a60c585c",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.deel": "6dcd5796e01fee3bad938ef525c39152b278f3407e8dc80a1e29696e353dd354",
+    "services.ingest.integrations.deel.client": "a3ea37fed66cb5131accbef06e56965a07180225ed365879f192f9444c514c97",
+    "services.ingest.integrations.deel.metrics": "0aa34c90211ffd5941f42911ee402e425e9210fd2fb9fe5361603dbced302232",
+    "services.ingest.integrations.deel.oauth": "c4be743d62832f185bf48a9650323a5ee5e3e3a95cb2f5c4545c5f9f5cd6c169",
+    "services.ingest.integrations.deel.onboarding": "f1541ce5e5b9bdfecfd2ee7204a0e8125c12f3729cda9cb3b2a762737b8357a6",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Deel API",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "api_token"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Deel",
+    "oauth_ingresses": [],
+    "operation_policy_ids": [
+      "contracts.list",
+      "contracts.get",
+      "invoices.list"
+    ],
+    "outbound_endpoint_names": [
+      "deel_api"
+    ],
+    "provider_id": "deel",
+    "source_ids": [
+      "deel"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "observation_response",
+        "channel": "deel:payment",
+        "dedicated_handler_binding": null,
+        "handler_mode": "generic",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "deel",
+        "route_path": "/webhooks/deel",
+        "secret_loader_binding": "services.app.webhooks.secrets:load_installation_secrets",
+        "source_id": "deel",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_deel",
+        "verification_handshake_binding": null,
+        "verification_handshake_handler_binding": null,
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.deel:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "contract_order": [
+        "con_e5a8d6ddc3b9ffe2"
+      ],
+      "contracts": {
+        "con_e5a8d6ddc3b9ffe2": {
+          "amount": 13561.1,
+          "contractType": "ongoing_time_based",
+          "createdAt": "2026-01-05T00:00:00Z",
+          "id": "con_e5a8d6ddc3b9ffe2",
+          "legalBusinessName": "Acme Robotics, Inc.",
+          "name": "Contractor Agreement 1",
+          "payments": [
+            {
+              "amount": 972.47,
+              "bankDescription": "CREDIT Counterparty ae6317",
+              "contractId": "con_e5a8d6ddc3b9ffe2",
+              "counterpartyId": "cp_36e2ffd6d0",
+              "counterpartyName": "Counterparty ae6317",
+              "createdAt": "2026-01-05T23:00:00Z",
+              "deelCategory": "Revenue",
+              "details": {
+                "accountNumber": "9881ee5b194c",
+                "rail": "ach",
+                "routingNumber": "604c00b2a"
+              },
+              "externalMemo": "memo-0",
+              "id": "pay_8dc0396eb49e1cb41d5c",
+              "kind": "credit",
+              "note": "payment 0 on con_e5a8d6ddc3b9ffe2",
+              "postedAt": "2026-01-05T23:00:00Z",
+              "status": "sent"
+            },
+            {
+              "amount": -63.15,
+              "bankDescription": "DEBIT Counterparty 99a709",
+              "contractId": "con_e5a8d6ddc3b9ffe2",
+              "counterpartyId": "cp_0553b43a70",
+              "counterpartyName": "Counterparty 99a709",
+              "createdAt": "2026-01-05T22:00:00Z",
+              "deelCategory": "Vendors",
+              "details": {
+                "accountNumber": "caed45788ee3",
+                "rail": "wire",
+                "routingNumber": "9873ce5de"
+              },
+              "externalMemo": "memo-1",
+              "id": "pay_129180546d7b1d37f7e5",
+              "kind": "debit",
+              "note": "payment 1 on con_e5a8d6ddc3b9ffe2",
+              "postedAt": "2026-01-05T22:00:00Z",
+              "status": "posted"
+            },
+            {
+              "amount": 388.12,
+              "bankDescription": "CREDIT Counterparty ca3e6c",
+              "contractId": "con_e5a8d6ddc3b9ffe2",
+              "counterpartyId": "cp_282f99081f",
+              "counterpartyName": "Counterparty ca3e6c",
+              "createdAt": "2026-01-05T21:00:00Z",
+              "deelCategory": "Revenue",
+              "details": {
+                "accountNumber": "1d4b6968b194",
+                "rail": "ach",
+                "routingNumber": "07e89241f"
+              },
+              "externalMemo": "memo-2",
+              "id": "pay_9eb0a48c2713418a0e96",
+              "kind": "credit",
+              "note": "payment 2 on con_e5a8d6ddc3b9ffe2",
+              "postedAt": "2026-01-05T21:00:00Z",
+              "status": "pending"
+            },
+            {
+              "amount": -390.54,
+              "bankDescription": "DEBIT Counterparty a1c77f",
+              "contractId": "con_e5a8d6ddc3b9ffe2",
+              "counterpartyId": "cp_5e95e6e2a2",
+              "counterpartyName": "Counterparty a1c77f",
+              "createdAt": "2026-01-05T20:00:00Z",
+              "deelCategory": "Vendors",
+              "details": {
+                "accountNumber": "09b2f26345ab",
+                "rail": "wire",
+                "routingNumber": "7f00e536e"
+              },
+              "externalMemo": "memo-3",
+              "id": "pay_843a3f2b3b8e219c4f45",
+              "kind": "debit",
+              "note": "payment 3 on con_e5a8d6ddc3b9ffe2",
+              "postedAt": "2026-01-05T20:00:00Z",
+              "status": "sent"
+            }
+          ],
+          "rate": 13561.1,
+          "status": "in_progress",
+          "title": "Contractor Agreement 1",
+          "type": "ongoing_time_based",
+          "workerName": "Worker 1"
+        }
+      },
+      "page_size": 100
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "contracts.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "contracts.list"
+        ],
+        "path_template": "/contracts",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "deel.contracts",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "contracts.get",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "contracts.get"
+        ],
+        "path_template": "/contracts/{contract_id}",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "deel.contract",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "invoices.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "invoices.list"
+        ],
+        "path_template": "/invoices",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "deel.invoices",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [
+      "finance_testing"
+    ],
+    "certification": {
+      "canary_id": "ingest.canary.deel",
+      "evidence_id": "ingest.evidence.deel",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.deel",
+      "validation_runtime": {
+        "generator_group": "deel",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_deel_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_deel_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_deel_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_deel_live_target",
+        "preflight_binding": "services.ingest.synthetic.validation_runs.preflight:preflight_records_deel",
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_deel_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.deel.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "contract",
+      "organization_invoice"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "People",
+      "connection_method": "API token",
+      "description": "Contractor, payroll, and workforce records.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 25,
+      "setup_requirements": "Deel organization access, API token, worker/contract scope, payroll or contractor data approval.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill",
+        "Live events"
+      ]
+    },
+    "display_name": "Deel",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.deel:fetch_page_deel",
+    "finance_testing_binding": "services.app.gateway.finance_router:build_deel_finance_testing",
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:deel_payment",
+      "services.ingest.ingestion.idempotency:deel_contract"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "deel:payment",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "deel:payment",
+        "ingress_kind": "poll"
+      },
+      {
+        "channel": "deel:payment",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_deel_installation",
+      "management": {
+        "base_url_column": "base_url",
+        "enabled_column": null,
+        "entity_install_column": "deel_installation_id",
+        "entity_status_columns": [
+          "contract_id",
+          "contract_name",
+          "state"
+        ],
+        "entity_table": "deel_contracts",
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "secret_ref",
+          "webhook_secret_ref"
+        ],
+        "scope_column": "organization_id",
+        "source": "deel",
+        "status_credential_column_groups": [],
+        "status_detail_columns": [],
+        "status_presence_columns": [],
+        "table": "deel_installations",
+        "updated_at_column": null,
+        "webhook_installation_id_column": "organization_id",
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "organization_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "deel",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.deel.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "deel:payment"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.deel:handle_deel_payment"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "organization id",
+          "contract ids",
+          "worker/payment scope availability"
+        ],
+        "agent_generates": [
+          "webhook signing secret ref",
+          "workforce scope contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin creates or approves a least-privilege service credential"
+        ],
+        "settings_targets": [
+          "developer API settings",
+          "webhook settings",
+          "organization settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "workers",
+        "contracts",
+        "payments"
+      ],
+      "discovery_target": "contracts, workers, and payment scopes",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/webhooks/deel"
+      ],
+      "local_rehearsal": null,
+      "method": "api_token",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/deel/connect/finalize",
+        "kind": "api_token_native_connect",
+        "payload_fields": [
+          "api_token",
+          "base_url",
+          "contract_ids",
+          "organization_id",
+          "webhook_secret"
+        ],
+        "preflight_path": "/integrations/deel/connect/preflight",
+        "preflight_payload_fields": [
+          "api_token",
+          "base_url"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "organization_id",
+        "base_url",
+        "contract_ids",
+        "webhook_secret"
+      ],
+      "provider_console_url": "https://app.deel.com/",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "workers read",
+        "contracts read",
+        "payments read"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "native_finalizer_required",
+      "required_inputs": [
+        "api_token"
+      ],
+      "required_refs": [
+        "api_token"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "contracts.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "contracts.get",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "invoices.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "deel_api",
+        "operation_ids": [
+          "contracts.list",
+          "contracts.get",
+          "invoices.list"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.deel:plan_shards_deel",
+    "provider_id": "deel",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.deel:reconcile_deel",
+    "runtime_identifiers": [
+      "organization_id",
+      "contract_id"
+    ],
+    "source_id": "deel",
+    "trust_tiers": [
+      "authoritative"
+    ],
+    "ui_slug": "deel"
+  },
+  "source_id": "deel"
+}

@@ -17,10 +17,10 @@ from services.platform.runtime.source_browser_agent_recipes import (
 )
 
 
-_LEGACY_ORDERED_PAYLOAD_SHA256 = (
-    "b22612ffa80b1673af77dd2bdbb5e29226d0d62bc2418ff57309cd4aeded6f23"
+_ORDERED_PAYLOAD_SHA256 = (
+    "18dc132434b5ec9a310aedd84f344006cf9fb8b51c6bddbdd005e11702393422"
 )
-_LEGACY_RECIPE_ORDER = (
+_RECIPE_ORDER = (
     "ashby",
     "aws",
     "brex",
@@ -66,10 +66,10 @@ def test_browser_recipe_view_preserves_exact_27_source_payload_and_order() -> No
         separators=(",", ":"),
     ).encode()
 
-    assert tuple(payload) == _LEGACY_RECIPE_ORDER
+    assert tuple(payload) == _RECIPE_ORDER
     assert len(payload) == len(SOURCE_DEFINITIONS) == 27
     assert hashlib.sha256(wire_payload).hexdigest() == (
-        _LEGACY_ORDERED_PAYLOAD_SHA256
+        _ORDERED_PAYLOAD_SHA256
     )
 
 

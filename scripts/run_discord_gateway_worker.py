@@ -436,6 +436,11 @@ async def _cleanup_resources(resources: _RuntimeResources) -> None:
 
 
 async def _main() -> int:
+    from services.ingest.source_contract.runtime import (
+        validate_live_worker_startup,
+    )
+
+    validate_live_worker_startup("discord", "discord_gateway_worker")
     log = structlog.get_logger("scripts.run_discord_gateway_worker")
     config, early_exit = _load_config(log)
     if early_exit is not None:

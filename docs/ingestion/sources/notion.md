@@ -2,7 +2,7 @@
 
 > The *declared-intent / canonical-state* layer (databases, pages, comments) —
 > lets Think reason about intent-vs-reality drift against GitHub/Slack actuals.
-> Poll-based, with a special always-pipeline webhook handler.
+> Poll-based, with a dedicated Kafka-first webhook handler and inline fallback.
 
 | Field | Value |
 |---|---|
@@ -15,14 +15,16 @@
 
 ## Why it is structurally different
 
-Notion has no reliable content push, so there is effectively **no inline webhook
-path**. The webhook endpoint `/webhooks/notion/...` routes **always** to the full
-pipeline via a *dedicated handler* that fetches the full page and calls
-`shadow_write_raw()` directly (using the `app.state.notion_data_plane` alias,
-which points at the *same* producer/S3 instances). It short-circuits the router
-before the inline block — there is **no** `_PROVIDER_CHANNEL` entry for Notion.
-The primary live path is a **poll**: the `periodic_reconciler` re-runs the
-backfill fetcher under `ingress_kind="poll"`.
+Notion's thin webhook requires provider-specific hydration, so
+`/webhooks/notion/events` routes to a dedicated handler. The provider contract
+declares `dedicated_kafka_first_with_inline_fallback`: the handler fetches the
+full page and first calls `shadow_write_raw()` using
+`app.state.notion_data_plane`. If S3/Kafka is unavailable or delivery cannot be
+confirmed before acknowledgement, that same hydrated page goes through
+`ingest("notion:object", ...)` inline. An inline failure propagates so Notion can
+retry; the handler never acknowledges a page that neither path persisted. The
+periodic reconciler remains the broader live correctness backstop and re-runs
+the backfill fetcher under `ingress_kind="poll"`.
 
 ## Auth & install
 

@@ -10,6 +10,7 @@ from services.ingest.source_certification.runtime import (
     resolve_fixture_count_oracle,
     resolve_fixture_factory,
     resolve_installation_seeder,
+    resolve_live_fixture_factory,
     validate_certification_bindings,
 )
 from services.ingest.source_contract.catalog import (
@@ -56,8 +57,12 @@ def test_whatsapp_history_is_explicitly_unsupported() -> None:
 
     assert source_definition("whatsapp").history is None
     assert spec.fixture_factory_binding is None
+    assert spec.live_fixture_factory_binding is not None
+    assert spec.live_fixture_factory_binding.role == "live_fixture_factory"
     assert spec.fixture_count_oracle_binding is None
     assert spec.installation_seeder_binding is None
+    fixture = resolve_live_fixture_factory("whatsapp")()
+    assert fixture["object"] == "whatsapp_business_account"
     with pytest.raises(
         CertificationHistoryUnsupportedError,
         match="explicitly does not support history",

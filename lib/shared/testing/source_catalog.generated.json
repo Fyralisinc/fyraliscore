@@ -1,0 +1,227 @@
+{
+  "schemaVersion": "fyralis.test-source-catalog.v1",
+  "rows": [
+    {
+      "id": "slack",
+      "uiSlug": "slack",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "github",
+      "uiSlug": "github",
+      "aliases": [
+        "git_hub"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "discord",
+      "uiSlug": "discord",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "gmail",
+      "uiSlug": "gmail",
+      "aliases": [
+        "google_mail"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "notion",
+      "uiSlug": "notion",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "google_calendar",
+      "uiSlug": "google-calendar",
+      "aliases": [
+        "gcal",
+        "calendar"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "google_drive",
+      "uiSlug": "google-drive",
+      "aliases": [
+        "gdrive",
+        "drive"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "jira",
+      "uiSlug": "jira",
+      "aliases": [
+        "jira_cloud"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "mercury",
+      "uiSlug": "mercury",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "quickbooks",
+      "uiSlug": "quickbooks",
+      "aliases": [
+        "qbo",
+        "quickbooks_online"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "grafana",
+      "uiSlug": "grafana",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "telegram",
+      "uiSlug": "telegram",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "brex",
+      "uiSlug": "brex",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "ramp",
+      "uiSlug": "ramp",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "gusto",
+      "uiSlug": "gusto",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "deel",
+      "uiSlug": "deel",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "fireflies",
+      "uiSlug": "fireflies",
+      "aliases": [
+        "fireflies_ai"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "signal",
+      "uiSlug": "signal",
+      "aliases": [
+        "signal_messenger"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "aws",
+      "uiSlug": "aws",
+      "aliases": [
+        "amazon_web_services",
+        "cloudtrail"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "miro",
+      "uiSlug": "miro",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "figma",
+      "uiSlug": "figma",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "carta",
+      "uiSlug": "carta",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "hibob",
+      "uiSlug": "hibob",
+      "aliases": [
+        "bob"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "ashby",
+      "uiSlug": "ashby",
+      "aliases": [],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "linkedin",
+      "uiSlug": "linkedin",
+      "aliases": [
+        "linked_in"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    },
+    {
+      "id": "whatsapp",
+      "uiSlug": "whatsapp",
+      "aliases": [
+        "whatsapp_business",
+        "whatsapp_cloud"
+      ],
+      "historicalSupported": false,
+      "dataPlane": true
+    },
+    {
+      "id": "facebook_pages",
+      "uiSlug": "facebook_pages",
+      "aliases": [
+        "facebook",
+        "facebook_messenger",
+        "messenger"
+      ],
+      "historicalSupported": true,
+      "dataPlane": true
+    }
+  ]
+}

@@ -142,7 +142,7 @@ external API ─┬─ backfill/poll (planner → fetcher, ShardFetch loop)
   `tenant_resolver._extract_{src}` + router maps
   (`_PROVIDER_TO_SHADOW_SOURCE`, `_CUTOVER_ENABLED_PROVIDERS`,
   `_PROVIDER_CHANNEL`). Tenant resolution + secret loading reuse
-  `provider_installations` (no `load_secrets` change — the Jira reuse trick).
+  `provider_installations` (no generic secret-loader change — the Jira reuse trick).
 - **Migration** — `db/migrations/00NN_{src}.sql`: dedicated tables + RLS +
   widen the four M6 source CHECKs **carrying every prior source forward**.
 

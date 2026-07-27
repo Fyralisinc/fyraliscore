@@ -1,0 +1,75 @@
+{
+  "schema_version": "fyralis.source-certification-execution-binding.v1",
+  "source_id": "aws",
+  "spec_hash": "4a093789fcc1096abbaf8b642043d14fe2647573525a6b822ea8a2e0ce5302e0",
+  "stages": {
+    "canary": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "aws",
+        "--stage",
+        "canary",
+        "--plan-sha256",
+        "da5db2fb9596fa1b14cab295c4203d0440689a1a5a7f1da1a2ce154c872e3b61"
+      ],
+      "credential_env": [
+        "FYRALIS_CANARY_AWS"
+      ],
+      "required_env": [
+        "FYRALIS_CANARY_AWS"
+      ],
+      "timeout_seconds": 900
+    },
+    "fault_recovery": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "aws",
+        "--stage",
+        "fault_recovery",
+        "--plan-sha256",
+        "da5db2fb9596fa1b14cab295c4203d0440689a1a5a7f1da1a2ce154c872e3b61"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    },
+    "load": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "aws",
+        "--stage",
+        "load",
+        "--plan-sha256",
+        "da5db2fb9596fa1b14cab295c4203d0440689a1a5a7f1da1a2ce154c872e3b61"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 1800
+    },
+    "local_correctness": {
+      "argv": [
+        "{python}",
+        "-m",
+        "services.ingest.source_certification.execution_driver",
+        "--source",
+        "aws",
+        "--stage",
+        "local_correctness",
+        "--plan-sha256",
+        "da5db2fb9596fa1b14cab295c4203d0440689a1a5a7f1da1a2ce154c872e3b61"
+      ],
+      "credential_env": [],
+      "required_env": [],
+      "timeout_seconds": 600
+    }
+  }
+}

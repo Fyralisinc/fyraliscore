@@ -407,7 +407,7 @@ The writer owns:
 7. Falls back to inline ingestion when cutover is unavailable.
 8. Optionally writes shadow raw envelopes after inline success.
 
-Supported webhook provider families include Slack, GitHub, Discord, Jira, Mercury, QuickBooks, Grafana, Brex, Ramp, Gusto, Deel, Fireflies, Miro, Figma, HiBob, and Ashby. Discord has provider-specific response semantics, so it is not cut over in the same way as simple `202` providers.
+Supported webhook provider families include Slack, GitHub, Discord, Jira, Mercury, QuickBooks, Grafana, Brex, Ramp, Gusto, Deel, Fireflies, Figma, HiBob, and Ashby. Miro is poll-only. Discord has provider-specific response semantics, so it is not cut over in the same way as simple `202` providers.
 
 ### 7.5 Onboarding And Backfill
 

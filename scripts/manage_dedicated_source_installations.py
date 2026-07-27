@@ -488,8 +488,16 @@ def _selector_clause(
         values.append(args.scope_id)
         clauses.append(f"{spec.scope_column} = ${len(values)}")
     if getattr(args, "region", None):
-        if spec.source != "aws":
-            raise DedicatedSourceInstallationCliError("--region is only valid for aws")
+        selectable_columns = {
+            spec.scope_column,
+            *spec.extra_output_columns,
+            *spec.status_detail_columns,
+        }
+        if "region" not in selectable_columns:
+            raise DedicatedSourceInstallationCliError(
+                f"--region is not declared by the {spec.source} "
+                "installation contract"
+            )
         values.append(args.region)
         clauses.append(f"region = ${len(values)}")
     return clauses

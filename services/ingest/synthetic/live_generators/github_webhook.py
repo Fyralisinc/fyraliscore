@@ -4,7 +4,7 @@ Per A25. Drives the GitHub live-ingestion path end-to-end in-process:
 
   Generator → MockGithubClient fixture append (state coordination)
             → httpx.AsyncClient(transport=ASGITransport(app))
-            → POST /webhooks/github/events
+            → POST /webhooks/github
             → signature verify (real HMAC-SHA256, X-Hub-Signature-256)
             → tenant resolution (real, provider_installations by
               installation.id)
@@ -364,7 +364,7 @@ class GithubWebhookGenerator:
             self._last[(repo_full_name, event_type)] = (payload, delivery)
 
         response = await self._client.post(
-            "/webhooks/github/events",
+            "/webhooks/github",
             content=body,
             headers={
                 "Content-Type": "application/json",

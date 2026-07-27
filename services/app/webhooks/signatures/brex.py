@@ -9,7 +9,7 @@ the module constants `_HEADER_NAME`, `_PREFIX`, and `_DIGEST_ENCODING` so that
 confirming the real scheme is a one-line edit per knob, not a rewrite.
 
 The per-tenant signing secret(s) are resolved by
-`services/app/webhooks/secrets.py::load_secrets` from the `provider_installations`
+`services/app/webhooks/secrets.py::load_installation_secrets` from the `provider_installations`
 row (provider='brex') the seed/onboarding step registers. The verifier loops over
 ALL active secrets so a rotation (two valid secrets in flight) verifies.
 

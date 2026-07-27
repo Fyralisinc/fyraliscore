@@ -558,12 +558,19 @@ class PeriodicReconciler(LongRunningService):
 #   PERIODIC_RECONCILE_INSTANCE         — instance name for diagnostics.
 #   INGESTION_HEALTH_PORT               — /healthz + /metrics (opt-in).
 #   WORKFLOWS_LOG_LEVEL                 — log level (default INFO).
-async def _run_service() -> None:
-    import signal as sig_module
+async def run_forever(
+    pool: asyncpg.Pool,
+    *,
+    config: PeriodicReconcilerConfig | None = None,
+    stop_event: asyncio.Event | None = None,
+) -> None:
+    """Run the shared steady-state reconciler for every historical source.
 
-    from services.ingest.ingestion.workflows.runtime import make_workflow_pool
+    This dependency-injected entrypoint is the executable source-contract
+    binding. The module CLI below owns environment, signals, health, and pool
+    lifecycle; both paths execute this same worker body.
+    """
 
-    pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     # Per-source reconcilers need pool access for auxiliary reads (shard
     # cursors, installation rows) and raise if their pool isn't registered.
     # Register ALL historical sources (derived from SourceDefinition) — the same
@@ -579,6 +586,15 @@ async def _run_service() -> None:
         "periodic_reconciler.pool_providers_registered",
         extra={"source_count": len(registered)},
     )
+    await PeriodicReconciler(pool, config=config).run(stop_event=stop_event)
+
+
+async def _run_service() -> None:
+    import signal as sig_module
+
+    from services.ingest.ingestion.workflows.runtime import make_workflow_pool
+
+    pool = await make_workflow_pool(os.environ["DATABASE_URL"])
 
     config = PeriodicReconcilerConfig(
         tick_interval_seconds=float(
@@ -600,8 +616,6 @@ async def _run_service() -> None:
             "PERIODIC_RECONCILE_INSTANCE", WORKFLOW_ID_DEFAULT,
         ),
     )
-    service = PeriodicReconciler(pool, config=config)
-
     stop_event = asyncio.Event()
     loop = asyncio.get_event_loop()
     for s in (sig_module.SIGTERM, sig_module.SIGINT):
@@ -618,7 +632,7 @@ async def _run_service() -> None:
         "batch": config.batch_size,
     })
     try:
-        await service.run(stop_event=stop_event)
+        await run_forever(pool, config=config, stop_event=stop_event)
     finally:
         ticker.cancel()
         if health is not None:
@@ -649,4 +663,5 @@ __all__ = [
     "get_metrics",
     "main",
     "reset_metrics",
+    "run_forever",
 ]

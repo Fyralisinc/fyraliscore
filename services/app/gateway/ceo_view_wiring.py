@@ -1,7 +1,6 @@
 """CEO-view and adjacent product router wiring for the gateway."""
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -189,54 +188,6 @@ def _include_conversation_router(
     app_.state.conversations = {"repo": conv_repo, "handler": probe_handler}
 
 
-def _include_google_admin_routers(app_: FastAPI) -> None:
-    if not (
-        os.environ.get("GMAIL_SERVICE_ACCOUNT_JSON_FILE")
-        or os.environ.get("GMAIL_SERVICE_ACCOUNT_JSON")
-    ):
-        return
-
-    try:
-        from services.ingest.integrations.gmail.oauth import router as _gmail_oauth_router
-
-        app_.include_router(_gmail_oauth_router)
-        log.info("gmail_routers_mounted")
-    except Exception as exc:  # noqa: BLE001
-        log.warning("gmail_mount_failed", error=str(exc))
-
-    try:
-        from services.ingest.integrations.google_calendar.oauth import (
-            router as _gcal_oauth_router,
-        )
-
-        if not _route_path_mounted(
-            app_,
-            "/integrations/google_calendar/connect/preflight",
-        ):
-            app_.include_router(_gcal_oauth_router)
-            log.info("google_calendar_router_mounted")
-    except Exception as exc:  # noqa: BLE001
-        log.warning("google_calendar_mount_failed", error=str(exc))
-
-    try:
-        from services.ingest.integrations.google_drive.oauth import (
-            router as _gdrive_oauth_router,
-        )
-
-        if not _route_path_mounted(
-            app_,
-            "/integrations/google_drive/connect/preflight",
-        ):
-            app_.include_router(_gdrive_oauth_router)
-            log.info("google_drive_router_mounted")
-    except Exception as exc:  # noqa: BLE001
-        log.warning("google_drive_mount_failed", error=str(exc))
-
-
-def _route_path_mounted(app_: FastAPI, path: str) -> bool:
-    return any(getattr(route, "path", None) == path for route in app_.routes)
-
-
 def _include_debug_router(app_: FastAPI, *, settings: GatewaySettings) -> None:
     if not settings.debug_endpoints_enabled:
         return
@@ -291,6 +242,5 @@ async def configure_ceo_view(
     # Simulation authoring endpoints moved to the demo overlay, which contributes
     # the /simulation panel (router + slack_ui static) via its gateway extension
     # startup hook. Core no longer imports the `simulation` package.
-    _include_google_admin_routers(app_)
     _include_debug_router(app_, settings=resolved_settings)
     _publish_ceo_view_state(app_, greeting=greeting, qry_handler=qry_handler)

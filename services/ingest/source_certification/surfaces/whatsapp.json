@@ -1,0 +1,432 @@
+{
+  "implementation_sha256": {
+    "services.app.gateway.facebook_pages_router": "f1bb1c38767f197e33088286daebf904be230266098a6ec95b20332f5c6e7463",
+    "services.app.gateway.whatsapp_router": "30c7a6f7ba7f12c839ec4195e2718af4cc1dadad325e6d9457fb562c4a9b4414",
+    "services.ingest.ingestion.handlers.whatsapp": "e13d9e5a2c7a3ac37b2ba046e2b5ce62a289331a66df153d64fa23181cee1c9a",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.integrations.facebook_pages.oauth": "fbf5dd93afe5b6c734663e63e606e8f4e9537ebec914b1203dd402901db66cd3",
+    "services.ingest.integrations.whatsapp": "7d3213c0d0357258d696170e0366531a6d12300056947f1eaa1682df4f2f6166",
+    "services.ingest.integrations.whatsapp.oauth": "45184ba830edc2551ad95612b5f0e0f4d3ee08b2580ae2ff60673cef4a970191",
+    "services.ingest.integrations.whatsapp.signature": "1e2114f289c8380f034d0f1b69a821b482319a260225059f69af1dfea959f208",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_cd": "41c4c2a2e3d41386cae397e018f3cd519f08baae2bdf5e148c00e36c3df41929",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "WhatsApp Cloud API",
+  "provider_contract": {
+    "aliases": [
+      "facebook",
+      "meta_platforms"
+    ],
+    "auth_strategies": [
+      "oauth2",
+      "app_secret_webhook"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [
+      {
+        "acknowledgement_policy": "durable_or_inline_before_ack",
+        "channel": "whatsapp:message",
+        "dispatcher_binding": "services.app.gateway.whatsapp_router:build_whatsapp_router",
+        "ingress_id": "whatsapp_webhook",
+        "ingress_kind": "webhook",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "route_path": "/integrations/whatsapp/webhook",
+        "router_factory_accepts_debug_endpoints": true,
+        "router_factory_binding": "services.app.gateway.whatsapp_router:build_whatsapp_router",
+        "source_id": "whatsapp",
+        "tenant_binding_policy": "phone_number_installation",
+        "tenant_resolver_binding": "services.app.gateway.whatsapp_router:_lookup_installation",
+        "verification_bindings": [
+          "services.app.gateway.whatsapp_router:_verify_token_matches_installation",
+          "services.ingest.integrations.whatsapp.signature:verify_signature"
+        ],
+        "verification_policy": "meta_verify_token_hmac"
+      },
+      {
+        "acknowledgement_policy": "durable_or_inline_before_ack",
+        "channel": "facebook_pages:message",
+        "dispatcher_binding": "services.app.gateway.facebook_pages_router:build_facebook_pages_router",
+        "ingress_id": "facebook_pages_webhook",
+        "ingress_kind": "webhook",
+        "kafka_mode": "flagged_kafka_first_with_inline_fallback",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "route_path": "/integrations/facebook_pages/webhook",
+        "router_factory_accepts_debug_endpoints": false,
+        "router_factory_binding": "services.app.gateway.facebook_pages_router:build_facebook_pages_router",
+        "source_id": "facebook_pages",
+        "tenant_binding_policy": "page_installation",
+        "tenant_resolver_binding": "services.app.gateway.facebook_pages_router:_lookup_installation",
+        "verification_bindings": [
+          "services.app.gateway.facebook_pages_router:_verify_token_matches_installation",
+          "services.ingest.integrations.whatsapp.signature:verify_signature"
+        ],
+        "verification_policy": "meta_verify_token_hmac"
+      }
+    ],
+    "display_name": "Meta",
+    "oauth_ingresses": [
+      {
+        "callback_handler_binding": "services.ingest.integrations.facebook_pages.oauth:callback_handler",
+        "callback_path": "/integrations/facebook_pages/callback",
+        "install_handler_binding": "services.ingest.integrations.facebook_pages.oauth:install_handler",
+        "install_path": "/integrations/facebook_pages/install",
+        "mount_mode": "shared_router",
+        "public_result_paths": [
+          "/integrations/facebook_pages/installed",
+          "/integrations/facebook_pages/install-error"
+        ],
+        "source_id": "facebook_pages"
+      }
+    ],
+    "operation_policy_ids": [
+      "pages.list",
+      "pages.subscribe",
+      "conversations.list",
+      "messages.list",
+      "oauth.token.exchange",
+      "oauth.user_token.extend"
+    ],
+    "outbound_endpoint_names": [
+      "facebook_graph_api"
+    ],
+    "provider_id": "meta",
+    "source_ids": [
+      "whatsapp",
+      "facebook_pages"
+    ],
+    "webhook_ingresses": []
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "entry": [
+        {
+          "changes": [
+            {
+              "field": "messages",
+              "value": {
+                "contacts": [
+                  {
+                    "profile": {
+                      "name": "Certification Fixture"
+                    },
+                    "wa_id": "15550000001"
+                  }
+                ],
+                "messages": [
+                  {
+                    "from": "15550000001",
+                    "id": "wamid.certification.1",
+                    "text": {
+                      "body": "sanitized certification payload"
+                    },
+                    "timestamp": "1781000001",
+                    "type": "text"
+                  }
+                ],
+                "messaging_product": "whatsapp",
+                "metadata": {
+                  "display_phone_number": "+15550000000",
+                  "phone_number_id": "certification-surface-whatsapp"
+                }
+              }
+            }
+          ],
+          "id": "certification-waba"
+        }
+      ],
+      "object": "whatsapp_business_account",
+      "phone_number_id": "certification-surface-whatsapp"
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [],
+        "operation_ids": [],
+        "path_template": "/webhook",
+        "quota_bucket": null,
+        "quota_cost": 1.0,
+        "route_id": "whatsapp.webhook_verify",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [],
+        "operation_ids": [],
+        "path_template": "/webhook",
+        "quota_bucket": "webhook",
+        "quota_cost": 1.0,
+        "route_id": "whatsapp.webhook_delivery",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack"
+    ],
+    "aliases": [
+      "whatsapp_business",
+      "whatsapp_cloud"
+    ],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [
+      "no_outbound_provider_requests"
+    ],
+    "certification": {
+      "canary_id": "ingest.canary.whatsapp",
+      "evidence_id": "ingest.evidence.whatsapp",
+      "notes": [
+        "Live webhook only; missed and pre-install history is unrecoverable."
+      ],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.whatsapp",
+      "validation_runtime": {
+        "generator_group": "whatsapp",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_whatsapp_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_whatsapp_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_whatsapp_live_install",
+        "live_only_bootstrap_binding": "services.ingest.synthetic.validation_runs.source_bindings:bootstrap_whatsapp_live_only",
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_whatsapp_live_target",
+        "preflight_binding": null,
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_whatsapp_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.whatsapp.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "inbound_message",
+      "delivery_status"
+    ],
+    "delivery_policies": [
+      "at_least_once"
+    ],
+    "display": {
+      "category": "Communication",
+      "connection_method": "Webhook",
+      "description": "Cloud API live webhook ingestion.",
+      "display_name_override": "WhatsApp",
+      "notice": null,
+      "order": 11,
+      "setup_requirements": "WhatsApp Cloud API app, business account and phone IDs, generated verify token, app secret, and optional customer-local access token.",
+      "supported_sync_modes": [
+        "Live events"
+      ]
+    },
+    "display_name": "WhatsApp Business",
+    "fetcher_binding": null,
+    "finance_testing_binding": null,
+    "history": null,
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:whatsapp_message",
+      "services.ingest.ingestion.idempotency:whatsapp_status"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "whatsapp:message",
+        "ingress_kind": "webhook"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": null,
+      "management": {
+        "base_url_column": null,
+        "enabled_column": "enabled",
+        "entity_install_column": null,
+        "entity_status_columns": [],
+        "entity_table": null,
+        "extra_output_columns": [],
+        "native_google_watch_table": false,
+        "ref_columns": [
+          "app_secret_ref",
+          "verify_token_ref",
+          "access_token_ref"
+        ],
+        "scope_column": "phone_number_id",
+        "source": "whatsapp",
+        "status_credential_column_groups": [
+          [
+            "app_secret_ref",
+            "verify_token_ref"
+          ]
+        ],
+        "status_detail_columns": [
+          "waba_id",
+          "display_phone_number"
+        ],
+        "status_presence_columns": [
+          [
+            "access_token_configured",
+            "access_token_ref"
+          ]
+        ],
+        "table": "whatsapp_installations",
+        "updated_at_column": "updated_at",
+        "webhook_installation_id_column": null,
+        "webhook_installation_id_transform": null
+      },
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": null,
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_managed_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "phone_number_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "whatsapp_webhook",
+          "boundary_kind": "dedicated_ingress",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": []
+    },
+    "live_transports": [
+      "webhook"
+    ],
+    "metrics_export_bindings": [],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "whatsapp:message"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.whatsapp:handle_whatsapp"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "business account id",
+          "phone number id",
+          "webhook verify target"
+        ],
+        "agent_generates": [
+          "verify token ref",
+          "app secret ref",
+          "WhatsApp webhook contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "Meta admin signs in and completes MFA when prompted",
+          "Meta admin approves business phone and webhook subscriptions"
+        ],
+        "settings_targets": [
+          "Meta app settings",
+          "WhatsApp business settings",
+          "webhook settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "business-account",
+        "approved-phone-ids"
+      ],
+      "discovery_target": "business account, phone numbers, webhook verification, and message events",
+      "generic_authorization_mode": "customer_webhook_app",
+      "ingress_paths": [
+        "/integrations/whatsapp/webhook"
+      ],
+      "local_rehearsal": null,
+      "method": "webhook",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/whatsapp/connect/finalize",
+        "kind": "whatsapp_native_connect",
+        "payload_fields": [
+          "phone_number_id",
+          "business_account_id",
+          "display_phone_number",
+          "app_secret",
+          "verify_token",
+          "access_token"
+        ],
+        "preflight_path": "/integrations/whatsapp/connect/preflight",
+        "preflight_payload_fields": [
+          "phone_number_id",
+          "app_secret",
+          "verify_token"
+        ],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": [
+        "business_account_id",
+        "display_phone_number",
+        "access_token"
+      ],
+      "provider_console_url": "https://developers.facebook.com/apps/",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:generic_provider_handoff",
+      "provider_permissions": [
+        "business account read",
+        "messages webhook",
+        "phone id"
+      ],
+      "provider_setup_builder_binding": null,
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:generic_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "source_specific",
+      "required_inputs": [
+        "phone_number_id",
+        "verify_token",
+        "app_secret"
+      ],
+      "required_refs": [
+        "phone_number_id",
+        "app_secret",
+        "verify_token"
+      ]
+    },
+    "operation_policies": [],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [],
+    "planner_binding": null,
+    "provider_id": "meta",
+    "provider_transport_enforced": true,
+    "reconciler_binding": null,
+    "runtime_identifiers": [
+      "phone_number_id"
+    ],
+    "source_id": "whatsapp",
+    "trust_tiers": [
+      "attested_agent",
+      "authoritative"
+    ],
+    "ui_slug": "whatsapp"
+  },
+  "source_id": "whatsapp"
+}

@@ -12,16 +12,8 @@ import pytest
 from fastapi import FastAPI
 
 from services.app.gateway.byoc_onboarding_router import (
-    _ALL_REHEARSAL_SOURCES,
-    _GENERIC_AUTHORIZATION_MODES,
-    _GENERIC_PROVIDER_CONSOLES,
-    _SOURCE_DISCOVERY_TARGETS,
-    _SOURCE_METHODS,
-    _SOURCE_NATIVE_CONNECT_CONTRACTS,
-    _SOURCE_OPTIONAL_INPUTS,
-    _SOURCE_REQUIRED_INPUTS,
+    _contract_provider_handoff,
     _discord_source_access_payload,
-    _discord_source_access_payload_for_installations,
     _execute_source_auto_connect_background_run,
     _ensure_rehearsal_actor,
     _materialize_source_auto_connect_run,
@@ -30,13 +22,15 @@ from services.app.gateway.byoc_onboarding_router import (
     _source_auto_connect_state,
     _source_deployment_context,
     _source_installation_row,
-    _source_provider_handoff,
     _source_rehearsal_status_payload,
+    build_discord_source_access_status,
     build_byoc_onboarding_router,
 )
 from services.ingest.source_contract import (
     SOURCE_DEFINITIONS,
     SOURCE_LIVE_INGRESS_CATALOG,
+    resolve_provider_handoff,
+    source_definition,
 )
 from lib.shared.errors import DiscordApiError
 from services.platform.runtime.source_browser_agent_recipes import (
@@ -49,6 +43,10 @@ from services.platform.runtime.source_browser_agent_workflow import (
 from services.platform.runtime.byoc_onboarding_intents import (
     InMemoryOnboardingIntentStore,
 )
+
+
+def _native_connect(source: str) -> dict[str, object]:
+    return source_definition(source).onboarding.native_connect.as_payload()
 
 
 class _RecordingSecretStore:
@@ -323,7 +321,7 @@ def test_auto_connect_materializes_sanitized_background_artifact(
         {
             "browser_agent": browser_agent_recipe_for_source("ramp"),
             "provider_console_url": "https://developers.ramp.com/",
-            "native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS["ramp"],
+            "native_connect": _native_connect("ramp"),
             "status": {"installed": False, "observation_count": 0},
             "missing_configuration": [],
             "automation_profile": {
@@ -334,7 +332,7 @@ def test_auto_connect_materializes_sanitized_background_artifact(
     )
     descriptor = _source_auto_connect_run_descriptor(
         "ramp",
-        {"native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS["ramp"]},
+        {"native_connect": _native_connect("ramp")},
         browser_agent_run,
     )
 
@@ -809,7 +807,7 @@ async def test_discord_source_access_payload_aggregates_multiple_guilds(
         _MultiGuildDiscordClient,
     )
 
-    payload = await _discord_source_access_payload_for_installations(
+    payload = await build_discord_source_access_status(
         _DiscordMultiAccessPool(),
         tenant_id=tenant_id,
         installations=[
@@ -869,7 +867,7 @@ async def test_discord_provider_handoff_uses_administrator_for_full_server_sync(
 
     monkeypatch.setattr(discord_oauth, "issue_state_token", _state_token)
 
-    payload = await _source_provider_handoff(
+    payload = await _contract_provider_handoff(
         "discord",
         pool=object(),
         tenant_id=uuid4(),
@@ -892,7 +890,7 @@ async def test_figma_provider_handoff_uses_deployment_owned_oauth_app(
     monkeypatch.setattr(figma_oauth, "_deployment_oauth_ready", lambda: False)
     monkeypatch.setattr(figma_oauth, "_figma_redirect_uri", lambda: "")
 
-    payload = await _source_provider_handoff(
+    payload = await _contract_provider_handoff(
         "figma",
         pool=object(),
         tenant_id=uuid4(),
@@ -912,11 +910,19 @@ async def test_figma_provider_handoff_uses_deployment_owned_oauth_app(
 
 
 def test_browser_agent_recipes_cover_all_rehearsal_sources() -> None:
-    assert missing_browser_agent_recipe_sources(_ALL_REHEARSAL_SOURCES) == set()
+    assert (
+        missing_browser_agent_recipe_sources(
+            source.source_id for source in SOURCE_DEFINITIONS
+        )
+        == set()
+    )
 
 
 def test_native_connect_contracts_cover_mounted_source_routers() -> None:
-    assert set(_SOURCE_NATIVE_CONNECT_CONTRACTS) >= {
+    native_connect_sources = {
+        source.source_id for source in SOURCE_DEFINITIONS
+    }
+    assert native_connect_sources >= {
         "ashby",
         "aws",
         "brex",
@@ -945,10 +951,10 @@ def test_native_connect_contracts_cover_mounted_source_routers() -> None:
         "telegram",
         "whatsapp",
     }
-    assert _SOURCE_NATIVE_CONNECT_CONTRACTS["ramp"]["finalize_path"] == (
+    assert _native_connect("ramp")["finalize_path"] == (
         "/integrations/ramp/connect/finalize"
     )
-    figma_contract = _SOURCE_NATIVE_CONNECT_CONTRACTS["figma"]
+    figma_contract = _native_connect("figma")
     assert figma_contract["kind"] == "figma_oauth_file_scoped_connect"
     assert figma_contract["start_path"] == "/integrations/figma/oauth/start"
     assert figma_contract["status_path"] == "/integrations/figma/connect/status"
@@ -957,18 +963,18 @@ def test_native_connect_contracts_cover_mounted_source_routers() -> None:
     assert figma_contract["payload_fields"] == ["file_urls", "return_path"]
     assert "preflight_path" not in figma_contract
     assert SOURCE_LIVE_INGRESS_CATALOG["figma"] == "/webhooks/figma"
-    assert _SOURCE_NATIVE_CONNECT_CONTRACTS["gmail"]["preflight_path"] == (
+    assert _native_connect("gmail")["preflight_path"] == (
         "/integrations/gmail/connect/preflight"
     )
-    assert _SOURCE_NATIVE_CONNECT_CONTRACTS["gmail"]["preflight_payload_fields"] == [
+    assert _native_connect("gmail")["preflight_payload_fields"] == [
         "workspace_domain",
         "admin_email",
         "scope",
     ]
-    assert _SOURCE_NATIVE_CONNECT_CONTRACTS["gmail"]["scope_aliases"] == [
+    assert _native_connect("gmail")["scope_aliases"] == [
         "gmail.metadata"
     ]
-    assert _SOURCE_NATIVE_CONNECT_CONTRACTS["google_calendar"][
+    assert _native_connect("google_calendar")[
         "preflight_payload_fields"
     ] == ["workspace_domain", "admin_email", "scope"]
     assert SOURCE_LIVE_INGRESS_CATALOG["google_calendar"] == (
@@ -976,51 +982,20 @@ def test_native_connect_contracts_cover_mounted_source_routers() -> None:
     )
 
 
-def test_onboarding_views_are_derived_from_source_contracts() -> None:
-    assert set(_SOURCE_METHODS) == {
-        source.source_id for source in SOURCE_DEFINITIONS
-    }
-    assert set(_SOURCE_DISCOVERY_TARGETS) == set(_SOURCE_METHODS)
-    assert set(_SOURCE_NATIVE_CONNECT_CONTRACTS) == set(_SOURCE_METHODS)
-
+def test_onboarding_runtime_is_owned_directly_by_source_contracts() -> None:
+    assert len(SOURCE_DEFINITIONS) == 27
     for source in SOURCE_DEFINITIONS:
-        source_id = source.source_id
         onboarding = source.onboarding
-        if onboarding.required_inputs is None:
-            assert source_id not in _SOURCE_REQUIRED_INPUTS
-        else:
-            assert _SOURCE_REQUIRED_INPUTS[source_id] == list(
-                onboarding.required_inputs
-            )
-        if onboarding.optional_inputs is None:
-            assert source_id not in _SOURCE_OPTIONAL_INPUTS
-        else:
-            assert _SOURCE_OPTIONAL_INPUTS[source_id] == list(
-                onboarding.optional_inputs
-            )
-        if onboarding.provider_console_url is None:
-            assert source_id not in _GENERIC_PROVIDER_CONSOLES
-        else:
-            assert (
-                _GENERIC_PROVIDER_CONSOLES[source_id]
-                == onboarding.provider_console_url
-            )
-        if onboarding.generic_authorization_mode is None:
-            assert source_id not in _GENERIC_AUTHORIZATION_MODES
-        else:
-            assert (
-                _GENERIC_AUTHORIZATION_MODES[source_id]
-                == onboarding.generic_authorization_mode
-            )
-        assert _SOURCE_METHODS[source_id] == onboarding.method
-        assert (
-            _SOURCE_DISCOVERY_TARGETS[source_id]
-            == onboarding.discovery_target
-        )
-        assert (
-            _SOURCE_NATIVE_CONNECT_CONTRACTS[source_id]
-            == onboarding.native_connect.as_payload()
-        )
+        assert onboarding.discovery_target
+        assert onboarding.provider_console_url.startswith("https://")
+        assert onboarding.native_connect.as_payload()["kind"]
+        assert onboarding.rehearsal_finalize_mode in {
+            "provider_callback",
+            "source_specific",
+            "native_finalizer_required",
+            "generic_customer_refs",
+        }
+        assert callable(resolve_provider_handoff(source.source_id))
 
 
 def test_google_browser_agent_run_uses_native_dwd_contract() -> None:
@@ -1078,7 +1053,7 @@ def test_figma_browser_agent_run_keeps_file_scoped_oauth_out_of_pat_runner() -> 
                 "https://fyralis-ingress.customer.example/"
                 "integrations/figma/oauth/callback"
             ),
-            "native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS["figma"],
+            "native_connect": _native_connect("figma"),
             "status": {"installed": False, "observation_count": 0},
             "missing_configuration": [],
             "automation_profile": {"human_steps": [], "automated_actions": []},
@@ -1185,7 +1160,9 @@ def test_browser_agent_provider_setup_bundles_are_specific_for_all_sources() -> 
         "whatsapp": "whatsapp_webhook_setup",
     }
 
-    assert set(expected_kinds) == _ALL_REHEARSAL_SOURCES
+    assert set(expected_kinds) == {
+        source.source_id for source in SOURCE_DEFINITIONS
+    }
     for source, expected_kind in expected_kinds.items():
         run = source_browser_agent_run_for_payload(
             source,
@@ -1259,7 +1236,7 @@ def test_aws_browser_agent_bundle_autofills_cloudformation_deployment_context():
             "provider_console_url": (
                 "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
             ),
-            "native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS["aws"],
+            "native_connect": _native_connect("aws"),
             "deployment_context": {
                 "aws_region": "us-west-2",
                 "aws_assuming_principal_arn": assuming_principal_arn,
@@ -1364,7 +1341,7 @@ def test_aws_auto_connect_blocks_until_byoc_runtime_role_is_known(
         "install_url": None,
         "finalize_mode": "native_finalizer_required",
         "browser_agent": browser_agent_recipe_for_source("aws"),
-        "native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS["aws"],
+        "native_connect": _native_connect("aws"),
         "deployment_context": {"aws_region": "ap-south-1"},
     }
 

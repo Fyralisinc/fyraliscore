@@ -54,6 +54,55 @@ async def test_aws_reconciler_propagates_retry_later(
         )
 
 
+@pytest.mark.parametrize(
+    ("high_water", "expected_floor"),
+    [
+        (1_000, 2_000),
+        (1_001, 2_000),
+        (1_999, 2_000),
+    ],
+)
+async def test_aws_reconciler_probes_from_next_cloudtrail_second(
+    monkeypatch: pytest.MonkeyPatch,
+    high_water: int,
+    expected_floor: int,
+) -> None:
+    async def _high_water(_pool, _shard_id):  # noqa: ANN001
+        return high_water
+
+    seen: list[dict[str, object]] = []
+
+    class _Client:
+        async def has_events_since(self, **kwargs):
+            seen.append(kwargs)
+            return False
+
+    monkeypatch.setattr(aws, "_load_shard_high_water", _high_water)
+    shard = {
+        "id": uuid4(),
+        "shard_identifier": {
+            "shard_kind": aws.SHARD_KIND_ACCOUNT_EVENTS,
+        },
+    }
+
+    reshared = await aws._check_one_shard_for_gap(
+        pool=object(),
+        client=_Client(),
+        shard=shard,
+        account_id="123456789012",
+        region="us-east-1",
+    )
+
+    assert reshared is None
+    assert seen == [
+        {
+            "account_id": "123456789012",
+            "region": "us-east-1",
+            "from_ms": expected_floor,
+        }
+    ]
+
+
 async def test_telegram_reconciler_propagates_retry_later(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

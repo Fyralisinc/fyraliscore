@@ -25,6 +25,7 @@ globally-unique ids, so only the token-scoped endpoints need this.
 A process-local asyncpg pool + secret store are created lazily and shared
 across shards.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -36,7 +37,11 @@ from typing import Any
 import asyncpg
 import httpx
 
-from lib.integrations.provider_lab import provider_lab_enabled
+from lib.integrations.provider_lab import (
+    provider_lab_enabled,
+    provider_lab_endpoint_url,
+    provider_lab_root_url,
+)
 from services.ingest.integrations.provider_transport_runtime import (
     get_provider_transport_runtime,
 )
@@ -85,7 +90,8 @@ async def _get_http() -> httpx.AsyncClient:
                 _HTTP = httpx.AsyncClient(
                     timeout=30.0,
                     limits=httpx.Limits(
-                        max_connections=64, max_keepalive_connections=32,
+                        max_connections=64,
+                        max_keepalive_connections=32,
                     ),
                 )
     return _HTTP
@@ -102,12 +108,15 @@ async def _get_pool() -> asyncpg.Pool:
                 from services.ingest.ingestion.workflows.runtime import (
                     make_workflow_pool,
                 )
+
                 _POOL = await make_workflow_pool(os.environ["DATABASE_URL"])
     return _POOL
 
 
 async def _effective_pool(
-    provided: asyncpg.Pool | None, *, provider_lab: bool,
+    provided: asyncpg.Pool | None,
+    *,
+    provider_lab: bool,
 ) -> asyncpg.Pool | None:
     """Pool for the client to carry. Reuse the caller's pool when given;
     in Provider Lab mode the clients never touch the pool (tokens are preset,
@@ -125,6 +134,7 @@ async def _get_secret_store() -> Any:
     global _SECRET_STORE
     if _SECRET_STORE is None:
         from lib.shared.secrets import build_secret_store
+
         _SECRET_STORE = build_secret_store(await _get_pool())
     return _SECRET_STORE
 
@@ -169,7 +179,9 @@ async def _new_github_client(
 
 
 async def build_github_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Build (or reuse) a GithubClient for an installation.
 
@@ -204,7 +216,9 @@ async def build_github_client(
 
 
 async def build_slack_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     from services.ingest.integrations.slack.client import SlackClient
 
@@ -221,7 +235,8 @@ async def build_slack_client(
     )
     if provider_lab:
         client._bot_token_cache.set(  # type: ignore[attr-defined]
-            f"spam-slack::{team_id}", ttl_seconds=float("inf"),
+            f"spam-slack::{team_id}",
+            ttl_seconds=float("inf"),
         )
     return client
 
@@ -265,13 +280,16 @@ async def build_slack_user_client(
     )
     if provider_lab:
         client._user_token_cache.set(  # type: ignore[attr-defined]
-            f"spam-slack-user::{team_id}::{user_id}", ttl_seconds=float("inf"),
+            f"spam-slack-user::{team_id}::{user_id}",
+            ttl_seconds=float("inf"),
         )
     return client
 
 
 async def build_discord_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     from services.ingest.integrations.discord.client import DiscordClient
 
@@ -291,7 +309,9 @@ async def build_discord_client(
 
 
 async def build_notion_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Notion read-client. Bot token is long-lived: resolved once from the
     secret store via `install['secret_ref']` (or preset in Provider Lab mode).
@@ -321,7 +341,9 @@ async def build_notion_client(
 
 
 async def build_jira_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Jira Cloud read-client. API token is long-lived: resolved once from the
     secret store via `install['secret_ref']` (or preset in Provider Lab mode). The
@@ -357,7 +379,9 @@ async def build_jira_client(
 
 
 async def build_mercury_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Mercury read-client. API token is long-lived: resolved once from the
     secret store via `install['secret_ref']` (or preset in Provider Lab mode). The
@@ -387,7 +411,9 @@ async def build_mercury_client(
 
 
 async def build_grafana_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Grafana read-client. Service-account token (Bearer) is long-lived:
     resolved once from the secret store via `install['secret_ref']` (or preset in
@@ -406,7 +432,10 @@ async def build_grafana_client(
         secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_token=("spam-grafana" if provider_lab else None),
+        # Grafana service-account tokens are instance scoped. Preserve that
+        # identity in Provider Lab so sibling installations cannot read the
+        # same merged annotation corpus.
+        api_token=(f"spam-grafana::{base_url}" if provider_lab else None),
         http_client=await _get_http(),
         # Provider Lab routes to the one mock host under /grafana; prod uses the
         # per-install base_url (api_base_url=None → base_url is used).
@@ -418,7 +447,9 @@ async def build_grafana_client(
 
 
 async def build_quickbooks_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """QuickBooks read-client. OAuth access token is resolved once from the
     secret store via `install['secret_ref']` (or preset in Provider Lab mode). The
@@ -456,7 +487,9 @@ async def build_quickbooks_client(
 
 
 async def build_telegram_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Telegram MTProto read-client for BACKFILL. The credential is a persisted
     Telethon StringSession resolved once from the secret store (or preset in
@@ -468,11 +501,31 @@ async def build_telegram_client(
     from services.ingest.integrations.telegram.client import TelegramClient
 
     provider_lab = _provider_lab_mode()
+    telegram_transport = None
+    if provider_lab:
+        from services.ingest.synthetic.provider_lab.client_bindings import (
+            ProviderLabTelegramTransport,
+        )
+
+        root_url = provider_lab_root_url()
+        if root_url is None:  # guarded by _provider_lab_mode(); fail closed.
+            raise RuntimeError("Provider Lab mode has no validated root URL")
+        account_label = str(
+            install["account_label"] if "account_label" in install else ""
+        )
+        telegram_transport = ProviderLabTelegramTransport(
+            root_url=root_url,
+            session=f"spam-telegram::{account_label}",
+            http_client=await _get_http(),
+        )
     backfill_ref = (
         install["backfill_session_secret_ref"]
-        if "backfill_session_secret_ref" in install else None
+        if "backfill_session_secret_ref" in install
+        else None
     )
-    live_ref = install["session_secret_ref"] if "session_secret_ref" in install else None
+    live_ref = (
+        install["session_secret_ref"] if "session_secret_ref" in install else None
+    )
     client = TelegramClient(
         pool=await _effective_pool(pool, provider_lab=provider_lab),
         secret_store=None if provider_lab else await _get_secret_store(),
@@ -483,7 +536,7 @@ async def build_telegram_client(
             install["api_hash_secret_ref"] if "api_hash_secret_ref" in install else None
         ),
         session_secret_ref=(backfill_ref or live_ref),
-        session=("spam-telegram" if provider_lab else None),
+        telegram_transport=telegram_transport,
         **_provider_transport_kwargs(),
     )
     # ProviderTransport owns per-install cooldown and concurrency. A global
@@ -492,7 +545,9 @@ async def build_telegram_client(
 
 
 async def build_brex_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Brex read-client (IN-FIN2, Bearer auth over real v2 cash/card APIs). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
@@ -522,7 +577,9 @@ async def build_brex_client(
 
 
 async def build_ramp_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Ramp read-client (IN-FIN2, OAuth client-credentials — verified
     docs.ramp.com Developer API). The Bearer access token is resolved once from
@@ -561,7 +618,9 @@ async def build_ramp_client(
 
 
 async def build_gusto_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Gusto read-client (IN-FIN2, OAuth payroll REST — /v1 bare-array
     endpoints, header pagination). OAuth access token is resolved once from
@@ -599,7 +658,9 @@ async def build_gusto_client(
 
 
 async def build_deel_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Deel read-client (IN-FIN2, Bearer auth over /rest/v2). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
@@ -629,7 +690,9 @@ async def build_deel_client(
 
 
 async def build_fireflies_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Fireflies read-client (IN-VERTICALS, GraphQL-only Bearer API). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
@@ -658,7 +721,9 @@ async def build_fireflies_client(
 
 
 async def build_miro_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Miro read-client (IN-VERTICALS, Brex/HMAC archetype). API token is
     long-lived: resolved once from the secret store via `install['secret_ref']`
@@ -686,7 +751,9 @@ async def build_miro_client(
 
 
 async def build_figma_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Figma read-client (IN-VERTICALS, PAT or OAuth Bearer REST API).
 
@@ -732,7 +799,9 @@ async def build_figma_client(
 
 
 async def build_carta_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Carta read-client (IN-VERTICALS, Gusto/OAuth archetype). OAuth access
     token is resolved once from the secret store via `install['secret_ref']`
@@ -755,7 +824,7 @@ async def build_carta_client(
         secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        access_token=("spam-carta" if provider_lab else None),
+        access_token=(f"spam-carta::{issuer_id}" if provider_lab else None),
         http_client=await _get_http(),
         api_base_url=(endpoint("carta_api") if provider_lab else None),
         install_row_id=install["id"] if "id" in install else None,
@@ -768,7 +837,9 @@ async def build_carta_client(
 
 
 async def build_signal_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Signal linked-device read-client for BACKFILL (IN-VERTICALS,
     Telegram/gateway archetype). The credential is a persisted linked-device
@@ -783,14 +854,13 @@ async def build_signal_client(
     provider_lab = _provider_lab_mode()
     backfill_ref = (
         install["backfill_session_secret_ref"]
-        if "backfill_session_secret_ref" in install else None
+        if "backfill_session_secret_ref" in install
+        else None
     )
     live_ref = (
         install["session_secret_ref"] if "session_secret_ref" in install else None
     )
-    account_label = (
-        install["account_label"] if "account_label" in install else None
-    )
+    account_label = install["account_label"] if "account_label" in install else None
     client = SignalClient(
         pool=await _effective_pool(pool, provider_lab=provider_lab),
         secret_store=None if provider_lab else await _get_secret_store(),
@@ -798,7 +868,13 @@ async def build_signal_client(
         installation_id=install["id"],
         account_label=account_label,
         session_secret_ref=(backfill_ref or live_ref),
-        session=("spam-signal" if provider_lab else None),
+        session=(f"spam-signal::{account_label}" if provider_lab else None),
+        jsonrpc_endpoint=(
+            provider_lab_endpoint_url("signal_jsonrpc") if provider_lab else None
+        ),
+        sse_endpoint=(
+            provider_lab_endpoint_url("signal_sse") if provider_lab else None
+        ),
         http_client=await _get_http(),
         **_provider_transport_kwargs(),
     )
@@ -806,27 +882,55 @@ async def build_signal_client(
 
 
 async def build_aws_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """AWS CloudTrail read-client for BACKFILL (IN-VERTICALS, poll-live edge).
     Credentials are resolved from the install's `credential_kind` (assume_role /
     static_keys) + `secret_ref`; `account_id` + `region` scope every
-    LookupEvents call. There is no Provider Lab base-URL override (the synthetic
-    harness rebinds the fetcher's `_open_aws_client` seam to a MockAwsClient),
-    so this builds a real client against the install's auth."""
+    LookupEvents call. Provider Lab mode keeps the real SigV4/botocore boundary,
+    supplying deterministic installation-scoped static credentials and a
+    loopback endpoint because subprocesses cannot inherit a Python monkeypatch."""
     from services.ingest.integrations.aws.client import AwsClient
 
     provider_lab = _provider_lab_mode()
+    account_id = str(install["account_id"]) if "account_id" in install else ""
+    region = str(install["region"]) if "region" in install else "us-east-1"
+    secret_store = None
+    credential_kind = (
+        install["credential_kind"] if "credential_kind" in install else None
+    )
+    secret_ref = install["secret_ref"] if "secret_ref" in install else None
+    endpoint_override = None
+    if provider_lab:
+        from services.ingest.synthetic.provider_lab.client_bindings import (
+            ProviderLabJsonSecretStore,
+        )
+
+        secret_store = ProviderLabJsonSecretStore(
+            {
+                # The Lab extracts account + region from this real SigV4
+                # credential scope; no test-only HTTP header is needed.
+                "access_key_id": f"AKIDLAB{account_id}",
+                "secret_access_key": "provider-lab-aws-secret",
+            }
+        )
+        credential_kind = "static_keys"
+        secret_ref = "provider-lab://aws/static-credentials"
+        root_url = provider_lab_root_url()
+        if root_url is None:  # guarded by _provider_lab_mode(); fail closed.
+            raise RuntimeError("Provider Lab mode has no validated root URL")
+        endpoint_override = f"{root_url}/aws"
     client = AwsClient(
-        account_id=str(install["account_id"]) if "account_id" in install else "",
-        region=str(install["region"]) if "region" in install else "us-east-1",
+        account_id=account_id,
+        region=region,
         pool=await _effective_pool(pool, provider_lab=provider_lab),
-        secret_store=None if provider_lab else await _get_secret_store(),
+        secret_store=(secret_store if provider_lab else await _get_secret_store()),
         tenant_id=install["tenant_id"] if "tenant_id" in install else None,
-        credential_kind=(
-            install["credential_kind"] if "credential_kind" in install else None
-        ),
-        secret_ref=install["secret_ref"] if "secret_ref" in install else None,
+        credential_kind=credential_kind,
+        secret_ref=secret_ref,
+        endpoint_override=endpoint_override,
         installation_row_id=install["id"] if "id" in install else None,
         **_provider_transport_kwargs(),
     )
@@ -835,7 +939,9 @@ async def build_aws_client(
 
 
 async def build_hibob_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """HiBob read-client (IN-PEOPLE, Gusto-structure / Brex-auth archetype).
     HiBob authenticates with a SERVICE USER — HTTP Basic
@@ -863,7 +969,10 @@ async def build_hibob_client(
         secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        token=("spam-hibob" if provider_lab else None),
+        # HiBob's service-user credential determines the company; its API paths
+        # do not carry company_id. Encode the exact company in the Lab-only
+        # secret half of the otherwise real Basic-auth request.
+        token=(f"spam-hibob::{company_id}" if provider_lab else None),
         http_client=await _get_http(),
         api_base_url=(endpoint("hibob_api") if provider_lab else None),
         installation_row_id=install["id"] if "id" in install else None,
@@ -873,7 +982,9 @@ async def build_hibob_client(
 
 
 async def build_ashby_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Ashby read-client (IN-PEOPLE, Gusto-structure archetype). Ashby
     authenticates with an API KEY presented as the Basic username + empty
@@ -895,7 +1006,7 @@ async def build_ashby_client(
         secret_store=None if provider_lab else await _get_secret_store(),
         tenant_id=install["tenant_id"],
         secret_ref=secret_ref,
-        api_key=("spam-ashby" if provider_lab else None),
+        api_key=(f"spam-ashby--{org_id}" if provider_lab else None),
         http_client=await _get_http(),
         api_base_url=(endpoint("ashby_api") if provider_lab else None),
         installation_row_id=install["id"] if "id" in install else None,
@@ -905,7 +1016,9 @@ async def build_ashby_client(
 
 
 async def build_linkedin_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """LinkedIn read-client (IN-PEOPLE, Carta-structure archetype). OAuth access
     token is resolved once from the secret store via `install['secret_ref']` (or
@@ -945,7 +1058,9 @@ async def build_linkedin_client(
 
 
 async def build_facebook_pages_client(
-    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+    install: asyncpg.Record,
+    *,
+    pool: asyncpg.Pool | None = None,
 ) -> Any:
     """Facebook Pages read-client. The Page access token lives behind
     `facebook_page_installations.page_access_token_ref`; in Provider Lab mode a
@@ -963,7 +1078,8 @@ async def build_facebook_pages_client(
         access_token=(f"spam-facebook-pages::{page_id}" if provider_lab else None),
         page_access_token_ref=(
             install["page_access_token_ref"]
-            if "page_access_token_ref" in install else None
+            if "page_access_token_ref" in install
+            else None
         ),
         pool=await _effective_pool(pool, provider_lab=provider_lab),
         secret_store=None if provider_lab else await _get_secret_store(),
@@ -999,7 +1115,11 @@ async def open_slack_client(install: asyncpg.Record) -> Opener:
 
 
 async def open_slack_user_client(
-    *, tenant_id: Any, team_id: str, user_id: str, base_url: str | None = None,
+    *,
+    tenant_id: Any,
+    team_id: str,
+    user_id: str,
+    base_url: str | None = None,
 ) -> Opener:
     """Per-user DM read-client opener (fetcher/reconciler seam). Identity comes
     from the `slack_dm_window` shard_identifier (team_id + consenting user_id)
@@ -1007,8 +1127,10 @@ async def open_slack_user_client(
     per-module `_open_slack_user_client` seam."""
     return (
         await build_slack_user_client(
-            tenant_id=tenant_id, team_id=team_id,
-            user_id=user_id, base_url=base_url,
+            tenant_id=tenant_id,
+            team_id=team_id,
+            user_id=user_id,
+            base_url=base_url,
         ),
         _noop,
     )
@@ -1107,24 +1229,52 @@ async def open_aws_client(install: asyncpg.Record) -> Opener:
 
 
 __all__ = [
-    "build_github_client", "build_slack_client", "build_slack_user_client",
+    "build_github_client",
+    "build_slack_client",
+    "build_slack_user_client",
     "build_discord_client",
-    "build_notion_client", "build_jira_client",
-    "build_mercury_client", "build_quickbooks_client", "build_grafana_client",
+    "build_notion_client",
+    "build_jira_client",
+    "build_mercury_client",
+    "build_quickbooks_client",
+    "build_grafana_client",
     "build_telegram_client",
-    "build_brex_client", "build_ramp_client", "build_gusto_client", "build_deel_client",
-    "build_fireflies_client", "build_miro_client", "build_figma_client",
-    "build_carta_client", "build_signal_client", "build_aws_client",
-    "build_hibob_client", "build_ashby_client", "build_linkedin_client",
+    "build_brex_client",
+    "build_ramp_client",
+    "build_gusto_client",
+    "build_deel_client",
+    "build_fireflies_client",
+    "build_miro_client",
+    "build_figma_client",
+    "build_carta_client",
+    "build_signal_client",
+    "build_aws_client",
+    "build_hibob_client",
+    "build_ashby_client",
+    "build_linkedin_client",
     "build_facebook_pages_client",
-    "open_github_client", "open_slack_client", "open_slack_user_client",
+    "open_github_client",
+    "open_slack_client",
+    "open_slack_user_client",
     "open_discord_client",
-    "open_notion_client", "open_jira_client",
-    "open_mercury_client", "open_quickbooks_client", "open_grafana_client",
+    "open_notion_client",
+    "open_jira_client",
+    "open_mercury_client",
+    "open_quickbooks_client",
+    "open_grafana_client",
     "open_telegram_client",
-    "open_brex_client", "open_ramp_client", "open_gusto_client", "open_deel_client",
-    "open_fireflies_client", "open_miro_client", "open_figma_client",
-    "open_carta_client", "open_signal_client", "open_aws_client",
-    "open_hibob_client", "open_ashby_client", "open_linkedin_client",
+    "open_brex_client",
+    "open_ramp_client",
+    "open_gusto_client",
+    "open_deel_client",
+    "open_fireflies_client",
+    "open_miro_client",
+    "open_figma_client",
+    "open_carta_client",
+    "open_signal_client",
+    "open_aws_client",
+    "open_hibob_client",
+    "open_ashby_client",
+    "open_linkedin_client",
     "open_facebook_pages_client",
 ]

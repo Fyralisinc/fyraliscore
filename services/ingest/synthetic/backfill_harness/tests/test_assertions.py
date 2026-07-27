@@ -5,7 +5,7 @@ clean fixtures to confirm both the pass and fail paths.
 """
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -20,6 +20,7 @@ from services.ingest.synthetic.backfill_harness import (
     assert_no_duplicate_observations,
     assert_observation_count_matches_fixture,
     assert_reshare_cycles_completed,
+    assert_sibling_installation_identity,
 )
 
 
@@ -33,13 +34,17 @@ def _outcome(
     pass_count: int = 0,
     expected_reshare: bool = False,
     expected_obs: int = 0,
+    tenant_id: UUID | None = None,
+    installation_key: str | None = None,
 ) -> TenantOutcome:
     return TenantOutcome(
         scenario=BackfillScenario(
-            tenant_slug="x", source=source,
+            tenant_slug="x",
+            source=source,
+            installation_key=installation_key,
             expected_observation_count=expected_obs,
         ),
-        tenant_id=uuid4(),
+        tenant_id=tenant_id or uuid4(),
         completion_observed=completion_observed,
         completion_signal_count=completion_signal_count,
         observations=observations or [],
@@ -145,6 +150,52 @@ def test_assert_observation_count_skips_when_expected_is_zero() -> None:
         expected_obs=0,
         observations=[{"external_id": "a"}],
     )))
+
+
+def test_assert_observation_count_sums_sibling_installation_fixtures() -> None:
+    tenant_id = uuid4()
+    observations = [{"external_id": str(index)} for index in range(10)]
+    first = _outcome(
+        tenant_id=tenant_id,
+        installation_key="installation-1",
+        expected_obs=4,
+        observations=observations,
+    )
+    second = _outcome(
+        tenant_id=tenant_id,
+        installation_key="installation-2",
+        expected_obs=6,
+        observations=observations,
+    )
+
+    assert_observation_count_matches_fixture(_result(first, second))
+
+
+def test_assert_sibling_installation_identity_requires_exact_distinct_ids() -> None:
+    tenant_id = uuid4()
+    siblings = [
+        _outcome(
+            tenant_id=tenant_id,
+            installation_key=f"installation-{index}",
+        )
+        for index in range(2)
+    ]
+    for sibling in siblings:
+        sibling.installation_row_id = uuid4()
+        sibling.trigger_id = uuid4()
+        sibling.onboarding_run_id = uuid4()
+
+    assert_sibling_installation_identity(
+        _result(*siblings),
+        installations_per_tenant=2,
+    )
+
+    siblings[1].installation_row_id = siblings[0].installation_row_id
+    with pytest.raises(PropertyViolation, match="installation rows"):
+        assert_sibling_installation_identity(
+            _result(*siblings),
+            installations_per_tenant=2,
+        )
 
 
 def test_assert_reshare_cycles_passes_when_pass_count_positive() -> None:

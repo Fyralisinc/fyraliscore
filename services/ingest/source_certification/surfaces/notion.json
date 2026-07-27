@@ -1,0 +1,908 @@
+{
+  "implementation_sha256": {
+    "services.app.webhooks.ingress_metadata": "a3ff4bad57630c710f011615f3e9a6c0a37caa1bff218beb3c2ae0e464dbf3b8",
+    "services.app.webhooks.signatures.notion": "9f947b08da880bf93ca00ce63dd43c2bc100d127a017041821b47383b0460115",
+    "services.app.webhooks.tenant_resolver": "42f103530e97c323c088e700534bb79c544b5c7c354bbb8a5ae64b764b03b3d3",
+    "services.ingest.ingestion.fetchers.notion": "9644fceef84b012ad431f6f3c6fd0b3be26bb8b6f82274e12f53d63754636686",
+    "services.ingest.ingestion.handlers.notion": "3dfce08795975f6da0660a54ee7a32bdf4eed1ef9071a4e21495f6e8d0c2ffa2",
+    "services.ingest.ingestion.idempotency": "24d6e4e1270f98d22d4b77a92d88738431541d77a40e500446b59728efa7b33f",
+    "services.ingest.ingestion.installation_status": "dcc0f5cdc70fda2a5c50e5e293590776cf8cbfe85017c17dc77db0e7f62cb58c",
+    "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
+    "services.ingest.ingestion.planners.notion": "f831ba0ef19f2129359f4178d1e409779bda2cf9ae75fe091f93edcab4194d63",
+    "services.ingest.ingestion.reconcilers.notion": "4d8a9965c9397ccdac84963000676bc0ecebec495963334874c1ce169b7a730d",
+    "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.notion": "31e885113c0b58fd247ad224b734ac44b3c696f564318753b7dfa5f9d109ed04",
+    "services.ingest.integrations.notion.client": "b85c56300f075d3b699031f0b6c3b11fca2de5282d819bd139e0e956a527d8c6",
+    "services.ingest.integrations.notion.metrics": "b672b4662c2fc2fae851e6eac74f76258e0a70c81872eb9576316ade87cd836f",
+    "services.ingest.integrations.notion.oauth": "88661661bbd3b09428d8b8f0fc40b78bc2c9d22b4c2e4dcf8085069f553c384b",
+    "services.ingest.integrations.notion.uninstall": "56ed11b34cd1a62c462e381043034bb57abdd09cf8be0e14840ddf27bd54633d",
+    "services.ingest.integrations.notion.webhook": "9b3a53b8e65f8ff50483d4825a1f009eacfc5878d6332792b508d2ffcb379b71",
+    "services.ingest.integrations.notion.webhook_secrets": "cd43f797fa61aa7bcceed7b9fd182dae5dfbfa867417ed91ef8f4d60511e4358",
+    "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
+    "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
+    "services.ingest.synthetic.provider_lab.wave_cd": "41c4c2a2e3d41386cae397e018f3cd519f08baae2bdf5e148c00e36c3df41929",
+    "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
+    "services.platform.runtime.source_browser_agent_setup": "94573ed4fe4021187c94d861adc39dbf7955fa29bc6791c63accc05571a8def2",
+    "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
+  },
+  "provider_api_version": "Notion API 2022-06-28",
+  "provider_contract": {
+    "aliases": [],
+    "auth_strategies": [
+      "oauth2"
+    ],
+    "data_plane": true,
+    "dedicated_ingresses": [],
+    "display_name": "Notion",
+    "oauth_ingresses": [
+      {
+        "callback_handler_binding": "services.ingest.integrations.notion.oauth:callback_handler",
+        "callback_path": "/integrations/notion/callback",
+        "install_handler_binding": "services.ingest.integrations.notion.oauth:install_handler",
+        "install_path": "/integrations/notion/install",
+        "mount_mode": "shared_router",
+        "public_result_paths": [
+          "/integrations/notion/installed",
+          "/integrations/notion/install-error"
+        ],
+        "source_id": "notion"
+      }
+    ],
+    "operation_policy_ids": [
+      "search",
+      "databases.query",
+      "blocks.children.list",
+      "comments.list",
+      "pages.retrieve",
+      "users.me",
+      "oauth.token.exchange"
+    ],
+    "outbound_endpoint_names": [
+      "notion_api"
+    ],
+    "provider_id": "notion",
+    "source_ids": [
+      "notion"
+    ],
+    "webhook_ingresses": [
+      {
+        "acknowledgement_policy": "dedicated_handler",
+        "channel": "notion:object",
+        "dedicated_handler_binding": "services.ingest.integrations.notion.webhook:handle_notion_event",
+        "handler_mode": "dedicated",
+        "ingress_metadata_binding": "services.app.webhooks.ingress_metadata:build_generic_metadata",
+        "kafka_mode": "dedicated_kafka_first_with_inline_fallback",
+        "normalizer_header_projection": [],
+        "route_id": "notion",
+        "route_path": "/webhooks/notion/events",
+        "secret_loader_binding": "services.ingest.integrations.notion.webhook_secrets:load_app_webhook_secrets",
+        "source_id": "notion",
+        "tenant_binding": "payload",
+        "tenant_extractor_binding": "services.app.webhooks.tenant_resolver:_extract_notion",
+        "verification_handshake_binding": "services.ingest.integrations.notion.webhook:is_verification_handshake",
+        "verification_handshake_handler_binding": "services.ingest.integrations.notion.webhook:handle_verification_handshake",
+        "verified_pre_tenant_handler_binding": null,
+        "verified_tenant_handler_binding": null,
+        "verifier_binding": "services.app.webhooks.signatures.notion:verifier.verify"
+      }
+    ]
+  },
+  "provider_lab": {
+    "golden_fixture": {
+      "blocks_by_page": {},
+      "comments_by_page": {},
+      "databases": [
+        {
+          "database_id": "9fab3be4-cb0c-7b6e-56d8-40fafdca60e5",
+          "object_summary": {
+            "created_time": "2026-01-05T00:00:00.000Z",
+            "id": "9fab3be4-cb0c-7b6e-56d8-40fafdca60e5",
+            "last_edited_time": "2026-01-05T00:00:00.000Z",
+            "object": "database",
+            "parent": {
+              "type": "workspace",
+              "workspace": true
+            },
+            "title": [
+              {
+                "annotations": {},
+                "href": null,
+                "plain_text": "Database 0",
+                "text": {
+                  "content": "Database 0",
+                  "link": null
+                },
+                "type": "text"
+              }
+            ],
+            "url": "https://www.notion.so/9fab3be4cb0c7b6e56d840fafdca60e5"
+          },
+          "rows": [
+            {
+              "created_by": {
+                "id": "3356badb-3adf-aa37-8944-ca9ac9ad05d0",
+                "name": "User 9d4a6e",
+                "object": "user",
+                "type": "person"
+              },
+              "created_time": "2026-01-05T00:00:00.000Z",
+              "id": "d83457f5-5b3a-7ff9-0bcf-782e27d68c88",
+              "last_edited_by": {
+                "id": "3356badb-3adf-aa37-8944-ca9ac9ad05d0",
+                "name": "User 9d4a6e",
+                "object": "user",
+                "type": "person"
+              },
+              "last_edited_time": "2026-01-05T00:30:00.000Z",
+              "object": "page",
+              "parent": {
+                "database_id": "9fab3be4-cb0c-7b6e-56d8-40fafdca60e5",
+                "type": "database_id"
+              },
+              "properties": {
+                "Name": {
+                  "id": "title",
+                  "title": [
+                    {
+                      "annotations": {},
+                      "href": null,
+                      "plain_text": "Row 0 of db 0",
+                      "text": {
+                        "content": "Row 0 of db 0",
+                        "link": null
+                      },
+                      "type": "text"
+                    }
+                  ],
+                  "type": "title"
+                },
+                "Status": {
+                  "id": "9027024c",
+                  "status": {
+                    "color": "blue",
+                    "name": "In Progress"
+                  },
+                  "type": "status"
+                }
+              },
+              "url": "https://www.notion.so/d83457f55b3a7ff90bcf782e27d68c88"
+            },
+            {
+              "created_by": {
+                "id": "9fab8a8b-32a8-9ecd-4c1a-08d8bf8275db",
+                "name": "User 72e95a",
+                "object": "user",
+                "type": "person"
+              },
+              "created_time": "2026-01-05T01:00:00.000Z",
+              "id": "6735c647-1a96-b0d2-fe24-e232ce22fb8e",
+              "last_edited_by": {
+                "id": "9fab8a8b-32a8-9ecd-4c1a-08d8bf8275db",
+                "name": "User 72e95a",
+                "object": "user",
+                "type": "person"
+              },
+              "last_edited_time": "2026-01-05T01:30:00.000Z",
+              "object": "page",
+              "parent": {
+                "database_id": "9fab3be4-cb0c-7b6e-56d8-40fafdca60e5",
+                "type": "database_id"
+              },
+              "properties": {
+                "Name": {
+                  "id": "title",
+                  "title": [
+                    {
+                      "annotations": {},
+                      "href": null,
+                      "plain_text": "Row 1 of db 0",
+                      "text": {
+                        "content": "Row 1 of db 0",
+                        "link": null
+                      },
+                      "type": "text"
+                    }
+                  ],
+                  "type": "title"
+                },
+                "Status": {
+                  "id": "ba628e9f",
+                  "status": {
+                    "color": "blue",
+                    "name": "In Progress"
+                  },
+                  "type": "status"
+                }
+              },
+              "url": "https://www.notion.so/6735c6471a96b0d2fe24e232ce22fb8e"
+            }
+          ]
+        }
+      ],
+      "loose_pages": [
+        {
+          "created_by": {
+            "id": "a566c5f4-3b07-fa76-7ccc-41fb957c001e",
+            "name": "User 7c1e5b",
+            "object": "user",
+            "type": "person"
+          },
+          "created_time": "2026-01-06T00:00:00.000Z",
+          "id": "11a25da7-d1c5-5072-b2a1-187d683c2b76",
+          "last_edited_by": {
+            "id": "a566c5f4-3b07-fa76-7ccc-41fb957c001e",
+            "name": "User 7c1e5b",
+            "object": "user",
+            "type": "person"
+          },
+          "last_edited_time": "2026-01-06T00:30:00.000Z",
+          "object": "page",
+          "parent": {
+            "type": "workspace",
+            "workspace": true
+          },
+          "properties": {
+            "Name": {
+              "id": "title",
+              "title": [
+                {
+                  "annotations": {},
+                  "href": null,
+                  "plain_text": "Loose page 0",
+                  "text": {
+                    "content": "Loose page 0",
+                    "link": null
+                  },
+                  "type": "text"
+                }
+              ],
+              "type": "title"
+            },
+            "Status": {
+              "id": "54669cbc",
+              "status": {
+                "color": "blue",
+                "name": "In Progress"
+              },
+              "type": "status"
+            }
+          },
+          "url": "https://www.notion.so/11a25da7d1c55072b2a1187d683c2b76"
+        }
+      ],
+      "page_size": 100,
+      "workspace_id": "certification-surface-notion"
+    },
+    "protocol_surfaces": [],
+    "routes": [
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "oauth.token.exchange",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "oauth.token.exchange"
+        ],
+        "path_template": "/v1/oauth/token",
+        "quota_bucket": "oauth",
+        "quota_cost": 1.0,
+        "route_id": "notion.oauth_token",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "search",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "search"
+        ],
+        "path_template": "/v1/search",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "notion.search",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "POST"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "POST",
+            "operation_id": "databases.query",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "databases.query"
+        ],
+        "path_template": "/v1/databases/{database_id}/query",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "notion.query_database",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "blocks.children.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "blocks.children.list"
+        ],
+        "path_template": "/v1/blocks/{block_id}/children",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "notion.block_children",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "comments.list",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "comments.list"
+        ],
+        "path_template": "/v1/comments",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "notion.comments",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "pages.retrieve",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "pages.retrieve"
+        ],
+        "path_template": "/v1/pages/{page_id}",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "notion.retrieve_page",
+        "transport": "http"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
+        "operation_bindings": [
+          {
+            "body_sha256": null,
+            "headers": [],
+            "method": "GET",
+            "operation_id": "users.me",
+            "path_values": [],
+            "query_items": []
+          }
+        ],
+        "operation_ids": [
+          "users.me"
+        ],
+        "path_template": "/v1/users/me",
+        "quota_bucket": "rest",
+        "quota_cost": 1.0,
+        "route_id": "notion.bot_user",
+        "transport": "http"
+      }
+    ]
+  },
+  "schema_version": "fyralis.source-certification-surface.v2",
+  "source_contract": {
+    "acknowledgement_policies": [
+      "durable_before_ack",
+      "cursor_after_durable"
+    ],
+    "aliases": [],
+    "allowed_observation_kinds": [
+      "signal",
+      "state_change"
+    ],
+    "capability_flags": [],
+    "certification": {
+      "canary_id": "ingest.canary.notion",
+      "evidence_id": "ingest.evidence.notion",
+      "notes": [],
+      "require_canary": true,
+      "require_evidence": true,
+      "require_test_kit": true,
+      "status": "unverified",
+      "test_kit_id": "ingest.test_kit.notion",
+      "validation_runtime": {
+        "generator_group": "notion",
+        "live_event_binding": "services.ingest.synthetic.validation_runs.source_bindings:dispatch_notion_live_event",
+        "live_generator_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_notion_live_generator",
+        "live_install_binding": "services.ingest.synthetic.validation_runs.source_bindings:seed_notion_live_install",
+        "live_only_bootstrap_binding": null,
+        "live_target_binding": "services.ingest.synthetic.validation_runs.source_bindings:build_notion_live_target",
+        "preflight_binding": null,
+        "replay_probe_binding": null,
+        "signature_probe_binding": "services.ingest.synthetic.validation_runs.source_bindings:probe_notion_signature",
+        "twin_probe_binding": null
+      }
+    },
+    "connect_router_binding": "services.ingest.integrations.notion.oauth:router",
+    "credential_refresh": null,
+    "data_objects": [
+      "database",
+      "page",
+      "block",
+      "comment"
+    ],
+    "delivery_policies": [
+      "at_least_once",
+      "replayable_pull"
+    ],
+    "display": {
+      "category": "Knowledge",
+      "connection_method": "OAuth",
+      "description": "Pages, databases, and workspace knowledge.",
+      "display_name_override": null,
+      "notice": null,
+      "order": 6,
+      "setup_requirements": "Workspace integration token, pages and databases shared to integration, workspace owner approval, selector scope.",
+      "supported_sync_modes": [
+        "Dry run",
+        "Limited backfill"
+      ]
+    },
+    "display_name": "Notion",
+    "fetcher_binding": "services.ingest.ingestion.fetchers.notion:fetch_page_notion",
+    "finance_testing_binding": null,
+    "history": "api",
+    "idempotency_builder_bindings": [
+      "services.ingest.ingestion.idempotency:notion_object"
+    ],
+    "ingress_routes": [
+      {
+        "channel": "notion:object",
+        "ingress_kind": "webhook"
+      },
+      {
+        "channel": "notion:object",
+        "ingress_kind": "backfill"
+      },
+      {
+        "channel": "notion:object",
+        "ingress_kind": "poll"
+      }
+    ],
+    "installation_adapter": {
+      "loader_binding": "services.ingest.ingestion.installations:load_notion_installation",
+      "management": null,
+      "onboarding_failure_binding": null,
+      "planner_client_builder_binding": "services.ingest.ingestion.installations:build_notion_planner_client",
+      "status_loader_binding": "services.ingest.ingestion.installation_status:load_provider_installation_status_rows"
+    },
+    "installation_identifiers": [
+      "workspace_id"
+    ],
+    "live_runtime": {
+      "ingress_boundaries": [
+        {
+          "boundary_id": "notion",
+          "boundary_kind": "webhook_route",
+          "deployment_unit": "gateway",
+          "transport": "webhook"
+        }
+      ],
+      "workers": [
+        {
+          "cadence_seconds": 21600,
+          "component_id": "periodic_reconciler",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "periodic_reconciler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.periodic_reconciler:run_forever",
+          "lease_scope": "resource",
+          "managed_reason": null,
+          "role": "periodic_reconciliation",
+          "transport": "api_poll"
+        }
+      ]
+    },
+    "live_transports": [
+      "webhook",
+      "api_poll"
+    ],
+    "metrics_export_bindings": [
+      "services.ingest.integrations.notion.metrics:export_metrics"
+    ],
+    "non_resolver_operation_bindings": [],
+    "normalization_inputs": [
+      "notion:object"
+    ],
+    "normalizer_bindings": [
+      "services.ingest.ingestion.handlers.notion:handle_notion_object"
+    ],
+    "onboarding": {
+      "access_status_binding": null,
+      "browser_agent": {
+        "agent_collects": [
+          "workspace id",
+          "shared pages",
+          "shared databases"
+        ],
+        "agent_generates": [
+          "workspace/page scope contract",
+          "webhook eligibility contract"
+        ],
+        "completion_checks": [
+          "provider handoff prepared",
+          "customer-cloud secret refs created or confirmed",
+          "source install status is pollable",
+          "onboarding trigger or source-native install row is present",
+          "sanitized connection proof can be read from observations"
+        ],
+        "human_gates": [
+          "admin signs in and completes MFA when prompted",
+          "admin approves provider app scopes"
+        ],
+        "settings_targets": [
+          "integration settings",
+          "workspace sharing",
+          "database/page settings"
+        ]
+      },
+      "consent_scopes": [],
+      "default_scopes": [
+        "shared-pages",
+        "shared-databases"
+      ],
+      "discovery_target": "shared pages, databases, users, and webhook eligibility",
+      "generic_authorization_mode": null,
+      "ingress_paths": [
+        "/integrations/notion/callback",
+        "/webhooks/notion/events"
+      ],
+      "local_rehearsal": {
+        "callback_path": "/integrations/notion/callback",
+        "default_env": [],
+        "derived_env": [],
+        "env": [
+          "NOTION_CLIENT_ID",
+          "NOTION_CLIENT_SECRET",
+          "NOTION_REDIRECT_URI",
+          "OAUTH_STATE_HMAC_KEY",
+          "NOTION_WEBHOOK_VERIFICATION_TOKEN"
+        ],
+        "finalize_endpoint": null,
+        "install_endpoint": "/integrations/notion/install",
+        "kind": "oauth_app",
+        "manual_gate_names": [
+          "notion_integration_creation_or_update",
+          "notion_oauth_consent",
+          "notion_webhook_verification_token_copy"
+        ],
+        "needs_public_url": true,
+        "preflight_endpoint": null,
+        "required_env": [
+          "NOTION_CLIENT_ID",
+          "NOTION_CLIENT_SECRET",
+          "NOTION_REDIRECT_URI",
+          "OAUTH_STATE_HMAC_KEY"
+        ],
+        "runtime_components": [],
+        "webhook_path": "/webhooks/notion/events"
+      },
+      "method": "oauth",
+      "native_connect": {
+        "disconnect_path": null,
+        "finalize_path": "/integrations/notion/connect/finalize",
+        "kind": "oauth_callback_native_connect",
+        "payload_fields": [
+          "workspace_id",
+          "shared_page_ids",
+          "shared_database_ids",
+          "oauth_redirect_url",
+          "events_request_url",
+          "installation_id"
+        ],
+        "preflight_path": "/integrations/notion/connect/preflight",
+        "preflight_payload_fields": [],
+        "retry_path": null,
+        "scope_aliases": [],
+        "start_path": null,
+        "status_path": null
+      },
+      "no_ingress_reason": null,
+      "optional_inputs": null,
+      "provider_console_url": "https://www.notion.so/my-integrations",
+      "provider_handoff_binding": "services.ingest.source_contract.onboarding_handoffs:notion_provider_handoff",
+      "provider_permissions": [
+        "read content",
+        "read users",
+        "database access"
+      ],
+      "provider_setup_builder_binding": "services.platform.runtime.source_browser_agent_setup:build_notion_provider_setup_bundle",
+      "provider_setup_notes_binding": "services.platform.runtime.source_rehearsal_contract:notion_provider_setup_notes",
+      "rehearsal_artifact_builder_binding": null,
+      "rehearsal_finalize_mode": "provider_callback",
+      "required_inputs": null,
+      "required_refs": [
+        "oauth_client",
+        "token_ref"
+      ]
+    },
+    "operation_policies": [
+      {
+        "operation_id": "search",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "databases.query",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "blocks.children.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "comments.list",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "pages.retrieve",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "users.me",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 3,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 4,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "idempotent",
+          "retryable_error_codes": [
+            "provider_rate_limited",
+            "provider_timeout",
+            "provider_transient_error"
+          ],
+          "retryable_status_codes": [
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504
+          ],
+          "timeout_seconds": 30.0
+        }
+      },
+      {
+        "operation_id": "oauth.token.exchange",
+        "request_policy": {
+          "base_backoff_seconds": 0.5,
+          "default_retry_later_seconds": 60.0,
+          "max_attempts": 1,
+          "max_backoff_seconds": 30.0,
+          "max_concurrency": 1,
+          "max_elapsed_seconds": 60.0,
+          "max_inline_retry_after_seconds": 30.0,
+          "max_quota_wait_seconds": 0.0,
+          "rate_limit_header_parser_id": "http.retry_after",
+          "retry_safety": "unsafe",
+          "retryable_error_codes": [],
+          "retryable_status_codes": [],
+          "timeout_seconds": 30.0
+        }
+      }
+    ],
+    "operator_live_ingress": null,
+    "outbound_endpoint_bindings": [
+      {
+        "endpoint_name": "notion_api",
+        "operation_ids": [
+          "search",
+          "databases.query",
+          "blocks.children.list",
+          "comments.list",
+          "pages.retrieve",
+          "users.me",
+          "oauth.token.exchange"
+        ]
+      }
+    ],
+    "planner_binding": "services.ingest.ingestion.planners.notion:plan_shards_notion",
+    "provider_id": "notion",
+    "provider_transport_enforced": true,
+    "reconciler_binding": "services.ingest.ingestion.reconcilers.notion:reconcile_notion",
+    "runtime_identifiers": [
+      "workspace_id",
+      "entity_id"
+    ],
+    "source_id": "notion",
+    "trust_tiers": [
+      "attested_agent"
+    ],
+    "ui_slug": "notion"
+  },
+  "source_id": "notion"
+}
