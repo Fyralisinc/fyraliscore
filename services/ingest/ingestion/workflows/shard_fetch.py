@@ -243,6 +243,9 @@ from lib.shared.provider_transport import (
     ZeroProgressError,
     validate_fetch_progress,
 )
+from services.ingest.ingestion.event_replica_attribution import (
+    merge_current_event_attribution,
+)
 from services.ingest.ingestion.kafka.topics import topic_for
 from services.ingest.ingestion.installations import (
     InstallationIdentityError,
@@ -1049,6 +1052,12 @@ async def _write_record_and_build_message(
     Partition key = tenant_id bytes (LLD §5.2 partition affinity).
     """
     now = now or dt.datetime.now(tz=dt.timezone.utc)
+    ingress_metadata = merge_current_event_attribution(
+        {
+            "installation_row_id": str(installation_row_id),
+        },
+        expected_installation_id=installation_row_id,
+    )
 
     record_body = dict(record)
     webhook_metadata = record_body.pop("webhook_metadata", {})
@@ -1082,9 +1091,7 @@ async def _write_record_and_build_message(
         content_hash=content_hash,
         ingested_at=now,
         ingress_kind="backfill",
-        ingress_metadata={
-            "installation_row_id": str(installation_row_id),
-        },
+        ingress_metadata=ingress_metadata,
     )
     return KafkaMessage(
         # Per-source raw topic so backfill traffic for one source cannot

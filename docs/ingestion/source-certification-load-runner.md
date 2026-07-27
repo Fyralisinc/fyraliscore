@@ -105,6 +105,22 @@ to measure ingestion throughput. It is a library API, not a second CLI stage.
 loopback infrastructure, a mode, and a source-specific
 `PipelineBoundaryAdapter` factory.
 
+Pipeline artifacts use
+`fyralis.source-certification-pipeline-load.v2`. A workload contains typed
+`executable_operations`, not the catalog's legacy string-only semantic mix.
+Each operation binds an importable callable and evidence identity; declares
+data versus control work, raw/normalized/observation cardinality, cursor
+applicability, provider-operation/quota-bucket mappings, and required receipt
+proofs; and declares one of these schedules:
+
+- weighted `per_item` data work;
+- `once_per_trial` control work positioned before or after offered load; or
+- periodic control work with an explicit cadence.
+
+The legacy `operation_mix` remains only for the existing request-boundary
+runner. Planning and reconciliation are consequently not round-robined at the
+offered item rate.
+
 There is currently no production `PipelineBoundaryAdapter` factory and no
 execution-driver binding for it. Calling `run_pipeline_load()` without the
 factory returns a self-validating blocked artifact with
@@ -131,22 +147,30 @@ following:
 - the canonical source and an exact hash of the loopback Postgres, Kafka, and
   S3 binding;
 - the dedicated namespace;
-- the historical, live, or combined workload and the hash of its exact
-  source-owned operation mix;
+- the historical, live, or combined workload and the hash of its complete
+  typed executable-operation contract;
 - `ingestion.raw.<source>` and `ingestion.normalized.<source>`;
 - the `observations` and `think_trigger_queue` relations;
 - strict or disabled quota mode; and
 - the exact tenant, installation, and replica topology.
 
 Every trial cross-checks offer receipts against measurements read from the
-real boundary. For each accepted item, there must be one raw S3 object and one
-raw Kafka record. The receipt-declared number of expected observations must
-equal the normalized-record, Observation, and T1-trigger counts. Observation
-and T1 identities must be unique. Raw and normalized bytes, provider-request
-counts, quota units, per-layer latency samples, event and cursor ledger
-hashes, cursor checks, Kafka lag, Observation-to-T1 lag, DLQ entries,
-cross-tenant leaks, and actual per-replica processing counts are part of the
-terminal snapshot.
+real boundary. A receipt repeats the operation-contract hash and evidence
+identity, proves the bound callable invocation, records exact raw S3, raw
+Kafka, normalized, and expected-observation cardinalities, and itemizes
+provider requests by the declared operation/bucket/cost mapping. Accepted
+counts must satisfy that operation's cardinality contract. Historical fetch
+work requires one or more raw, normalized, and observation outputs; an empty
+terminal page is not accepted offered load. Control work requires zero
+data-plane output. Cursor checks are required only for cursor-applicable
+operations.
+
+The terminal snapshot must exactly match the receipt totals and the
+self-hashed receipt ledger. Observation and T1 identities must be unique. Raw
+and normalized bytes, provider-request counts, quota units, per-layer latency
+samples, event, receipt, and cursor ledger hashes, Kafka lag,
+Observation-to-T1 lag, DLQ entries, cross-tenant leaks, and actual
+per-replica raw-record processing counts are part of the terminal snapshot.
 
 An adapter cannot establish this proof merely by reporting counters. Its
 boundary identity must match the requested source, infrastructure hash,
@@ -164,10 +188,10 @@ A release-shaped run requires:
 = 8 scheduling lanes
 ```
 
-Work items rotate through all eight lanes. A terminal snapshot must contain
+Data work rotates through all eight lanes. A terminal snapshot must contain
 exactly two tenant IDs, four installation IDs, and two replica IDs. Both
 replicas must report processing at least one item, and their processed-item
-counts must add up to the accepted-item count. This proves observed worker
+counts must add up to the raw Kafka record count. This proves observed worker
 participation rather than merely declaring `replicas=2`.
 
 Injected topologies remain useful for unit tests, but only exactly 2 × 2 × 2
@@ -179,9 +203,9 @@ The exact-pipeline runner uses the system monotonic clock for eligible
 evidence. Each trial:
 
 1. requires a zero baseline;
-2. computes `floor(target_rate × duration)` unique work items;
-3. schedules them at their target monotonic timestamps across the eight
-   lanes, with bounded in-flight offers;
+2. computes `floor(target_rate × duration)` weighted data operations;
+3. merges those timestamps with before/after-trial and cadence-based control
+   operations, using bounded in-flight offers;
 4. waits for every offer receipt;
 5. calls `finish_trial()` to drain the complete data plane; and
 6. computes throughput using the real elapsed time from trial start through
@@ -196,8 +220,9 @@ Stability requires exact counts through every layer, at least 90 percent of
 the target offered rate over end-to-end wall time, zero missing records,
 unexpected duplicates, cross-tenant leaks, cursor consistency errors,
 cooldown violations, failed requests, DLQ entries, and terminal lag. It also
-requires positive cursor checks, full replica participation, and Observation
-p99 below the configured maximum.
+requires every cursor-required receipt to carry a positive check, full
+data-plane replica participation, and Observation p99 below the configured
+maximum. Cursor-free workloads are not forced to fabricate cursor activity.
 
 `maximum_offered_rate` is only a safety cap. In the quota-disabled ceiling
 mode, reaching that cap without finding an unstable upper bound fails the
@@ -221,7 +246,10 @@ The adapter also identifies its evidence class as `exact_pipeline` or
 only. The artifact states are:
 
 - `blocked` when prerequisites such as acknowledged loopback infrastructure,
-  exact quota evidence, or the adapter are absent;
+  exact quota evidence, the adapter, or a required bounded renewal callable
+  are absent;
+- `not_applicable` when the source contract explicitly excludes the workload
+  shape (currently WhatsApp historical ingestion);
 - `failed` when an attempted run violates a search or correctness invariant;
 - `diagnostic` for structurally non-eligible clock, timing, topology, or
   test-double runs; and

@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "grafana",
-  "spec_hash": "bdce75a12d91d5fa141de125bb3ab8925d8750dc00804fdd23781215a80c039a",
+  "spec_hash": "b54e47681488f4c3c46d7833d48314d757769ab5c6559a8cdff9f6be1832c7e5",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "6e9a9d864cf112eca3bde2c3db7450307fed6975202026c20c16cd6485126f01"
+        "4ea844fa9345c58e1c7ac1c5bfe7e5c2b6d0c5bd1acdbdc21520d7c54efd4b1a"
       ],
       "credential_env": [
         "FYRALIS_CANARY_GRAFANA"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "6e9a9d864cf112eca3bde2c3db7450307fed6975202026c20c16cd6485126f01"
+        "4ea844fa9345c58e1c7ac1c5bfe7e5c2b6d0c5bd1acdbdc21520d7c54efd4b1a"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "6e9a9d864cf112eca3bde2c3db7450307fed6975202026c20c16cd6485126f01"
+        "4ea844fa9345c58e1c7ac1c5bfe7e5c2b6d0c5bd1acdbdc21520d7c54efd4b1a"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "6e9a9d864cf112eca3bde2c3db7450307fed6975202026c20c16cd6485126f01"
+        "4ea844fa9345c58e1c7ac1c5bfe7e5c2b6d0c5bd1acdbdc21520d7c54efd4b1a"
       ],
       "credential_env": [],
       "required_env": [],

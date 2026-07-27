@@ -31,6 +31,9 @@ from uuid import UUID
 
 import orjson
 
+from services.ingest.ingestion.event_replica_attribution import (
+    merge_current_event_attribution,
+)
 from services.ingest.ingestion.kafka.topics import topic_for
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope, SourceLiteral
 from services.ingest.ingestion.raw_tier.s3 import (
@@ -147,6 +150,9 @@ async def shadow_write_raw(
       now              — inject for testing; defaults to UTC now.
     """
     now = now or dt.datetime.now(tz=dt.timezone.utc)
+    merged_ingress_metadata = merge_current_event_attribution(
+        ingress_metadata,
+    )
     content_hash = compute_content_hash(raw_body)
     s3_key = build_raw_s3_key(
         env=env,
@@ -177,7 +183,7 @@ async def shadow_write_raw(
         content_hash=content_hash,
         ingested_at=now,
         ingress_kind=ingress_kind,
-        ingress_metadata=ingress_metadata or {},
+        ingress_metadata=merged_ingress_metadata,
         idem_hints=idem_hints or {},
     )
     envelope_bytes = orjson.dumps(envelope.model_dump(mode="json"))

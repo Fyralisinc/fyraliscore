@@ -19,6 +19,10 @@ from typing import Any, Literal
 
 EvidenceKind = Literal["documented", "observed_live", "fyralis_specific"]
 SuiteKind = Literal["historical", "live", "combined"]
+LoadOperationKind = Literal["data", "control"]
+LoadExecutionFrequency = Literal["per_item", "once_per_trial", "periodic"]
+LoadCardinality = Literal["none", "exactly_one", "zero_or_more", "one_or_more"]
+LoadCursorApplicability = Literal["required", "optional", "not_applicable"]
 CertificationState = Literal["unverified", "passed", "failed", "blocked"]
 CanaryCleanupState = Literal["not_required", "passed", "failed", "blocked"]
 CanaryOperationMutability = Literal["read", "mutation", "unclassified"]
@@ -34,6 +38,8 @@ _CALLABLE_REFERENCE_RE = re.compile(
     r"^[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*:"
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
 )
+_LOAD_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
+_PROVIDER_OPERATION_ID_RE = re.compile(r"^[A-Za-z0-9_./@{}:-]+$")
 
 
 class CertificationInvariantError(ValueError):
@@ -97,11 +103,373 @@ class EvidenceReference:
 
 
 @dataclass(frozen=True, slots=True)
+class LoadQuotaMapping:
+    """One provider operation/bucket charge an executable load operation may use."""
+
+    operation_id: str
+    quota_bucket: str | None
+    units_per_request: float
+
+    def __post_init__(self) -> None:
+        operation_id = _nonempty(self.operation_id, "quota operation_id")
+        if _PROVIDER_OPERATION_ID_RE.fullmatch(operation_id) is None:
+            raise CertificationInvariantError(
+                f"invalid quota operation_id {operation_id!r}"
+            )
+        if self.quota_bucket is not None:
+            bucket = _nonempty(self.quota_bucket, "quota_bucket")
+            if _LOAD_ID_RE.fullmatch(bucket) is None:
+                raise CertificationInvariantError(
+                    f"invalid quota_bucket {bucket!r}"
+                )
+        if (
+            isinstance(self.units_per_request, bool)
+            or not isinstance(self.units_per_request, (int, float))
+            or not math.isfinite(float(self.units_per_request))
+            or self.units_per_request <= 0
+        ):
+            raise CertificationInvariantError(
+                "units_per_request must be a finite positive number"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "operation_id": self.operation_id,
+            "quota_bucket": self.quota_bucket,
+            "units_per_request": float(self.units_per_request),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutableLoadOperation:
+    """One bounded callable and its operation-aware receipt contract."""
+
+    operation_id: str
+    executable_binding: str
+    evidence_id: str
+    kind: LoadOperationKind
+    execution_frequency: LoadExecutionFrequency
+    raw_cardinality: LoadCardinality
+    normalized_cardinality: LoadCardinality
+    observation_cardinality: LoadCardinality
+    cursor_applicability: LoadCursorApplicability
+    receipt_proof_requirements: tuple[str, ...]
+    quota_mappings: tuple[LoadQuotaMapping, ...] = ()
+    selection_weight: int | None = None
+    cadence_seconds: float | None = None
+    trial_position: Literal["before_load", "after_load"] | None = None
+
+    def __post_init__(self) -> None:
+        operation_id = _nonempty(self.operation_id, "load operation_id")
+        if _LOAD_ID_RE.fullmatch(operation_id) is None:
+            raise CertificationInvariantError(
+                f"invalid load operation_id {operation_id!r}"
+            )
+        binding = _nonempty(self.executable_binding, "executable_binding")
+        if _CALLABLE_REFERENCE_RE.fullmatch(binding) is None:
+            raise CertificationInvariantError(
+                "executable_binding must be 'module.path:callable'; "
+                f"got {binding!r}"
+            )
+        evidence_id = _nonempty(self.evidence_id, "load evidence_id")
+        if _LOAD_ID_RE.fullmatch(evidence_id) is None:
+            raise CertificationInvariantError(
+                f"invalid load evidence_id {evidence_id!r}"
+            )
+        if self.kind not in {"data", "control"}:
+            raise CertificationInvariantError(
+                f"invalid load operation kind {self.kind!r}"
+            )
+        if self.execution_frequency not in {
+            "per_item",
+            "once_per_trial",
+            "periodic",
+        }:
+            raise CertificationInvariantError(
+                "invalid load execution_frequency "
+                f"{self.execution_frequency!r}"
+            )
+        if self.raw_cardinality not in {
+            "none",
+            "exactly_one",
+            "zero_or_more",
+            "one_or_more",
+        }:
+            raise CertificationInvariantError(
+                f"invalid raw_cardinality {self.raw_cardinality!r}"
+            )
+        if self.observation_cardinality not in {
+            "none",
+            "exactly_one",
+            "zero_or_more",
+            "one_or_more",
+        }:
+            raise CertificationInvariantError(
+                "invalid observation_cardinality "
+                f"{self.observation_cardinality!r}"
+            )
+        if self.normalized_cardinality not in {
+            "none",
+            "exactly_one",
+            "zero_or_more",
+            "one_or_more",
+        }:
+            raise CertificationInvariantError(
+                "invalid normalized_cardinality "
+                f"{self.normalized_cardinality!r}"
+            )
+        if self.cursor_applicability not in {
+            "required",
+            "optional",
+            "not_applicable",
+        }:
+            raise CertificationInvariantError(
+                "invalid cursor_applicability "
+                f"{self.cursor_applicability!r}"
+            )
+        _strings(
+            self.receipt_proof_requirements,
+            "receipt_proof_requirements",
+        )
+        if (
+            not self.receipt_proof_requirements
+            or len(self.receipt_proof_requirements)
+            != len(set(self.receipt_proof_requirements))
+            or any(
+                _LOAD_ID_RE.fullmatch(proof_id) is None
+                for proof_id in self.receipt_proof_requirements
+            )
+        ):
+            raise CertificationInvariantError(
+                "receipt_proof_requirements must contain unique valid IDs"
+            )
+        if "binding_invocation" not in self.receipt_proof_requirements:
+            raise CertificationInvariantError(
+                "receipt proof must require binding_invocation"
+            )
+        if not isinstance(self.quota_mappings, tuple) or not all(
+            isinstance(mapping, LoadQuotaMapping)
+            for mapping in self.quota_mappings
+        ):
+            raise CertificationInvariantError(
+                "quota_mappings must be a tuple of LoadQuotaMapping values"
+            )
+        quota_ids = tuple(
+            (mapping.operation_id, mapping.quota_bucket)
+            for mapping in self.quota_mappings
+        )
+        if len(quota_ids) != len(set(quota_ids)):
+            raise CertificationInvariantError(
+                "quota_mappings must not contain duplicate operation/bucket pairs"
+            )
+        if bool(self.quota_mappings) != (
+            "quota_mapping" in self.receipt_proof_requirements
+        ):
+            raise CertificationInvariantError(
+                "quota_mapping receipt proof must match quota_mappings presence"
+            )
+
+        if self.execution_frequency == "per_item":
+            if self.kind != "data":
+                raise CertificationInvariantError(
+                    "per_item load operations must be data operations"
+                )
+            if (
+                isinstance(self.selection_weight, bool)
+                or not isinstance(self.selection_weight, int)
+                or self.selection_weight <= 0
+            ):
+                raise CertificationInvariantError(
+                    "per_item operations require a positive selection_weight"
+                )
+            if self.cadence_seconds is not None:
+                raise CertificationInvariantError(
+                    "per_item operations cannot declare cadence_seconds"
+                )
+            if self.trial_position is not None:
+                raise CertificationInvariantError(
+                    "per_item operations cannot declare trial_position"
+                )
+        else:
+            if self.kind != "control":
+                raise CertificationInvariantError(
+                    "once_per_trial/periodic operations must be control operations"
+                )
+            if self.selection_weight is not None:
+                raise CertificationInvariantError(
+                    "control operations cannot declare selection_weight"
+                )
+            if self.execution_frequency == "once_per_trial":
+                if self.cadence_seconds is not None:
+                    raise CertificationInvariantError(
+                        "once_per_trial operations cannot declare cadence_seconds"
+                    )
+                if self.trial_position not in {
+                    "before_load",
+                    "after_load",
+                }:
+                    raise CertificationInvariantError(
+                        "once_per_trial operations require a trial_position"
+                    )
+            elif (
+                isinstance(self.cadence_seconds, bool)
+                or not isinstance(self.cadence_seconds, (int, float))
+                or not math.isfinite(float(self.cadence_seconds))
+                or self.cadence_seconds <= 0
+            ):
+                raise CertificationInvariantError(
+                    "periodic operations require finite positive cadence_seconds"
+                )
+            elif self.trial_position is not None:
+                raise CertificationInvariantError(
+                    "periodic operations cannot declare trial_position"
+                )
+
+        data_proofs = {
+            "raw_s3",
+            "raw_kafka",
+            "normalized_kafka",
+            "observation",
+            "t1",
+            "replica_processing",
+        }
+        if self.kind == "control":
+            if (
+                self.raw_cardinality != "none"
+                or self.normalized_cardinality != "none"
+                or self.observation_cardinality != "none"
+                or self.cursor_applicability != "not_applicable"
+                or data_proofs.intersection(self.receipt_proof_requirements)
+            ):
+                raise CertificationInvariantError(
+                    "control operations cannot claim data/cursor output proofs"
+                )
+        else:
+            if (
+                self.raw_cardinality == "none"
+                or self.normalized_cardinality == "none"
+                or self.observation_cardinality == "none"
+                or not data_proofs.issubset(self.receipt_proof_requirements)
+            ):
+                raise CertificationInvariantError(
+                    "data operations require non-none cardinalities and all "
+                    "exact pipeline receipt proofs"
+                )
+            has_cursor_proof = (
+                "cursor_consistency" in self.receipt_proof_requirements
+            )
+            if (self.cursor_applicability == "required") != has_cursor_proof:
+                raise CertificationInvariantError(
+                    "cursor_consistency proof is required exactly when cursor "
+                    "applicability is required"
+                )
+
+    @property
+    def declaration_sha256(self) -> str:
+        payload = json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "operation_id": self.operation_id,
+            "executable_binding": self.executable_binding,
+            "evidence_id": self.evidence_id,
+            "kind": self.kind,
+            "execution_frequency": self.execution_frequency,
+            "selection_weight": self.selection_weight,
+            "cadence_seconds": (
+                float(self.cadence_seconds)
+                if self.cadence_seconds is not None
+                else None
+            ),
+            "trial_position": self.trial_position,
+            "raw_cardinality": self.raw_cardinality,
+            "normalized_cardinality": self.normalized_cardinality,
+            "observation_cardinality": self.observation_cardinality,
+            "cursor_applicability": self.cursor_applicability,
+            "quota_mappings": [
+                mapping.to_dict() for mapping in self.quota_mappings
+            ],
+            "receipt_proof_requirements": list(
+                self.receipt_proof_requirements
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class LoadOperationContractAbsence:
+    """Explicit proof that a legacy semantic has no bounded load callable."""
+
+    operation_id: str
+    evidence_id: str
+    missing_contract: Literal["bounded_callable"]
+    reason: str
+    blocks_execution: bool
+
+    def __post_init__(self) -> None:
+        for field_name in ("operation_id", "evidence_id"):
+            value = _nonempty(getattr(self, field_name), field_name)
+            if _LOAD_ID_RE.fullmatch(value) is None:
+                raise CertificationInvariantError(
+                    f"invalid load contract absence {field_name} {value!r}"
+                )
+        if self.missing_contract != "bounded_callable":
+            raise CertificationInvariantError(
+                "load contract absence must identify bounded_callable"
+            )
+        _nonempty(self.reason, "load contract absence reason")
+        if not isinstance(self.blocks_execution, bool):
+            raise CertificationInvariantError(
+                "load contract absence blocks_execution must be a boolean"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "operation_id": self.operation_id,
+            "evidence_id": self.evidence_id,
+            "missing_contract": self.missing_contract,
+            "reason": self.reason,
+            "blocks_execution": self.blocks_execution,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class LoadSuiteNonApplicability:
+    """Evidence that a suite shape does not exist for this source."""
+
+    evidence_id: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        evidence_id = _nonempty(self.evidence_id, "non-applicable evidence_id")
+        if _LOAD_ID_RE.fullmatch(evidence_id) is None:
+            raise CertificationInvariantError(
+                f"invalid non-applicable evidence_id {evidence_id!r}"
+            )
+        _nonempty(self.reason, "non-applicable reason")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"evidence_id": self.evidence_id, "reason": self.reason}
+
+
+@dataclass(frozen=True, slots=True)
 class LoadSuite:
-    """Deterministic local workload required for one source."""
+    """Deterministic local workload required for one source.
+
+    ``operation_mix`` remains the request-boundary semantic projection.
+    ``executable_operations`` is the independently hashed load-runner
+    projection and never treats internal semantic stages as offerable work.
+    """
 
     kind: SuiteKind
     operation_mix: tuple[str, ...]
+    executable_operations: tuple[ExecutableLoadOperation, ...] = ()
+    contract_absence_assertions: tuple[LoadOperationContractAbsence, ...] = ()
+    non_applicability: LoadSuiteNonApplicability | None = None
     tenants: int = 2
     installations_per_tenant: int = 2
     replicas: int = 2
@@ -118,6 +486,78 @@ class LoadSuite:
             raise CertificationInvariantError("operation_mix must not be empty")
         for operation in self.operation_mix:
             _nonempty(operation, "operation_mix item")
+        if (
+            not isinstance(self.executable_operations, tuple)
+            or not all(
+                isinstance(operation, ExecutableLoadOperation)
+                for operation in self.executable_operations
+            )
+        ):
+            raise CertificationInvariantError(
+                "executable_operations must be a tuple of "
+                "ExecutableLoadOperation values"
+            )
+        if self.non_applicability is not None and not isinstance(
+            self.non_applicability,
+            LoadSuiteNonApplicability,
+        ):
+            raise CertificationInvariantError(
+                "non_applicability must be a LoadSuiteNonApplicability"
+            )
+        if self.executable_operations and self.non_applicability is not None:
+            raise CertificationInvariantError(
+                "a load suite cannot be executable and not applicable"
+            )
+        executable_ids = tuple(
+            operation.operation_id for operation in self.executable_operations
+        )
+        if len(executable_ids) != len(set(executable_ids)):
+            raise CertificationInvariantError(
+                "executable_operations must have unique operation IDs"
+            )
+        if not isinstance(self.contract_absence_assertions, tuple) or not all(
+            isinstance(assertion, LoadOperationContractAbsence)
+            for assertion in self.contract_absence_assertions
+        ):
+            raise CertificationInvariantError(
+                "contract_absence_assertions must be a tuple of "
+                "LoadOperationContractAbsence values"
+            )
+        absence_ids = tuple(
+            assertion.operation_id
+            for assertion in self.contract_absence_assertions
+        )
+        if (
+            len(absence_ids) != len(set(absence_ids))
+            or set(absence_ids).intersection(executable_ids)
+        ):
+            raise CertificationInvariantError(
+                "contract absence IDs must be unique and not executable"
+            )
+        if self.kind == "combined" and self.executable_operations:
+            if self.non_applicability is not None:
+                raise CertificationInvariantError(
+                    "combined load suite cannot be non-applicable"
+                )
+            renewal_ids = tuple(
+                operation
+                for operation in self.operation_mix
+                if operation.endswith(".token_or_watch_renewal")
+            )
+            if len(renewal_ids) != 1:
+                raise CertificationInvariantError(
+                    "combined legacy operation mix must declare one "
+                    "token_or_watch_renewal semantic"
+                )
+            renewal_id = renewal_ids[0]
+            if (
+                renewal_id not in executable_ids
+                and renewal_id not in absence_ids
+            ):
+                raise CertificationInvariantError(
+                    "combined renewal omission requires an explicit executable "
+                    "contract-absence assertion"
+                )
         for name in (
             "tenants",
             "installations_per_tenant",
@@ -318,6 +758,52 @@ class SourceCertificationSpec:
             raise CertificationInvariantError(
                 "load_suites must contain historical, live, and combined exactly once"
             )
+        for suite in self.load_suites:
+            if (
+                not suite.executable_operations
+                and suite.non_applicability is None
+            ):
+                raise CertificationInvariantError(
+                    "canonical load suites must be executable or explicitly "
+                    "not applicable"
+                )
+            operation_ids = (
+                *(operation.operation_id for operation in suite.executable_operations),
+                *(
+                    assertion.operation_id
+                    for assertion in suite.contract_absence_assertions
+                ),
+            )
+            if any(
+                not operation_id.startswith(f"{self.source_id}.")
+                for operation_id in operation_ids
+            ):
+                raise CertificationInvariantError(
+                    "load operation/absence belongs to a different source"
+                )
+            evidence_ids = (
+                *(
+                    operation.evidence_id
+                    for operation in suite.executable_operations
+                ),
+                *(
+                    assertion.evidence_id
+                    for assertion in suite.contract_absence_assertions
+                ),
+                *(
+                    (suite.non_applicability.evidence_id,)
+                    if suite.non_applicability is not None
+                    else ()
+                ),
+            )
+            if any(
+                not evidence_id.startswith(f"{self.evidence_pack_id}.")
+                for evidence_id in evidence_ids
+            ):
+                raise CertificationInvariantError(
+                    "load operation evidence identity differs from the "
+                    "source evidence pack"
+                )
         ids = [item.behavior_id for item in self.evidence]
         if len(ids) != len(set(ids)):
             raise CertificationInvariantError("evidence behavior_ids must be unique")

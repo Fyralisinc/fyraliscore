@@ -38,6 +38,13 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
+from services.ingest.source_certification.models import (
+    CertificationInvariantError,
+    ExecutableLoadOperation,
+    LoadOperationContractAbsence,
+    LoadQuotaMapping,
+    LoadSuiteNonApplicability,
+)
 from services.ingest.source_certification.pipeline_probe import (
     PIPELINE_ACK_ENV,
     PIPELINE_ACK_VALUE,
@@ -51,10 +58,16 @@ from services.ingest.source_contract.catalog import CANONICAL_SOURCE_IDS
 
 
 PIPELINE_LOAD_ARTIFACT_SCHEMA_VERSION = (
-    "fyralis.source-certification-pipeline-load.v1"
+    "fyralis.source-certification-pipeline-load.v2"
 )
 PipelineLoadMode = Literal["provider_safe", "fyralis_ceiling"]
-PipelineLoadState = Literal["passed", "diagnostic", "failed", "blocked"]
+PipelineLoadState = Literal[
+    "passed",
+    "diagnostic",
+    "failed",
+    "blocked",
+    "not_applicable",
+]
 PipelineWorkloadKind = Literal["historical", "live", "combined"]
 TrialPhase = Literal["warmup", "step", "binary_search", "validation", "soak"]
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -69,8 +82,13 @@ _PIPELINE_LAYERS = (
 _TRIAL_METRIC_FIELDS = frozenset(
     {
         "offered_items",
+        "scheduled_data_operations",
+        "scheduled_control_operations",
         "accepted_items",
         "expected_observations",
+        "expected_raw_s3_objects",
+        "expected_raw_kafka_records",
+        "expected_normalized_records",
         "raw_s3_objects",
         "raw_kafka_records",
         "normalized_records",
@@ -86,6 +104,8 @@ _TRIAL_METRIC_FIELDS = frozenset(
         "unexpected_duplicates",
         "cross_tenant_leaks",
         "cursor_checks",
+        "cursor_required_operations",
+        "cursor_proven_operations",
         "cursor_consistency_errors",
         "cooldown_violations",
         "failed_requests",
@@ -96,6 +116,7 @@ _TRIAL_METRIC_FIELDS = frozenset(
         "peak_backlog",
         "backlog_growth_per_second",
         "offered_items_per_second",
+        "data_operations_per_second",
         "raw_records_per_second",
         "normalized_records_per_second",
         "observations_per_second",
@@ -389,25 +410,73 @@ class PipelineLoadTiming:
 
 @dataclass(frozen=True, slots=True)
 class DeclaredPipelineWorkload:
-    """One catalog-declared historical/live/combined operation mix."""
+    """One catalog-declared executable operation contract."""
 
     kind: PipelineWorkloadKind
-    operation_mix: tuple[str, ...]
+    executable_operations: tuple[ExecutableLoadOperation, ...]
+    contract_absence_assertions: tuple[LoadOperationContractAbsence, ...] = ()
+    non_applicability: LoadSuiteNonApplicability | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in {"historical", "live", "combined"}:
             raise ValueError("pipeline workload kind is invalid")
         if (
-            not self.operation_mix
-            or len(self.operation_mix) != len(set(self.operation_mix))
-            or any(
-                not isinstance(operation, str) or not operation.strip()
-                for operation in self.operation_mix
+            not isinstance(self.executable_operations, tuple)
+            or not all(
+                isinstance(operation, ExecutableLoadOperation)
+                for operation in self.executable_operations
             )
         ):
             raise ValueError(
-                "pipeline workload operation_mix must be non-empty and unique"
+                "pipeline workload executable_operations must be a tuple"
             )
+        if self.non_applicability is not None and not isinstance(
+            self.non_applicability,
+            LoadSuiteNonApplicability,
+        ):
+            raise ValueError("pipeline workload non_applicability is invalid")
+        if bool(self.executable_operations) == (
+            self.non_applicability is not None
+        ):
+            raise ValueError(
+                "pipeline workload must be executable or not applicable"
+            )
+        operation_ids = self.operation_ids
+        if len(operation_ids) != len(set(operation_ids)):
+            raise ValueError(
+                "pipeline workload executable operation IDs must be unique"
+            )
+        if not isinstance(self.contract_absence_assertions, tuple) or not all(
+            isinstance(assertion, LoadOperationContractAbsence)
+            for assertion in self.contract_absence_assertions
+        ):
+            raise ValueError(
+                "pipeline workload contract absences are invalid"
+            )
+        absence_ids = tuple(
+            assertion.operation_id
+            for assertion in self.contract_absence_assertions
+        )
+        if (
+            len(absence_ids) != len(set(absence_ids))
+            or set(absence_ids).intersection(operation_ids)
+        ):
+            raise ValueError(
+                "pipeline workload contract absence IDs are inconsistent"
+            )
+
+    @property
+    def operation_ids(self) -> tuple[str, ...]:
+        return tuple(
+            operation.operation_id
+            for operation in self.executable_operations
+        )
+
+    def operation(self, operation_id: str) -> ExecutableLoadOperation:
+        for operation in self.executable_operations:
+            if operation.operation_id == operation_id:
+                return operation
+        raise KeyError(operation_id)
 
     @property
     def declaration_sha256(self) -> str:
@@ -415,24 +484,54 @@ class DeclaredPipelineWorkload:
             _canonical_bytes(
                 {
                     "kind": self.kind,
-                    "operation_mix": list(self.operation_mix),
+                    "executable_operations": [
+                        operation.to_dict()
+                        for operation in self.executable_operations
+                    ],
+                    "contract_absence_assertions": [
+                        assertion.to_dict()
+                        for assertion in self.contract_absence_assertions
+                    ],
+                    "non_applicability": (
+                        self.non_applicability.to_dict()
+                        if self.non_applicability is not None
+                        else None
+                    ),
                 }
             )
         )
 
     def validate_source(self, source_id: str) -> None:
         if any(
-            not operation.startswith(f"{source_id}.")
-            for operation in self.operation_mix
+            not operation_id.startswith(f"{source_id}.")
+            for operation_id in (
+                *self.operation_ids,
+                *(
+                    assertion.operation_id
+                    for assertion in self.contract_absence_assertions
+                ),
+            )
         ):
             raise PipelineLoadError(
-                "workload operation mix contains a foreign source operation"
+                "workload contract contains a foreign source operation"
             )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "kind": self.kind,
-            "operation_mix": list(self.operation_mix),
+            "executable_operations": [
+                operation.to_dict()
+                for operation in self.executable_operations
+            ],
+            "contract_absence_assertions": [
+                assertion.to_dict()
+                for assertion in self.contract_absence_assertions
+            ],
+            "non_applicability": (
+                self.non_applicability.to_dict()
+                if self.non_applicability is not None
+                else None
+            ),
             "declaration_sha256": self.declaration_sha256,
         }
 
@@ -636,7 +735,7 @@ class PipelineBoundaryProof:
     binding_sha256: str
     dedicated_namespace: str
     workload_kind: PipelineWorkloadKind
-    operation_mix_sha256: str
+    operation_contract_sha256: str
     raw_topic: str
     normalized_topic: str
     observation_relation: str
@@ -655,7 +754,7 @@ class PipelineBoundaryProof:
             raise ValueError("boundary binding_sha256 is invalid")
         if (
             self.workload_kind not in {"historical", "live", "combined"}
-            or _SHA256_RE.fullmatch(self.operation_mix_sha256) is None
+            or _SHA256_RE.fullmatch(self.operation_contract_sha256) is None
         ):
             raise ValueError("boundary workload identity is invalid")
         if (
@@ -674,7 +773,7 @@ class PipelineBoundaryProof:
             "binding_sha256": self.binding_sha256,
             "dedicated_namespace": self.dedicated_namespace,
             "workload_kind": self.workload_kind,
-            "operation_mix_sha256": self.operation_mix_sha256,
+            "operation_contract_sha256": self.operation_contract_sha256,
             "raw_topic": self.raw_topic,
             "normalized_topic": self.normalized_topic,
             "observation_relation": self.observation_relation,
@@ -757,6 +856,7 @@ class PipelineSnapshot:
     replica_ids: tuple[str, ...]
     replica_processed_items: tuple[tuple[str, int], ...]
     event_ledger_sha256: str
+    receipt_ledger_sha256: str
     cursor_ledger_sha256: str
     cpu_percent: float = 0.0
     memory_bytes: int = 0
@@ -826,7 +926,11 @@ class PipelineSnapshot:
             raise ValueError(
                 "replica_processed_items must cover replica_ids exactly"
             )
-        for name in ("event_ledger_sha256", "cursor_ledger_sha256"):
+        for name in (
+            "event_ledger_sha256",
+            "receipt_ledger_sha256",
+            "cursor_ledger_sha256",
+        ):
             if _SHA256_RE.fullmatch(getattr(self, name)) is None:
                 raise ValueError(f"{name} must be a lowercase SHA-256")
 
@@ -846,6 +950,8 @@ class WorkItem:
     sequence: int
     event_id: str
     operation_id: str
+    operation_contract_sha256: str
+    evidence_id: str
     tenant_slot: int
     installation_slot: int
     replica_slot: int
@@ -853,29 +959,131 @@ class WorkItem:
 
 
 @dataclass(frozen=True, slots=True)
+class ReceiptQuotaCharge:
+    operation_id: str
+    quota_bucket: str | None
+    request_count: int
+    units: float
+
+    def __post_init__(self) -> None:
+        if not self.operation_id:
+            raise ValueError("receipt quota operation_id must be non-empty")
+        if self.quota_bucket is not None and not self.quota_bucket:
+            raise ValueError("receipt quota_bucket must be non-empty or null")
+        _nonnegative_int(self.request_count, "receipt quota request_count")
+        if self.request_count < 1:
+            raise ValueError("receipt quota request_count must be positive")
+        if (
+            isinstance(self.units, bool)
+            or not isinstance(self.units, (int, float))
+            or not math.isfinite(float(self.units))
+            or self.units <= 0
+        ):
+            raise ValueError(
+                "receipt quota units must be finite and positive"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "operation_id": self.operation_id,
+            "quota_bucket": self.quota_bucket,
+            "request_count": self.request_count,
+            "units": float(self.units),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class OfferReceipt:
     sequence: int
     event_id: str
     operation_id: str
+    operation_contract_sha256: str
+    evidence_id: str
+    execution_evidence_sha256: str
     accepted: bool
     expected_observations: int
+    raw_s3_objects: int
+    raw_kafka_records: int
+    normalized_records: int
     raw_bytes: int
     provider_requests: int
     quota_units: float
+    cursor_checks: int
+    cursor_consistency_errors: int
+    proofs: tuple[str, ...]
+    quota_charges: tuple[ReceiptQuotaCharge, ...] = ()
 
     def __post_init__(self) -> None:
         if self.sequence < 1 or not self.event_id or not self.operation_id:
             raise ValueError("offer receipt identity is invalid")
         if (
+            _SHA256_RE.fullmatch(self.operation_contract_sha256) is None
+            or _SHA256_RE.fullmatch(self.execution_evidence_sha256) is None
+            or not self.evidence_id
+        ):
+            raise ValueError("offer receipt contract/evidence identity is invalid")
+        if not isinstance(self.accepted, bool):
+            raise ValueError("offer receipt accepted must be a boolean")
+        if (
             isinstance(self.expected_observations, bool)
             or not isinstance(self.expected_observations, int)
-            or self.expected_observations < 1
+            or self.expected_observations < 0
         ):
-            raise ValueError("expected_observations must be positive")
-        for name in ("raw_bytes", "provider_requests"):
+            raise ValueError("expected_observations must be non-negative")
+        for name in (
+            "raw_s3_objects",
+            "raw_kafka_records",
+            "normalized_records",
+            "raw_bytes",
+            "provider_requests",
+            "cursor_checks",
+            "cursor_consistency_errors",
+        ):
             _nonnegative_int(getattr(self, name), name)
-        if self.quota_units < 0 or not math.isfinite(self.quota_units):
+        if (
+            isinstance(self.quota_units, bool)
+            or not isinstance(self.quota_units, (int, float))
+            or self.quota_units < 0
+            or not math.isfinite(self.quota_units)
+        ):
             raise ValueError("receipt quota_units must be finite/non-negative")
+        if (
+            not isinstance(self.proofs, tuple)
+            or len(self.proofs) != len(set(self.proofs))
+            or any(not isinstance(proof, str) or not proof for proof in self.proofs)
+        ):
+            raise ValueError("offer receipt proofs must be unique non-empty IDs")
+        if not isinstance(self.quota_charges, tuple) or not all(
+            isinstance(charge, ReceiptQuotaCharge)
+            for charge in self.quota_charges
+        ):
+            raise ValueError(
+                "offer receipt quota_charges must be ReceiptQuotaCharge values"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "sequence": self.sequence,
+            "event_id": self.event_id,
+            "operation_id": self.operation_id,
+            "operation_contract_sha256": self.operation_contract_sha256,
+            "evidence_id": self.evidence_id,
+            "execution_evidence_sha256": self.execution_evidence_sha256,
+            "accepted": self.accepted,
+            "expected_observations": self.expected_observations,
+            "raw_s3_objects": self.raw_s3_objects,
+            "raw_kafka_records": self.raw_kafka_records,
+            "normalized_records": self.normalized_records,
+            "raw_bytes": self.raw_bytes,
+            "provider_requests": self.provider_requests,
+            "quota_units": float(self.quota_units),
+            "cursor_checks": self.cursor_checks,
+            "cursor_consistency_errors": self.cursor_consistency_errors,
+            "proofs": list(self.proofs),
+            "quota_charges": [
+                charge.to_dict() for charge in self.quota_charges
+            ],
+        }
 
 
 @runtime_checkable
@@ -999,7 +1207,7 @@ def _validate_boundary(
         boundary.source_id != source_id
         or boundary.binding_sha256 != infrastructure.binding_sha256
         or boundary.workload_kind != workload.kind
-        or boundary.operation_mix_sha256 != workload.declaration_sha256
+        or boundary.operation_contract_sha256 != workload.declaration_sha256
         or boundary.topology != topology
         or boundary.raw_topic != f"ingestion.raw.{source_id}"
         or boundary.normalized_topic != f"ingestion.normalized.{source_id}"
@@ -1043,10 +1251,313 @@ async def _collect_pending(
     receipts.extend(task.result() for task in done)
 
 
+def _cardinality_allows(cardinality: str, count: int) -> bool:
+    if cardinality == "none":
+        return count == 0
+    if cardinality == "exactly_one":
+        return count == 1
+    if cardinality == "zero_or_more":
+        return count >= 0
+    return count >= 1
+
+
+def _validate_offer_receipt(
+    receipt: OfferReceipt,
+    *,
+    item: WorkItem,
+    operation: ExecutableLoadOperation,
+) -> None:
+    if (
+        receipt.sequence != item.sequence
+        or receipt.event_id != item.event_id
+        or receipt.operation_id != operation.operation_id
+        or receipt.operation_contract_sha256
+        != operation.declaration_sha256
+        or receipt.operation_contract_sha256
+        != item.operation_contract_sha256
+        or receipt.evidence_id != operation.evidence_id
+        or receipt.evidence_id != item.evidence_id
+    ):
+        raise PipelineLoadError(
+            "offer receipt differs from its scheduled operation contract"
+        )
+    if "binding_invocation" not in receipt.proofs:
+        raise PipelineLoadError(
+            "offer receipt lacks binding invocation proof"
+        )
+    if receipt.raw_s3_objects != receipt.raw_kafka_records:
+        raise PipelineLoadError(
+            "offer receipt raw S3/Kafka cardinalities differ"
+        )
+    if receipt.accepted:
+        if not set(operation.receipt_proof_requirements).issubset(
+            receipt.proofs
+        ):
+            raise PipelineLoadError(
+                "accepted offer receipt lacks required operation proofs"
+            )
+        if not _cardinality_allows(
+            operation.raw_cardinality,
+            receipt.raw_s3_objects,
+        ):
+            raise PipelineLoadError(
+                "offer receipt violates raw cardinality contract"
+            )
+        if not _cardinality_allows(
+            operation.observation_cardinality,
+            receipt.expected_observations,
+        ):
+            raise PipelineLoadError(
+                "offer receipt violates observation cardinality contract"
+            )
+        if not _cardinality_allows(
+            operation.normalized_cardinality,
+            receipt.normalized_records,
+        ):
+            raise PipelineLoadError(
+                "offer receipt violates normalized cardinality contract"
+            )
+    elif any(
+        (
+            receipt.expected_observations,
+            receipt.raw_s3_objects,
+            receipt.raw_kafka_records,
+            receipt.normalized_records,
+            receipt.raw_bytes,
+            receipt.cursor_checks,
+        )
+    ):
+        raise PipelineLoadError(
+            "rejected offer receipt claims accepted pipeline output"
+        )
+    if operation.kind == "control" and any(
+        (
+            receipt.expected_observations,
+            receipt.raw_s3_objects,
+            receipt.raw_kafka_records,
+            receipt.normalized_records,
+            receipt.raw_bytes,
+        )
+    ):
+        raise PipelineLoadError(
+            "control operation receipt claims data-plane output"
+        )
+    if (
+        operation.cursor_applicability == "required"
+        and receipt.accepted
+        and receipt.cursor_checks < 1
+    ):
+        raise PipelineLoadError(
+            "cursor-required operation receipt lacks a cursor check"
+        )
+    if (
+        operation.cursor_applicability == "not_applicable"
+        and (
+            receipt.cursor_checks != 0
+            or "cursor_consistency" in receipt.proofs
+        )
+    ):
+        raise PipelineLoadError(
+            "cursor-inapplicable operation receipt claims cursor proof"
+        )
+    if (
+        operation.cursor_applicability == "optional"
+        and receipt.cursor_checks > 0
+        and "cursor_consistency" not in receipt.proofs
+    ):
+        raise PipelineLoadError(
+            "optional cursor checks require cursor consistency proof"
+        )
+
+    allowed_charges = {
+        (mapping.operation_id, mapping.quota_bucket): mapping
+        for mapping in operation.quota_mappings
+    }
+    charge_ids = tuple(
+        (charge.operation_id, charge.quota_bucket)
+        for charge in receipt.quota_charges
+    )
+    if len(charge_ids) != len(set(charge_ids)):
+        raise PipelineLoadError(
+            "offer receipt contains duplicate quota charge identities"
+        )
+    if any(identity not in allowed_charges for identity in charge_ids):
+        raise PipelineLoadError(
+            "offer receipt quota charge is outside the operation allowlist"
+        )
+    if sum(
+        charge.request_count for charge in receipt.quota_charges
+    ) != receipt.provider_requests:
+        raise PipelineLoadError(
+            "offer receipt provider request count differs from quota charges"
+        )
+    for charge in receipt.quota_charges:
+        mapping = allowed_charges[
+            (charge.operation_id, charge.quota_bucket)
+        ]
+        if not math.isclose(
+            charge.units,
+            charge.request_count * mapping.units_per_request,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        ):
+            raise PipelineLoadError(
+                "offer receipt quota units differ from the declared mapping"
+            )
+    if not math.isclose(
+        receipt.quota_units,
+        sum(charge.units for charge in receipt.quota_charges),
+        rel_tol=1e-9,
+        abs_tol=1e-9,
+    ):
+        raise PipelineLoadError(
+            "offer receipt quota units differ from quota charges"
+        )
+
+
+def _target_data_operations(
+    workload: DeclaredPipelineWorkload,
+    *,
+    target_rate: float,
+    duration_seconds: float,
+) -> int:
+    if not any(
+        operation.execution_frequency == "per_item"
+        for operation in workload.executable_operations
+    ):
+        return 0
+    return max(1, math.floor(target_rate * duration_seconds))
+
+
+def _scheduled_operation_counts(
+    workload: DeclaredPipelineWorkload,
+    *,
+    target_rate: float,
+    duration_seconds: float,
+) -> tuple[dict[str, int], int, int]:
+    counts = {operation_id: 0 for operation_id in workload.operation_ids}
+    per_item = tuple(
+        operation
+        for operation in workload.executable_operations
+        if operation.execution_frequency == "per_item"
+    )
+    target_data = _target_data_operations(
+        workload,
+        target_rate=target_rate,
+        duration_seconds=duration_seconds,
+    )
+    weighted = tuple(
+        operation
+        for operation in per_item
+        for _ in range(operation.selection_weight or 0)
+    )
+    if target_data and not weighted:
+        raise PipelineLoadError(
+            "workload has no weighted per-item operation selection"
+        )
+    full_cycles, remainder = (
+        divmod(target_data, len(weighted)) if weighted else (0, 0)
+    )
+    for operation in weighted:
+        counts[operation.operation_id] += full_cycles
+    for operation in weighted[:remainder]:
+        counts[operation.operation_id] += 1
+
+    control_count = 0
+    for operation in workload.executable_operations:
+        if operation.execution_frequency == "once_per_trial":
+            counts[operation.operation_id] = 1
+            control_count += 1
+        elif operation.execution_frequency == "periodic":
+            assert operation.cadence_seconds is not None
+            executions = math.ceil(
+                duration_seconds / operation.cadence_seconds
+            )
+            counts[operation.operation_id] = executions
+            control_count += executions
+    return counts, target_data, control_count
+
+
+def _scheduled_operations(
+    workload: DeclaredPipelineWorkload,
+    *,
+    target_rate: float,
+    duration_seconds: float,
+):  # noqa: ANN202
+    """Yield (offset, operation, data ordinal) without materializing the load."""
+
+    per_item = tuple(
+        operation
+        for operation in workload.executable_operations
+        if operation.execution_frequency == "per_item"
+    )
+    weighted = tuple(
+        operation
+        for operation in per_item
+        for _ in range(operation.selection_weight or 0)
+    )
+    target_data = _target_data_operations(
+        workload,
+        target_rate=target_rate,
+        duration_seconds=duration_seconds,
+    )
+    controls: list[tuple[float, int, ExecutableLoadOperation]] = []
+    for declaration_index, operation in enumerate(
+        workload.executable_operations
+    ):
+        if operation.execution_frequency == "once_per_trial":
+            controls.append(
+                (
+                    (
+                        0.0
+                        if operation.trial_position == "before_load"
+                        else duration_seconds
+                    ),
+                    declaration_index,
+                    operation,
+                )
+            )
+        elif operation.execution_frequency == "periodic":
+            assert operation.cadence_seconds is not None
+            for execution_index in range(
+                math.ceil(duration_seconds / operation.cadence_seconds)
+            ):
+                controls.append(
+                    (
+                        execution_index * operation.cadence_seconds,
+                        declaration_index,
+                        operation,
+                    )
+                )
+    controls.sort(key=lambda item: (item[0], item[1]))
+    control_index = 0
+    for data_index in range(target_data):
+        offset = data_index / target_rate
+        while (
+            control_index < len(controls)
+            and controls[control_index][0] <= offset
+        ):
+            control_offset, _index, operation = controls[control_index]
+            yield control_offset, operation, None
+            control_index += 1
+        yield offset, weighted[data_index % len(weighted)], data_index + 1
+    while control_index < len(controls):
+        control_offset, _index, operation = controls[control_index]
+        yield control_offset, operation, None
+        control_index += 1
+
+
+def _receipt_ledger_sha256(receipts: Sequence[OfferReceipt]) -> str:
+    return _sha256(
+        _canonical_bytes([receipt.to_dict() for receipt in receipts])
+    )
+
+
 def _metrics(
     *,
     snapshot: PipelineSnapshot,
     receipts: Sequence[OfferReceipt],
+    workload: DeclaredPipelineWorkload,
     duration_seconds: float,
     target_rate: float,
     scheduled_elapsed_seconds: float,
@@ -1054,21 +1565,58 @@ def _metrics(
     topology: PipelineLoadTopology,
 ) -> tuple[dict[str, int | float], tuple[str, ...]]:
     offered = len(receipts)
+    operations = {
+        operation.operation_id: operation
+        for operation in workload.executable_operations
+    }
+    scheduled_data = sum(
+        operations[receipt.operation_id].kind == "data"
+        for receipt in receipts
+    )
+    scheduled_control = offered - scheduled_data
     accepted_receipts = [receipt for receipt in receipts if receipt.accepted]
     accepted = len(accepted_receipts)
     expected = sum(
         receipt.expected_observations for receipt in accepted_receipts
     )
     receipt_raw_bytes = sum(receipt.raw_bytes for receipt in accepted_receipts)
+    expected_raw_s3 = sum(
+        receipt.raw_s3_objects for receipt in accepted_receipts
+    )
+    expected_raw_kafka = sum(
+        receipt.raw_kafka_records for receipt in accepted_receipts
+    )
+    expected_normalized = sum(
+        receipt.normalized_records for receipt in accepted_receipts
+    )
+    receipt_cursor_checks = sum(
+        receipt.cursor_checks for receipt in receipts
+    )
+    receipt_cursor_errors = sum(
+        receipt.cursor_consistency_errors for receipt in receipts
+    )
+    cursor_required = sum(
+        receipt.accepted
+        and operations[receipt.operation_id].cursor_applicability
+        == "required"
+        for receipt in receipts
+    )
+    cursor_proven = sum(
+        receipt.accepted
+        and operations[receipt.operation_id].cursor_applicability
+        == "required"
+        and receipt.cursor_checks > 0
+        for receipt in receipts
+    )
     receipt_provider_requests = sum(
         receipt.provider_requests for receipt in receipts
     )
     receipt_quota_units = sum(receipt.quota_units for receipt in receipts)
     missing = sum(
         (
-            max(0, accepted - snapshot.raw_s3_objects),
-            max(0, accepted - snapshot.raw_kafka_records),
-            max(0, expected - snapshot.normalized_records),
+            max(0, expected_raw_s3 - snapshot.raw_s3_objects),
+            max(0, expected_raw_kafka - snapshot.raw_kafka_records),
+            max(0, expected_normalized - snapshot.normalized_records),
             max(0, expected - snapshot.observations),
             max(0, expected - snapshot.t1_triggers),
         )
@@ -1082,11 +1630,28 @@ def _metrics(
         ("offered_items", snapshot.offered_items, offered),
         ("accepted_items", snapshot.accepted_items, accepted),
         ("expected_observations", snapshot.expected_observations, expected),
+        ("raw_s3_objects", snapshot.raw_s3_objects, expected_raw_s3),
+        (
+            "raw_kafka_records",
+            snapshot.raw_kafka_records,
+            expected_raw_kafka,
+        ),
+        (
+            "normalized_records",
+            snapshot.normalized_records,
+            expected_normalized,
+        ),
         ("raw_bytes", snapshot.raw_bytes, receipt_raw_bytes),
         (
             "provider_requests",
             snapshot.provider_requests,
             receipt_provider_requests,
+        ),
+        ("cursor_checks", snapshot.cursor_checks, receipt_cursor_checks),
+        (
+            "cursor_consistency_errors",
+            snapshot.cursor_consistency_errors,
+            receipt_cursor_errors,
         ),
     )
     failures.extend(
@@ -1109,26 +1674,36 @@ def _metrics(
         failures.append("raw latency count differs")
     if snapshot.normalized_latency.count != snapshot.normalized_records:
         failures.append("normalized latency count differs")
-    if len(snapshot.tenant_ids) != topology.tenants:
+    if scheduled_data and len(snapshot.tenant_ids) != topology.tenants:
         failures.append("tenant topology coverage differs")
-    if len(snapshot.installation_ids) != topology.installation_count:
+    if (
+        scheduled_data
+        and len(snapshot.installation_ids) != topology.installation_count
+    ):
         failures.append("installation topology coverage differs")
     if len(snapshot.replica_ids) != topology.replicas:
         failures.append("replica topology coverage differs")
     participating_replicas = sum(
         count > 0 for _replica_id, count in snapshot.replica_processed_items
     )
-    if participating_replicas != topology.replicas:
+    if scheduled_data and participating_replicas != topology.replicas:
         failures.append("actual replica participation differs")
     if sum(
         count for _replica_id, count in snapshot.replica_processed_items
-    ) != accepted:
-        failures.append("replica processed count differs from accepted items")
+    ) != expected_raw_kafka:
+        failures.append(
+            "replica processed count differs from raw Kafka records"
+        )
 
     metrics: dict[str, int | float] = {
         "offered_items": offered,
+        "scheduled_data_operations": scheduled_data,
+        "scheduled_control_operations": scheduled_control,
         "accepted_items": accepted,
         "expected_observations": expected,
+        "expected_raw_s3_objects": expected_raw_s3,
+        "expected_raw_kafka_records": expected_raw_kafka,
+        "expected_normalized_records": expected_normalized,
         "raw_s3_objects": snapshot.raw_s3_objects,
         "raw_kafka_records": snapshot.raw_kafka_records,
         "normalized_records": snapshot.normalized_records,
@@ -1146,6 +1721,8 @@ def _metrics(
         "unexpected_duplicates": duplicates,
         "cross_tenant_leaks": snapshot.cross_tenant_leaks,
         "cursor_checks": snapshot.cursor_checks,
+        "cursor_required_operations": cursor_required,
+        "cursor_proven_operations": cursor_proven,
         "cursor_consistency_errors": snapshot.cursor_consistency_errors,
         "cooldown_violations": snapshot.cooldown_violations,
         "failed_requests": snapshot.failed_requests,
@@ -1163,6 +1740,9 @@ def _metrics(
             / wall_elapsed_seconds
         ),
         "offered_items_per_second": offered / wall_elapsed_seconds,
+        "data_operations_per_second": (
+            scheduled_data / wall_elapsed_seconds
+        ),
         "raw_records_per_second": (
             snapshot.raw_kafka_records / wall_elapsed_seconds
         ),
@@ -1188,7 +1768,11 @@ def _metrics(
             wall_elapsed_seconds / duration_seconds
         ),
         "offered_rate_achievement_ratio": (
-            (offered / wall_elapsed_seconds) / target_rate
+            (
+                (scheduled_data / wall_elapsed_seconds) / target_rate
+                if scheduled_data
+                else 1.0
+            )
         ),
         "p50_raw_latency_ms": snapshot.raw_latency.p50_ms,
         "p95_raw_latency_ms": snapshot.raw_latency.p95_ms,
@@ -1221,13 +1805,14 @@ def _stable(
     failures = list(crosscheck_failures)
     equality_checks = (
         ("accepted_items", "offered_items"),
-        ("raw_s3_objects", "accepted_items"),
-        ("raw_kafka_records", "accepted_items"),
-        ("normalized_records", "expected_observations"),
+        ("raw_s3_objects", "expected_raw_s3_objects"),
+        ("raw_kafka_records", "expected_raw_kafka_records"),
+        ("normalized_records", "expected_normalized_records"),
         ("observations", "expected_observations"),
         ("t1_triggers", "expected_observations"),
         ("unique_observation_identities", "observations"),
         ("unique_t1_observation_ids", "observations"),
+        ("cursor_proven_operations", "cursor_required_operations"),
     )
     failures.extend(
         f"{left} differs from {right}"
@@ -1248,8 +1833,6 @@ def _stable(
     ):
         if metrics[name] != 0:
             failures.append(f"{name} must equal zero")
-    if metrics["cursor_checks"] <= 0:
-        failures.append("cursor_checks must be positive")
     if metrics["scheduled_duration_ratio"] < 0.99:
         failures.append("scheduled duration ratio is below 0.99")
     if (
@@ -1293,34 +1876,71 @@ async def _run_trial(
         raise PipelineLoadError(
             "trial baseline is not zero in the dedicated namespace"
         )
-    target_items = max(1, math.floor(target_rate * duration_seconds))
-    if config.release and target_items < config.topology.lane_count:
+    scheduled_counts, target_data_operations, control_operations = (
+        _scheduled_operation_counts(
+            workload,
+            target_rate=target_rate,
+            duration_seconds=duration_seconds,
+        )
+    )
+    target_items = target_data_operations + control_operations
+    per_item_weight = sum(
+        operation.selection_weight or 0
+        for operation in workload.executable_operations
+        if operation.execution_frequency == "per_item"
+    )
+    if (
+        config.release
+        and target_data_operations
+        and target_data_operations
+        < max(config.topology.lane_count, per_item_weight)
+    ):
         raise PipelineLoadError(
-            "release trial does not offer enough items to cover every lane"
+            "release trial does not offer enough data operations to cover "
+            "every lane and weighted operation"
         )
 
     started_at = clock.now()
     started_monotonic = clock.monotonic()
     receipts: list[OfferReceipt] = []
     pending: set[asyncio.Task[OfferReceipt]] = set()
-    for sequence in range(1, target_items + 1):
-        scheduled = started_monotonic + ((sequence - 1) / target_rate)
+    scheduled_items: dict[
+        int,
+        tuple[WorkItem, ExecutableLoadOperation],
+    ] = {}
+    for sequence, (
+        scheduled_offset,
+        operation,
+        data_ordinal,
+    ) in enumerate(
+        _scheduled_operations(
+            workload,
+            target_rate=target_rate,
+            duration_seconds=duration_seconds,
+        ),
+        start=1,
+    ):
+        scheduled = started_monotonic + scheduled_offset
         await clock.sleep(max(0.0, scheduled - clock.monotonic()))
-        tenant, installation, replica = _lane(sequence, config.topology)
+        tenant, installation, replica = _lane(
+            data_ordinal or 1,
+            config.topology,
+        )
         item = WorkItem(
             sequence=sequence,
             event_id=(
                 f"{source_id}:{trial_index}:{sequence}:"
                 f"{tenant}:{installation}:{replica}"
             ),
-            operation_id=workload.operation_mix[
-                (sequence - 1) % len(workload.operation_mix)
-            ],
+            operation_id=operation.operation_id,
+            operation_contract_sha256=operation.declaration_sha256,
+            evidence_id=operation.evidence_id,
             tenant_slot=tenant,
             installation_slot=installation,
             replica_slot=replica,
             scheduled_monotonic=scheduled,
         )
+        scheduled_items[sequence] = (item, operation)
         pending.add(asyncio.create_task(adapter.offer(item)))
         if len(pending) >= config.maximum_in_flight:
             await _collect_pending(pending, receipts, all_tasks=False)
@@ -1339,25 +1959,35 @@ async def _run_trial(
         raise PipelineLoadError("offer receipts are missing or duplicated")
     if len({item.event_id for item in receipts}) != len(receipts):
         raise PipelineLoadError("offer receipts contain duplicate event IDs")
+    if len(
+        {item.execution_evidence_sha256 for item in receipts}
+    ) != len(receipts):
+        raise PipelineLoadError(
+            "offer receipts contain duplicate execution evidence"
+        )
+    actual_operation_counts = {
+        operation_id: sum(
+            receipt.operation_id == operation_id
+            for receipt in receipts
+        )
+        for operation_id in workload.operation_ids
+    }
+    if actual_operation_counts != scheduled_counts:
+        raise PipelineLoadError(
+            "offer receipts differ from the deterministic operation schedule"
+        )
     for receipt in receipts:
-        tenant, installation, replica = _lane(
-            receipt.sequence,
-            config.topology,
-        )
-        expected_event_id = (
-            f"{source_id}:{trial_index}:{receipt.sequence}:"
-            f"{tenant}:{installation}:{replica}"
-        )
-        expected_operation = workload.operation_mix[
-            (receipt.sequence - 1) % len(workload.operation_mix)
-        ]
-        if (
-            receipt.event_id != expected_event_id
-            or receipt.operation_id != expected_operation
-        ):
+        try:
+            scheduled_item, operation = scheduled_items[receipt.sequence]
+        except KeyError as exc:
             raise PipelineLoadError(
-                "offer receipt differs from its scheduled workload item"
-            )
+                "offer receipt has an unscheduled sequence"
+            ) from exc
+        _validate_offer_receipt(
+            receipt,
+            item=scheduled_item,
+            operation=operation,
+        )
 
     terminal = await adapter.finish_trial()
     completed_at = clock.now()
@@ -1367,6 +1997,7 @@ async def _run_trial(
     metrics, crosscheck_failures = _metrics(
         snapshot=terminal,
         receipts=receipts,
+        workload=workload,
         duration_seconds=duration_seconds,
         target_rate=target_rate,
         scheduled_elapsed_seconds=scheduled_elapsed_seconds,
@@ -1380,6 +2011,13 @@ async def _run_trial(
         ),
         crosscheck_failures=crosscheck_failures,
     )
+    receipt_ledger_sha256 = _receipt_ledger_sha256(receipts)
+    if terminal.receipt_ledger_sha256 != receipt_ledger_sha256:
+        stable = False
+        failures = (
+            *failures,
+            "receipt ledger differs from offer receipts",
+        )
     return {
         "trial_index": trial_index,
         "phase": phase,
@@ -1390,14 +2028,9 @@ async def _run_trial(
         "stable": stable,
         "failures": list(failures),
         "event_ledger_sha256": terminal.event_ledger_sha256,
+        "receipt_ledger_sha256": terminal.receipt_ledger_sha256,
         "cursor_ledger_sha256": terminal.cursor_ledger_sha256,
-        "operation_counts": {
-            operation_id: sum(
-                receipt.operation_id == operation_id
-                for receipt in receipts
-            )
-            for operation_id in workload.operation_mix
-        },
+        "operation_counts": actual_operation_counts,
         "replica_processed_items": dict(
             terminal.replica_processed_items
         ),
@@ -1530,6 +2163,7 @@ def _blocked_artifact(
     now: datetime,
     reason_code: str,
     quota: VerifiedQuotaConfiguration | None,
+    state: Literal["blocked", "not_applicable"] = "blocked",
 ) -> dict[str, object]:
     current = _aware(now, "now").isoformat()
     return _finish_artifact(
@@ -1538,7 +2172,7 @@ def _blocked_artifact(
             "source_id": source_id,
             "mode": mode,
             "workload": workload.to_dict(),
-            "state": "blocked",
+            "state": state,
             "promotion_eligible": False,
             "clock": "not_started",
             "started_at": current,
@@ -1551,8 +2185,15 @@ def _blocked_artifact(
             "maximum_stable_rate": None,
             "reason_code": reason_code,
             "claim_boundary": (
-                "No load claim is made because release prerequisites were "
-                "not accepted."
+                (
+                    "No load claim is applicable to this explicitly "
+                    "unsupported workload shape."
+                    if state == "not_applicable"
+                    else (
+                        "No load claim is made because release prerequisites "
+                        "were not accepted."
+                    )
+                )
             ),
         }
     )
@@ -1579,6 +2220,30 @@ async def run_pipeline_load(
     effective_config = config or PipelineLoadRunConfig()
     effective_clock = clock or SystemPipelineLoadClock()
     started_at = effective_clock.now()
+    if workload.non_applicability is not None:
+        return _blocked_artifact(
+            source_id=source_id,
+            mode=mode,
+            workload=workload,
+            config=effective_config,
+            now=started_at,
+            reason_code="workload_declared_not_applicable",
+            quota=quota,
+            state="not_applicable",
+        )
+    if any(
+        assertion.blocks_execution
+        for assertion in workload.contract_absence_assertions
+    ):
+        return _blocked_artifact(
+            source_id=source_id,
+            mode=mode,
+            workload=workload,
+            config=effective_config,
+            now=started_at,
+            reason_code="required_executable_contract_absent",
+            quota=quota,
+        )
 
     infrastructure, infrastructure_error = (
         resolve_isolated_pipeline_infrastructure(ambient_env)
@@ -1826,6 +2491,199 @@ def _artifact_integer(
     return value
 
 
+def _declared_workload_from_artifact(
+    value: Mapping[str, Any],
+    *,
+    source_id: str,
+) -> DeclaredPipelineWorkload:
+    _exact_fields(
+        value,
+        frozenset(
+            {
+                "kind",
+                "executable_operations",
+                "contract_absence_assertions",
+                "non_applicability",
+                "declaration_sha256",
+            }
+        ),
+        "workload",
+    )
+    raw_operations = value.get("executable_operations")
+    raw_absences = value.get("contract_absence_assertions")
+    if (
+        not isinstance(raw_operations, list)
+        or not isinstance(raw_absences, list)
+    ):
+        raise PipelineLoadArtifactError(
+            "workload executable contract arrays are invalid"
+        )
+    operations: list[ExecutableLoadOperation] = []
+    for index, raw_operation in enumerate(raw_operations):
+        operation_map = _mapping(
+            raw_operation,
+            f"workload.executable_operations[{index}]",
+        )
+        _exact_fields(
+            operation_map,
+            frozenset(
+                {
+                    "operation_id",
+                    "executable_binding",
+                    "evidence_id",
+                    "kind",
+                    "execution_frequency",
+                    "selection_weight",
+                    "cadence_seconds",
+                    "trial_position",
+                    "raw_cardinality",
+                    "normalized_cardinality",
+                    "observation_cardinality",
+                    "cursor_applicability",
+                    "quota_mappings",
+                    "receipt_proof_requirements",
+                }
+            ),
+            f"workload.executable_operations[{index}]",
+        )
+        raw_mappings = operation_map.get("quota_mappings")
+        raw_proofs = operation_map.get("receipt_proof_requirements")
+        if not isinstance(raw_mappings, list) or not isinstance(
+            raw_proofs,
+            list,
+        ):
+            raise PipelineLoadArtifactError(
+                "workload operation quota/proof arrays are invalid"
+            )
+        mappings: list[LoadQuotaMapping] = []
+        for mapping_index, raw_mapping in enumerate(raw_mappings):
+            mapping = _mapping(
+                raw_mapping,
+                (
+                    "workload.executable_operations"
+                    f"[{index}].quota_mappings[{mapping_index}]"
+                ),
+            )
+            _exact_fields(
+                mapping,
+                frozenset(
+                    {
+                        "operation_id",
+                        "quota_bucket",
+                        "units_per_request",
+                    }
+                ),
+                "workload operation quota mapping",
+            )
+            try:
+                mappings.append(
+                    LoadQuotaMapping(
+                        operation_id=mapping.get("operation_id"),  # type: ignore[arg-type]
+                        quota_bucket=mapping.get("quota_bucket"),  # type: ignore[arg-type]
+                        units_per_request=mapping.get("units_per_request"),  # type: ignore[arg-type]
+                    )
+                )
+            except (CertificationInvariantError, TypeError) as exc:
+                raise PipelineLoadArtifactError(
+                    "workload quota mapping is invalid"
+                ) from exc
+        try:
+            operations.append(
+                ExecutableLoadOperation(
+                    operation_id=operation_map.get("operation_id"),  # type: ignore[arg-type]
+                    executable_binding=operation_map.get("executable_binding"),  # type: ignore[arg-type]
+                    evidence_id=operation_map.get("evidence_id"),  # type: ignore[arg-type]
+                    kind=operation_map.get("kind"),  # type: ignore[arg-type]
+                    execution_frequency=operation_map.get("execution_frequency"),  # type: ignore[arg-type]
+                    selection_weight=operation_map.get("selection_weight"),  # type: ignore[arg-type]
+                    cadence_seconds=operation_map.get("cadence_seconds"),  # type: ignore[arg-type]
+                    trial_position=operation_map.get("trial_position"),  # type: ignore[arg-type]
+                    raw_cardinality=operation_map.get("raw_cardinality"),  # type: ignore[arg-type]
+                    normalized_cardinality=operation_map.get("normalized_cardinality"),  # type: ignore[arg-type]
+                    observation_cardinality=operation_map.get("observation_cardinality"),  # type: ignore[arg-type]
+                    cursor_applicability=operation_map.get("cursor_applicability"),  # type: ignore[arg-type]
+                    quota_mappings=tuple(mappings),
+                    receipt_proof_requirements=tuple(raw_proofs),  # type: ignore[arg-type]
+                )
+            )
+        except (CertificationInvariantError, TypeError) as exc:
+            raise PipelineLoadArtifactError(
+                "workload executable operation is invalid"
+            ) from exc
+
+    absences: list[LoadOperationContractAbsence] = []
+    for index, raw_absence in enumerate(raw_absences):
+        absence_map = _mapping(
+            raw_absence,
+            f"workload.contract_absence_assertions[{index}]",
+        )
+        _exact_fields(
+            absence_map,
+            frozenset(
+                {
+                    "operation_id",
+                    "evidence_id",
+                    "missing_contract",
+                    "reason",
+                    "blocks_execution",
+                }
+            ),
+            "workload contract absence",
+        )
+        try:
+            absences.append(
+                LoadOperationContractAbsence(
+                    operation_id=absence_map.get("operation_id"),  # type: ignore[arg-type]
+                    evidence_id=absence_map.get("evidence_id"),  # type: ignore[arg-type]
+                    missing_contract=absence_map.get("missing_contract"),  # type: ignore[arg-type]
+                    reason=absence_map.get("reason"),  # type: ignore[arg-type]
+                    blocks_execution=absence_map.get("blocks_execution"),  # type: ignore[arg-type]
+                )
+            )
+        except (CertificationInvariantError, TypeError) as exc:
+            raise PipelineLoadArtifactError(
+                "workload contract absence is invalid"
+            ) from exc
+    raw_non_applicability = value.get("non_applicability")
+    non_applicability = None
+    if raw_non_applicability is not None:
+        non_applicability_map = _mapping(
+            raw_non_applicability,
+            "workload.non_applicability",
+        )
+        _exact_fields(
+            non_applicability_map,
+            frozenset({"evidence_id", "reason"}),
+            "workload.non_applicability",
+        )
+        try:
+            non_applicability = LoadSuiteNonApplicability(
+                evidence_id=non_applicability_map.get("evidence_id"),  # type: ignore[arg-type]
+                reason=non_applicability_map.get("reason"),  # type: ignore[arg-type]
+            )
+        except (CertificationInvariantError, TypeError) as exc:
+            raise PipelineLoadArtifactError(
+                "workload non-applicability declaration is invalid"
+            ) from exc
+    try:
+        declared = DeclaredPipelineWorkload(
+            kind=value.get("kind"),  # type: ignore[arg-type]
+            executable_operations=tuple(operations),
+            contract_absence_assertions=tuple(absences),
+            non_applicability=non_applicability,
+        )
+        declared.validate_source(source_id)
+    except (ValueError, PipelineLoadError) as exc:
+        raise PipelineLoadArtifactError(
+            "workload declaration is invalid"
+        ) from exc
+    if declared.to_dict() != dict(value):
+        raise PipelineLoadArtifactError(
+            "workload declaration is non-canonical or its hash differs"
+        )
+    return declared
+
+
 def validate_pipeline_load_artifact(value: object) -> None:
     """Strictly validate semantic cross-checks and the self hash."""
 
@@ -1863,36 +2721,20 @@ def validate_pipeline_load_artifact(value: object) -> None:
     if mode not in {"provider_safe", "fyralis_ceiling"}:
         raise PipelineLoadArtifactError("artifact mode is invalid")
     workload = _mapping(artifact.get("workload"), "workload")
-    _exact_fields(
+    declared_workload = _declared_workload_from_artifact(
         workload,
-        frozenset({"kind", "operation_mix", "declaration_sha256"}),
-        "workload",
+        source_id=source_id,
     )
-    workload_kind = workload.get("kind")
-    operation_mix = workload.get("operation_mix")
-    if (
-        workload_kind not in {"historical", "live", "combined"}
-        or not isinstance(operation_mix, list)
-        or not operation_mix
-        or any(
-            not isinstance(operation, str)
-            or not operation.startswith(f"{source_id}.")
-            for operation in operation_mix
-        )
-        or len(operation_mix) != len(set(operation_mix))
-    ):
-        raise PipelineLoadArtifactError("workload declaration is invalid")
-    expected_workload_sha = _sha256(
-        _canonical_bytes(
-            {
-                "kind": workload_kind,
-                "operation_mix": operation_mix,
-            }
-        )
-    )
-    if workload.get("declaration_sha256") != expected_workload_sha:
-        raise PipelineLoadArtifactError("workload declaration hash differs")
-    if state not in {"passed", "diagnostic", "failed", "blocked"}:
+    workload_kind = declared_workload.kind
+    operation_ids = declared_workload.operation_ids
+    expected_workload_sha = declared_workload.declaration_sha256
+    if state not in {
+        "passed",
+        "diagnostic",
+        "failed",
+        "blocked",
+        "not_applicable",
+    }:
         raise PipelineLoadArtifactError("artifact state is invalid")
     digest = artifact.get("artifact_sha256")
     if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
@@ -2068,10 +2910,18 @@ def validate_pipeline_load_artifact(value: object) -> None:
     trials = artifact.get("trials")
     if not isinstance(trials, list):
         raise PipelineLoadArtifactError("trials must be an array")
-    if state == "blocked":
+    if state in {"blocked", "not_applicable"}:
         if trials or artifact.get("maximum_stable_rate") is not None:
             raise PipelineLoadArtifactError(
-                "blocked artifact cannot contain load results"
+                "non-executed artifact cannot contain load results"
+            )
+        if state == "not_applicable" and (
+            declared_workload.non_applicability is None
+            or artifact.get("reason_code")
+            != "workload_declared_not_applicable"
+        ):
+            raise PipelineLoadArtifactError(
+                "not-applicable artifact lacks its workload declaration"
             )
         return
     if not trials and state != "failed":
@@ -2089,6 +2939,7 @@ def validate_pipeline_load_artifact(value: object) -> None:
             "stable",
             "failures",
             "event_ledger_sha256",
+            "receipt_ledger_sha256",
             "cursor_ledger_sha256",
             "operation_counts",
             "replica_processed_items",
@@ -2159,6 +3010,7 @@ def validate_pipeline_load_artifact(value: object) -> None:
             or _SHA256_RE.fullmatch(trial[name]) is None
             for name in (
                 "event_ledger_sha256",
+                "receipt_ledger_sha256",
                 "cursor_ledger_sha256",
             )
         ):
@@ -2209,8 +3061,17 @@ def validate_pipeline_load_artifact(value: object) -> None:
             trial.get("operation_counts"),
             "trial operation_counts",
         )
+        (
+            expected_operation_counts,
+            expected_data_operations,
+            expected_control_operations,
+        ) = _scheduled_operation_counts(
+            declared_workload,
+            target_rate=float(target_rate),
+            duration_seconds=float(duration),
+        )
         if (
-            set(operation_counts) != set(operation_mix)
+            set(operation_counts) != set(operation_ids)
             or any(
                 isinstance(count, bool)
                 or not isinstance(count, int)
@@ -2218,15 +3079,14 @@ def validate_pipeline_load_artifact(value: object) -> None:
                 for count in operation_counts.values()
             )
             or sum(operation_counts.values()) != metrics["offered_items"]
-            or (
-                operation_counts
-                and max(operation_counts.values())
-                - min(operation_counts.values())
-                > 1
-            )
+            or dict(operation_counts) != expected_operation_counts
+            or metrics["scheduled_data_operations"]
+            != expected_data_operations
+            or metrics["scheduled_control_operations"]
+            != expected_control_operations
         ):
             raise PipelineLoadArtifactError(
-                "trial operation mix differs from the declared workload"
+                "trial operation counts differ from the executable schedule"
             )
         wall_elapsed = float(metrics["wall_elapsed_seconds"])
         scheduled_elapsed = float(metrics["scheduled_elapsed_seconds"])
@@ -2249,7 +3109,11 @@ def validate_pipeline_load_artifact(value: object) -> None:
             )
         if not math.isclose(
             float(metrics["offered_rate_achievement_ratio"]),
-            float(metrics["offered_items_per_second"])
+            (
+                float(metrics["data_operations_per_second"])
+                if expected_data_operations
+                else float(target_rate)
+            )
             / float(target_rate),
             rel_tol=1e-9,
         ):
@@ -2258,6 +3122,10 @@ def validate_pipeline_load_artifact(value: object) -> None:
             )
         rate_checks = (
             ("offered_items_per_second", "offered_items"),
+            (
+                "data_operations_per_second",
+                "scheduled_data_operations",
+            ),
             ("raw_records_per_second", "raw_kafka_records"),
             ("normalized_records_per_second", "normalized_records"),
             ("observations_per_second", "observations"),
@@ -2280,13 +3148,17 @@ def validate_pipeline_load_artifact(value: object) -> None:
         if stable:
             equality_checks = (
                 ("accepted_items", "offered_items"),
-                ("raw_s3_objects", "accepted_items"),
-                ("raw_kafka_records", "accepted_items"),
-                ("normalized_records", "expected_observations"),
+                ("raw_s3_objects", "expected_raw_s3_objects"),
+                ("raw_kafka_records", "expected_raw_kafka_records"),
+                ("normalized_records", "expected_normalized_records"),
                 ("observations", "expected_observations"),
                 ("t1_triggers", "expected_observations"),
                 ("unique_observation_identities", "observations"),
                 ("unique_t1_observation_ids", "observations"),
+                (
+                    "cursor_proven_operations",
+                    "cursor_required_operations",
+                ),
             )
             if any(metrics[left] != metrics[right] for left, right in equality_checks):
                 raise PipelineLoadArtifactError(
@@ -2311,20 +3183,30 @@ def validate_pipeline_load_artifact(value: object) -> None:
                     "stable trial retains an invariant failure"
                 )
             if (
-                metrics["participating_replica_count"]
-                != topology["replicas"]
-                or any(
-                    count <= 0
-                    for count in replica_processed_items.values()
+                (
+                    expected_data_operations > 0
+                    and (
+                        metrics["participating_replica_count"]
+                        != topology["replicas"]
+                        or any(
+                            count <= 0
+                            for count in replica_processed_items.values()
+                        )
+                    )
                 )
                 or sum(replica_processed_items.values())
-                != metrics["accepted_items"]
+                != metrics["raw_kafka_records"]
                 or metrics["replica_count"] != topology["replicas"]
-                or metrics["tenant_count"] != topology["tenants"]
-                or metrics["installation_count"]
-                != (
-                    topology["tenants"]
-                    * topology["installations_per_tenant"]
+                or (
+                    expected_data_operations > 0
+                    and (
+                        metrics["tenant_count"] != topology["tenants"]
+                        or metrics["installation_count"]
+                        != (
+                            topology["tenants"]
+                            * topology["installations_per_tenant"]
+                        )
+                    )
                 )
                 or metrics["scheduled_duration_ratio"] < 0.99
                 or metrics["end_to_end_duration_ratio"]
@@ -2385,7 +3267,7 @@ def validate_pipeline_load_artifact(value: object) -> None:
                 "binding_sha256",
                 "dedicated_namespace",
                 "workload_kind",
-                "operation_mix_sha256",
+                "operation_contract_sha256",
                 "raw_topic",
                 "normalized_topic",
                 "observation_relation",
@@ -2409,7 +3291,7 @@ def validate_pipeline_load_artifact(value: object) -> None:
         or boundary_map.get("binding_sha256")
         != infrastructure.get("binding_sha256")
         or boundary_map.get("workload_kind") != workload_kind
-        or boundary_map.get("operation_mix_sha256")
+        or boundary_map.get("operation_contract_sha256")
         != expected_workload_sha
         or boundary_map.get("raw_topic") != f"ingestion.raw.{source_id}"
         or boundary_map.get("normalized_topic")
@@ -2519,6 +3401,7 @@ __all__ = [
     "PipelineSnapshot",
     "PipelineWorkloadKind",
     "QuotaConstraint",
+    "ReceiptQuotaCharge",
     "SystemPipelineLoadClock",
     "TrialContext",
     "VerifiedQuotaConfiguration",

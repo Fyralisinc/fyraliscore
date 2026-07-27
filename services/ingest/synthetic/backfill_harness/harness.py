@@ -2471,7 +2471,7 @@ class BackfillHarness:
             "observation_writer": (
                 "services.ingest.ingestion.writers.observation_writer",
                 {"WRITER_LOG_LEVEL": "WARNING"},
-                None,
+                ("WRITER_REPLICA_ID", "wrt"),
             ),
         }
         expanded: dict[str, tuple[str, dict[str, str]]] = {}

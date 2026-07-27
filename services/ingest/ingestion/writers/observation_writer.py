@@ -100,6 +100,11 @@ from services.ingest.ingestion.core import (
     ingest_from_draft,
 )
 from services.ingest.ingestion.dlq.publish import publish_dlq
+from services.ingest.ingestion.event_replica_attribution import (
+    EventReplicaAttribution,
+    parse_event_replica_attribution,
+    record_event_replica_attribution,
+)
 from services.ingest.ingestion.feature_flags.client import (
     TenantFlags,
 )
@@ -234,6 +239,12 @@ def _bump(key: str, by: float = 1.0) -> None:
     _metrics[key] = _metrics.get(key, 0.0) + by
 
 
+def _writer_replica_id_from_env() -> str | None:
+    """Return only an explicitly configured process identity."""
+
+    return os.environ.get("WRITER_REPLICA_ID") or None
+
+
 # ---------------------------------------------------------------------
 # M2 shadow log (preserved for flag=FALSE tenants).
 # ---------------------------------------------------------------------
@@ -355,12 +366,19 @@ async def _full_mode_write(
     embedder: Any,
     embedding_producer: Any,
     summarization_producer: Any,
+    replica_id: str | None = None,
 ) -> IngestResult:
     """Call `ingest_from_draft` per envelope. One transaction per
     envelope per Finding 4. Caller is responsible for catching
     permanent vs transient errors and committing the offset only
     after a definitive outcome.
     """
+    attribution = parse_event_replica_attribution(
+        env.ingress_metadata,
+        tenant_id=env.tenant_id,
+        source=env.source,
+        replica_id=replica_id,
+    )
     draft = _draft_from_envelope(env)
     result = await ingest_from_draft(
         channel=env.source_channel,
@@ -376,11 +394,34 @@ async def _full_mode_write(
         raw_s3_key=env.raw_s3_key,
         ingress_kind=env.ingress_kind,
     )
+    if attribution is not None:
+        await _record_full_mode_attribution(
+            pool,
+            attribution=attribution,
+        )
     if result.deduped:
         _bump("writer.full_mode_dedup_hits")
     else:
         _bump("writer.full_mode_writes")
     return result
+
+
+async def _record_full_mode_attribution(
+    pool: asyncpg.Pool,
+    *,
+    attribution: EventReplicaAttribution,
+) -> None:
+    """Record after Observation commit and before the Kafka offset commit.
+
+    This transaction is intentionally separate from ``ingest_from_draft``'s
+    Observation transaction.  Any error escapes the writer, leaving the Kafka
+    offset uncommitted; a replay deduplicates the Observation and retries this
+    exact durable claim.
+    """
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await record_event_replica_attribution(conn, attribution)
 
 
 # Self-heal outcomes (ticket #44). Returned by
@@ -453,6 +494,7 @@ async def _attempt_partition_self_heal(
         await _full_mode_write(
             env,
             pool=config.pool,
+            replica_id=config.replica_id,
             actor_repo=config.actor_repo,
             alias_repo=config.alias_repo,
             embedder=config.embedder,
@@ -521,6 +563,10 @@ class WriterConfig:
     # (matches M2.4 behaviour; useful for tests that don't want a
     # DB).
     pool: asyncpg.Pool | None = None
+    # Exact event attribution is opt-in.  A stamped event requires this
+    # process-owned identity; it is never read from envelope metadata or a
+    # scheduled workload slot.  Unstamped production traffic remains a no-op.
+    replica_id: str | None = None
     tenant_flags: TenantFlags | None = None
     actor_repo: ActorRepo | None = None
     alias_repo: EntityAliasRepo | None = None
@@ -764,6 +810,7 @@ async def _handle_message(
         await _full_mode_write(
             env,
             pool=config.pool,
+            replica_id=config.replica_id,
             actor_repo=config.actor_repo,
             alias_repo=config.alias_repo,
             embedder=config.embedder,
@@ -1208,6 +1255,7 @@ def main() -> None:
             ),
             consumer_group=group,
             source=source,
+            replica_id=_writer_replica_id_from_env(),
         )
         if dsn is not None:
             # Source isolation: per-source writers each own their pool,
@@ -1222,6 +1270,7 @@ def main() -> None:
                 consumer_group=config.consumer_group,
                 source=source,
                 pool=pool,
+                replica_id=config.replica_id,
                 tenant_flags=TenantFlags(pool),
                 actor_repo=ActorRepo(pool),
                 alias_repo=EntityAliasRepo(pool),

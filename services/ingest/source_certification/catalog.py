@@ -8,11 +8,13 @@ therefore blocks release until the promised proof actually exists.
 
 from __future__ import annotations
 
+import json
 from types import MappingProxyType
 from typing import Mapping
 
 from lib.shared.provider_transport import RetrySafety
 from services.ingest.source_certification.evidence import (
+    SURFACE_ARTIFACT_DIRECTORY,
     load_evidence_catalog,
     load_surface_operation_methods,
 )
@@ -21,7 +23,11 @@ from services.ingest.source_certification.models import (
     CanaryOperationContract,
     CertificationBindingRole,
     CertificationCallableBinding,
+    ExecutableLoadOperation,
+    LoadOperationContractAbsence,
+    LoadQuotaMapping,
     LoadSuite,
+    LoadSuiteNonApplicability,
     SourceCertificationSpec,
     SuiteKind,
 )
@@ -133,14 +139,140 @@ def _suite(
     source_id: str,
     history_supported: bool,
 ) -> LoadSuite:
+    source = source_definition(source_id)
+    evidence_id = (
+        f"{source.certification.evidence_id}.fyralis_runtime_contract"
+    )
+    quota_mappings = _load_quota_mappings(source_id)
+    control_proofs = (
+        ("binding_invocation", "quota_mapping")
+        if quota_mappings
+        else ("binding_invocation",)
+    )
+    data_proofs = (
+        "binding_invocation",
+        "raw_s3",
+        "raw_kafka",
+        "normalized_kafka",
+        "observation",
+        "t1",
+        "replica_processing",
+        "quota_mapping",
+    )
+    live_data_proofs = tuple(
+        proof_id
+        for proof_id in data_proofs
+        if proof_id != "quota_mapping"
+    )
+
+    def control(
+        operation_name: str,
+        binding: str,
+        *,
+        provider_calls: bool,
+        trial_position: str,
+    ) -> ExecutableLoadOperation:
+        return ExecutableLoadOperation(
+            operation_id=f"{source_id}.{operation_name}",
+            executable_binding=binding,
+            evidence_id=evidence_id,
+            kind="control",
+            execution_frequency="once_per_trial",
+            trial_position=trial_position,  # type: ignore[arg-type]
+            raw_cardinality="none",
+            normalized_cardinality="none",
+            observation_cardinality="none",
+            cursor_applicability="not_applicable",
+            quota_mappings=quota_mappings if provider_calls else (),
+            receipt_proof_requirements=(
+                control_proofs
+                if provider_calls
+                else ("binding_invocation",)
+            ),
+        )
+
+    def historical_fetch(
+        operation_name: str,
+    ) -> ExecutableLoadOperation:
+        if source.fetcher_binding is None:
+            raise RuntimeError(
+                f"source {source_id!r} has no historical fetch binding"
+            )
+        return ExecutableLoadOperation(
+            operation_id=f"{source_id}.{operation_name}",
+            executable_binding=source.fetcher_binding,
+            evidence_id=evidence_id,
+            kind="data",
+            execution_frequency="per_item",
+            selection_weight=1,
+            raw_cardinality="one_or_more",
+            normalized_cardinality="one_or_more",
+            observation_cardinality="one_or_more",
+            cursor_applicability="required",
+            quota_mappings=quota_mappings,
+            receipt_proof_requirements=(
+                *data_proofs,
+                "cursor_consistency",
+            ),
+        )
+
+    validation_runtime = source.certification.validation_runtime
+    if validation_runtime is None:
+        raise RuntimeError(
+            f"source {source_id!r} has no validation runtime"
+        )
+    live_receive = ExecutableLoadOperation(
+        operation_id=(
+            f"{source_id}.receive"
+            if kind == "live"
+            else f"{source_id}.live_receive"
+        ),
+        executable_binding=validation_runtime.live_event_binding,
+        evidence_id=evidence_id,
+        kind="data",
+        execution_frequency="per_item",
+        selection_weight=1,
+        raw_cardinality="exactly_one",
+        normalized_cardinality="one_or_more",
+        observation_cardinality="one_or_more",
+        cursor_applicability="optional",
+        receipt_proof_requirements=live_data_proofs,
+    )
+
     if kind == "historical":
         mix = (
             ("plan", "fetch_page", "reconcile")
             if history_supported
             else ("assert_history_unsupported",)
         )
+        if history_supported:
+            if (
+                source.planner_binding is None
+                or source.reconciler_binding is None
+            ):
+                raise RuntimeError(
+                    f"source {source_id!r} has incomplete history bindings"
+                )
+            executable_operations = (
+                control(
+                    "plan",
+                    source.planner_binding,
+                    provider_calls=True,
+                    trial_position="before_load",
+                ),
+                historical_fetch("fetch_page"),
+                control(
+                    "reconcile",
+                    source.reconciler_binding,
+                    provider_calls=True,
+                    trial_position="after_load",
+                ),
+            )
+        else:
+            executable_operations = ()
     elif kind == "live":
         mix = ("receive", "verify", "hydrate", "normalize", "persist")
+        executable_operations = (live_receive,)
     else:
         mix = (
             "live_receive",
@@ -148,7 +280,128 @@ def _suite(
             "reconcile",
             "token_or_watch_renewal",
         )
-    return LoadSuite(kind=kind, operation_mix=tuple(f"{source_id}.{x}" for x in mix))
+        if history_supported:
+            if (
+                source.planner_binding is None
+                or source.reconciler_binding is None
+            ):
+                raise RuntimeError(
+                    f"source {source_id!r} has incomplete history bindings"
+                )
+            executable_operations = (
+                control(
+                    "plan",
+                    source.planner_binding,
+                    provider_calls=True,
+                    trial_position="before_load",
+                ),
+                live_receive,
+                historical_fetch("historical_fetch"),
+                control(
+                    "reconcile",
+                    source.reconciler_binding,
+                    provider_calls=True,
+                    trial_position="after_load",
+                ),
+            )
+        else:
+            executable_operations = (live_receive,)
+    requires_renewal = (
+        source.credential_refresh is not None
+        or any(
+            worker.role == "watch_renewal"
+            for worker in source.live_runtime.workers
+        )
+    )
+    absence_assertions: tuple[LoadOperationContractAbsence, ...] = ()
+    if kind == "combined":
+        absence_assertions = (
+            LoadOperationContractAbsence(
+                operation_id=f"{source_id}.token_or_watch_renewal",
+                evidence_id=(
+                    f"{source.certification.evidence_id}."
+                    "fyralis_runtime_contract"
+                ),
+                missing_contract="bounded_callable",
+                reason=(
+                    (
+                        "the source requires renewal but exposes no bounded "
+                        "one-shot callable; long-running launchers and policy "
+                        "metadata are not offerable load operations"
+                    )
+                    if requires_renewal
+                    else (
+                        "the source contract declares no token or watch "
+                        "renewal semantic"
+                    )
+                ),
+                blocks_execution=requires_renewal,
+            ),
+        )
+        if not history_supported:
+            absence_assertions = (
+                LoadOperationContractAbsence(
+                    operation_id=f"{source_id}.history_rejection",
+                    evidence_id=evidence_id,
+                    missing_contract="bounded_callable",
+                    reason=(
+                        "historical ingestion is genuinely not applicable; "
+                        "there is no data-plane history operation to offer"
+                    ),
+                    blocks_execution=False,
+                ),
+                *absence_assertions,
+            )
+    return LoadSuite(
+        kind=kind,
+        operation_mix=tuple(f"{source_id}.{x}" for x in mix),
+        executable_operations=executable_operations,
+        contract_absence_assertions=absence_assertions,
+        non_applicability=(
+            LoadSuiteNonApplicability(
+                evidence_id=evidence_id,
+                reason=(
+                    "the source contract explicitly declares historical "
+                    "ingestion unsupported"
+                ),
+            )
+            if kind == "historical" and not history_supported
+            else None
+        ),
+    )
+
+
+def _load_quota_mappings(source_id: str) -> tuple[LoadQuotaMapping, ...]:
+    """Load the hash-pinned operation/bucket/cost allowlist for receipts."""
+
+    path = SURFACE_ARTIFACT_DIRECTORY / f"{source_id}.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    routes = payload["provider_lab"]["routes"]
+    mappings: dict[tuple[str, str | None], LoadQuotaMapping] = {}
+    for route in routes:
+        bucket = route["quota_bucket"]
+        units = route["quota_cost"]
+        for operation in route["operation_bindings"]:
+            mapping = LoadQuotaMapping(
+                operation_id=operation["operation_id"],
+                quota_bucket=bucket,
+                units_per_request=units,
+            )
+            identity = (mapping.operation_id, mapping.quota_bucket)
+            existing = mappings.get(identity)
+            if existing is not None and existing != mapping:
+                raise RuntimeError(
+                    f"source {source_id!r} has conflicting quota mapping "
+                    f"{identity!r}"
+                )
+            mappings[identity] = mapping
+    return tuple(
+        mappings[identity]
+        for identity in sorted(
+            mappings,
+            key=lambda item: (item[0], item[1] or ""),
+        )
+    )
 
 
 def _canary_operations(source) -> tuple[str, ...]:  # noqa: ANN001

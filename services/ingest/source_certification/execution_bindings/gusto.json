@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "gusto",
-  "spec_hash": "89b69202a5bfc4cd7982fd1e58300681656046c4148dcf1a46d254764cec4029",
+  "spec_hash": "77a877be07aaf8c4283bd1b018830888cd981c941d38dbd7513c4feb1df2b518",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "0884023ed9b58792f3402a51bc5660ed5a26345ee1544532c182f04c2e047768"
+        "d070e2758fee909cddc6b924e353f8e7e83bc9c2dde7e80800f981b75a72be82"
       ],
       "credential_env": [
         "FYRALIS_CANARY_GUSTO"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "0884023ed9b58792f3402a51bc5660ed5a26345ee1544532c182f04c2e047768"
+        "d070e2758fee909cddc6b924e353f8e7e83bc9c2dde7e80800f981b75a72be82"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "0884023ed9b58792f3402a51bc5660ed5a26345ee1544532c182f04c2e047768"
+        "d070e2758fee909cddc6b924e353f8e7e83bc9c2dde7e80800f981b75a72be82"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "0884023ed9b58792f3402a51bc5660ed5a26345ee1544532c182f04c2e047768"
+        "d070e2758fee909cddc6b924e353f8e7e83bc9c2dde7e80800f981b75a72be82"
       ],
       "credential_env": [],
       "required_env": [],

@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "slack",
-  "spec_hash": "821a2a40965fe4736f2f5926063f44fcfa0f1da87328685be23ac502b2a535a2",
+  "spec_hash": "6e7c1d52bb53ca40af46d00cdc9698a1ebf9317bf65422792f269badb3a4b6ad",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "b601e0872fb95197686b4ad055874479c8829de3adb49235aa037725dd2ecace"
+        "8b704db17c840395d0509bf51955034a5a8785f4ed154b03d291c7645e12c9e9"
       ],
       "credential_env": [
         "FYRALIS_CANARY_SLACK"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "b601e0872fb95197686b4ad055874479c8829de3adb49235aa037725dd2ecace"
+        "8b704db17c840395d0509bf51955034a5a8785f4ed154b03d291c7645e12c9e9"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "b601e0872fb95197686b4ad055874479c8829de3adb49235aa037725dd2ecace"
+        "8b704db17c840395d0509bf51955034a5a8785f4ed154b03d291c7645e12c9e9"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "b601e0872fb95197686b4ad055874479c8829de3adb49235aa037725dd2ecace"
+        "8b704db17c840395d0509bf51955034a5a8785f4ed154b03d291c7645e12c9e9"
       ],
       "credential_env": [],
       "required_env": [],

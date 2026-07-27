@@ -9,6 +9,12 @@ from pathlib import Path
 
 import pytest
 
+from services.ingest.source_certification.models import (
+    ExecutableLoadOperation,
+    LoadOperationContractAbsence,
+    LoadQuotaMapping,
+    LoadSuiteNonApplicability,
+)
 from services.ingest.source_certification.pipeline_load_runner import (
     PIPELINE_LOAD_ARTIFACT_SCHEMA_VERSION,
     DeclaredPipelineWorkload,
@@ -22,6 +28,7 @@ from services.ingest.source_certification.pipeline_load_runner import (
     PipelineLoadTopology,
     PipelineSnapshot,
     QuotaConstraint,
+    ReceiptQuotaCharge,
     TrialContext,
     VerifiedQuotaConfiguration,
     WorkItem,
@@ -44,9 +51,102 @@ NOW = datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc)
 
 
 def _workload(kind: str = "combined") -> DeclaredPipelineWorkload:
+    evidence_id = "ingest.evidence.slack.fyralis_runtime_contract"
+    data_proofs = (
+        "binding_invocation",
+        "raw_s3",
+        "raw_kafka",
+        "normalized_kafka",
+        "observation",
+        "t1",
+        "replica_processing",
+    )
+    operations = (
+        ExecutableLoadOperation(
+            operation_id="slack.plan",
+            executable_binding=(
+                "services.ingest.ingestion.planners.slack:plan_shards_slack"
+            ),
+            evidence_id=evidence_id,
+            kind="control",
+            execution_frequency="once_per_trial",
+            trial_position="before_load",
+            raw_cardinality="none",
+            normalized_cardinality="none",
+            observation_cardinality="none",
+            cursor_applicability="not_applicable",
+            receipt_proof_requirements=("binding_invocation",),
+        ),
+        ExecutableLoadOperation(
+            operation_id="slack.live_ingress",
+            executable_binding=(
+                "services.ingest.synthetic.validation_runs.source_bindings:"
+                "dispatch_slack_live_event"
+            ),
+            evidence_id=evidence_id,
+            kind="data",
+            execution_frequency="per_item",
+            selection_weight=1,
+            raw_cardinality="exactly_one",
+            normalized_cardinality="exactly_one",
+            observation_cardinality="exactly_one",
+            cursor_applicability="optional",
+            receipt_proof_requirements=data_proofs,
+        ),
+        ExecutableLoadOperation(
+            operation_id="slack.historical_fetch",
+            executable_binding=(
+                "services.ingest.ingestion.fetchers.slack:fetch_page_slack"
+            ),
+            evidence_id=evidence_id,
+            kind="data",
+            execution_frequency="per_item",
+            selection_weight=1,
+            raw_cardinality="exactly_one",
+            normalized_cardinality="exactly_one",
+            observation_cardinality="exactly_one",
+            cursor_applicability="required",
+            quota_mappings=(
+                LoadQuotaMapping(
+                    operation_id="conversations.history",
+                    quota_bucket="web-api",
+                    units_per_request=1,
+                ),
+            ),
+            receipt_proof_requirements=(
+                *data_proofs,
+                "quota_mapping",
+                "cursor_consistency",
+            ),
+        ),
+        ExecutableLoadOperation(
+            operation_id="slack.reconcile",
+            executable_binding=(
+                "services.ingest.ingestion.reconcilers.slack:reconcile_slack"
+            ),
+            evidence_id=evidence_id,
+            kind="control",
+            execution_frequency="once_per_trial",
+            trial_position="after_load",
+            raw_cardinality="none",
+            normalized_cardinality="none",
+            observation_cardinality="none",
+            cursor_applicability="not_applicable",
+            receipt_proof_requirements=("binding_invocation",),
+        ),
+    )
     return DeclaredPipelineWorkload(
         kind=kind,  # type: ignore[arg-type]
-        operation_mix=("slack.live_ingress", "slack.historical_fetch"),
+        executable_operations=operations,
+        contract_absence_assertions=(
+            LoadOperationContractAbsence(
+                operation_id="slack.token_or_watch_renewal",
+                evidence_id=evidence_id,
+                missing_contract="bounded_callable",
+                reason="unit-test contract records the bounded-callable gap",
+                blocks_execution=False,
+            ),
+        ),
     )
 
 
@@ -125,6 +225,7 @@ def _zero_snapshot() -> PipelineSnapshot:
         replica_ids=(),
         replica_processed_items=(),
         event_ledger_sha256="0" * 64,
+        receipt_ledger_sha256="0" * 64,
         cursor_ledger_sha256="0" * 64,
     )
 
@@ -149,7 +250,7 @@ class _Adapter:
             binding_sha256=infrastructure.binding_sha256,
             dedicated_namespace="unit-test-pipeline-namespace",
             workload_kind=workload.kind,
-            operation_mix_sha256=workload.declaration_sha256,
+            operation_contract_sha256=workload.declaration_sha256,
             raw_topic=f"ingestion.raw.{source_id}",
             normalized_topic=f"ingestion.normalized.{source_id}",
             observation_relation="observations",
@@ -158,39 +259,87 @@ class _Adapter:
             topology=topology,
         )
         self.topology = topology
+        self.operations = {
+            operation.operation_id: operation
+            for operation in workload.executable_operations
+        }
         self.stable_through = stable_through
         self.clock = clock
         self.drain_seconds = drain_seconds
         self.inactive_replica = inactive_replica
         self.context: TrialContext | None = None
         self.items: list[WorkItem] = []
+        self.receipts: list[OfferReceipt] = []
         self.closed = False
 
     async def begin_trial(self, context: TrialContext) -> PipelineSnapshot:
         self.context = context
         self.items = []
+        self.receipts = []
         return _zero_snapshot()
 
     async def offer(self, item: WorkItem) -> OfferReceipt:
         self.items.append(item)
-        return OfferReceipt(
+        operation = self.operations[item.operation_id]
+        is_data = operation.kind == "data"
+        cursor_checks = int(
+            operation.cursor_applicability == "required"
+        )
+        quota_charges = (
+            (
+                ReceiptQuotaCharge(
+                    operation_id=operation.quota_mappings[0].operation_id,
+                    quota_bucket=operation.quota_mappings[0].quota_bucket,
+                    request_count=1,
+                    units=operation.quota_mappings[0].units_per_request,
+                ),
+            )
+            if operation.quota_mappings
+            else ()
+        )
+        receipt = OfferReceipt(
             sequence=item.sequence,
             event_id=item.event_id,
             operation_id=item.operation_id,
+            operation_contract_sha256=item.operation_contract_sha256,
+            evidence_id=item.evidence_id,
+            execution_evidence_sha256=hashlib.sha256(
+                f"execution:{item.event_id}".encode()
+            ).hexdigest(),
             accepted=True,
-            expected_observations=1,
-            raw_bytes=100,
-            provider_requests=1,
-            quota_units=1.0,
+            expected_observations=int(is_data),
+            raw_s3_objects=int(is_data),
+            raw_kafka_records=int(is_data),
+            normalized_records=int(is_data),
+            raw_bytes=100 if is_data else 0,
+            provider_requests=sum(
+                charge.request_count for charge in quota_charges
+            ),
+            quota_units=sum(charge.units for charge in quota_charges),
+            cursor_checks=cursor_checks,
+            cursor_consistency_errors=0,
+            proofs=operation.receipt_proof_requirements,
+            quota_charges=quota_charges,
         )
+        self.receipts.append(receipt)
+        return receipt
 
     async def finish_trial(self) -> PipelineSnapshot:
         assert self.context is not None
         if self.clock is not None and self.drain_seconds:
             await self.clock.sleep(self.drain_seconds)
         count = len(self.items)
+        receipts = sorted(self.receipts, key=lambda receipt: receipt.sequence)
+        data_count = sum(receipt.raw_kafka_records for receipt in receipts)
+        expected_observations = sum(
+            receipt.expected_observations for receipt in receipts
+        )
         stable = self.context.target_rate <= self.stable_through
-        completed = count if stable else max(0, count - 1)
+        completed = (
+            expected_observations
+            if stable
+            else max(0, expected_observations - 1)
+        )
         tenant_ids = tuple(
             f"tenant-{slot}" for slot in range(self.topology.tenants)
         )
@@ -205,32 +354,48 @@ class _Adapter:
             f"replica-{slot}" for slot in range(self.topology.replicas)
         )
         replica_counts = [
-            count // len(replica_ids)
-            + (1 if slot < count % len(replica_ids) else 0)
+            sum(
+                self.operations[item.operation_id].kind == "data"
+                and item.replica_slot == slot
+                for item in self.items
+            )
             for slot in range(len(replica_ids))
         ]
         if self.inactive_replica:
             replica_counts[0] += replica_counts[-1]
             replica_counts[-1] = 0
         ledger = ",".join(item.event_id for item in self.items).encode()
+        receipt_ledger = (
+            json.dumps(
+                [receipt.to_dict() for receipt in receipts],
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode()
         return PipelineSnapshot(
             offered_items=count,
             accepted_items=count,
-            expected_observations=count,
-            raw_s3_objects=count,
-            raw_kafka_records=count,
+            expected_observations=expected_observations,
+            raw_s3_objects=data_count,
+            raw_kafka_records=data_count,
             normalized_records=completed,
             observations=completed,
             t1_triggers=completed,
             unique_observation_identities=completed,
             unique_t1_observation_ids=completed,
-            raw_bytes=count * 100,
+            raw_bytes=data_count * 100,
             normalized_bytes=completed * 80,
-            provider_requests=count,
-            quota_units=float(count),
+            provider_requests=sum(
+                receipt.provider_requests for receipt in receipts
+            ),
+            quota_units=sum(receipt.quota_units for receipt in receipts),
             unexpected_duplicates=0,
             cross_tenant_leaks=0,
-            cursor_checks=max(1, count),
+            cursor_checks=sum(
+                receipt.cursor_checks for receipt in receipts
+            ),
             cursor_consistency_errors=0,
             cooldown_violations=0,
             failed_requests=0,
@@ -239,7 +404,7 @@ class _Adapter:
             normalized_kafka_lag=0,
             observation_to_t1_lag=0,
             peak_backlog=0 if stable else 1,
-            raw_latency=_latency(count, 4),
+            raw_latency=_latency(data_count, 4),
             normalized_latency=_latency(completed, 7),
             observation_latency=_latency(completed),
             t1_latency=_latency(completed, 12),
@@ -251,6 +416,9 @@ class _Adapter:
                 for slot, replica_id in enumerate(replica_ids)
             ),
             event_ledger_sha256=hashlib.sha256(ledger).hexdigest(),
+            receipt_ledger_sha256=hashlib.sha256(
+                receipt_ledger
+            ).hexdigest(),
             cursor_ledger_sha256=hashlib.sha256(
                 b"cursor:" + ledger
             ).hexdigest(),
@@ -387,6 +555,60 @@ async def test_provider_safe_fails_closed_without_verified_quota() -> None:
     validate_pipeline_load_artifact(artifact)
 
 
+async def test_non_applicable_and_blocking_contract_gaps_do_not_execute() -> None:
+    non_applicable = DeclaredPipelineWorkload(
+        kind="historical",
+        executable_operations=(),
+        non_applicability=LoadSuiteNonApplicability(
+            evidence_id=(
+                "ingest.evidence.whatsapp.fyralis_runtime_contract"
+            ),
+            reason="historical ingestion is unsupported",
+        ),
+    )
+    not_applicable_artifact = await run_pipeline_load(
+        source_id="whatsapp",
+        mode="fyralis_ceiling",
+        workload=non_applicable,
+        ambient_env={},
+        adapter_factory=None,
+        config=_diagnostic_config(),
+        clock=_Clock(),
+    )
+    assert not_applicable_artifact["state"] == "not_applicable"
+    assert (
+        not_applicable_artifact["reason_code"]
+        == "workload_declared_not_applicable"
+    )
+    validate_pipeline_load_artifact(not_applicable_artifact)
+
+    workload = _workload()
+    blocking = replace(
+        workload,
+        contract_absence_assertions=(
+            replace(
+                workload.contract_absence_assertions[0],
+                blocks_execution=True,
+            ),
+        ),
+    )
+    blocked_artifact = await run_pipeline_load(
+        source_id="slack",
+        mode="fyralis_ceiling",
+        workload=blocking,
+        ambient_env=_environment(),
+        adapter_factory=None,
+        config=_diagnostic_config(),
+        clock=_Clock(),
+    )
+    assert blocked_artifact["state"] == "blocked"
+    assert (
+        blocked_artifact["reason_code"]
+        == "required_executable_contract_absent"
+    )
+    validate_pipeline_load_artifact(blocked_artifact)
+
+
 async def test_runner_fails_closed_without_infrastructure_or_adapter() -> None:
     adapters: list[_Adapter] = []
     no_infrastructure = await run_pipeline_load(
@@ -461,14 +683,17 @@ async def test_exact_pipeline_search_measures_every_layer_and_topology() -> None
         assert metrics["unexpected_duplicates"] == 0
         assert metrics["cursor_consistency_errors"] == 0
         assert set(trial["operation_counts"]) == {
+            "slack.plan",
             "slack.live_ingress",
             "slack.historical_fetch",
+            "slack.reconcile",
         }
-        assert (
-            max(trial["operation_counts"].values())
-            - min(trial["operation_counts"].values())
-            <= 1
-        )
+        assert trial["operation_counts"]["slack.plan"] == 1
+        assert trial["operation_counts"]["slack.reconcile"] == 1
+        assert abs(
+            trial["operation_counts"]["slack.live_ingress"]
+            - trial["operation_counts"]["slack.historical_fetch"]
+        ) <= 1
     assert adapters[0].closed is True
     validate_pipeline_load_artifact(artifact)
 
@@ -577,7 +802,9 @@ async def test_release_requires_all_eight_topology_lanes() -> None:
     )
 
     assert artifact["state"] == "failed"
-    assert "enough items to cover every lane" in artifact["claim_boundary"]
+    assert "enough data operations to cover every lane" in artifact[
+        "claim_boundary"
+    ]
 
 
 async def test_artifact_semantics_reject_rehashed_count_tampering(
@@ -656,7 +883,8 @@ async def test_throughput_uses_wall_elapsed_time_including_drain() -> None:
     metrics = warmup["metrics"]
     assert metrics["scheduled_elapsed_seconds"] == 4
     assert metrics["wall_elapsed_seconds"] == 6
-    assert metrics["offered_items_per_second"] == pytest.approx(8 / 6)
+    assert metrics["offered_items_per_second"] == pytest.approx(10 / 6)
+    assert metrics["data_operations_per_second"] == pytest.approx(8 / 6)
     assert metrics["end_to_end_duration_ratio"] == 1.5
     assert metrics["offered_rate_achievement_ratio"] == pytest.approx(2 / 3)
     assert "end-to-end offered rate is below 90% of target" in warmup["failures"]
@@ -689,13 +917,24 @@ async def test_stable_trial_requires_terminal_replica_participation() -> None:
 
 
 async def test_workload_kind_and_operation_mix_are_boundary_identity() -> None:
+    combined = _workload()
+    live_operation = next(
+        operation
+        for operation in combined.executable_operations
+        if operation.operation_id == "slack.live_ingress"
+    )
+    historical_operation = next(
+        operation
+        for operation in combined.executable_operations
+        if operation.operation_id == "slack.historical_fetch"
+    )
     live = DeclaredPipelineWorkload(
         kind="live",
-        operation_mix=("slack.live_ingress",),
+        executable_operations=(live_operation,),
     )
     historical = DeclaredPipelineWorkload(
         kind="historical",
-        operation_mix=("slack.historical_fetch",),
+        executable_operations=(historical_operation,),
     )
     artifacts = [
         await run_pipeline_load(
@@ -716,8 +955,8 @@ async def test_workload_kind_and_operation_mix_are_boundary_identity() -> None:
         "historical",
     ]
     assert (
-        artifacts[0]["boundary"]["operation_mix_sha256"]
-        != artifacts[1]["boundary"]["operation_mix_sha256"]
+        artifacts[0]["boundary"]["operation_contract_sha256"]
+        != artifacts[1]["boundary"]["operation_contract_sha256"]
     )
     for artifact in artifacts:
         validate_pipeline_load_artifact(artifact)

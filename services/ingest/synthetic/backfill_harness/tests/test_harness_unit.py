@@ -605,6 +605,9 @@ def test_harness_service_specs_include_normalizer_and_writer(
     assert specs["observation_writer"][0] == (
         "services.ingest.ingestion.writers.observation_writer"
     )
+    assert specs["observation_writer"][1]["WRITER_REPLICA_ID"].endswith(
+        "replica-1"
+    )
 
 
 def test_harness_two_replicas_expand_the_complete_service_roster() -> None:
@@ -646,6 +649,15 @@ def test_harness_two_replicas_expand_the_complete_service_roster() -> None:
         specs["normalizer@1"][0]
         == specs["normalizer@2"][0]
         == "services.ingest.ingestion.normalizer.worker"
+    )
+    writer_replica_ids = {
+        specs[f"observation_writer@{replica}"][1]["WRITER_REPLICA_ID"]
+        for replica in (1, 2)
+    }
+    assert len(writer_replica_ids) == 2
+    assert all(
+        replica_id.endswith(f"replica-{replica}")
+        for replica, replica_id in enumerate(sorted(writer_replica_ids), 1)
     )
 
 

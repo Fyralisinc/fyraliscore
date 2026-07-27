@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "notion",
-  "spec_hash": "1862c9cc35728fb3ca7c891dd577b8c9f765731016a7a687de3af3ec8fb24158",
+  "spec_hash": "3a03503e29cb50ba4a858a9e0ef1a64683ac994f9253a7f1e08cb851a7904f25",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "06e74e4c45fc68e24a6cfb5905ae28288914bf2d505dece54f773fdcd4d84253"
+        "62555e2a62e304311622ac7f06b84e0c5f8f8cbceaf97dafafbf05d76c7a39f1"
       ],
       "credential_env": [
         "FYRALIS_CANARY_NOTION"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "06e74e4c45fc68e24a6cfb5905ae28288914bf2d505dece54f773fdcd4d84253"
+        "62555e2a62e304311622ac7f06b84e0c5f8f8cbceaf97dafafbf05d76c7a39f1"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "06e74e4c45fc68e24a6cfb5905ae28288914bf2d505dece54f773fdcd4d84253"
+        "62555e2a62e304311622ac7f06b84e0c5f8f8cbceaf97dafafbf05d76c7a39f1"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "06e74e4c45fc68e24a6cfb5905ae28288914bf2d505dece54f773fdcd4d84253"
+        "62555e2a62e304311622ac7f06b84e0c5f8f8cbceaf97dafafbf05d76c7a39f1"
       ],
       "credential_env": [],
       "required_env": [],

@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "discord",
-  "spec_hash": "e23df6b904db7e925d643b429ea3c9af0a6b281b44e6da1fcd6a73aa30b6e231",
+  "spec_hash": "0bcce31dc143f7c9c575a1ac382a519ab69ffd62b6b5a2e798627430435d37ae",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "e5d0fe5afa549fdaa04ff0cc71a66ed98d0e87af7471b02ac2c957fa65dd4314"
+        "c983eb54106e3de9f9be9b1e1ac15fedc07cbace804f78dbe03a4ecb6f55e2c6"
       ],
       "credential_env": [
         "FYRALIS_CANARY_DISCORD"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "e5d0fe5afa549fdaa04ff0cc71a66ed98d0e87af7471b02ac2c957fa65dd4314"
+        "c983eb54106e3de9f9be9b1e1ac15fedc07cbace804f78dbe03a4ecb6f55e2c6"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "e5d0fe5afa549fdaa04ff0cc71a66ed98d0e87af7471b02ac2c957fa65dd4314"
+        "c983eb54106e3de9f9be9b1e1ac15fedc07cbace804f78dbe03a4ecb6f55e2c6"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "e5d0fe5afa549fdaa04ff0cc71a66ed98d0e87af7471b02ac2c957fa65dd4314"
+        "c983eb54106e3de9f9be9b1e1ac15fedc07cbace804f78dbe03a4ecb6f55e2c6"
       ],
       "credential_env": [],
       "required_env": [],

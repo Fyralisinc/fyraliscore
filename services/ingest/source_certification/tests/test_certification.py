@@ -200,11 +200,49 @@ def test_every_source_declares_all_three_load_shapes() -> None:
             "live",
             "combined",
         }
+        for suite in spec.load_suites:
+            assert bool(suite.executable_operations) != (
+                suite.non_applicability is not None
+            )
+            for operation in suite.executable_operations:
+                assert operation.operation_id.startswith(f"{spec.source_id}.")
+                assert operation.evidence_id.startswith(
+                    f"{spec.evidence_pack_id}."
+                )
     whatsapp = SOURCE_CERTIFICATION_CATALOG["whatsapp"]
     historical = next(s for s in whatsapp.load_suites if s.kind == "historical")
     assert historical.operation_mix == (
         "whatsapp.assert_history_unsupported",
     )
+    assert historical.executable_operations == ()
+    assert historical.non_applicability is not None
+
+
+def test_required_renewal_contract_gaps_block_combined_execution() -> None:
+    renewal_sources = {
+        "gmail",
+        "google_calendar",
+        "google_drive",
+        "quickbooks",
+        "ramp",
+        "gusto",
+        "carta",
+        "linkedin",
+    }
+    for spec in SOURCE_CERTIFICATION_SPECS:
+        combined = next(
+            suite for suite in spec.load_suites if suite.kind == "combined"
+        )
+        renewal = next(
+            assertion
+            for assertion in combined.contract_absence_assertions
+            if assertion.operation_id.endswith(
+                ".token_or_watch_renewal"
+            )
+        )
+        assert renewal.blocks_execution == (
+            spec.source_id in renewal_sources
+        )
 
 
 def test_canary_operations_cover_contract_requests_and_live_transports() -> None:

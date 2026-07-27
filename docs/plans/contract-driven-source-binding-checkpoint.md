@@ -18,7 +18,10 @@ provider-safe throughput tests, and low-rate real-provider canaries.
 ## Current Outcome
 
 The contract-driven local runtime and its exact raw-to-T1 pipeline proof are
-implemented for all 27 sources. The release milestone is **not complete**:
+implemented for all 27 sources. This follow-on checkpoint adds the executable
+load-contract foundation, a strict scenario-evidence protocol, and durable
+event-to-replica attribution. It deliberately does **not** promote any source
+or scenario status. The release milestone is **not complete**:
 
 - Local pipeline boundary: **27/27 passed**.
 - Applicable pipeline scenarios: **133 passed**.
@@ -108,18 +111,46 @@ attribution scenarios.
   pagination, cursor, quota, fault, and request-ledger surfaces.
 - Calibration requires both the configured time window and minimum sample
   count, removing a short-window false pass.
-- `pipeline_load_runner.py` provides the typed offered-load search framework
-  and fails closed with `exact_pipeline_adapter_absent` when no concrete
-  pipeline adapter is supplied. Provider Lab request throughput is not
-  mislabeled as end-to-end Fyralis throughput.
-- An exact adapter cannot be added as a thin factory against the current
-  protocol. Catalog load mixes contain semantic control/downstream operations
-  such as planning, verification, persistence, reconciliation, and watch
-  renewal, while the adapter currently requires every accepted item to emit
-  one raw S3 object and one raw Kafka record. The protocol first needs typed
-  executable operation bindings, operation-specific output/cursor semantics,
-  verifiable receipts, quota-bucket mappings, a long-lived trial supervisor,
-  and durable event-to-replica attribution.
+- `pipeline_load_runner.py` now uses the v2 executable-load artifact. Its
+  declaration-hashed operations distinguish data from control work, declare
+  scheduling, output cardinality, cursor semantics, quota mappings, callable
+  and evidence identity, and required receipt proofs.
+- Weighted data operations alone drive offered rate. Planning runs before a
+  trial, reconciliation runs after it, and periodic controls require an
+  explicit cadence. Receipt-ledger and terminal-counter hashes prevent an
+  accepted-item count from standing in for raw, normalized, Observation, T1,
+  cursor, quota, or replica evidence.
+- WhatsApp historical load is explicitly non-applicable. Combined execution
+  is fail-closed while required bounded renewal bindings are absent for Gmail,
+  Google Calendar, Google Drive, QuickBooks, Ramp, Gusto, Carta, and LinkedIn.
+- The legacy operation mix remains only for request-boundary compatibility.
+  No concrete `PipelineBoundaryAdapter` or long-lived trial supervisor exists
+  yet, so Provider Lab request throughput is still not mislabeled as
+  end-to-end Fyralis throughput.
+
+### Scenario evidence and replica attribution foundations
+
+- `scenario_execution_artifact.py` defines a standalone, self-hashed evidence
+  protocol. Promotion is derived only after the verifier checks the expected
+  source, scenario, executable, contract, execution context, topology,
+  operation evidence, fault linkage, cursor behavior, recovery, ordering, and
+  lifecycle requirements. Callers cannot supply a pass boolean.
+- Migration `0199_ingestion_event_replica_attributions.sql` adds a strict-RLS,
+  retention-bounded ledger whose first durable writer owns an exact
+  trial/source/event identity. Replays increment delivery count without
+  changing that owner; tenant, installation, or operation drift fails closed.
+- An opt-in, versioned attribution stamp now crosses both live raw shadow
+  writes and historical shard output, survives normalization metadata, and is
+  recorded after successful new or deduplicated Observation persistence but
+  before Kafka offset commit. The tenant and source come from the validated
+  normalized envelope, installation and event identity come from the scoped
+  producer stamp, and replica identity comes only from `WRITER_REPLICA_ID`.
+- The synthetic harness assigns unique writer replica IDs. The future exact
+  adapter can therefore prove per-event replica participation instead of
+  inferring it from process heartbeats.
+- Neither the scenario protocol nor the attribution seam is yet wired into an
+  executable certification supervisor. The 225 blocked scenario rows remain
+  blocked until real executors produce and validate these artifacts.
 
 ## Final Local Pipeline Matrix
 
@@ -148,13 +179,14 @@ Detailed per-source counts and timings are in
 | Run 5 — 27 generated execution bindings | 27/27 probes; 133 scenarios; 2,370 expected Observations |
 | Source contract | 192 passed |
 | Provider Lab | 95 passed |
-| Source certification | 220 passed |
+| Source certification | 240 passed; 1 optional real-Redis diagnostic skipped in a clean desired-patch worktree |
+| New load/scenario/attribution focused gates | 58 passed; 2 harness replica-ID tests passed; 3 disposable-PostgreSQL migration tests passed |
 | Exact-installation / scheduling / migration database gate | 108 passed |
 | Validation / backfill harness / fixtures | 194 passed; 7 opt-in E2E tests skipped because Run 5 exercised the stronger all-source path |
 | General and source architecture ratchets | passed; source ratchet 0 findings |
 | Import contracts | 7 kept, 0 broken |
 | Catalog / surface / execution generation | current |
-| MkDocs strict + YAML + TOML | passed |
+| MkDocs strict | Current clean desired-patch build reached site generation, then stopped on two pre-existing missing-link warnings in Figma operations docs excluded from this checkpoint |
 | Ruff + diff hygiene | passed |
 
 Canonical historical reports:
@@ -171,20 +203,27 @@ a signed clean-commit release artifact.
 
 ## Remaining Local Engineering
 
-1. Redesign the load contract so its semantic operation mix is executable and
-   operation-aware, then implement the concrete `PipelineBoundaryAdapter`.
-   Direct raw injection or echoing an operation ID cannot truthfully stand in
-   for historical planning, live verification, reconciliation, persistence,
-   or renewal.
-2. Produce accepted artifacts for the remaining 225 source-specific scenarios,
+1. Implement the concrete, long-lived `PipelineBoundaryAdapter` / trial
+   supervisor against the typed operation contract. It must invoke the real
+   planner, fetch, live ingress, reconciliation, persistence, and renewal
+   boundaries and return evidence-backed receipts; direct raw injection or an
+   echoed operation ID is not acceptable.
+2. Migrate `execution_driver.py`, `load_search.py`, and the generated execution
+   plan payload from the compatibility `operation_mix` view to typed
+   executable operations and explicit non-applicability.
+3. Add bounded renewal executables for Gmail, Google Calendar, Google Drive,
+   QuickBooks, Ramp, Gusto, Carta, and LinkedIn before combined workloads can
+   run.
+4. Integrate the strict scenario artifact verifier, implement the remaining
+   scenario executors, and produce accepted artifacts for all 225 blocked rows,
    including auth expiry, pagination/delta expiry, webhook replay/order,
    source-specific fault recovery, renewals, and protocol behaviors.
-3. Run provider-safe, quota-disabled ceiling, burst/recovery, combined
+5. Run provider-safe, quota-disabled ceiling, burst/recovery, combined
    live/backfill, 15-minute stable, and 60-minute soak workloads after verified
    quota configuration exists.
-4. Confirm the Provider Lab remains at least 2× faster than each offered load
+6. Confirm the Provider Lab remains at least 2× faster than each offered load
    and below the required client-timeout p99 ratio during those suites.
-5. Retire the remaining development-only compatibility router and any
+7. Retire the remaining development-only compatibility router and any
    contract-replaced test fallback only after the external certification gates
    pass. Do not perform final P9 deletion earlier.
 
@@ -245,6 +284,12 @@ COMPANY_OS_ENV=test PYTHONPATH=. .venv/bin/python \
   scripts/generate_source_certification_surfaces.py --check
 COMPANY_OS_ENV=test PYTHONPATH=. .venv/bin/python \
   scripts/generate_source_certification_execution_bindings.py --check
+COMPANY_OS_ENV=test PYTHONPATH=. .venv/bin/python -m pytest \
+  services/ingest/source_certification/tests -q
+COMPANY_OS_ENV=test PYTHONPATH=. .venv/bin/python -m pytest \
+  services/ingest/ingestion/tests/test_event_replica_attribution.py \
+  services/ingest/ingestion/writers/tests/test_observation_writer_attribution.py \
+  -q
 PYTHONPATH=. .venv/bin/python \
   scripts/check_source_architecture_ratchet.py --no-baseline
 ```
@@ -264,5 +309,5 @@ The checkpoint commit must not absorb unrelated pre-existing edits, including:
 - unrelated browser-storage ratchet edits
 - unrelated Figma operations-document edits
 
-`mkdocs.yml` and the BYOC onboarding router/tests require partial staging so
-only the source-contract portions enter this checkpoint.
+All of these paths remain unstaged by this follow-on checkpoint. No partial
+staging of `mkdocs.yml` or the BYOC onboarding router/tests is required here.

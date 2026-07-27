@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "whatsapp",
-  "spec_hash": "00ce01b01ffc2d9503e548aaa3615958541074471686cff7df076dc43273048b",
+  "spec_hash": "7168865f531d417a0f7f52f6712fa747a71de7efa5c232282714ee8c5c099a45",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "0bbe87af0ebbdcdb7740ca48a7829b1f49db2bd25c48085c9e6ce782e8b2bcc9"
+        "0b49064e385a820c6a74818eda777f59d1f6e0c0182467791ef55dc251daf795"
       ],
       "credential_env": [
         "FYRALIS_CANARY_WHATSAPP"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "0bbe87af0ebbdcdb7740ca48a7829b1f49db2bd25c48085c9e6ce782e8b2bcc9"
+        "0b49064e385a820c6a74818eda777f59d1f6e0c0182467791ef55dc251daf795"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "0bbe87af0ebbdcdb7740ca48a7829b1f49db2bd25c48085c9e6ce782e8b2bcc9"
+        "0b49064e385a820c6a74818eda777f59d1f6e0c0182467791ef55dc251daf795"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "0bbe87af0ebbdcdb7740ca48a7829b1f49db2bd25c48085c9e6ce782e8b2bcc9"
+        "0b49064e385a820c6a74818eda777f59d1f6e0c0182467791ef55dc251daf795"
       ],
       "credential_env": [],
       "required_env": [],
