@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.generate_source_certification_surfaces import (
@@ -15,6 +16,53 @@ from services.ingest.source_certification.evidence import (
     load_surface_operation_methods,
 )
 from services.ingest.source_contract.catalog import CANONICAL_SOURCE_IDS
+
+
+def test_time_windowed_golden_fixtures_are_pinned_independently_of_runtime_clock(
+    monkeypatch,
+) -> None:
+    """Static surface fixtures must not inherit runtime recency defaults."""
+
+    from services.ingest.synthetic.fixtures import certification
+
+    first = build_surface_artifacts()
+
+    monkeypatch.setattr(
+        certification,
+        "_RECENT_CERTIFICATION_BASE",
+        datetime(2042, 4, 9, 12, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        certification,
+        "_RECENT_CERTIFICATION_BASE_MS",
+        2280657600000,
+    )
+    second = build_surface_artifacts()
+
+    for source_id in ("aws", "grafana", "hibob"):
+        assert (
+            first[source_id]["provider_lab"]["golden_fixture"]
+            == second[source_id]["provider_lab"]["golden_fixture"]
+        )
+
+    assert (
+        first["aws"]["provider_lab"]["golden_fixture"]["events"][0][
+            "eventTime"
+        ]
+        == 1767571200000
+    )
+    assert (
+        first["grafana"]["provider_lab"]["golden_fixture"]["annotations"][0][
+            "time"
+        ]
+        == 1767571200000
+    )
+    assert (
+        first["hibob"]["provider_lab"]["golden_fixture"]["entities"][
+            "employee"
+        ][0]["modified"]
+        == "2026-01-05T00:00:00+00:00"
+    )
 
 
 def test_checked_in_surfaces_match_contract_lab_and_golden_fixtures() -> None:

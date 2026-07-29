@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://docs.aws.amazon.com/awscloudtrail/latest/APIReference/Welcome.html",
       "api_version": "AWS CloudTrail / STS / SQS APIs",
-      "schema_sha256": "21713cd5c0f3f05225bcdec68d8186a6c21903cb46b5dff8b59a0c25c9bb867a",
+      "schema_sha256": "a00fa9786a6f06fbf9b5375c553e29011e92357388bd62a4a1eb4ee0af2201c5",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

@@ -56,6 +56,17 @@ DEFAULT_OUTPUT_DIRECTORY = Path(
     "services/ingest/source_certification/surfaces",
 )
 
+# Checked-in surface artifacts must be byte-stable.  The runtime certification
+# fixtures for these providers deliberately use a recent clock anchor so their
+# backfills stay inside real provider lookback windows.  That behavior is
+# correct for a run, but it must not leak into the static golden fixture bundle.
+# Keep the pinned values aligned with the deterministic generator defaults.
+_PINNED_GOLDEN_FIXTURE_PARAMS: Mapping[str, Mapping[str, Any]] = {
+    "aws": {"base_ms": 1767571200000},
+    "grafana": {"base_ms": 1767571200000},
+    "hibob": {"base_iso": "2026-01-05T00:00:00Z"},
+}
+
 
 def _golden_fixture(source_id: str) -> Mapping[str, Any]:
     source = source_definition(source_id)
@@ -65,7 +76,7 @@ def _golden_fixture(source_id: str) -> Mapping[str, Any]:
         else resolve_live_fixture_factory(source_id)
     )
     fixture = factory(
-        fixture_params={},
+        fixture_params=_PINNED_GOLDEN_FIXTURE_PARAMS.get(source_id, {}),
         installation_id=f"certification-surface-{source_id}",
     )
     if not isinstance(fixture, Mapping):

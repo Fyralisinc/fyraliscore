@@ -82,8 +82,8 @@
             "displayName": "Person af1881",
             "email": "af18811d@example.com",
             "id": "1000",
-            "modified": "2026-07-26T12:00:00+00:00",
-            "startDate": "2026-07-26",
+            "modified": "2026-01-05T00:00:00+00:00",
+            "startDate": "2026-01-05",
             "status": "active",
             "title": "Software Engineer"
           }
@@ -91,20 +91,20 @@
         "lifecycle": [
           {
             "displayName": "Person 1621fc",
-            "effectiveDate": "2026-07-26",
+            "effectiveDate": "2026-01-05",
             "id": "1000",
             "lifecycleStatus": "hired",
-            "modified": "2026-07-26T12:00:00+00:00",
+            "modified": "2026-01-05T00:00:00+00:00",
             "status": "hired"
           }
         ],
         "payroll": [
           {
             "displayName": "Person 3f4ef9",
-            "effectiveDate": "2026-07-26",
+            "effectiveDate": "2026-01-05",
             "grossPay": 6489.85,
             "id": "1000",
-            "modified": "2026-07-26T12:00:00+00:00",
+            "modified": "2026-01-05T00:00:00+00:00",
             "payrollId": "1000",
             "status": "processed"
           }
@@ -114,9 +114,9 @@
             "approvalStatus": "approved",
             "displayName": "Person 38ced8",
             "id": "1000",
-            "modified": "2026-07-26T12:00:00+00:00",
+            "modified": "2026-01-05T00:00:00+00:00",
             "requestId": "1000",
-            "startDate": "2026-07-26",
+            "startDate": "2026-01-05",
             "status": "approved"
           }
         ]
